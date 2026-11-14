@@ -1183,3 +1183,57 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
 }
+
+#[test]
+fn ping_pong_concurrent_streams_keep_separate_cursors() {
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
+    let s = samples(300, 30, 0, false);
+    let mut c = GopCache::in_pool(None, pool.clone());
+    // Hold only ~12 frames so distant streams (0.. and 150..) cannot stay co-cached for long.
+    c.budget = 0;
+
+    // Warm stream A at 150, then jump to stream B at 0, then advance both interleaved.
+    assert_eq!(index_of(&c.frame(&s, 150_000).expect("A0")), 150);
+    for step in 0..80usize {
+        assert_eq!(index_of(&c.frame(&s, step as i64 * 1000).expect("B")), step);
+        assert_eq!(index_of(&c.frame(&s, (151 + step) as i64 * 1000).expect("A")), 151 + step);
+    }
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 2, "two interleaved offsets keep two cursors");
+    assert!(s.resets.load(Ordering::Relaxed) <= 3, "only initial seeks, got {} resets", s.resets.load(Ordering::Relaxed));
+    assert!(s.decodes.load(Ordering::Relaxed) < 200, "no re-decoding from sync per step, decoded {}", s.decodes.load(Ordering::Relaxed));
+}
+
+#[test]
+fn multi_cursor_eviction_preserves_both_active_playheads() {
+    let mut c = GopCache::new(None);
+    c.budget = 0;
+    let pic = || VideoFrame::rgba8(1, 1, vec![0; 4]);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 200_000;
+    st.extra.push(StreamCursor {
+        decoder: Box::new(Dec {
+            delay: 0,
+            intra: false,
+            held: VecDeque::new(),
+            draft: false,
+            limited: false,
+            resets: Default::default(),
+            decodes: Default::default(),
+        }),
+        next: 10,
+        start: 0,
+        out_max: 9_000,
+        pin: 9_000,
+        last_used: Instant::now(),
+        background: false,
+    });
+    for k in 0..20 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    for k in 150..250 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    assert!(st.frames.contains_key(&200_000), "primary playhead kept");
+    assert!(st.frames.contains_key(&9_000), "secondary playhead kept across distant decodes");
+}
+

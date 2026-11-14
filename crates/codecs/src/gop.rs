@@ -187,6 +187,32 @@ fn decode_start(s: &dyn VideoSamples, i: usize) -> usize {
     key
 }
 
+const MAX_EXTRA_CURSORS: usize = 3;
+const ABANDONED_TTL: Duration = Duration::from_secs(2);
+
+struct StreamCursor {
+    decoder: Box<dyn VideoDecoder>,
+    next: usize,
+    start: usize,
+    out_max: i64,
+    pin: i64,
+    last_used: Instant,
+    background: bool,
+}
+
+#[derive(Clone, Copy)]
+struct AbandonedCursor {
+    next: usize,
+    pin: i64,
+    at: Instant,
+}
+
+fn cursor_can_continue(next: usize, start: usize, out_max: i64, i: usize, want_pts: i64, key: usize, n: usize) -> bool {
+    let running = next != usize::MAX && next <= n && start <= key;
+    let near = next <= key && key - next <= CONTINUE_THROUGH;
+    running && (next > key || near) && (i >= next || (start <= i && want_pts > out_max))
+}
+
 struct State {
     decoder: Option<Box<dyn VideoDecoder>>,
     /// The decoder only produces intra pictures: frames decode independently and in parallel.
@@ -216,6 +242,12 @@ struct State {
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
     background: bool,
+    /// Additional decoder cursors retained when two or more timeline layers concurrently read
+    /// distant offsets of the same source item (ping-pong avoidance).
+    extra: Vec<StreamCursor>,
+    /// Recently abandoned cursor positions used to detect ping-pong alternation before spawning
+    /// another decoder session.
+    abandoned: Vec<AbandonedCursor>,
 }
 
 impl State {
@@ -227,8 +259,88 @@ impl State {
             pool.decoders.fetch_sub(1, Ordering::Relaxed);
             out.push(d);
         }
+        for c in self.extra.drain(..) {
+            pool.decoders.fetch_sub(1, Ordering::Relaxed);
+            out.push(c.decoder);
+        }
+        self.abandoned.clear();
         self.next = usize::MAX;
         out
+    }
+
+    fn has_decoders(&self) -> bool {
+        self.decoder.is_some() || !self.extra.is_empty()
+    }
+
+    fn swap_extra(&mut self, idx: usize) {
+        if let Some(dec) = self.decoder.take() {
+            let cur = StreamCursor {
+                decoder: dec,
+                next: self.next,
+                start: self.start,
+                out_max: self.out_max,
+                pin: self.pin,
+                last_used: self.last_used,
+                background: self.background,
+            };
+            let picked = std::mem::replace(&mut self.extra[idx], cur);
+            self.decoder = Some(picked.decoder);
+            self.next = picked.next;
+            self.start = picked.start;
+            self.out_max = picked.out_max;
+            self.pin = picked.pin;
+            self.background = picked.background;
+        } else {
+            let picked = self.extra.swap_remove(idx);
+            self.decoder = Some(picked.decoder);
+            self.next = picked.next;
+            self.start = picked.start;
+            self.out_max = picked.out_max;
+            self.pin = picked.pin;
+            self.background = picked.background;
+        }
+    }
+
+    fn push_abandoned(&mut self, next: usize, pin: i64, now: Instant) {
+        if next == usize::MAX {
+            return;
+        }
+        self.abandoned.retain(|a| now.saturating_duration_since(a.at) < ABANDONED_TTL);
+        if self.abandoned.len() >= 4 {
+            self.abandoned.remove(0);
+        }
+        self.abandoned.push(AbandonedCursor { next, pin, at: now });
+    }
+
+    fn take_abandoned_match(&mut self, i: usize, now: Instant) -> Option<AbandonedCursor> {
+        self.abandoned.retain(|a| now.saturating_duration_since(a.at) < ABANDONED_TTL);
+        let pos = self
+            .abandoned
+            .iter()
+            .position(|a| i >= a.next.saturating_sub(8) && i <= a.next + CONTINUE_THROUGH)?;
+        Some(self.abandoned.swap_remove(pos))
+    }
+
+    fn touch_pin_for_hit(&mut self, want_pts: i64, now: Instant) {
+        if self.extra.is_empty() {
+            self.pin = want_pts;
+            return;
+        }
+        let primary_dist = if self.pin == i64::MIN { u64::MAX } else { want_pts.abs_diff(self.pin) };
+        if let Some((idx, best_dist)) = self
+            .extra
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.pin != i64::MIN)
+            .map(|(idx, c)| (idx, want_pts.abs_diff(c.pin)))
+            .min_by_key(|&(_, d)| d)
+            && best_dist < primary_dist
+        {
+            self.extra[idx].pin = want_pts;
+            self.extra[idx].last_used = now;
+            return;
+        }
+        self.pin = want_pts;
     }
 
     /// Evict frames, earliest first, while `more` says so.
@@ -425,7 +537,7 @@ impl Pool {
             if self.decoders.load(Ordering::Relaxed) <= cap {
                 continue;
             }
-            for c in self.idle_others(me, idle, |st| st.decoder.is_some()) {
+            for c in self.idle_others(me, idle, |st| st.has_decoders()) {
                 if self.decoders.load(Ordering::Relaxed) <= cap {
                     break;
                 }
@@ -450,7 +562,7 @@ impl Pool {
         for c in all.iter().filter(|c| !std::ptr::eq(Arc::as_ptr(c), me)) {
             if let Some(mut st) = try_state(c)
                 && st.background
-                && st.decoder.is_some()
+                && st.has_decoders()
             {
                 released.extend(st.release_decoder(self));
             }
@@ -655,6 +767,8 @@ impl GopCache {
                 last_used: Instant::now(),
                 pin: i64::MIN,
                 background: false,
+                extra: Vec::new(),
+                abandoned: Vec::new(),
             }),
             pool: pool.clone(),
         });
@@ -758,31 +872,63 @@ impl GopCache {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
-        // Evict frames far from the request (pin), not the newest decode. A frame-threaded
-        // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
-        // wanted picture and walk the GOP again.
-        let pivot = if st.pin != i64::MIN { st.pin } else { pts };
+        // Evict frames far from the active stream pins (primary + recent concurrent cursors),
+        // not the newest decode. A frame-threaded decoder can emit a burst past the playhead,
+        // and two concurrent layers reading distant offsets of one source need both playhead
+        // windows retained so they do not evict each other.
+        let now = st.last_used;
+        let mut pins = [i64::MIN; 1 + MAX_EXTRA_CURSORS];
+        let mut pin_count = 0usize;
+        if st.pin != i64::MIN {
+            pins[pin_count] = st.pin;
+            pin_count += 1;
+        }
+        for c in &st.extra {
+            if c.pin != i64::MIN && now.saturating_duration_since(c.last_used) < RECENT && !pins[..pin_count].contains(&c.pin) {
+                pins[pin_count] = c.pin;
+                pin_count += 1;
+            }
+        }
+        let pivot = if pin_count > 0 { pins[0] } else { pts };
         while st.bytes > budget && st.frames.len() > 1 {
-            let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let mut victim = if pivot - first > last - pivot { first } else { last };
-            if victim == pivot || victim == pts {
-                victim = if victim == first { last } else { first };
+            let victim = if pin_count <= 1 {
+                let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
+                let mut victim = if pivot - first > last - pivot { first } else { last };
                 if victim == pivot || victim == pts {
-                    // both ends are the request and the new decode: an interior frame goes,
-                    // or a reordered batch would stay cached far above the budget
-                    // (the ends are `pivot` and `pts`, so the interior frame farthest from `pivot` is the one next to the other end)
-                    let mut interior = st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last)));
-                    let k = if pivot == first { interior.next_back() } else { interior.next() };
-                    if let Some((&k, _)) = k {
-                        victim = k;
-                    } else if pts != pivot {
-                        // only the request and the new decode remain: the new decode goes, the request stays
-                        victim = pts;
-                    } else {
-                        break;
+                    victim = if victim == first { last } else { first };
+                    if victim == pivot || victim == pts {
+                        // both ends are the request and the new decode: an interior frame goes,
+                        // or a reordered batch would stay cached far above the budget
+                        // (the ends are `pivot` and `pts`, so the interior frame farthest from `pivot` is the one next to the other end)
+                        let mut interior = st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last)));
+                        let k = if pivot == first { interior.next_back() } else { interior.next() };
+                        if let Some((&k, _)) = k {
+                            victim = k;
+                        } else if pts != pivot {
+                            // only the request and the new decode remain: the new decode goes, the request stays
+                            victim = pts;
+                        } else {
+                            break;
+                        }
                     }
                 }
-            }
+                victim
+            } else {
+                let active = &pins[..pin_count];
+                if let Some(k) = st
+                    .frames
+                    .keys()
+                    .copied()
+                    .filter(|&k| k != pts && !active.contains(&k))
+                    .max_by_key(|&k| active.iter().map(|&p| k.abs_diff(p)).min().unwrap_or(0))
+                {
+                    k
+                } else if let Some(k) = st.frames.keys().copied().filter(|&k| k != pivot).max_by_key(|&k| k.abs_diff(pivot)) {
+                    k
+                } else {
+                    break;
+                }
+            };
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
                 st.raw.remove(&victim);
@@ -881,16 +1027,118 @@ impl GopCache {
         let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _decoding = DecodingGuard::enter(me);
-        st.last_used = Instant::now();
-        st.pin = want_pts;
+        let now = Instant::now();
+        let prev_last_used = st.last_used;
+        st.last_used = now;
         let background = filmcraft_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
+            st.touch_pin_for_hit(want_pts, now);
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
             st.background &= background;
             return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
+        // Drop any extra cursor that has gone idle before choosing one for this miss.
+        let idle_cutoff = if self.shared.pool.decoders.load(Ordering::Relaxed) > self.shared.pool.max_decoders {
+            self.shared.pool.recent
+        } else {
+            self.shared.pool.idle
+        };
+        let mut idx = 0;
+        while idx < st.extra.len() {
+            if now.saturating_duration_since(st.extra[idx].last_used) >= idle_cutoff {
+                let c = st.extra.swap_remove(idx);
+                self.shared.pool.decoders.fetch_sub(1, Ordering::Relaxed);
+                released.push(c.decoder);
+            } else {
+                idx += 1;
+            }
+        }
+        if !st.intra && (st.decoder.is_some() || !st.extra.is_empty()) {
+            let key = decode_start(s, i);
+            let fits_bg = |d: &dyn VideoDecoder| background || !d.thread_limited();
+            let primary_dist = st
+                .decoder
+                .as_deref()
+                .filter(|d| fits_bg(*d) && cursor_can_continue(st.next, st.start, st.out_max, i, want_pts, key, n))
+                .map(|_| i.saturating_sub(st.next));
+            let best_extra = st
+                .extra
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| fits_bg(c.decoder.as_ref()) && cursor_can_continue(c.next, c.start, c.out_max, i, want_pts, key, n))
+                .map(|(idx, c)| (idx, i.saturating_sub(c.next)))
+                .min_by_key(|&(_, d)| d);
+            let close_cursor = match (primary_dist, best_extra) {
+                (Some(pd), Some((ei, ed))) => {
+                    if ed < pd && ed <= 16 {
+                        Some(Some(ei))
+                    } else if pd <= 16 {
+                        Some(None)
+                    } else {
+                        None
+                    }
+                }
+                (Some(pd), None) if pd <= 16 => Some(None),
+                (None, Some((ei, ed))) if ed <= 16 => Some(Some(ei)),
+                _ => None,
+            };
+            if let Some(pick) = close_cursor {
+                if let Some(ei) = pick {
+                    st.last_used = prev_last_used;
+                    st.swap_extra(ei);
+                    st.last_used = now;
+                }
+            } else if !background && st.extra.len() < MAX_EXTRA_CURSORS && st.take_abandoned_match(i, now).is_some() {
+                // Ping-pong detected: keep the other active stream's cursor in `extra` and open a
+                // dedicated decoder at this offset instead of thrashing back and forth.
+                if let Some(dec) = st.decoder.take() {
+                    let cur = StreamCursor {
+                        decoder: dec,
+                        next: st.next,
+                        start: st.start,
+                        out_max: st.out_max,
+                        pin: st.pin,
+                        last_used: prev_last_used,
+                        background: st.background,
+                    };
+                    st.extra.push(cur);
+                    st.next = usize::MAX;
+                    st.out_max = i64::MIN;
+                }
+            } else {
+                match (primary_dist, best_extra) {
+                    (Some(pd), Some((ei, ed))) if ed < pd => {
+                        st.last_used = prev_last_used;
+                        st.swap_extra(ei);
+                        st.last_used = now;
+                    }
+                    (Some(_), _) => {}
+                    (None, Some((ei, _))) => {
+                        st.last_used = prev_last_used;
+                        st.swap_extra(ei);
+                        st.last_used = now;
+                    }
+                    (None, None) => {
+                        // No cursor can continue: pick the least-recently-used cursor to reset,
+                        // remembering the replaced position in case the caller returns to it soon.
+                        if let Some((lru_ei, _)) = st.extra.iter().enumerate().min_by_key(|(_, c)| c.last_used)
+                            && st.extra[lru_ei].last_used < prev_last_used
+                        {
+                            st.last_used = prev_last_used;
+                            st.swap_extra(lru_ei);
+                            st.last_used = now;
+                        }
+                        if !background && st.next != usize::MAX {
+                            let (next, pin) = (st.next, st.pin);
+                            st.push_abandoned(next, pin, now);
+                        }
+                    }
+                }
+            }
+        }
+        st.pin = want_pts;
         if !background {
             st.background = false;
         } else if st.decoder.is_none() {
@@ -930,11 +1178,7 @@ impl GopCache {
         // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
         // evicted or lies in another GOP: restart at the sync sample. A run that started after
         // `key` (at the random-access picture of a wanted leading picture) left the picture out.
-        let running = st.next != usize::MAX && st.next <= n && st.start <= key;
-        // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
-        // playback wants those frames anyway.
-        let near = st.next <= key && key - st.next <= CONTINUE_THROUGH;
-        let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
+        let continuing = cursor_can_continue(st.next, st.start, st.out_max, i, want_pts, key, n);
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
             key = random_access_at_or_before(s, key, |data| st.decoder.as_ref().and_then(|d| d.is_random_access(data)))?;
