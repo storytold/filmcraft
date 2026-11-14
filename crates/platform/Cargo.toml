@@ -29,7 +29,6 @@ filmcraft-codecs = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
-filmcraft-gpu = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
@@ -43,6 +42,7 @@ objc2-video-toolbox = "0.3.2"
 # Windows: Media Foundation decoder MFTs + Direct3D 11 / DXVA through the official `windows` bindings
 # (MIT OR Apache-2.0; already in the lockfile through wgpu / winit).
 [target.'cfg(target_os = "windows")'.dependencies]
+filmcraft-gpu = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",

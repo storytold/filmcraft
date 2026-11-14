@@ -18,9 +18,12 @@
 //! two write different streams.
 
 use filmcraft_export::{
-    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, GpuEncodeInput, GpuEncodePool, H264Pass,
-    H264Profile, HardwareEncoding, Result, VideoEncoder,
+    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result,
+    VideoEncoder,
 };
+
+#[cfg(target_os = "windows")]
+use filmcraft_export::{GpuEncodeInput, GpuEncodePool};
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
 
