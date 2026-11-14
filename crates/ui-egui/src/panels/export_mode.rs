@@ -153,7 +153,9 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
 
 /// Full output path of the current settings.
 pub fn output_path(ex: &ExportUi) -> String {
-    let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
+    // exactly one filename component: a sequence name from a project file must not carry
+    // separators or `..` into the destination (the user picks the folder in Location)
+    let name = filmcraft_engine::export_tools::file_safe(&ex.file_name);
     let dir = filmcraft_engine::export_tools::expand_home(ex.location.trim());
     let file = format!("{name}.{}", ex.settings.extension());
     if dir.is_empty() { file } else { std::path::Path::new(&dir).join(file).to_string_lossy().to_string() }
@@ -173,7 +175,8 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
 fn sync_sequence(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.state.active_sequence else { return };
     if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {
-        app.ui.export.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+        app.ui.export.file_name =
+            filmcraft_engine::export_tools::file_safe(&app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into()));
         app.ui.export.for_sequence = Some(seq.0);
     }
     if app.ui.export.location.is_empty() {
@@ -235,6 +238,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 #[cfg(test)]
 mod location_tests {
     use super::*;
+
+    #[test]
+    fn output_path_keeps_a_project_supplied_name_inside_the_location() {
+        for name in ["../../outside", "/etc/passwd", r"..\..\outside", "..", "", "  "] {
+            let ex = ExportUi { file_name: name.into(), location: "/exports".into(), ..Default::default() };
+            let out = std::path::PathBuf::from(output_path(&ex));
+            assert_eq!(out.parent(), Some(std::path::Path::new("/exports")), "{name:?} became {out:?}");
+        }
+    }
 
     #[test]
     fn location_tail_is_bounded_and_keeps_utf8_intact() {
