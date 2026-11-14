@@ -1,11 +1,12 @@
 //! Effect masks in the UI: the mask rows of Effect Controls (create ellipse / 4-point polygon /
-//! pen masks, per-mask Path / Feather / Opacity / Expansion / Inverted / mode) and on-monitor
+//! pen / colour range masks, per-mask Path / Feather / Opacity / Expansion / Inverted / Color
+//! Range (with its HSL Secondary rows) / mode) and on-monitor
 //! editing on the Program monitor (drag vertices, Bézier handles, the whole mask, feather,
 //! expansion and corner-roundness handles; a marquee or Shift-click selects several vertices,
 //! which move together; the pen places a free-draw Bézier mask).
 //!
-//! Automation ids: `effectControls.<effect>.mask.{ellipse,polygon,pen}`,
-//! `effectControls.<effect>.mask<k>` (+ `.mode`, `.inverted`, `.delete`, and the parameter rows
+//! Automation ids: `effectControls.<effect>.mask.{ellipse,polygon,pen,color}`,
+//! `effectControls.<effect>.mask<k>` (+ `.mode`, `.inverted`, `.colorRange`, `.delete`, and the parameter rows
 //! `effectControls.<effect>.mask<k>.<param>.*`), `program.mask.vertex.<i>`, `program.mask.in.<i>`,
 //! `program.mask.out.<i>`, `program.mask.body`, `program.mask.feather`, `program.mask.expansion`,
 //! `program.mask.roundness`, `program.mask.marquee`, `program.maskPen`.
@@ -53,6 +54,7 @@ pub(crate) fn effect_rows(
         (Icon::Ellipse, "ellipse", tl!("Create ellipse mask")),
         (Icon::Rectangle, "polygon", tl!("Create 4-point polygon mask")),
         (Icon::Pen, "pen", tl!("Free draw bezier")),
+        (Icon::Eyedropper, "color", tl!("Create color range mask")),
     ]
     .into_iter()
     .enumerate()
@@ -95,7 +97,9 @@ pub(crate) fn effect_rows(
         // shape glyph: ellipse for smooth paths, square for polygons
         let path = m.path_at(mt);
         let glyph = Rect::from_center_size(pos2(r.min.x + 42.0, r.center().y), vec2(12.0, 12.0));
-        let gi = if path.vertices.iter().all(|v| v.is_corner()) {
+        let gi = if m.color.is_some() {
+            Icon::Eyedropper
+        } else if path.vertices.iter().all(|v| v.is_corner()) {
             Icon::Rectangle
         } else if path.len() == 4 {
             Icon::Ellipse
@@ -173,6 +177,30 @@ pub(crate) fn effect_rows(
             actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "inverted": inv})));
         }
         app.auto.add(&format!("{base}.inverted"), cr, "Inverted");
+        // Color Range: limits the mask to a hue / saturation / lightness range
+        let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+        crate::panels::effect_controls::row_line(ui, r, lane, &t);
+        ui.painter().text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, tl!("Color Range"), Tokens::ui(12.0), t.text);
+        let cr = Rect::from_min_size(pos2(r.min.x + (r.width() * 0.5).max(150.0), r.min.y + 2.0), vec2(20.0, ROW_H - 4.0));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        crate::panels::effect_controls::fit_to_row(&mut cui);
+        let mut on = m.color.is_some();
+        if crate::widgets::accessible_name(cui.checkbox(&mut on, ""), "Color Range").changed() {
+            actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "colorRange": on})));
+        }
+        app.auto.add(&format!("{base}.colorRange"), cr, "Color Range");
+        if m.color.is_none() {
+            continue;
+        }
+        for pd in filmcraft_project::mask::color_param_defs() {
+            crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, it, keys);
+            if app.ui.expanded_fx.contains(&crate::panels::effect_controls::graph_key(clip, idx, &format!("mask{k}.{}", pd.id)))
+                && let Some(param) = m.param(pd.id)
+                && param.is_animated()
+            {
+                crate::panels::effect_controls::graph_rows(app, ui, body, clip, idx, Some(k), pd, param, lane, it, actions);
+            }
+        }
     }
 }
 

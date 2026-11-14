@@ -3826,8 +3826,12 @@ fn build() -> Vec<CommandSpec> {
                         _ => None,
                     }
                     .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
-                    // the parameter's definition (a mask's own parameters have none)
-                    let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
+                    // the parameter's definition (a mask's colour range has one, its shape parameters none)
+                    let def = if pq.get("mask").is_none_or(Value::is_null) {
+                        e.def().and_then(|d| d.param(&pid))
+                    } else {
+                        filmcraft_project::mask::color_param_defs().iter().find(|d| d.id == pid)
+                    };
                     // a choice takes its option name as well as its index, as transition parameters do
                     let val = match (def.map(|d| &d.kind), &val) {
                         (Some(filmcraft_project::ParamKind::Choice(opts)), Value::String(name)) => {

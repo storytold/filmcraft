@@ -8,7 +8,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 17,
+  "schema_version": 18,
   "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
@@ -57,6 +57,7 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 15 | Project notes | Project notes default empty; no-op step |
 | 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
 | 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
+| 18 | Colour range masks | Effect masks may carry a `color` range (HSL Secondary key); existing masks have none; older builds refuse v18 instead of silently dropping it; no-op step |
 
 ### Migrations
 
@@ -477,3 +478,12 @@ Markers may store an optional `url` independently of their name and notes. Older
 load with an empty URL. Schema v17 prevents older builds from silently dropping links
 on save. Changing marker type retains the address. Project loading never opens it; the
 Edit Marker dialog offers explicit HTTP(S) browser opening for Web Link markers.
+
+## Colour range masks (schema v18)
+
+An effect mask may have a `color` object: `hue`, `hue_range`, `sat_min`, `luma_min`, `luma_max`,
+`soften` and `blur`, each a keyframable parameter with Lumetri HSL Secondary's meaning, range and
+default. The mask then covers only the pixels inside its shape whose colour is in the range, keyed
+on the picture the effect receives (for Opacity masks, the clip itself; on an adjustment layer, the
+picture below it). Masks without a colour range are written exactly as before. Schema v18
+prevents older builds from silently dropping colour ranges on save.

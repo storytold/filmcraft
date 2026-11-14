@@ -1442,7 +1442,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// The HSL Secondary key of one pixel's grading signal (0…1 per channel).
 #[inline]
-fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+pub(crate) fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
     let h = rgb_to_hsl(v[0], v[1], v[2]);
     let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
     let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
