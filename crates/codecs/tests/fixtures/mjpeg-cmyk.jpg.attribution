@@ -1,0 +1,6 @@
+asset: crates/codecs/tests/fixtures/mjpeg-cmyk.jpg
+title: CMYK JPEG decoder parity fixture copied from craft-libs prepress tests
+author: craft-libs contributors
+source: https://github.com/storytold/craft-libs/tree/24a472717/crates/prepress/tests/fixtures/cyan-cmyk.jpg
+license: MIT OR Apache-2.0 (craft-libs)
+added: 2026-11-13
