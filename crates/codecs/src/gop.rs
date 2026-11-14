@@ -203,7 +203,6 @@ struct StreamCursor {
 #[derive(Clone, Copy)]
 struct AbandonedCursor {
     next: usize,
-    pin: i64,
     at: Instant,
 }
 
@@ -301,7 +300,7 @@ impl State {
         }
     }
 
-    fn push_abandoned(&mut self, next: usize, pin: i64, now: Instant) {
+    fn push_abandoned(&mut self, next: usize, now: Instant) {
         if next == usize::MAX {
             return;
         }
@@ -309,7 +308,7 @@ impl State {
         if self.abandoned.len() >= 4 {
             self.abandoned.remove(0);
         }
-        self.abandoned.push(AbandonedCursor { next, pin, at: now });
+        self.abandoned.push(AbandonedCursor { next, at: now });
     }
 
     fn take_abandoned_match(&mut self, i: usize, now: Instant) -> Option<AbandonedCursor> {
@@ -1131,8 +1130,8 @@ impl GopCache {
                             st.last_used = now;
                         }
                         if !background && st.next != usize::MAX {
-                            let (next, pin) = (st.next, st.pin);
-                            st.push_abandoned(next, pin, now);
+                            let next = st.next;
+                            st.push_abandoned(next, now);
                         }
                     }
                 }
