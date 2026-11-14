@@ -7,8 +7,8 @@
 //! `metadata.label`, `metadata.section.<Clip|File>`.
 
 use egui::{Rect, RichText, Sense, vec2};
-use filmcraft_engine::panels::{Field, metadata_fields};
-use filmcraft_project::{ItemId, Label};
+use filmcraft_engine::panels::{Field, metadata_clip_fields};
+use filmcraft_project::{ItemId, Label, TrackItem};
 use serde_json::json;
 
 use crate::FilmcraftApp;
@@ -29,10 +29,15 @@ pub(crate) fn follow_selection(app: &mut FilmcraftApp) {
 /// The item Metadata and Info show. Keep the preferred source while entering either inspector;
 /// an empty selection falls back to the other panel, as Metadata did before source retention.
 pub fn target(app: &FilmcraftApp) -> Option<ItemId> {
+    target_clip(app).map(|(id, _)| id)
+}
+
+/// [`target`] with the timeline clip it came from, if any.
+fn target_clip(app: &FilmcraftApp) -> Option<(ItemId, Option<&TrackItem>)> {
     let s = &app.session;
-    let exists = |id: &ItemId| s.project.item(*id).is_some();
-    let project = s.state.project_selection.first().copied().filter(exists);
-    let timeline = s.state.selection.first().and_then(|clip| s.active_sequence()?.find_item(*clip).map(|(_, item)| item.item)).filter(exists);
+    let exists = |(id, _): &(ItemId, Option<&TrackItem>)| s.project.item(*id).is_some();
+    let project = s.state.project_selection.first().map(|id| (*id, None)).filter(exists);
+    let timeline = s.state.selection.first().and_then(|clip| s.active_sequence()?.find_item(*clip).map(|(_, item)| (item.item, Some(item)))).filter(exists);
     match app.ui.panels.inspector_source {
         InspectorSource::Project => project.or(timeline),
         InspectorSource::Timeline => timeline.or(project),
@@ -45,12 +50,12 @@ pub fn field_id(name: &str) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    let Some(item) = target(app) else {
+    let Some((item, clip)) = target_clip(app) else {
         crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to view its metadata."));
         app.auto.add("metadata.empty", rect, "Select a clip to view its metadata.");
         return;
     };
-    let fields = metadata_fields(&app.session.project, item);
+    let fields = metadata_clip_fields(&app.session.project, item, clip);
     let name = app.session.project.item(item).map(|i| i.name.clone()).unwrap_or_default();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 8.0))));
     let ui = &mut child;
