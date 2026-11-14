@@ -208,12 +208,13 @@ fn relinking_later_resolves_the_anchor_that_waited_for_the_real_size() {
     assert_eq!(auto_points(&t.project), ["motion.anchor"]);
     t.execute("edit.redo", json!({})).unwrap();
     assert_eq!(*t.project, *linked);
-    // an anchor that is already a number is not touched by a later relink to another size
+    // an anchor that is already a number keeps its spot in the picture on a later relink to
+    // another size: the centre of 320×180 is the centre of 160×90
     std::fs::create_dir_all(d.join("other")).unwrap();
     let other = d.join("other/shot.mov");
     make_movie(&other, DemoScene::OceanSunset, 160, 90, 24);
     t.execute("media.relink", json!({"item": clip.item.0, "path": other.to_string_lossy(), "force": true})).unwrap();
-    assert_eq!(motion_point(&first_clip(&t, seq), "anchor"), Vec2::new(160.0, 90.0));
+    assert_eq!(motion_point(&first_clip(&t, seq), "anchor"), Vec2::new(80.0, 45.0));
     let _ = std::fs::remove_dir_all(&d);
 }
 
