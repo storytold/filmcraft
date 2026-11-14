@@ -188,7 +188,8 @@ pub enum Drag {
         /// The time under the pointer when the button went down: the edge moves by how far the
         /// pointer has moved since (#259).
         from: Tick,
-        /// Linked partners trim along; false when Alt was held as the drag started (#3300).
+        /// Linked partners and, when `clip` is selected, the other selected clips trim along
+        /// (#3044); false when Alt was held as the drag started (#3300).
         linked: bool,
     },
     Roll {
@@ -214,7 +215,7 @@ pub enum Drag {
         delta: Tick,
         /// As in [`Drag::Trim`].
         from: Tick,
-        /// As in [`Drag::Trim`].
+        /// Linked partners stretch along; false when Alt was held as the drag started (#3300).
         linked: bool,
     },
     /// Remix tool: drag a music clip's Out edge; on release `clip.remix` re-plans it to the new duration.

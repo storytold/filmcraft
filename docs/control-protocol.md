@@ -154,6 +154,12 @@ step (Track Select Forward / Backward drags use it so subtitles stay with the di
 as far as the clips (they would overlap captions that stay, or one is on a locked track) the call fails and
 nothing moves; it cannot be combined with `copy`, and the result lists them as `captions`.
 
+**Trimming clips**: `timeline.trim {clip, edge, mode?, delta | deltaFrames, linked?, selection?}` → `{delta}`.
+With `selection: true` and a regular trim of a selected clip, every selected clip has the same edge
+trimmed by the same amount in one undo step; the tightest media, neighbour or minimum-duration limit
+stops all of them. Clips on locked tracks stay as they are. The timeline's Selection-tool edge drag
+passes it; Alt-drag trims only the clip under the pointer.
+
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
 it shows. With Linked Selection on, selecting an edge includes its unlocked linked partners, even

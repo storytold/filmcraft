@@ -666,7 +666,8 @@ fn locked_move_keeps_the_original_preview(audio: bool, destination: bool, linked
     } else {
         from
     };
-    let mut to = from + egui::vec2(60.0, 0.0);
+    // 40 px keeps the pointer inside the clip, away from its Out edge, where it would show the trim cursor
+    let mut to = from + egui::vec2(40.0, 0.0);
     if destination {
         let label = if audio { "A2" } else { "V2" };
         let rows = d.ok("ui.elements", json!({"prefix": format!("timeline.track.{label}.target")}));
@@ -911,4 +912,134 @@ fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
     assert!(matches!(d.app().tl.drag, Some(Drag::Transition { edge: Some(_), .. })), "dragging the end: {:?}", d.app().tl.drag);
     assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
     d.release(to);
+}
+
+/// #3044: dragging the Out edge of one selected clip trims every selected clip by the same amount,
+/// shown on all of them during the drag, in one undo step; Alt-drag still trims only that clip.
+#[test]
+fn dragging_an_edge_of_a_selection_trims_every_selected_clip() {
+    for alt in [false, true] {
+        let mut d = Driver::demo();
+        let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+        d.exec("timeline.select", json!({"clips": [city, dunes]}));
+        let (c0, d0, undo) = (d.span(city), d.span(dunes), d.undo_steps());
+        let (_, x1, y) = d.edges(city);
+        let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+        let width = |d: &mut Driver| {
+            let id = format!("timeline.clip.{dunes}");
+            d.ok("ui.elements", json!({"prefix": id}))[0]["rect"][2].as_f64().expect("width")
+        };
+        let w0 = width(&mut d);
+        if !alt {
+            d.press_and_move(from, to, 20);
+            assert!(width(&mut d) < w0 - 30.0, "the other selected clip previews the trim");
+            d.release(to);
+        } else {
+            d.ok("ui.drag", json!({"from": {"x": from.x, "y": y}, "to": {"x": to.x, "y": y}, "steps": 20, "modifiers": {"alt": true}}));
+            d.frames(2);
+        }
+        let (c1, d1) = (d.span(city), d.span(dunes));
+        assert_eq!(c1.0, c0.0, "alt={alt}: trimmed, not moved");
+        assert!(c1.1 < c0.1, "alt={alt}: the grabbed clip was trimmed: {c0:?} -> {c1:?}");
+        if alt {
+            assert_eq!(d1, d0, "Alt-drag trims only the clip under the pointer");
+        } else {
+            assert_eq!(d1, (d0.0, d0.1 - (c0.1 - c1.1)), "the other selected clip is trimmed by the same amount");
+        }
+        assert_eq!(d.undo_steps(), undo + 1, "alt={alt}: one undo step");
+        assert!(d.app().session.state.selection.contains(&ClipId(dunes)), "the selection stays");
+        d.exec("edit.undo", json!({}));
+        assert_eq!((d.span(city), d.span(dunes)), (c0, d0));
+    }
+}
+
+/// #3044: a selected clip on a locked track stays where it is while the other selected clips trim,
+/// as `timeline.trim` leaves it.
+#[test]
+fn a_selected_clip_on_a_locked_track_stays_while_the_others_trim() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (music, track) =
+        seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|i| i.name.contains("Ambient")).map(|i| (i.id.0, t.id.0))).expect("the demo has music");
+    d.exec("timeline.select", json!({"clips": [city, music]}));
+    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
+    d.frames(3);
+    let (c0, m0, undo) = (d.span(city), d.span(music), d.undo_steps());
+    let (_, x1, y) = d.edges(city);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "the edge shows the trim it starts");
+    d.press_and_move(from, to, 20);
+    assert_ne!(d.cursor(), CursorIcon::NotAllowed);
+    d.release(to);
+    assert!(d.span(city).1 < c0.1, "the unlocked clip is trimmed");
+    assert_eq!(d.span(music), m0, "the clip on the locked track stays");
+    assert_eq!(d.undo_steps(), undo + 1);
+}
+
+/// #3044: with snapping on, the edge of another selected clip snaps to the playhead when it comes
+/// near it, though the grabbed edge is far from anything.
+#[test]
+fn another_selected_edge_snaps_to_the_playhead() {
+    let mut d = Driver::demo();
+    let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+    d.exec("timeline.select", json!({"clips": [city, dunes]}));
+    let (c0, d0) = (d.span(city), d.span(dunes));
+    let (tpp, frame) = (d.ticks_per_px(city), d.frame());
+    let playhead = d0.1 - (60.0 * tpp / frame as f64).round() as i64 * frame;
+    d.exec("playhead.set", json!({"time": playhead}));
+    d.exec("sequence.snap", json!({"on": true}));
+    d.frames(3);
+    let (_, x1, y) = d.edges(city);
+    d.drag(pos2(x1 - 3.0, y), pos2(x1 - 3.0 - 58.0, y), 20);
+    assert_eq!(d.span(dunes).1, playhead, "the other selected Out edge snapped to the playhead");
+    assert_eq!(d.span(city).1, c0.1 - (d0.1 - playhead), "the grabbed clip moved by the same amount");
+}
+
+/// #3044: a clip whose linked sound is on a locked track still trims, and its sound stays, as
+/// `timeline.trim` leaves a locked partner.
+#[test]
+fn a_locked_linked_partner_does_not_block_the_trim() {
+    let mut d = Driver::demo();
+    let (video, sound) = lock_a_linked_sound(&mut d);
+    let (v0, a0, undo) = (d.span(video), d.span(sound), d.undo_steps());
+    let (_, x1, y) = d.edges(video);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn);
+    d.drag(from, to, 20);
+    assert!(d.span(video).1 < v0.1, "the video is trimmed: {v0:?} -> {:?}", d.span(video));
+    assert_eq!(d.span(sound), a0, "the sound on the locked track stays");
+    assert_eq!(d.undo_steps(), undo + 1);
+}
+
+/// A clip on V1 and its linked sound, with the sound's track locked.
+fn lock_a_linked_sound(d: &mut Driver) -> (u64, u64) {
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (video, sound, track) = seq.video_tracks[0]
+        .items
+        .iter()
+        .find_map(|v| seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|a| v.link.is_some() && a.link == v.link).map(|a| (v.id.0, a.id.0, t.id.0))))
+        .expect("a linked clip on V1");
+    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
+    d.frames(3);
+    (video, sound)
+}
+
+/// #3044: a ripple trim would shift later clips away from a linked sound on a locked track, so
+/// that sound still refuses it.
+#[test]
+fn a_locked_linked_partner_blocks_a_ripple_trim() {
+    let mut d = Driver::demo();
+    let (video, sound) = lock_a_linked_sound(&mut d);
+    d.ok("ui.set", json!({"tool": "ripple"}));
+    let (v0, a0, undo) = (d.span(video), d.span(sound), d.undo_steps());
+    let (_, x1, y) = d.edges(video);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.press_and_move(from, to, 20);
+    assert!(d.app().tl.drag.is_none(), "the ripple drag does not start");
+    d.release(to);
+    assert_eq!((d.span(video), d.span(sound)), (v0, a0), "nothing moves");
+    assert_eq!(d.undo_steps(), undo);
 }
