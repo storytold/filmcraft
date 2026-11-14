@@ -825,6 +825,18 @@ fn param_value_widget(
                 set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
             }
         }
+        // Color Grading's Shadows / Midtones / Highlights wheels: the puck's offset as X and Y in
+        // −1..1, the range the Color Grading panel's wheel writes (they showed `Vec2(..)`, #4623)
+        (ParamKind::Wheel, ParamValue::Vec2(p)) => {
+            let label = crate::i18n::t(pd.label);
+            let (rx, nx) = crate::widgets::hot_number(vui, &format!("{label} X"), id.with("x"), p.x, HotNumberOptions::new(0.005, (-1.0, 1.0), 2, "", &t));
+            app.auto.add(&format!("effectControls.{}.{}.x", e.effect, pkey), rx.rect, &format!("{label} X"));
+            let (ry, ny) = crate::widgets::hot_number(vui, &format!("{label} Y"), id.with("y"), p.y, HotNumberOptions::new(0.005, (-1.0, 1.0), 2, "", &t));
+            app.auto.add(&format!("effectControls.{}.{}.y", e.effect, pkey), ry.rect, &format!("{label} Y"));
+            if nx.is_some() || ny.is_some() {
+                set = Some(json!([nx.unwrap_or(p.x), ny.unwrap_or(p.y)]));
+            }
+        }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut v = *b;
             fit_to_row(vui);
@@ -1603,6 +1615,7 @@ fn param_text(project: &filmcraft_project::Project, id: &str, value: &ParamValue
         ParamValue::Text(s) => s.clone(),
         ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => tl!("Default").into(),
         ParamValue::Curve(pts) => tlf!("Custom ({n} points)", n = pts.len()),
+        ParamValue::Vec2(v) => format!("{:.2}, {:.2}", v.x, v.y),
         other => format!("{other:?}"),
     }
 }
@@ -1621,6 +1634,8 @@ mod param_text_tests {
         assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), "Default");
         assert_eq!(param_text(&p, "hue_vs_sat", &ParamValue::Curve(vec![])), "Default");
         assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])), "Custom (3 points)");
+        // #4623: a point read as `Vec2(Vec2 { x: 0.0, y: 0.0 })`
+        assert_eq!(param_text(&p, "wheel_shadows", &ParamValue::Vec2(filmcraft_geom::Vec2::new(0.0, -0.25))), "0.00, -0.25");
     }
 }
 
