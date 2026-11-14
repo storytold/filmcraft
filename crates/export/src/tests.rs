@@ -521,7 +521,69 @@ fn gpu_hook_scenarios() {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
+
+    // 7. Renderers that take plans: a stepped export plans each batch while the one before it is
+    //    rendered. The file is the one renderers planning their own frames give, and every frame
+    //    after the first two batches is composited from a plan made ahead.
+    let (p, seq, m) = project();
+    let stepped = |name: &str| {
+        let s = ExportSettings { format: Format::ProRes, path: tmp(name), gpu_rendering: crate::GpuRendering::Auto, ..Default::default() };
+        let prog = Progress::default();
+        let mut ex = Exporter::new(p.clone(), seq, &s, &prog).unwrap();
+        ex.set_batch(4);
+        while !matches!(ex.step(&m, &prog).unwrap(), Step::Done(_)) {}
+        std::fs::read(tmp(name)).unwrap()
+    };
     crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(PlanningRenderer(false)) as Box<dyn FrameRenderer>));
+    let planned_inside = stepped("plans-inside.mov");
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(PlanningRenderer(true)) as Box<dyn FrameRenderer>));
+    let before = PLANS.load(std::sync::atomic::Ordering::SeqCst);
+    let planned_ahead = stepped("plans-ahead.mov");
+    assert!(!planned_inside.is_empty() && planned_inside == planned_ahead, "planning ahead changed the file");
+    if rayon::current_num_threads() > 1 {
+        // batches of at most the pool's size: the first two plan as they render
+        let batch = 4.min(crate::pipeline::gpu_renderer_count(rayon::current_num_threads()));
+        assert_eq!(
+            PLANS.load(std::sync::atomic::Ordering::SeqCst) - before,
+            24 - 2 * batch,
+            "the frames after the first two batches come from plans made ahead"
+        );
+    }
+    crate::reset_frame_renderers_for_tests();
+}
+
+static PLANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Draws each frame from its plan on the CPU ([`filmcraft_render::plan::execute_cpu`]): planning
+/// it itself, or (`.0`) taking the plans the export made ahead.
+struct PlanningRenderer(bool);
+
+impl FrameRenderer for PlanningRenderer {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::plan::execute_cpu(&filmcraft_render::plan::plan_frame(project, seq, t, opts, self.caps(), sources)))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn takes_plans(&self) -> bool {
+        self.0
+    }
+
+    fn render_plan(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        PLANS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(filmcraft_render::plan::execute_cpu(plan))
+    }
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

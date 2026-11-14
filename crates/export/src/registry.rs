@@ -127,6 +127,30 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// Whether this renderer composites frames the export planned beforehand
+    /// ([`Self::render_plan`]): the export then plans each frame (decodes its sources) on its own
+    /// threads, a batch ahead of the frames being composited, instead of inside [`Self::render`].
+    fn takes_plans(&self) -> bool {
+        false
+    }
+
+    /// Composite `plan` (made by [`filmcraft_render::plan::plan_frame`] with [`Self::caps`]) as
+    /// [`Self::render`] returns a frame, `None` for the CPU to render it. Called only when
+    /// [`Self::takes_plans`].
+    fn render_plan(&mut self, _plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        None
+    }
+
+    /// [`Self::render_plan`] for an SDR export that encodes the picture as it is (no fitting,
+    /// overlays, video limiter or alpha): the frame over black as straight sRGB RGBA8 rows (width,
+    /// height, pixels), what [`filmcraft_render::Image::over_black_rgba8`] makes of
+    /// [`Self::render_plan`]'s image. A GPU renderer converts on the GPU instead and reads back
+    /// half the bytes.
+    fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
+        let img = self.render_plan(plan)?;
+        Some((img.w, img.h, img.over_black_rgba8()))
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

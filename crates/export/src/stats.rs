@@ -81,13 +81,16 @@ pub enum Stage {
     /// Time the encoding side waited, after encoding a batch, for the next batch to finish rendering
     /// (only with overlap: large means the export is render-bound, near zero encode-bound).
     Wait,
+    /// Planning the batch after the one being rendered (its frames' sources decoded), alongside
+    /// that render and the encoding (GPU renderers that take plans only).
+    Plan,
 }
 
-const STAGES: usize = 9;
+const STAGES: usize = 10;
 
 impl Stage {
     pub const ALL: [Stage; STAGES] =
-        [Stage::Setup, Stage::Loudness, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish, Stage::Wait];
+        [Stage::Setup, Stage::Loudness, Stage::Render, Stage::Encode, Stage::Convert, Stage::Audio, Stage::Mux, Stage::Finish, Stage::Wait, Stage::Plan];
 
     /// The name in `perf.stats`.
     pub fn name(self) -> &'static str {
@@ -101,6 +104,7 @@ impl Stage {
             Stage::Mux => "mux",
             Stage::Finish => "finish",
             Stage::Wait => "wait",
+            Stage::Plan => "plan",
         }
     }
 }
@@ -143,6 +147,21 @@ pub fn note_gpu_frame() {
 /// The GPU renderer declined a frame (the CPU reference renderer took it).
 pub fn note_gpu_fallback() {
     GPU_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+static PLAN_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PLAN_FRAME_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A frame was planned ahead in `d` (`Pipeline::plan`).
+pub(crate) fn note_plan_frame(d: std::time::Duration) {
+    PLAN_FRAMES.fetch_add(1, Ordering::Relaxed);
+    PLAN_FRAME_NS.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+/// Frames planned ahead so far and the time their planning took, summed over frames (for
+/// benchmarks: against the plan stage's wall time it says how much the frames of a batch overlap).
+pub fn plan_frame_time() -> (u64, std::time::Duration) {
+    (PLAN_FRAMES.load(Ordering::Relaxed), std::time::Duration::from_nanos(PLAN_FRAME_NS.load(Ordering::Relaxed)))
 }
 
 /// Time an export worker waited for a free GPU renderer (process-wide, for the bench).

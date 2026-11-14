@@ -11,7 +11,7 @@
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
 
-use crate::{GpuCompositor, prepare};
+use crate::GpuCompositor;
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
@@ -22,6 +22,7 @@ pub mod timing {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    static PLAN_NS: AtomicU64 = AtomicU64::new(0);
     static SUBMIT_NS: AtomicU64 = AtomicU64::new(0);
     static MAP_WAIT_NS: AtomicU64 = AtomicU64::new(0);
     static CONVERT_NS: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +31,9 @@ pub mod timing {
     /// Totals since the last [`reset`].
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct GpuTimings {
+        /// Planning the frame inside the renderer (its sources' pictures decoded or taken from
+        /// their caches); zero when the export plans ahead.
+        pub plan: Duration,
         /// Recording and submitting the frame's commands.
         pub submit: Duration,
         /// Waiting for the GPU and the staging buffer's mapping.
@@ -42,6 +46,10 @@ pub mod timing {
 
     fn add(counter: &AtomicU64, d: Duration) {
         counter.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_plan(d: Duration) {
+        add(&PLAN_NS, d);
     }
 
     pub(crate) fn add_submit(d: Duration) {
@@ -62,11 +70,11 @@ pub mod timing {
 
     pub fn get() -> GpuTimings {
         let d = |c: &AtomicU64| Duration::from_nanos(c.load(Ordering::Relaxed));
-        GpuTimings { submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
+        GpuTimings { plan: d(&PLAN_NS), submit: d(&SUBMIT_NS), map_wait: d(&MAP_WAIT_NS), convert: d(&CONVERT_NS), frames: FRAMES.load(Ordering::Relaxed) }
     }
 
     pub fn reset() {
-        for c in [&SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
+        for c in [&PLAN_NS, &SUBMIT_NS, &MAP_WAIT_NS, &CONVERT_NS, &FRAMES] {
             c.store(0, Ordering::Relaxed);
         }
     }
@@ -152,16 +160,49 @@ impl ExportRenderer {
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+        let planning = std::time::Instant::now();
         let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
-        match &plan {
+        timing::add_plan(planning.elapsed());
+        self.render_plan(&plan)
+    }
+
+    /// [`Self::render_plan`] for an SDR export that encodes the picture as it is: the frame over
+    /// black as straight sRGB RGBA8 rows (width, height, pixels), converted on the GPU
+    /// ([`GpuCompositor::render_export_rgba8`]).
+    pub fn render_plan_rgba8(&mut self, plan: &FramePlan) -> Option<(usize, usize, Vec<u8>)> {
+        match plan {
+            FramePlan::Image(img) => Some((img.w, img.h, img.over_black_rgba8())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let (w, h, px) = self.compositor.render_export_rgba8(plan)?;
+                // an error reported while this frame was drawn leaves its pixels untrusted
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some((w as usize, h as usize, px))
+            }
+        }
+    }
+
+    /// Composite a frame planned beforehand with [`Self::caps`] (the export plans a batch ahead on
+    /// its own threads, see `filmcraft_export::FrameRenderer::takes_plans`), as [`Self::render`]
+    /// returns it.
+    pub fn render_plan(&mut self, plan: &FramePlan) -> Option<Image> {
+        match plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
                     return None;
                 }
-                let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                // No `prepare` first: this thread uploads the layers itself, and a layer still
+                // uploaded from an earlier frame (a subtitle, a graphic: one picture for many
+                // frames) is then not converted again for nothing (every frame with a subtitle
+                // converted its 1080p float picture to half floats).
+                let (w, h, px) = self.compositor.render_export_prepared(plan, None)?;
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
                     return None;
@@ -663,6 +704,30 @@ mod tests {
         }
     }
 
+    /// The RGBA8 read-back (`render_plan_rgba8`, SDR exports) is the float read-back over black
+    /// in sRGB bytes: within one code (the GPU's exact sRGB curve against the CPU's 4096-step
+    /// table), opaque, for a full-frame layer and a transformed, translucent one over empty canvas.
+    #[test]
+    fn rgba8_read_back_is_the_float_read_back_over_black() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu export rgba8): no adapter");
+            return;
+        };
+        for transform in [false, true] {
+            let (p, seq, m) = project(transform);
+            let plan = plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), r.caps(), &m);
+            let float = r.render_plan(&plan).expect("float read-back");
+            let want = float.over_black_rgba8();
+            let (w, h, got) = r.render_plan_rgba8(&plan).expect("RGBA8 read-back");
+            assert_eq!((w, h), (float.w, float.h));
+            assert_eq!(got.len(), want.len());
+            let max = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(max <= 1, "transform {transform}: RGBA8 read-back differs by {max}");
+            assert!(got.as_chunks::<4>().0.iter().all(|px| px[3] == 255), "over black is opaque");
+            assert!(got.as_chunks::<4>().0.iter().any(|px| px[..3].iter().any(|&c| c > 25)), "the picture is there");
+        }
+    }
+
     #[test]
     fn gpu_render_impls_frame_renderer() {
         // dev-dependency: the same wrapper the app and CLI register.
@@ -674,6 +739,18 @@ mod tests {
 
             fn caps(&self) -> DeviceCaps {
                 self.0.caps()
+            }
+
+            fn takes_plans(&self) -> bool {
+                true
+            }
+
+            fn render_plan(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+                self.0.render_plan(plan)
+            }
+
+            fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
+                self.0.render_plan_rgba8(plan)
             }
         }
         let Some(r) = ExportRenderer::new() else {
