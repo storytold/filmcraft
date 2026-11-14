@@ -45,9 +45,9 @@ pub(crate) use interact::wheel_input;
 use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
-pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
 pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+pub(crate) use layout::{reveal_playhead, zoom_playhead};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
@@ -500,6 +500,8 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
             v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(min_pps(seq.duration().seconds(), content.width()), 24_000.0);
             v.target_scroll = 0.0;
             v.fit_pending = false;
+            // a zoom still holding a time under a screen x would pull the view off 0
+            app.tl.zoom_anchor = None;
             v.fit_empty = empty.then_some(v.target_pps);
         }
         // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the extent
@@ -545,10 +547,12 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
             if px > w * 0.5 || px < 0.0 {
                 v.target_scroll = (ph - w * 0.5 / v.pps).max(0.0);
                 v.scroll = v.target_scroll;
+                app.tl.zoom_anchor = None;
             }
         } else if px > w * 0.95 || px < 0.0 {
             v.target_scroll = (ph - w * 0.05 / v.pps).max(0.0);
             v.scroll = v.target_scroll;
+            app.tl.zoom_anchor = None;
         }
     }
     // A jump while stopped (Home, End, edit points, markers) brings the playhead into view.
@@ -565,6 +569,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         {
             v.target_scroll = s;
             v.scroll = s;
+            app.tl.zoom_anchor = None;
         }
     }
     // The view stays inside the Timeline's extent, however it was moved (wheel, scroll bar, zoom,

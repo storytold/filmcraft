@@ -283,6 +283,8 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
                     let limit = max_scroll(seq.duration().seconds(), layout.content.width(), v.pps);
                     v.target_scroll = (v.target_scroll - d as f64 / v.pps).clamp(0.0, limit);
                     v.scroll = v.target_scroll;
+                    // the view goes where the wheel puts it, not back under a zoom's anchor
+                    app.tl.zoom_anchor = None;
                 }
                 // up and down: the video tracks above the divider, the audio tracks below it (the
                 // lowest video track is at the bottom, so wheeling up brings higher ones in)
@@ -673,6 +675,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let v = &mut app.ui.timeline;
                 v.target_scroll = (v.target_scroll - dx as f64 / v.pps).max(0.0);
                 v.scroll = v.target_scroll;
+                app.tl.zoom_anchor = None;
                 // the tracks follow the pointer: the video tracks hang from the divider (scrolling
                 // brings higher ones down), the audio tracks start at it, as with the wheel
                 if audio {
