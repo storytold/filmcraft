@@ -177,6 +177,9 @@ pub struct Gpu {
     copy: Mutex<Option<CopyPipeline>>,
     query_pool: Mutex<Vec<ID3D11Query>>,
     shared_pool: Mutex<SharedPool>,
+    /// Resources whose GPU work did not finish: a failure path may not close textures or handles
+    /// under a copy that is still running, so they are held until the device itself goes.
+    quarantine: Mutex<Vec<(SharedPlanePair, ID3D11Query)>>,
     fallback_staging: Mutex<CpuFallbackStaging>,
 }
 
@@ -241,6 +244,7 @@ impl Gpu {
             copy: Mutex::new(None),
             query_pool: Mutex::new(Vec::new()),
             shared_pool: Mutex::new(SharedPool::default()),
+            quarantine: Mutex::new(Vec::new()),
             fallback_staging: Mutex::new(CpuFallbackStaging::default()),
         })
     }
@@ -356,7 +360,16 @@ impl Gpu {
             copy.ensure_scratch(&self.device, desc.Width, desc.Height, format)?;
             copy.dispatch(&self.context, &tex, index, &pair, (ox, oy), &query);
         }
-        self.wait_event_query(&query)?;
+        if let Err(why) = self.wait_event_query(&query) {
+            // The copy dispatched above may still be running: closing the pair's textures and
+            // shared handles, or the query, would pull them from under a GPU operation. Neither
+            // goes back to a pool; both are held until the device is dropped. A device that cannot
+            // finish a small blit within EVENT_QUERY_TIMEOUT is treated as lost here, so no new
+            // decoder keeps feeding work that would only pile up more of them.
+            self.lost.store(true, Ordering::Relaxed);
+            self.quarantine.lock().unwrap_or_else(PoisonError::into_inner).push((pair, query));
+            return Err(why);
+        }
         self.recycle_event_query(query);
         let surf = MfGpuSurface {
             id: (1usize << (usize::BITS - 1)) | NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
