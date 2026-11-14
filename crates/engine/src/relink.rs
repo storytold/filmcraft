@@ -450,7 +450,7 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     } else if let Some(folder) = str_p(p, "folder") {
-        let index = index_folder(Path::new(folder), 20_000);
+        let index = index_folder(Path::new(folder), SEARCH_LIMIT);
         for m in &missing {
             let key = m.file_name.to_ascii_lowercase();
             let mut best: Option<Candidate> = None;
@@ -475,12 +475,28 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
+/// Files under a folder by lower-case file name ([`index_folder`]).
+pub type FolderIndex = BTreeMap<String, Vec<PathBuf>>;
+
+/// The most files a search or a folder relink looks at under the chosen folder.
+pub const SEARCH_LIMIT: usize = 20_000;
+
 /// Files under `root` by lower-case file name (breadth-first, at most `limit` files).
-pub fn index_folder(root: &Path, limit: usize) -> BTreeMap<String, Vec<PathBuf>> {
-    let mut out: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+pub fn index_folder(root: &Path, limit: usize) -> FolderIndex {
+    index_folder_until(root, limit, &std::sync::atomic::AtomicBool::new(false)).unwrap_or_default()
+}
+
+/// [`index_folder`], stopping when `cancel` is set (checked before each folder is read): `None`
+/// then. Walking a large folder on a network volume takes long enough that the Link Media dialog
+/// runs it off the UI thread (#3937) and drops it when the dialog closes.
+pub fn index_folder_until(root: &Path, limit: usize, cancel: &std::sync::atomic::AtomicBool) -> Option<FolderIndex> {
+    let mut out: FolderIndex = BTreeMap::new();
     let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
     let mut n = 0;
     while let Some(d) = queue.pop_front() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.file_name());
@@ -501,31 +517,36 @@ pub fn index_folder(root: &Path, limit: usize) -> BTreeMap<String, Vec<PathBuf>>
                 out.entry(name.to_ascii_lowercase()).or_default().push(p);
                 n += 1;
                 if n >= limit {
-                    return out;
+                    return Some(out);
                 }
             }
         }
     }
-    out
+    Some(out)
 }
 
 /// `media.search {folder, item?, exactName?}`: candidate files for one missing item (or all).
 pub fn search(s: &Session, p: &Value) -> Result<Value> {
     let folder = str_p(p, "folder").ok_or_else(|| bad("media.search", "need `folder`"))?;
+    search_index(s, p, &index_folder(Path::new(folder), SEARCH_LIMIT))
+}
+
+/// [`search`] over files already indexed ([`index_folder`]): checking the candidates needs the
+/// session, walking the folder doesn't, so the UI walks it on another thread and checks here.
+pub fn search_index(s: &Session, p: &Value, index: &FolderIndex) -> Result<Value> {
     let exact = bool_p(p, "exactName").unwrap_or(true);
     let o = MatchOptions::from_params(p);
     let items: Vec<ItemId> = match u64_p(p, "item") {
         Some(i) => vec![ItemId(i)],
         None => scan(&s.project, &s.media, &*s.services).into_iter().filter(|m| m.status == "missing").map(|m| ItemId(m.item)).collect(),
     };
-    let index = index_folder(Path::new(folder), 20_000);
     let mut out = Vec::new();
     for id in items {
         let Some(MediaRef::File { path }) = s.project.item(id).and_then(|i| i.as_media()).map(|m| m.media.clone()) else { continue };
         let fname = file_name(&path).to_ascii_lowercase();
         let stem = split_ext(&fname).0.to_string();
         let mut cands: Vec<Candidate> = Vec::new();
-        for (name, paths) in &index {
+        for (name, paths) in index {
             let hit = if exact { *name == fname } else { split_ext(name).0 == stem || name.contains(&stem) };
             if !hit {
                 continue;
