@@ -181,8 +181,8 @@ enum DragPayload {
     Bin(u64),
     Source(source_drag::SourceDrag),
     Effect(String),
-    /// A graphics template (id, name) from Essential Graphics ▸ Browse.
-    Template(String, String),
+    /// A graphics template (id, name, duration) from Essential Graphics ▸ Browse.
+    Template(String, String, filmcraft_time::Tick),
 }
 
 /// Single egui temp slot holding the active drag payload: a project item or bin, a source, an effect or a graphics template.
@@ -211,12 +211,12 @@ pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
         _ => None,
     }
 }
-pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
+pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str, duration: filmcraft_time::Tick) {
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string(), duration)))));
 }
-pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
+pub fn dragged_template(ui: &egui::Ui) -> Option<(String, filmcraft_time::Tick)> {
     match payload(ui) {
-        Some(DragPayload::Template(id, _)) => Some(id),
+        Some(DragPayload::Template(id, _, dur)) => Some((id, dur)),
         _ => None,
     }
 }
@@ -317,7 +317,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
                 };
                 format!("{name} · {mode} · {:.2} s", s.range.duration.seconds())
             }
-            DragPayload::Template(_, name) => name.clone(),
+            DragPayload::Template(_, name, _) => name.clone(),
             DragPayload::Effect(e) => match (e.strip_prefix("preset:"), e.strip_prefix(LUMETRI_PRESET_PREFIX)) {
                 (Some(name), _) => name.to_string(),
                 (_, Some(name)) => crate::i18n::t(name).to_string(),

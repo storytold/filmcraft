@@ -27,7 +27,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
@@ -87,6 +87,10 @@ impl Driver {
         }
         out
     }
+    fn element(&mut self, id: &str) -> Option<Value> {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        v.as_array().and_then(|arr| arr.iter().find(|e| e["id"] == id).cloned())
+    }
 }
 
 #[test]
@@ -142,6 +146,62 @@ fn drag_template_onto_the_timeline() {
     d.ok("ui.drag", json!({"from": {"id": "gfxTemplates.item.builtin:callout-tag"}, "to": {"id": "timeline.tracks", "fx": 0.85, "fy": 0.08}, "steps": 16}));
     d.frames(4);
     assert_eq!(d.clips_named("Callout – Tag").len(), before + 1, "dropped on the timeline");
+}
+
+#[test]
+fn drag_template_drop_preview_size_matches_template_duration() {
+    let mut d = Driver::demo("preview_size");
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.EssentialGraphics"}));
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "browse", "query": "tag"}}));
+    d.frames(4);
+    let card = d.element("gfxTemplates.item.builtin:callout-tag").expect("card");
+    let card_rect = card["rect"].as_array().unwrap();
+    let from = egui::pos2(card_rect[0].as_f64().unwrap() as f32 + 10.0, card_rect[1].as_f64().unwrap() as f32 + 10.0);
+    let tracks = d.element("timeline.tracks").expect("tracks");
+    let tr = tracks["rect"].as_array().unwrap();
+    let to = egui::pos2(tr[0].as_f64().unwrap() as f32 + 50.0, tr[1].as_f64().unwrap() as f32 + 20.0);
+
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(from));
+    d.frames(1);
+    d.harness.input_mut().events.push(button(from, true));
+    d.frames(1);
+    for k in 1..=10 {
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
+        d.frames(1);
+    }
+    d.frames(2);
+    let preview = d.element("timeline.templateDropPreview").expect("preview shown during drag");
+    let r = preview["rect"].as_array().unwrap();
+    let w = r[2].as_f64().unwrap();
+    assert!(w > 60.0, "drop preview width ({w}) must match template duration, not fixed 60px");
+    d.harness.input_mut().events.push(button(to, false));
+    d.frames(4);
+}
+
+#[test]
+fn double_click_graphic_clip_on_timeline_switches_to_edit_tab() {
+    let mut d = Driver::demo("double_click_graphic");
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.EssentialGraphics"}));
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "browse"}}));
+    d.frames(4);
+    let r = d.exec("graphics.template.apply", json!({"template": "builtin:callout-tag"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.frames(4);
+    // Switch back to browse tab
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "browse"}}));
+    d.frames(2);
+    let st = d.ok("ui.inspect", json!({}));
+    assert_eq!(st["ui"]["gfx_templates"]["tab"], "browse");
+
+    // Double-click the graphic clip on the timeline
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "count": 2}));
+    d.frames(4);
+
+    let st = d.ok("ui.inspect", json!({}));
+    assert_eq!(st["ui"]["gfx_templates"]["tab"], "edit", "double clicking graphic clip must switch Essential Graphics tab to edit");
 }
 
 #[test]

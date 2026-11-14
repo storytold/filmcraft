@@ -231,6 +231,128 @@ pub fn select_all_on_focus(ui: &Ui, r: &Response, text: &str) {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ClearOnFocusSession {
+    original: String,
+    current: String,
+    modified: bool,
+}
+
+fn add_clear_edit(ui: &mut Ui, edit_id: egui::Id, buf: &mut String, desired_width: f32, multiline_rows: Option<usize>) -> Response {
+    match multiline_rows {
+        Some(rows) => ui.add(egui::TextEdit::multiline(buf).id(edit_id).desired_rows(rows).desired_width(desired_width)),
+        None => ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(desired_width)),
+    }
+}
+
+fn clear_on_focus_text_edit_impl(ui: &mut Ui, id: egui::Id, value: &str, desired_width: f32, multiline_rows: Option<usize>) -> (Response, Option<String>) {
+    let edit_id = id.with("edit");
+    let session_id = id.with("session");
+    let rect_id = id.with("rect");
+
+    let was_focused = ui.ctx().memory(|m| m.focused() == Some(edit_id));
+    let last_rect: Option<egui::Rect> = ui.data(|d| d.get_temp(rect_id));
+    let clicked_into = !was_focused
+        && last_rect.is_some_and(|rect| {
+            ui.input(|i| {
+                let ptr = &i.pointer;
+                (ptr.primary_down() || ptr.primary_clicked()) && ptr.interact_pos().is_some_and(|p| rect.contains(p))
+            })
+        });
+
+    let mut session: Option<ClearOnFocusSession> = ui.data(|d| d.get_temp(session_id));
+
+    // If an edit session is active and Escape was pressed, cancel and revert to original
+    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if let Some(s) = session.as_ref() {
+        if escape {
+            ui.data_mut(|d| d.remove::<ClearOnFocusSession>(session_id));
+            let revert = if s.modified { Some(s.original.clone()) } else { None };
+            let mut buf = s.original.clone();
+            let r = add_clear_edit(ui, edit_id, &mut buf, desired_width, multiline_rows);
+            r.surrender_focus();
+            ui.data_mut(|d| d.insert_temp(rect_id, r.rect));
+            return (r, revert);
+        }
+
+        // If focus was lost before this frame, finalize the session before drawing
+        if !was_focused && !clicked_into {
+            ui.data_mut(|d| d.remove::<ClearOnFocusSession>(session_id));
+            let commit = if s.modified && s.current != value { Some(s.current.clone()) } else { None };
+            let mut buf = value.to_string();
+            let r = add_clear_edit(ui, edit_id, &mut buf, desired_width, multiline_rows);
+            ui.data_mut(|d| d.insert_temp(rect_id, r.rect));
+            return (r, commit);
+        }
+    }
+
+    let newly_focused = (!was_focused && clicked_into) || (was_focused && session.is_none());
+    if newly_focused {
+        let new_session = ClearOnFocusSession { original: value.to_string(), current: String::new(), modified: false };
+        ui.data_mut(|d| d.insert_temp(session_id, new_session.clone()));
+        session = Some(new_session);
+        let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
+        st.store(ui.ctx(), edit_id);
+    }
+
+    let mut buf = if let Some(s) = &session { s.current.clone() } else { value.to_string() };
+
+    let r = add_clear_edit(ui, edit_id, &mut buf, desired_width, multiline_rows);
+    ui.data_mut(|d| d.insert_temp(rect_id, r.rect));
+
+    // Handle focus gained via click or keyboard (e.g. Tab) if not already caught by clicked_into
+    if (r.has_focus() || r.gained_focus() || r.clicked()) && session.is_none() {
+        let new_session = ClearOnFocusSession { original: value.to_string(), current: String::new(), modified: false };
+        ui.data_mut(|d| d.insert_temp(session_id, new_session.clone()));
+        session = Some(new_session);
+        let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
+        st.store(ui.ctx(), edit_id);
+        ui.ctx().request_repaint();
+    }
+
+    let is_focused = ui.ctx().memory(|m| m.focused() == Some(edit_id));
+
+    let mut commit = None;
+    if is_focused {
+        if let Some(mut s) = session {
+            let backspace_or_delete = ui.input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete));
+            if r.changed() || backspace_or_delete {
+                s.modified = true;
+                s.current = buf.clone();
+                ui.data_mut(|d| d.insert_temp(session_id, s));
+                commit = Some(buf);
+            }
+        }
+    } else if let Some(s) = session {
+        ui.data_mut(|d| d.remove::<ClearOnFocusSession>(session_id));
+        if s.modified {
+            if s.current != value {
+                commit = Some(s.current);
+            }
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    (r, commit)
+}
+
+/// Single-line text edit field that hides its text on focus/click so typing starts fresh immediately.
+/// If unfocused without typing anything (or on Escape), restores the original text without committing.
+/// If user types or explicitly deletes, commits changes as they occur.
+pub fn clear_on_focus_text_edit(ui: &mut Ui, id: egui::Id, value: &str, desired_width: f32) -> (Response, Option<String>) {
+    clear_on_focus_text_edit_impl(ui, id, value, desired_width, None)
+}
+
+/// Multi-line text edit field that hides its text on focus/click so typing starts fresh immediately.
+/// If unfocused without typing anything (or on Escape), restores the original text without committing.
+/// If user types or explicitly deletes, commits changes as they occur.
+pub fn clear_on_focus_multiline_text_edit(ui: &mut Ui, id: egui::Id, value: &str, desired_width: f32, rows: usize) -> (Response, Option<String>) {
+    clear_on_focus_text_edit_impl(ui, id, value, desired_width, Some(rows))
+}
+
 /// The painted, draggable value shown while the field is not in text-edit mode.
 fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
     let HotNumberOptions { speed, range, decimals, suffix, tokens: t } = options;
@@ -874,5 +996,166 @@ mod tests {
         frame(vec![press(to, false)]);
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
+
+    #[test]
+    fn clear_on_focus_text_edit_clears_on_focus_and_restores_on_blur_if_untyped() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_edit");
+        let edit_id = id.with("edit");
+
+        // Frame 1: field is unfocused with text "Hello"
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, None);
+        });
+        out.textures_delta.clear();
+
+        // Frame 2: simulate focus gained
+        ctx.memory_mut(|m| m.request_focus(edit_id));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, None);
+            let s: Option<ClearOnFocusSession> = ui.data(|d| d.get_temp(id.with("session")));
+            assert!(s.is_some());
+            assert_eq!(s.as_ref().unwrap().current, "");
+            assert!(!s.as_ref().unwrap().modified);
+        });
+        out.textures_delta.clear();
+
+        // Frame 3: lose focus without typing
+        ctx.memory_mut(|m| m.surrender_focus(edit_id));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, None);
+            let s: Option<ClearOnFocusSession> = ui.data(|d| d.get_temp(id.with("session")));
+            assert!(s.is_none());
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn clear_on_focus_text_edit_commits_when_typed() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_edit_type");
+        let edit_id = id.with("edit");
+
+        // Frame 1: unfocused
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, None);
+        });
+        out.textures_delta.clear();
+
+        // Frame 2: focus gained
+        ctx.memory_mut(|m| m.request_focus(edit_id));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, None);
+        });
+        out.textures_delta.clear();
+
+        // Frame 3: type characters "World"
+        let input = egui::RawInput { events: vec![egui::Event::Text("World".into())], ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Hello", 100.0);
+            assert_eq!(commit, Some("World".to_string()));
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn clear_on_focus_text_edit_escape_cancels_and_reverts() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_edit_esc");
+        let edit_id = id.with("edit");
+
+        // Focus and type
+        ctx.memory_mut(|m| m.request_focus(edit_id));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _ = clear_on_focus_text_edit(ui, id, "Original", 100.0);
+        });
+        out.textures_delta.clear();
+
+        let input = egui::RawInput { events: vec![egui::Event::Text("Changed".into())], ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Original", 100.0);
+            assert_eq!(commit, Some("Changed".to_string()));
+        });
+        out.textures_delta.clear();
+
+        // Frame: press Escape
+        let input_esc = egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input_esc, |ui| {
+            let (_, commit) = clear_on_focus_text_edit(ui, id, "Changed", 100.0);
+            assert_eq!(commit, Some("Original".to_string()));
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn clear_on_focus_multiline_text_edit_commits_and_reverts() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_multiline_clear");
+        let edit_id = id.with("edit");
+
+        // Focus and type multiline text
+        ctx.memory_mut(|m| m.request_focus(edit_id));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _ = clear_on_focus_multiline_text_edit(ui, id, "Line1\nLine2", 100.0, 2);
+        });
+        out.textures_delta.clear();
+
+        let input = egui::RawInput { events: vec![egui::Event::Text("New\nText".into())], ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            let (_, commit) = clear_on_focus_multiline_text_edit(ui, id, "Line1\nLine2", 100.0, 2);
+            assert_eq!(commit, Some("New\nText".to_string()));
+        });
+        out.textures_delta.clear();
+
+        // Escape reverts
+        let input_esc = egui::RawInput {
+            events: vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input_esc, |ui| {
+            let (_, commit) = clear_on_focus_multiline_text_edit(ui, id, "New\nText", 100.0, 2);
+            assert_eq!(commit, Some("Line1\nLine2".to_string()));
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn clear_on_focus_multiline_text_edit_click_clears() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("test_multiline_click");
+
+        let mut rect = egui::Rect::NOTHING;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (r, _) = clear_on_focus_multiline_text_edit(ui, id, "Line1\nLine2", 100.0, 2);
+            rect = r.rect;
+        });
+        out.textures_delta.clear();
+
+        let click_input = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerButton { pos: rect.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            ],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(click_input, |ui| {
+            let (r, commit) = clear_on_focus_multiline_text_edit(ui, id, "Line1\nLine2", 100.0, 2);
+            let s: Option<ClearOnFocusSession> = ui.data(|d| d.get_temp(id.with("session")));
+            assert!(s.is_some());
+            assert_eq!(s.as_ref().unwrap().current, "");
+            assert!(!s.as_ref().unwrap().modified);
+            assert_eq!(commit, None);
+            assert!(r.has_focus());
+        });
+        out.textures_delta.clear();
     }
 }
