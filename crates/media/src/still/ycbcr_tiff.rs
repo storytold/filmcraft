@@ -6,7 +6,8 @@
 //! Every number comes from the file: sizes, strip offsets and counts are checked before use, the
 //! picture is capped at [`MAX_PIXELS`], and PackBits output stops at the bytes the image needs.
 
-use filmcraft_dng::tiff::{Tiff, tags};
+use filmcraft_dng::tiff::{Tiff, Type, tags};
+use image::metadata::Orientation;
 
 use super::Raster;
 use crate::{MediaError, Result};
@@ -17,6 +18,7 @@ const MAX_PIXELS: u64 = 1 << 28;
 const PHOTOMETRIC_YCBCR: u64 = 6;
 const COMPRESSION_NONE: u64 = 1;
 const COMPRESSION_PACKBITS: u64 = 32773;
+const ORIENTATION: u16 = 274;
 const YCBCR_COEFFICIENTS: u16 = 529;
 const YCBCR_SUBSAMPLING: u16 = 530;
 const REFERENCE_BLACK_WHITE: u16 = 532;
@@ -143,7 +145,25 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
             }
         }
     }
-    Ok(Raster { width: width as u32, height: height as u32, rgba, has_alpha: false })
+    // the data units are converted: free them before turning the picture, which copies it, so the
+    // peak is the two RGBA buffers the other stills need too
+    drop(units);
+    // TIFF 6.0 Orientation, as the image crate applies it to the other TIFFs: turn the picture
+    // upright. A missing, unreadable or out-of-range value leaves it as stored, and so does an
+    // entry that is not the one SHORT the tag is (its declared values are never read).
+    let orientation = ifd
+        .get(ORIENTATION)
+        .filter(|e| e.ty == Type::Short && e.count == 1)
+        .and_then(|e| t.uint(e).ok())
+        .and_then(|v| u8::try_from(v).ok())
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms);
+    let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba).ok_or_else(|| bad("pixel buffer does not match the image size"))?;
+    let mut img = image::DynamicImage::ImageRgba8(img);
+    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha: false })
 }
 
 /// Whether a file of `file_len` bytes can hold `need` bytes of data units: uncompressed they are
