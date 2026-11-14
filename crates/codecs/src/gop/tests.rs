@@ -15,9 +15,12 @@ use super::*;
 use crate::video::DecodedFrame;
 use std::collections::VecDeque;
 
-/// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
+/// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering). With `first`,
+/// a window onto a longer track that starts at its sample `first` (a sync sample), as Matroska's
+/// lazily indexed window: index `i` names the track's sample `first + i`.
 struct Samples {
     n: usize,
+    first: usize,
     gop: usize,
     delay: usize,
     intra: bool,
@@ -85,17 +88,17 @@ impl VideoSamples for Samples {
         self.n
     }
     fn pts(&self, i: usize) -> i64 {
-        i as i64 * 1000
+        (self.first + i) as i64 * 1000
     }
     fn sync_before(&self, i: usize) -> usize {
-        if self.intra { i } else { i / self.gop * self.gop }
+        if self.intra { i } else { (self.first + i) / self.gop * self.gop - self.first }
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
-        let i = (t / 1000) as usize;
+        let i = ((t / 1000) as usize).checked_sub(self.first)?;
         (i < self.n).then_some(i)
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
-        Ok(vec![i as u8])
+        Ok(vec![(self.first + i) as u8])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         Ok(Box::new(Dec {
@@ -108,10 +111,13 @@ impl VideoSamples for Samples {
             decodes: self.decodes.clone(),
         }))
     }
+    fn table(&self) -> u64 {
+        self.first as u64
+    }
 }
 
 fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    Samples { n, first: 0, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
 }
 
 fn index_of(f: &VideoFrame) -> usize {
@@ -119,6 +125,22 @@ fn index_of(f: &VideoFrame) -> usize {
         filmcraft_frame::PixelData::Rgba8(d) => d[0] as usize | (d[1] as usize) << 8,
         _ => unreachable!(),
     }
+}
+
+#[test]
+fn a_replaced_sample_table_restarts_the_decoder() {
+    // A window of 40 samples from the track's start, then one from its sample 20: index 5 of the
+    // second names the track's sample 25. The decoder, running in the first window, sits at an
+    // index that means another sample now; continuing it would feed the wrong samples.
+    let c = GopCache::new(None);
+    let a = samples(40, 20, 2, false);
+    assert_eq!(index_of(&c.frame(&a, 10_000).expect("frame")), 10);
+    let b = Samples { first: 20, ..samples(40, 20, 2, false) };
+    for k in [25usize, 26, 27, 41] {
+        assert_eq!(index_of(&c.frame(&b, k as i64 * 1000).expect("frame")), k, "track sample {k}");
+    }
+    // the decoder is the one the first window made: its resets count there
+    assert_eq!(a.resets.load(Ordering::Relaxed), 2, "restarted once more, at the new table's sync sample");
 }
 
 #[test]
