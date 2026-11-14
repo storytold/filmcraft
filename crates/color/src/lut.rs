@@ -346,6 +346,7 @@ impl Lut {
 
     /// Parse an Autodesk `.3dl`.
     pub fn parse_3dl(text: &str) -> Result<Lut, String> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut mesh: Option<Vec<f32>> = None;
         let mut out_bits: Option<u32> = None;
         let mut rows: Vec<[f32; 3]> = Vec::new();
@@ -693,6 +694,16 @@ mod tests {
         assert_eq!(a.shaper.as_ref().unwrap().domain_max, [1.0, 2.0, 3.0]);
         let b = Lut::parse_cube(&a.to_cube()).unwrap();
         assert_eq!(b.shaper.unwrap().domain_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn parse_3dl_strips_utf8_bom() {
+        let body = "0 1023\n0 0 0\n0 0 4095\n0 4095 0\n0 4095 4095\n4095 0 0\n4095 0 4095\n4095 4095 0\n4095 4095 4095\n";
+        assert!(Lut::parse_3dl(&format!("\u{feff}{body}")).is_ok());
+        let with = Lut::parse_3dl(&format!("\u{feff}3DMESH\n{body}"));
+        let without = Lut::parse_3dl(&format!("3DMESH\n{body}"));
+        assert!(with.is_ok());
+        assert_eq!(with.unwrap().to_cube(), without.unwrap().to_cube());
     }
 
     #[test]
