@@ -90,7 +90,11 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         let preroll = which == Which::Program && app.playback.preroll.is_some();
         app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
         if preroll {
-            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
+            let last = rate.frame_at(duration) - 1;
+            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, last);
+            // (only while the project stands still: see `Playback::preroll_revision`)
+            let unchanged = stands_still(app.playback.preroll_revision.replace(key.revision), key.revision);
+            app.playback.preroll_pending = !app.playback.preroll_ready && unchanged && app.frames.preroll_pending(key, app.playback.speed, last);
         }
     } else {
         app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
@@ -104,23 +108,24 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         format!("monitor-{prefix}")
     };
     let (shown, on_screen) = if use_gpu {
+        // (while playing, a frame standing in for the one due is never older than the picture
+        // on screen: see `steps_back`)
+        let before = app.gpu.as_ref().and_then(|g| g.last_key);
+        let goes_on = |k: &FrameKey| !steps_back(*k, key, before, dir);
         let found = app
             .frames
             .get_plan(&key)
             .map(|p| (key, p))
-            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| app.frames.nearest_plan(key, crate::frames::PLAYING_LOOK_BACK).filter(|(k, _)| goes_on(k)))
             .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
-            .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
+            .or_else(|| playing_recent(app, key, dir).filter(goes_on).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
             Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
             None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
         }
-    } else if grid {
-        let recent = playing_recent(app, key, dir);
-        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
     } else {
-        let recent = playing_recent(app, key, dir);
-        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+        let play = Play { dir, recent: playing_recent(app, key, dir) };
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, play, display, grid)
     };
     let exact = on_screen == Some(key);
     if which == Which::Program {
@@ -156,9 +161,9 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
         }
         let (reference, _) = if mv.transparency_grid {
-            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], None, DisplayMode::Composite, true)
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], Play::default(), DisplayMode::Composite, true)
         } else {
-            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite)
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], Play::default(), DisplayMode::Composite, false)
         };
         if let Some(tex) = reference {
             ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -609,28 +614,50 @@ fn play_direction(speed: f64) -> i64 {
     if speed < 0.0 { -1 } else { 1 }
 }
 
+/// Whether the project stood still since the preroll's pass before this one (`before`: the
+/// revision that pass saw, None on the first): see `Playback::preroll_revision`.
+fn stands_still(before: Option<u64>, revision: u64) -> bool {
+    before.is_none_or(|r| r == revision)
+}
+
+/// Whether showing `stand_in` in place of the frame `due` would take a playing monitor's picture
+/// back: `stand_in` lies behind the picture on screen (`shown`) in the direction of play (`dir`;
+/// `None` when stopped) while the frame due does not. The monitor then keeps the picture it has.
+/// A frame that is not ready is stood in for by the nearest ready one before it, and that one
+/// can be older than the picture on screen once the plan of that picture has left the cache: a
+/// frame from a few frames earlier then flashed up for one refresh in the middle of a shot. A
+/// play that goes back itself (a loop, a seek) shows what it finds.
+fn steps_back(stand_in: FrameKey, due: FrameKey, shown: Option<FrameKey>, dir: Option<i64>) -> bool {
+    let (Some(dir), Some(shown)) = (dir, shown) else { return false };
+    let after_shown = |k: FrameKey| k.frame.saturating_sub(shown.frame).saturating_mul(dir);
+    stand_in != due && shown.target == due.target && after_shown(due) >= 0 && after_shown(stand_in) < 0
+}
+
 /// While playing, a frame to show when the one due is not ready at the project's revision: the
 /// same frame (or one just played) rendered for one of the last few revisions (#1673).
 fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option<FrameKey> {
-    dir.and_then(|dir| app.frames.recent(key, dir, 6, crate::frames::PLAYING_REVISION_LAG))
+    dir.and_then(|dir| app.frames.recent(key, dir, crate::frames::PLAYING_LOOK_BACK, crate::frames::PLAYING_REVISION_LAG))
+}
+
+/// What a playing monitor's CPU path needs to know of the play (all `None` when stopped).
+#[derive(Clone, Copy, Default)]
+struct Play {
+    /// Which way it plays (see [`play_direction`]).
+    dir: Option<i64>,
+    /// See [`playing_recent`].
+    recent: Option<FrameKey>,
+}
+
+/// The cached frames just before `key` that may stand in for it, nearest first: not one that
+/// would take a playing monitor's picture (`shown`) back (see [`steps_back`]).
+fn stand_ins_before(key: FrameKey, shown: Option<FrameKey>, dir: Option<i64>) -> impl Iterator<Item = FrameKey> {
+    (1..=6).map(move |d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).filter(move |k| !steps_back(*k, key, shown, dir))
 }
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
-/// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
-/// with the display mode's channel mapping. Returns the texture and the frame it shows.
-fn cpu_texture(
-    app: &mut FilmcraftApp,
-    ctx: &egui::Context,
-    name: &str,
-    key: FrameKey,
-    asked: &[FrameKey],
-    recent: Option<FrameKey>,
-    mode: DisplayMode,
-) -> (Option<egui::TextureId>, Option<FrameKey>) {
-    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false)
-}
-
-/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+/// it, else the newest ready one of `asked` (see [`asked_before`]), else `play.recent` (while
+/// playing), with the display mode's channel mapping, keeping the frame's alpha when `alpha` is
+/// set (the Transparency Grid). Returns the texture and the frame it shows.
 #[allow(clippy::too_many_arguments)]
 fn cpu_texture_as(
     app: &mut FilmcraftApp,
@@ -638,17 +665,19 @@ fn cpu_texture_as(
     name: &str,
     key: FrameKey,
     asked: &[FrameKey],
-    recent: Option<FrameKey>,
+    play: Play,
     mode: DisplayMode,
     alpha: bool,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
+    // (while playing, never a frame older than the picture on screen, as on the GPU path)
+    let before = app.texture_key(name);
     let found = app
         .frames
         .get(&key)
         .map(|img| (key, img))
-        .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
+        .or_else(|| stand_ins_before(key, before, play.dir).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
         .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
-        .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
+        .or_else(|| play.recent.filter(|k| !steps_back(*k, key, before, play.dir)).and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {
         Some((k, img)) => {
             let tex = if mode.is_channel() {
@@ -1401,6 +1430,54 @@ mod tests {
         assert!(transport_is_lit("media.toggleProxies", true, false));
 
         assert!(!transport_is_lit("playback.toggle", true, true));
+    }
+
+    /// A value dragged while the preroll waits makes a revision per pass: no pass finds the
+    /// project standing still, so the preroll does not hold the picture for frames that are
+    /// never ready. After one edit the passes that follow wait again.
+    #[test]
+    fn the_preroll_waits_again_once_the_project_stands_still() {
+        use super::stands_still;
+        assert!(stands_still(None, 7), "the first pass of a preroll");
+        assert!(stands_still(Some(7), 7));
+        assert!(!stands_still(Some(7), 8), "edited since the pass before");
+        assert!(stands_still(Some(8), 8), "and not since");
+    }
+
+    /// Playing 50 fps on a 60 Hz display, frame 345 is due for a second refresh and its plan has
+    /// left the cache; the nearest plan before it is frame 341. The monitor used to show that one:
+    /// the picture went four frames back for one refresh.
+    #[test]
+    fn a_playing_monitor_never_stands_in_a_frame_older_than_its_picture() {
+        let at = |frame: i64| FrameKey { target: Target::Sequence(filmcraft_project::ItemId(1)), frame, size: 1000, revision: 0, draft: false };
+        let forward = Some(1);
+        assert!(steps_back(at(341), at(345), Some(at(345)), forward), "341 for 345 with 345 on screen");
+        assert!(steps_back(at(341), at(346), Some(at(345)), forward), "341 for a late 346 with 345 on screen");
+        // the picture on screen again, or a later frame that came late, moves nothing back
+        assert!(!steps_back(at(345), at(346), Some(at(345)), forward));
+        assert!(!steps_back(at(346), at(348), Some(at(345)), forward));
+        // the frame due is always shown
+        assert!(!steps_back(at(345), at(345), Some(at(345)), forward));
+        // a loop or a seek goes back itself: the nearest frame to where it went is shown
+        assert!(!steps_back(at(8), at(10), Some(at(345)), forward));
+        // nothing on screen yet, another sequence on screen, or stopped (scrubbing back)
+        assert!(!steps_back(at(341), at(345), None, forward));
+        let other = FrameKey { target: Target::Sequence(filmcraft_project::ItemId(2)), ..at(345) };
+        assert!(!steps_back(at(341), at(345), Some(other), forward));
+        assert!(!steps_back(at(341), at(345), Some(at(345)), None));
+        // in reverse the frames already played are the higher ones
+        assert!(steps_back(at(349), at(345), Some(at(345)), Some(-1)));
+        assert!(!steps_back(at(341), at(345), Some(at(345)), Some(-1)));
+        // hostile frame numbers do not overflow
+        // the CPU path (the Source monitor, the software renderer, the grid, the channel views)
+        // looks up to six frames back: none of them behind the picture on screen
+        let back = |due: i64, shown: Option<i64>, dir| super::stand_ins_before(at(due), shown.map(at), dir).map(|k| k.frame).collect::<Vec<_>>();
+        assert_eq!(back(346, Some(345), forward), [345], "342 to 344 would step back");
+        assert_eq!(back(345, Some(345), forward), Vec::<i64>::new(), "all six lie behind the picture");
+        assert_eq!(back(346, Some(345), None), [345, 344, 343, 342, 341, 340], "stopped: the nearest there is");
+        assert_eq!(back(346, None, forward).len(), 6, "nothing on screen yet");
+        assert!(steps_back(at(i64::MIN), at(i64::MAX), Some(at(i64::MAX)), forward));
+        assert!(steps_back(at(i64::MAX), at(i64::MIN), Some(at(i64::MIN)), Some(-1)));
     }
 
     #[test]

@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use filmcraft_engine::Session;
 use filmcraft_project::{ItemId, ParamValue, Project, SequenceSettings, TrackKind, find_effect, resolve_auto_points};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
-use filmcraft_ui_egui::frames::{FrameKey, FrameServer, JobRecord, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time};
+use filmcraft_ui_egui::frames::{
+    FrameKey, FrameServer, JobRecord, PLAYING_LOOK_BACK, PREROLL_MAX_S, PREROLL_TIMEOUT_S, PlaybackMeter, Target, process_cpu_time, thread_cpu_time,
+};
 use serde_json::{Value, json};
 
 use crate::fixtures::fixture;
@@ -151,7 +153,9 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            // (like the monitor, never a stand-in older than the picture shown: the bench plays forward)
+            let goes_on = |k: &FrameKey| self.last.is_none_or(|l| l.target != k.target || k.frame >= l.frame);
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, PLAYING_LOOK_BACK).filter(|(k, _)| goes_on(k)))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
@@ -165,7 +169,9 @@ impl Display {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest(key.target, key.frame, key.size, key.revision, 6).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i)));
+            let near = img.or_else(|| {
+                server.nearest(key.target, key.frame, key.size, key.revision, PLAYING_LOOK_BACK).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i))
+            });
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {
@@ -245,6 +251,8 @@ pub fn load_avg() -> String {
 }
 
 pub struct Bench {
+    /// Directory for a per-play CSV of every job (`--trace`).
+    pub trace: Option<String>,
     pub server: FrameServer,
     pub refresh_hz: f64,
     pub seconds: f64,
@@ -279,7 +287,10 @@ impl Bench {
             self.server.schedule_playback(key, rate, scale, &project, 1.0, true);
             let exact = display.refresh(&self.server, key);
             meter.refresh(first, exact);
-            if self.server.preroll_ready(key, 1.0, last_frame) || t_pre.elapsed().as_secs_f64() >= PREROLL_TIMEOUT_S {
+            let ready = self.server.preroll_ready(key, 1.0, last_frame);
+            // as the app does: wait longer while the first frames are still being made
+            let timeout = if !ready && self.server.preroll_pending(key, 1.0, last_frame) { PREROLL_MAX_S } else { PREROLL_TIMEOUT_S };
+            if ready || t_pre.elapsed().as_secs_f64() >= timeout {
                 break;
             }
             std::thread::sleep(period);
@@ -372,6 +383,33 @@ impl Bench {
             }
         }
         rep.present = display.present.iter().map(|d| ms(*d)).collect();
+        if let Some(dir) = &self.trace {
+            let rel = |t: Instant| if t >= anchor { ms(t - anchor) } else { -ms(anchor - t) };
+            let mut csv = String::from("frame,prio,due_ms,queued_ms,started_ms,finished_ms,cancelled,preview,job_cpu_ms,source_wall_ms,source_cpu_ms\n");
+            let mut sorted: Vec<&JobRecord> = recs.iter().filter(|r| r.key.target == target).collect();
+            sorted.sort_by_key(|r| (r.key.frame, r.queued));
+            for r in sorted {
+                let due = due_at.get(&r.key.frame).map(|d| format!("{:.1}", rel(*d))).unwrap_or_default();
+                csv.push_str(&format!(
+                    "{},{},{},{:.1},{:.1},{:.1},{},{},{:.1},{:.1},{:.1}\n",
+                    r.key.frame,
+                    r.prio,
+                    due,
+                    rel(r.queued),
+                    rel(r.started),
+                    rel(r.finished),
+                    r.cancelled as u8,
+                    r.preview as u8,
+                    ms(r.cpu),
+                    ms(r.source_wall),
+                    ms(r.source_cpu)
+                ));
+            }
+            let file = Path::new(dir).join(format!("{}.csv", label.replace(['/', '\\', ':', ' '], "_")));
+            if let Err(e) = std::fs::write(&file, csv) {
+                eprintln!("trace {}: {e}", file.display());
+            }
+        }
         rep
     }
 
@@ -527,7 +565,7 @@ pub struct ScrubReport {
 
 pub fn print_header() {
     println!(
-        "{:<34} {:>6} {:>5} {:>5} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>7} {:>6} | {:>5} {:>5} {:>5} {:>4} | load",
+        "{:<34} {:>6} {:>5} {:>5} {:>7} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>6} {:>6} {:>6} | {:>6} {:>6} | {:>7} {:>6} | {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>4} | load",
         "scenario",
         "wall s",
         "shown",
@@ -547,6 +585,9 @@ pub fn print_header() {
         "cores",
         "seeks",
         "dec",
+        "evict",
+        "skip",
+        "drop",
         "waste",
         "canc"
     );
@@ -556,7 +597,7 @@ pub fn print_row(r: &PlayReport, fps: f64) {
     let frames = (r.shown + r.dropped).max(1) as f64;
     let cpu_per_frame = r.process_cpu / frames;
     println!(
-        "{:<34} {:>6.2} {:>5} {:>5} {:>6.0}% | {:>6.1} {:>6.1} {:>6.1} | {:>6.1} {:>6.1} | {:>6.1} {:>6.1} {:>6.1} | {:>6.2} {:>6.2} | {:>7.1} {:>6.2} | {:>5} {:>5} {:>5} {:>4} | {}",
+        "{:<34} {:>6.2} {:>5} {:>5} {:>6.0}% | {:>6.1} {:>6.1} {:>6.1} | {:>6.1} {:>6.1} | {:>6.1} {:>6.1} {:>6.1} | {:>6.2} {:>6.2} | {:>7.1} {:>6.2} | {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>4} | {}",
         r.label,
         r.seconds,
         r.shown,
@@ -576,6 +617,9 @@ pub fn print_row(r: &PlayReport, fps: f64) {
         cpu_per_frame * fps / 1000.0,
         r.gop.seeks,
         r.gop.decoded,
+        r.gop.evicted,
+        r.gop.skipped,
+        r.gop.dropped,
         r.wasted_jobs,
         r.cancelled_jobs,
         r.load
@@ -596,7 +640,7 @@ pub fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
         "present_ms": {"p50": pct(&r.present, 0.5), "p95": pct(&r.present, 0.95), "max": pct(&r.present, 1.0)},
         "ui_cpu_ms": r.ui_cpu, "process_cpu_ms": r.process_cpu, "cpu_ms_per_frame": r.process_cpu / frames,
         "jobs": r.jobs, "wasted_jobs": r.wasted_jobs, "cancelled_jobs": r.cancelled_jobs, "preview_jobs": r.preview_jobs, "uploaded_mb": r.uploaded_mb,
-        "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted, "skipped": r.gop.skipped, "decode_ms": r.gop.decode_ns as f64 / 1e6},
+        "gop": {"hits": r.gop.hits, "misses": r.gop.misses, "seeks": r.gop.seeks, "decoded": r.gop.decoded, "evicted": r.gop.evicted, "skipped": r.gop.skipped, "dropped": r.gop.dropped, "decode_ms": r.gop.decode_ns as f64 / 1e6},
         "loadavg": r.load, "preroll_ms": r.preroll_ms,
     })
 }
@@ -605,6 +649,7 @@ pub fn to_json(r: &PlayReport, scenario: &str, res: &str, path: &str) -> Value {
 
 struct Args {
     scenarios: Vec<String>,
+    trace: Option<String>,
     res: Vec<(String, f32)>,
     gpu: bool,
     seconds: f64,
@@ -617,6 +662,7 @@ struct Args {
 fn parse_args() -> Args {
     let mut a = Args {
         scenarios: vec![],
+        trace: None,
         res: vec![("full".into(), 1.0), ("half".into(), 0.5)],
         gpu: true,
         seconds: 8.0,
@@ -629,6 +675,9 @@ fn parse_args() -> Args {
     while let Some(x) = it.next() {
         match x.as_str() {
             "--scenario" | "-s" => a.scenarios.extend(it.next().unwrap_or_default().split(',').map(str::to_string)),
+            // a media file of the user's own: a sequence with the clip's settings (`media:<path>`)
+            "--media" => a.scenarios.push(format!("media:{}", it.next().unwrap_or_default())),
+            "--trace" => a.trace = it.next(),
             "--res" => {
                 a.res = it
                     .next()
@@ -650,7 +699,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--media FILE] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json] [--trace DIR]"
                 );
                 std::process::exit(0);
             }
@@ -759,6 +808,16 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             s.execute("file.openDemoProject", json!({})).ok()?;
             s.state.active_sequence?
         }
+        n if n.starts_with("media:") => {
+            let path = Path::new(&n[6..]);
+            if !path.is_file() {
+                eprintln!("{name}: no such file");
+                return None;
+            }
+            let a = import(&mut s, path);
+            let r = s.execute("file.newSequenceFromClip", json!({ "items": [a.0] })).ok()?;
+            ItemId(r["sequence"].as_u64()?)
+        }
         _ => {
             eprintln!("unknown scenario {name}");
             return None;
@@ -799,7 +858,7 @@ pub fn cli_main() {
                 // A fresh frame server per run so caches start cold, as after opening a project.
                 let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), args.workers);
                 server.set_profiling(true);
-                let bench = Bench { server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
+                let bench = Bench { trace: args.trace.clone(), server, refresh_hz: args.refresh, seconds: args.seconds, draft: false };
                 let mut display = Display::new(args.gpu);
                 if args.gpu && display.gpu.is_none() {
                     eprintln!("no GPU adapter; using the CPU path");
