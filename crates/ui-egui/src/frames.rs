@@ -393,6 +393,16 @@ impl PlanCache {
         })
     }
 
+    /// Bytes of the plan for `k`, or of the largest plan cached for its target (the frames one
+    /// monitor shows are what its prefetch has to fit); 0 when nothing of that target is cached.
+    fn bytes_of(&self, k: &FrameKey) -> usize {
+        self.map
+            .get(k)
+            .map(|(_, _, b)| *b)
+            .or_else(|| self.map.iter().filter(|(cached, _)| cached.target == k.target).map(|(_, (_, _, b))| *b).max())
+            .unwrap_or(0)
+    }
+
     fn insert(&mut self, k: FrameKey, p: GpuPlan) {
         self.clock += 1;
         let b = p.bytes();
@@ -464,6 +474,25 @@ struct FrameRequest<'a> {
 /// before it is dropped as stale).
 pub fn prefetch_depth(speed: f64) -> i64 {
     if speed.abs() > 1.5 { 24 } else { 14 }
+}
+
+/// Frames prefetched even when one frame's plan is too large for the cache to hold that many,
+/// so playback never waits for a single frame it could have rendered earlier.
+const MIN_PREFETCH: i64 = 4;
+
+/// [`prefetch_depth`] reduced to the frames the plan cache holds at `plan_bytes` each: asking for
+/// more only makes the prefetch run evict the plans it just rendered, and those frames are then
+/// rendered again when the playhead reaches them (a 4K four-layer plan leaves the cache holding
+/// seven to ten of them, not the fourteen asked for).
+///
+/// A cache that holds most of the run already is left alone: evicting its last frame or two costs
+/// little, while the frames it does hold are the margin that keeps the workers fed.
+fn fitting_prefetch_depth(base: i64, plan_bytes: usize) -> i64 {
+    let fits = i64::try_from(PlanCache::BUDGET / plan_bytes.max(1)).unwrap_or(i64::MAX);
+    if fits.saturating_mul(4) >= base.saturating_mul(3) {
+        return base;
+    }
+    fits.max(MIN_PREFETCH)
 }
 
 /// Playback starts its clock once this many frames from the playhead are ready, or after
@@ -741,7 +770,12 @@ impl FrameServer {
         }
         // During preroll the clock has not started: only the frames that gate start, not a
         // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
-        let ahead = if preroll { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
+        let ahead = if preroll {
+            (PREROLL_FRAMES - 1).max(0)
+        } else {
+            let plan_bytes = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).bytes_of(&key);
+            fitting_prefetch_depth(prefetch_depth(speed), plan_bytes)
+        };
         for i in 0..ahead {
             let f = key.frame + (lead + i * stride) * dir * step;
             if f >= 0 {
@@ -1201,8 +1235,33 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameKey, PlaybackMeter, Target, background_work, playback_plan, recent_keys};
+    use super::{FrameKey, PlanCache, PlaybackMeter, Target, background_work, fitting_prefetch_depth, playback_plan, recent_keys};
     use filmcraft_project::ItemId;
+
+    #[test]
+    fn the_prefetch_run_fits_the_plan_cache() {
+        // Plans that fit the budget keep the frames asked for: 1080p four-layer plans (~12 MB).
+        assert_eq!(fitting_prefetch_depth(14, 12 << 20), 14);
+        // Nothing cached yet: no reduction.
+        assert_eq!(fitting_prefetch_depth(14, 0), 14);
+        // A 10-layer 1080p plan (~41 MB) fills the cache with twelve of the fourteen: the run is
+        // left as it is, since only its tail was being evicted anyway.
+        assert_eq!(fitting_prefetch_depth(14, 42_508_800), 14);
+        // A 4K four-layer plan (~62 MB) fills the cache with eight: asking for fourteen made the
+        // run evict the plans it had just rendered.
+        let four_k = 62_208_000;
+        let depth = fitting_prefetch_depth(14, four_k);
+        assert_eq!(depth, i64::try_from(PlanCache::BUDGET / four_k).unwrap());
+        assert!((super::MIN_PREFETCH..14).contains(&depth), "{depth}");
+        assert!(depth as usize * four_k <= PlanCache::BUDGET, "the prefetched plans fit");
+        // A transition frame with every layer visible (~75 MB) keeps fewer.
+        assert!(fitting_prefetch_depth(14, 74_649_600) < depth);
+        // However large a plan gets, playback still runs a few frames ahead.
+        assert_eq!(fitting_prefetch_depth(14, PlanCache::BUDGET), super::MIN_PREFETCH);
+        // Fast playback asks for more frames and is bounded the same way.
+        assert_eq!(fitting_prefetch_depth(24, 4 << 20), 24);
+        assert!(fitting_prefetch_depth(24, 62_208_000) < 24);
+    }
 
     #[test]
     fn only_item_thumbnails_are_background_work() {
