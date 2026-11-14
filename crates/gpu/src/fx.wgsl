@@ -55,6 +55,7 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_LUMETRI_WHEELS: u32 = 39u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -431,6 +432,19 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
                 o = o + (l - l2);
             }
             return dec(o);
+        }
+        case OP_LUMETRI_WHEELS: {
+            // `effects::lumetri_advanced`: p0..p2 the shadow, midtone and highlight offsets, p3 the
+            // lightness of each; lift (shadows), gamma-ish (midtones), gain (highlights)
+            var v = enc(c);
+            let l = clamp(luma709(v), 0.0, 1.0);
+            let wsh = (1.0 - l) * (1.0 - l);
+            let whi = l * l;
+            let wmid = max(1.0 - wsh - whi, 0.0);
+            v = v + (u.p0.xyz * 0.3 + vec3(u.p3.x * 0.3)) * wsh;
+            v = v + (u.p1.xyz * 0.3 + vec3(u.p3.y * 0.3)) * wmid;
+            v = v * (vec3(1.0) + (u.p2.xyz * 0.5 + vec3(u.p3.z * 0.5)) * whi);
+            return dec(v);
         }
         case OP_THREE_WAY: {
             if u.i1.x != 0u {

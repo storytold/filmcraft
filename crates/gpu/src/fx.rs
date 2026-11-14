@@ -57,6 +57,8 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+// (37 and 38 are taken by open changes: Noise, Frame Blending)
+const OP_LUMETRI_WHEELS: u32 = 39;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -156,6 +158,19 @@ fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
     }
 }
 
+/// Unsharp Mask's passes: its blur passes, then the combine with the image they started from.
+fn unsharp(rx: &[u32], ry: &[u32], amount: f32, threshold: f32, out: &mut Vec<Step>) {
+    let start = out.len();
+    boxes(rx, false, true, out);
+    boxes(ry, true, true, out);
+    for s in out.iter_mut().skip(start) {
+        s.unsharp_blur = true;
+    }
+    let mut s = step(OP_UNSHARP, [0; 4], &[amount, threshold]);
+    s.combine = true;
+    out.push(s);
+}
+
 /// The passes of an op on a `w`×`h` working image (empty: no-op). Unsharp's blur passes come
 /// first, then the combine.
 fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
@@ -219,16 +234,7 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 }
             }
         }
-        FxOp::Unsharp { rx, ry, amount, threshold } => {
-            boxes(rx, false, true, &mut out);
-            boxes(ry, true, true, &mut out);
-            for s in &mut out {
-                s.unsharp_blur = true;
-            }
-            let mut s = step(OP_UNSHARP, [0; 4], &[*amount, *threshold]);
-            s.combine = true;
-            out.push(s);
-        }
+        FxOp::Unsharp { rx, ry, amount, threshold } => unsharp(rx, ry, *amount, *threshold, &mut out),
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
         FxOp::Resample(r) => {
             let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
@@ -282,6 +288,8 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             vround,
             vfeather,
             aspect,
+            wheels,
+            sharpen,
             ..
         } => {
             let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
@@ -320,6 +328,14 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 0.0,
             ];
             out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+            // the CPU's order: the main pass, the wheels, then Sharpen
+            if let Some([ws, wm, wh, l]) = wheels {
+                let p: Vec<f32> = [ws, wm, wh, l].iter().flat_map(|v| [v[0], v[1], v[2], 0.0]).collect();
+                out.push(step(OP_LUMETRI_WHEELS, [0; 4], &p));
+            }
+            if let Some((rx, ry, amount)) = sharpen {
+                unsharp(rx, ry, *amount, 0.0, &mut out);
+            }
         }
     }
     out
