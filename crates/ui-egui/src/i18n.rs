@@ -58,8 +58,11 @@ pub enum Language {
     /// Swedish.
     Sv,
     Tr,
+    /// Azerbaijani, Latin script.
+    Az,
 }
 
+static AZERBAIJANI: OnceLock<Catalog> = OnceLock::new();
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
 static SPANISH: OnceLock<Catalog> = OnceLock::new();
 static PORTUGUESE: OnceLock<Catalog> = OnceLock::new();
@@ -78,7 +81,7 @@ static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -95,6 +98,7 @@ impl Language {
         Self::Pl,
         Self::Sv,
         Self::Tr,
+        Self::Az,
         Self::Bs,
     ];
 
@@ -119,6 +123,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Az => "az",
         }
     }
 
@@ -141,6 +146,7 @@ impl Language {
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
             Self::Tr => "Türkçe",
+            Self::Az => "Azərbaycanca",
         }
     }
 
@@ -163,6 +169,7 @@ impl Language {
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
             "tr" => Some(Self::Tr),
+            "az" => Some(Self::Az),
             _ => None,
         }
     }
@@ -173,11 +180,11 @@ impl Language {
     /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
     /// the French one; any Indonesian (`id-ID`, `id_ID.UTF-8`, and the legacy `in-ID` that older Java
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
-    /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one. Chinese gets the Simplified catalog
+    /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one; any Azerbaijani (`az`, `az-AZ`, `az_AZ.UTF-8`…) the Azerbaijani one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 18] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -195,6 +202,7 @@ impl Language {
             ("pl", Language::Pl),
             ("sv", Language::Sv),
             ("tr", Language::Tr),
+            ("az", Language::Az),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -232,6 +240,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Az => "az",
         }
     }
 
@@ -255,6 +264,7 @@ impl Language {
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
             Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
+            Self::Az => Some(AZERBAIJANI.get_or_init(|| Catalog::parse(include_str!("i18n/az.tsv")))),
         }
     }
 
@@ -271,7 +281,7 @@ impl Language {
     /// Uppercase `text`, using Turkish-aware rules (`i` → `İ`, `ı` → `I`) when the language is
     /// Turkish.
     pub fn to_uppercase(self, text: &str) -> String {
-        if self == Self::Tr {
+        if matches!(self, Self::Tr | Self::Az) {
             let mapped: String = text
                 .chars()
                 .map(|c| match c {
@@ -289,7 +299,7 @@ impl Language {
     /// Lowercase `text`, using Turkish-aware rules (`İ` → `i`, `I` → `ı`) when the language is
     /// Turkish. Decomposed `I` followed by `\u{0307}` is normalized to `i`.
     pub fn to_lowercase(self, text: &str) -> String {
-        if self == Self::Tr {
+        if matches!(self, Self::Tr | Self::Az) {
             let normalized = text.replace("I\u{0307}", "i");
             let mapped: String = normalized
                 .chars()
