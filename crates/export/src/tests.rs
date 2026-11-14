@@ -323,11 +323,13 @@ fn hdr_exports_signal_pq_and_hlg() {
             let hdr = v.hdr.unwrap_or_else(|| panic!("{path}: no HDR metadata"));
             assert_eq!((hdr.mastering_max_nits, hdr.max_cll, hdr.peak_nits()), (Some(1000.0), None, Some(1000.0)), "{path}");
         }
-        // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
+        // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red. HLG comes
+        // back dimmer: its signal peak, not reference white, is SDR white on the way down
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
         let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
         let c = filmcraft_render::Image::unpremul(back.get(160, 90));
-        assert!(c[0] > 0.6 && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
+        let red = if transfer == Transfer::Hlg { 0.45 } else { 0.6 };
+        assert!(c[0] > red && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
         // ffprobe agrees
         let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("hdr export signalling") else { continue };
         let out = std::process::Command::new(&ffprobe)
