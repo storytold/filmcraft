@@ -105,6 +105,8 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         .map(str::to_string)
         .or_else(|| s.path.as_deref().and_then(|x| Path::new(x).file_stem()).map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| s.project.name.clone());
+    // the collected project lands in `dest` itself, whatever the (document-derived) name holds
+    let name = crate::export_tools::file_safe(&name);
     let dest_dir = PathBuf::from(&dest);
     let project_path = dest_dir.join(format!("{name}.fcproj")).to_string_lossy().into_owned();
 

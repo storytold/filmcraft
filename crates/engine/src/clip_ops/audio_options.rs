@@ -73,7 +73,9 @@ pub(super) fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let pi = s.project.item(item).ok_or_else(|| EngineError::Other("no such item".into()))?;
         let name = pi.name.clone();
-        let stem = std::path::Path::new(&name).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
+        // one filename component whatever the (document-supplied) item name holds
+        let stem =
+            crate::export_tools::file_safe(&std::path::Path::new(&name).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone()));
         let src = s.media.full_res_source(&s.project, root, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: media is offline")))?;
         let sr = a.sample_rate.max(8000);
         let start = range.start.to_units_floor(sr as i64);
