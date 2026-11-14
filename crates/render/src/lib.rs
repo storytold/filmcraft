@@ -652,7 +652,7 @@ fn plain_layer(frame: &Arc<VideoFrame>, n: usize, opacity: f32, blend: Blend) ->
         None if matches!(frame.data, PixelData::Yuv8 { alpha: None, .. }) => Layer::Frame { frame: Arc::clone(frame), n, opacity, blend },
         None => {
             let (w, h, px) = frame.to_linear_f32_decimated(n);
-            let opaque = matches!(frame.data, PixelData::Yuv8 { alpha: None, .. } | PixelData::Yuv16 { alpha: None, .. });
+            let opaque = matches!(frame.data, PixelData::Yuv8 { alpha: None, .. } | PixelData::Yuv16 { alpha: None, .. } | PixelData::GpuSurface(_));
             Layer::Full { image: Image { w, h, px }, opacity, blend, opaque }
         }
     }

@@ -103,6 +103,8 @@ struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
     views: [wgpu::TextureView; 4],
     planes: Vec<PooledTexture>,
+    #[expect(dead_code, reason = "keeps externally imported HAL textures alive alongside views")]
+    owned_textures: Vec<wgpu::Texture>,
     gpu_bytes: u64,
     kind: u32,
     code_scale: f32,
@@ -301,10 +303,30 @@ fn codes_to_f16_bytes(v: &[u16], bits: u32) -> Vec<u8> {
     out
 }
 
+/// Externally imported zero-copy planes for a [`filmcraft_frame::GpuSurface`].
+pub struct ImportedPlanes {
+    pub views: [wgpu::TextureView; 4],
+    pub textures: Vec<wgpu::Texture>,
+    pub gpu_bytes: u64,
+    pub kind: u32,
+    pub code_scale: f32,
+    pub chroma: (u32, u32),
+}
+
+/// Platform hook importing a [`filmcraft_frame::GpuSurface`] into a `wgpu::Device` without CPU copies.
+pub type GpuSurfaceImporter = fn(&wgpu::Device, &wgpu::TextureView, &dyn filmcraft_frame::GpuSurface, u32, u32) -> Option<ImportedPlanes>;
+
+static SURFACE_IMPORTER: std::sync::OnceLock<GpuSurfaceImporter> = std::sync::OnceLock::new();
+
+/// Register the platform zero-copy importer once at startup (`filmcraft_platform::register`).
+pub fn register_gpu_surface_importer(importer: GpuSurfaceImporter) {
+    let _ = SURFACE_IMPORTER.set(importer);
+}
+
 /// Optional wgpu device features that accelerate FilmCraft's GPU compositor when supported by
 /// `adapter` (safe to bitwise-OR into `DeviceDescriptor::required_features`).
 pub fn requested_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+    adapter.features() & (wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
 }
 
 /// Convert a frame's texels for upload (None when it uploads as it is).
@@ -321,7 +343,7 @@ pub fn prepare_frame_for(f: &VideoFrame, r16_unorm: bool) -> Option<Prepared> {
         PixelData::Yuv16 { planes, bits, alpha, .. } => {
             Some(Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() })
         }
-        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } => None,
+        PixelData::Rgba8(_) | PixelData::Yuv8 { .. } | PixelData::GpuSurface(_) => None,
     }
 }
 
@@ -610,6 +632,7 @@ impl GpuCompositor {
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::Yuv8 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
             PixelData::Yuv16 { planes, .. } => Arc::as_ptr(&planes[0]) as *const u8 as usize,
+            PixelData::GpuSurface(s) => s.id(),
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
@@ -617,10 +640,64 @@ impl GpuCompositor {
             u.last_used = self.clock;
             return key;
         }
-        let (w, h) = (f.width, f.height);
+        let up = match &f.data {
+            PixelData::GpuSurface(surf) => self.upload_gpu_surface(f, surf),
+            _ => self.upload_cpu_data(f.width, f.height, &f.data, &f.data, prep),
+        };
+        self.upload_cache_bytes = self.upload_cache_bytes.saturating_add(up.gpu_bytes);
+        if let Some(prev) = self.uploads.insert(key, up) {
+            self.recycle_uploaded(prev);
+        }
+        // Keep recent uploads up to the VRAM budget and entry cap, recycling evicted textures.
+        if self.uploads.len() > UPLOAD_CACHE_MAX_ENTRIES || self.upload_cache_bytes > UPLOAD_CACHE_BUDGET_BYTES {
+            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
+            v.sort_unstable();
+            for (_, k) in v {
+                if self.uploads.len() <= UPLOAD_CACHE_MAX_ENTRIES && self.upload_cache_bytes <= UPLOAD_CACHE_BUDGET_BYTES {
+                    break;
+                }
+                if k == key {
+                    continue;
+                }
+                if let Some(evicted) = self.uploads.remove(&k) {
+                    self.recycle_uploaded(evicted);
+                }
+            }
+        }
+        key
+    }
+
+    fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Uploaded {
+        if let Some(importer) = SURFACE_IMPORTER.get()
+            && let Some(imported) = importer(&self.device, &self.dummy, surf.as_ref(), f.width, f.height)
+        {
+            return Uploaded {
+                views: imported.views,
+                planes: Vec::new(),
+                owned_textures: imported.textures,
+                gpu_bytes: imported.gpu_bytes,
+                kind: imported.kind,
+                code_scale: imported.code_scale,
+                alpha_scale: 0.0,
+                chroma: imported.chroma,
+                last_used: self.clock,
+                _pixels: f.data.clone(),
+            };
+        }
+        match surf.to_cpu() {
+            Ok(cpu_data) => self.upload_cpu_data(f.width, f.height, &cpu_data, &f.data, None),
+            Err(why) => {
+                log::warn!("GPU surface fallback readback failed: {why}");
+                let blank = PixelData::Rgba8(Arc::new(vec![0u8; (f.width as usize).saturating_mul(f.height as usize).saturating_mul(4)]));
+                self.upload_cpu_data(f.width, f.height, &blank, &f.data, None)
+            }
+        }
+    }
+
+    fn upload_cpu_data(&mut self, w: u32, h: u32, data: &PixelData, keep: &PixelData, prep: Option<&Prepared>) -> Uploaded {
         let d0 = self.dummy.clone();
         let dummy = || d0.clone();
-        let up = match &f.data {
+        match data {
             PixelData::Rgba8(d) => {
                 let p0 = self.plane_texture(w, h, wgpu::TextureFormat::Rgba8UnormSrgb, d, 4);
                 let v = p0.view.clone();
@@ -628,13 +705,14 @@ impl GpuCompositor {
                 Uploaded {
                     views: [v, dummy(), dummy(), dummy()],
                     planes: vec![p0],
+                    owned_textures: Vec::new(),
                     gpu_bytes,
                     kind: 0,
                     code_scale: 1.0,
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    _pixels: keep.clone(),
                 }
             }
             PixelData::RgbaF32(d) => {
@@ -652,13 +730,14 @@ impl GpuCompositor {
                 Uploaded {
                     views: [v, dummy(), dummy(), dummy()],
                     planes: vec![p0],
+                    owned_textures: Vec::new(),
                     gpu_bytes,
                     kind: 1,
                     code_scale: 1.0,
                     alpha_scale: 0.0,
                     chroma: (w, h),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    _pixels: keep.clone(),
                 }
             }
             PixelData::Yuv8 { planes, chroma, alpha } => {
@@ -684,13 +763,14 @@ impl GpuCompositor {
                 Uploaded {
                     views: [y, u, v, a.unwrap_or_else(dummy)],
                     planes: owned_planes,
+                    owned_textures: Vec::new(),
                     gpu_bytes,
                     kind: 2,
                     code_scale: 255.0,
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
-                    _pixels: f.data.clone(),
+                    _pixels: keep.clone(),
                 }
             }
             PixelData::Yuv16 { planes, chroma, bits, alpha } => {
@@ -719,13 +799,14 @@ impl GpuCompositor {
                     Uploaded {
                         views: [y, u, v, a.unwrap_or_else(dummy)],
                         planes: owned_planes,
+                        owned_textures: Vec::new(),
                         gpu_bytes,
                         kind: 2,
                         code_scale: 65535.0,
                         alpha_scale,
                         chroma: (cw, ch),
                         last_used: self.clock,
-                        _pixels: f.data.clone(),
+                        _pixels: keep.clone(),
                     }
                 } else {
                     let scale = (1u32 << bits) as f32;
@@ -758,38 +839,30 @@ impl GpuCompositor {
                     Uploaded {
                         views: [y, u, v, a.unwrap_or_else(dummy)],
                         planes: owned_planes,
+                        owned_textures: Vec::new(),
                         gpu_bytes,
                         kind: 2,
                         code_scale: scale,
                         alpha_scale,
                         chroma: (cw, ch),
                         last_used: self.clock,
-                        _pixels: f.data.clone(),
+                        _pixels: keep.clone(),
                     }
                 }
             }
-        };
-        self.upload_cache_bytes = self.upload_cache_bytes.saturating_add(up.gpu_bytes);
-        if let Some(prev) = self.uploads.insert(key, up) {
-            self.recycle_uploaded(prev);
+            PixelData::GpuSurface(_) => Uploaded {
+                views: [dummy(), dummy(), dummy(), dummy()],
+                planes: Vec::new(),
+                owned_textures: Vec::new(),
+                gpu_bytes: 0,
+                kind: 1,
+                code_scale: 1.0,
+                alpha_scale: 0.0,
+                chroma: (w, h),
+                last_used: self.clock,
+                _pixels: keep.clone(),
+            },
         }
-        // Keep recent uploads up to the VRAM budget and entry cap, recycling evicted textures.
-        if self.uploads.len() > UPLOAD_CACHE_MAX_ENTRIES || self.upload_cache_bytes > UPLOAD_CACHE_BUDGET_BYTES {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v {
-                if self.uploads.len() <= UPLOAD_CACHE_MAX_ENTRIES && self.upload_cache_bytes <= UPLOAD_CACHE_BUDGET_BYTES {
-                    break;
-                }
-                if k == key {
-                    continue;
-                }
-                if let Some(evicted) = self.uploads.remove(&k) {
-                    self.recycle_uploaded(evicted);
-                }
-            }
-        }
-        key
     }
 
     /// The source description of an uploaded frame.
@@ -798,6 +871,7 @@ impl GpuCompositor {
         let code_levels = match &f.data {
             PixelData::Yuv8 { .. } => 256.0,
             PixelData::Yuv16 { bits, .. } => (*bits as f32).exp2(),
+            PixelData::GpuSurface(s) => (s.bits() as f32).exp2(),
             _ => 1.0,
         };
         Some(SrcInfo {
@@ -831,8 +905,8 @@ impl GpuCompositor {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
-            (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
+            (Range::Limited, 2 | 3) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
+            (Range::Full, 2 | 3) => (0.0, src.code_levels - 1.0, src.code_levels / 2.0, src.code_levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -1018,7 +1092,7 @@ impl GpuCompositor {
                 input: None,
             });
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
-            let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
+            let src = SrcInfo { input: l.input.as_ref().filter(|_| matches!(src.kind, 2 | 3)).and_then(|t| t.gpu_params()), ..src };
             let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
             let job = match &l.fx {
                 Some(lfx) => {
