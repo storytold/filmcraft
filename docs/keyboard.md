@@ -52,6 +52,22 @@ Show/Hide Tracks… and Meter Input(s) Only are the commands `mixer.showHideTrac
 FilmCraft Default keeps its own keys where they differ (Shift+E is Clip ▸ Enable there, so Export
 Frame has no default key; the Premiere preset moves Shift+E to Export Frame and Enable to ⇧⌘E).
 
+## Mouse wheel and trackpad in the monitors
+
+These are gestures, not rebindable shortcuts, and are the same in every preset
+([`monitors.md`](monitors.md), `crates/ui-egui/src/panels/monitor_view.rs`):
+
+| Gesture over the Program or Source monitor | Does |
+|---|---|
+| Cmd/Ctrl+wheel, or a pinch | Zoom about the pointer (from Fit too, 10%–1600%) |
+| Wheel | Scroll a picture magnified past the monitor vertically (nothing at Fit) |
+| Shift+wheel | Scroll it sideways |
+| Two-finger trackpad swipe | Scroll it both ways |
+| Middle-button drag, or a drag with the Hand tool (H) | Pan it |
+
+**Changed in #2685:** the plain wheel used to zoom the monitors (#807). It now scrolls a
+magnified picture, as in Premiere; zoom with Cmd/Ctrl+wheel or a pinch.
+
 ## Skipped Premiere default shortcuts
 
 | Premiere command (key, scope) | Reason |
