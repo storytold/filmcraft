@@ -29,17 +29,16 @@ fn test_amf_safe_session_h264() {
 
 #[test]
 fn test_amf_safe_session_hevc() {
-    let cfg = Config { width: 320, height: 240, fps: (30, 1), bitrate_kbps: 1000, max_bitrate_kbps: 1500, cbr: false, keyint: 30, profile: Profile::HevcMain };
-    let mut session = match Session::open(&cfg) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("AMF HEVC Session::open skipped/failed: {e}");
-            return;
-        }
-    };
-    let y = vec![128u8; 320 * 240];
-    let u = vec![128u8; 160 * 120];
-    let v = vec![128u8; 160 * 120];
+    if !hevc_available() {
+        eprintln!("No AMD AMF HEVC encoder on this system, skipping test.");
+        return;
+    }
+    // Match the capability probe: some AMD runtimes reject smaller HEVC pictures.
+    let cfg = Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 1000, max_bitrate_kbps: 1500, cbr: false, keyint: 30, profile: Profile::HevcMain };
+    let mut session = Session::open(&cfg).expect("AMF HEVC session failed after a successful capability probe");
+    let y = vec![128u8; 640 * 360];
+    let u = vec![128u8; 320 * 180];
+    let v = vec![128u8; 320 * 180];
     let mut total_packets = 0;
     for i in 0..5 {
         let pkts = session.encode_8bit(&y, &u, &v, i * 333_333, 333_333).unwrap();

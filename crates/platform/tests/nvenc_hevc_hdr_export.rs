@@ -146,7 +146,8 @@ fn yuv16(f: &filmcraft_frame::VideoFrame) -> ([Arc<Vec<u16>>; 3], u32) {
 fn hdr_sequences_export_as_main_10() {
     let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
-    assert_eq!(filmcraft_export::hdr_available(Format::Hevc), hevc_hdr_available(), "HDR H.265 is available iff NVENC can encode Main 10");
+    // The global registry also includes AMD AMF; NVENC-specific checks still skip below without NVENC.
+    assert_eq!(filmcraft_export::hdr_available(Format::Hevc), hevc_hdr_available() || filmcraft_platform::amf::hevc_hdr_available());
     if !hevc_hdr_available() {
         eprintln!("SKIPPED: no NVENC HEVC Main 10 here (hevc: {})", hevc_available());
         return;
