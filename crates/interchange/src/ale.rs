@@ -159,6 +159,7 @@ pub fn parse(text: &str) -> Result<AleDoc, String> {
     }
     let mut doc = AleDoc::default();
     let mut sec = Sec::None;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     for line in text.lines() {
         match line.trim() {
@@ -208,6 +209,13 @@ mod tests {
     use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind, VideoStreamInfo};
     use filmcraft_project::{ItemKind, Label, MediaClip};
     use filmcraft_time::TimeRange;
+
+    #[test]
+    fn utf8_bom_is_ignored() {
+        let doc = parse("\u{feff}Heading\r\nFPS\t24\r\n\r\nColumn\r\nName\tStart\r\n\r\nData\r\nA\t01:00:00:00\r\n").unwrap();
+        assert_eq!(doc.columns, ["Name", "Start"]);
+        assert_eq!(doc.rows.len(), 1);
+    }
 
     #[test]
     fn non_positive_or_non_finite_fps_is_rejected() {
