@@ -5262,6 +5262,7 @@ pub fn inspect_project(s: &Session) -> Value {
         "root": bin(&p.root, p),
         "activeSequence": s.state.active_sequence.map(|i| i.0),
         "sourceItem": s.state.source_item.map(|i| i.0),
+        "ingestEnabled": p.settings.ingest.enabled,
     })
 }
 
