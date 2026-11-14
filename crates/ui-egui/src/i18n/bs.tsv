@@ -3632,3 +3632,35 @@
 	Toggle Color Grading Section	Uključi/isključi odjeljak gradacije boja
 	Color Grading Section	Odjeljak gradacije boja
 	Read Video Scopes	Očitaj video skopove
+	Zoom Anchor Point	Sidrišna tačka zumiranja
+	Cursor Position	Položaj pokazivača
+	Playhead Position	Položaj glave za reprodukciju
+	Step Playhead (Frames)	Pomjeri glavu za reprodukciju (sličice)
+	Disabled	Onemogućeno
+	Alt + Scroll	Alt + točkić
+	Shift + Scroll	Shift + točkić
+	Ctrl + Scroll	Ctrl + točkić
+	Move Playhead on Timeline Click	Pomjeri glavu za reprodukciju klikom na vremensku liniju
+	Ruler Only	Samo na ravnalu
+	Empty Space Only	Samo na praznom prostoru
+	Anywhere on Timeline	Bilo gdje na vremenskoj liniji
+	Drag Playhead Line Across Tracks	Prevlačenje linije glave za reprodukciju preko traka
+	Anywhere, Including Over Clips	Bilo gdje, i preko klipova
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Podijeljeno vremensko ravnalo: prevlačenje gornje polovine postavlja ulaz/izlaz
+	Program Monitor Mouse Wheel	Točkić miša u programskom monitoru
+	Source Monitor Mouse Wheel	Točkić miša u izvornom monitoru
+	Effect Controls Mouse Wheel	Točkić miša u kontrolama efekata
+	Scroll	Točkić
+	Over the Preview	Iznad pregleda
+	Over the Time Ruler	Iznad vremenskog ravnala
+	Timeline Mouse Wheel Behavior	Ponašanje točkića miša na vremenskoj liniji
+	Step Frames	Korak po sličicama
+	Step Keyframes	Korak po ključnim sličicama
+	Off (Ruler Head Only)	Isključeno (samo na vrhu ravnala)
+	Pan Timeline by Dragging With Middle Mouse Button	Pomjeranje vremenske linije prevlačenjem srednjim dugmetom miša
+	Navigation…	Navigacija…
+	Navigation Style	Stil navigacije
+	Alternative	Alternativni
+	Timeline Mouse Wheel	Točkić miša na vremenskoj liniji
+	Timeline Clicks and Drags	Klikovi i prevlačenja na vremenskoj liniji
+	More Settings…	Više postavki…

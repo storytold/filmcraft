@@ -4,6 +4,19 @@ use super::{
     Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json,
     label_color, pos2, vec2,
 };
+use crate::state::{TRACK_H_MAX, TRACK_H_MIN, TimelineView};
+
+/// The height a header drag or double-click changes: the track's own height when Alt + wheel gave
+/// it one, else the height its kind shares.
+pub(super) fn track_height_mut(tv: &mut TimelineView, video: bool, id: u64) -> &mut f32 {
+    if tv.track_h_override.contains_key(&id) {
+        tv.track_h_override.entry(id).or_insert(TRACK_H_MIN)
+    } else if video {
+        &mut tv.video_track_h
+    } else {
+        &mut tv.audio_track_h
+    }
+}
 
 /// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
 struct PatchButton<'a> {
@@ -183,8 +196,8 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             }
             if eresp.dragged() {
                 let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
-                let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-                *h = (*h + d).clamp(22.0, 220.0);
+                let h = track_height_mut(&mut app.ui.timeline, r.kind == TrackKind::Video, r.track.0);
+                *h = (*h + d).clamp(TRACK_H_MIN, TRACK_H_MAX);
             }
         }
         let resp = ui.interact(
@@ -193,7 +206,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             Sense::click(),
         );
         if resp.double_clicked() {
-            let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+            let h = track_height_mut(&mut app.ui.timeline, r.kind == TrackKind::Video, r.track.0);
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
         }
     }

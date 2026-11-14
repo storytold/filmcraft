@@ -78,16 +78,19 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
     }
 }
 
-/// The top of each of `n` video rows `vh` high, V1 first: V1 sits at the bottom of `area` and the
-/// tracks stack upward; `v_scroll` (clamped here) shifts them up. Also gives the largest `v_scroll`.
-/// The scroll range includes one empty track's height above the top track: without it, tracks that
-/// fill the area leave no space where a drop adds a new one (#1522).
-pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
-    let total = (n + 1) as f32 * vh;
+/// The top of each video row (`heights`, V1 first; `new_h` is the empty row above the top one): V1
+/// sits at the bottom of `area` and the tracks stack upward; `v_scroll` (clamped here) shifts them
+/// up. Also gives the largest `v_scroll`. The scroll range includes one empty track's height above
+/// the top track: without it, tracks that fill the area leave no space where a drop adds a new one
+/// (#1522).
+pub(super) fn video_row_tops(area: Rect, heights: &[f32], new_h: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
+    let total = heights.iter().sum::<f32>() + new_h;
     let v_off = (area.height() - total).max(0.0);
     let max_vs = (total - area.height()).max(0.0);
     *v_scroll = v_scroll.clamp(0.0, max_vs);
-    let tops = (0..n).map(|i| area.min.y + v_off + (n - i) as f32 * vh - (max_vs - *v_scroll)).collect();
+    let base = area.min.y + v_off - (max_vs - *v_scroll);
+    // track i has the empty drop row and the tracks above it (higher indexes) over it
+    let tops = (0..heights.len()).map(|i| base + new_h + heights.iter().skip(i + 1).sum::<f32>()).collect();
     (tops, max_vs)
 }
 

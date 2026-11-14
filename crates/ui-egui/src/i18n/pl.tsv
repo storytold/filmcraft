@@ -3638,3 +3638,35 @@
 	Toggle Color Grading Section	Przełącz sekcję korekcji kolorów
 	Color Grading Section	Sekcja korekcji kolorów
 	Read Video Scopes	Odczytaj wskaźniki wideo
+	Zoom Anchor Point	Punkt zakotwiczenia powiększenia
+	Cursor Position	Pozycja kursora
+	Playhead Position	Pozycja głowicy
+	Step Playhead (Frames)	Przesuwaj głowicę (klatki)
+	Disabled	Wyłączone
+	Alt + Scroll	Alt + kółko
+	Shift + Scroll	Shift + kółko
+	Ctrl + Scroll	Ctrl + kółko
+	Move Playhead on Timeline Click	Przenieś głowicę kliknięciem na osi czasu
+	Ruler Only	Tylko na linijce
+	Empty Space Only	Tylko w pustym miejscu
+	Anywhere on Timeline	W dowolnym miejscu osi czasu
+	Drag Playhead Line Across Tracks	Przeciąganie linii głowicy przez ścieżki
+	Anywhere, Including Over Clips	W dowolnym miejscu, także nad klipami
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Dzielona linijka czasu: przeciąganie w górnej połowie ustawia wejście/wyjście
+	Program Monitor Mouse Wheel	Kółko myszy w monitorze programu
+	Source Monitor Mouse Wheel	Kółko myszy w monitorze źródła
+	Effect Controls Mouse Wheel	Kółko myszy w elementach sterujących efektu
+	Scroll	Kółko
+	Over the Preview	Nad podglądem
+	Over the Time Ruler	Nad linijką czasu
+	Timeline Mouse Wheel Behavior	Działanie kółka myszy na osi czasu
+	Step Frames	Krok po klatkach
+	Step Keyframes	Krok po klatkach kluczowych
+	Off (Ruler Head Only)	Wył. (tylko za uchwyt na linijce)
+	Pan Timeline by Dragging With Middle Mouse Button	Przesuwaj oś czasu, przeciągając środkowym przyciskiem myszy
+	Navigation…	Nawigacja…
+	Navigation Style	Styl nawigacji
+	Alternative	Alternatywny
+	Timeline Mouse Wheel	Kółko myszy na osi czasu
+	Timeline Clicks and Drags	Kliknięcia i przeciąganie na osi czasu
+	More Settings…	Więcej ustawień…
