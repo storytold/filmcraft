@@ -136,3 +136,63 @@ fn ripple_delete_of_two_neighbours_with_sounds_on_alternating_tracks() {
     assert_eq!(q.audio_tracks[1].items.iter().map(|i| i.range()).collect::<Vec<_>>(), vec![q.video_tracks[0].items[1].range()], "its sound moved with it");
     assert_eq!(q.duration(), rate.tick_of(96));
 }
+
+/// Sync-locked caption tracks follow `edit.rippleDelete` and restore cleanly on undo.
+#[test]
+fn ripple_delete_shifts_sync_locked_caption_tracks_and_restores_on_undo() {
+    let mut s = Session::default();
+    let [(_, _), (picture2, _), (_, _), (_, _)] = four_clips(&mut s);
+    let rate = s.sequence_rate();
+    let f = move |n: i64| rate.tick_of(n);
+
+    let dir = std::env::temp_dir().join(format!("fc-ripple-cap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let srt = dir.join("dialogue.srt");
+    // Frame times at 24fps:
+    // Cue 1: 10..30 (0.417s .. 1.250s)
+    // Cue 2: 55..75 (2.292s .. 3.125s)
+    // Cue 3: 90..110 (3.750s .. 4.583s)
+    // Cue 4: 150..170 (6.250s .. 7.083s)
+    std::fs::write(
+        &srt,
+        "1\r\n00:00:00,417 --> 00:00:01,250\r\nBefore\r\n\r\n2\r\n00:00:02,292 --> 00:00:03,125\r\nInside clip 2\r\n\r\n3\r\n00:00:03,750 --> 00:00:04,583\r\nOverlapping boundary\r\n\r\n4\r\n00:00:06,250 --> 00:00:07,083\r\nAfter\r\n",
+    )
+    .unwrap();
+    s.execute("captions.import", json!({"path": srt.to_string_lossy()})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    let tr = &q.caption_tracks[0];
+    assert!(tr.sync_lock, "imported caption track has sync lock on");
+    assert_eq!(tr.captions.len(), 4);
+    assert_eq!((tr.captions[0].start, tr.captions[0].end()), (f(10), f(30)));
+    assert_eq!((tr.captions[1].start, tr.captions[1].end()), (f(55), f(75)));
+    assert_eq!((tr.captions[2].start, tr.captions[2].end()), (f(90), f(110)));
+    assert_eq!((tr.captions[3].start, tr.captions[3].end()), (f(150), f(170)));
+
+    let before = s.project.clone();
+
+    // Ripple delete picture2 (clip 2 occupies frames 48..96, duration 48)
+    s.execute("edit.rippleDelete", json!({"clips": [picture2.0]})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    let tr = &q.caption_tracks[0];
+
+    assert_eq!(tr.captions.len(), 3, "inside caption is removed, leaving 3 captions");
+    assert_eq!(tr.captions[0].text, "Before");
+    assert_eq!((tr.captions[0].start, tr.captions[0].end()), (f(10), f(30)));
+
+    assert_eq!(tr.captions[1].text, "Overlapping boundary");
+    assert_eq!((tr.captions[1].start, tr.captions[1].end()), (f(48), f(62)));
+
+    assert_eq!(tr.captions[2].text, "After");
+    assert_eq!((tr.captions[2].start, tr.captions[2].end()), (f(102), f(122)));
+
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before, "one undo step restores caption track completely");
+
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*s.project, *after, "redo restores rippled captions");
+    std::fs::remove_dir_all(dir).unwrap();
+}

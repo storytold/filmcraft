@@ -5,9 +5,9 @@
 //! hostile inputs are errors. Skips (with SKIPPED) only on a machine without a 10-bit HEVC encoder.
 #![cfg(target_os = "windows")]
 
+use craft_video::hevc::decode::params::Sps;
 use filmcraft_bitstream::unescape_rbsp;
 use filmcraft_export::{ColorSignal, rgbf_to_yuv420_10};
-use filmcraft_hevc::params::Sps;
 use filmcraft_isobmff::SampleEntry;
 use filmcraft_platform::nvenc::export::nvenc_signal;
 use filmcraft_platform::nvenc::{Codec, Config, Nvenc, Packet, Profile, Signal, hevc_available, hevc_hdr_available, nal_type};
@@ -58,7 +58,7 @@ fn picture(i: usize) -> Vec<f32> {
 fn planes(rgb: &[f32], signal: &ColorSignal) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (kr, kb) = signal.kr_kb();
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    rgbf_to_yuv420_10(rgb, W, H, kr, kb, &mut y, &mut u, &mut v).expect("convert");
+    rgbf_to_yuv420_10(rgb, W, H, filmcraft_export::Matrix::new(kr, kb), &mut y, &mut u, &mut v).expect("convert");
     (y, u, v)
 }
 

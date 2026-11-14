@@ -7,7 +7,12 @@ use std::ptr;
 use filmcraft_codecs::hw::NalCodec;
 use filmcraft_frame::VideoFrame;
 
-use super::ffi::*;
+use super::ffi::{
+    CUVID_PKT_ENDOFPICTURE, CUVID_PKT_ENDOFSTREAM, CUVID_PKT_TIMESTAMP, CUVIDDECODECAPS, CUVIDDECODECREATEINFO, CUVIDEOFORMAT, CUVIDPARSERDISPINFO,
+    CUVIDPARSERPARAMS, CUVIDPICPARAMS, CUVIDPROCPARAMS, CUVIDSOURCEDATAPACKET, CreateDecoder, CreateVideoParser, DecodePicture, DestroyDecoder,
+    DestroyVideoParser, GetDecoderCaps, MapVideoFrame, ParseVideoData, ShortRect, UnmapVideoFrame, cudaVideoChromaFormat_420, cudaVideoCodec_H264,
+    cudaVideoCodec_HEVC, cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12, cudaVideoSurfaceFormat_P016,
+};
 use crate::biplanar::{Biplanar, Geometry, to_frame};
 use crate::nvenc::device::Device;
 

@@ -54,7 +54,7 @@ fn surround() -> (Arc<Project>, ItemId, SourceMap) {
     let id = p.add_item(
         "tones51",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: "/tones51.wav".into() },
             info: info.clone(),
             interpret: Default::default(),
@@ -64,7 +64,7 @@ fn surround() -> (Arc<Project>, ItemId, SourceMap) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let r = FrameRate::FPS_24;

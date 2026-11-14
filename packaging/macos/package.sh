@@ -58,7 +58,8 @@ echo "==> FilmCraft $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $
 if [[ "$SKIP_BUILD" = 0 ]]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
-  (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli "${args[@]}")
+  # Official packages include Kokoro natural voices (downloaded on first use). #2318 #3773
+  (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli --features filmcraft/neural-voices "${args[@]}")
 fi
 
 rm -rf "$WORK"
@@ -78,6 +79,21 @@ sign() {
   local kc=()
   [[ -n "${MACOS_KEYCHAIN:-}" ]] && kc=(--keychain "$MACOS_KEYCHAIN")
   codesign --force --sign "$IDENTITY" ${kc[@]+"${kc[@]}"} "${ts[@]}" "$@"
+}
+
+# `stapler staple` and `stapler validate` both fetch the ticket from Apple's CloudKit, and a dropped
+# connection there (NSURLErrorDomain -1005, "Error 68") fails them although notarization worked.
+# Both are idempotent, so retry with a pause; a missing or bad ticket still fails every try.
+stapler_retry() {
+  local try
+  for try in 1 2 3 4; do
+    xcrun stapler "$1" "$2" && return 0
+    [[ "$try" = 4 ]] && break
+    echo "stapler $1 failed (try $try of 4); retrying in $((try * 20)) s" >&2
+    sleep $((try * 20))
+  done
+  echo "error: stapler $1 $(basename "$2") failed 4 times" >&2
+  exit 1
 }
 
 notarize() {
@@ -121,8 +137,8 @@ codesign --verify --strict --deep --verbose=2 "$APP"
 if [[ "$NOTARIZE" = 1 ]]; then
   ditto -c -k --keepParent "$APP" "$WORK/FilmCraft-notarize.zip"
   notarize "$WORK/FilmCraft-notarize.zip"
-  xcrun stapler staple "$APP"
-  xcrun stapler validate "$APP"
+  stapler_retry staple "$APP"
+  stapler_retry validate "$APP"
   spctl --assess --type execute -vvv "$APP"
 fi
 
@@ -147,8 +163,8 @@ sign "$DMG"
 codesign --verify --strict --verbose=2 "$DMG"
 if [[ "$NOTARIZE" = 1 ]]; then
   notarize "$DMG"
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  stapler_retry staple "$DMG"
+  stapler_retry validate "$DMG"
   spctl --assess --type open --context context:primary-signature -vvv "$DMG"
 fi
 

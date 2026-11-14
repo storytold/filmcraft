@@ -3,7 +3,9 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::*;
+use super::{
+    Affine, FxCtx, Image, Tick, Vec2, affine_warp, blend_simple, bv, chv, clip_progress, cv, ease, fbm, fv, lin, noise1, offv, over, place, pv, smoothstep,
+};
 use crate::effects::{warp, warp_opt};
 
 /// 3×3 projective matrix, row-major, mapping (x, y, 1).
@@ -242,6 +244,7 @@ pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let cx2 = FxCtx {
             t,
             px_scale: cx.px_scale,
+            mask_scale: cx.mask_scale,
             seconds: cx.seconds + k * span,
             timecode: cx.timecode,
             clip_name: cx.clip_name,

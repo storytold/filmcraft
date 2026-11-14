@@ -256,3 +256,70 @@ fn an_interchange_import_links_media_without_reading_the_files_whole() {
     assert_eq!(s.project.source_size(clip.item), Some((320, 180)), "the file's real size, from its index");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A Final Cut slideshow remains editable offline, survives saving, and renders after relinking.
+#[test]
+fn fcpxml_video_still_can_be_relinked_after_save_and_reopen() {
+    let d = tmp_dir("fcpxml-video-still");
+    let doc = d.join("slides.fcpxml");
+    let xml = r#"<fcpxml version="1.11"><resources>
+      <format id="f" frameDuration="1/30s" width="16" height="16"/>
+      <asset id="a" name="Slide" start="0s" duration="0s" hasVideo="1" format="f">
+        <media-rep kind="original-media" src="slide.png"/>
+      </asset>
+    </resources><project name="Slides"><sequence format="f" tcStart="0s"><spine>
+      <video ref="a" name="Slide" offset="0s" start="3600s" duration="10s"/>
+    </spine></sequence></project></fcpxml>"#;
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let before = filmcraft_format::encode(&s.project, false);
+    let (report, seq) = import(&mut s, &doc);
+    assert_eq!(report["linkedMedia"], 0);
+    assert_eq!(report["offlineMedia"].as_array().unwrap().len(), 1, "{report}");
+    let clip = first_clip(&s, seq);
+    assert_eq!(clip.duration, Tick::from_seconds_f64(10.0));
+    let missing = s.execute("media.linkMedia", json!({})).unwrap();
+    assert_eq!(missing["missing"].as_array().unwrap().len(), 1, "the slideshow must expose a relinkable media item: {missing}");
+    assert_eq!(missing["missing"][0]["status"], "missing");
+    assert_eq!(missing["missing"][0]["item"], clip.item.0);
+    let imported = filmcraft_format::encode(&s.project, false);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&s.project, false), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&s.project, false), imported);
+
+    let saved = d.join("slides.fcproj");
+    s.execute("file.saveAs", json!({"path": saved.to_string_lossy()})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": saved.to_string_lossy()})).unwrap();
+    assert_eq!(first_clip(&reopened, seq).item, clip.item);
+    let waiting = filmcraft_format::encode(&reopened.project, false);
+    let image = d.join("found.png");
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 0, 255])).save(&image).unwrap();
+    let linked = reopened.execute("media.relink", json!({"item": clip.item.0, "path": image.to_string_lossy(), "force": true})).unwrap();
+    assert_eq!(linked["relinked"].as_array().unwrap().len(), 1, "{linked}");
+    let media = reopened.project.item(clip.item).unwrap().as_media().unwrap();
+    assert!(!media.offline);
+    assert_eq!(media.info.kind, filmcraft_media::MediaKind::Still);
+    assert_eq!(first_clip(&reopened, seq).source_in, clip.source_in);
+    let after_link = filmcraft_format::encode(&reopened.project, false);
+    reopened.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&reopened.project, false), waiting);
+    reopened.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(filmcraft_format::encode(&reopened.project, false), after_link);
+    for frame in [0, 150, 299] {
+        let (w, h, rgba) = crate::media_test_util::frame_rgba(&mut reopened, frame, 1.0);
+        assert_eq!((w, h), (16, 16));
+        assert!(rgba.as_chunks::<4>().0.iter().all(|p| *p == [255, 0, 0, 255]), "the relinked still must render for the whole clip");
+    }
+
+    // When the original path exists, normal import links it without a separate relink step.
+    std::fs::copy(&image, d.join("slide.png")).unwrap();
+    let mut online = Session::default();
+    let (report, online_seq) = import(&mut online, &doc);
+    assert_eq!(report["linkedMedia"], 1, "{report}");
+    assert!(report["offlineMedia"].as_array().unwrap().is_empty());
+    assert_eq!(first_clip(&online, online_seq).duration, clip.duration);
+    assert_eq!(crate::media_test_util::frame_rgba(&mut online, 150, 1.0), crate::media_test_util::frame_rgba(&mut reopened, 150, 1.0));
+    let _ = std::fs::remove_dir_all(d);
+}

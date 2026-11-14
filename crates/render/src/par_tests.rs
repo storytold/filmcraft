@@ -48,6 +48,7 @@ fn halves(w: u32, h: u32, par: (u32, u32)) -> Halves {
             has_alpha: false,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: Vec::new(),
         container: "test".into(),
@@ -73,7 +74,7 @@ fn project(src: (u32, u32), src_par: (u32, u32), seq: (u32, u32), seq_par: (u32,
         proxy: None,
         identity: None,
     };
-    let item = p.add_item("halves", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("halves", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let settings = SequenceSettings { width: seq.0, height: seq.1, par: seq_par, frame_rate: FPS, ..Default::default() };
     let sid = p.new_sequence("s", settings, 1, 0, None);
     let mut ti = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(24)), FPS).unwrap();
@@ -141,7 +142,7 @@ fn the_gpu_plan_places_an_anamorphic_clip_like_the_cpu() {
     for scale in [1.0, 0.5] {
         let opts = RenderOptions { scale, ..Default::default() };
         let want = render_sequence(&p, seq, Tick::ZERO, opts, &map);
-        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map));
+        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, plan::DeviceCaps::ALL, &map));
         assert_eq!((got.w, got.h), (want.w, want.h));
         assert_row(&row(&got), &row(&want));
     }
@@ -245,7 +246,7 @@ fn hostile_pixel_aspect_ratios_render_square_without_panicking() {
         // a sequence's ratio (a damaged project): square, so a 4:3-pixel clip fills it
         let r = std::panic::catch_unwind(|| {
             let (p, seq, _, map) = project((144, 108), (4, 3), (192, 108), bad, true);
-            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), &map));
+            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), plan::DeviceCaps::ALL, &map));
             (row(&render(&p, seq, &map)), row(&plan))
         });
         let (cpu, gpu) = r.unwrap_or_default();

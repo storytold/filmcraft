@@ -89,7 +89,7 @@ on the sRGB curve).
 
 ## Grading signal (`grade`)
 
-Lumetri's controls work on a 0…1 signal. `GradeSpace` picks it from the working space:
+Color Grading's controls work on a 0…1 signal. `GradeSpace` picks it from the working space:
 
 | Working space | Signal of working-linear `c` (1.0 = 203 cd/m² in HDR) | 1.0 means |
 |---|---|---|
@@ -97,7 +97,7 @@ Lumetri's controls work on a 0…1 signal. `GradeSpace` picks it from the workin
 | Rec. 2100 PQ | `PQ⁻¹(c·203/10000) / PQ⁻¹(W/10000)` (SMPTE ST 2084) | HDR White `W` cd/m² |
 | Rec. 2100 HLG | `F = c·203/W`, `Y = BT.2020 luma(F)`, `E = F·Y^((1−γ)/γ)`, signal = HLG OETF(E), γ = 1.2 + 0.42·log10(W/1000) (BT.2100 inverse OOTF, note 5f) | display peak `W` |
 
-`W` is Lumetri's HDR White (Basic Correction) or HDR Range (Curves), default 1000 cd/m². HDR
+`W` is Color Grading's HDR White (Basic Correction) or HDR Range (Curves), default 1000 cd/m². HDR
 values above `W` are signals above 1 and are kept (PQ to 10 000 cd/m², HLG to signal 1.5). Checked
 values: PQ 100 / 203 / 1000 cd/m² = 0.508 / 0.581 / 0.752 of the plain PQ signal (BT.2408); HLG on
 a 1000 cd/m² display: 203 cd/m² = 0.75, 26 cd/m² (18 % grey) ≈ 0.38 (BT.2408).

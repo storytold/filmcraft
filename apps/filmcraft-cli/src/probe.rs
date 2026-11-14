@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-fn rate(r: filmcraft_mxf::Rational) -> String {
+fn rate(r: craft_media::mxf::Rational) -> String {
     format!("{}/{}", r.num, r.den)
 }
 
@@ -28,7 +28,7 @@ fn mxf_details(src: &filmcraft_codecs::MxfSource) -> Value {
                 "startPosition": t.start_position,
                 "duration": t.duration,
             });
-            if t.kind == filmcraft_mxf::TrackKind::Picture {
+            if t.kind == craft_media::mxf::TrackKind::Picture {
                 v["pictures"] = json!(t.samples.len());
                 v["keyFrames"] = json!(t.samples.iter().filter(|s| s.key).count());
                 v["indexed"] = json!(t.indexed);
@@ -65,12 +65,12 @@ fn ogg_details(src: &filmcraft_codecs::OggSource) -> Value {
         .iter()
         .map(|s| {
             let mut v = json!({"serial": s.serial, "codec": s.codec.name(), "packets": s.packets.len(), "pages": s.pages, "lastGranule": s.last_granule, "endOfStream": s.saw_eos});
-            if s.codec == filmcraft_ogg::Codec::Opus
+            if s.codec == craft_media::ogg::Codec::Opus
                 && let Some(h) = s.headers.first()
                 && h.len() >= 12
             {
                 let pre_skip = u16::from_le_bytes([h[10], h[11]]);
-                let t = filmcraft_ogg::OpusTiming::of(s, pre_skip as u32);
+                let t = craft_media::ogg::OpusTiming::of(s, pre_skip as u32);
                 v["preSkip"] = json!(pre_skip);
                 v["samples48k"] = json!(t.total);
             }
@@ -91,8 +91,8 @@ fn mpeg_details(src: &filmcraft_codecs::MpegSource) -> Value {
         .enumerate()
         .map(|(i, s)| {
             let id = match s.id {
-                filmcraft_mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
-                filmcraft_mpegts::StreamId::Ps { stream_id, sub_id } => {
+                craft_media::mpegts::StreamId::Pid(pid) => json!({"pid": pid}),
+                craft_media::mpegts::StreamId::Ps { stream_id, sub_id } => {
                     json!({"streamId": format!("0x{stream_id:02x}"), "subStreamId": sub_id.map(|x| format!("0x{x:02x}"))})
                 }
             };
@@ -140,7 +140,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
             std::fs::read_dir(&dir).map_err(|e| format!("{dir}: {e}"))?.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         let frames = sequence_frames(&n, &names);
         let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let loader: filmcraft_media::sequence::FrameLoader = Arc::new(|p: &str| std::fs::read(p));
+        let loader: filmcraft_media::sequence::FrameLoader = Arc::new(|p: &str| filmcraft_media::reader::read_regular_file(std::path::Path::new(p)));
         // the timebase of a fresh install (Settings ▸ Media ▸ Indeterminate Media Timebase)
         let src = ImageSequenceSource::new(&name, frames, filmcraft_time::FrameRate::FPS_29_97, loader).map_err(|e| format!("{path}: {e}"))?;
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();
@@ -153,10 +153,10 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         });
         return Ok(v);
     }
-    let bytes: Arc<[u8]> = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?.into();
+    let bytes: Arc<[u8]> = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?.into();
     let name = std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string());
     let head = &bytes[..bytes.len().min(70_000)];
-    if filmcraft_mxf::sniff(head) {
+    if craft_media::mxf::sniff(head) {
         let src = filmcraft_codecs::MxfSource::open(&name, bytes).map_err(|e| format!("{path}: {e}"))?;
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();
         v["mxf"] = mxf_details(&src);
@@ -168,7 +168,7 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         v["mpeg"] = mpeg_details(&src);
         return Ok(v);
     }
-    if filmcraft_ogg::sniff(head)
+    if craft_media::ogg::sniff(head)
         && let Ok(src) = filmcraft_codecs::OggSource::open(&name, bytes.clone())
     {
         let mut v = serde_json::to_value(filmcraft_media::MediaSource::info(&src)).unwrap_or_default();

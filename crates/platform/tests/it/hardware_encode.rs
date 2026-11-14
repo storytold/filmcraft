@@ -16,8 +16,8 @@ use filmcraft_frame::PixelData;
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{DemoScene, MediaSource};
-use filmcraft_platform::hardware_encode::{config_for, hevc_available, videotoolbox_encoder_factory};
-use filmcraft_platform::videotoolbox_encode::{VtConfig, VtEncoder, VtProfile, VtRate};
+use filmcraft_platform::hardware_encode::{HardwareEncoder, config_for, hevc_available, videotoolbox_encoder_factory};
+use filmcraft_platform::videotoolbox_encode::{VtConfig, VtEncoder, VtInput, VtProfile, VtRate};
 use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_render::SourceMap;
 use filmcraft_time::{FrameRate, Tick, TimeRange};
@@ -98,6 +98,197 @@ fn psnr(a: &[u8], b: &[u8]) -> f64 {
     assert_eq!(a.len(), b.len());
     let mse = a.iter().zip(b).map(|(x, y)| (f64::from(*x) - f64::from(*y)).powi(2)).sum::<f64>() / a.len() as f64;
     if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() }
+}
+
+fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).map(|(x, y)| (f64::from(*x) - f64::from(*y)).abs()).sum::<f64>() / a.len() as f64
+}
+
+/// Decode `packets` (decoding order, no reordering) with our software decoder: every picture's
+/// Y, Cb and Cr planes in presentation order.
+fn decode_planes(entry: &SampleEntry, packets: &[EncodedPacket]) -> Vec<[Vec<u8>; 3]> {
+    let mut dec = filmcraft_codecs::software_video_decoder(entry).expect("software decoder");
+    let mut out = Vec::new();
+    let take = |frames: Vec<filmcraft_codecs::DecodedFrame>, out: &mut Vec<(i64, [Vec<u8>; 3])>| {
+        for f in frames {
+            let PixelData::Yuv8 { planes, .. } = &f.frame.data else { panic!("expected 8-bit planes") };
+            out.push((f.pts, [planes[0].to_vec(), planes[1].to_vec(), planes[2].to_vec()]));
+        }
+    };
+    for (i, p) in packets.iter().enumerate() {
+        take(dec.decode(&p.data, i as i64).expect("decode"), &mut out);
+    }
+    take(dec.flush(), &mut out);
+    out.sort_by_key(|(pts, _)| *pts);
+    out.into_iter().map(|(_, planes)| planes).collect()
+}
+
+/// The sample entry of a session's stream (known once its first frame came out).
+fn entry_of(vt: &VtEncoder) -> SampleEntry {
+    let p = vt.parameter_sets().expect("parameter sets after the first frame");
+    SampleEntry::avc(filmcraft_isobmff::AvcConfig::new(p.sps, p.pps, 4), W as u16, H as u16)
+}
+
+/// RGBA pictures handed to VideoToolbox as they are (`32BGRA`, VideoToolbox converting) encode the
+/// same pictures as the planar path (our own BT.709 limited-range conversion into NV12): every
+/// plane of both decodes is within a few codes of our conversion of the source. A swapped channel,
+/// a full-range conversion, another matrix or a transfer-function conversion would be tens of codes
+/// off in some plane. The hardware output differs between the two paths by rate control and chroma
+/// filtering only, so the quality is compared, not the bytes.
+#[test]
+fn rgba_pictures_encode_like_the_cpu_conversion() {
+    let cfg = config_for(W, H, FPS, &hardware_settings()).expect("a hardware configuration");
+    let Ok(mut rgb) = VtEncoder::with_rgba_input(cfg.clone()) else {
+        eprintln!("SKIPPED: no VideoToolbox hardware H.264 encoder");
+        return;
+    };
+    let mut planar = VtEncoder::new(cfg).expect("the planar session opens where the RGB one does");
+    assert_eq!((rgb.input(), planar.input()), (VtInput::Bgra, VtInput::Nv12));
+    let n = 24u64;
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+    let mut copy = std::time::Duration::ZERO;
+    for i in 0..n {
+        let px = picture(i);
+        match rgb.encode_rgba(i, &px) {
+            Ok((packets, copied)) => {
+                a.extend(packets);
+                copy += copied;
+            }
+            Err(why) => {
+                eprintln!("SKIPPED: this VideoToolbox does not take RGBA pictures ({why})");
+                return;
+            }
+        }
+        rgba_to_yuv420_8(&px, W as usize, H as usize, &mut y, &mut u, &mut v);
+        b.extend(planar.encode(i, &y, &u, &v).expect("planar encode"));
+    }
+    a.extend(rgb.flush().expect("flush"));
+    b.extend(planar.flush().expect("flush"));
+    let a: Vec<EncodedPacket> = a.into_iter().map(|p| EncodedPacket { data: p.data, key: p.key, duration: 1, composition_offset: 0 }).collect();
+    let b: Vec<EncodedPacket> = b.into_iter().map(|p| EncodedPacket { data: p.data, key: p.key, duration: 1, composition_offset: 0 }).collect();
+    assert_eq!((a.len() as u64, b.len() as u64), (n, n));
+    let (da, db) = (decode_planes(&entry_of(&rgb), &a), decode_planes(&entry_of(&planar), &b));
+    assert_eq!((da.len() as u64, db.len() as u64), (n, n));
+    let mut worst = [99.0f64; 3];
+    let mut gap = [0.0f64; 3];
+    let mut apart = [0.0f64; 3];
+    for i in 0..n as usize {
+        rgba_to_yuv420_8(&picture(i as u64), W as usize, H as usize, &mut y, &mut u, &mut v);
+        for (c, reference) in [&y, &u, &v].into_iter().enumerate() {
+            let (pa, pb) = (psnr(&da[i][c], reference), psnr(&db[i][c], reference));
+            worst[c] = worst[c].min(pa);
+            gap[c] = gap[c].max(pb - pa);
+            apart[c] = apart[c].max(mean_abs_diff(&da[i][c], &db[i][c]));
+        }
+    }
+    // The planar path's chroma is our conversion itself (2×2 average), so against that reference it
+    // scores near-perfectly where VideoToolbox's filtered chroma siting scores ~40 dB: the gap is
+    // reported, the bounds are the absolute ones. (M2 Max: Y/Cb/Cr 52 / 41 / 37 dB, paths 0.2 / 0.6 /
+    // 0.8 codes apart; a swapped channel or a range or matrix mistake is tens of codes.)
+    eprintln!(
+        "RGBA input: worst PSNR Y/Cb/Cr {worst:.1?} dB, at most {gap:.1?} dB under the planar path, mean |Δ| between the paths {apart:.2?} codes; copy {:.2} ms a frame",
+        copy.as_secs_f64() * 1000.0 / n as f64
+    );
+    for c in 0..3 {
+        assert!(worst[c] > 30.0, "plane {c}: worst PSNR {:.1} dB against our conversion", worst[c]);
+        assert!(apart[c] < 2.0, "plane {c}: the paths are {:.2} codes apart on average", apart[c]);
+    }
+    assert!(gap[0] < 3.0, "luma {:.1} dB below the planar path", gap[0]);
+}
+
+/// The adapter the factory registers prefers RGB input; the pictures it writes decode at the same quality.
+#[test]
+fn the_encoder_takes_rgba_pictures_where_videotoolbox_converts() {
+    let cfg = config_for(W, H, FPS, &hardware_settings()).expect("a hardware configuration");
+    let Ok(enc) = HardwareEncoder::open(cfg) else {
+        eprintln!("SKIPPED: no VideoToolbox hardware H.264 encoder");
+        return;
+    };
+    assert!(enc.takes_rgba(), "the RGB session is tried first");
+    let mut enc: Box<dyn VideoEncoder> = Box::new(enc);
+    let n = 20u64;
+    let packets = encode_all(&mut enc, n);
+    assert_eq!(packets.len() as u64, n);
+    let decoded = decode(&enc.sample_entry(), &packets);
+    let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+    let mut worst = 99.0f64;
+    for (i, (_, luma)) in decoded.iter().enumerate() {
+        rgba_to_yuv420_8(&picture(i as u64), W as usize, H as usize, &mut y, &mut u, &mut v);
+        worst = worst.min(psnr(&y, luma));
+    }
+    assert!(worst > 30.0, "worst luma PSNR {worst:.1} dB");
+}
+
+/// Hostile RGBA pictures and the wrong kind of picture for a session give errors, never crashes.
+#[test]
+fn rgba_input_refuses_what_does_not_fit() {
+    let cfg = config_for(W, H, FPS, &hardware_settings()).expect("a hardware configuration");
+    let Ok(mut rgb) = VtEncoder::with_rgba_input(cfg.clone()) else {
+        eprintln!("SKIPPED: no VideoToolbox hardware H.264 encoder");
+        return;
+    };
+    let (w, h) = (W as usize, H as usize);
+    assert!(calm("empty", || rgb.encode_rgba(0, &[])).is_err());
+    assert!(calm("short", || rgb.encode_rgba(0, &vec![0; w * h * 4 - 1])).is_err());
+    assert!(calm("planes to an RGB session", || rgb.encode(0, &vec![16; w * h], &vec![128; w * h / 4], &vec![128; w * h / 4])).is_err());
+    let mut planar = VtEncoder::new(cfg).expect("planar session");
+    assert!(calm("RGBA to a planar session", || planar.encode_rgba(0, &vec![0; w * h * 4])).is_err());
+    // a picture larger than its size is fine (the extra bytes are ignored)
+    let _ = calm("long", || rgb.encode_rgba(0, &vec![0; w * h * 4 + 64]));
+    let _ = calm("flush", || rgb.flush());
+}
+
+/// An export at another frame rate than the sequence's (frames are repeated or dropped on the way) and
+/// a cancelled export followed by a complete one in the same process: the hardware path must give the
+/// asked-for frame count, release its sessions and start clean again.
+#[test]
+fn rate_conversion_and_cancel_then_export_again() {
+    filmcraft_platform::register();
+    let probe = ExportSettings { include_audio: false, ..hardware_settings() };
+    if hardware(&probe, W, H).is_none() {
+        return;
+    }
+    let (frames, (p, seq, m)) = (60i64, project(60));
+    // 60 frames at 30 fps become 120 at 60 fps and 50 at 25 fps
+    for (rate, want) in [(FrameRate::FPS_60, 120usize), (FrameRate::FPS_25, 50)] {
+        let path = tmp(&format!("rate-{}.mp4", rate.num));
+        let s = ExportSettings { path: path.clone(), frame_rate: Some(rate), ..probe.clone() };
+        let report = export(&p, seq, &s, &m, &Progress::default()).expect("export");
+        assert_eq!(report.frames as usize, want, "{rate:?}");
+        let (samples, pictures, _) = inspect(&path);
+        assert_eq!((samples, pictures), (want, want), "{rate:?}");
+    }
+    // cancel from another thread once a few frames are done
+    let before = hw_encode_stats();
+    let path = tmp("cancelled.mp4");
+    let s = ExportSettings { path: path.clone(), ..probe.clone() };
+    let progress = Progress::default();
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while progress.done.load(std::sync::atomic::Ordering::Relaxed) < 8 && !progress.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        export(&p, seq, &s, &m, &progress)
+    });
+    match result {
+        Err(filmcraft_export::ExportError::Cancelled) => {}
+        Ok(r) => eprintln!("the export finished before the cancel landed ({} frames)", r.frames),
+        Err(e) => panic!("a cancelled export must report Cancelled or finish, not {e}"),
+    }
+    // and the next export in the same process is complete
+    let path = tmp("after-cancel.mp4");
+    let s = ExportSettings { path: path.clone(), ..probe };
+    let report = export(&p, seq, &s, &m, &Progress::default()).expect("export after a cancel");
+    assert_eq!(report.frames, frames as u64);
+    let (samples, pictures, _) = inspect(&path);
+    assert_eq!((samples, pictures), (frames as usize, frames as usize));
+    let after = hw_encode_stats();
+    assert!(after.sessions >= before.sessions + 2, "both exports opened a hardware session");
+    assert_eq!(after.declined, before.declined, "nothing was declined to the software encoder");
 }
 
 #[test]
@@ -196,7 +387,7 @@ fn project(frames: i64) -> (Arc<Project>, filmcraft_project::ItemId, SourceMap) 
     let item = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -206,7 +397,7 @@ fn project(frames: i64) -> (Arc<Project>, filmcraft_project::ItemId, SourceMap) 
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: FPS, ..Default::default() }, 1, 1, None);

@@ -56,6 +56,139 @@ fn marked_range_places_video_audio_or_linked_both_as_one_undo_step() {
     }
 }
 
+/// `sourceIn` and `duration` accept the same time objects as `time`, and mean the same range as
+/// the equivalent ticks.
+#[test]
+fn place_source_range_in_seconds_equals_ticks() {
+    let place = |source_in: serde_json::Value, duration: serde_json::Value| {
+        let mut s = setup();
+        s.execute("timeline.place", json!({"item":5,"track":"V1","time":0,"sourceIn":source_in,"duration":duration,"audio":false})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        (clip.source_in, clip.duration)
+    };
+    let (sin, dur) = (Tick::from_seconds_f64(1.0), Tick::from_seconds_f64(2.0));
+    let by_ticks = place(json!(sin.0), json!(dur.0));
+    assert_eq!(by_ticks.0, sin);
+    assert_eq!(place(json!({"seconds": 1.0}), json!({"seconds": 2.0})), by_ticks);
+    assert_eq!(place(json!({"seconds": 1.0}), json!(dur.0)), by_ticks);
+    assert_eq!(place(json!(sin.0), json!({"seconds": 2.0})), by_ticks);
+}
+
+/// `frame` and `timecode` objects read against the rate of the thing they measure: `sourceIn` the
+/// item's, `duration` the sequence's.
+#[test]
+fn place_source_range_in_frames_and_timecode_equals_ticks() {
+    let place = |source_in: serde_json::Value, duration: serde_json::Value| {
+        let mut s = setup();
+        s.execute("timeline.place", json!({"item":5,"track":"V1","time":0,"sourceIn":source_in,"duration":duration,"audio":false})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        (clip.source_in, clip.duration)
+    };
+    let s = setup();
+    let item_rate = s.project.item(ItemId(5)).unwrap().frame_rate();
+    let seq_rate = s.sequence_rate();
+    let (sin, dur) = (item_rate.tick_of(12), seq_rate.tick_of(48));
+    let by_ticks = place(json!(sin.0), json!(dur.0));
+    assert_eq!(by_ticks.0, sin);
+    assert_eq!(place(json!({"frame": 12}), json!({"frame": 48})), by_ticks);
+    assert_eq!(place(json!({"time": sin.0}), json!({"time": dur.0})), by_ticks);
+    assert_eq!(place(json!(sin.0), json!({"timecode": "00:00:02:00"})), by_ticks, "48 frames at 24 fps");
+}
+
+/// A `sourceIn` or `duration` that is neither ticks nor a time object (or is negative) is refused
+/// before anything changes, also when `track` or `audioTrack` is `"new"`: no new track, the same
+/// revision, and the redo history intact.
+#[test]
+fn place_malformed_source_range_is_refused_before_any_change() {
+    for (key, bad) in [
+        ("sourceIn", json!("1s")),
+        ("sourceIn", json!({"seconds": "x"})),
+        ("sourceIn", json!({})),
+        ("sourceIn", json!({"bogus": 1})),
+        ("sourceIn", json!(1.5)),
+        ("sourceIn", json!(true)),
+        ("sourceIn", json!(-1)),
+        ("sourceIn", json!({"seconds": -1.0})),
+        ("duration", json!("2s")),
+        ("duration", json!({"seconds": "x"})),
+        ("duration", json!({"timecode": "nope"})),
+        ("duration", json!([1])),
+        ("duration", json!(-1)),
+        ("duration", json!({"frame": -24})),
+    ] {
+        // a placement undone: the redo history holds something worth keeping
+        let mut s = setup();
+        s.execute("timeline.place", json!({"item":5,"track":"V1","time":0})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+        assert!(redo >= 1);
+        let before = s.project.to_json();
+        let (nv, na) = (s.active_sequence().unwrap().video_tracks.len(), s.active_sequence().unwrap().audio_tracks.len());
+        let revision = s.revision;
+
+        for tracks in [
+            json!({"track":"V1","audio":false}),
+            json!({"track":"new","audio":false}),
+            json!({"audioTrack":"new","video":false}),
+            json!({"track":"new","audioTrack":"new"}),
+        ] {
+            let mut p = json!({"item":5,"time":0});
+            for (k, v) in tracks.as_object().into_iter().flatten() {
+                p[k.as_str()] = v.clone();
+            }
+            p[key] = bad.clone();
+            assert!(s.execute("timeline.place", p).is_err(), "{key} = {bad} with {tracks}");
+            let q = s.active_sequence().unwrap();
+            assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (nv, na), "{key} = {bad} with {tracks}: no track added");
+            assert_eq!(counts(&s), (0, 0));
+            assert_eq!(s.project.to_json(), before, "{key} = {bad} with {tracks}");
+            assert_eq!(s.revision, revision, "{key} = {bad} with {tracks}: revision");
+            assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{key} = {bad} with {tracks}: history");
+        }
+    }
+}
+
+/// Parameters that are wrong in other ways (stream flags, a negative `time`, a track that does not
+/// exist) are refused before the `"new"` track is added as well.
+#[test]
+fn place_on_new_track_with_other_bad_params_changes_nothing() {
+    let mut s = setup();
+    s.execute("timeline.place", json!({"item":5,"track":"V1","time":0})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+    let before = s.project.to_json();
+    let revision = s.revision;
+    for params in [
+        json!({"item":5,"track":"new","audioTrack":"new","time":0,"video":"yes"}),
+        json!({"item":5,"track":"new","audioTrack":"new","time":0,"audio":2}),
+        json!({"item":5,"track":"new","audioTrack":"new","time":0,"video":false,"audio":false}),
+        json!({"item":5,"track":"new","audioTrack":"new","time":-1}),
+        json!({"item":5,"track":"new","audioTrack":"A99","time":0}),
+        json!({"item":5,"track":"V99","audioTrack":"new","time":0}),
+        json!({"item":999_999,"track":"new","time":0}),
+    ] {
+        assert!(s.execute("timeline.place", params.clone()).is_err(), "{params}");
+        assert_eq!(s.project.to_json(), before, "{params}");
+        assert_eq!(s.revision, revision, "{params}: revision");
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{params}: history");
+    }
+}
+
+/// A placement that only fails after the new track was added (a track of the wrong kind) is rolled
+/// back whole: the project, the undo history and the redo history are as before.
+#[test]
+fn place_on_new_track_rolls_back_a_late_failure() {
+    let mut s = setup();
+    s.execute("timeline.place", json!({"item":5,"track":"V1","time":0})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+    let before = s.project.to_json();
+    // `audioTrack` names a video track: only known once the tracks exist
+    assert!(s.execute("timeline.place", json!({"item":5,"track":"new","audioTrack":"V1","time":0})).is_err());
+    assert_eq!(s.project.to_json(), before);
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo));
+}
+
 #[test]
 fn invalid_stream_choices_and_locked_destinations_do_not_mutate_project() {
     let mut s = setup();
@@ -90,6 +223,20 @@ fn subclip_session(video: bool, audio: bool) -> (Session, ItemId) {
         s.execute("file.newOfflineFile", json!({"name":"Parent","video":video,"audio":audio,"fps":24,"seconds":10})).unwrap()["item"].as_u64().unwrap();
     let sub = s.execute("clip.makeSubclip", json!({"item":parent,"startFrame":10,"endFrame":60})).unwrap()["item"].as_u64().unwrap();
     (s, ItemId(sub))
+}
+
+/// A subclip's `sourceIn` frame / timecode counts frames of the parent media (24 fps here), not
+/// the subclip's own default rate (23.976), the same as the Source monitor's marks.
+#[test]
+fn place_subclip_source_in_frames_use_the_parent_media_rate() {
+    let (mut s, sub) = subclip_session(true, false);
+    let ItemKind::Subclip { parent, .. } = s.project.item(sub).unwrap().kind else { panic!("expected a subclip") };
+    let want = s.project.item(parent).unwrap().frame_rate().tick_of(25);
+    s.execute("timeline.place", json!({"item":sub.0,"track":"V1","time":0,"sourceIn":{"frame":25}})).unwrap();
+    s.execute("timeline.place", json!({"item":sub.0,"track":"V1","time":want.0 * 10,"sourceIn":{"timecode":"00:00:01:01"}})).unwrap();
+    let items = &s.active_sequence().unwrap().video_tracks[0].items;
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|c| c.source_in == want), "{:?} != {want:?}", items.iter().map(|c| c.source_in).collect::<Vec<_>>());
 }
 
 fn assert_subclip_placement(s: &Session, item: ItemId, expected: (usize, usize)) {
@@ -238,4 +385,48 @@ fn inspect_duration_frames_counts_a_partial_last_frame_like_export() {
     let frames = s.execute("export.resolve", json!({})).unwrap()["frames"].clone();
     assert_eq!(js["durationFrames"], frames);
     assert_eq!(frames, 49);
+}
+
+/// Video and audio tracks of the active sequence that hold a clip.
+fn filled_tracks(s: &Session) -> (usize, usize) {
+    let q = s.active_sequence().unwrap();
+    (q.video_tracks.iter().filter(|t| !t.items.is_empty()).count(), q.audio_tracks.iter().filter(|t| !t.items.is_empty()).count())
+}
+
+/// #1887: the Timeline's drop preview draws `placement_lanes` tracks, so they must be the tracks
+/// `timeline.place` fills, for every way an item can spread over several tracks.
+#[test]
+fn placement_lanes_are_the_tracks_a_placement_fills() {
+    let full = |s: &Session, item: ItemId| TimeRange::new(Tick::ZERO, s.project.item(item).unwrap().duration());
+    // picture and sound, either one alone
+    for (video, audio) in [(true, true), (true, false), (false, true)] {
+        let mut s = setup();
+        let lanes = s.placement_lanes(ItemId(5), full(&s, ItemId(5)), video, audio);
+        s.execute("timeline.place", json!({"item":5,"track":"V1","audioTrack":"A1","time":0,"video":video,"audio":audio})).unwrap();
+        assert_eq!(lanes, filled_tracks(&s), "video {video}, audio {audio}");
+    }
+    // Modify ▸ Audio Channels with two clips, and a second container audio stream: three audio tracks
+    let mut s = setup();
+    let m = std::sync::Arc::make_mut(&mut s.project).item_mut(ItemId(5)).unwrap().as_media_mut().unwrap();
+    m.info.audio_streams.push(m.info.audio_streams[0].clone());
+    m.interpret.audio_channels = Some(filmcraft_project::AudioChannelMap { format: filmcraft_project::AudioChannels::Mono, clips: vec![vec![1], vec![0]] });
+    let lanes = s.placement_lanes(ItemId(5), full(&s, ItemId(5)), true, true);
+    assert_eq!(lanes, (1, 3));
+    s.execute("timeline.place", json!({"item":5,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    // the nest toggle off: a sequence edits in as its clips, one track per source track with clips
+    let mut s = setup();
+    let active = s.state.active_sequence;
+    let demo = s.project.items.values().find(|i| i.as_sequence().is_some() && Some(i.id) != active).map(|i| i.id).unwrap();
+    s.execute("sequence.nestSequences", json!({"on": false})).unwrap();
+    let lanes = s.placement_lanes(demo, full(&s, demo), true, true);
+    assert!(lanes.0 > 1 && lanes.1 > 0, "the demo sequence spans several tracks: {lanes:?}");
+    s.execute("timeline.place", json!({"item":demo.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    // nested, the same sequence is one clip per kind
+    let mut s = setup();
+    let lanes = s.placement_lanes(demo, full(&s, demo), true, true);
+    s.execute("timeline.place", json!({"item":demo.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
+    assert_eq!(lanes, filled_tracks(&s));
+    assert_eq!(lanes, (1, 1));
 }

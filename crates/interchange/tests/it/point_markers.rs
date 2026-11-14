@@ -54,10 +54,13 @@ fn point_roundtrips_through_the_one_frame_convention() {
     let mut p = Project::new("Lib");
     let a = media(&mut p, "/m/a.mov", true, true, r);
     let s = sequence(&mut p, "Cut", r, false);
-    clip(&mut p, s, TrackKind::Video, 0, a, 0, 240, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..240, 0);
     {
         let q = p.sequence_mut(s).unwrap();
         q.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(1),
             start: r.tick_of(24),
             duration: Tick::ZERO,
@@ -67,6 +70,9 @@ fn point_roundtrips_through_the_one_frame_convention() {
             color: Label::Blue,
         });
         q.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(2),
             start: r.tick_of(48),
             duration: r.tick_of(5),

@@ -131,8 +131,8 @@ fn nc_of(a: Option<u8>, b: Option<u8>) -> i32 {
     }
 }
 
-/// Write the macroblock layer in CAVLC. For P/B slices the caller writes mb_skip_run first.
-pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
+/// mb_type (and the P_8x8 sub_mb_types).
+fn write_mb_type(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
     let intra_base = match nb.slice_type {
         SliceType::I => 0,
         SliceType::P => 5,
@@ -159,20 +159,89 @@ pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
             w.write_ue(0);
         }
     }
+}
+
+/// prev_intra_NxN_pred_mode flags / rem_intra_NxN_pred_mode values.
+fn write_intra_pred_modes(w: &mut BitWriter, c: &MbCode) {
+    let n = if c.t8x8 { 4 } else { 16 };
+    for i in 0..n {
+        let p = c.ipred[i];
+        if p < 0 {
+            w.write_bit(true);
+        } else {
+            w.write_bit(false);
+            w.write_bits(p as u32, 3);
+        }
+    }
+}
+
+/// coded_block_pattern.
+fn write_cbp(w: &mut BitWriter, c: &MbCode) {
+    let code = if c.kind.is_intra() { CBP_INTRA_TO_CODE[c.cbp as usize] } else { CBP_INTER_TO_CODE[c.cbp as usize] };
+    let cbp_idx = (c.cbp & 15) | ((c.cbp >> 4) << 4);
+    debug_assert_eq!(cbp_idx, c.cbp);
+    w.write_ue(code as u32);
+}
+
+/// Luma residual blocks of the macroblock.
+fn write_luma_residual(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
+    let luma_nc = |r: usize| nc_of(nb.luma_nnz(r, true), nb.luma_nnz(r, false));
+    if c.kind == MbKind::I16x16 {
+        write_residual(w, &c.luma_dc, luma_nc(0));
+        if c.cbp & 15 != 0 {
+            for blk in 0..16 {
+                let (x, y) = BLK4_XY[blk];
+                write_residual(w, &c.luma4[blk][1..16], luma_nc(y * 4 + x));
+            }
+        }
+        return;
+    }
+    for b8 in 0..4 {
+        if (c.cbp >> b8) & 1 == 0 {
+            continue;
+        }
+        for i in 0..4 {
+            let blk = b8 * 4 + i;
+            let (x, y) = BLK4_XY[blk];
+            if c.t8x8 {
+                let mut sub = [0i16; 16];
+                for k in 0..16 {
+                    sub[k] = c.luma8[b8][4 * k + i];
+                }
+                write_residual(w, &sub, luma_nc(y * 4 + x));
+            } else {
+                write_residual(w, &c.luma4[blk], luma_nc(y * 4 + x));
+            }
+        }
+    }
+}
+
+/// Chroma DC / AC residual blocks of the macroblock.
+fn write_chroma_residual(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
+    let chroma = c.cbp >> 4;
+    if chroma != 0 {
+        for comp in 0..2 {
+            write_residual(w, &c.cdc[comp], -1);
+        }
+    }
+    if chroma == 2 {
+        for comp in 0..2 {
+            for b in 0..4 {
+                let ncv = nc_of(nb.chroma_nnz(comp, b, true), nb.chroma_nnz(comp, b, false));
+                write_residual(w, &c.cac[comp * 4 + b][1..16], ncv);
+            }
+        }
+    }
+}
+
+/// Write the macroblock layer in CAVLC. For P/B slices the caller writes mb_skip_run first.
+pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
+    write_mb_type(w, nb, c);
     if c.kind.is_inxn() {
         if nb.t8x8_mode {
             w.write_bit(c.t8x8);
         }
-        let n = if c.t8x8 { 4 } else { 16 };
-        for i in 0..n {
-            let p = c.ipred[i];
-            if p < 0 {
-                w.write_bit(true);
-            } else {
-                w.write_bit(false);
-                w.write_bits(p as u32, 3);
-            }
-        }
+        write_intra_pred_modes(w, c);
     }
     if c.kind.is_intra() {
         w.write_ue(c.chroma_mode as u32);
@@ -188,10 +257,7 @@ pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
         }
     }
     if c.kind != MbKind::I16x16 {
-        let code = if c.kind.is_intra() { CBP_INTRA_TO_CODE[c.cbp as usize] } else { CBP_INTER_TO_CODE[c.cbp as usize] };
-        let cbp_idx = (c.cbp & 15) | ((c.cbp >> 4) << 4);
-        debug_assert_eq!(cbp_idx, c.cbp);
-        w.write_ue(code as u32);
+        write_cbp(w, c);
         if c.cbp & 15 != 0 && nb.t8x8_mode && !c.kind.is_inxn() {
             w.write_bit(c.t8x8);
         }
@@ -200,49 +266,8 @@ pub fn write_mb(w: &mut BitWriter, nb: &NbCtx, c: &MbCode) {
         return;
     }
     w.write_se(c.qp_delta);
-    let luma_nc = |r: usize| nc_of(nb.luma_nnz(r, true), nb.luma_nnz(r, false));
-    if c.kind == MbKind::I16x16 {
-        write_residual(w, &c.luma_dc, luma_nc(0));
-        if c.cbp & 15 != 0 {
-            for blk in 0..16 {
-                let (x, y) = BLK4_XY[blk];
-                write_residual(w, &c.luma4[blk][1..16], luma_nc(y * 4 + x));
-            }
-        }
-    } else {
-        for b8 in 0..4 {
-            if (c.cbp >> b8) & 1 == 0 {
-                continue;
-            }
-            for i in 0..4 {
-                let blk = b8 * 4 + i;
-                let (x, y) = BLK4_XY[blk];
-                if c.t8x8 {
-                    let mut sub = [0i16; 16];
-                    for k in 0..16 {
-                        sub[k] = c.luma8[b8][4 * k + i];
-                    }
-                    write_residual(w, &sub, luma_nc(y * 4 + x));
-                } else {
-                    write_residual(w, &c.luma4[blk], luma_nc(y * 4 + x));
-                }
-            }
-        }
-    }
-    let chroma = c.cbp >> 4;
-    if chroma != 0 {
-        for comp in 0..2 {
-            write_residual(w, &c.cdc[comp], -1);
-        }
-    }
-    if chroma == 2 {
-        for comp in 0..2 {
-            for b in 0..4 {
-                let ncv = nc_of(nb.chroma_nnz(comp, b, true), nb.chroma_nnz(comp, b, false));
-                write_residual(w, &c.cac[comp * 4 + b][1..16], ncv);
-            }
-        }
-    }
+    write_luma_residual(w, nb, c);
+    write_chroma_residual(w, nb, c);
 }
 
 #[cfg(test)]

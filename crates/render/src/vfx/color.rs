@@ -5,7 +5,7 @@ use filmcraft_project::EffectInstance;
 use filmcraft_project::effect::LIGHT_IDS;
 use rayon::prelude::*;
 
-use super::*;
+use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, cv, dec, enc, fv, lin, luma, pv, smoothstep};
 
 /// Lighting Effects: up to five directional / omni / spot lights, ambience, gloss and a bump map
 /// from the layer's own luminance.
@@ -296,11 +296,25 @@ pub fn cineon(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let iw = fv(e, "white_internal", cx) / 255.0;
     let gamma = fv(e, "gamma", cx).max(0.1);
     let roll = fv(e, "rolloff", cx) / 255.0;
-    img.map_rgb(|c, _, _| dec(enc(c).map(|v| cineon_value(v, mode, black, white, ib, iw, gamma, roll))));
+    let cin = CineonParams { mode, black, white, ib, iw, gamma, roll };
+    img.map_rgb(|c, _, _| dec(enc(c).map(|v| cineon_value(v, &cin))));
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cineon_value(v: f32, mode: u32, black: f32, white: f32, ib: f32, iw: f32, gamma: f32, roll: f32) -> f32 {
+/// Cineon conversion settings: direction (`mode`), 10-bit black and white points, the internal
+/// black and white, film gamma and highlight rolloff.
+#[derive(Clone, Copy)]
+pub(crate) struct CineonParams {
+    pub mode: u32,
+    pub black: f32,
+    pub white: f32,
+    pub ib: f32,
+    pub iw: f32,
+    pub gamma: f32,
+    pub roll: f32,
+}
+
+pub(crate) fn cineon_value(v: f32, p: &CineonParams) -> f32 {
+    let CineonParams { mode, black, white, ib, iw, gamma, roll } = *p;
     let k = 0.002 / 0.6;
     let offset = 10f32.powf((black - white) * k);
     match mode {

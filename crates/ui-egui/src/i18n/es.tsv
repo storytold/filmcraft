@@ -11,7 +11,7 @@
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Spanish video-editing vocabulary (pista, cabezal, secuencia, bandeja, procesar…). No proprietary
 # localisation resource, string table or product UI was consulted or copied; add entries the same
-# way. Product and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS…) keep their
+# way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. "video" is written without an accent, as in the rest of this catalog.
 
 	About FilmCraft	Acerca de FilmCraft
@@ -69,6 +69,10 @@
 	Captions and Graphics	Subtítulos y gráficos
 	Captions…	Subtítulos…
 	Caribbean	Caribe
+	Center at Cut	Centrado en el corte
+	Start at Cut	Inicio en el corte
+	End at Cut	Fin en el corte
+	Custom Start	Inicio personalizado
 	Center Horizontally	Centrar horizontalmente
 	Center Vertically	Centrar verticalmente
 	Cerulean	Cerúleo
@@ -198,8 +202,8 @@
 	Refresh Changed Media	Actualizar medios cambiados
 	Linked Selection	Selección vinculada
 	Lock Guides	Bloquear guías
-	Lumetri Color	Color Lumetri
-	Lumetri Scopes	Ámbitos Lumetri
+	Color Grading	Gradación de color
+	Video Scopes	Medidores de vídeo
 	Magnification	Ampliación
 	Make Offline…	Desconectar…
 	Make Subclip…	Crear subclip…
@@ -452,9 +456,12 @@
 	Recover	Recuperar
 	Not Now	Ahora no
 	Are you sure you want to discard your changes to '{file}'?	¿Seguro que quieres descartar los cambios en '{file}'?
+	Replace File	Reemplazar archivo
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” ya existe en “{folder}”. ¿Quieres reemplazarlo?
+	Replace	Reemplazar
 	Yes	Sí
 	No	No
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos en cualquier parte de la ventana o elige un origen abajo.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos o carpetas en cualquier parte de la ventana o elige un origen abajo.
 	Browse files…	Examinar archivos…
 	Movies, audio and stills from disk	Películas, audio e imágenes fijas del disco
 	Demo footage	Material de demostración
@@ -898,7 +905,7 @@
 	Clip Volume	Volumen del clip
 	(no clip selected)	(ningún clip seleccionado)
 	Master · {name}	Maestro · {name}
-	Add Lumetri Color to clip	Añadir Color Lumetri al clip
+	Add Color Grading to clip	Añadir gradación de color al clip
 	Input LUT	LUT de entrada
 	Color	Color
 	Temperature	Temperatura
@@ -999,7 +1006,6 @@
 	Eyedropper (pick a color from the Program monitor)	Cuentagotas (tomar un color del monitor de programa)
 	Eyedropper: no picture to sample	Cuentagotas: no hay imagen de la que tomar el color
 	Add/Remove Keyframe	Añadir/quitar fotograma clave
-	Temporal Interpolation	Interpolación temporal
 	Linear	Lineal
 	Bezier	Bézier
 	Auto Bezier	Bézier automático
@@ -1048,6 +1054,7 @@
 	All Caps	Todo mayúsculas
 	Small Caps	Versalitas
 	Underline	Subrayado
+	Strikethrough	Tachado
 	OpenType	OpenType
 	Kerning	Ajuste entre pares
 	Ligatures	Ligaduras
@@ -1188,7 +1195,7 @@
 	New Bin	Nueva bandeja
 	Find	Buscar
 	Automate to Sequence	Automatizar a secuencia
-	Select items to clear	Selecciona los elementos que quieres borrar
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Selecciona un clip (o un clip vinculado) en la línea de tiempo, o un elemento en el panel Proyecto, para cambiarle el nombre
 	User Order	Orden del usuario
 	Descending	Descendente
 	Refresh Project	Actualizar proyecto
@@ -1677,7 +1684,7 @@
 	Elliptical	Elíptico
 	Emboss	Relieve
 	Enable HSL Secondary	Activar HSL secundaria
-	Enable Mercury Transmit	Activar Mercury Transmit
+	Enable External Video Output	Activar salida de vídeo externa
 	Enable ProRes hardware accelerated encoding, if available	Activar la codificación ProRes acelerada por hardware, si está disponible
 	Enable clip and XMP metadata linking	Activar la vinculación de metadatos de clip y XMP
 	Enable developer mode	Activar el modo de desarrollador
@@ -1745,7 +1752,7 @@
 	Focus Size	Tamaño del foco
 	Fold Motion	Movimiento de plegado
 	Foldback	Retorno
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para los parámetros de gestión del color, ve a la pestaña Ajustes del panel Color Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Para los parámetros de gestión del color, vaya a la pestaña Ajustes del panel Gradación de color.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Cuatro ámbitos (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Cuatro ámbitos (YUV, coma flotante, sin limitar)
@@ -2016,7 +2023,7 @@
 	Luma Key	Incrustación de luminancia
 	Luma Source	Origen de luminancia
 	Luma and Chroma	Luminancia y croma
-	Lumetri Presets	Ajustes preestablecidos de Lumetri
+	Color Grading Presets	Ajustes preestablecidos de gradación de color
 	Luminance	Luminancia
 	Luminance Threshold	Umbral de luminancia
 	Luminosity	Luminosidad
@@ -3000,6 +3007,9 @@
 	AAC Audio	AAC Audio
 	AAC Audio 48 kHz 320 kbps	AAC Audio 48 kHz 320 kbps
 	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	Audio MPEG-4 (.m4a), estéreo, AAC-LC de 48 kHz a 320 kbps
+	MP3	MP3
+	MP3 48 kHz 320 kbps	MP3 48 kHz 320 kbps
+	MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps	Audio MPEG (.mp3), estéreo conjunto de 48 kHz a 320 kbps
 	AIFF	AIFF
 	AIFF 48 kHz 16-bit	AIFF 48 kHz 16 bits
 	AIFF, stereo 48 kHz 16-bit PCM	AIFF, estéreo, PCM de 48 kHz y 16 bits
@@ -3138,7 +3148,6 @@
 	Left align text	Alinear texto a la izquierda
 	Looping GIF, 640×360 at 15 fps	GIF en bucle, 640×360 a 15 fps
 	Lower First	Inferior primero
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3472,6 +3481,7 @@
 	Clip Speed / Duration	Velocidad/duración del clip
 	Speed:	Velocidad:
 	Reverse Speed	Invertir velocidad
+	Maintain Audio Pitch	Mantener tono del audio
 	Ripple Edit, Shifting Trailing Clips	Edición de rizo, desplazando los clips posteriores
 	About	Acerca de
 	Contributors	Colaboradores
@@ -3607,6 +3617,7 @@
 	The default graphics are used from the next start.	Los gráficos predeterminados se usarán a partir del próximo inicio.
 	DirectX 12 only	Solo DirectX 12
 	software rendering	procesamiento por software
+	integrated GPU	GPU integrada
 	Label Color Presets	Ajustes preestablecidos de color de etiqueta
 	{name} (Modified)	{name} (modificado)
 	Revert to the preset's colors and names	Volver a los colores y nombres del ajuste preestablecido
@@ -3614,7 +3625,6 @@
 	Export the labels to a preset file…	Exportar las etiquetas a un archivo de ajuste preestablecido…
 	Show the presets folder	Mostrar la carpeta de ajustes preestablecidos
 	Delete this preset	Eliminar este ajuste preestablecido
-	Opens in your web browser: {url}	Se abre en el navegador web: {url}
 	Saves this session's log and shows it in your file manager.	Guarda el registro de esta sesión y lo muestra en el explorador de archivos.
 	Shows a report on this computer.	Muestra un informe sobre este equipo.
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
@@ -3626,5 +3636,122 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Editar marcador…
+	In:	Entrada:
+	Marker Color:	Color del marcador:
+	Options:	Opciones:
+	Comment Marker	Marcador de comentario
+	Chapter Marker	Marcador de capítulo
+	Segmentation Marker	Marcador de segmentación
+	Web Link	Vínculo web
+	Flash Cue Point	Punto de referencia Flash
+	Invalid duration: {error}	Duración no válida: {error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
+	Enter a positive duration within the supported speed range.	Introduce una duración positiva dentro del rango de velocidad admitido.
+	Show Video Names	Mostrar nombres de vídeo
+	Show Audio Names	Mostrar nombres de audio
+	Video Names	Nombres de vídeo
+	Audio Names	Nombres de audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	El servidor de control está desactivado: FILMCRAFT_CONTROL_TOKEN debe contener 64 caracteres hexadecimales aleatorios (ver docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Clip Mismatch Warning dialog.
+	Clip Mismatch Warning	Aviso de discrepancia de clip
+	This clip does not match the sequence settings.	Este clip no coincide con los ajustes de la secuencia.
+	Clip: {settings}	Clip: {settings}
+	Sequence: {settings}	Secuencia: {settings}
+	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
+	Change Sequence Settings	Cambiar ajustes de secuencia
+	Keep Existing Settings	Mantener los ajustes actuales
+	Temporal Interpolation	Interpolación temporal
+	Select items to clear	Selecciona los elementos que quieres borrar
+	Opens in your web browser: {url}	Se abre en el navegador web: {url}
+	A range marker needs a positive duration	Un marcador de rango necesita una duración positiva
+	Add Custom Color	Añadir color personalizado
+	Add and apply	Añadir y aplicar
+	Add color	Añadir color
+	Add custom color	Añadir color personalizado
+	Add custom color…	Añadir color personalizado…
+	Author	Autor
+	Chapter	Capítulo
+	Choose Color…	Elegir color…
+	Choose color with system picker	Elegir color con el selector del sistema
+	Color picker	Selector de color
+	Color selected markers	Cambiar el color de los marcadores seleccionados
+	Custom Color…	Color personalizado…
+	Delete Marker	Eliminar marcador
+	Delete selected markers	Eliminar los marcadores seleccionados
+	Edit Custom Color	Editar color personalizado
+	Edit Marker	Editar marcador
+	Edit color	Editar color
+	Editing or removing a swatch leaves assigned colors unchanged.	Editar o eliminar una muestra no cambia los colores asignados.
+	Enter six hex digits, for example FF80C0.	Introduce seis dígitos hexadecimales, por ejemplo FF80C0.
+	Hex	Hex
+	Hex color	Color hexadecimal
+	Manage Colors	Gestionar colores
+	Manage Colors…	Gestionar colores…
+	Marker owner is unavailable	El propietario del marcador no está disponible
+	No markers	No hay marcadores
+	No matching markers	No hay marcadores coincidentes
+	No saved colors	No hay colores guardados
+	No sequence open	No hay ninguna secuencia abierta
+	No source clip open	No hay ningún clip de origen abierto
+	Notes	Notas
+	Project Colors	Colores del proyecto
+	Range marker	Marcador de rango
+	Remove saved color	Eliminar color guardado
+	Save color	Guardar color
+	Search markers	Buscar marcadores
+	Search name, notes, author	Buscar nombre, notas o autor
+	Select all	Seleccionar todo
+	Select all visible markers	Seleccionar todos los marcadores visibles
+	Sequence: {name}	Secuencia: {name}
+	Source: {name}	Origen: {name}
+	Source: {name} (shared source markers)	Origen: {name} (marcadores de origen compartidos)
+	System color picker unavailable: {error}	El selector de color del sistema no está disponible: {error}
+	Time is outside the supported range	El tiempo está fuera del rango admitido
+	{count} selected	{count} seleccionados
+	Remove Custom Color	Eliminar color personalizado
+	Edit Markers	Editar marcadores
+	Delete Markers	Eliminar marcadores
+	Marker changed or was removed. Reopen it to continue.	El marcador cambió o se eliminó. Ábrelo de nuevo para continuar.
+	URL	URL
+	Open Link	Abrir enlace
+	Opens this address in your web browser	Abre esta dirección en tu navegador web
+	Enter a valid HTTP or HTTPS URL without credentials	Introduce una URL HTTP o HTTPS válida sin credenciales
+	Previous	Anterior
+	Next	Siguiente
+	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF
+	Open Presets Folder	Abrir carpeta de ajustes preestablecidos
+	Scan Presets Folder	Escanear carpeta de ajustes preestablecidos
+	From preset file:	Desde archivo de ajustes preestablecidos:
+	No presets folder: the app has no data directory	No hay carpeta de ajustes preestablecidos: la aplicación no tiene directorio de datos
+	Imported {n} preset(s)	Se importaron {n} ajustes preestablecidos
+	Imported {n} preset(s); {skipped} skipped	Se importaron {n} ajustes preestablecidos; {skipped} omitidos
+	Imported {n} preset(s); {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {warnings} con parámetros no compatibles
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {skipped} omitidos, {warnings} con parámetros no compatibles
+	Imported {n} preset(s); not imported: {error}	Se importaron {n} ajustes preestablecidos; no se importó: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes preestablecidos actualizada: {imported} cargados, {removed} eliminados
+	Preset library updated	Biblioteca de ajustes preestablecidos actualizada
+	Preset library is up to date	La biblioteca de ajustes preestablecidos está actualizada
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Color de 10 bits
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Cada fotograma es clave (fácil de editar, archivos más grandes)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) con el tamaño de la secuencia, calidad constante CRF 16, AAC 320 kbps; un máster de 10 bits
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, cada fotograma es clave), CRF 12, AAC 320 kbps; un intermedio fácil de editar
+	List Color Grading Presets	Listar ajustes preestablecidos de gradación de color
+	Apply Color Grading Preset	Aplicar ajuste preestablecido de gradación de color
+	Color Grading Preset Thumbnails	Miniaturas de ajustes preestablecidos de gradación de color
+	Toggle Color Grading Section	Alternar sección de gradación de color
+	Color Grading Section	Sección de gradación de color
+	Read Video Scopes	Leer medidores de vídeo

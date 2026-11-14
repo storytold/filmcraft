@@ -29,7 +29,7 @@ fn encode_decodes_in_ffmpeg() {
         let mut cfg = EncoderConfig::new(c.profile, w, h);
         cfg.bit_depth = c.depth;
         let chroma = cfg.chroma();
-        let src = source_frames(&ff, c.name, c.lavfi, 2, w, h, chroma, c.depth);
+        let src = source_frames(&ff, SourceFrameSpec { name: c.name, lavfi: c.lavfi, frames: 2, width: w, height: h, chroma, depth: c.depth });
         let mut enc = Encoder::with_config(cfg).unwrap();
         let t = std::time::Instant::now();
         let coded: Vec<Vec<u8>> = src.iter().map(|f| enc.encode(f).unwrap()).collect();

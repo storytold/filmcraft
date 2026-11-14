@@ -5,4 +5,4 @@ source:       original work (drawn by the owner in ArtCraft, then vectorised)
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
 added:        2026-10-02 by Claude (agent) for Brandon Thomas
-notes:        SVG traced at 2048 px with craftrules assets/logo-options/_tools/vectorize_tile.py from the owner's ArtCraft drawing (craftrules assets/app-icons/filmcraft/source.png). Three colours: ink #0b0b0c, paper #efe9dc, app colour #8b5cf6; 512 viewBox, rx=112. See assets/app-icon/README.md.
+notes:        SVG traced at 2048 px from the owner's ArtCraft drawing. Three colours: ink #0b0b0c, paper #efe9dc, app colour #8b5cf6; 512 viewBox, rx=112. See assets/app-icon/README.md.

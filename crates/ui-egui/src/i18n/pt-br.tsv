@@ -4,7 +4,7 @@
 # Brazilian Portuguese video-editing vocabulary. No proprietary localisation resource, string table
 # or product UI was consulted or copied; add entries the same way. Commands use the infinitive
 # ("Salvar como…"), instructions use the polite imperative ("Selecione um clipe…"), and labels use
-# sentence case. Product, format and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS,
+# sentence case. Product, format and technology names (FilmCraft, ArtCraft, ProRes, LUFS,
 # EDL, AAF…) keep their spelling; decimals in prose use a comma ("29,97 fps"). This catalog has the
 # same entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English
 # until they are translated. A native-speaker review is welcome.
@@ -73,6 +73,10 @@
 	Captions and Graphics	Legendas e gráficos
 	Captions…	Legendas…
 	Caribbean	Caribe
+	Center at Cut	Centralizado no corte
+	Start at Cut	Início no corte
+	End at Cut	Fim no corte
+	Custom Start	Início personalizado
 	Center Horizontally	Centralizar horizontalmente
 	Center Vertically	Centralizar verticalmente
 	Cerulean	Cerúleo
@@ -199,8 +203,8 @@
 	Refresh Changed Media	Atualizar mídia alterada
 	Linked Selection	Seleção vinculada
 	Lock Guides	Bloquear guias
-	Lumetri Color	Cor Lumetri
-	Lumetri Scopes	Escopos Lumetri
+	Color Grading	Gradação de cor
+	Video Scopes	Escopos de vídeo
 	Magnification	Ampliação
 	Make Offline…	Tornar offline…
 	Make Subclip…	Criar subclipe…
@@ -452,9 +456,12 @@
 	Recover	Recuperar
 	Not Now	Agora não
 	Are you sure you want to discard your changes to '{file}'?	Tem certeza de que deseja descartar as alterações em '{file}'?
+	Replace File	Substituir arquivo
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” já existe em “{folder}”. Deseja substituí-lo?
+	Replace	Substituir
 	Yes	Sim
 	No	Não
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Adicione mídia ao projeto. Solte arquivos em qualquer lugar da janela ou escolha uma origem abaixo.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Adicione mídia ao projeto. Solte arquivos ou pastas em qualquer lugar da janela ou escolha uma origem abaixo.
 	Browse files…	Procurar arquivos…
 	Movies, audio and stills from disk	Filmes, áudio e imagens estáticas do disco
 	Demo footage	Clipes de demonstração
@@ -892,7 +899,7 @@
 	Clip Volume	Volume do clipe
 	(no clip selected)	(nenhum clipe selecionado)
 	Master · {name}	Mestre · {name}
-	Add Lumetri Color to clip	Adicionar Cor Lumetri ao clipe
+	Add Color Grading to clip	Adicionar gradação de cor ao clipe
 	Input LUT	LUT de entrada
 	Color	Cor
 	Temperature	Temperatura
@@ -993,7 +1000,6 @@
 	Eyedropper (pick a color from the Program monitor)	Conta-gotas (capturar uma cor do monitor do programa)
 	Eyedropper: no picture to sample	Conta-gotas: nenhuma imagem para amostrar
 	Add/Remove Keyframe	Adicionar/remover quadro-chave
-	Temporal Interpolation	Interpolação temporal
 	Linear	Linear
 	Bezier	Bézier
 	Auto Bezier	Bézier automático
@@ -1042,6 +1048,7 @@
 	All Caps	Tudo em maiúsculas
 	Small Caps	Versaletes
 	Underline	Sublinhado
+	Strikethrough	Tachado
 	OpenType	OpenType
 	Kerning	Kerning
 	Ligatures	Ligaduras
@@ -1182,7 +1189,7 @@
 	New Bin	Nova pasta
 	Find	Localizar
 	Automate to Sequence	Automatizar para a sequência
-	Select items to clear	Selecione os itens que deseja limpar
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Selecione um clipe (ou um clipe vinculado) na linha do tempo, ou um item no painel Projeto, para renomeá-lo
 	User Order	Ordem do usuário
 	Descending	Decrescente
 	Refresh Project	Atualizar projeto
@@ -1671,7 +1678,7 @@
 	Elliptical	Elíptico
 	Emboss	Relevo
 	Enable HSL Secondary	Ativar HSL secundário
-	Enable Mercury Transmit	Ativar Mercury Transmit
+	Enable External Video Output	Ativar saída de vídeo externa
 	Enable ProRes hardware accelerated encoding, if available	Ativar a codificação ProRes acelerada por hardware, se disponível
 	Enable clip and XMP metadata linking	Ativar a vinculação de metadados de clipe e XMP
 	Enable developer mode	Ativar o modo de desenvolvedor
@@ -1739,7 +1746,7 @@
 	Focus Size	Tamanho do foco
 	Fold Motion	Movimento de dobra
 	Foldback	Retorno
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Cor Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Para os parâmetros de gerenciamento de cores, acesse a aba Configurações no painel Gradação de cor.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quatro escopos (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Quatro escopos (YUV, ponto flutuante, sem limitar)
@@ -2008,7 +2015,7 @@
 	Luma Key	Chave de luma
 	Luma Source	Origem de luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefinições Lumetri
+	Color Grading Presets	Predefinições de gradação de cor
 	Luminance	Luminância
 	Luminance Threshold	Limiar de luminância
 	Luminosity	Luminosidade
@@ -3123,7 +3130,6 @@
 	Left align text	Alinhar texto à esquerda
 	Looping GIF, 640×360 at 15 fps	GIF em loop, 640×360 a 15 fps
 	Lower First	Inferior primeiro
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3457,6 +3463,7 @@
 	Clip Speed / Duration	Velocidade/duração do clipe
 	Speed:	Velocidade:
 	Reverse Speed	Inverter velocidade
+	Maintain Audio Pitch	Manter tom do áudio
 	Ripple Edit, Shifting Trailing Clips	Edição em cascata, deslocando os clipes seguintes
 	About	Sobre
 	Contributors	Colaboradores
@@ -3586,3 +3593,98 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	Enter a positive duration within the supported speed range.	Insira uma duração positiva dentro do intervalo de velocidade compatível.
+	Show Video Names	Mostrar nomes de vídeo
+	Show Audio Names	Mostrar nomes de áudio
+	Video Names	Nomes de vídeo
+	Audio Names	Nomes de áudio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	O servidor de controle está desativado: FILMCRAFT_CONTROL_TOKEN deve conter 64 caracteres hexadecimais aleatórios (veja docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Editar marcador…
+	In:	Entrada:
+	Marker Color:	Cor do marcador:
+	Options:	Opções:
+	Comment Marker	Marcador de comentário
+	Chapter Marker	Marcador de capítulo
+	Segmentation Marker	Marcador de segmentação
+	Web Link	Link da Web
+	Flash Cue Point	Ponto de referência Flash
+	Invalid duration: {error}	Duração inválida: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolação temporal
+	Select items to clear	Selecione os itens que deseja limpar
+	A range marker needs a positive duration	Um marcador de intervalo precisa de uma duração positiva
+	Add Custom Color	Adicionar cor personalizada
+	Add and apply	Adicionar e aplicar
+	Add color	Adicionar cor
+	Add custom color	Adicionar cor personalizada
+	Add custom color…	Adicionar cor personalizada…
+	Author	Autor
+	Chapter	Capítulo
+	Choose Color…	Escolher cor…
+	Choose color with system picker	Escolher cor com o seletor do sistema
+	Color picker	Seletor de cores
+	Color selected markers	Alterar a cor dos marcadores selecionados
+	Custom Color…	Cor personalizada…
+	Delete Marker	Excluir marcador
+	Delete selected markers	Excluir os marcadores selecionados
+	Edit Custom Color	Editar cor personalizada
+	Edit Marker	Editar marcador
+	Edit color	Editar cor
+	Editing or removing a swatch leaves assigned colors unchanged.	Editar ou remover uma amostra não altera as cores atribuídas.
+	Enter six hex digits, for example FF80C0.	Digite seis dígitos hexadecimais, por exemplo FF80C0.
+	Hex	Hex
+	Hex color	Cor hexadecimal
+	Manage Colors	Gerenciar cores
+	Manage Colors…	Gerenciar cores…
+	Marker owner is unavailable	O proprietário do marcador está indisponível
+	No markers	Nenhum marcador
+	No matching markers	Nenhum marcador correspondente
+	No saved colors	Nenhuma cor salva
+	No sequence open	Nenhuma sequência aberta
+	No source clip open	Nenhum clipe de origem aberto
+	Notes	Notas
+	Project Colors	Cores do projeto
+	Range marker	Marcador de intervalo
+	Remove saved color	Remover cor salva
+	Save color	Salvar cor
+	Search markers	Pesquisar marcadores
+	Search name, notes, author	Pesquisar nome, notas ou autor
+	Select all	Selecionar tudo
+	Select all visible markers	Selecionar todos os marcadores visíveis
+	Sequence: {name}	Sequência: {name}
+	Source: {name}	Origem: {name}
+	Source: {name} (shared source markers)	Origem: {name} (marcadores de origem compartilhados)
+	System color picker unavailable: {error}	Seletor de cores do sistema indisponível: {error}
+	Time is outside the supported range	O tempo está fora do intervalo suportado
+	{count} selected	{count} selecionados
+	Remove Custom Color	Remover cor personalizada
+	Edit Markers	Editar marcadores
+	Delete Markers	Excluir marcadores
+	Marker changed or was removed. Reopen it to continue.	O marcador foi alterado ou removido. Abra-o novamente para continuar.
+	URL	URL
+	Open Link	Abrir link
+	Opens this address in your web browser	Abre este endereço no navegador da web
+	Enter a valid HTTP or HTTPS URL without credentials	Insira uma URL HTTP ou HTTPS válida sem credenciais
+	Previous	Anterior
+	Next	Próximo
+	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Cor de 10 bits
+	All Intra	Somente intra
+	Every frame a keyframe (edit-friendly, larger files)	Todo quadro é um quadro-chave (fácil de editar, arquivos maiores)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) com o tamanho da sequência, qualidade constante CRF 16, AAC 320 kbps; um master de 10 bits
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, todo quadro é um quadro-chave), CRF 12, AAC 320 kbps; um intermediário fácil de editar
+	List Color Grading Presets	Listar predefinições de gradação de cor
+	Apply Color Grading Preset	Aplicar predefinição de gradação de cor
+	Color Grading Preset Thumbnails	Miniaturas de predefinições de gradação de cor
+	Toggle Color Grading Section	Alternar seção de gradação de cor
+	Color Grading Section	Seção de gradação de cor
+	Read Video Scopes	Ler escopos de vídeo

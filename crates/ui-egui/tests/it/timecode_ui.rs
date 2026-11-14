@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    /// The window is in the background: egui sees it focused only on frames carrying control input.
+    background: bool,
 }
 
 impl Driver {
@@ -24,7 +26,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
+        let mut d = Driver { harness, tx, background: false };
         d.frames(4);
         d
     }
@@ -32,6 +34,7 @@ impl Driver {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
             let mut raw = std::mem::take(self.harness.input_mut());
+            raw.focused = !self.background;
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             self.harness.step();
@@ -143,6 +146,32 @@ fn arrow_keys_move_the_caret_instead_of_committing() {
     expect.pop();
     expect.push('9');
     assert_eq!(d.frame(), parse_timecode(&expect, rate, df, 0).unwrap(), "{tc} with its last digit replaced");
+}
+
+/// Control input reaches a window in the background, which egui sees focused only on the frames
+/// that carry the input: a click still selects the whole time and Left still moves the caret.
+#[test]
+fn arrow_keys_move_the_caret_in_a_background_window() {
+    let mut d = Driver::demo();
+    let (rate, df) = {
+        let s = &d.harness.state().session;
+        (s.sequence_rate(), s.active_sequence().unwrap().settings.drop_frame)
+    };
+    d.set_frame(30);
+    let tc = d.label("timeline.timecode");
+    d.background = true;
+    for (method, params) in [("ui.click", json!({"id": "timeline.timecode"})), ("ui.key", json!({"key": "Left"}))] {
+        d.ok(method, params);
+        d.frames(4);
+        assert_eq!(d.frame(), 30, "nothing is committed before Enter");
+    }
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    let mut expect = tc.clone();
+    expect.pop();
+    assert_eq!(d.frame(), parse_timecode(&expect, rate, df, 0).unwrap(), "{tc} without its last digit");
+    d.type_into("timeline.timecode", "1000", "Enter");
+    assert_eq!(d.frame(), parse_timecode("1000", rate, df, 0).unwrap(), "the whole time was selected and replaced");
 }
 
 #[test]

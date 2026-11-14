@@ -18,6 +18,9 @@ pub enum Segment {
 /// The marker *Add pause* inserts.
 pub const PAUSE_MARKER: &str = "[pause 1s]";
 
+/// Longest `[pause …]` marker recognised, brackets included (`[pause 123456789012ms]` is 22).
+const MAX_MARKER_CHARS: usize = 64;
+
 /// Split `text` into speech and pauses, in order. Empty speech pieces are dropped.
 pub fn parse(text: &str) -> Vec<Segment> {
     let mut out = Vec::new();
@@ -26,7 +29,9 @@ pub fn parse(text: &str) -> Vec<Segment> {
     while let Some(open) = rest.find('[') {
         let (before, from) = rest.split_at(open);
         speech.push_str(before);
-        let close = from.find(']');
+        // A marker is short; looking only that far keeps each `[` from rescanning (and
+        // lowercasing) the rest of a long script.
+        let close = from.char_indices().take(MAX_MARKER_CHARS).find(|&(_, c)| c == ']').map(|(i, _)| i);
         match (close, close.and_then(|c| from.get(..=c)).and_then(pause_millis)) {
             (Some(close), Some(millis)) => {
                 flush(&mut out, &mut speech);
@@ -101,5 +106,13 @@ mod tests {
             let _ = parse(s);
         }
         assert_eq!(parse("  "), vec![]);
+    }
+
+    #[test]
+    fn many_open_brackets_parse_in_linear_time() {
+        // every `[` used to search (and copy) the whole remainder for its `]`
+        let text = format!("{}]", "[".repeat(400_000));
+        // a quadratic parse would not finish this input (a hang is the failure signal, not a wall-clock threshold)
+        assert_eq!(parse(&text), vec![sp(&text)]);
     }
 }

@@ -268,6 +268,33 @@ fn custom_presets_persist_export_and_import() {
     s.execute("shortcuts.deletePreset", json!({"name": "My Keys"})).unwrap();
     assert!(s.execute("shortcuts.deletePreset", json!({"name": "FilmCraft Default"})).is_err());
     assert_eq!(s.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["From Windows"]));
+    // #2489: a built-in set exported and imported again is listed, under a name of its own
+    s.execute("shortcuts.loadPreset", json!({"name": "FilmCraft Default"})).unwrap();
+    let again = dir.join("FilmCraft Default.json");
+    s.execute("shortcuts.export", json!({"path": again.to_string_lossy()})).unwrap();
+    let r = s.execute("shortcuts.import", json!({"path": again.to_string_lossy()})).unwrap();
+    assert_eq!(r["name"], json!("FilmCraft Default (Imported)"));
+    let presets = s.execute("shortcuts.presets", json!({})).unwrap();
+    assert_eq!(presets["active"], json!("FilmCraft Default (Imported)"));
+    assert!(presets["custom"].as_array().unwrap().contains(&json!("FilmCraft Default (Imported)")), "{presets}");
+    // under another file name it keeps the set's name, not the file's (#2705 review)
+    s.execute("shortcuts.loadPreset", json!({"name": "FilmCraft Default"})).unwrap();
+    let renamed = dir.join("export.json");
+    s.execute("shortcuts.export", json!({"path": renamed.to_string_lossy()})).unwrap();
+    assert_eq!(s.execute("shortcuts.import", json!({"path": renamed.to_string_lossy()})).unwrap()["name"], json!("FilmCraft Default (Imported)"));
+    // a file past the size limit is refused, not read whole
+    let big = dir.join("big.json");
+    std::fs::write(&big, vec![b' '; (8 << 20) + 16]).unwrap();
+    assert!(s.execute("shortcuts.import", json!({"path": big.to_string_lossy()})).unwrap_err().to_string().contains("too large"));
+    // Premiere's own files say why they can't be read
+    let kys = dir.join("Mine.kys");
+    std::fs::write(&kys, b"<?xml version=\"1.0\"?><shortcuts/>").unwrap();
+    let e = s.execute("shortcuts.import", json!({"path": kys.to_string_lossy()})).unwrap_err().to_string();
+    assert!(e.contains(".kys") && e.contains("Premiere Pro Compatible"), "{e}");
+    // a FilmCraft export named .kys still imports: the contents decide, not the name (#2705 review)
+    let named_kys = dir.join("Exported.kys");
+    s.execute("shortcuts.export", json!({"path": named_kys.to_string_lossy()})).unwrap();
+    assert!(s.execute("shortcuts.import", json!({"path": named_kys.to_string_lossy()})).is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -291,6 +318,61 @@ fn list_searches_labels_and_keys() {
     assert_eq!(v.as_array().unwrap().len(), 3, "{v}");
 }
 
+/// A command run without parameters whose parameters are all optional or defaulted opens its
+/// dialog instead of running (ui-egui routes them through clip_dialogs / menu_dialogs /
+/// media_dialogs), so it belongs in the shortcut editor. A parameter left marked required takes it
+/// out of the list even though the engine defaults it (#2024).
+///
+/// The engine cannot see ui-egui's dialog tables, so this list is the dialog commands of today.
+/// ui-egui's `every_command_with_a_clip_dialog_can_be_bound` and
+/// `every_command_with_a_menu_dialog_can_be_bound` walk the registry against `clip_dialogs::meta`
+/// and `menu_dialogs::meta` themselves, so a command added to either table later is checked too.
+#[test]
+fn commands_that_open_dialogs_can_be_bound() {
+    let r = Session::default().shortcuts.commands();
+    for id in [
+        // clip_dialogs::meta
+        "edit.pasteAttributes",
+        "edit.removeAttributes",
+        "file.newOfflineFile",
+        "clip.nest",
+        "clip.makeSubclip",
+        "clip.editSubclip",
+        "clip.audioChannels",
+        "clip.modifyTimecode",
+        "clip.frameHoldOptions",
+        "clip.fieldOptions",
+        "clip.speedDuration",
+        "file.closeProject",
+        // menu_dialogs::meta, minus file.mediaProperties and clip.sourceSettings (views, not
+        // undoable actions: they stay out of the editor on purpose even though a default key
+        // names mediaProperties)
+        "edit.find",
+        "file.newSearchBin",
+        "clip.editOffline",
+        "clip.updateMetadata",
+        "clip.automateToSequence",
+        "clip.sceneEditDetection",
+        "sequence.normalizeMixTrack",
+        "sequence.simplify",
+        "sequence.transcribe",
+        "file.saveAsTemplate",
+        "markers.addFlashCue",
+        "file.newColorMatte",
+        // media_dialogs::route, minus the ones that relink a file picked in a native dialog
+        // (media.attachProxies, media.reconnectFullRes) and media.linkMedia (a dialog the app
+        // opens but does not edit the project, so it is not a bindable action)
+        "media.makeOffline",
+        "media.createProxies",
+    ] {
+        assert!(r.iter().any(|c| c.id == id), "{id} opens its dialog when run without parameters, so it can be bound");
+    }
+    // and the assignment goes through, so the key can be recorded and shown in the editor
+    let mut s = Session::default();
+    s.execute("shortcuts.set", json!({"command": "clip.nest", "keys": "Cmd+Alt+N"})).unwrap();
+    assert_eq!(s.shortcuts.primary("clip.nest").as_deref(), Some("Cmd+Alt+N"));
+}
+
 #[test]
 fn default_keymaps_have_no_conflicts_on_any_platform() {
     // The Premiere audit used to check keys on macOS only, so off macOS `⌃9`/`⌘9`, `⌃⇧M`/`⌘⇧M` and
@@ -307,4 +389,41 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
     for (cmd, keys) in [("multicam.cutToCamera9", "Ctrl+9"), ("markers.addRange", "Ctrl+Shift+M"), ("graphics.newText", "Cmd+T")] {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
+}
+
+#[test]
+fn a_preset_named_active_does_not_replace_the_active_set() {
+    let dir = temp_dir("active-name");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let active = dir.join("Keyboard Shortcuts").join("active.json");
+    let before = std::fs::read(&active).ok();
+    // a preset file whose own name is "active", imported without activating it
+    let file = dir.join("in.json");
+    s.export(&file).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    v["name"] = json!("active");
+    std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+    s.import(&file, false).unwrap();
+    assert_eq!(std::fs::read(&active).ok(), before, "the active set file is untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn presets_named_active_get_their_own_files() {
+    let dir = temp_dir("active-paths");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let presets = dir.join("Keyboard Shortcuts");
+    let path = |n: &str| s.preset_path(n).unwrap();
+    assert_ne!(path("active"), presets.join("active.json"));
+    assert_ne!(path("active"), path("active (preset)"), "a preset named like the old redirect must not collide");
+    // a mixed-case preset saved by an earlier version stays reachable on a case-sensitive file system
+    std::fs::create_dir_all(&presets).unwrap();
+    std::fs::write(presets.join("Active.json"), b"{}").unwrap();
+    if !presets.join("active.json").exists() {
+        assert_eq!(path("Active"), presets.join("Active.json"));
+        assert_ne!(path("active"), presets.join("Active.json"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

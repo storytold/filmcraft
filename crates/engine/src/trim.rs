@@ -29,6 +29,10 @@ use filmcraft_time::{Tick, TimeRange};
 
 use crate::{EngineError, Result, Session};
 
+/// The id a ripple trim's undo step records in place of a command id (`timeline.trim` runs both
+/// regular and ripple trims). The History panel shows the Ripple tool's icon for it.
+pub const RIPPLE_TRIM_ORIGIN: &str = "timeline.trim.ripple";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TrimKind {
@@ -46,6 +50,16 @@ impl TrimKind {
             TrimKind::Ripple => TrimKind::Roll,
             TrimKind::Roll => TrimKind::Trim,
             TrimKind::Trim => TrimKind::Ripple,
+        }
+    }
+
+    /// The id the undo step of a trim of this kind records: `timeline.trim`, a ripple trim's
+    /// [`RIPPLE_TRIM_ORIGIN`] or `timeline.roll`.
+    pub fn history_origin(self) -> &'static str {
+        match self {
+            TrimKind::Trim => "timeline.trim",
+            TrimKind::Ripple => RIPPLE_TRIM_ORIGIN,
+            TrimKind::Roll => "timeline.roll",
         }
     }
 }
@@ -243,16 +257,21 @@ fn trim_all_raw(s: &mut Session, delta_for: &dyn Fn(&Sequence, &EditPoint) -> Op
         // Each timeline command clamps and edits its linked group together. Do not dispatch it
         // again for the group's other selected edges (which would also ripple later clips twice).
         let group = linked_points(s, *ep);
-        let r = match ep.kind {
+        let (id, params) = match ep.kind {
             TrimKind::Roll => {
                 let Some((l, r)) = roll_pair(seq, ep) else { continue };
-                s.execute("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0}))?
+                ("timeline.roll", json!({"left": l.0, "right": r.0, "delta": delta.0}))
             }
-            k => s.execute(
+            k => (
                 "timeline.trim",
                 json!({"clip": ep.clip.0, "edge": if ep.out { "out" } else { "in" }, "mode": if k == TrimKind::Ripple { "ripple" } else { "regular" }, "delta": delta.0}),
-            )?,
+            ),
         };
+        // the step records the trim kind's own id instead of the outer `trim.*` command
+        let outer = s.command_origin.replace(ep.kind.history_origin().to_string());
+        let r = s.execute(id, params);
+        s.command_origin = outer;
+        let r = r?;
         edited.extend(group);
         applied.push(r.get("delta").cloned().unwrap_or(Value::Null));
     }
@@ -596,12 +615,14 @@ pub fn commit(s: &mut Session) -> Value {
         s.state.trim_shift = d.shift_before;
         return json!({"committed": false, "offsetFrames": 0});
     }
-    let label = match s.state.edit_points.first().map(|e| e.kind) {
-        Some(TrimKind::Roll) => "Dynamic Rolling Edit",
-        Some(TrimKind::Ripple) => "Dynamic Ripple Trim",
-        _ => "Dynamic Trim",
+    let kind = s.state.edit_points.first().map_or(TrimKind::Trim, |e| e.kind);
+    let label = match kind {
+        TrimKind::Roll => "Dynamic Rolling Edit",
+        TrimKind::Ripple => "Dynamic Ripple Trim",
+        TrimKind::Trim => "Dynamic Trim",
     };
-    s.history.undo.push((label.to_string(), d.before));
+    // the step records the trim kind's id, whichever command commits it
+    s.history.undo.push((label.to_string(), d.before, Some(kind.history_origin().to_string())));
     if s.history.undo.len() > s.history.limit {
         s.history.undo.remove(0);
     }

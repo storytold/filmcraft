@@ -16,12 +16,30 @@ pub struct CpalIn {
     stop: Option<mpsc::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
     error: Arc<Mutex<Option<String>>>,
+    /// Frames of `buf` already measured by [`AudioInput::take_peaks`].
+    metered: usize,
 }
 
 impl CpalIn {
     pub fn new(host: &str) -> Self {
-        Self { host: host.to_string(), buf: Arc::default(), stop: None, worker: None, error: Arc::default() }
+        Self { host: host.to_string(), buf: Arc::default(), stop: None, worker: None, error: Arc::default(), metered: 0 }
     }
+}
+
+/// At most this many trailing frames are measured per meter poll (2 s at 48 kHz), so a meter that
+/// was not polled for a while doesn't scan the whole take.
+const PEAK_WINDOW: usize = 96_000;
+
+/// Per-channel peak of the frames from `from` on (only the last [`PEAK_WINDOW`]), and the new
+/// measured position; no peaks when nothing new arrived.
+fn peaks(buf: &[Vec<f32>], from: usize) -> (Vec<f32>, usize) {
+    let len = buf.first().map_or(0, Vec::len);
+    let start = from.max(len.saturating_sub(PEAK_WINDOW));
+    if start >= len {
+        return (Vec::new(), len);
+    }
+    let peaks = buf.iter().map(|c| c.get(start..).unwrap_or_default().iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
+    (peaks, len)
 }
 
 fn host(name: &str) -> cpal::Host {
@@ -114,6 +132,7 @@ impl AudioInput for CpalIn {
     fn start(&mut self, name: &str, sample_rate: u32) -> Result<InputFormat, String> {
         self.stop();
         lock(&self.buf).clear();
+        self.metered = 0;
         *lock(&self.error) = None;
         let (host_name, name) = (self.host.clone(), name.to_string());
         let buf = self.buf.clone();
@@ -188,6 +207,7 @@ impl AudioInput for CpalIn {
     }
     fn read(&mut self, frames: usize) -> Vec<Vec<f32>> {
         let mut b = lock(&self.buf);
+        self.metered = self.metered.saturating_sub(b.first().map_or(0, |c| frames.min(c.len())));
         b.iter_mut()
             .map(|c| {
                 let n = frames.min(c.len());
@@ -195,8 +215,14 @@ impl AudioInput for CpalIn {
             })
             .collect()
     }
+    fn take_peaks(&mut self) -> Vec<f32> {
+        let (p, metered) = peaks(&lock(&self.buf), self.metered);
+        self.metered = metered;
+        p
+    }
     fn discard(&mut self) {
         lock(&self.buf).iter_mut().for_each(Vec::clear);
+        self.metered = 0;
     }
     fn error(&self) -> Option<String> {
         lock(&self.error).clone()
@@ -239,6 +265,18 @@ mod tests {
         assert_eq!(data[1], [0.0, 0.0]);
         assert_eq!(data[0][0], -1.0);
         assert!(lock(&error).is_none());
+    }
+
+    #[test]
+    fn peaks_measure_only_new_frames_and_stop_when_nothing_arrives() {
+        let buf = vec![vec![0.1, -0.8, 0.2], vec![0.0, 0.3, -0.4]];
+        let (p, at) = peaks(&buf, 0);
+        assert_eq!((p, at), (vec![0.8, 0.4], 3));
+        assert_eq!(peaks(&buf, 3), (Vec::new(), 3), "nothing new: no peaks");
+        assert_eq!(peaks(&buf, 2).0, [0.2, 0.4], "only frames from the measured position");
+        assert_eq!(peaks(&[], 5), (Vec::new(), 0));
+        let long = vec![[vec![1.0], vec![0.25; PEAK_WINDOW]].concat()];
+        assert_eq!(peaks(&long, 0).0, [0.25], "only the trailing window is scanned");
     }
 
     #[test]

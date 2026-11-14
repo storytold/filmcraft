@@ -1,0 +1,8 @@
+asset:        cs.tsv
+title:        Czech interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT, LICENSE-APACHE
+added:        2026-10-11 by Losminek
+notes:        AI-assisted original Czech translations, manually rewritten as complete phrases from English meanings with a binding editing glossary; not yet proofread by a native speaker.

@@ -12,5 +12,9 @@ workspace = true
 # Intentionally dependency-free (layer L1): planar `&mut [f32]` slices in, planar slices out.
 [dependencies]
 
+[features]
+# `remix::test_music`, generated rhythmic music for the remix tests of dependent crates.
+test-util = []
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

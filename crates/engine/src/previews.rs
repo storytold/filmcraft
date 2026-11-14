@@ -62,12 +62,24 @@ pub struct BarSpan {
 /// Which segments a render command picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Red and yellow segments in In/Out (Enter).
+    /// Red segments in In/Out (Enter), as in Premiere: yellow ones should play in real time, and
+    /// rendering them too can take hours of encoding on a long sequence (#1220).
     EffectsInToOut,
     /// Every segment in In/Out, including no-bar ones.
     InToOut,
     /// Segments showing a selected clip.
     Selection,
+}
+
+impl RenderMode {
+    /// Whether this mode renders a segment whose playback needs `need` (In/Out and the selection
+    /// aside).
+    pub fn renders(self, need: Need) -> bool {
+        match self {
+            RenderMode::EffectsInToOut => need == Need::Render,
+            RenderMode::InToOut | RenderMode::Selection => true,
+        }
+    }
 }
 
 type Memo = (Arc<Project>, ItemId, Arc<Vec<Segment>>);
@@ -166,6 +178,13 @@ fn rel_range(seg: &Segment, rate: FrameRate, range: &TimeRange) -> (i64, i64) {
 }
 fn audio_name(hash: &str) -> String {
     format!("{hash}.wav")
+}
+
+/// The speaker layout a mix is rendered for and how a 5.1 Mix is folded down to stereo.
+#[derive(Clone, Copy, Debug)]
+pub struct MixOutput {
+    pub layout: Layout,
+    pub mixdown: Mixdown,
 }
 
 impl PreviewStore {
@@ -376,7 +395,7 @@ impl PreviewStore {
                 return Some(s);
             }
         }
-        let bytes = std::fs::read(self.audio_path_for(hash)?).ok()?;
+        let bytes = filmcraft_media::reader::read_regular_file(&self.audio_path_for(hash)?).ok()?;
         let samples = Arc::new(read_wav_f32(&bytes)?);
         let mut g = self.audio.lock().unwrap_or_else(|e| e.into_inner());
         g.push((hash.to_string(), samples.clone()));
@@ -389,14 +408,13 @@ impl PreviewStore {
     /// Sequence audio for playback and meters, as stereo (a 5.1 Mix folded with the BS.775
     /// downmix): rendered audio previews where they are valid, the live mix everywhere else.
     pub fn mix(&self, project: &Arc<Project>, seq: ItemId, start: i64, frames: usize, sources: &dyn filmcraft_render::SourceProvider) -> AudioBuffer {
-        self.mix_layout(project, seq, start, frames, sources, Layout::Stereo, Mixdown::FrontRear)
+        self.mix_layout(project, seq, start, frames, sources, MixOutput { layout: Layout::Stereo, mixdown: Mixdown::FrontRear })
     }
 
     /// [`PreviewStore::mix`] in `layout`: a 5.1 Mix is folded to stereo with `mixdown` (Preferences ▸
     /// Audio ▸ 5.1 Mixdown Type) or played as six channels on a 5.1 device; a stereo Mix is placed
     /// on the front speakers of a 5.1 device. Rendered audio previews are stereo BS.775 folds, so
     /// they are used only for stereo output of a stereo Mix or with the BS.775 mixdown.
-    #[allow(clippy::too_many_arguments)]
     pub fn mix_layout(
         &self,
         project: &Arc<Project>,
@@ -404,9 +422,9 @@ impl PreviewStore {
         start: i64,
         frames: usize,
         sources: &dyn filmcraft_render::SourceProvider,
-        layout: Layout,
-        mixdown: Mixdown,
+        output: MixOutput,
     ) -> AudioBuffer {
+        let MixOutput { layout, mixdown } = output;
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
@@ -559,7 +577,7 @@ pub(crate) fn open_preview_file(_pool: &MediaPool, name: &str, path: &std::path:
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn open_preview_file(pool: &MediaPool, name: &str, path: &std::path::Path) -> Option<SharedSource> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = filmcraft_media::reader::read_regular_file(path).ok()?;
     pool.open_bytes(name, bytes.into()).ok()
 }
 
@@ -626,9 +644,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
     let mut todo: Vec<Todo> = Vec::new();
-    for g in segs.iter() {
+    for g in segs.iter().filter(|g| mode.renders(g.need)) {
         let (a, b) = match mode {
-            RenderMode::EffectsInToOut if g.need == Need::None => continue,
             RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
             RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
             RenderMode::Selection => continue,
@@ -638,7 +655,11 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
     }
     if todo.is_empty() {
-        s.toast("Nothing to render: previews are up to date");
+        s.toast(if mode == RenderMode::EffectsInToOut {
+            "Nothing to render: no red segments without previews between In and Out"
+        } else {
+            "Nothing to render: previews are up to date"
+        });
         return Ok(json!({"job": null, "segments": 0}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
@@ -652,8 +673,9 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     };
     job.progress.total.store(frames.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    // Previews are cached by content and reused with proxies on or off: always full resolution.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
+    // Previews are cached by content and reused with proxies on or off: always full resolution,
+    // from their own copies of the files so the monitors keep their decoders.
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {
@@ -710,7 +732,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: done_frames as f64 / secs.max(1e-6),
-            extra_files: Vec::new(),
+            ..Default::default()
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -754,7 +776,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let job = crate::Job { id, label: "Rendering audio previews".into(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(total.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {
@@ -763,31 +785,59 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
         let mut outcome: std::result::Result<(), String> = Ok(());
         let Some(q) = project.sequence(seq) else { return };
         'segs: for g in &todo {
-            let mut inter = Vec::with_capacity(g.samples as usize * 2);
-            let mut pos = g.first_sample;
-            while pos < g.first_sample + g.samples {
-                if prog.cancel.load(Ordering::Relaxed) {
+            // Streamed to the part file one second at a time: the segment's length comes from the
+            // project, so it must not size a buffer.
+            let Some(header) = u64::try_from(g.samples).ok().and_then(|n| wav_header_f32(n, sr as u32)) else {
+                outcome = Err("an audio segment is too long for a WAV preview".into());
+                break;
+            };
+            // its own part file: two jobs rendering one segment must not share (or remove) each other's
+            static PART: AtomicU64 = AtomicU64::new(0);
+            let part = dir.join(format!("{}.wav.{}-{}.part", g.hash, std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
+            let fin = dir.join(audio_name(&g.hash));
+            let written = (|| -> std::io::Result<Option<u64>> {
+                use std::io::Write;
+                let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
+                file.write_all(&header)?;
+                let mut pos = g.first_sample;
+                let mut chunk = Vec::new();
+                while pos < g.first_sample + g.samples {
+                    if prog.cancel.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    let n = (g.first_sample + g.samples - pos).min(sr) as usize;
+                    let buf = filmcraft_render::audio::mix_sequence(&project, q, pos, n, &provider);
+                    chunk.clear();
+                    for i in 0..n {
+                        chunk.extend_from_slice(&buf.channels[0][i].to_le_bytes());
+                        chunk.extend_from_slice(&buf.channels[buf.channels.len().min(2) - 1][i].to_le_bytes());
+                    }
+                    file.write_all(&chunk)?;
+                    pos += n as i64;
+                    prog.done.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                file.flush()?;
+                Ok(Some(header.len() as u64 + g.samples as u64 * 8))
+            })();
+            let data_len = match written {
+                Ok(Some(len)) => len,
+                Ok(None) => {
+                    let _ = std::fs::remove_file(&part);
                     outcome = Err("cancelled".into());
                     break 'segs;
                 }
-                let n = (g.first_sample + g.samples - pos).min(sr) as usize;
-                let buf = filmcraft_render::audio::mix_sequence(&project, q, pos, n, &provider);
-                for i in 0..n {
-                    inter.push(buf.channels[0][i]);
-                    inter.push(buf.channels[buf.channels.len().min(2) - 1][i]);
+                Err(e) => {
+                    let _ = std::fs::remove_file(&part);
+                    outcome = Err(e.to_string());
+                    break;
                 }
-                pos += n as i64;
-                prog.done.fetch_add(n as u64, Ordering::Relaxed);
-            }
-            let data = write_wav_f32(&inter, sr as u32);
-            let part = dir.join(format!("{}.wav.part", g.hash));
-            let fin = dir.join(audio_name(&g.hash));
-            if let Err(e) = std::fs::write(&part, &data).and_then(|_| std::fs::rename(&part, &fin)) {
+            };
+            if let Err(e) = std::fs::rename(&part, &fin) {
                 let _ = std::fs::remove_file(&part);
                 outcome = Err(e.to_string());
                 break;
             }
-            bytes += data.len() as u64;
+            bytes += data_len;
             store.add_audio(&g.hash);
         }
         let secs = t0.elapsed().as_secs_f64();
@@ -797,7 +847,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: 0.0,
-            extra_files: Vec::new(),
+            ..Default::default()
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -817,22 +867,31 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"job": id, "segments": nseg, "samples": total}))
 }
 
+/// The 44-byte header of a 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT) of `frames` frames, or
+/// None when its data would not fit the format's 32-bit sizes.
+pub(crate) fn wav_header_f32(frames: u64, rate: u32) -> Option<[u8; 44]> {
+    let data_len = u32::try_from(frames.checked_mul(8)?).ok().filter(|&n| n <= u32::MAX - 36)?;
+    let mut v = [0u8; 44];
+    v[0..4].copy_from_slice(b"RIFF");
+    v[4..8].copy_from_slice(&(36 + data_len).to_le_bytes());
+    v[8..16].copy_from_slice(b"WAVEfmt ");
+    v[16..20].copy_from_slice(&16u32.to_le_bytes());
+    v[20..22].copy_from_slice(&3u16.to_le_bytes()); // IEEE float
+    v[22..24].copy_from_slice(&2u16.to_le_bytes());
+    v[24..28].copy_from_slice(&rate.to_le_bytes());
+    v[28..32].copy_from_slice(&rate.wrapping_mul(8).to_le_bytes());
+    v[32..34].copy_from_slice(&8u16.to_le_bytes());
+    v[34..36].copy_from_slice(&32u16.to_le_bytes());
+    v[36..40].copy_from_slice(b"data");
+    v[40..44].copy_from_slice(&data_len.to_le_bytes());
+    Some(v)
+}
+
 /// 32-bit float stereo WAV (WAVE_FORMAT_IEEE_FLOAT) from interleaved samples.
 pub fn write_wav_f32(interleaved: &[f32], rate: u32) -> Vec<u8> {
-    let data_len = (interleaved.len() * 4) as u32;
-    let mut v = Vec::with_capacity(44 + data_len as usize);
-    v.extend_from_slice(b"RIFF");
-    v.extend_from_slice(&(36 + data_len).to_le_bytes());
-    v.extend_from_slice(b"WAVEfmt ");
-    v.extend_from_slice(&16u32.to_le_bytes());
-    v.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
-    v.extend_from_slice(&2u16.to_le_bytes());
-    v.extend_from_slice(&rate.to_le_bytes());
-    v.extend_from_slice(&(rate * 8).to_le_bytes());
-    v.extend_from_slice(&8u16.to_le_bytes());
-    v.extend_from_slice(&32u16.to_le_bytes());
-    v.extend_from_slice(b"data");
-    v.extend_from_slice(&data_len.to_le_bytes());
+    let frames = (interleaved.len() / 2) as u64;
+    let mut v = wav_header_f32(frames, rate).map(|h| h.to_vec()).unwrap_or_default();
+    v.reserve(interleaved.len() * 4);
     for s in interleaved {
         v.extend_from_slice(&s.to_le_bytes());
     }

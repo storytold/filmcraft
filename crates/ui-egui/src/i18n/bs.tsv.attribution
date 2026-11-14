@@ -1,0 +1,8 @@
+asset:        bs.tsv
+title:        Bosnian interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-30 by nine-codes
+notes:        AI-assisted clean-room English-to-Bosnian (Latin, Ijekavian) translations, shared with storytold/craft-i18n locales/bs/; not yet reviewed by a native speaker.

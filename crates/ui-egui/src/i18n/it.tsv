@@ -10,7 +10,7 @@
 # Italian video-editing vocabulary (traccia, indicatore di riproduzione, sequenza, raccoglitore,
 # attacco/stacco, fotogramma chiave, rendering…). No proprietary localisation resource, string
 # table or product UI was consulted or copied, and no other FilmCraft catalog was translated from;
-# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft, Lumetri,
+# add entries the same way. Product, technology and format names (FilmCraft, ArtCraft,
 # ProRes, LUFS, H.264…) keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Commands are imperatives addressed with "tu"; decimals use a comma (29,97 fps).
 
@@ -69,6 +69,10 @@
 	Captions and Graphics	Sottotitoli e grafica
 	Captions…	Sottotitoli…
 	Caribbean	Caraibi
+	Center at Cut	Centrato sul taglio
+	Start at Cut	Inizio sul taglio
+	End at Cut	Fine sul taglio
+	Custom Start	Inizio personalizzato
 	Center Horizontally	Centra orizzontalmente
 	Center Vertically	Centra verticalmente
 	Cerulean	Ceruleo
@@ -195,8 +199,8 @@
 	Refresh Changed Media	Aggiorna media modificati
 	Linked Selection	Selezione collegata
 	Lock Guides	Blocca guide
-	Lumetri Color	Colore Lumetri
-	Lumetri Scopes	Ambiti Lumetri
+	Color Grading	Gradazione colore
+	Video Scopes	Oscilloscopi video
 	Magnification	Ingrandimento
 	Make Offline…	Rendi offline…
 	Make Subclip…	Crea sottoclip…
@@ -445,9 +449,12 @@
 	Recover	Recupera
 	Not Now	Non ora
 	Are you sure you want to discard your changes to '{file}'?	Vuoi davvero scartare le modifiche a '{file}'?
+	Replace File	Sostituisci file
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” esiste già in “{folder}”. Vuoi sostituirlo?
+	Replace	Sostituisci
 	Yes	Sì
 	No	No
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file o le cartelle in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
 	Browse files…	Sfoglia file…
 	Movies, audio and stills from disk	Filmati, audio e immagini fisse dal disco
 	Demo footage	Filmati demo
@@ -887,7 +894,7 @@
 	Clip Volume	Volume clip
 	(no clip selected)	(nessuna clip selezionata)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Aggiungi Colore Lumetri alla clip
+	Add Color Grading to clip	Aggiungi gradazione colore alla clip
 	Input LUT	LUT di ingresso
 	Color	Colore
 	Temperature	Temperatura
@@ -988,7 +995,6 @@
 	Eyedropper (pick a color from the Program monitor)	Contagocce (preleva un colore dal monitor programma)
 	Eyedropper: no picture to sample	Contagocce: nessuna immagine da campionare
 	Add/Remove Keyframe	Aggiungi/rimuovi fotogramma chiave
-	Temporal Interpolation	Interpolazione temporale
 	Linear	Lineare
 	Bezier	Bezier
 	Auto Bezier	Bezier automatica
@@ -1037,6 +1043,7 @@
 	All Caps	Tutto maiuscolo
 	Small Caps	Maiuscoletto
 	Underline	Sottolineato
+	Strikethrough	Barrato
 	OpenType	OpenType
 	Kerning	Crenatura
 	Ligatures	Legature
@@ -1177,7 +1184,7 @@
 	New Bin	Nuovo raccoglitore
 	Find	Trova
 	Automate to Sequence	Automatizza in sequenza
-	Select items to clear	Seleziona gli elementi da cancellare
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Seleziona una clip (o una clip collegata) nella timeline, o un elemento nel pannello Progetto, per rinominarlo
 	User Order	Ordine utente
 	Descending	Decrescente
 	Refresh Project	Aggiorna progetto
@@ -1666,7 +1673,7 @@
 	Elliptical	Ellittico
 	Emboss	Rilievo
 	Enable HSL Secondary	Abilita HSL secondario
-	Enable Mercury Transmit	Abilita trasmissione Mercury
+	Enable External Video Output	Abilita uscita video esterna
 	Enable ProRes hardware accelerated encoding, if available	Abilita la codifica ProRes con accelerazione hardware, se disponibile
 	Enable clip and XMP metadata linking	Abilita il collegamento dei metadati clip e XMP
 	Enable developer mode	Abilita la modalità sviluppatore
@@ -1734,7 +1741,7 @@
 	Focus Size	Dimensione messa a fuoco
 	Fold Motion	Movimento di piegatura
 	Foldback	Ripiegamento
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Per i parametri di gestione del colore, vai alla scheda Impostazioni del pannello Colore Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Per i parametri di gestione del colore, apri la scheda Impostazioni nel pannello Gradazione colore.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quattro ambiti (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Quattro ambiti (YUV, virgola mobile, senza limitazione)
@@ -2003,7 +2010,7 @@
 	Luma Key	Chiave luma
 	Luma Source	Sorgente luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefiniti Lumetri
+	Color Grading Presets	Predefiniti di gradazione colore
 	Luminance	Luminanza
 	Luminance Threshold	Soglia luminanza
 	Luminosity	Luminosità
@@ -3120,7 +3127,6 @@
 	Left align text	Allinea il testo a sinistra
 	Looping GIF, 640×360 at 15 fps	GIF in loop, 640×360 a 15 fps
 	Lower First	Prima il campo inferiore
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3453,6 +3459,7 @@
 	Clip Speed / Duration	Velocità / durata clip
 	Speed:	Velocità:
 	Reverse Speed	Velocità inversa
+	Maintain Audio Pitch	Mantieni intonazione audio
 	Ripple Edit, Shifting Trailing Clips	Modifica a scorrimento, sposta le clip successive
 	About	Informazioni
 	Contributors	Contributori
@@ -3582,6 +3589,7 @@
 	The default graphics are used from the next start.	La grafica predefinita viene usata dal prossimo avvio.
 	DirectX 12 only	Solo DirectX 12
 	software rendering	rendering software
+	integrated GPU	GPU integrata
 	Label Color Presets	Predefiniti colori etichette
 	{name} (Modified)	{name} (modificato)
 	Revert to the preset's colors and names	Ripristina i colori e i nomi del predefinito
@@ -3597,7 +3605,6 @@
 	32 bit float	32 bit in virgola mobile
 	FLAC stores whole-number samples only	FLAC memorizza solo campioni interi
 	MXF export writes integer PCM only	L'esportazione MXF scrive solo PCM intero
-	Opens in your web browser: {url}	Si apre nel browser web: {url}
 	Saves this session's log and shows it in your file manager.	Salva il registro di questa sessione e lo mostra nel gestore file.
 	Shows a report on this computer.	Mostra un rapporto su questo computer.
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
@@ -3609,3 +3616,99 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Enter a positive duration within the supported speed range.	Inserisci una durata positiva nell’intervallo di velocità supportato.
+	Show Video Names	Mostra nomi video
+	Show Audio Names	Mostra nomi audio
+	Video Names	Nomi video
+	Audio Names	Nomi audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Il server di controllo è disattivato: FILMCRAFT_CONTROL_TOKEN deve contenere 64 caratteri esadecimali casuali (vedi docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Modifica marcatore…
+	In:	Attacco:
+	Marker Color:	Colore marcatore:
+	Options:	Opzioni:
+	Comment Marker	Marcatore commento
+	Chapter Marker	Marcatore capitolo
+	Segmentation Marker	Marcatore segmentazione
+	Web Link	Collegamento web
+	Flash Cue Point	Punto Flash Cue
+	Invalid duration: {error}	Durata non valida: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolazione temporale
+	Select items to clear	Seleziona gli elementi da cancellare
+	Opens in your web browser: {url}	Si apre nel browser web: {url}
+	A range marker needs a positive duration	Un marcatore di intervallo richiede una durata positiva
+	Add Custom Color	Aggiungi colore personalizzato
+	Add and apply	Aggiungi e applica
+	Add color	Aggiungi colore
+	Add custom color	Aggiungi colore personalizzato
+	Add custom color…	Aggiungi colore personalizzato…
+	Author	Autore
+	Chapter	Capitolo
+	Choose Color…	Scegli colore…
+	Choose color with system picker	Scegli il colore con il selettore di sistema
+	Color picker	Selettore colore
+	Color selected markers	Colora i marcatori selezionati
+	Custom Color…	Colore personalizzato…
+	Delete Marker	Elimina marcatore
+	Delete selected markers	Elimina i marcatori selezionati
+	Edit Custom Color	Modifica colore personalizzato
+	Edit Marker	Modifica marcatore
+	Edit color	Modifica colore
+	Editing or removing a swatch leaves assigned colors unchanged.	La modifica o la rimozione di un campione non cambia i colori già assegnati.
+	Enter six hex digits, for example FF80C0.	Inserisci sei cifre esadecimali, ad esempio FF80C0.
+	Hex	Esadecimale
+	Hex color	Colore esadecimale
+	Manage Colors	Gestisci colori
+	Manage Colors…	Gestisci colori…
+	Marker owner is unavailable	La sorgente del marcatore non è disponibile
+	No markers	Nessun marcatore
+	No matching markers	Nessun marcatore corrispondente
+	No saved colors	Nessun colore salvato
+	No sequence open	Nessuna sequenza aperta
+	No source clip open	Nessuna clip sorgente aperta
+	Notes	Note
+	Project Colors	Colori del progetto
+	Range marker	Marcatore di intervallo
+	Remove saved color	Rimuovi colore salvato
+	Save color	Salva colore
+	Search markers	Cerca marcatori
+	Search name, notes, author	Cerca nome, note, autore
+	Select all	Seleziona tutto
+	Select all visible markers	Seleziona tutti i marcatori visibili
+	Sequence: {name}	Sequenza: {name}
+	Source: {name}	Sorgente: {name}
+	Source: {name} (shared source markers)	Sorgente: {name} (marcatori sorgente condivisi)
+	System color picker unavailable: {error}	Selettore colore di sistema non disponibile: {error}
+	Time is outside the supported range	Il tempo è fuori dall’intervallo supportato
+	{count} selected	{count} selezionati
+	Remove Custom Color	Rimuovi colore personalizzato
+	Edit Markers	Modifica marcatori
+	Delete Markers	Elimina marcatori
+	Marker changed or was removed. Reopen it to continue.	Il marcatore è stato modificato o rimosso. Riaprilo per continuare.
+	URL	URL
+	Open Link	Apri link
+	Opens this address in your web browser	Apre questo indirizzo nel browser web
+	Enter a valid HTTP or HTTPS URL without credentials	Inserisci un URL HTTP o HTTPS valido senza credenziali
+	Previous	Precedente
+	Next	Successivo
+	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Colore a 10 bit
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Ogni fotogramma è un fotogramma chiave (facile da montare, file più grandi)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bit 4:2:0) alla dimensione della sequenza, qualità costante CRF 16, AAC 320 kbps; un master a 10 bit
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, ogni fotogramma è un fotogramma chiave), CRF 12, AAC 320 kbps; un intermedio facile da montare
+	List Color Grading Presets	Elenca predefiniti di gradazione colore
+	Apply Color Grading Preset	Applica predefinito di gradazione colore
+	Color Grading Preset Thumbnails	Miniature dei predefiniti di gradazione colore
+	Toggle Color Grading Section	Attiva/disattiva sezione di gradazione colore
+	Color Grading Section	Sezione di gradazione colore
+	Read Video Scopes	Leggi oscilloscopi video

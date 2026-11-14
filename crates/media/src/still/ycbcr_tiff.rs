@@ -70,9 +70,15 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     let unit_len = sh * sv + 2;
     let need = usize::try_from(units_x.saturating_mul(units_y).saturating_mul(unit_len)).map_err(|_| bad("too large"))?;
 
+    if !file_can_hold(bytes.len(), compression != COMPRESSION_NONE, need) {
+        return Err(bad("image data shorter than the image"));
+    }
     let offsets = uints(tags::STRIP_OFFSETS)?.ok_or_else(|| bad("no StripOffsets"))?;
     let counts = uints(tags::STRIP_BYTE_COUNTS)?.ok_or_else(|| bad("no StripByteCounts"))?;
-    let mut units: Vec<u8> = Vec::with_capacity(need);
+    // fallible: `need` can be hundreds of MiB for a small PackBits file, and a refused reservation must be an error, not an abort
+    let mut units: Vec<u8> = Vec::new();
+    units.try_reserve_exact(need).map_err(|_| bad("image too large to decode"))?;
+    let mut strip_bytes = 0usize;
     for (&off, &len) in offsets.iter().zip(&counts) {
         if units.len() >= need {
             break;
@@ -82,6 +88,11 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
             .zip(usize::try_from(len).ok())
             .and_then(|(o, l)| bytes.get(o..o.checked_add(l)?))
             .ok_or_else(|| bad("strip outside the file"))?;
+        // strips of one image do not overlap, so together they cannot exceed the file
+        strip_bytes = strip_bytes.saturating_add(strip.len());
+        if strip_bytes > bytes.len() {
+            return Err(bad("strips overlap"));
+        }
         match compression {
             COMPRESSION_NONE => units.extend_from_slice(strip.get(..need - units.len()).unwrap_or(strip)),
             _ => unpackbits(strip, &mut units, need),
@@ -135,6 +146,12 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     Ok(Raster { width: width as u32, height: height as u32, rgba, has_alpha: false })
 }
 
+/// Whether a file of `file_len` bytes can hold `need` bytes of data units: uncompressed they are
+/// the file's bytes, PackBits expands at most 64 to 1 (a two-byte run of 128).
+fn file_can_hold(file_len: usize, packbits: bool, need: usize) -> bool {
+    need <= file_len.saturating_mul(if packbits { 64 } else { 1 })
+}
+
 /// PackBits (TIFF 6.0 §9) from `src` appended to `out`, stopping at `limit` bytes of output or at
 /// a run that the data ends inside.
 fn unpackbits(src: &[u8], out: &mut Vec<u8>, limit: usize) {
@@ -160,6 +177,14 @@ fn unpackbits(src: &[u8], out: &mut Vec<u8>, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_small_file_cannot_claim_a_large_image() {
+        assert!(file_can_hold(100, false, 100));
+        assert!(!file_can_hold(100, false, 101));
+        assert!(file_can_hold(100, true, 6400));
+        assert!(!file_can_hold(100, true, 6401));
+    }
 
     #[test]
     fn packbits_runs_literals_and_noops() {

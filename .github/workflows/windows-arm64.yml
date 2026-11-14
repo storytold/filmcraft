@@ -32,3 +32,5 @@ jobs:
     with:
       app-name: filmcraft
       app-dir: FilmCraft
+      install-relative-path: Programs/ArtCraft/FilmCraft
+      install-scope: perUser

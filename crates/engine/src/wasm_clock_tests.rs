@@ -14,12 +14,14 @@ fn sources() -> Vec<(String, String)> {
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).unwrap().flatten() {
             let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             if p.is_dir() {
-                stack.push(p);
+                if name != "tests" {
+                    stack.push(p);
+                }
                 continue;
             }
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "media_test_util.rs" {
+            if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "tests.rs" || name == "media_test_util.rs" {
                 continue;
             }
             out.push((p.display().to_string(), std::fs::read_to_string(&p).unwrap()));

@@ -123,7 +123,10 @@ impl BridgeClient {
         let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
             .await
             .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
-            .map_err(|e| AutomationError::Bridge(format!("cannot connect to {} ({e}); start the app with `filmcraft --control <port>`", self.addr)))?;
+            .map_err(|e| AutomationError::Bridge(format!(
+                "cannot connect to {} ({e}); start the app with `filmcraft --control <port>` and set FILMCRAFT_CONTROL_TOKEN to the same 64-hex-character value on both sides (see docs/control-protocol.md)",
+                self.addr
+            )))?;
         let (r, w) = s.into_split();
         Ok((BufReader::new(r), w))
     }
@@ -173,6 +176,20 @@ mod tests {
             }
         });
         (addr, seen)
+    }
+
+    /// A refused connection names the launch command and the token requirement (#3436): the
+    /// reporter spent two ports and a debug-level console capture on a bare "connection refused".
+    #[tokio::test]
+    async fn refused_connection_error_names_the_token_requirement() {
+        // Bind and drop: connecting to the freed address is deterministically refused.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let b = BridgeClient::new(addr.as_str()).unwrap();
+        let err = b.call("ui.inspect", json!({})).await.unwrap_err().to_string();
+        assert!(err.contains("--control"), "{err}");
+        assert!(err.contains("FILMCRAFT_CONTROL_TOKEN"), "{err}");
     }
 
     /// A blocking bridge export runs as an app job (#91, #92): the app never sees `wait: true` (it

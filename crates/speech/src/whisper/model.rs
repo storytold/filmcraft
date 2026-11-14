@@ -28,6 +28,9 @@ pub struct Config {
     pub vocab_size: usize,
 }
 
+/// Most attention heads a model may declare.
+const MAX_HEADS: usize = 64;
+
 struct Attention {
     q: Linear,
     k: Linear,
@@ -40,6 +43,14 @@ struct Attention {
 
 impl Attention {
     fn new(d: usize, heads: usize, vb: VarBuilder) -> Result<Self> {
+        // from config.json: zero heads divided by zero in `forward`, and the count sizes every
+        // attention-logit tensor (released Whisper models use 6 to 20)
+        if heads == 0 || heads > MAX_HEADS {
+            candle_core::bail!("config.json: {heads} attention heads is outside 1 to {MAX_HEADS}");
+        }
+        if !d.is_multiple_of(heads) {
+            candle_core::bail!("config.json: d_model {d} is not divisible by {heads} attention heads");
+        }
         Ok(Self {
             q: candle_nn::linear(d, d, vb.pp("q_proj"))?,
             k: candle_nn::linear_no_bias(d, d, vb.pp("k_proj"))?,
@@ -270,5 +281,22 @@ impl Model {
     pub fn last_logits(logits: &Tensor) -> Result<Vec<f32>> {
         let t = logits.dim(1)?;
         logits.get(0)?.get(t - 1)?.to_dtype(DType::F32)?.to_vec1()
+    }
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+
+    #[test]
+    fn head_counts_that_cannot_split_d_model_are_errors() {
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        for heads in [0, 7, 1 << 20] {
+            assert!(Attention::new(384, heads, vb.clone()).is_err(), "{heads} heads");
+        }
+        let why = |d: usize, heads: usize| Attention::new(d, heads, vb.clone()).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(why(65, 65).contains("outside"), "{}", why(65, 65));
+        assert!(why(384, 7).contains("not divisible"), "{}", why(384, 7));
+        assert!(Attention::new(384, 6, vb).is_ok());
     }
 }

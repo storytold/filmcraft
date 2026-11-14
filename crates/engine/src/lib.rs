@@ -25,19 +25,24 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+mod marker_edit;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
 pub mod media_pool;
+#[cfg(not(target_arch = "wasm32"))]
+mod media_queue;
 pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+mod palette;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -76,6 +81,67 @@ pub use media_pool::MediaPool;
 /// this platform"). Use this instead of `std::env::temp_dir()` in any code the web build runs.
 pub fn temp_dir() -> std::path::PathBuf {
     if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
+}
+
+/// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
+/// for and the same for the rest of the process (a new one if the cached folder was removed). Use it, not a fixed name in the shared temp folder:
+/// another local user can pre-create that name and plant links in it. An error when no folder could
+/// be created (a missing `TMPDIR`): callers must not fall back to creating the path themselves, which
+/// would make it with the default mode. On wasm32 the virtual filesystem has no owner, so the path is
+/// returned as is.
+pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    // The folder and, on unix, the (device, inode) it was created with.
+    static DIR: std::sync::Mutex<Option<(std::path::PathBuf, Option<(u64, u64)>)>> = std::sync::Mutex::new(None);
+    // Where a folder's identity cannot be read (non-unix) this is `None`, and the check below is only "still a real folder".
+    fn identity(p: &std::path::Path) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = p;
+            None
+        }
+    }
+    let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
+    // A folder removed or swapped since (a temp cleaner, then another user's folder or link at the
+    // same name) is replaced by a new private one, not recreated by a caller with the default mode.
+    // shortcut: this is a check at reuse; a swap between the check and the write needs directory-handle I/O.
+    if let Some((d, _)) =
+        cached.as_ref().filter(|(d, id)| cfg!(target_arch = "wasm32") || (std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()) && identity(d) == *id))
+    {
+        return Ok(d.clone());
+    }
+    let mut last = None;
+    for _ in 0..16 {
+        let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
+        if cfg!(target_arch = "wasm32") {
+            *cached = Some((path.clone(), None));
+            return Ok(path);
+        }
+        // Owner-only on Unix. Elsewhere there's no mode to set, and a `mut` would be unused.
+        #[cfg(unix)]
+        let dir = {
+            let mut dir = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+            dir
+        };
+        #[cfg(not(unix))]
+        let dir = std::fs::DirBuilder::new();
+        // `create` fails when the name exists, so a folder someone else made is never accepted
+        match dir.create(&path) {
+            Ok(()) => {
+                *cached = Some((path.clone(), identity(&path)));
+                return Ok(path);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no private temp folder")))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -161,7 +227,7 @@ pub trait Services: Send + Sync {
 pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        std::fs::read(path)
+        filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -193,7 +259,7 @@ impl Services for FsServices {
         Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
-        Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
+        Some(std::sync::Arc::new(|p: &str| filmcraft_media::reader::read_regular_file(std::path::Path::new(p))))
     }
     /// Media are read in place from the open file: a clip costs its index, not its size.
     #[cfg(any(unix, windows))]
@@ -223,11 +289,13 @@ impl Services for FsServices {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UndoMark(Option<usize>);
 
-/// Undo history of whole-project snapshots.
+/// Undo history of whole-project snapshots. Each step is its label, the project before (undo) or
+/// after (redo) it, and the id of the command that made it (None for an edit made outside
+/// [`Session::execute`]); the History panel draws that command's icon.
 #[derive(Clone, Default)]
 pub struct History {
-    pub undo: Vec<(String, Arc<Project>)>,
-    pub redo: Vec<(String, Arc<Project>)>,
+    pub undo: Vec<(String, Arc<Project>, Option<String>)>,
+    pub redo: Vec<(String, Arc<Project>, Option<String>)>,
     /// Labels of all applied states, oldest first (History panel).
     pub limit: usize,
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
@@ -398,9 +466,16 @@ pub struct EditorState {
     /// Marker colours hidden in the Markers panel (Show All Marker Colors clears this).
     #[serde(default)]
     pub hidden_marker_colors: Vec<filmcraft_project::Label>,
+    #[serde(default)]
+    pub hidden_custom_marker_colors: Vec<filmcraft_project::HexColor>,
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Transitions copied with the clipboard clips (#3450): those whose every clip is copied, with
+    /// their track kind and relative track index (start relative to the copied range, `from`/`to`
+    /// still the copied clips' original ids).
+    #[serde(skip)]
+    pub clipboard_transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)>,
     /// Captions copied from the Timeline, with their caption track's index (starts relative to the
     /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
     /// places whichever was copied last.
@@ -429,6 +504,8 @@ pub enum Event {
 
 pub struct Session {
     pub project: Arc<Project>,
+    /// Runtime identity of the opened project, stable across edits/undo and renewed on replacement.
+    pub project_instance: Arc<()>,
     pub history: History,
     pub revision: u64,
     /// Bumped whenever the session installs a different project document (`file.newProject`,
@@ -497,6 +574,9 @@ pub struct Session {
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
+    /// it makes.
+    pub(crate) command_origin: Option<String>,
     /// Each media file's size and modification time when last seen (Settings ▸ Media ▸
     /// Automatically refresh growing files, [`media_watch`]).
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
@@ -551,6 +631,7 @@ impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
         Self {
             project: Arc::new(Project::new("Untitled")),
+            project_instance: Arc::new(()),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
             document_epoch: 0,
@@ -593,6 +674,7 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
         }
@@ -632,6 +714,8 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        // a restart restores the persisted Selection Follows Playhead toggle (#3089)
+        self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
@@ -704,6 +788,8 @@ impl Session {
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
         let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
+        // the session mirrors the persisted Selection Follows Playhead toggle (#3089)
+        self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         if cache_changed {
             self.apply_media_cache();
@@ -747,7 +833,13 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-        if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
+        // headless sessions (CLI, MCP, control channel) have no UI frame loop calling
+        // `poll_persistence`: apply background mask tracking before each command (#3302)
+        if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
+            masks::poll(self);
+        }
+        let journal = spec.journal && !commands::reports_only(id, &params);
+        if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
         if let Err(why) = self.enabled_for(spec, &params) {
@@ -757,6 +849,18 @@ impl Session {
             }
             return Err(e);
         }
+        // Only an editing command can introduce clips for the sequence-only scope. Loading a
+        // document or restoring an undo snapshot must not run recognition or change that snapshot.
+        let transcription_before = (self.exec_depth == 0
+            && spec.journal
+            && self.prefs.media_analysis.auto_transcribe
+            && self.prefs.media_analysis.auto_transcribe_scope == "sequenceClips"
+            && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
+        .then(|| self.project.clone());
+        let outermost = self.exec_depth == 0;
+        if outermost {
+            self.command_origin = Some(id.to_string());
+        }
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -764,12 +868,24 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if outermost {
+            self.command_origin = None;
+        }
         if self.exec_depth == 0 {
             source_monitor::track_history(self);
         }
         // source graphics: an edited instance updates the shared layers and the other instances
-        if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
+        if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
+        }
+        if r.is_ok()
+            && let Some(before) = transcription_before
+            && !Arc::ptr_eq(&before, &self.project)
+            && let Err(e) = transcript::auto_transcribe_sequence_clips(self, &before)
+        {
+            let message = format!("Automatic transcription: {e}");
+            self.log.push(panels::Level::Warning, id, message.clone());
+            self.events.push(Event::Toast { message, error: true });
         }
         if self.exec_depth == 0
             && let Err(e) = &r
@@ -779,7 +895,7 @@ impl Session {
         self.sync_persistence();
         // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
         self.previews.live.publish_project(self.project.clone());
-        if r.is_ok() && spec.journal {
+        if r.is_ok() && journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
@@ -887,14 +1003,31 @@ impl Session {
         }
     }
 
+    /// Every edit passes through here too: a transition whose clip the edit removed, or whose two
+    /// clips it moved apart, goes away (`filmcraft_edit::remove_orphan_transitions`), whichever
+    /// command made the edit. Sequences the edit did not touch are left as they are (the edit
+    /// cloned only what it changed, so this costs nothing for them).
+    fn drop_orphan_transitions(&self, edited: &mut Project) {
+        for (id, it) in &mut edited.items {
+            let filmcraft_project::ItemKind::Sequence(q) = &mut it.kind else { continue };
+            if matches!(self.project.items.get(id).map(|o| &o.kind), Some(filmcraft_project::ItemKind::Sequence(o)) if Arc::ptr_eq(o, q)) {
+                continue;
+            }
+            for t in Arc::make_mut(q).all_tracks_mut() {
+                filmcraft_edit::remove_orphan_transitions(t);
+            }
+        }
+    }
+
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
+        self.drop_orphan_transitions(&mut p);
         let old = std::mem::replace(&mut self.project, Arc::new(p));
-        self.history.undo.push((label.to_string(), old));
+        self.history.undo.push((label.to_string(), old, self.command_origin.clone()));
         if self.history.undo.len() > self.history.limit {
             self.history.undo.remove(0);
         }
@@ -919,6 +1052,7 @@ impl Session {
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
+        self.drop_orphan_transitions(&mut p);
         self.project = Arc::new(p);
         self.state = st;
         self.drop_stale_gap();
@@ -936,7 +1070,7 @@ impl Session {
         // a panic inside the group must not leave the history unlimited: restore, then let it go on
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
         self.history.limit = limit;
-        let first = self.history.undo.get(undo).map(|e| e.1.clone());
+        let first = self.history.undo.get(undo).map(|e| (e.1.clone(), e.2.clone()));
         let rolled_back = |s: &mut Session| {
             s.history.undo.truncate(undo);
             s.history.redo = redo.clone();
@@ -946,9 +1080,9 @@ impl Session {
             s.bump();
         };
         match (r, first) {
-            (Ok(Ok(v)), Some(first)) => {
+            (Ok(Ok(v)), Some((first, origin))) => {
                 self.history.undo.truncate(undo);
-                self.history.undo.push((label.to_string(), first));
+                self.history.undo.push((label.to_string(), first, origin));
                 if self.history.undo.len() > limit {
                     self.history.undo.remove(0);
                 }
@@ -984,7 +1118,7 @@ impl Session {
         let mut earliest = None;
         let mut n = 0;
         while self.undo_mark() != mark {
-            let Some((_, prev)) = self.history.undo.pop() else { break };
+            let Some((_, prev, _)) = self.history.undo.pop() else { break };
             earliest = Some(prev);
             n += 1;
         }
@@ -1037,20 +1171,20 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
-        let (label, prev) = self.history.undo.pop()?;
+        let (label, prev, origin) = self.history.undo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
-        self.history.redo.push((label.clone(), cur));
+        self.history.redo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
         Some(label)
     }
 
     pub fn redo(&mut self) -> Option<String> {
-        let (label, next) = self.history.redo.pop()?;
+        let (label, next, origin) = self.history.redo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
-        self.history.undo.push((label.clone(), cur));
+        self.history.undo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
         Some(label)
@@ -1276,6 +1410,8 @@ mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
 #[cfg(test)]
+mod clip_mismatch_tests;
+#[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
@@ -1298,6 +1434,8 @@ mod individual_selection_tests;
 #[cfg(test)]
 mod interchange_auto_points_tests;
 #[cfg(test)]
+mod interchange_bin_tests;
+#[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
@@ -1317,6 +1455,8 @@ mod media_watch_tests;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod named_targets_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]
@@ -1393,3 +1533,15 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
+
+#[cfg(all(test, unix))]
+mod private_temp_dir_tests {
+    #[test]
+    fn the_private_temp_dir_is_new_owner_only_and_stable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = super::private_temp_dir().unwrap();
+        assert!(d.is_dir());
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(d, super::private_temp_dir().unwrap());
+    }
+}

@@ -11,13 +11,20 @@ default = ["threads"]
 threads = ["dep:rayon"]
 # A small DNG and lossless JPEG writer for synthesising test files (not used by the app).
 writer = []
+# serde derives on the raw settings (`ProcessOptions`) for UI state and project files.
+serde = ["dep:serde"]
 
 [dependencies]
 rayon = { workspace = true, optional = true }
+# Baseline (lossy) JPEG for Compression 34892 tiles: the JPEG decoder the workspace already uses
+# (crates/codecs, crates/media), pure Rust.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-filmcraft-dng = { path = ".", features = ["writer"] }
+filmcraft-dng = { path = ".", features = ["writer", "serde"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

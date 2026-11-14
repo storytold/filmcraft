@@ -19,9 +19,9 @@ fn project_with_a_title() -> (Project, ItemId) {
     let graphic = p.add_item("Graphic", Label::Rose, ItemKind::Graphic { width: 1920, height: 1080, rate: RATE }, None);
     let layer =
         p.add_item("Adjustment Layer", Label::Iris, ItemKind::AdjustmentLayer { width: 1920, height: 1080, rate: RATE, duration: RATE.tick_of(240) }, None);
-    clip(&mut p, s, TrackKind::Video, 0, a, 0, 48, 0);
-    let adj = clip(&mut p, s, TrackKind::Video, 0, layer, 48, 24, 0);
-    let title = clip(&mut p, s, TrackKind::Video, 1, graphic, 12, 24, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..48, 0);
+    let adj = clip(&mut p, s, TrackKind::Video, 0, layer, 48..48 + (24), 0);
+    let title = clip(&mut p, s, TrackKind::Video, 1, graphic, 12..12 + (24), 0);
     let q = p.sequence_mut(s).unwrap();
     let (_, t) = q.find_item_mut(title).unwrap();
     t.name = "Opening \"line\"".into();
@@ -64,7 +64,7 @@ fn every_format_names_the_title_and_the_adjustment_layer_it_cannot_carry() {
 fn two_titles_are_two_report_lines() {
     let (mut p, s) = project_with_a_title();
     let graphic = p.items.values().find(|i| matches!(i.kind, ItemKind::Graphic { .. })).map(|i| i.id).unwrap();
-    let second = clip(&mut p, s, TrackKind::Video, 1, graphic, 40, 10, 0);
+    let second = clip(&mut p, s, TrackKind::Video, 1, graphic, 40..40 + (10), 0);
     p.sequence_mut(s).unwrap().find_item_mut(second).unwrap().1.name = "Closing".into();
     for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf] {
         let (_, report) = export_report(&p, s, format);
@@ -77,7 +77,7 @@ fn a_sequence_without_such_clips_reports_nothing_about_them() {
     let mut p = Project::new("Plain");
     let s = sequence(&mut p, "Cut", RATE, false);
     let a = media(&mut p, "/m/a.mov", true, true, RATE);
-    clip(&mut p, s, TrackKind::Video, 0, a, 0, 48, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..48, 0);
     for format in [Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Edl, Format::Aaf] {
         let (_, report) = export_report(&p, s, format);
         assert!(!report.mentions("graphic clip") && !report.mentions("adjustment layer"), "{format:?}: {report}");
@@ -138,8 +138,8 @@ fn fcp7_import_reports_a_clip_item_whose_file_is_not_defined() {
     let mut plain = Project::new("Plain");
     let s = sequence(&mut plain, "Cut", RATE, false);
     let a = media(&mut plain, "/m/a.mov", true, true, RATE);
-    clip(&mut plain, s, TrackKind::Video, 0, a, 0, 48, 0);
-    clip(&mut plain, s, TrackKind::Video, 0, a, 48, 24, 0);
+    clip(&mut plain, s, TrackKind::Video, 0, a, 0..48, 0);
+    clip(&mut plain, s, TrackKind::Video, 0, a, 48..48 + (24), 0);
     let (bytes, _) = export_report(&plain, s, Format::Fcp7Xml);
     let (_, report) = import(&bytes, Format::Fcp7Xml, None).unwrap();
     assert!(!report.mentions("does not define"), "{report}");
