@@ -580,6 +580,29 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
     }
 }
 
+/// The items of a track the view can show. Items are sorted by start and do not overlap (the
+/// invariants `Track::check` keeps, and the order `Track::item_at` binary-searches), so the
+/// visible window is one contiguous slice found by two binary searches instead of a scan of
+/// every clip on the track. A drag previews items somewhere other than their stored `start`,
+/// so while one is in progress every item is checked. A project that breaks the invariants
+/// (a load enforces the value bounds only) falls back to inspecting all of them.
+fn visible_items(items: &[TrackItem], visible: (Tick, Tick), previewing: bool) -> &[TrackItem] {
+    if previewing {
+        return items;
+    }
+    // The binary searches below are valid only while both starts and ends are nondecreasing
+    // (Track::check keeps that for edits, but a load only checks value bounds, so a legacy
+    // file can break either). Verify both in one pass; on a broken track, fall back to
+    // inspecting every item rather than trusting a wrong boundary that could drop a visible
+    // clip or include an invisible one.
+    if !items.iter().is_sorted_by(|a, b| a.start <= b.start && a.end() <= b.end()) {
+        return items;
+    }
+    let lo = items.partition_point(|i| i.end() < visible.0);
+    let hi = items.partition_point(|i| i.start <= visible.1);
+    items.get(lo..hi).unwrap_or(items)
+}
+
 /// The clips in the visible rows: each track's items (with their drag previews, copies,
 /// waveforms and thumbnails), duplicate-frame stripes, empty nested-sequence overhangs,
 /// through edits, transitions and the locked-track hatch.
@@ -632,7 +655,8 @@ fn draw_clips(
                 app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
             }
         }
-        for it in &tr.items {
+        // items are sorted by start, so only the window the view covers is inspected
+        for it in visible_items(&tr.items, visible, !previews.is_empty() || !edited.is_empty()) {
             let it = edited.get(&it.id).unwrap_or(it);
             let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
             if moved_track.is_some_and(|m| m != r.track) {
@@ -692,8 +716,10 @@ fn draw_clips(
                 app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
             }
         }
-        paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
     }
+    // after the row loop: `paint_track_edits` walks every row itself, so inside it each overlay
+    // would be painted once per visible row (20 rows ≈ 400 row passes)
+    paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
 }
 
 /// Per-track details over the clips: through-edit bow-ties, the selected edit points, the
@@ -1339,5 +1365,167 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+}
+
+/// `paint_track_edits` walks every row itself, so calling it from inside `draw_clips`' row loop
+/// painted all overlays (transitions, through edits, the locked-track hatch) once per visible
+/// row. The registered automation ids count the passes: each overlay must register once per
+/// frame, not once per row.
+#[cfg(test)]
+mod overlay_paint_count_tests {
+    use super::*;
+
+    /// The demo project's session, its active sequence, and that sequence's id.
+    pub(super) fn demo() -> (FilmcraftApp, Sequence, ItemId) {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let seq_id = s.state.active_sequence.unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        (FilmcraftApp::new(s), seq, seq_id)
+    }
+
+    /// One `draw_clips` pass over every track, laid out the way `show` lays it out: rows stacked
+    /// from the top, all of them on screen.
+    fn draw_clips_once(app: &mut FilmcraftApp, seq: &Sequence, seq_id: ItemId) {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 400.0));
+            let rows: Vec<Row> = seq
+                .all_tracks()
+                .enumerate()
+                .map(|(i, tr)| Row {
+                    track: tr.id,
+                    kind: tr.kind,
+                    index: i,
+                    rect: Rect::from_min_max(pos2(0.0, i as f32 * 40.0), pos2(1600.0, (i + 1) as f32 * 40.0)),
+                    lane: false,
+                })
+                .collect();
+            let layout = Layout { content, ruler: content, rows: rows.clone(), pps: 100.0, scroll: 0.0, split_y: 0.0, v_scroll: 0.0, a_scroll: 0.0 };
+            // keep the pass to the overlays under test: no thumbnail or peak jobs from a test
+            app.ui.timeline.show_thumbnails = false;
+            app.ui.timeline.show_waveforms = false;
+            app.session.state.show_duplicate_frame_markers = false;
+            app.auto.elements.clear();
+            let t = app.tokens;
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("draw-clips-test")));
+            draw_clips(app, ctx, &painter, seq, seq_id, &rows, &layout, content, content, content, seq.settings.frame_rate, t);
+        });
+        // nothing renders the frame, so the font textures it allocated are dropped unapplied
+        out.textures_delta.clear();
+    }
+
+    /// The regression test for the per-row overlay paint: one `draw_clips` pass must register
+    /// each transition exactly once, however many rows are visible.
+    #[test]
+    fn overlays_register_once_per_frame_not_once_per_visible_row() {
+        let (mut app, seq, seq_id) = demo();
+        assert!(seq.all_tracks().count() > 1, "the bug needs more than one visible row to show");
+        draw_clips_once(&mut app, &seq, seq_id);
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for e in &app.auto.elements {
+            if e.id.starts_with("timeline.transition.") {
+                *seen.entry(e.id.as_str()).or_default() += 1;
+            }
+        }
+        assert!(!seen.is_empty(), "the demo project's transitions must be drawn");
+        let repeated: Vec<(&str, usize)> = seen.iter().filter(|(_, n)| **n > 1).map(|(id, n)| (*id, *n)).collect();
+        assert!(repeated.is_empty(), "an overlay registers once per frame, not once per visible row: {repeated:?}");
+    }
+}
+
+/// `visible_items` replaces a scan of every clip on a track with two binary searches. The drawn
+/// output must be exactly the clips the view covers, a drag preview must still see every clip
+/// (a dragged clip is not where its stored `start` says), and a project that breaks the
+/// sorted-start or sorted-ends invariant must fall back rather than drop a visible clip or
+/// panic on crossed window bounds.
+#[cfg(test)]
+mod visible_items_tests {
+    use super::overlay_paint_count_tests::demo;
+    use super::*;
+
+    /// Seconds as ticks.
+    fn t(s: f64) -> Tick {
+        Tick::from_seconds_f64(s)
+    }
+
+    /// Clips on one track with the given start/duration pairs, in that order.
+    fn make(pairs: &[(f64, f64)]) -> Vec<TrackItem> {
+        let (_, seq, _) = demo();
+        let base = seq.all_tracks().flat_map(|tr| &tr.items).next().cloned().expect("the demo project has clips");
+        pairs
+            .iter()
+            .map(|(start, dur)| {
+                let mut it = base.clone();
+                it.start = t(*start);
+                it.duration = t(*dur);
+                it
+            })
+            .collect()
+    }
+
+    /// Five clips on one track: 0–5, 10–15, 20–100, 110–115, 120–125 seconds.
+    fn five() -> Vec<TrackItem> {
+        make(&[(0.0, 5.0), (10.0, 5.0), (20.0, 80.0), (110.0, 5.0), (120.0, 5.0)])
+    }
+
+    /// The start of each item, in order.
+    fn starts(items: &[TrackItem]) -> Vec<Tick> {
+        items.iter().map(|i| i.start).collect()
+    }
+
+    /// A window inside, before, across and past the clips returns exactly the clips it covers.
+    #[test]
+    fn only_the_clips_the_view_covers_are_returned() {
+        let items = five();
+        // 50–60 s sits inside the 20–100 s clip alone
+        assert_eq!(starts(visible_items(&items, (t(50.0), t(60.0)), false)), [t(20.0)]);
+        // a view starting before the first clip still gets the first clip
+        assert_eq!(starts(visible_items(&items, (t(-5.0), t(3.0)), false)), [t(0.0)]);
+        // a view straddling a cut gets both clips
+        assert_eq!(starts(visible_items(&items, (t(12.0), t(21.0)), false)), [t(10.0), t(20.0)]);
+        // past the end of the track: nothing
+        assert!(visible_items(&items, (t(200.0), t(300.0)), false).is_empty());
+        // an empty track: nothing
+        assert!(visible_items(&[], (t(0.0), t(10.0)), false).is_empty());
+    }
+
+    /// A drag can move a clip anywhere, so previews bypass the window and inspect every item.
+    #[test]
+    fn a_drag_preview_checks_every_item_because_a_dragged_clip_is_not_at_its_stored_start() {
+        let items = five();
+        assert_eq!(visible_items(&items, (t(50.0), t(60.0)), true).len(), items.len());
+    }
+
+    /// A negative duration can cross the window bounds; the helper falls back instead of panicking.
+    #[test]
+    fn an_item_whose_end_precedes_its_start_falls_back_instead_of_panicking() {
+        let mut items = five();
+        // 110 s start with a −200 s duration ends at −90 s: a load checks value bounds only,
+        // so this can reach the view and make the window's two bounds cross (lo > hi)
+        items[3].duration = t(-200.0);
+        let all = visible_items(&items, (t(105.0), t(108.0)), false);
+        assert_eq!(all.len(), items.len(), "falls back to inspecting every item");
+    }
+
+    /// Overlapping clips break sorted ends; the long clip must not be dropped.
+    #[test]
+    fn overlapping_clips_whose_ends_are_not_sorted_stay_visible() {
+        // 0–100 and 10–15 overlap, so ends (100, 15) are not nondecreasing; the long clip
+        // spans a 50–60 s view and must not be dropped by the lower-bound search
+        let items = make(&[(0.0, 100.0), (10.0, 5.0)]);
+        let all = visible_items(&items, (t(50.0), t(60.0)), false);
+        assert_eq!(all.len(), items.len(), "the overlapping long clip stays visible");
+    }
+
+    /// Unordered starts break the upper-bound search; overlapping clips must stay visible.
+    #[test]
+    fn unordered_starts_fall_back_instead_of_dropping_a_visible_clip() {
+        // starts 10, 80, 20 are not nondecreasing; the 20–100 clip overlaps a 30–50 s view
+        // and must not be dropped by the upper-bound search
+        let items = make(&[(10.0, 30.0), (80.0, 10.0), (20.0, 80.0)]);
+        let all = visible_items(&items, (t(30.0), t(50.0)), false);
+        assert_eq!(all.len(), items.len(), "every overlapping clip stays visible");
     }
 }
