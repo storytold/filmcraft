@@ -103,6 +103,7 @@ pub fn register() -> Availability {
         media_foundation::set_zero_copy(zero_copy);
         if zero_copy {
             filmcraft_gpu::register_gpu_surface_importer(media_foundation::import_wgpu_surface);
+            filmcraft_gpu::register_export_target_importer(nvenc::import_wgpu_target);
         }
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");

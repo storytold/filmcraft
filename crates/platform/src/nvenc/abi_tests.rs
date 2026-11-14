@@ -669,3 +669,37 @@ fn bit_field_masks_match_the_header() {
     assert_eq!(AV1_INPUT_PIXEL_BIT_DEPTH_MASK >> AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT, 7, "inputPixelBitDepthMinus8 is 3 bits");
     assert_eq!(AV1_PIXEL_BIT_DEPTH_MASK >> AV1_PIXEL_BIT_DEPTH_SHIFT, 7, "pixelBitDepthMinus8 is 3 bits");
 }
+
+#[test]
+fn nv_enc_register_and_map_resource_layout_matches_the_header() {
+    assert_eq!((size_of::<NV_ENC_MAP_INPUT_RESOURCE>(), align_of::<NV_ENC_MAP_INPUT_RESOURCE>()), (1544, 8), "NV_ENC_MAP_INPUT_RESOURCE");
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, version), 0);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, subResourceIndex), 4);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, inputResource), 8);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, registeredResource), 16);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, mappedResource), 24);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, mappedBufferFmt), 32);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, reserved1), 36);
+    assert_eq!(offset_of!(NV_ENC_MAP_INPUT_RESOURCE, reserved2), 1040);
+
+    assert_eq!((size_of::<NV_ENC_REGISTER_RESOURCE>(), align_of::<NV_ENC_REGISTER_RESOURCE>()), (1536, 8), "NV_ENC_REGISTER_RESOURCE");
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, version), 0);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, resourceType), 4);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, width), 8);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, height), 12);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, pitch), 16);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, subResourceIndex), 20);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, resourceToRegister), 24);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, registeredResource), 32);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, bufferFormat), 40);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, bufferUsage), 44);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, pInputFencePoint), 48);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, chromaOffset), 56);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, reserved1), 64);
+    assert_eq!(offset_of!(NV_ENC_REGISTER_RESOURCE, reserved2), 1048);
+
+    assert_eq!(NV_ENC_MAP_INPUT_RESOURCE_VER, struct_version(4));
+    assert_eq!(NV_ENC_REGISTER_RESOURCE_VER, struct_version(4));
+    assert_eq!(NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX, 0);
+    assert_eq!(NV_ENC_BUFFER_USAGE_INPUT_IMAGE, 0);
+}

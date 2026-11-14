@@ -26,6 +26,21 @@ pub struct EncoderFrame<'a> {
     pub index: u64,
 }
 
+/// An opaque GPU-resident surface that an encoder accepts directly without CPU readback.
+pub trait GpuEncodeInput: Send + Sync {
+    /// Stable per-process identifier used by GPU compositors to cache imported views.
+    fn id(&self) -> u64;
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+}
+
+/// Pool of [`GpuEncodeInput`] surfaces supplied by a [`VideoEncoder`] for zero-copy export.
+pub trait GpuEncodePool: Send + Sync {
+    fn acquire(&self, width: u32, height: u32) -> Option<std::sync::Arc<dyn GpuEncodeInput>>;
+}
+
 /// Per-picture work an encoder hands to the export's render threads, see
 /// [`VideoEncoder::prepare_ahead`].
 pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
@@ -36,6 +51,14 @@ pub trait VideoEncoder: Send {
     fn timescale(&self) -> u32;
     fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>>;
     fn flush(&mut self) -> Result<Vec<EncodedPacket>>;
+    /// Pool of encoder-owned GPU surfaces for zero-copy GPU rendering ([`FrameRenderer::render_planned_gpu`]).
+    fn gpu_input_pool(&self) -> Option<std::sync::Arc<dyn GpuEncodePool>> {
+        None
+    }
+    /// Encode a GPU-resident surface rendered via [`FrameRenderer::render_planned_gpu`].
+    fn encode_gpu(&mut self, _input: std::sync::Arc<dyn GpuEncodeInput>, _index: u64) -> Result<Vec<EncodedPacket>> {
+        Err(crate::ExportError::Unsupported("GPU encode input is not supported by this encoder".into()))
+    }
     /// Media start offset for an edit list (B-frame delay), in the encoder timescale.
     fn media_start(&self) -> Option<i64> {
         None
@@ -142,12 +165,14 @@ pub trait FrameRenderer: Send {
     }
 
     /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
-    fn render_planned_rgba8(
-        &mut self,
-        _plan: &filmcraft_render::plan::FramePlan,
-        _prep: Option<&dyn std::any::Any>,
-    ) -> Option<(u32, u32, Vec<u8>)> {
+    fn render_planned_rgba8(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
         None
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into an encoder-provided GPU surface
+    /// without CPU readback. Returns `false` when zero-copy rendering is unavailable for this frame.
+    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> bool {
+        false
     }
 }
 

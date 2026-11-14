@@ -80,11 +80,7 @@ impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
         let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
-        let preparer = if renderers.iter().all(|r| r.plan_preparer().is_some()) {
-            renderers.first().and_then(|r| r.plan_preparer())
-        } else {
-            None
-        };
+        let preparer = if renderers.iter().all(|r| r.plan_preparer().is_some()) { renderers.first().and_then(|r| r.plan_preparer()) } else { None };
         Some(Self {
             capacity: renderers.len(),
             caps: filmcraft_render::plan::DeviceCaps { adjust_side },
@@ -137,6 +133,12 @@ impl RendererPool {
         self.available.notify_all();
         res.ok()
     }
+}
+
+/// Output of one rendered frame: either CPU pixels or an encoder-owned GPU surface.
+pub(crate) enum RenderedFrame {
+    Cpu(Vec<u8>, Vec<f32>),
+    Gpu(Arc<dyn crate::GpuEncodeInput>),
 }
 
 /// The immutable part of an export: everything needed to produce one output frame.
@@ -275,9 +277,9 @@ impl Pipeline {
             && !self.has_overlays()
     }
 
-    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+    /// Output frame `f` for an export batch, using `gpu_pool` for zero-copy GPU rendering when
+    /// eligible (`can_gpu_rgba8() && !video_limiter.enabled`).
+    pub(crate) fn frame_or_gpu(&self, f: i64, sources: &dyn SourceProvider, gpu_pool: Option<&dyn crate::GpuEncodePool>) -> RenderedFrame {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
         // draw, any internal error) falls back to the CPU reference renderer below. A frame the
@@ -285,39 +287,58 @@ impl Pipeline {
         // complex transition, HDR) does not take a pooled renderer: it would render on the CPU
         // inside the pool, as many frames at a time as there are renderers instead of one per
         // export thread.
-        let pool = self
-            .renderer
-            .as_ref()
-            .filter(|pool| !pool.is_failed() && !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+        let pool =
+            self.renderer.as_ref().filter(|pool| !pool.is_failed() && !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
         if let Some(pool) = pool
             && let Some(preparer) = &pool.preparer
         {
             let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
             if let filmcraft_render::plan::FramePlan::Image(img) = plan {
                 note_gpu_frame();
-                return self.finish_image(img, t);
+                let (rgba, hdr) = self.finish_image(img, t);
+                return RenderedFrame::Cpu(rgba, hdr);
             }
             let prep = (preparer)(&plan);
             if self.can_gpu_rgba8() {
-                let asked = web_time::Instant::now();
-                let gpu = pool
-                    .with(|r| {
-                        crate::note_lock_wait(asked.elapsed());
-                        r.render_planned_rgba8(&plan, Some(prep.as_ref()))
-                    })
-                    .flatten();
-                if let Some((gw, gh, mut rgba)) = gpu
-                    && (gw, gh) == (self.w, self.h)
+                if !self.effects.video_limiter.enabled
+                    && let Some(gpu_pool) = gpu_pool
+                    && let Some(target) = gpu_pool.acquire(self.w, self.h)
                 {
-                    note_gpu_frame();
-                    if self.effects.video_limiter.enabled {
-                        limit_rgba8(&mut rgba, self.effects.video_limiter.min_percent, self.effects.video_limiter.max_percent);
+                    let asked = web_time::Instant::now();
+                    let ok = pool
+                        .with(|r| {
+                            crate::note_lock_wait(asked.elapsed());
+                            r.render_planned_gpu(&plan, Some(prep.as_ref()), target.as_ref())
+                        })
+                        .unwrap_or(false);
+                    if ok {
+                        note_gpu_frame();
+                        return RenderedFrame::Gpu(target);
                     }
-                    return (rgba, Vec::new());
+                    drop(target);
+                }
+                if !pool.is_failed() {
+                    let asked = web_time::Instant::now();
+                    let gpu = pool
+                        .with(|r| {
+                            crate::note_lock_wait(asked.elapsed());
+                            r.render_planned_rgba8(&plan, Some(prep.as_ref()))
+                        })
+                        .flatten();
+                    if let Some((gw, gh, mut rgba)) = gpu
+                        && (gw, gh) == (self.w, self.h)
+                    {
+                        note_gpu_frame();
+                        if self.effects.video_limiter.enabled {
+                            limit_rgba8(&mut rgba, self.effects.video_limiter.min_percent, self.effects.video_limiter.max_percent);
+                        }
+                        return RenderedFrame::Cpu(rgba, Vec::new());
+                    }
                 }
                 note_gpu_fallback();
                 let img = filmcraft_render::plan::execute_cpu(&plan);
-                return self.finish_image(img, t);
+                let (rgba, hdr) = self.finish_image(img, t);
+                return RenderedFrame::Cpu(rgba, hdr);
             }
             let asked = web_time::Instant::now();
             let gpu = pool
@@ -336,7 +357,8 @@ impl Pipeline {
                     filmcraft_render::plan::execute_cpu(&plan)
                 }
             };
-            return self.finish_image(img, t);
+            let (rgba, hdr) = self.finish_image(img, t);
+            return RenderedFrame::Cpu(rgba, hdr);
         }
         let gpu = match pool {
             Some(pool) => {
@@ -361,7 +383,17 @@ impl Pipeline {
                 filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
             }
         };
-        self.finish_image(img, t)
+        let (rgba, hdr) = self.finish_image(img, t);
+        RenderedFrame::Cpu(rgba, hdr)
+    }
+
+    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
+    /// R'G'B' floats (3 per pixel).
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+        match self.frame_or_gpu(f, sources, None) {
+            RenderedFrame::Cpu(rgba, hdr) => (rgba, hdr),
+            RenderedFrame::Gpu(_) => (Vec::new(), Vec::new()),
+        }
     }
 
     fn finish_image(&self, img: Image, t: Tick) -> (Vec<u8>, Vec<f32>) {

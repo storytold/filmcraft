@@ -71,11 +71,11 @@ use rayon::prelude::*;
 
 use crate::audio_out::AudioOut;
 use crate::mxf_out::{MxfMux, MxfSetup};
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Pipeline, RenderedFrame};
 use crate::settings::{AudioCodec, BitrateMode, HardwareEncoding};
 use crate::{
-    AudioEncoder, ColorSignal, EncodedPacket, EncoderFactory, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report,
-    Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_stage, take_hw_encode_decline, timed, video_factories,
+    AudioEncoder, ColorSignal, EncodedPacket, EncoderFactory, EncoderFrame, ExportError, ExportSettings, Format, GpuEncodePool, H264Pass, Out, PrepareAhead,
+    Progress, Report, Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_stage, take_hw_encode_decline, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -87,8 +87,8 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
-type Frame = (Vec<u8>, Vec<f32>);
+/// One rendered picture: straight RGBA8 / HDR floats on the CPU, or an encoder GPU surface.
+type Frame = RenderedFrame;
 
 /// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
 pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
@@ -113,20 +113,27 @@ struct Ahead {
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
-/// `prepare` (the encoder's [`VideoEncoder::prepare_ahead`]) then works on each frame, numbered
-/// from `f0` like [`EncoderFrame::index`].
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider, prepare: Option<&PrepareAhead>, f0: i64) -> Option<Vec<Frame>> {
+/// `prepare` (the encoder's [`VideoEncoder::prepare_ahead`]) then works on each CPU frame,
+/// numbered from `f0` like [`EncoderFrame::index`].
+fn render_batch(
+    pipe: &Pipeline,
+    range: (i64, i64),
+    sources: &dyn SourceProvider,
+    prepare: Option<&PrepareAhead>,
+    gpu_pool: Option<&dyn GpuEncodePool>,
+    f0: i64,
+) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
-    let frames: Vec<Frame> = (f..end)
+    let frames: Vec<Frame> = (range.0..range.1)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+            let frame = pipe.frame_or_gpu(fi, sources, gpu_pool);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
-            if let Some(prepare) = prepare {
+            if let (Some(prepare), RenderedFrame::Cpu(rgba, hdr)) = (prepare, &frame) {
                 let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
-                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.hdr_out.then_some(frame.1.as_slice()), index });
+                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba, hdr: pipe.hdr_out.then_some(hdr.as_slice()), index });
             }
             frame
         })
@@ -586,13 +593,14 @@ impl Exporter {
     /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile.
     fn step_batch(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
         let prepare = self.venc.prepare_ahead();
+        let gpu_pool = self.venc.gpu_input_pool();
         let f0 = self.f0;
         let (f, frames) = match self.ahead.take() {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0)) {
+                match timed(Stage::Render, || render_batch(pipe, (f, end), sources, prepare.as_ref(), gpu_pool.as_deref(), f0)) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -616,11 +624,14 @@ impl Exporter {
             };
         };
         let pipe = self.pipe.clone();
+        let next_gpu_pool = gpu_pool.clone();
         let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0)))));
+                slot = Some(catch_unwind(AssertUnwindSafe(|| {
+                    timed(Stage::Render, || render_batch(&pipe, (a, b), sources, prepare.as_ref(), next_gpu_pool.as_deref(), f0))
+                })));
             });
             let r = self.encode_batch(f, frames, sources);
             encode_done = Some(web_time::Instant::now());
@@ -652,7 +663,7 @@ impl Exporter {
     fn encode_batch(&mut self, f: i64, frames: Vec<Frame>, sources: &dyn SourceProvider) -> Result<Encoded> {
         if self.first_pass {
             for (k, frame) in frames.into_iter().enumerate() {
-                timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), f + k as i64))?;
+                timed(Stage::Encode, || self.encode_one(frame, f + k as i64))?;
             }
             return Ok(Encoded::Done);
         }
@@ -677,7 +688,7 @@ impl Exporter {
         let mut mixed = mixed.into_iter();
         for (k, frame) in frames.into_iter().enumerate() {
             let fi = f + k as i64;
-            let packets = timed(Stage::Encode, || self.encode(std::slice::from_ref(&frame), fi))?;
+            let packets = timed(Stage::Encode, || self.encode_one(frame, fi))?;
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
                 timed(Stage::Mux, || -> Result<()> {
@@ -694,19 +705,15 @@ impl Exporter {
         Ok(Encoded::Done)
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
-        let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
-            };
-            packets.extend(self.venc.encode(&fr)?);
+    fn encode_one(&mut self, frame: Frame, f: i64) -> Result<Vec<EncodedPacket>> {
+        let index = u64::try_from(f - self.f0).unwrap_or(u64::MAX);
+        match frame {
+            RenderedFrame::Gpu(input) => self.venc.encode_gpu(input, index),
+            RenderedFrame::Cpu(rgba, hdr) => {
+                let fr = EncoderFrame { width: self.pipe.w, height: self.pipe.h, rgba: &rgba, hdr: self.pipe.hdr_out.then_some(hdr.as_slice()), index };
+                self.venc.encode(&fr)
+            }
         }
-        Ok(packets)
     }
 }
 

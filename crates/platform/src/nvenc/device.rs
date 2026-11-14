@@ -11,7 +11,7 @@ mod directx {
     use super::c_void;
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-    use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device};
+    use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11Multithread};
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1};
     use windows::core::Interface;
 
@@ -26,6 +26,9 @@ mod directx {
         }
         pub fn as_raw(&self) -> *mut c_void {
             self.0.as_raw()
+        }
+        pub(crate) fn d3d11(&self) -> &ID3D11Device {
+            &self.0
         }
     }
     /// A Direct3D 11 device on the first NVIDIA adapter (what an NVENC session is opened on).
@@ -56,6 +59,9 @@ mod directx {
                 .is_ok()
                     && let Some(d) = device
                 {
+                    if let Ok(mt) = d.cast::<ID3D11Multithread>() {
+                        let _ = mt.SetMultithreadProtected(true);
+                    }
                     return Ok(d);
                 }
             }

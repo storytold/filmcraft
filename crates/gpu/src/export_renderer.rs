@@ -199,6 +199,28 @@ impl ExportRenderer {
         }
     }
 
+    /// Render a pre-planned and pre-prepared frame directly into an externally owned GPU surface
+    /// (`OUTPUT_FORMAT` / `Rgba8Unorm`) without CPU readback. Returns `false` when zero-copy
+    /// import or rendering is unavailable.
+    pub fn render_plan_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&crate::PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> bool {
+        if matches!(plan, FramePlan::Image(_)) || device_failed() {
+            return false;
+        }
+        if !self.compositor.render_export_surface_prepared(plan, prep, target, target_id, (w, h)) || device_failed() {
+            return false;
+        }
+        timing::add_frame();
+        true
+    }
+
     /// Type-erased wrapper around [`Self::render_plan`] for `FrameRenderer` implementations.
     pub fn render_planned(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<Image> {
         let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
@@ -209,6 +231,20 @@ impl ExportRenderer {
     pub fn render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
         let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
         self.render_plan_rgba8(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan_surface`] for `FrameRenderer` implementations.
+    pub fn render_planned_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> bool {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan_surface(plan, prep, target, target_id, w, h)
     }
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the

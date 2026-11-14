@@ -46,6 +46,8 @@ use std::collections::VecDeque;
 use filmcraft_isobmff::{Av1Config, HevcConfig};
 
 pub use self::session::{Caps, Codec, Params, Sei, Signal};
+#[cfg(target_os = "windows")]
+pub(crate) use self::session::{GpuPool, GpuSurface, import_wgpu_target};
 use self::session::{Locked, Session, Submitted};
 
 /// H.264 profile (`profile_idc` 66 / 77 / 100), HEVC Main / Main 10, or AV1 Main (8-bit 4:2:0).
@@ -107,6 +109,8 @@ pub struct Packet {
 
 /// Pictures in flight: input / output buffer pairs.
 const RING: usize = 8;
+#[cfg(target_os = "windows")]
+const GPU_POOL_SIZE: usize = 16;
 
 /// An NVENC encoder (H.264, HEVC, or AV1).
 pub struct Nvenc {
@@ -132,6 +136,8 @@ pub struct Nvenc {
     ten_bit: bool,
     /// Pictures go in as packed RGBA ([`Nvenc::encode_rgba`]) and the GPU converts them to 4:2:0.
     rgba_input: bool,
+    #[cfg(target_os = "windows")]
+    gpu_pool: Option<std::sync::Arc<GpuPool>>,
 }
 
 /// The H.264 encoder (the name it had before HEVC joined it).
@@ -381,6 +387,8 @@ impl Nvenc {
             size: (w, h),
             ten_bit,
             rgba_input,
+            #[cfg(target_os = "windows")]
+            gpu_pool: None,
         })
     }
 
@@ -470,19 +478,65 @@ impl Nvenc {
         self.submit_picture(index, |l| fill_p010(l, y, u, v, w, h))
     }
 
-    fn submit_picture(&mut self, index: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Vec<Packet>, String> {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn enable_gpu_input(&mut self) -> Result<std::sync::Arc<GpuPool>, String> {
+        if let Some(pool) = &self.gpu_pool {
+            return Ok(std::sync::Arc::clone(pool));
+        }
+        if !self.rgba_input {
+            return Err("GPU surface input requires an RGBA encoder".into());
+        }
+        let pool = self.session.enable_gpu_input(GPU_POOL_SIZE)?;
+        self.gpu_pool = Some(std::sync::Arc::clone(&pool));
+        Ok(pool)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn gpu_pool(&self) -> Option<std::sync::Arc<GpuPool>> {
+        self.gpu_pool.clone()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn encode_gpu(&mut self, surf: &std::sync::Arc<GpuSurface>, index: u64) -> Result<Vec<Packet>, String> {
+        if !self.rgba_input {
+            return Err("a GPU RGBA picture for a planar-input encoder".into());
+        }
         let mut out = Vec::new();
-        let slot = match self.free.pop() {
-            Some(s) => s,
+        while self.ready > 0 && self.pending.len() >= 4 {
+            out.push(self.read_oldest()?);
+        }
+        let slot = self.take_free_slot(&mut out)?;
+        let st = match self.session.submit_gpu(slot, index, surf) {
+            Ok(s) => s,
+            Err(e) => {
+                self.free.push(slot);
+                return Err(e);
+            }
+        };
+        self.pending.push_back(slot);
+        if st == Submitted::Ready {
+            self.ready = self.pending.len();
+        }
+        Ok(out)
+    }
+
+    fn take_free_slot(&mut self, out: &mut Vec<Packet>) -> Result<usize, String> {
+        match self.free.pop() {
+            Some(s) => Ok(s),
             None => {
                 // the ring is full: the oldest picture must come out first
                 if self.ready == 0 {
                     return Err("the encoder holds more pictures than it can".into());
                 }
                 out.push(self.read_oldest()?);
-                self.free.pop().ok_or("no free encoder buffer")?
+                self.free.pop().ok_or_else(|| "no free encoder buffer".to_string())
             }
-        };
+        }
+    }
+
+    fn submit_picture(&mut self, index: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Vec<Packet>, String> {
+        let mut out = Vec::new();
+        let slot = self.take_free_slot(&mut out)?;
         let st = self.session.submit(slot, index, fill);
         let st = match st {
             Ok(s) => s,

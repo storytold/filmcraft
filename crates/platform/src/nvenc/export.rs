@@ -18,8 +18,8 @@
 //! two write different streams.
 
 use filmcraft_export::{
-    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result,
-    VideoEncoder,
+    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, GpuEncodeInput, GpuEncodePool, H264Pass,
+    H264Profile, HardwareEncoding, Result, VideoEncoder,
 };
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
@@ -43,6 +43,42 @@ struct NvencEncoder {
     v16: Vec<u16>,
 }
 
+#[cfg(target_os = "windows")]
+struct NvencGpuInput(std::sync::Arc<super::GpuSurface>);
+
+#[cfg(target_os = "windows")]
+impl GpuEncodeInput for NvencGpuInput {
+    fn id(&self) -> u64 {
+        self.0.id()
+    }
+
+    fn width(&self) -> u32 {
+        self.0.width()
+    }
+
+    fn height(&self) -> u32 {
+        self.0.height()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_ref()
+    }
+
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::clone(&self.0) as std::sync::Arc<dyn std::any::Any + Send + Sync>
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct NvencGpuPool(std::sync::Arc<super::GpuPool>);
+
+#[cfg(target_os = "windows")]
+impl GpuEncodePool for NvencGpuPool {
+    fn acquire(&self, width: u32, height: u32) -> Option<std::sync::Arc<dyn GpuEncodeInput>> {
+        self.0.acquire(width, height).map(|s| std::sync::Arc::new(NvencGpuInput(s)) as std::sync::Arc<dyn GpuEncodeInput>)
+    }
+}
+
 /// SEI payload types of the HDR10 static metadata (H.265 Annex D): mastering display colour volume
 /// and content light level information.
 const SEI_MASTERING_DISPLAY: u32 = 137;
@@ -62,7 +98,19 @@ pub fn nvenc_signal(signal: &ColorSignal) -> Signal {
     Signal { primaries: signal.primaries, transfer: signal.transfer, matrix: signal.matrix, sei }
 }
 
-fn new_encoder(enc: Nvenc, w: u32, h: u32, rate: FrameRate, signal: ColorSignal) -> NvencEncoder {
+fn new_encoder(mut enc: Nvenc, w: u32, h: u32, rate: FrameRate, signal: ColorSignal) -> NvencEncoder {
+    #[cfg(target_os = "windows")]
+    {
+        let zero_copy = std::env::var_os("FILMCRAFT_HW_ZERO_COPY").as_deref() != Some(std::ffi::OsStr::new("0"));
+        if zero_copy
+            && enc.takes_rgba()
+            && let Err(why) = enc.enable_gpu_input()
+        {
+            log::info!("NVENC zero-copy GPU input unavailable ({why}); using RGBA readback");
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = &mut enc;
     NvencEncoder { enc, w, h, rate, signal, y: Vec::new(), u: Vec::new(), v: Vec::new(), y16: Vec::new(), u16: Vec::new(), v16: Vec::new() }
 }
 
@@ -141,6 +189,25 @@ impl VideoEncoder for NvencEncoder {
 
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         let ps = self.enc.flush().map_err(|e| ExportError::Encode(format!("NVENC: {e}")))?;
+        Ok(self.packets(ps))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn gpu_input_pool(&self) -> Option<std::sync::Arc<dyn GpuEncodePool>> {
+        self.enc.gpu_pool().map(|p| std::sync::Arc::new(NvencGpuPool(p)) as std::sync::Arc<dyn GpuEncodePool>)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn encode_gpu(&mut self, input: std::sync::Arc<dyn GpuEncodeInput>, index: u64) -> Result<Vec<EncodedPacket>> {
+        if input.width() != self.w || input.height() != self.h {
+            return Err(ExportError::Encode(format!("NVENC: a {}x{} picture for a {}x{} encoder", input.width(), input.height(), self.w, self.h)));
+        }
+        let Ok(surf) = input.clone_arc_any().downcast::<super::GpuSurface>() else {
+            return Err(ExportError::Unsupported("NVENC GPU encode input does not belong to NVENC".into()));
+        };
+        let hint = if self.enc.codec() == Codec::H264 { " (turn Export > Hardware encoding off to use the software encoder)" } else { "" };
+        let ps = self.enc.encode_gpu(&surf, index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?;
+        filmcraft_export::note_hw_encode_frame();
         Ok(self.packets(ps))
     }
 

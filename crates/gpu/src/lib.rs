@@ -131,6 +131,7 @@ pub struct GpuCompositor {
     /// Copy of the accumulator under a blend-mode layer (allocated on first use).
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    export_targets: HashMap<(u64, u32, u32), (wgpu::Texture, wgpu::TextureView)>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     output_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
@@ -322,6 +323,17 @@ static SURFACE_IMPORTER: std::sync::OnceLock<GpuSurfaceImporter> = std::sync::On
 /// Register the platform zero-copy importer once at startup (`filmcraft_platform::register`).
 pub fn register_gpu_surface_importer(importer: GpuSurfaceImporter) {
     let _ = SURFACE_IMPORTER.set(importer);
+}
+
+/// Platform hook importing an opaque encoder-owned GPU surface into a `wgpu::Device` as a
+/// render-attachment texture of format [`OUTPUT_FORMAT`] without CPU copies.
+pub type ExportTargetImporter = fn(&wgpu::Device, &dyn std::any::Any, u32, u32) -> Option<wgpu::Texture>;
+
+static EXPORT_TARGET_IMPORTER: std::sync::OnceLock<ExportTargetImporter> = std::sync::OnceLock::new();
+
+/// Register the platform zero-copy export target importer once at startup (`filmcraft_platform::register`).
+pub fn register_export_target_importer(importer: ExportTargetImporter) {
+    let _ = EXPORT_TARGET_IMPORTER.set(importer);
 }
 
 /// Optional wgpu device features that accelerate FilmCraft's GPU compositor when supported by
@@ -518,6 +530,7 @@ impl GpuCompositor {
             accum: None,
             backdrop: None,
             output: None,
+            export_targets: HashMap::new(),
             accum_readback_buf: None,
             output_readback_buf: None,
             uploads: HashMap::new(),
@@ -1046,7 +1059,6 @@ impl GpuCompositor {
         } else {
             None
         };
-        let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
         let max_side = self.device.limits().max_texture_dimension_2d;
@@ -1213,29 +1225,36 @@ impl GpuCompositor {
             i = end;
         }
         if resolve {
-            let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("final"),
-                layout: &self.final_bgl,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
-            });
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("resolve"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &out_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.final_pipeline);
-            pass.set_bind_group(0, &final_bg, &[]);
-            pass.draw(0..3, 0..1);
+            let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
+            self.resolve_into(enc, &accum_view, &out_view);
+            (out_view, (w, h))
+        } else {
+            (accum_view, (w, h))
         }
-        (if resolve { out_view } else { accum_view }, (w, h))
+    }
+
+    fn resolve_into(&self, enc: &mut wgpu::CommandEncoder, accum_view: &wgpu::TextureView, dst: &wgpu::TextureView) {
+        let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("final"),
+            layout: &self.final_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum_view) }],
+        });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("resolve"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dst,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.final_pipeline);
+        pass.set_bind_group(0, &final_bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     fn composite_steps(
@@ -1413,6 +1432,71 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
         self.map_output(size)
+    }
+
+    fn import_export_target(&mut self, target: &dyn std::any::Any, target_id: u64, (w, h): (u32, u32)) -> Option<wgpu::TextureView> {
+        let key = (target_id, w, h);
+        if let Some((_, view)) = self.export_targets.get(&key) {
+            return Some(view.clone());
+        }
+        let importer = EXPORT_TARGET_IMPORTER.get()?;
+        let tex = importer(&self.device, target, w, h)?;
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        if self.export_targets.len() >= 32 {
+            self.export_targets.clear();
+        }
+        self.export_targets.insert(key, (tex, view.clone()));
+        Some(view)
+    }
+
+    /// Zero-copy export rendering for SDR opaque outputs: composite `plan` and resolve directly into
+    /// an encoder-imported GPU surface (`OUTPUT_FORMAT` / `Rgba8Unorm`), waiting for the GPU
+    /// submission so the consumer sees completed contents without CPU readback.
+    pub fn render_export_surface_prepared(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        dims: (u32, u32),
+    ) -> bool {
+        let (w, h) = dims;
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let plan_size = match plan {
+            FramePlan::Layers { width, height, .. } | FramePlan::Composite { width, height, .. } => (*width as u32, *height as u32),
+            FramePlan::Image(img) => (img.w as u32, img.h as u32),
+        };
+        if plan_size != (w, h) {
+            return false;
+        }
+        let Some(target_view) = self.import_export_target(target, target_id, (w, h)) else {
+            return false;
+        };
+        let t = std::time::Instant::now();
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-surface") });
+        self.begin_frame();
+        let (accum_view, resolved_dims) = self.record_plan(&mut enc, plan, prep, true, false);
+        let ok = if resolved_dims == (w, h) {
+            self.resolve_into(&mut enc, &accum_view, &target_view);
+            true
+        } else {
+            false
+        };
+        self.end_frame();
+        if !ok {
+            return false;
+        }
+        let sub = self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+        let wait_t = std::time::Instant::now();
+        let finished = matches!(
+            self.device.poll(wgpu::PollType::Wait { submission_index: Some(sub), timeout: Some(MAP_TIMEOUT) }),
+            Ok(wgpu::PollStatus::WaitSucceeded | wgpu::PollStatus::QueueEmpty)
+        );
+        export_renderer::timing::add_map_wait(wait_t.elapsed());
+        finished
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
