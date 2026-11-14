@@ -30,6 +30,8 @@ fn is_file_media(item: &filmcraft_project::ProjectItem) -> bool {
 
 /// Write embedded audio without replacing an occupied path; return the path used. A numbered
 /// name changes only the file name: the folder keeps its separators as written (`/` or `\`).
+/// An occupied path that already holds exactly this audio is used as it is, so importing a
+/// document again neither rewrites its audio nor leaves a numbered copy of it (#2020).
 fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
     let (folder, name) = path.split_at(path.rfind(['/', '\\']).map_or(0, |i| i + 1));
     if matches!(name, "" | "." | "..") {
@@ -43,11 +45,21 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
         let candidate = if number == 1 { path.to_owned() } else { format!("{folder}{stem} ({number}){extension}") };
         match s.services.write_file_new(&candidate, wav) {
             Ok(()) => return Ok(candidate),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if holds(s, &candidate, wav) {
+                    return Ok(candidate);
+                }
+            }
             Err(e) => return Err(EngineError::Other(format!("{candidate}: {e}"))),
         }
     }
     Err(EngineError::Other(format!("{path}: no unused embedded-audio filename after 1000 attempts")))
+}
+
+/// Whether the file at `path` holds exactly `bytes`. The size is asked first, so a file of
+/// another length is not read; a file that cannot be read does not hold them.
+fn holds(s: &Session, path: &str, bytes: &[u8]) -> bool {
+    s.services.file_size(path).is_ok_and(|size| size == bytes.len() as u64) && s.services.read_file(path).is_ok_and(|found| found == bytes)
 }
 
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
