@@ -362,6 +362,11 @@ impl FilmcraftApp {
         // A project/sequence replacement may have happened in the previous pass's control drain.
         // Drop the old edit and IME composition before shortcuts or the frame see them.
         self.sync_ime_target_context(&ctx);
+        // A bin clicked alone stops counting once anything (Select All, a plain item click, a
+        // marquee, `project.select`) fills the selection, so Clear cannot take it along (#4382).
+        if !self.session.state.project_selection.is_empty() {
+            self.ui.project_panel.selected_bin = None;
+        }
         // Each pass draws at most one editor; a stale entry from a previous pass must not be
         // observed as this pass's editor.
         self.ime_drawn_editor = None;

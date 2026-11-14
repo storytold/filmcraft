@@ -137,27 +137,45 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label, custom: Option<f
 /// Items in display order for a view (keyboard navigation): the list's expanded rows, or the icon
 /// / freeform cards.
 pub fn items_in_view(app: &FilmcraftApp, v: &View, filter: &str) -> Vec<ItemId> {
+    view_order(app, v, filter, false)
+}
+
+/// The view's rows / cards in display order, with the bins shown among them (by id, one id space
+/// with items) when `with_bins`, so a Shift-click range can span bins and items (#4382).
+fn view_order(app: &FilmcraftApp, v: &View, filter: &str, with_bins: bool) -> Vec<ItemId> {
     let p = &app.session.project;
     let Some(bin) = p.root.find_bin(v.bin) else { return Vec::new() };
     match v.mode {
         ViewMode::List => {
             let sort = &app.session.prefs.project_panel.view.sort;
             let mut out = Vec::new();
-            fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, out: &mut Vec<ItemId>) {
+            /// Append `b`'s rows in List view order, descending into the bins shown open.
+            fn walk(app: &FilmcraftApp, b: &Bin, sort: &SortSpec, filter: &str, with_bins: bool, out: &mut Vec<ItemId>) {
                 let (bins, items) = pp::bin_children(&app.session.project, b, sort);
                 for bid in bins {
+                    if with_bins {
+                        out.push(ItemId(bid.0));
+                    }
                     if (app.ui.expanded_bins.contains(&bid.0) || !filter.is_empty())
                         && let Some(sub) = app.session.project.root.find_bin(bid)
                     {
-                        walk(app, sub, sort, filter, out);
+                        walk(app, sub, sort, filter, with_bins, out);
                     }
                 }
                 out.extend(items.into_iter().filter(|i| matches_filter(app, *i, filter)));
             }
-            walk(app, bin, sort, filter, &mut out);
+            walk(app, bin, sort, filter, with_bins, &mut out);
             out
         }
-        ViewMode::Icon => icon_order(app, bin, filter),
+        ViewMode::Icon => {
+            // bin cards come first, and only without a search (see `icon_view`)
+            let mut out: Vec<ItemId> = Vec::new();
+            if with_bins && filter.is_empty() {
+                out.extend(bin.children.iter().filter_map(|e| if let BinEntry::Bin(b) = e { Some(ItemId(b.id.0)) } else { None }));
+            }
+            out.extend(icon_order(app, bin, filter));
+            out
+        }
         ViewMode::Freeform => {
             let mut ids: Vec<ItemId> = Vec::new();
             for e in &bin.children {
@@ -250,19 +268,60 @@ pub(super) struct ItemInteraction<'a> {
     allow_menu: bool,
 }
 
+/// The Project panel's selection: the selected items and bins, plus a bin selected alone by a
+/// plain click (`selected_bin`), which a Ctrl/Cmd or Shift click then adds to.
+fn panel_selection(app: &FilmcraftApp) -> Vec<ItemId> {
+    let mut sel = app.session.state.project_selection.clone();
+    if let Some(b) = app.ui.project_panel.selected_bin
+        && !sel.contains(&ItemId(b))
+    {
+        sel.push(ItemId(b));
+    }
+    sel
+}
+
+/// Select after a click on the item or bin `id` with `mods` (see [`click_selection`]); bins and
+/// items share the one selection, so Clear then deletes them all in one step (#4382).
+fn select_clicked(app: &mut FilmcraftApp, v: &View, id: ItemId, mods: egui::Modifiers, actions: &mut Actions) {
+    let order = if mods.shift { view_order(app, v, &app.ui.project_search.to_ascii_lowercase(), true) } else { Vec::new() };
+    let anchor = app.ui.project_panel.anchor.map(ItemId);
+    let sel = click_selection(&panel_selection(app), &order, anchor, id, mods.shift, mods.command);
+    // a Shift-click keeps the anchor; a plain or Ctrl/Cmd click sets it, and so does a Shift-click
+    // whose anchor this view does not show (Freeform, a search), as it selected like a plain click
+    let ranged = mods.shift && anchor.is_some_and(|a| order.contains(&a)) && order.contains(&id);
+    if !ranged {
+        app.ui.project_panel.anchor = Some(id.0);
+    }
+    app.ui.project_panel.selected_bin = None;
+    actions.push(("project.select".into(), json!({"items": sel.iter().map(|i| i.0).collect::<Vec<_>>()})));
+}
+
+/// A click on a bin row or card. A plain click selects the bin alone (`selected_bin`, which rename
+/// and open act on); Ctrl/Cmd and Shift add it to the selection as for items. Returns whether the
+/// click was plain.
+fn bin_click(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bin: u64, actions: &mut Actions) -> bool {
+    let mods = click_modifiers(ui);
+    if mods.shift || mods.command {
+        select_clicked(app, v, ItemId(bin), mods, actions);
+        return false;
+    }
+    app.ui.project_panel.selected_bin = Some(bin);
+    app.ui.project_panel.anchor = Some(bin);
+    actions.push(("project.select".into(), json!({"items": []})));
+    true
+}
+
+/// Whether the bin `bin` is selected: alone by a plain click, or in the selection.
+fn bin_selected(app: &FilmcraftApp, bin: u64) -> bool {
+    app.ui.project_panel.selected_bin == Some(bin) || app.session.state.project_selection.contains(&ItemId(bin))
+}
+
+/// Handle a click (select), double-click (open), drag and right-click menu on an item.
 pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: &mut Actions, interaction: ItemInteraction<'_>) {
     let ItemInteraction { view: v, response: resp, item: id, kind, allow_drag: drag, allow_menu: menu } = interaction;
     if resp.clicked() {
         let mods = click_modifiers(ui);
-        let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
-        let anchor = app.ui.project_panel.anchor.map(ItemId);
-        let sel = click_selection(&app.session.state.project_selection, &order, anchor, id, mods.shift, mods.command);
-        // a Shift-click keeps the anchor; a plain or Ctrl/Cmd click sets it
-        if !mods.shift {
-            app.ui.project_panel.anchor = Some(id.0);
-        }
-        app.ui.project_panel.selected_bin = None;
-        actions.push(("project.select".into(), json!({"items": sel.iter().map(|i| i.0).collect::<Vec<_>>()})));
+        select_clicked(app, v, id, mods, actions);
     }
     if resp.double_clicked() {
         let matte = matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_engine::project::MediaRef::Generator(filmcraft_media::Generator::ColorMatte { .. })));
@@ -283,6 +342,7 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
     }
 }
 
+/// The right-click menu of an item row or card.
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
@@ -399,12 +459,16 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         app.auto.add("project.itemMenu.proxy", r.response.rect, tl!("Proxy"));
     }
     ui.separator();
-    if ui.button(tl!("Clear")).clicked() {
-        actions.push(("project.delete".into(), json!({"items": [id.0]})));
+    let b = ui.button(tl!("Clear"));
+    app.auto.add("project.itemMenu.clear", b.rect, tl!("Clear"));
+    if b.clicked() {
+        let items: Vec<u64> = menu_targets(&panel_selection(app), id).iter().map(|i| i.0).collect();
+        actions.push(("project.delete".into(), json!({"items": items})));
         ui.close();
     }
 }
 
+/// The right-click menu of a bin row or card.
 fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actions: &mut Actions) {
     for (label, how) in [(tl!("Open in Place"), "inPlace"), (tl!("Open in New Tab"), "newTab"), (tl!("Open in New Window"), "newWindow")] {
         let b = ui.button(label);
@@ -427,8 +491,12 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         ui.close();
     }
     ui.separator();
-    if ui.button(tl!("Clear")).clicked() {
-        actions.push(("project.delete".into(), json!({"items": [bin]})));
+    let b = ui.button(tl!("Clear"));
+    app.auto.add(&format!("{}.binMenu.clear", v.prefix), b.rect, tl!("Clear"));
+    if b.clicked() {
+        // every selected bin and item when the bin right-clicked is among them (#4382)
+        let items: Vec<u64> = menu_targets(&panel_selection(app), ItemId(bin)).iter().map(|i| i.0).collect();
+        actions.push(("project.delete".into(), json!({"items": items})));
         ui.close();
     }
 }
@@ -723,10 +791,12 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(origin);
         let m = ui.input(|i| i.modifiers);
         let add = m.shift || m.command;
+        // a bin clicked alone is part of what Shift/Ctrl add to, and of what Escape restores (#4382)
+        let before: Vec<u64> = panel_selection(app).iter().map(|i| i.0).collect();
         if !add {
             app.ui.project_panel.selected_bin = None;
         }
-        ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
+        ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, before, add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
     let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -775,6 +845,7 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
     ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, new_bin, actions));
 }
 
+/// Draw `bin`'s List view rows (its bins, open ones recursively, then its items) and handle them.
 #[allow(clippy::too_many_arguments)]
 fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, filter: &str, row: &mut usize, actions: &mut Actions, v: &View, lc: &ListCtx) {
     let t = app.tokens;
@@ -783,7 +854,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let Some(b) = app.session.project.root.find_bin(bid).cloned() else { continue };
         let open = app.ui.expanded_bins.contains(&b.id.0) || !filter.is_empty();
         let (r, resp) = ui.allocate_exact_size(vec2(lc.width, lc.row_h), Sense::click_and_drag());
-        let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
+        let selected = bin_selected(app, b.id.0);
         if selected {
             ui.painter().rect_filled(r, 0.0, t.row_selected);
         } else if *row % 2 == 1 {
@@ -800,21 +871,26 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), r.intersect(ui.clip_rect()), &b.name);
         app.auto.add(&format!("{}.bin.{}.toggle", v.prefix, b.id.0), tri, "Expand");
+        // a selection marker only where the row shows: none for a row scrolled out of view
+        let shown = r.intersect(ui.clip_rect());
+        if selected && shown.is_positive() {
+            app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), shown, "Selected");
+        }
         accept_bin_drop(app, ui, r, b.id.0, actions);
         if resp.drag_started_by(egui::PointerButton::Primary) {
             crate::panels::start_drag_bin(ui, b.id.0);
         }
         if resp.clicked() {
             let on_tri = resp.interact_pointer_pos().is_some_and(|p| p.x < x + 12.0);
-            if on_tri || app.ui.project_panel.selected_bin == Some(b.id.0) && !resp.double_clicked() {
+            let was_selected = app.ui.project_panel.selected_bin == Some(b.id.0);
+            let plain = bin_click(app, ui, v, b.id.0, actions);
+            if on_tri || plain && was_selected && !resp.double_clicked() {
                 if open {
                     app.ui.expanded_bins.retain(|x| *x != b.id.0);
                 } else {
                     app.ui.expanded_bins.push(b.id.0);
                 }
             }
-            app.ui.project_panel.selected_bin = Some(b.id.0);
-            actions.push(("project.select".into(), json!({"items": []})));
         }
         if resp.double_clicked() {
             let mods = click_modifiers(ui);
@@ -1035,11 +1111,12 @@ fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, ma
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// Draw an Icon view bin card and handle its clicks, drops, drag and menu.
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let mut resp = ui.interact(r.expand(2.0), egui::Id::unique((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
-    let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
+    let selected = bin_selected(app, b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.row_selected } else { t.panel_bg });
     if selected {
@@ -1071,9 +1148,12 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     if resp.drag_started_by(egui::PointerButton::Primary) {
         crate::panels::start_drag_bin(ui, b.id.0);
     }
+    let shown = th.intersect(ui.clip_rect());
+    if selected && shown.is_positive() {
+        app.auto.add(&format!("{}.bin.{}.selected", v.prefix, b.id.0), shown, "Selected");
+    }
     if resp.clicked() {
-        app.ui.project_panel.selected_bin = Some(b.id.0);
-        actions.push(("project.select".into(), json!({"items": []})));
+        bin_click(app, ui, v, b.id.0, actions);
     }
     if resp.double_clicked() {
         let mods = click_modifiers(ui);

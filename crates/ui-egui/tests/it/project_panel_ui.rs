@@ -28,10 +28,16 @@ struct Driver {
 
 impl Driver {
     fn with(session: Session) -> Self {
+        Self::with_step_dt(session, 0.25)
+    }
+
+    /// A driver whose frames last `dt` seconds (1/60 for a real double-click, which needs its two
+    /// clicks closer together than the default quarter-second frames allow).
+    fn with_step_dt(session: Session, dt: f32) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(dt).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
         }
@@ -118,6 +124,16 @@ impl Driver {
         panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
     }
 
+    /// Step frames until `done` holds, for at most two minutes of wall-clock time.
+    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(self) {
+            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            self.frames(1);
+        }
+    }
+
     fn key(&mut self, key: &str) {
         self.ok("ui.key", json!({"key": key}));
         self.frames(2);
@@ -172,7 +188,14 @@ impl Driver {
 
 /// The demo project with the Project panel maximized (room for the List view's columns).
 fn project_driver() -> Driver {
-    let mut d = Driver::demo();
+    project_driver_at(0.25)
+}
+
+/// [`project_driver`] with frames `dt` seconds long.
+fn project_driver_at(dt: f32) -> Driver {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let mut d = Driver::with_step_dt(session, dt);
     d.ok("ui.panel.show", json!({"panel": "Project"}));
     d.ok("ui.set", json!({"focused": "Project"}));
     d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
@@ -812,6 +835,422 @@ fn new_bin_then_clear_removes_the_bin() {
     assert_eq!(d.app().session.project.items.len(), items0, "clips already in the project stay");
 }
 
+// ---- several bins selected (#4382)
+
+/// Click the element `id` holding `mods` (`{"shift": true}`, `{"command": true}`).
+fn click_with(d: &mut Driver, id: &str, mods: Value) {
+    d.ok("ui.click", json!({"id": id, "modifiers": mods}));
+}
+
+/// Right-click the element `id` and pick `clear` (its menu's Clear) once the menu shows it.
+fn menu_clear(d: &mut Driver, id: &str, clear: &str) {
+    d.ok("ui.click", json!({"id": id, "button": "right"}));
+    d.wait_for(clear);
+    d.click(clear);
+}
+
+/// Whether each of `bins` is drawn selected.
+fn marked(d: &mut Driver, bins: &[u64]) -> Vec<bool> {
+    bins.iter().map(|b| d.has(&format!("project.bin.{b}.selected"))).collect()
+}
+
+/// Step frames until exactly the bins `want` says among `bins` are drawn selected.
+fn wait_marked(d: &mut Driver, bins: &[u64], want: &[bool]) {
+    d.wait_until(&format!("bins {bins:?} drawn selected as {want:?}"), |d| marked(d, bins) == want);
+}
+
+/// Whether the bin `bin` is in the project.
+fn has_bin(d: &mut Driver, bin: u64) -> bool {
+    d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).is_some()
+}
+
+/// The Project panel (frames `dt` seconds long) in `view` with three new bins at the root, shown.
+fn three_bins_at(view: &str, dt: f32) -> (Driver, [u64; 3]) {
+    let mut d = project_driver_at(dt);
+    d.exec("project.view.set", json!({"view": view}));
+    let bins = ["Zz cleanup 1", "Zz cleanup 2", "Zz cleanup 3"].map(|n| d.exec("file.newBin", json!({"name": n}))["bin"].as_u64().unwrap());
+    for b in bins {
+        d.wait_for(&format!("project.bin.{b}"));
+    }
+    (d, bins)
+}
+
+/// [`three_bins_at`] with the usual quarter-second frames.
+fn three_bins(view: &str) -> (Driver, [u64; 3]) {
+    three_bins_at(view, 0.25)
+}
+
+/// Twirl the demo's Footage bin open through its triangle (List view), so its clips show as rows.
+fn twirl_footage_open(d: &mut Driver) -> (u64, Vec<u64>) {
+    let (footage, items) = d.footage();
+    d.click(&format!("project.bin.{footage}.toggle"));
+    d.wait_for(&format!("project.item.{}", items[items.len() - 1]));
+    (footage, items)
+}
+
+/// Shift-click a range of bins, Ctrl/Cmd-click one out, then Delete: the two still selected go
+/// (it used to remove only the bin clicked last), in one undo step that puts them back exactly.
+fn range_toggle_delete(view: &str) {
+    let (mut d, [a, b, c]) = three_bins(view);
+    let items0 = d.app().session.project.items.len();
+    d.click(&format!("project.bin.{a}"));
+    wait_marked(&mut d, &[a, b, c], &[true, false, false]);
+    assert_eq!(d.app().ui.project_panel.selected_bin, Some(a), "a plain click selects the bin alone");
+    click_with(&mut d, &format!("project.bin.{c}"), json!({"shift": true}));
+    wait_marked(&mut d, &[a, b, c], &[true, true, true]);
+    assert_eq!(selection(&mut d), sorted(vec![a, b, c]), "Shift-click selects the range of bins, nothing else");
+    click_with(&mut d, &format!("project.bin.{b}"), json!({"command": true}));
+    wait_marked(&mut d, &[a, b, c], &[true, false, true]);
+    assert_eq!(selection(&mut d), sorted(vec![a, c]), "Ctrl/Cmd-click toggles one out");
+    let (before, undo0) = (d.app().session.project.clone(), d.app().session.history.undo.len());
+    d.key("Delete");
+    d.wait_until("Delete to remove the bins", |d| !has_bin(d, a));
+    assert_eq!([a, b, c].map(|x| has_bin(&mut d, x)), [false, true, false], "the selected bins are gone, the other stays");
+    assert_eq!(d.app().session.project.items.len(), items0, "no item removed");
+    assert_eq!(d.app().session.history.undo.len(), undo0 + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, *before, "one undo puts both back as they were");
+}
+
+#[test]
+fn several_bins_selected_are_deleted_at_once() {
+    range_toggle_delete("list");
+}
+
+#[test]
+fn several_bin_cards_selected_are_deleted_at_once_in_icon_view() {
+    range_toggle_delete("icon");
+}
+
+/// Plain-click A, Ctrl/Cmd-click B: both are selected. Ctrl/Cmd-click A again: only B is left.
+fn cmd_click_adds_to_a_bin_clicked_alone(view: &str) {
+    let (mut d, [a, b, c]) = three_bins(view);
+    d.click(&format!("project.bin.{a}"));
+    wait_marked(&mut d, &[a, b, c], &[true, false, false]);
+    click_with(&mut d, &format!("project.bin.{b}"), json!({"command": true}));
+    wait_marked(&mut d, &[a, b, c], &[true, true, false]);
+    assert_eq!(selection(&mut d), sorted(vec![a, b]), "Ctrl/Cmd-click adds B to A clicked alone");
+    assert_eq!(d.app().ui.project_panel.selected_bin, None, "A is in the selection now, not alone");
+    click_with(&mut d, &format!("project.bin.{a}"), json!({"command": true}));
+    wait_marked(&mut d, &[a, b, c], &[false, true, false]);
+    assert_eq!(selection(&mut d), vec![b], "Ctrl/Cmd-click on A again toggles it off");
+}
+
+#[test]
+fn cmd_click_adds_a_bin_to_one_clicked_alone_in_list_view() {
+    cmd_click_adds_to_a_bin_clicked_alone("list");
+}
+
+#[test]
+fn cmd_click_adds_a_bin_card_to_one_clicked_alone_in_icon_view() {
+    cmd_click_adds_to_a_bin_clicked_alone("icon");
+}
+
+/// A bin (with a clip in it) and a clip elsewhere selected together: Delete clears both in one
+/// `project.delete`, so one undo step restores the bin, its contents and the clip exactly.
+#[test]
+fn a_bin_and_an_item_are_cleared_together_and_one_undo_restores_both() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (_, items) = d.footage();
+    let (inside, item) = (items[0], items[1]);
+    let bin = d.exec("file.newBin", json!({"name": "Zz box"}))["bin"].as_u64().unwrap();
+    d.exec("project.moveToBin", json!({"items": [inside], "bin": bin}));
+    twirl_footage_open(&mut d);
+    d.click(&format!("project.bin.{bin}"));
+    wait_marked(&mut d, &[bin], &[true]);
+    click_with(&mut d, &format!("project.item.{item}"), json!({"command": true}));
+    d.wait_until("Ctrl/Cmd-click to add the clip", |d| selection(d).contains(&item));
+    assert_eq!(selection(&mut d), sorted(vec![bin, item]), "the bin and the clip are selected together");
+    wait_marked(&mut d, &[bin], &[true]);
+    let (before, undo0) = (d.app().session.project.clone(), d.app().session.history.undo.len());
+    d.key("Delete");
+    d.wait_until("Delete to remove the bin", |d| !has_bin(d, bin));
+    let p = d.app().session.project.clone();
+    assert!(p.item(ItemId(inside)).is_none(), "the clip inside the bin goes with it");
+    assert!(p.item(ItemId(item)).is_none(), "the selected clip goes");
+    assert_eq!(p.items.len(), before.items.len() - 2, "and nothing else");
+    assert_eq!(d.app().session.history.undo.len(), undo0 + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(*d.app().session.project, *before, "one undo restores the bin, its clip and the other clip");
+    assert_eq!(d.app().session.project.root.parent_of(ItemId(inside)), Some(filmcraft_project::BinId(bin)), "the clip is back in its bin");
+}
+
+/// Bins A and B selected, C not, and the clip `clip` too when `clip_selected` (List view, Footage
+/// twirled open). Returns the driver, [A, B, C] and the clip.
+fn menu_setup(clip_selected: bool) -> (Driver, [u64; 3], u64) {
+    let (mut d, [a, b, c]) = three_bins("list");
+    let (_, items) = twirl_footage_open(&mut d);
+    let clip = items[0];
+    d.click(&format!("project.bin.{a}"));
+    click_with(&mut d, &format!("project.bin.{b}"), json!({"command": true}));
+    if clip_selected {
+        click_with(&mut d, &format!("project.item.{clip}"), json!({"command": true}));
+    }
+    d.wait_until("the selection", |d| selection(d).len() == if clip_selected { 3 } else { 2 });
+    let want = if clip_selected { vec![a, b, clip] } else { vec![a, b] };
+    assert_eq!(selection(&mut d), sorted(want));
+    (d, [a, b, c], clip)
+}
+
+#[test]
+fn clear_on_an_unselected_bin_clears_only_that_bin() {
+    let (mut d, [a, b, c], clip) = menu_setup(false);
+    menu_clear(&mut d, &format!("project.bin.{c}"), "project.binMenu.clear");
+    d.wait_until("Clear to remove the bin", |d| !has_bin(d, c));
+    assert_eq!([a, b, c].map(|x| has_bin(&mut d, x)), [true, true, false], "the selection is left alone");
+    assert!(d.app().session.project.item(ItemId(clip)).is_some());
+}
+
+#[test]
+fn clear_on_a_selected_bin_clears_the_whole_selection() {
+    let (mut d, [a, b, c], clip) = menu_setup(true);
+    menu_clear(&mut d, &format!("project.bin.{b}"), "project.binMenu.clear");
+    d.wait_until("Clear to remove the bins", |d| !has_bin(d, b));
+    assert_eq!([a, b, c].map(|x| has_bin(&mut d, x)), [false, false, true], "both selected bins go, the other stays");
+    assert!(d.app().session.project.item(ItemId(clip)).is_none(), "and the selected clip");
+}
+
+#[test]
+fn clear_on_an_unselected_item_clears_only_that_item() {
+    let (mut d, [a, b, c], clip) = menu_setup(false);
+    menu_clear(&mut d, &format!("project.item.{clip}"), "project.itemMenu.clear");
+    d.wait_until("Clear to remove the clip", |d| d.app().session.project.item(ItemId(clip)).is_none());
+    assert_eq!([a, b, c].map(|x| has_bin(&mut d, x)), [true, true, true], "the selected bins stay");
+}
+
+#[test]
+fn clear_on_a_selected_item_clears_the_whole_selection() {
+    let (mut d, [a, b, c], clip) = menu_setup(true);
+    menu_clear(&mut d, &format!("project.item.{clip}"), "project.itemMenu.clear");
+    d.wait_until("Clear to remove the clip", |d| d.app().session.project.item(ItemId(clip)).is_none());
+    assert_eq!([a, b, c].map(|x| has_bin(&mut d, x)), [false, false, true], "the selected bins go with it");
+}
+
+/// A bin clicked alone in Footage (opened in place, List view), with a clip `kept` in it, then
+/// `fill` fills the selection with clips (it returns them) and `clear` runs: only those clips go.
+/// The bin is no longer selected and stays, with its clip (#4382 review: `selected_bin` is
+/// cleared once anything fills the selection).
+fn bin_left_out_once_the_selection_fills(fill: impl FnOnce(&mut Driver, &[(u64, [f32; 4])]) -> Vec<u64>, clear: impl FnOnce(&mut Driver)) {
+    let mut d = project_driver();
+    let (footage, items) = d.footage();
+    let bin = d.exec("file.newBin", json!({"name": "Keep me", "parent": footage}))["bin"].as_u64().unwrap();
+    let kept = items[0];
+    d.exec("project.moveToBin", json!({"items": [kept], "bin": bin}));
+    let rows = footage_in(&mut d, "list");
+    d.wait_for(&format!("project.bin.{bin}"));
+    d.click(&format!("project.bin.{bin}"));
+    wait_marked(&mut d, &[bin], &[true]);
+    let filled = fill(&mut d, &rows);
+    d.wait_until("the bin no longer drawn selected", |d| marked(d, &[bin]) == [false]);
+    assert_eq!(selection(&mut d), sorted(filled.clone()), "the clips alone are selected");
+    assert_eq!(d.app().ui.project_panel.selected_bin, None);
+    clear(&mut d);
+    d.wait_until("the clips cleared", |d| filled.iter().all(|i| d.app().session.project.item(ItemId(*i)).is_none()));
+    assert!(has_bin(&mut d, bin), "the bin clicked before stays");
+    assert!(d.app().session.project.item(ItemId(kept)).is_some(), "and the clip in it");
+}
+
+#[test]
+fn an_item_click_after_a_bin_click_leaves_the_bin_out_of_delete() {
+    bin_left_out_once_the_selection_fills(
+        |d, rows| {
+            d.click(&format!("project.item.{}", rows[0].0));
+            vec![rows[0].0]
+        },
+        |d| d.key("Delete"),
+    );
+}
+
+#[test]
+fn a_marquee_after_a_bin_click_leaves_the_bin_out_of_clear() {
+    bin_left_out_once_the_selection_fills(
+        |d, rows| {
+            let n = rows.len();
+            let empty = d.rect("project.empty");
+            marquee(d, (empty[0] + 60.0, empty[1] + 20.0), (empty[0] + 60.0, centre(rows[n - 2].1).1), false);
+            vec![rows[n - 1].0, rows[n - 2].0]
+        },
+        |d| d.click("project.button.project.delete"),
+    );
+}
+
+#[test]
+fn project_select_after_a_bin_click_leaves_the_bin_out_of_clear() {
+    bin_left_out_once_the_selection_fills(
+        |d, rows| {
+            d.exec("project.select", json!({"items": [rows[0].0]}));
+            vec![rows[0].0]
+        },
+        |d| d.click("project.button.project.delete"),
+    );
+}
+
+/// A Shift-marquee adds to a bin clicked alone, as a Shift-click does: Delete then takes the bin,
+/// its clip and the clips the marquee touched.
+#[test]
+fn a_shift_marquee_adds_to_a_bin_clicked_alone() {
+    let mut d = project_driver();
+    let (footage, items) = d.footage();
+    let bin = d.exec("file.newBin", json!({"name": "Zz box", "parent": footage}))["bin"].as_u64().unwrap();
+    let inside = items[0];
+    d.exec("project.moveToBin", json!({"items": [inside], "bin": bin}));
+    let rows = footage_in(&mut d, "list");
+    d.wait_for(&format!("project.bin.{bin}"));
+    d.click(&format!("project.bin.{bin}"));
+    wait_marked(&mut d, &[bin], &[true]);
+    let n = rows.len();
+    let (last, before_last) = (rows[n - 1].0, rows[n - 2].0);
+    let empty = d.rect("project.empty");
+    marquee(&mut d, (empty[0] + 60.0, empty[1] + 20.0), (empty[0] + 60.0, centre(rows[n - 2].1).1), true);
+    d.wait_until("the marquee to add the clips", |d| selection(d).contains(&last));
+    assert_eq!(selection(&mut d), sorted(vec![bin, last, before_last]), "the bin stays selected beside the clips");
+    wait_marked(&mut d, &[bin], &[true]);
+    d.key("Delete");
+    d.wait_until("Delete to remove the bin", |d| !has_bin(d, bin));
+    for i in [inside, last, before_last] {
+        assert!(d.app().session.project.item(ItemId(i)).is_none(), "{i} cleared");
+    }
+}
+
+/// #4382 review: a bin clicked alone, then Select All, then Clear from a selected item's menu
+/// clears only the selected items: the bin clicked before Select All, and what is in it, stay.
+#[test]
+fn select_all_after_a_bin_click_keeps_the_bin_out_of_clear() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let bin = d.exec("file.newBin", json!({"name": "Keep me"}))["bin"].as_u64().unwrap();
+    let kept = d.footage().1[0];
+    d.exec("project.moveToBin", json!({"items": [kept], "bin": bin}));
+    // Footage twirled open, so Select All has its clips to select; "Keep me" stays closed
+    let (footage, _) = twirl_footage_open(&mut d);
+    d.click(&format!("project.bin.{bin}"));
+    wait_marked(&mut d, &[bin], &[true]);
+    assert_eq!(d.app().ui.project_panel.selected_bin, Some(bin));
+    d.key("Cmd+A");
+    d.wait_until("Select All", |d| !d.app().session.state.project_selection.is_empty());
+    let sel = d.app().session.state.project_selection.clone();
+    assert!(![bin, footage, kept].iter().any(|i| sel.contains(&ItemId(*i))), "Select All selects the shown items only: {sel:?}");
+    let bins0 = d.app().session.project.root.children.iter().filter(|e| matches!(e, BinEntry::Bin(_))).count();
+    menu_clear(&mut d, &format!("project.item.{}", sel[0].0), "project.itemMenu.clear");
+    d.wait_until("Clear", |d| d.app().session.project.item(sel[0]).is_none_or(|it| it.as_media().is_some_and(|m| m.offline)));
+    let p = d.app().session.project.clone();
+    assert!(p.root.find_bin(filmcraft_project::BinId(bin)).is_some(), "the bin stays");
+    assert!(p.item(ItemId(kept)).is_some(), "and the clip in it");
+    assert_eq!(p.root.children.iter().filter(|e| matches!(e, BinEntry::Bin(_))).count(), bins0, "no bin removed");
+    for i in &sel {
+        assert!(p.item(*i).is_none_or(|it| it.as_media().is_some_and(|m| m.offline)), "selected item {i:?} cleared");
+    }
+    assert_eq!(d.app().ui.project_panel.selected_bin, None, "the bin clicked alone is no longer selected");
+    assert!(!d.has(&format!("project.bin.{bin}.selected")), "nor drawn selected");
+}
+
+/// A plain click on a bin of a multi-selection selects it alone and leaves it closed; a second
+/// plain click on it, now selected alone, twirls it open.
+#[test]
+fn a_plain_click_on_a_multi_selected_bin_selects_it_alone_then_twirls_it() {
+    let (mut d, [a, b, c]) = three_bins("list");
+    d.click(&format!("project.bin.{a}"));
+    click_with(&mut d, &format!("project.bin.{b}"), json!({"command": true}));
+    wait_marked(&mut d, &[a, b, c], &[true, true, false]);
+    d.click(&format!("project.bin.{a}"));
+    wait_marked(&mut d, &[a, b, c], &[true, false, false]);
+    assert_eq!(d.app().ui.project_panel.selected_bin, Some(a), "A alone");
+    assert!(selection(&mut d).is_empty());
+    assert!(!d.app().ui.expanded_bins.contains(&a), "the click that narrows the selection does not twirl A open");
+    d.click(&format!("project.bin.{a}"));
+    d.wait_until("the second click to twirl A open", |d| d.app().ui.expanded_bins.contains(&a));
+    assert_eq!(d.app().ui.project_panel.selected_bin, Some(a), "A stays selected alone");
+}
+
+/// Double-click a point as a person does: a pause, then two clicks 1/60 s apart (needs a driver
+/// from `project_driver_at(1.0 / 60.0)`).
+fn double_click_at(d: &mut Driver, at: egui::Pos2) {
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    // a pause first, as a person makes: clicks closer together continue the last gesture
+    // (a triple click) instead of starting a double-click
+    d.frames(60);
+    push(d, egui::Event::PointerMoved(at));
+    d.frames(1);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            d.frames(1);
+        }
+    }
+    d.frames(3);
+}
+
+/// After a multi-select, a double-click on one of the bins opens it (in place, the default) and
+/// does not twirl it.
+#[test]
+fn double_clicking_a_bin_after_a_multi_select_opens_it() {
+    let (mut d, [a, b, c]) = three_bins_at("list", 1.0 / 60.0);
+    assert_eq!(d.app().session.prefs.general.bins_double_click, "openInPlace");
+    d.click(&format!("project.bin.{a}"));
+    click_with(&mut d, &format!("project.bin.{b}"), json!({"command": true}));
+    wait_marked(&mut d, &[a, b, c], &[true, true, false]);
+    let r = d.rect(&format!("project.bin.{a}"));
+    double_click_at(&mut d, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0));
+    d.wait_until("the double-click to open A", |d| d.app().ui.project_panel.bin == Some(a));
+    assert!(!d.app().ui.expanded_bins.contains(&a), "the double-click does not twirl A");
+}
+
+/// Freeform shows no bins: a Shift-click there with a bin as the anchor selects like a plain
+/// click (only the card clicked), and makes that card the anchor for the next Shift-click.
+#[test]
+fn shift_click_in_freeform_with_a_bin_anchor_selects_like_a_plain_click() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (footage, items) = d.footage();
+    d.wait_for(&format!("project.bin.{footage}"));
+    d.click(&format!("project.bin.{footage}"));
+    assert_eq!(d.app().ui.project_panel.anchor, Some(footage));
+    footage_in(&mut d, "freeform");
+    assert!(d.ids("project.bin.").is_empty(), "Freeform draws no bin");
+    assert_eq!(d.app().ui.project_panel.anchor, Some(footage), "the anchor is the bin");
+    click_with(&mut d, &format!("project.item.{}", items[0]), json!({"shift": true}));
+    d.wait_until("the Shift-click", |d| !selection(d).is_empty());
+    assert_eq!(selection(&mut d), vec![items[0]], "only the card clicked");
+    assert_eq!(d.app().ui.project_panel.anchor, Some(items[0]), "which is the anchor now");
+    // Freeform's order is the bin's
+    click_with(&mut d, &format!("project.item.{}", items[2]), json!({"shift": true}));
+    d.wait_until("the second Shift-click", |d| selection(d).contains(&items[2]));
+    assert_eq!(selection(&mut d), sorted(items[..3].to_vec()), "the range from that card");
+}
+
+/// A search hides Icon view's bin cards: a Shift-click on a clip with a bin as the anchor selects
+/// like a plain click, and the next Shift-click selects the range from that clip.
+#[test]
+fn shift_click_in_a_searched_icon_view_with_a_bin_anchor_selects_like_a_plain_click() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let (footage, _) = d.footage();
+    d.wait_for(&format!("project.bin.{footage}"));
+    d.click(&format!("project.bin.{footage}"));
+    assert_eq!(d.app().ui.project_panel.anchor, Some(footage));
+    d.click("project.search");
+    d.ok("ui.type", json!({"text": ".mp4"}));
+    d.wait_until("the search to hide the bin cards", |d| !d.has(&format!("project.bin.{footage}")));
+    assert_eq!(d.app().ui.project_panel.anchor, Some(footage), "the anchor is the bin");
+    // the clips found, in the order shown
+    let mut cards: Vec<(u64, [f32; 4])> = d
+        .ids("project.item.")
+        .iter()
+        .filter(|id| id.matches('.').count() == 2)
+        .map(|id| (id.rsplit('.').next().and_then(|n| n.parse().ok()).unwrap(), d.rect(id)))
+        .collect();
+    cards.sort_by(|a, b| (a.1[1], a.1[0]).partial_cmp(&(b.1[1], b.1[0])).unwrap());
+    assert!(cards.len() >= 3, "the search finds the .mp4 clips: {cards:?}");
+    let (first, third) = (cards[0].0, cards[2].0);
+    click_with(&mut d, &format!("project.item.{first}"), json!({"shift": true}));
+    d.wait_until("the Shift-click", |d| !selection(d).is_empty());
+    assert_eq!(selection(&mut d), vec![first], "only the clip clicked");
+    click_with(&mut d, &format!("project.item.{third}"), json!({"shift": true}));
+    d.wait_until("the second Shift-click", |d| selection(d).contains(&third));
+    assert_eq!(selection(&mut d), sorted(cards[..3].iter().map(|c| c.0).collect()), "the range from that clip, as shown");
+}
+
 /// #2106: with nothing selected, Clear and Automate to Sequence are disabled, as in the ≡ menu: a
 /// click does nothing (it used to only put "Select items to clear" / "select an item" in the
 /// status bar). With an item selected both act.
@@ -1176,27 +1615,12 @@ fn double_click_empty_area_imports_with_a_project_loaded() {
         d.frames(10);
         (d, picks)
     }
-    fn double_click(d: &mut Driver, at: egui::Pos2) {
-        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
-        // a pause first, as a person makes: clicks closer together continue the last gesture
-        // (a triple click) instead of starting a double-click
-        d.frames(60);
-        push(d, egui::Event::PointerMoved(at));
-        d.frames(1);
-        for _ in 0..2 {
-            for pressed in [true, false] {
-                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
-                d.frames(1);
-            }
-        }
-        d.frames(3);
-    }
     let count = |p: &std::sync::Arc<std::sync::atomic::AtomicUsize>| p.load(std::sync::atomic::Ordering::SeqCst);
 
     // an empty project: the whole panel is the empty area
     let (mut d, picks) = driver(false);
     let r = d.rect("project.empty");
-    double_click(&mut d, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0));
+    double_click_at(&mut d, egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0));
     assert_eq!(count(&picks), 1, "empty project");
 
     // the demo project, Icon view: the gap between the first two bins, and the space right of the
@@ -1205,17 +1629,17 @@ fn double_click_empty_area_imports_with_a_project_loaded() {
     d.ok("ui.set", json!({}));
     let (a, b) = (d.rect("project.bin.1"), d.rect("project.bin.2"));
     assert!((a[1] - b[1]).abs() < 1.0 && b[0] > a[0] + a[2], "bins 1 and 2 share a row: {a:?} {b:?}");
-    double_click(&mut d, egui::pos2((a[0] + a[2] + b[0]) / 2.0, a[1] + a[3] / 2.0));
+    double_click_at(&mut d, egui::pos2((a[0] + a[2] + b[0]) / 2.0, a[1] + a[3] / 2.0));
     assert_eq!(count(&picks), 1, "between two bins");
     let row: Vec<[f32; 4]> = d.ids("project.bin.").iter().map(|id| d.rect(id)).filter(|r| (r[1] - a[1]).abs() < 1.0).collect();
     let last = row.iter().fold(a, |m, r| if r[0] > m[0] { *r } else { m });
     let panel = d.rect("project.count");
     if last[0] + last[2] + 30.0 < panel[0] + panel[2] {
-        double_click(&mut d, egui::pos2(last[0] + last[2] + 20.0, last[1] + last[3] / 2.0));
+        double_click_at(&mut d, egui::pos2(last[0] + last[2] + 20.0, last[1] + last[3] / 2.0));
         assert_eq!(count(&picks), 2, "right of the last card");
     }
     // a card still takes its own double-click: the bin opens, Import does not
-    double_click(&mut d, egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0));
+    double_click_at(&mut d, egui::pos2(a[0] + a[2] / 2.0, a[1] + a[3] / 2.0));
     let picked = count(&picks);
     assert!(picked <= 2, "double-clicking a bin must not open Import");
 }
@@ -1243,28 +1667,15 @@ fn double_click_imports_with_audio_in_the_timeline() {
     let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
     let mut d = Driver { harness, tx, snapshots: None };
     d.frames(10);
-    let double_click = |d: &mut Driver, at: egui::Pos2| {
-        let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
-        d.frames(60);
-        push(d, egui::Event::PointerMoved(at));
-        d.frames(1);
-        for _ in 0..2 {
-            for pressed in [true, false] {
-                push(d, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
-                d.frames(1);
-            }
-        }
-        d.frames(3);
-    };
     let count = || picks.load(std::sync::atomic::Ordering::SeqCst);
     let cards: Vec<[f32; 4]> = d.ids("project.item.").iter().filter(|id| id.matches('.').count() == 2).map(|id| d.rect(id)).collect();
     assert!(!cards.is_empty(), "the sequence and the tone show as cards");
     let empty = d.rect("project.empty");
     eprintln!("cards {cards:?}, empty strip {empty:?}");
-    double_click(&mut d, egui::pos2(empty[0] + empty[2] / 2.0, empty[1] + empty[3] / 2.0));
+    double_click_at(&mut d, egui::pos2(empty[0] + empty[2] / 2.0, empty[1] + empty[3] / 2.0));
     let strip = count();
     let last = cards.iter().fold(cards[0], |m, r| if r[0] > m[0] { *r } else { m });
-    double_click(&mut d, egui::pos2(last[0] + last[2] + 40.0, last[1] + last[3] / 2.0));
+    double_click_at(&mut d, egui::pos2(last[0] + last[2] + 40.0, last[1] + last[3] / 2.0));
     let beside = count() - strip;
     assert_eq!((strip, beside), (1, 1), "double-click on (the strip under the cards, the space beside them)");
 }
