@@ -20,12 +20,17 @@ struct Driver {
 impl Driver {
     /// A sequence with two 48-frame clips on V1 (and their sounds on A1) at frames 0 and 96.
     fn two_clips() -> (Self, ClipId, ClipId) {
+        Self::two_clips_at(96)
+    }
+
+    /// Two 48-frame clips with linked sound, with the second beginning at `second`.
+    fn two_clips_at(second: i64) -> (Self, ClipId, ClipId) {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.execute("file.newSequence", json!({"name": "Gaps", "video": 1, "audio": 1})).unwrap();
         let rate = s.sequence_rate();
         let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
-        for f in [0, 96] {
+        for f in [0, second] {
             s.execute("timeline.place", json!({"item": item.0, "frame": f, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0})).unwrap();
         }
         s.execute("edit.deselectAll", json!({})).unwrap();
@@ -87,7 +92,7 @@ impl Driver {
         let ra = self.rect(&format!("timeline.clip.{}", a.0)).expect("the first clip is shown");
         let rb = self.rect(&format!("timeline.clip.{}", b.0)).expect("the second clip is shown");
         let (gap_l, gap_r) = (ra[0] + ra[2], rb[0]);
-        assert!(gap_r - gap_l > 10.0, "the gap is wide enough to click: {ra:?} {rb:?}");
+        assert!(gap_r > gap_l, "the gap has a visible interior: {ra:?} {rb:?}");
         self.ok("ui.click", json!({"x": (gap_l + gap_r) / 2.0, "y": ra[1] + ra[3] / 2.0, "button": button}));
         self.frames(3);
     }
@@ -166,15 +171,17 @@ fn clicking_a_clip_or_after_the_last_clip_drops_the_gap() {
 /// A cut's edit point menu, right-clicked before, does not stand in for the gap's menu.
 #[test]
 fn the_gap_menu_follows_an_edit_point_menu() {
-    let (mut d, a, b) = Driver::two_clips();
-    d.ok("ui.click", json!({"id": format!("timeline.clip.{}", b.0), "fx": 0.0, "button": "right"}));
-    d.frames(3);
-    assert!(d.rect("timeline.editPointMenu.rippleIn").is_some(), "the edge's edit point menu");
-    d.ok("ui.key", json!({"key": "Escape"}));
-    d.frames(3);
-    d.click_between(a, b, "right");
-    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some(), "the gap's menu");
-    assert!(d.rect("timeline.editPointMenu.rippleIn").is_none(), "not the edit point menu");
+    for second in [50, 96] {
+        let (mut d, a, b) = Driver::two_clips_at(second);
+        d.ok("ui.click", json!({"id": format!("timeline.clip.{}", b.0), "fx": 0.0, "button": "right"}));
+        d.frames(3);
+        assert!(d.rect("timeline.editPointMenu.rippleIn").is_some(), "the edge's edit point menu");
+        d.ok("ui.key", json!({"key": "Escape"}));
+        d.frames(3);
+        d.click_between(a, b, "right");
+        assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some(), "the gap's menu");
+        assert!(d.rect("timeline.editPointMenu.rippleIn").is_none(), "not the edit point menu");
+    }
 }
 
 #[test]
@@ -210,4 +217,67 @@ fn close_gap_can_be_found_assigned_and_run_from_the_shortcut_editor() {
     d.shot("close-gap-shortcut-result");
     d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
     assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), before);
+}
+
+/// A small gap must not be mistaken for the outer trim handle of an adjacent clip.
+#[test]
+fn right_clicking_a_narrow_gap_opens_its_menu_and_closes_it() {
+    let (mut d, a, b) = Driver::two_clips_at(50);
+    let before = d.harness.state().session.project.clone();
+    let ra = d.rect(&format!("timeline.clip.{}", a.0)).unwrap();
+    let rb = d.rect(&format!("timeline.clip.{}", b.0)).unwrap();
+    let width = rb[0] - (ra[0] + ra[2]);
+    assert!(width > 0.0 && width < 2.0 * f64::from(filmcraft_ui_egui::panels::timeline_hit::EDGE_PX), "narrow gap: {width}px");
+
+    d.click_between(a, b, "right");
+    assert!(d.gap().is_object(), "right-clicking the gap selects it");
+    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some());
+    assert!(d.rect("timeline.editPointMenu.rippleIn").is_none(), "not the adjacent clip edge");
+    d.ok("ui.click", json!({"id": "timeline.gapMenu.edit.rippleDelete"}));
+    d.frames(3);
+    let f48 = d.frame(48);
+    assert_eq!(d.start(b), f48);
+    let q = d.harness.state().session.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks[0].items[1].start.0, f48, "linked sound moves with picture");
+    assert_eq!(d.gap(), Value::Null);
+    assert_eq!(d.harness.state_mut().session.undo().as_deref(), Some("Ripple Delete"));
+    assert_eq!(*d.harness.state().session.project, *before);
+}
+
+#[test]
+fn empty_space_past_the_last_clip_does_not_keep_an_edit_point_menu() {
+    let (mut d, _, b) = Driver::two_clips_at(50);
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{}", b.0), "fx": 0.0, "button": "right"}));
+    d.frames(3);
+    assert!(d.rect("timeline.editPointMenu.rippleIn").is_some());
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(3);
+    let rb = d.rect(&format!("timeline.clip.{}", b.0)).unwrap();
+    d.ok("ui.click", json!({"x": rb[0] + rb[2] + 1.0, "y": rb[1] + 8.0, "button": "right"}));
+    d.frames(3);
+    assert!(d.rect("timeline.editPointMenu.rippleIn").is_none());
+    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_none(), "no bounded gap after the last clip");
+}
+
+#[test]
+fn a_narrow_gap_menu_keeps_sync_lock_protection() {
+    let (mut d, a, b) = Driver::two_clips_at(50);
+    let item = d.harness.state().session.project.items.values().find(|i| i.has_video() && !i.has_audio() && i.as_media().is_some()).unwrap().id;
+    d.ok("engine.execute", json!({"command": "sequence.addTracks", "params": {"video": 1, "audio": 0}}));
+    let duration = d.frame(96);
+    d.ok("engine.execute", json!({"command": "timeline.place", "params": {"track": "V2", "item": item.0, "frame": 0, "duration": duration}}));
+    d.frames(3);
+    let before = d.harness.state().session.project.clone();
+    let undo = d.harness.state().session.history.undo.len();
+    d.click_between(a, b, "right");
+    assert!(d.gap().is_object());
+    assert!(d.rect("timeline.gapMenu.edit.rippleDelete").is_some());
+    let session = &d.harness.state().session;
+    let why = (filmcraft_engine::find_command("edit.rippleDelete").unwrap().enabled)(session).unwrap_err();
+    assert!(why.contains("V2") && why.contains("sync"), "{why}");
+    assert!(!session.is_enabled("edit.clear"));
+    d.ok("ui.click", json!({"id": "timeline.gapMenu.edit.rippleDelete"}));
+    d.frames(3);
+    assert_eq!(*d.harness.state().session.project, *before, "disabled menu cannot move any track");
+    assert_eq!(d.harness.state().session.history.undo.len(), undo);
 }

@@ -4,8 +4,8 @@ use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker
 use super::snap::{snap, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, hit_secondary, json, marker_at,
+    marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -1285,15 +1285,14 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let on_gap = match hit(seq, layout, p) {
+        let on_gap = match hit_secondary(seq, layout, p) {
             Hit::Empty { track } => app.session.execute("timeline.selectGap", json!({"track": track.0, "time": layout.tick_at(p.x).0})).is_ok(),
             _ => false,
         };
         ctx.data_mut(|d| d.insert_temp(gap_menu_id, on_gap));
-        if on_gap {
-            // not the edit point menu of a cut right-clicked before
-            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
-        }
+        // A fresh right-click must not inherit an earlier cut's menu, even past the last clip
+        // where there is no bounded gap. The clip branch below sets this click's target.
+        ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
     }
     // on a marker of the ruler, the marker menu instead (right-clicking a marker selects it first)
     let marker_menu_id = egui::Id::unique("timeline.markerMenu.target");
@@ -1320,7 +1319,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
+        && let Hit::Clip { clip, edge, track } = hit_secondary(seq, layout, p)
     {
         ctx.data_mut(|d| d.insert_temp(menu_clip_id, clip));
         let target = edge.and_then(|e| EditPointTarget::at(seq, track, clip, e).map(|t| (t, e)));
