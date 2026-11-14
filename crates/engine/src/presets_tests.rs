@@ -293,6 +293,42 @@ const SAMPLE_PRFPSET_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </PremiereData>"#;
 
 #[test]
+fn replacement_import_validates_every_input_before_importing_presets() {
+    for paths in [vec!["/presets/sample.prfpset", "/missing.wav"], vec!["/missing.wav", "/presets/sample.prfpset"], vec!["/presets/broken.prfpset"]] {
+        let fs = Arc::new(MemFs::default());
+        let mut s = Session::new(fs.clone());
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        fs.write_file("/presets/sample.prfpset", SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+        fs.write_file("/presets/broken.prfpset", b"not XML").unwrap();
+        let project = s.project.clone();
+        let state = serde_json::to_value(&s.state).unwrap();
+        let revision = (s.revision, s.saved_revision, s.document_epoch);
+        let history = (s.history.undo.len(), s.history.redo.len());
+        assert!(s.presets.find("Sample Black and White").is_none());
+        assert!(s.execute("file.import", json!({"paths": paths, "replace": true})).is_err());
+        assert!(Arc::ptr_eq(&s.project, &project));
+        assert_eq!(serde_json::to_value(&s.state).unwrap(), state);
+        assert_eq!((s.revision, s.saved_revision, s.document_epoch), revision);
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), history);
+        assert!(s.presets.find("Sample Black and White").is_none());
+    }
+}
+
+#[test]
+fn replacement_import_retains_new_preset_import_support() {
+    let fs = Arc::new(MemFs::default());
+    let mut s = Session::new(fs.clone());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let project = s.project.clone();
+    fs.write_file("/presets/sample.prfpset", SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+    let r = s.execute("file.import", json!({"paths": ["/presets/sample.prfpset"], "replace": true})).unwrap();
+    assert_eq!(r["presets"], json!(["Sample Black and White"]));
+    assert!(s.presets.find("Sample Black and White").is_some());
+    assert!(!Arc::ptr_eq(&s.project, &project));
+    assert!(s.project.items.is_empty());
+}
+
+#[test]
 fn file_import_detects_and_integrates_prfpset() {
     let fs = Arc::new(MemFs::default());
     let mut s = Session::new(fs.clone());

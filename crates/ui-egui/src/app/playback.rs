@@ -113,7 +113,8 @@ impl FilmcraftApp {
             || self.session.voiceover.recording()
     }
 
-    pub fn stop(&mut self) {
+    /// Retire Program presentation without committing recording edits into the current document.
+    pub(super) fn stop_playback_outputs(&mut self) {
         self.playback.playing = false;
         self.playback.tts_preview = false;
         self.playback.stop_at = None;
@@ -130,6 +131,10 @@ impl FilmcraftApp {
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
         self.playback.audio_retry_at = 0.0;
+    }
+
+    pub fn stop(&mut self) {
+        self.stop_playback_outputs();
         if self.session.mixrec.active() {
             let t = self.session.playhead();
             if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
@@ -153,7 +158,7 @@ impl FilmcraftApp {
     /// Give the scrub output's device back before playback opens its own stream (#2633). The scrub
     /// stream lingers for a few seconds after the last grain, and a device that takes one stream
     /// at a time (a raw ALSA `hw:` device, an exclusive-mode output) would refuse playback's.
-    fn release_scrub_output(&mut self) {
+    pub(super) fn release_scrub_output(&mut self) {
         if let Some(out) = self.scrub_out.as_mut() {
             out.release();
             self.scrub.device_stopped();

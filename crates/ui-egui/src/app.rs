@@ -133,6 +133,11 @@ impl FilmcraftApp {
         }
     }
 
+    /// Host overlays may use named UI fonts only after the second styled frame.
+    pub fn host_overlays_ready(&self) -> bool {
+        self.fonts_ready
+    }
+
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self
@@ -150,6 +155,14 @@ impl FilmcraftApp {
     pub fn with_control_notice(mut self, notice: crate::ControlNotice) -> Self {
         self.control_notice = Some(notice);
         self
+    }
+
+    /// Complete an engine command and retire any replaced pool before its next observer.
+    pub(crate) fn execute_engine(&mut self, id: &str, params: Value) -> filmcraft_engine::Result<Value> {
+        self.sync_pool();
+        let result = self.session.execute(id, params);
+        self.sync_pool();
+        result
     }
 
     pub fn services(&self) -> Arc<dyn Services> {
@@ -179,8 +192,17 @@ impl FilmcraftApp {
     }
 
     /// Rebuild the frame server if the session's media pool was replaced (e.g. project opened).
-    fn sync_pool(&mut self) {
+    pub(crate) fn sync_pool(&mut self) {
         if !Arc::ptr_eq(&self.frames.pool, &self.session.media) || !Arc::ptr_eq(&self.frames.previews, &self.session.previews) {
+            // Stop old-pool playback and request scrub release without waiting for a UI pass.
+            // Recording commands must not commit the previous document's pass into its replacement.
+            self.stop_source();
+            self.stop_playback_outputs();
+            self.release_scrub_output();
+            self.session.voiceover.discard();
+            self.session.mixrec = Default::default();
+            self.session.mcrec = Default::default();
+            self.session.previews.live.clear_all();
             self.frames = Arc::new(FrameServer::new(
                 self.session.media.clone(),
                 self.session.services.clone(),
@@ -193,6 +215,13 @@ impl FilmcraftApp {
             // the new frame server needs the Memory settings
             self.applied_prefs = None;
         }
+    }
+
+    /// Refresh the status timeout; ongoing conditions call this again while still present.
+    pub fn keep_status_visible(&mut self, s: impl Into<String>, now: f64) {
+        let status = s.into();
+        self.status_seen = (status.clone(), now);
+        self.ui.status = status;
     }
 
     pub fn status(&mut self, s: impl Into<String>) {
@@ -334,11 +363,26 @@ impl FilmcraftApp {
         capture::request_hidden_paint(self, ctx);
     }
 
+    /// Draw shared UI and guarded host overlays before UI replies, input acknowledgments and capture.
+    /// Overlays run on discarded passes too; callers check [`Self::host_overlays_ready`] before using named fonts.
+    pub fn ui_with_host_overlays(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, overlays: impl FnOnce(&mut Self, &mut egui::Ui)) {
+        let ctx = ui.ctx().clone();
+        self.ime_reset.begin_pass(&ctx);
+        self.ime_drawn_editor = None;
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
+        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
+            self.suspended_ime_controls(&ctx);
+        }
+        self.ui_inner(ui, frame, overlays);
+        self.finish_ime_reset_ui(&ctx);
+    }
+
     /// Draw one real UI pass. Establish the UI clock offset once, run first-pass input handling,
     /// draw panels under a panic guard, drain UI requests and check the IME editor only after
     /// this pass's commands ran. Screenshots are offered to `capture::issue`, which issues only
     /// on an accepted pass.
-    fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, overlays: impl FnOnce(&mut Self, &mut egui::Ui)) {
         if self.ui_clock_offset.is_none() {
             let egui_time = ui.ctx().input(|input| input.time);
             if egui_time.is_finite() {
@@ -404,6 +448,11 @@ impl FilmcraftApp {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| overlays(self, ui))).is_err() {
+            self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
+            self.playback.playing = false;
+            ctx.request_repaint();
         }
         self.last_ui_time = self.now();
         if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
@@ -520,16 +569,7 @@ impl eframe::App for FilmcraftApp {
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
     /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.ime_reset.begin_pass(&ctx);
-        self.ime_drawn_editor = None;
-        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
-        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
-        if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
-            self.suspended_ime_controls(&ctx);
-        }
-        self.ui_inner(ui, frame);
-        self.finish_ime_reset_ui(&ctx);
+        self.ui_with_host_overlays(ui, frame, |_, _| {});
     }
 }
 
