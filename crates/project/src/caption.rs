@@ -229,7 +229,13 @@ impl CaptionTrack {
     pub fn check_bounds(&self) -> Result<(), String> {
         for c in &self.captions {
             if !crate::bounded_time_range(c.start, c.duration) {
-                return Err(format!("{}: caption {:?} is outside supported time bounds", self.name, c.id));
+                return Err(format!(
+                    "{}: caption {:?} at {:.3}s for {:.3}s is outside supported time bounds",
+                    self.name,
+                    c.id,
+                    c.start.seconds(),
+                    c.duration.seconds()
+                ));
             }
         }
         Ok(())

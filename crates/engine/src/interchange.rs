@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use filmcraft_interchange::{ExportOptions, Format, ImportOptions};
+use filmcraft_interchange::{ExportOptions, Format, ImportOptions, Imported};
 use filmcraft_project::{BinId, ItemId, ItemKind, MediaRef};
 
 use crate::{EngineError, Result, Session};
@@ -50,6 +50,17 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
     Err(EngineError::Other(format!("{path}: no unused embedded-audio filename after 1000 attempts")))
 }
 
+/// Refuse what project load refuses (`Sequence::check_bounds`: settings, marks, clip, transition
+/// and caption times), so a project saved after an import always opens again (#2786).
+fn check_imported_sequences(path: &str, fragment: &Imported) -> Result<()> {
+    for item in fragment.project.items.values() {
+        if let ItemKind::Sequence(sequence) = &item.kind {
+            sequence.check_bounds().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence `{}`: {e}", item.name)))?;
+        }
+    }
+    Ok(())
+}
+
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences. The document's items go
 /// into `bin` (the Project panel's current bin, as for media files); the root when it is `None`
@@ -70,6 +81,8 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
             let (mut fragment, extracted, report) = r.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            // before any audio is written, so a refused document leaves no files behind
+            check_imported_sequences(path, &fragment)?;
             for m in extracted {
                 let media = fragment
                     .project
@@ -83,13 +96,12 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
             }
             (fragment, report)
         }
-        _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
-    };
-    for item in fragment.project.items.values() {
-        if let ItemKind::Sequence(sequence) = &item.kind {
-            sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
+        _ => {
+            let (fragment, report) = filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            check_imported_sequences(path, &fragment)?;
+            (fragment, report)
         }
-    }
+    };
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {
