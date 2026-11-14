@@ -839,3 +839,41 @@ fn accumulator_readback_retires_rejected_native_map() {
         "cleanup attempted to unmap an already rejected mapping"
     );
 }
+
+#[test]
+fn upload_cache_and_pools_reuse_textures_and_uniforms() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_frame = |v: u8| Arc::new(VideoFrame::rgba8(8, 8, std::iter::repeat_n([v, 255u8.saturating_sub(v), 64, 255], 64).flatten().collect()));
+    let frames: Vec<Arc<VideoFrame>> = (0..32u8).map(make_frame).collect();
+    let plan = FramePlan::Layers {
+        width: 8,
+        height: 8,
+        layers: frames
+            .iter()
+            .map(|f| PlanLayer { frame: f.clone(), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None })
+            .collect(),
+    };
+    c.composite(&plan);
+    let uploaded_once = c.uploaded_bytes;
+    let uniform_bufs = c.uniform_pool.bufs.len();
+    assert_eq!(c.uploads.len(), 32, "32 layers must stay cached without 24-entry thrashing");
+    c.composite(&plan);
+    assert_eq!(c.uploaded_bytes, uploaded_once, "re-compositing 32 cached layers must upload 0 bytes");
+    assert_eq!(c.uniform_pool.bufs.len(), uniform_bufs, "uniform pool must reuse buffers across frames");
+
+    // Exceed UPLOAD_CACHE_MAX_ENTRIES to exercise eviction -> texture_pool recycling -> reuse.
+    for i in 0..(UPLOAD_CACHE_MAX_ENTRIES + 8) {
+        let f = make_frame((i % 251) as u8);
+        let p = FramePlan::Layers {
+            width: 8,
+            height: 8,
+            layers: vec![PlanLayer { frame: f, matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
+        };
+        c.composite(&p);
+    }
+    assert_eq!(c.uploads.len(), UPLOAD_CACHE_MAX_ENTRIES);
+    assert!(c.texture_pool_bytes > 0, "evicted textures must be retained in texture_pool");
+}

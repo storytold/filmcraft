@@ -68,6 +68,8 @@ pub(crate) struct FxStage {
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    uniforms: super::UniformPool,
+    kernels: HashMap<u64, wgpu::TextureView>,
     /// Open [`begin_frame`](Self::begin_frame)s.
     frames: u32,
     /// Working textures created so far (a steady stream of frames creates none).
@@ -407,7 +409,18 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            uniforms: super::UniformPool::new("fx-u", 32 * 4),
+            kernels: HashMap::new(),
+            frames: 0,
+            created: 0,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -416,6 +429,7 @@ impl FxStage {
     pub(crate) fn begin_frame(&mut self) {
         if self.frames == 0 {
             self.used.clear();
+            self.uniforms.begin_frame();
         }
         self.frames = self.frames.saturating_add(1);
     }
@@ -495,26 +509,39 @@ impl FxStage {
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let kernel = (!s.kernel.is_empty()).then(|| kernel_texture(device, queue, &s.kernel));
+            let kernel = (!s.kernel.is_empty()).then(|| {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                s.kernel.len().hash(&mut h);
+                for &(dx, dy, wt) in &s.kernel {
+                    dx.hash(&mut h);
+                    dy.hash(&mut h);
+                    wt.to_bits().hash(&mut h);
+                }
+                let key = h.finish();
+                if let Some(v) = self.kernels.get(&key) {
+                    v.clone()
+                } else {
+                    let v = kernel_texture(device, queue, &s.kernel);
+                    if self.kernels.len() >= 64 {
+                        self.kernels.clear();
+                    }
+                    self.kernels.insert(key, v.clone());
+                    v
+                }
+            });
             let aux = match (s.combine, orig, &kernel) {
                 (true, Some(o), _) => views.get(o)?,
                 (_, _, Some(k)) => k,
                 _ => dummy,
             };
-            let mut bytes = Vec::with_capacity(128);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
-                bytes.extend_from_slice(&v.to_le_bytes());
+            let mut bytes = [0u8; 128];
+            for (dst, v) in
+                bytes.chunks_exact_mut(4).zip([s.code, w, h, 0].iter().chain(&s.i1).map(|x| x.to_le_bytes()).chain(s.p.iter().map(|x| x.to_le_bytes())))
+            {
+                dst.copy_from_slice(&v);
             }
-            for v in &s.p {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fx-u"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buf, 0, &bytes);
+            let buf = self.uniforms.write(device, queue, &bytes);
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
