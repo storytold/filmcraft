@@ -193,11 +193,13 @@ fn install_chinese(fonts: &mut FontDefinitions) {
 mod font_blob_tests {
     use super::*;
 
-    /// With the pinned web-font fixture, verify real glyph coverage and theme reinstall.
+    /// The faces `cargo xtask web` copies from the craft-fonts checkout (`CRAFT_FONTS_DIR`, set by
+    /// the CI gate) cover their language samples and survive a theme reinstall. Skipped without
+    /// craft-fonts.
     #[test]
     fn web_language_faces_cover_samples_and_survive_theme_reinstall() {
-        let Some(root) = std::env::var_os("FILMCRAFT_TEST_WEB_FONTS") else {
-            eprintln!("skipped: FILMCRAFT_TEST_WEB_FONTS is unset");
+        let Some(root) = std::env::var_os("CRAFT_FONTS_DIR").filter(|p| !p.is_empty()) else {
+            eprintln!("skipped: CRAFT_FONTS_DIR is unset");
             return;
         };
         let root = std::path::Path::new(&root);
