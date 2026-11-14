@@ -109,8 +109,9 @@ OPTIONS
                                 project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
-  --data-dir <dir>              FilmCraft data directory for user export presets (headless;
-                                default: the app's data directory)
+  --data-dir <dir>              FilmCraft data directory for user export and effect presets and
+                                the Effect Presets library, which are read and saved there
+                                (headless; default: the app's data directory)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
