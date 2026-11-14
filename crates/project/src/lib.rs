@@ -75,7 +75,7 @@ pub use source::resolve_auto_points;
 pub use track::{
     AudioChannels, FieldOptions, FieldProcessing, Marker, MarkerKind, TimeInterpolation, Track, TrackItem, TrackKind, Transition, TransitionAlign,
 };
-pub use view::{MAX_LUT_TEXT_BYTES, ProjectLut, ProjectView, SequenceView};
+pub use view::{MAX_LUT_TEXT_BYTES, ProjectLut, ProjectView, SequenceView, TimelineUiSettings, normalize_hex_color};
 id_type!(ItemId);
 id_type!(BinId);
 id_type!(TrackId);
