@@ -147,28 +147,32 @@ fn centroid_cache() -> &'static CentroidCache {
 }
 
 /// Auto Reframe: keeps the subject (a saliency centroid averaged over a time window set by the
-/// Motion Preset) in frame while zooming the clip to fill the sequence (or a chosen aspect).
+/// Motion Preset) in a window of the target aspect, which Reframe Zoom narrows. On the sequence's
+/// aspect, the layer covers the frame ([`super::reframes_to_sequence`]); a chosen aspect expects
+/// the clip placed so its centred window of that aspect fills the frame (Fill Frame does it).
 pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (lw, lh) = (img.w as f64, img.h as f64);
-    // the frame the layer must fill, in layer pixels (Motion at its defaults places the layer
-    // centred in the sequence 1:1)
-    let target = match (chv(e, "aspect"), cx.env) {
+    // the aspect of the window, in layer pixels
+    let r = match (chv(e, "aspect"), cx.env) {
         (0, Some(env)) => {
+            // the frame's, as the layer sees it: the box around the frame mapped back into the
+            // layer, so pixel aspects, a non-uniform Scale and Rotation count (a quarter turn swaps
+            // the sides)
+            let Some(i) = env.layer_to_output().inverse() else { return };
             let (sw, sh) = env.sequence_size();
-            let (src_w, _) = env.source_size();
-            let k = lw / src_w.max(1) as f64;
-            (sw as f64 * k, sh as f64 * k)
+            let (sw, sh) = (sw as f64, sh as f64);
+            ((i.a * sw).abs() + (i.c * sh).abs()) / ((i.b * sw).abs() + (i.d * sh).abs())
         }
         (0, None) => return,
-        (a, _) => {
-            let r = [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize];
-            if lw / lh > r { (lh * r, lh) } else { (lw, lw / r) }
-        }
+        (a, _) => [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize],
     };
-    let zoom_user = (fv(e, "zoom", cx) as f64 / 100.0).max(1.0);
-    let z = (target.0 / lw).max(target.1 / lh).max(1.0) * zoom_user;
+    if !(r.is_finite() && r > 0.0) {
+        return;
+    }
+    let target = if lw / lh > r { (lh * r, lh) } else { (lw, lw / r) };
+    let z = (fv(e, "zoom", cx) as f64 / 100.0).max(1.0);
     // window of the source that stays visible
-    let (vw, vh) = (target.0.min(lw * z) / z, target.1.min(lh * z) / z);
+    let (vw, vh) = (target.0.min(lw) / z, target.1.min(lh) / z);
     let (half, step) = [(1.0, 0.25), (0.5, 0.125), (0.15, 0.05)][chv(e, "preset").min(2) as usize];
     let subject = match cx.env {
         Some(env) => {
