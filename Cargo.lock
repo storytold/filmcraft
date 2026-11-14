@@ -2348,6 +2348,7 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-time",
+ "log",
  "proptest",
  "serde",
  "serde_json",

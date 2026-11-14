@@ -372,6 +372,9 @@ impl EffectSel {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
     pub active_sequence: Option<ItemId>,
+    /// Project-scoped Timeline interaction settings, persisted in `ProjectView`.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
     /// Item loaded in the Source monitor and its playhead (media time).
@@ -745,13 +748,17 @@ impl Session {
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
         let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
         let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
+        let Some(p) = self.persistence.as_ref() else { return };
         if p.last_sent.as_ref() == Some(&cur) {
             return;
         }
+        let view = dirty.then(|| self.project_view());
+        let Some(p) = self.persistence.as_mut() else { return };
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            if let Some(view) = view {
+                p.send_dirty(self.project.clone(), view, self.revision, self.path.clone());
+            }
         } else {
             p.send_clean();
         }
@@ -961,6 +968,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -970,6 +978,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
