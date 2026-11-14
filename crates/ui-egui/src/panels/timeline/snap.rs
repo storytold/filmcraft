@@ -32,6 +32,10 @@ fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude
     }
     let mut cands: Vec<Tick> = Vec::with_capacity(64);
     for tr in seq.all_tracks() {
+        // A video layer hidden with its eye is out of the way: its clips are not snap targets (#2243).
+        if tr.kind == filmcraft_project::TrackKind::Video && !tr.enabled {
+            continue;
+        }
         for it in &tr.items {
             if exclude.contains(&it.id) {
                 continue;
