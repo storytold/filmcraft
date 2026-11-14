@@ -154,7 +154,8 @@ progress and stop it:
   Motion is rescaled the way Sequence Settings' Scale Motion does it, so a 4K clip shown at 50 % in
   an HD sequence comes out at 100 % in 4K. `range` and `sequence` are refused. Without a `path`, or
   with a folder, the file is named after the clip and never replaces an existing file (`a.mp4`
-  becomes `a_2.mp4`; an error when `_2` to `_999` are taken too). An explicit file `path` is used as
+  becomes `a_2.mp4`; for an image sequence the first numbered still is what must be free, so a second
+  PNG export is numbered from `a_2.png` (`a_2000.png`…); an error when `_2` to `_999` are taken too). An explicit file `path` is used as
   given and replaces a file already there, except that no output (nor an image sequence's numbered
   stills) may replace the media the clips play, inside nested sequences included. Like
   `file.exportMedia` it returns at once with the `job` to poll in `jobs.list`, or with `"wait": true`

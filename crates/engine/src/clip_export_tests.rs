@@ -44,6 +44,7 @@ fn two_clips(name: &str) -> (Session, TmpDir, Vec<ClipId>, Vec<ClipId>) {
     (s, dir, v, au)
 }
 
+/// The Motion position and scale (in %) of `clip` in `q`.
 fn motion(q: &filmcraft_project::Sequence, clip: ClipId) -> ((f64, f64), f64) {
     let m = q.find_item(clip).unwrap().1.effect("motion").unwrap();
     let ParamValue::Vec2(p) = m.param("position").unwrap().value else { panic!("position is a point") };
@@ -51,6 +52,7 @@ fn motion(q: &filmcraft_project::Sequence, clip: ClipId) -> ((f64, f64), f64) {
     ((p.x, p.y), sc)
 }
 
+/// `dir` as a `path` parameter that names a folder (with its trailing slash).
 fn folder(dir: &Path) -> String {
     format!("{}/", dir.display())
 }
@@ -216,15 +218,15 @@ fn unused_path_never_hands_back_a_taken_name() {
     for n in 2..=999 {
         std::fs::write(dir.join(format!("a_{n}.mp4")), b"x").unwrap();
     }
-    assert!(crate::export_tools::unused_path(&path).is_err(), "every name is taken");
+    assert!(crate::export_tools::unused_path(&path, str::to_string).is_err(), "every name is taken");
     std::fs::remove_file(dir.join("a_500.mp4")).unwrap();
-    assert!(crate::export_tools::unused_path(&path).unwrap().ends_with("a_500.mp4"));
+    assert!(crate::export_tools::unused_path(&path, str::to_string).unwrap().ends_with("a_500.mp4"));
     // a broken symbolic link is taken too: writing through it would create its target
     #[cfg(unix)]
     {
         let link = dir.join("b.mp4");
         std::os::unix::fs::symlink(dir.join("missing.mp4"), &link).unwrap();
-        assert!(crate::export_tools::unused_path(&link.to_string_lossy()).unwrap().ends_with("b_2.mp4"));
+        assert!(crate::export_tools::unused_path(&link.to_string_lossy(), str::to_string).unwrap().ends_with("b_2.mp4"));
     }
 }
 
@@ -248,4 +250,15 @@ fn an_image_sequence_may_not_number_over_the_source() {
     assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/other/shot000.png"));
     assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/m/take000.png"));
     assert!(!crate::export_tools::sequence_may_write("/m/shot.png", "/m/shot.mp4"));
+}
+
+#[test]
+fn a_second_default_named_image_sequence_does_not_number_over_the_first() {
+    let (mut s, dir, v, _) = two_clips("clip-export-png-twice");
+    let out = folder(&dir.join("out"));
+    let first = s.execute("clip.export", json!({"clip": v[1].0, "format": "png", "path": out, "wait": true})).unwrap();
+    let second = s.execute("clip.export", json!({"clip": v[1].0, "format": "png", "path": out, "wait": true})).unwrap();
+    let (a, b) = (first["basePath"].as_str().unwrap(), second["basePath"].as_str().unwrap());
+    assert!(a.ends_with("b.png") && b.ends_with("b_2.png"), "{first} / {second}");
+    assert!(Path::new(first["path"].as_str().unwrap()).exists() && Path::new(second["path"].as_str().unwrap()).exists());
 }

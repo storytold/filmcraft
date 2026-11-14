@@ -575,6 +575,13 @@ fn file_name(path: &str) -> String {
 /// For an image sequence, the first and last numbered stills it writes: it never writes
 /// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
 fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+    let count = sequence_count(project, seq, settings)?;
+    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+}
+
+/// How many stills an image-sequence export of `seq` writes (`None` when `settings` is not an
+/// image sequence, or nothing would be written).
+fn sequence_count(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<u64> {
     if !settings.is_image_sequence() {
         return None;
     }
@@ -582,8 +589,7 @@ fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> 
     let range = filmcraft_export::export_range(project, seq, settings).ok()?;
     let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let count = u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)?;
-    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+    u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)
 }
 
 /// An export's `path` in a command result: the file written, for an image sequence its first
@@ -775,9 +781,10 @@ fn free_path(path: &str) -> bool {
 
 /// `path`, or when something is there already the first free `path_2`, `path_3`… up to `_999`:
 /// a default output name must not replace a file, the clip's own media least of all. An error
-/// when all of them are taken.
-pub(crate) fn unused_path(path: &str) -> Result<String> {
-    if free_path(path) {
+/// when all of them are taken. `written` maps a candidate to the file an export to it writes
+/// first, which is what must be free: for an image sequence `a.png` that is `a000.png`.
+pub(crate) fn unused_path(path: &str, written: impl Fn(&str) -> String) -> Result<String> {
+    if free_path(&written(path)) {
         return Ok(path.to_string());
     }
     let (stem, ext) = match path.rsplit_once('.') {
@@ -789,7 +796,7 @@ pub(crate) fn unused_path(path: &str) -> Result<String> {
             Some(e) => format!("{stem}_{n}.{e}"),
             None => format!("{stem}_{n}"),
         })
-        .find(|x| free_path(x))
+        .find(|x| free_path(&written(x)))
         .ok_or_else(|| bad("clip.export", format!("{path} and its numbered names up to _999 are all taken; choose another file")))
 }
 
@@ -910,7 +917,12 @@ pub fn export_clip(s: &mut Session, p: &Value) -> Result<Value> {
     let ClipExportPlan { clips, snap, params: q, preset, mut settings } = plan_clip_export(s, p)?;
     settings.path = output_path_named(s, &q, &snap.name, &settings, None);
     if str_p(&q, "path").is_none_or(|x| is_folder(&expand_home(x))) {
-        settings.path = unused_path(&settings.path)?;
+        // an image sequence never writes its base name, only the numbered stills
+        let count = sequence_count(&snap.project, snap.sequence, &settings);
+        settings.path = unused_path(&settings.path, |x| match count {
+            Some(n) => filmcraft_export::image_sequence_path(x, 0, n),
+            None => x.to_string(),
+        })?;
     }
     let image_sequence = settings.is_image_sequence();
     let own = |src: &&String| same_file(src, &settings.path) || (image_sequence && sequence_may_write(&settings.path, src));
