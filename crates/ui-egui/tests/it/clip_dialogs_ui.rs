@@ -301,13 +301,16 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     }
     let row = format!("project.item.{sub}");
     if d.has(&row) {
-        d.ok("ui.click", json!({"id": row, "button": "right"}));
+        // The row's top: its middle can sit under the panel's bottom bar when the list ends there.
+        let at = d.ok("ui.elements", json!({"prefix": row.as_str()}))[1]["rect"].clone();
+        let top = json!({"x": at[0].as_f64().unwrap() + 40.0, "y": at[1].as_f64().unwrap() + 4.0, "button": "right"});
+        d.ok("ui.click", top.clone());
         d.frames(3);
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");
         assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.editSubclip"));
         d.click("editSubclip.cancel");
-        d.ok("ui.click", json!({"id": row, "button": "right"}));
+        d.ok("ui.click", top);
         d.frames(3);
         d.click("project.itemMenu.convertToMaster");
         assert!(d.app().session.project.item(filmcraft_engine::project::ItemId(sub)).unwrap().as_media().is_some(), "converted");
