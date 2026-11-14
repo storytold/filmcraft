@@ -164,6 +164,9 @@ pub(crate) struct Pipeline {
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// The renderer's device cannot import the encoder's surfaces (another adapter, no external
+    /// memory): zero-copy is off for the rest of this export instead of a failed import per frame.
+    no_zero_copy: std::sync::atomic::AtomicBool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
     /// batch (`ExportSettings::part_of_batch`).
     trim_pool: bool,
@@ -259,6 +262,7 @@ impl Pipeline {
             out_tf,
             effects,
             overlay,
+            no_zero_copy: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -294,13 +298,20 @@ impl Pipeline {
         {
             let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
             if let filmcraft_render::plan::FramePlan::Image(img) = plan {
-                note_gpu_frame();
+                // the planner handed back a ready CPU image: no GPU renderer composited this frame
+                note_gpu_fallback();
                 let (rgba, hdr) = self.finish_image(img, t);
                 return RenderedFrame::Cpu(rgba, hdr);
             }
             let prep = (preparer)(&plan);
             if self.can_gpu_rgba8() {
+                // the encoder's surfaces cannot be imported into this device (see NoImport): the
+                // frames take the readback fallback, and each one says so in the counters
+                if !self.effects.video_limiter.enabled && gpu_pool.is_some() && self.no_zero_copy.load(std::sync::atomic::Ordering::Relaxed) {
+                    note_gpu_fallback();
+                }
                 if !self.effects.video_limiter.enabled
+                    && !self.no_zero_copy.load(std::sync::atomic::Ordering::Relaxed)
                     && let Some(gpu_pool) = gpu_pool
                     && let Some(target) = gpu_pool.acquire(self.w, self.h)
                 {
@@ -316,10 +327,17 @@ impl Pipeline {
                             note_gpu_frame();
                             return RenderedFrame::Gpu(target);
                         }
+                        // the renderer's device cannot import the encoder's surfaces at all (another
+                        // adapter, no external memory): every frame would pay a failed import here
+                        // and be rendered again by the readback below, so stop offering surfaces
+                        GpuFrame::NoImport => {
+                            self.no_zero_copy.store(true, std::sync::atomic::Ordering::Relaxed);
+                            note_gpu_fallback();
+                        }
                         // the submitted work may still be writing into the surface: retire its slot
                         // instead of putting it back in the pool, then render this frame again
                         GpuFrame::Unconfirmed => target.retire(),
-                        GpuFrame::NoImport | GpuFrame::Unavailable => {}
+                        GpuFrame::Unavailable => {}
                     }
                     drop(target);
                 }

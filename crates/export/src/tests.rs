@@ -521,7 +521,97 @@ fn gpu_hook_scenarios() {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
+
+    // 7. A renderer whose device cannot import the encoder's surfaces at all (another adapter, no
+    //    external memory) is asked for one surface only: the export remembers that and stops
+    //    paying a failed import on every frame, while the frames still come out through the
+    //    RGBA8 readback.
     crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(NoImportRenderer) as Box<dyn FrameRenderer>));
+    let (p, seq, m) = project();
+    let settings = ExportSettings { format: Format::PngSequence, gpu_rendering: crate::GpuRendering::Auto, ..Default::default() };
+    let pipe = crate::pipeline::Pipeline::new(Arc::clone(&p), seq, &settings, false).unwrap();
+    let pool = CountingPool::default();
+    for f in 0..4 {
+        let _ = pipe.frame_or_gpu(f, &m, Some(&pool));
+    }
+    assert_eq!(pool.acquired(), 1, "a permanent import failure is asked for a surface once, not once per frame");
+    assert!(gpu_render_stats().fallbacks >= 4, "the readback path rendered every frame: {:?}", gpu_render_stats());
+    crate::reset_frame_renderers_for_tests();
+}
+
+/// A renderer whose device cannot import the encoder's surfaces (`GpuFrame::NoImport`), but which
+/// does render the frame to RGBA8.
+struct NoImportRenderer;
+
+impl FrameRenderer for NoImportRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        Some(std::sync::Arc::new(|_plan: &filmcraft_render::plan::FramePlan| Box::new(()) as Box<dyn std::any::Any + Send + Sync>))
+    }
+
+    fn render_planned_rgba8(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        Some((320, 180, vec![0u8; 320 * 180 * 4]))
+    }
+
+    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> GpuFrame {
+        GpuFrame::NoImport
+    }
+}
+
+/// An encoder surface that only counts how often one was asked for.
+struct CountingSurface;
+
+impl GpuEncodeInput for CountingSurface {
+    fn id(&self) -> u64 {
+        1
+    }
+
+    fn width(&self) -> u32 {
+        320
+    }
+
+    fn height(&self) -> u32 {
+        180
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_arc_any(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::new(())
+    }
+}
+
+#[derive(Default)]
+struct CountingPool(std::sync::atomic::AtomicUsize);
+
+impl CountingPool {
+    fn acquired(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl GpuEncodePool for CountingPool {
+    fn acquire(&self, _width: u32, _height: u32) -> Option<Arc<dyn GpuEncodeInput>> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Some(Arc::new(CountingSurface))
+    }
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
