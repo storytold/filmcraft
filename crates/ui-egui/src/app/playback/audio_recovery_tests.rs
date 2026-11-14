@@ -223,6 +223,35 @@ fn playhead_set_during_playback_continues_from_the_new_position() {
     app.stop();
 }
 
+/// A control request can arrive on a hidden logic tick, where egui's input time is still the
+/// previous UI pass: the re-anchor must take the playback clock, or the next tick jumps by the
+/// staleness and can run the playhead into the sequence end.
+#[test]
+fn playhead_set_on_a_hidden_tick_reanchors_on_the_playback_clock() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert!(!app.playback.audio_clock, "no audio output: the wall clock drives playback");
+    // the hidden tick runs at 10 s; the last UI pass saw 0.5 s
+    app.set_now_for_test(10.0);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(0.5), ..Default::default() }, |_| {});
+    output.textures_delta.clear();
+    let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 2.0})).unwrap();
+    let want = Tick(r["time"].as_i64().expect("the set time"));
+    assert_eq!(app.playback.anchor_tick, want);
+    assert_eq!(app.playback.anchor_time, 10.0, "the re-anchor took the playback clock, not egui's stale time");
+    // the next tick continues from the move instead of jumping by the stale 9.5 s
+    app.set_now_for_test(10.5);
+    let mut output = ctx.run_ui(egui::RawInput { time: Some(0.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+    output.textures_delta.clear();
+    // one 0.5 s tick from the requested position, snapped to the sequence frame rate
+    assert_eq!(app.session.playhead(), app.session.sequence_rate().snap(want + Tick::from_seconds_f64(0.5)));
+    app.stop();
+}
+
 #[test]
 fn reanchoring_audio_clock_resets_stall_watchdog() {
     let mut session = Session::default();
@@ -238,6 +267,10 @@ fn reanchoring_audio_clock_resets_stall_watchdog() {
     app.session.set_playhead(Tick::from_seconds_f64(5.0));
     app.reanchor_playback(10.0);
 
+    // The watchdog compares against `app.now()`, not the raw input time: without this the stall
+    // interval would be read from the host clock near zero and the test could pass without the
+    // `audio_seen` reset in `reanchor_playback`.
+    app.set_now_for_test(10.5);
     let mut output = ctx.run_ui(egui::RawInput { time: Some(10.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
     output.textures_delta.clear();
     assert!(app.playback.audio_clock, "a fresh stream must not trip the stall watchdog");

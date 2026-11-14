@@ -684,8 +684,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if r.is_ok() && id == "playhead.set" {
         // A playhead move while playback runs continues from the new position (the pump would
-        // otherwise overwrite it on the next tick: #1622).
-        app.reanchor_playback(ctx.input(|i| i.time));
+        // otherwise overwrite it on the next tick: #1622). Use the playback clock: a control
+        // request can run on a hidden logic tick, where egui's input time is stale.
+        app.reanchor_playback(app.now());
     }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
