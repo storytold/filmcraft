@@ -535,7 +535,8 @@ pub fn bin_of(v: f32) -> Option<usize> {
 pub fn histogram(s: &Signal, p: &Params) -> Histogram {
     let mut h = Histogram { r: vec![0; BINS], g: vec![0; BINS], b: vec![0; BINS], y: vec![0; BINS], samples: s.len() as u32, below: [0; 4], above: [0; 4] };
     for &[r, g, b] in &s.rgb {
-        let y = rgb_to_ycbcr(r, g, b, p.matrix)[0];
+        let [cr, cg, cb] = if p.clamp { [r, g, b].map(|v| v.clamp(0.0, 1.0)) } else { [r, g, b] };
+        let y = rgb_to_ycbcr(cr, cg, cb, p.matrix)[0];
         for (i, v) in [r, g, b, y].into_iter().enumerate() {
             let bins = match i {
                 0 => &mut h.r,
