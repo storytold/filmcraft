@@ -956,12 +956,18 @@ fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)]
 /// Rolling Edit drag shows this, so the cut stops where the roll on release stops instead of
 /// following the pointer past the media.
 pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Result<Tick> {
+    roll_delta_linked(s, left, right, delta, true)
+}
+
+/// [`roll_delta`] for a roll that, with `follow_links` false (Alt held, `"followLinks": false`),
+/// rolls only this cut and leaves the linked partners' cut where it is: a J- or L-cut (#4287).
+pub fn roll_delta_linked(s: &Session, left: ClipId, right: ClipId, delta: Tick, follow_links: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
+    clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection && follow_links), delta, &mut ctx)
 }
 
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
