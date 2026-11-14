@@ -643,12 +643,17 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
         rng
     };
     let mut seek_ms = Vec::new();
+    let mut ttff_ms = f64::NAN;
+    let mut seeks_done = 0usize;
     let mut settle_ms = Vec::new();
     let mut timeouts = 0usize;
     let mut drag_steps = 0usize;
     let mut drag_shown = 0usize;
 
-    // TTFF = very first cold seek
+    // TTFF = very first cold seek. It is a single cold sample (sessions, shader/pipeline
+    // warm-up, first decoder open), so it must not be mixed into the seek p50/p95 sample
+    // set: with a small n the cold outlier becomes the p95 itself and reports the seek
+    // distribution as if every seek cost a cold start.
     for i in 0..24 {
         let f = (next_rand() % total_frames as u64) as i64;
         let key = FrameKey { target, frame: f, size, revision: s.revision, draft: false };
@@ -656,7 +661,13 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
         loop {
             server.request(key, rate.tick_of(f), scale, &project, 0);
             if display.refresh(&server, key) {
-                seek_ms.push(ms(t0.elapsed()));
+                let elapsed = ms(t0.elapsed());
+                if i == 0 {
+                    ttff_ms = elapsed;
+                } else {
+                    seek_ms.push(elapsed);
+                }
+                seeks_done += 1;
                 break;
             }
             if t0.elapsed() >= timeout {
@@ -665,7 +676,6 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
             }
             std::thread::sleep(Duration::from_millis(4));
         }
-        let _ = i;
     }
 
     for _ in 0..8 {
@@ -705,7 +715,7 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
     let (ram_ws_mb, ram_peak_mb, _) = process_ram_mb();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
     let cpu_cores_used = cpu_s / wall_s;
-    let seeks_done = seek_ms.len().max(1) as f64;
+    let seeks_done = seeks_done.max(1) as f64;
 
     json!({
         "case": case,
@@ -713,10 +723,11 @@ fn measure_scrub(case: &str, s: &Session, seq: ItemId, use_gpu: bool) -> Value {
         "adapter": adapter_name,
         "backend": backend_name,
         "resolution": format!("{}x{}", q.settings.width, q.settings.height),
-        "ttff_ms": seek_ms.first().copied().unwrap_or(f64::NAN),
+        "ttff_ms": ttff_ms,
         "seek_p50_ms": pct(&seek_ms, 0.5),
         "seek_p95_ms": pct(&seek_ms, 0.95),
         "seek_max_ms": pct(&seek_ms, 1.0),
+        "seek_samples_ms": seek_ms,
         "drag_settle_p50_ms": pct(&settle_ms, 0.5),
         "drag_settle_p95_ms": pct(&settle_ms, 0.95),
         "drag_shown_pct": 100.0 * drag_shown as f64 / drag_steps.max(1) as f64,
