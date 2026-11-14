@@ -130,6 +130,11 @@ struct Asset {
 /// Most times truncated media is imported again at a shallower depth.
 const MAX_REIMPORTS: usize = 4096;
 
+/// Deepest storyline/element nesting a hostile file may walk. The FCPXML structure can nest
+/// connected clips and secondary storylines without limit, and layout recurses once per level
+/// (audit: FilmCraft F3).
+const MAX_XML_DEPTH: usize = 128;
+
 struct Imp<'a, 'i, 'r> {
     b: Builder,
     opts: &'a ImportOptions,
@@ -148,6 +153,8 @@ struct Imp<'a, 'i, 'r> {
     /// Re-imports of truncated media still allowed.
     reimports_left: usize,
     effects: HashMap<String, String>,
+    /// Current storyline/element nesting, checked against [`MAX_XML_DEPTH`].
+    depth: usize,
 }
 
 /// Where an element's keyframe times start, the media time it starts at and its playback speed.
@@ -200,6 +207,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         media_truncated_at: HashMap::new(),
         reimports_left: MAX_REIMPORTS,
         effects: HashMap::new(),
+        depth: 0,
     };
     if let Some(res) = child(root, "resources") {
         for r in elements(res) {
@@ -381,9 +389,20 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         id
     }
 
+    /// Lay out a storyline, refusing nesting past [`MAX_XML_DEPTH`].
+    fn storyline(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.report.warn(format!("XML storylines are nested more than {MAX_XML_DEPTH} deep; deeper clips were skipped"));
+            return;
+        }
+        self.depth += 1;
+        self.storyline_inner(seq, ctx, spine, origin, lane, primary);
+        self.depth -= 1;
+    }
+
     /// Lay out a storyline. `origin` maps the storyline's offsets to timeline time
     /// (`timeline = origin + offset`). `lane` is the storyline's lane (0 = primary).
-    fn storyline(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
+    fn storyline_inner(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
         // (timeline start, timeline end, video clip on this storyline's track)
         let mut laid: Vec<(Tick, Tick, Option<filmcraft_project::ClipId>)> = Vec::new();
         let mut transitions: Vec<(usize, Node)> = Vec::new();
@@ -440,8 +459,28 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
     }
 
-    /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
+    /// Lay out one element, refusing nesting past [`MAX_XML_DEPTH`].
     fn element(&mut self, seq: &mut Sequence, ctx: &Ctx, el: Node<'a, 'i>, t0: Tick, lane: i32, primary: bool) -> (Tick, Option<filmcraft_project::ClipId>) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.report.warn(format!("XML elements are nested more than {MAX_XML_DEPTH} deep; deeper clips were skipped"));
+            return (t0, None);
+        }
+        self.depth += 1;
+        let out = self.element_inner(seq, ctx, el, t0, lane, primary);
+        self.depth -= 1;
+        out
+    }
+
+    /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
+    fn element_inner(
+        &mut self,
+        seq: &mut Sequence,
+        ctx: &Ctx,
+        el: Node<'a, 'i>,
+        t0: Tick,
+        lane: i32,
+        primary: bool,
+    ) -> (Tick, Option<filmcraft_project::ClipId>) {
         let tag = el.tag_name().name();
         let dur = attr_time(el, "duration").unwrap_or(Tick::ZERO);
         let local_start = attr_time(el, "start").unwrap_or(Tick::ZERO);
