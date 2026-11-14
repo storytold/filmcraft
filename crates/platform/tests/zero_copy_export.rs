@@ -131,13 +131,19 @@ fn nvenc_zero_copy_export_and_fallback() {
     let nframes = 48i64;
     let (p, seq, m) = project(1280, 720, nframes);
 
-    // 1. Zero-copy export for H.264, HEVC, and AV1 (when available on the GPU).
+    // The zero-copy and the readback exports of one codec differ by the video limiter (which forces
+    // the RGBA8 readback + NVENC upload path) and by two lossy encodes of the same pictures, so only
+    // a floor is meaningful: one stale, cut or blank frame in the middle of an otherwise perfect
+    // export must fail here, whatever the mean says.
+    let min_psnr = 28.0;
+
+    // 1. Zero-copy export for H.264, HEVC, and AV1 (when available on the GPU), each compared frame
+    //    by frame with the same sequence through the readback fallback.
     let formats = [
         (Format::H264, "h264_zc.mp4", true),
         (Format::Hevc, "hevc_zc.mp4", filmcraft_platform::nvenc::hevc_available()),
         (Format::Av1, "av1_zc.mp4", filmcraft_platform::nvenc::av1_available()),
     ];
-    let mut h264_path = None;
     for (format, name, enabled) in formats {
         if !enabled {
             continue;
@@ -163,8 +169,10 @@ fn nvenc_zero_copy_export_and_fallback() {
 
         assert_eq!(report.encoder.as_deref(), Some("NVENC"), "{name}");
         assert_eq!(report.frames, nframes as u64, "{name}");
-        assert_eq!(h.frames - h0.frames, nframes as u64, "{name}: every frame encoded by NVENC");
-        assert_eq!(g.frames - g0.frames, nframes as u64, "{name}: every frame rendered on GPU");
+        // the counters are process-wide and a batch may render or encode around its frames, so
+        // they are a floor, not an exact count
+        assert!(h.frames - h0.frames >= nframes as u64, "{name}: every frame encoded by NVENC ({h:?})");
+        assert!(g.frames - g0.frames >= nframes as u64, "{name}: every frame rendered on GPU ({g:?})");
         assert_eq!(g.fallbacks - g0.fallbacks, 0, "{name}: zero GPU fallbacks");
         assert_eq!(t.export_readback_bytes, 0, "{name}: zero-copy must not read back to CPU");
         assert_eq!(t.encode_upload_bytes, 0, "{name}: zero-copy must not upload to NVENC from CPU");
@@ -175,36 +183,34 @@ fn nvenc_zero_copy_export_and_fallback() {
             let out = std::process::Command::new(ff).args(["-v", "error", "-i", &path, "-f", "null", "-"]).output().unwrap();
             assert!(out.stderr.is_empty(), "{name} ffmpeg errors: {}", String::from_utf8_lossy(&out.stderr));
         }
-        if format == Format::H264 {
-            h264_path = Some(path);
-        }
+
+        // 2. The same frames through the readback fallback: the CPU Video Limiter turns zero-copy
+        //    off, so NVENC gets RGBA8 read back from the GPU.
+        let fb_path = dir.path().join(format!("{name}_fallback.mp4")).to_string_lossy().to_string();
+        let mut fb_settings = ExportSettings {
+            format,
+            path: fb_path.clone(),
+            include_audio: false,
+            bitrate_kbps: 4000,
+            bitrate_mode: BitrateMode::Vbr1Pass,
+            hardware_encoding: HardwareEncoding::Auto,
+            gpu_rendering: GpuRendering::Auto,
+            ..Default::default()
+        };
+        fb_settings.effects.video_limiter.enabled = true;
+        let tf0 = transfers::snapshot();
+        let fb_report = export(&p, seq, &fb_settings, &m, &Progress::default()).unwrap();
+        let tf = transfers::snapshot() - tf0;
+        assert_eq!(fb_report.encoder.as_deref(), Some("NVENC"), "{name}: fallback encoder");
+        assert!(tf.export_readback_bytes > 0, "{name}: video limiter must trigger GPU readback");
+        assert!(tf.encode_upload_bytes > 0, "{name}: video limiter must trigger CPU->NVENC upload");
+
+        let fb_frames = decode_all(&fb_path);
+        assert_eq!(fb_frames.len(), decoded.len(), "{name}: fallback decoded frame count");
+        let psnrs: Vec<f64> = decoded.iter().zip(&fb_frames).map(|(a, b)| luma_psnr(a, b)).collect();
+        let worst = psnrs.iter().copied().fold(f64::INFINITY, f64::min);
+        let mean = psnrs.iter().sum::<f64>() / psnrs.len() as f64;
+        eprintln!("{name}: frame PSNR min {worst:.1} dB, mean {mean:.1} dB");
+        assert!(worst > min_psnr, "{name}: worst-frame PSNR {worst:.1} dB (mean {mean:.1}), zero-copy and fallback disagree on a frame");
     }
-
-    // 2. Fallback check: enabling the CPU Video Limiter forces RGBA8 readback + NVENC RGBA upload
-    //    and produces visually matching output compared to zero-copy H.264.
-    let lim_path = dir.path().join("h264_limiter.mp4").to_string_lossy().to_string();
-    let mut lim_settings = ExportSettings {
-        format: Format::H264,
-        path: lim_path.clone(),
-        include_audio: false,
-        bitrate_kbps: 4000,
-        bitrate_mode: BitrateMode::Vbr1Pass,
-        hardware_encoding: HardwareEncoding::Auto,
-        gpu_rendering: GpuRendering::Auto,
-        ..Default::default()
-    };
-    lim_settings.effects.video_limiter.enabled = true;
-
-    let t0 = transfers::snapshot();
-    let lim_report = export(&p, seq, &lim_settings, &m, &Progress::default()).unwrap();
-    let t = transfers::snapshot() - t0;
-    assert_eq!(lim_report.encoder.as_deref(), Some("NVENC"));
-    assert!(t.export_readback_bytes > 0, "video limiter must trigger GPU readback");
-    assert!(t.encode_upload_bytes > 0, "video limiter must trigger CPU->NVENC upload");
-
-    let zc_frames = decode_all(h264_path.as_ref().unwrap());
-    let lim_frames = decode_all(&lim_path);
-    assert_eq!(zc_frames.len(), lim_frames.len());
-    let worst = zc_frames.iter().zip(&lim_frames).map(|(a, b)| luma_psnr(a, b)).fold(99.0, f64::min);
-    assert!(worst > 28.0, "zero-copy vs fallback PSNR too low: {worst:.1} dB");
 }
