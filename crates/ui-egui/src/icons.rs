@@ -127,6 +127,10 @@ pub enum Icon {
     Moon,
     /// Colour parameters: pick a colour from the Program monitor (a pipette).
     Eyedropper,
+    /// Program monitor direct manipulation: a box with a handle on each corner (Transform) and two
+    /// crossed right angles (Crop).
+    TransformBox,
+    Crop,
 }
 
 pub struct Pen16<'a> {
@@ -792,6 +796,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(9.5, 7.5), (3.5, 12.5)]);
             pen.line(&[(3.5, 12.5), (2.5, 13.5)]);
         }
+        TransformBox => {
+            pen.rect(4.0, 4.0, 12.0, 12.0);
+            for (x, y) in [(4.0, 4.0), (12.0, 4.0), (12.0, 12.0), (4.0, 12.0)] {
+                pen.rect_fill(x - 1.75, y - 1.75, x + 1.75, y + 1.75);
+            }
+        }
+        Crop => {
+            pen.line(&[(4.5, 1.5), (4.5, 11.5), (14.5, 11.5)]);
+            pen.line(&[(1.5, 4.5), (11.5, 4.5), (11.5, 14.5)]);
+        }
     }
 }
 
@@ -928,6 +942,8 @@ mod tests {
         Network,
         Clock,
         Eyedropper,
+        TransformBox,
+        Crop,
     ];
 
     /// Paint `icon` at `ppp` device pixels per point into a rect of `size` points whose corner is

@@ -11,6 +11,7 @@
 //! | `window.nextPanel` / `window.prevPanel` | Select Next / Previous Panel | Ctrl+Shift+. / Ctrl+Shift+, |
 //! | `window.toggleMonitorFocus` | Toggle Source/Program Monitor Focus | |
 //! | `window.openSearch` / `panel.selectFindBox` | Open Search / Select Find Box | Cmd+Shift+F / Shift+F |
+//! | `view.toggleTransformDirectManipulation` / `view.toggleCropDirectManipulation` | Toggle Transform / Crop Direct Manipulation | |
 //! | `view.programZoom100` / `view.programZoomFit` | Zoom Program Monitor to 100% / Fit | Cmd+Shift+1 / Cmd+Shift+0 |
 //! | `view.sourceZoom100` / `view.sourceZoomFit` | Zoom Source Monitor to 100% / Fit | Cmd+Alt+Shift+1 / Cmd+Alt+Shift+0 |
 //! | `playback.inToOutPreroll` / `playback.toOut` | Play In to Out with Preroll/Postroll / Play from Playhead to Out Point | Shift+Space / Ctrl+Space |
@@ -30,6 +31,7 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::menus::UiCommand;
+use crate::state::DirectMode;
 use filmcraft_engine::project_panel::ViewMode;
 
 /// Keyboard-only view state.
@@ -70,6 +72,8 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("panel.selectFindBox", "Select Find Box", [], Some("Shift+F")),
     uic!("window.workspace.learning", "Learning", ["Window", "Workspaces"], Some("Alt+Shift+7")),
     uic!("window.workspace.review", "Review", ["Window", "Workspaces"], Some("Alt+Shift+8")),
+    uic!("view.toggleTransformDirectManipulation", "Toggle Transform Direct Manipulation", [], None),
+    uic!("view.toggleCropDirectManipulation", "Toggle Crop Direct Manipulation", [], None),
     uic!("view.programZoom100", "Zoom Program Monitor to 100%", [], Some("Cmd+Shift+1")),
     uic!("view.programZoomFit", "Zoom Program Monitor to Fit", [], Some("Cmd+Shift+0")),
     uic!("view.sourceZoom100", "Zoom Source Monitor to 100%", [], Some("Cmd+Alt+Shift+1")),
@@ -137,6 +141,14 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
 ];
 
+/// Toggle `mode`'s direct manipulation on the Program monitor: on in `mode` from off or the other
+/// mode, off when it is already on in `mode`. Answers `{"directManipulation": "transform"|"crop"|null}`.
+pub fn toggle_direct(view: &mut crate::state::MonitorView, mode: DirectMode) -> Value {
+    view.direct = !(view.direct && view.direct_mode == mode);
+    view.direct_mode = mode;
+    json!({"directManipulation": view.direct.then(|| mode.name())})
+}
+
 /// FilmCraft's documentation (Help ▸ FilmCraft Help…, F1).
 pub const HELP_URL: &str = "https://github.com/storytold/filmcraft/tree/main/docs";
 
@@ -193,6 +205,10 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             let name = if id.ends_with("learning") { "Learning" } else { "Review" };
             app.set_workspace(name);
             Ok(json!({"workspace": name}))
+        }
+        "view.toggleTransformDirectManipulation" | "view.toggleCropDirectManipulation" => {
+            let mode = if id == "view.toggleCropDirectManipulation" { DirectMode::Crop } else { DirectMode::Transform };
+            Ok(toggle_direct(&mut app.ui.program, mode))
         }
         "view.programZoom100" | "view.programZoomFit" | "view.sourceZoom100" | "view.sourceZoomFit" => {
             let v = if id.starts_with("view.program") { &mut app.ui.program } else { &mut app.ui.source };
