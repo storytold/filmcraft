@@ -116,7 +116,13 @@ pub fn layout(t: &Tiff, ifd: &Ifd) -> Result<RawLayout> {
         }
         34892 if bits != 8 => return Err(Error::Unsupported(format!("lossy JPEG DNG with {bits}-bit samples (DNG allows only 8)"))),
         34892 => {}
-        52546 => return Err(Error::Unsupported("JPEG XL DNG".into())),
+        // DNG 1.7: JPEG XL for 8–16-bit integer data of one or three planes (not CFA mosaics)
+        52546 if !cfg!(feature = "jxl") => return Err(Error::Unsupported("JPEG XL DNG (this build has no JPEG XL decoder, feature `jxl`)".into())),
+        52546 if photometric != PHOTOMETRIC_LINEAR_RAW => return Err(Error::Unsupported("JPEG XL DNG of CFA data (DNG allows it only for LinearRaw)".into())),
+        52546 if !(8..=16).contains(&bits) || !matches!(spp, 1 | 3) => {
+            return Err(Error::Unsupported(format!("JPEG XL DNG with {spp} samples of {bits} bits")));
+        }
+        52546 => {}
         c => return Err(Error::Unsupported(format!("DNG compression {c}"))),
     }
     Ok(RawLayout { width: width as usize, height: height as usize, samples_per_pixel: spp as usize, bits: bits as u32, compression, photometric })
@@ -219,6 +225,8 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
     match l.compression {
         1 => unpack(c.bytes, c.w, c.h, l.samples_per_pixel, l.bits, big_endian),
         34892 => lossy_jpeg(c.bytes, need, l.samples_per_pixel),
+        #[cfg(feature = "jxl")]
+        52546 => jpeg_xl(c.bytes, need),
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
@@ -270,6 +278,38 @@ fn lossy_jpeg(bytes: &[u8], need: usize, spp: usize) -> Result<Vec<u16>> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or(Err(Error::Malformed("lossy JPEG decoder failed")))
 }
 
+/// Decode a JPEG XL tile or strip (Compression 52546, bare codestream or container) into `need`
+/// samples: one or three channels, integer samples back at the codestream's bit depth (exact
+/// for lossless JPEG XL), in raster order.
+#[cfg(feature = "jxl")]
+fn jpeg_xl(bytes: &[u8], need: usize) -> Result<Vec<u16>> {
+    let bad = |_| Error::Malformed("JPEG XL tile");
+    let decode = || -> Result<Vec<u16>> {
+        let img = jxl_oxide::JxlImage::builder().read(bytes).map_err(bad)?;
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let px = w.checked_mul(h).ok_or(Error::TooLarge)?;
+        // one or three channels must cover the chunk without being far larger
+        if px.saturating_mul(3) < need || px > need.saturating_add(65_536) || px > MAX_SAMPLES {
+            return Err(Error::Malformed("JPEG XL picture does not match its tile or strip"));
+        }
+        let depth = img.image_header().metadata.bit_depth;
+        let jxl_oxide::image::BitDepth::IntegerSample { bits_per_sample } = depth else {
+            return Err(Error::Unsupported("floating-point JPEG XL DNG".into()));
+        };
+        let bits = bits_per_sample.clamp(1, 16);
+        let render = img.render_frame(0).map_err(bad)?;
+        let fb = render.image_all_channels();
+        let channels = fb.channels();
+        if !matches!(channels, 1 | 3) || px.saturating_mul(channels) < need {
+            return Err(Error::Unsupported(format!("JPEG XL DNG tile with {channels} channels")));
+        }
+        let max = ((1u32 << bits) - 1) as f32;
+        Ok(fb.buf().iter().take(need).map(|&v| if v.is_finite() { (v * max).round().clamp(0.0, max) as u16 } else { 0 }).collect())
+    };
+    // a third-party decoder: a panic in it is an error for this file, not a crash
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or(Err(Error::Malformed("JPEG XL decoder failed")))
+}
+
 /// Read the raw image of `ifd`.
 pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     let l = layout(t, ifd)?;
@@ -282,7 +322,12 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     // every sample takes at least one bit of file (a Huffman code is at least one bit long);
     // lossy JPEG at least two bits per 8 × 8 block and component (a DC code and an end of
     // block), so a tiny file cannot claim a huge picture
-    let per_byte = if l.compression == 34892 { 256 } else { 8 };
+    let per_byte = match l.compression {
+        34892 => 256,
+        // JPEG XL codes flat areas in almost nothing; this still bounds the allocation
+        52546 => 4096,
+        _ => 8,
+    };
     let coded: usize = chunks.iter().map(|c| c.bytes.len()).fold(0usize, usize::saturating_add);
     if total.div_ceil(per_byte) > coded {
         return Err(Error::Truncated);

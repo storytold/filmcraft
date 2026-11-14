@@ -16,6 +16,7 @@ when it is installed, never linked.
 | TIFF Revision 6.0 | June 1992 | header, IFDs, field types, strips and tiles, PlanarConfiguration, row padding |
 | TIFF/EP, ISO 12234-2 | 2001 | CFARepeatPatternDim, CFAPattern |
 | TIFF Technical Note 1 (SubIFDs) | 1993 | the SubIFD tree |
+| ISO/IEC 18181-1:2022 (JPEG XL) | 2022 | decoded only through `jxl-oxide`'s public API (feature `jxl`) |
 | ITU-T T.81 \| ISO/IEC 10918-1 | 09/1992 | lossless JPEG (process 14, SOF3): Annex B syntax, Annex C Huffman tables, F.2.2.3 decoding, Annex H prediction and point transform |
 | CinemaDNG Image Data Format Specification | 1.0.0.0 (September 2009) | frames as numbered DNG files, FrameRate, TimeCodes, ReelName tags |
 | SMPTE ST 12-1 | 2014 | time code BCD packing (via the CinemaDNG TimeCodes tag) |
@@ -59,7 +60,10 @@ the raw image in a SubIFD, and arbitrary extra tags.
 - **Raw data:** 1–16-bit unsigned samples, uncompressed (8 and 16-bit in file byte order, other
   depths packed most significant bit first), lossy JPEG (Compression 34892: baseline DCT tiles or
   strips of one or three components, 8-bit LinearRaw only, as DNG 1.4 allows; the JPEG's own
-  colour transform applies) or lossless JPEG (all predictors 1–7, 1–4 components,
+  colour transform applies), JPEG XL (Compression 52546, DNG 1.7, **feature `jxl`, off by
+  default**: decoded by `jxl-oxide`, MIT OR Apache-2.0, pure Rust; 8–16-bit integer LinearRaw of
+  one or three channels, bare codestreams or containers; integer samples come back at the
+  codestream's depth, exact for lossless JPEG XL) or lossless JPEG (all predictors 1–7, 1–4 components,
   point transform, restart intervals of whole lines), in strips or tiles; tiles decode in
   parallel.
 - **Processing:** ActiveArea, LinearizationTable, per-site black levels with row / column deltas,
@@ -108,7 +112,7 @@ the raw image in a SubIFD, and arbitrary extra tags.
 
 ## Not supported (errors name them)
 
-JPEG XL DNG, deflate / floating-point DNG (HDR merges), planar raw data, colour
+JPEG XL DNG without the `jxl` feature, deflate / floating-point DNG (HDR merges), planar raw data, colour
 filters other than red / green / blue (CMY, RGBE), non-rectangular CFA layouts, DefaultScale and
 BestQualityScale (non-square pixels are shown square), DNG 1.6 IlluminantData for illuminant 255
 (calibration 1 is used) and lossless JPEG restart intervals that split a line. This crate reads
@@ -133,6 +137,10 @@ files). Kept for now so the faster pipeline stays bit-identical to the first one
 - `tests/it/lossy.rs`: lossy JPEG tiles and strips with one and three components, samples equal to
   the JPEG decoder's, a LinearizationTable expanding 8-bit codes, CFA and 12-bit lossy files
   refused, a tiny file claiming a huge picture, truncations and 3000 mutations.
+- `tests/it/jxl.rs` (feature `jxl`): lossless JPEG XL strips made by `cjxl` at test time (skipped
+  without it, nothing committed) decode bit-exactly at 8, 10, 12 and 16 bits with one and three
+  channels; lossy JPEG XL is close; truncations and mutations; without the feature, JPEG XL is
+  named as unsupported.
 - `tests/it/opcodes.rs`, `tests/it/equivalence.rs`: opcode lists per stage; the faster pipeline
   against the reference.
 - `tests/it/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic

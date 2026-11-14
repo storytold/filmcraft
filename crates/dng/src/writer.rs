@@ -84,6 +84,11 @@ pub enum Compression {
     LossyJpeg {
         quality: u8,
     },
+    /// Compression tag `code` with the strips / tiles coded by the caller ([`Options::external`],
+    /// in chunk order), e.g. JPEG XL from an external encoder.
+    External {
+        code: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +115,8 @@ pub struct Options {
     pub main_tags: Vec<(u16, Value)>,
     /// Extra tags of the raw IFD (black and white levels, crop…).
     pub raw_tags: Vec<(u16, Value)>,
+    /// Coded strips / tiles for [`Compression::External`].
+    pub external: Vec<Vec<u8>>,
 }
 
 impl Default for Options {
@@ -126,6 +133,7 @@ impl Default for Options {
             preview: false,
             main_tags: Vec::new(),
             raw_tags: Vec::new(),
+            external: Vec::new(),
         }
     }
 }
@@ -452,6 +460,7 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> Result<(Vec<u3
                     lj92(&chunk, &params)
                 }
                 Compression::LossyJpeg { quality } => lossy_jpeg(&chunk, cw, rows, spp, quality)?,
+                Compression::External { .. } => o.external.get(offs.len()).cloned().unwrap_or_default(),
             };
             if buf.len() % 2 == 1 {
                 buf.push(0);
@@ -498,6 +507,7 @@ pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
                 Compression::None => 1,
                 Compression::LosslessJpeg { .. } => 7,
                 Compression::LossyJpeg { .. } => 34892,
+                Compression::External { code } => code,
             }]),
         ),
         (tags::SAMPLES_PER_PIXEL, Value::Short(vec![o.samples_per_pixel as u16])),

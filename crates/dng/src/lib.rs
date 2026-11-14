@@ -94,7 +94,7 @@ pub struct Info {
     pub samples_per_pixel: usize,
     /// Colour filter array data (else LinearRaw).
     pub cfa: bool,
-    /// "uncompressed", "lossless JPEG" or "lossy JPEG".
+    /// "uncompressed", "lossless JPEG", "lossy JPEG" or "JPEG XL".
     pub compression: &'static str,
     pub dng_version: [u8; 4],
     /// CinemaDNG FrameRate (numerator, denominator).
@@ -340,6 +340,7 @@ impl<'a> Dng<'a> {
             compression: match l.compression {
                 7 => "lossless JPEG",
                 34892 => "lossy JPEG",
+                52546 => "JPEG XL",
                 _ => "uncompressed",
             },
             dng_version,
