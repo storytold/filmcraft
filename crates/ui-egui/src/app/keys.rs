@@ -4,6 +4,9 @@ impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
     /// to a focused text field except dock dividers.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.session.active_sequence().is_none() {
+            panels::timeline::clear_controls_listening(ctx);
+        }
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
@@ -25,7 +28,12 @@ impl FilmcraftApp {
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
-        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+        if (ctx.egui_wants_keyboard_input() && !divider_focused)
+            || self.dialog == Some(Dialog::Shortcuts)
+            || self.ui.clip_dialog.is_some()
+            // a Controls box is naming a new shortcut: nothing else may hear the key
+            || panels::timeline::controls_listening(ctx)
+        {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -50,7 +58,10 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
+        if self.session.active_sequence().is_none() {
+            panels::timeline::clear_controls_listening(ctx);
+        }
+        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
             return;
         }
         let mut input = egui::InputState::default();

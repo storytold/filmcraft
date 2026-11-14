@@ -338,10 +338,16 @@ fn close_project_and_save_all() {
     assert!(s.is_dirty());
     s.execute("file.saveAll", json!({})).unwrap();
     assert!(!s.is_dirty());
+    s.state.timeline_ui.zoom_bar_hidden = true;
+    s.project_view_changed();
+    assert!(!s.is_dirty(), "a view-only change must not dirty project content");
+    assert!(s.is_view_dirty(), "the view change still needs saving");
+    assert!(s.execute("file.closeProject", json!({})).is_err(), "closing must preserve unsaved view settings");
     s.execute("edit.label.tan", json!({})).unwrap();
     assert!(s.execute("file.closeProject", json!({})).is_err(), "unsaved changes");
     s.execute("file.closeProject", json!({"force": true})).unwrap();
     assert!(s.project.items.is_empty() && s.path.is_none() && s.state.active_sequence.is_none());
+    assert!(!s.has_unsaved_changes(), "the new untitled project starts clean");
     assert!(!s.history.can_undo());
 }
 
