@@ -76,7 +76,7 @@ fn probe(path: &std::path::Path, entries: &str) -> String {
         .arg(path)
         .output()
         .unwrap();
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n")
 }
 
 #[test]

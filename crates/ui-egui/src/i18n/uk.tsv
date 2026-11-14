@@ -24,6 +24,8 @@
 	Align to Video Frame as Group	Вирівняти за відеокадром як групу
 	All Panels	Усі панелі
 	Alpha	Альфа
+	Alternate Drag Speed	Альтернативна швидкість перетягування
+	Alternate Drag Speed:	Альтернативна швидкість перетягування:
 	Appearance	Вигляд
 	Appearance…	Вигляд…
 	Apply Audio Transition	Застосувати аудіоперехід
@@ -61,6 +63,7 @@
 	Captions…	Субтитри…
 	Caribbean	Карибський
 	Center Horizontally	По центру горизонтально
+	Center on Playhead:	Центрувати на головці відтворення:
 	Center Vertically	По центру вертикально
 	Cerulean	Лазурний
 	Clear	Видалити
@@ -81,6 +84,7 @@
 	Comparison View	Режим порівняння
 	Composite Video	Композитне відео
 	Consolidate Duplicates	Об’єднати дублікати
+	Controls	Керування
 	Copy	Копіювати
 	Copy Paste Includes Sequence Markers	Копіювати й вставляти разом із маркерами секвенції
 	Create Captions from Transcript…	Створити субтитри з транскрипції…
@@ -115,9 +119,11 @@
 	Ellipse	Еліпс
 	Enable	Увімкнути
 	Enable Remix	Увімкнути ремікс
+	Enter Shortcut	Введіть комбінацію клавіш
 	Essential Graphics	Основна графіка
 	Essential Sound	Основний звук
 	Events	Події
+	Explode Slider:	Розгорнути повзунок:
 	Export	Експорт
 	Export As Motion Graphics Template…	Експортувати як шаблон анімаційної графіки…
 	Extract	Вилучити зі зсувом
@@ -172,6 +178,7 @@
 	Insert Frame Hold Segment	Вставити сегмент стоп-кадру
 	Install Motion Graphics Template…	Установити шаблон анімаційної графіки…
 	Interpret Footage…	Інтерпретувати матеріал…
+	Invert Scrolling	Інвертувати прокручування
 	Join the ArtCraft Discord…	Приєднатися до Discord ArtCraft…
 	Keyboard Shortcuts…	Клавіатурні скорочення…
 	Label	Мітка
@@ -232,6 +239,7 @@
 	Paused Resolution	Роздільність під час паузи
 	Playback Resolution	Роздільність відтворення
 	Playback…	Відтворення…
+	Playhead Centering Range	Діапазон центрування головки відтворення
 	Plugins…	Плагіни…
 	Polygon	Багатокутник
 	Preferences	Налаштування
@@ -308,6 +316,7 @@
 	Sequence Settings…	Налаштування секвенції…
 	Sequence…	Секвенція…
 	Settings	Налаштування
+	Settings:	Налаштування:
 	Show Active Caption Tracks Only	Показати лише активні доріжки субтитрів
 	Show All Caption Tracks	Показати всі доріжки субтитрів
 	Show All Marker Colors	Показати всі кольори маркерів
@@ -318,6 +327,7 @@
 	Simplify Sequence…	Спростити секвенцію…
 	Snap in Program Monitor	Прив’язка в моніторі програми
 	Snap in Timeline	Прив’язка на часовій шкалі
+	Snap to Tracks	Прив'язка до доріжок
 	Source	Джерело
 	Source Settings…	Налаштування джерела…
 	Speed/Duration…	Швидкість/тривалість…

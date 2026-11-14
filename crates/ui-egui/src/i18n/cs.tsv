@@ -34,6 +34,8 @@
 	Align to Video Frame as Group	Zarovnat skupinu podle videosnímku
 	All Panels	Všechny panely
 	Alpha	Alfa
+	Alternate Drag Speed	Alternativní rychlost tazení
+	Alternate Drag Speed:	Alternativní rychlost tazení:
 	Appearance	Vzhled
 	Appearance…	Vzhled…
 	Apply Audio Transition	Použít zvukový přechod
@@ -70,6 +72,7 @@
 	Captions…	Titulky…
 	Caribbean	Karibská modř
 	Center Horizontally	Zarovnat vodorovně na střed
+	Center on Playhead:	Vystredit na prehrávací hlavu:
 	Center Vertically	Zarovnat svisle na střed
 	Cerulean	Nebeská modř
 	Clear	Vymazat
@@ -89,6 +92,7 @@
 	Comparison View	Porovnávací zobrazení
 	Composite Video	Složený obraz
 	Consolidate Duplicates	Sloučit duplicity
+	Controls	Ovládání
 	Copy	Kopírovat
 	Copy Paste Includes Sequence Markers	Zahrnout značky sekvence při kopírování a vložení
 	Create Captions from Transcript…	Vytvořit titulky z přepisu…
@@ -122,9 +126,11 @@
 	Ellipse	Elipsa
 	Enable	Povolit
 	Enable Remix	Povolit remix
+	Enter Shortcut	Zadejte klávesovou zkratku
 	Essential Graphics	Základní grafika
 	Essential Sound	Základní zvuk
 	Events	Události
+	Explode Slider:	Rozložit posuvník:
 	Export	Export
 	Export As Motion Graphics Template…	Exportovat jako šablonu pohyblivé grafiky…
 	Extract	Vyjmout s posunem
@@ -181,6 +187,7 @@
 	Insert Frame Hold Segment	Vložit segment se zmrazeným snímkem
 	Install Motion Graphics Template…	Nainstalovat šablonu pohyblivé grafiky…
 	Interpret Footage…	Interpretovat záběry…
+	Invert Scrolling	Invertovat posouvání
 	Join the ArtCraft Discord…	Připojit se k Discordu ArtCraft…
 	Keyboard Shortcuts…	Klávesové zkratky…
 	Label	Štítek
@@ -194,6 +201,7 @@
 	Light	Světlý
 	Link	Propojit
 	Link Media…	Propojit média…
+	Playhead Centering Range	Rozsah vycentrování prehrávací hlavy
 	Refresh Changed Media	Obnovit změněná média
 	Linked Selection	Propojený výběr
 	Lock Guides	Zamknout vodítka
@@ -325,6 +333,7 @@
 	Simplify Sequence…	Zjednodušit sekvenci…
 	Snap in Program Monitor	Přichytávat v programovém monitoru
 	Snap in Timeline	Přichytávat na časové ose
+	Snap to Tracks	Prichytit ke stopám
 	Source	Zdroj
 	Source Settings…	Nastavení zdroje…
 	Speed/Duration…	Rychlost / doba trvání…

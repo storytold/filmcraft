@@ -235,7 +235,7 @@ impl Default for TimelineView {
             a_scroll: 0.0,
             split: 0.5,
             video_track_h: 60.0,
-            audio_track_h: 56.0,
+            audio_track_h: 60.0,
             header_w: 204.0,
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,
