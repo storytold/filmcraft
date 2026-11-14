@@ -18,7 +18,7 @@ fn with_ui_commands(s: &mut Session) {
         CommandInfo::new("playback.forward", "Shuttle Right", &[], Some("L")),
         CommandInfo::new("playback.slowForward", "Shuttle Slow Right", &[], None),
         CommandInfo::new("playback.playAround", "Play Around", &[], None),
-        CommandInfo::new("tool.razor", "Razor Tool", &[], Some("C")),
+        CommandInfo::new("tool.razor", "Cut Tool", &[], Some("C")),
         CommandInfo::new("app.keyboardShortcuts", "Keyboard Shortcuts…", &["Edit"], Some("Cmd+Alt+K")),
     ]);
 }
