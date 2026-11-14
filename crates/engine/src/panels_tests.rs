@@ -161,7 +161,7 @@ fn events_report_background_jobs() {
     s.poll_persistence();
     assert_eq!(s.log.entries.iter().filter(|e| e.message.starts_with("Started:")).count(), 3);
     *a.result.lock().unwrap() =
-        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, extra_files: Vec::new() }));
+        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, ..Default::default() }));
     *b.result.lock().unwrap() = Some(Err("disk full".into()));
     c.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     *c.result.lock().unwrap() = Some(Err("cancelled".into()));
@@ -174,6 +174,38 @@ fn events_report_background_jobs() {
     // reported once
     s.poll_persistence();
     assert_eq!(s.log.entries.len(), 6);
+}
+
+/// #3952: a finished export's warnings (hardware encoding asked for, but the software encoder ran)
+/// show in Events after its "Finished" line, once each, so the desktop app says so too.
+#[test]
+fn events_show_a_finished_exports_warnings() {
+    let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+    let other = "another thing the export reported";
+    for (name, warnings) in [("none", vec![]), ("fallback", vec![fell_back]), ("two", vec![fell_back, other])] {
+        let mut s = demo();
+        s.execute("events.clear", json!({})).unwrap();
+        let job = crate::Job { id: 911, label: "Export a.mp4".into(), progress: Arc::new(Default::default()), result: Arc::new(std::sync::Mutex::new(None)) };
+        s.jobs.push(job.clone());
+        let warnings: Vec<String> = warnings.into_iter().map(String::from).collect();
+        let report = filmcraft_export::Report { path: "a.mp4".into(), encoder: Some("software".into()), warnings: warnings.clone(), ..Default::default() };
+        *job.result.lock().unwrap() = Some(Ok(report));
+        let l = s.execute("events.list", json!({})).unwrap();
+        let msgs: Vec<(String, String)> = l["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["level"].as_str().unwrap().into(), e["message"].as_str().unwrap().into()))
+            .filter(|(_, m): &(String, String)| m.contains("Export a.mp4"))
+            .collect();
+        let mut want = vec![("info".to_string(), "Started: Export a.mp4".to_string()), ("info".into(), "Finished: Export a.mp4".into())];
+        want.extend(warnings.iter().map(|w| ("warning".to_string(), format!("Export a.mp4: {w}"))));
+        assert_eq!(msgs, want, "{name}");
+        // reported once
+        let n = s.log.entries.len();
+        s.poll_persistence();
+        assert_eq!(s.log.entries.len(), n, "{name}");
+    }
 }
 
 /// #620: project notes are saved in the project file; typing (one `merge` key) is one undo step.

@@ -3584,6 +3584,7 @@
 	The default graphics are used from the next start.	Zadana grafika koristi se od sljedećeg pokretanja.
 	DirectX 12 only	Samo DirectX 12
 	software rendering	softversko iscrtavanje
+	integrated GPU	integrisani GPU
 	Label Color Presets	Predlošci boja oznaka
 	{name} (Modified)	{name} (izmijenjeno)
 	Revert to the preset's colors and names	Vrati na boje i nazive predloška

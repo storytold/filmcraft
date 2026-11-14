@@ -359,6 +359,9 @@ fn vv(e: &EffectInstance, id: &str, t: Tick) -> Vec2 {
     val(e, id, t).as_vec2().unwrap_or_default()
 }
 
+/// Largest shadow distance, size or blur, in layer pixels (the parameters' range).
+const MAX_SHADOW_PX: f32 = 1000.0;
+
 /// Evaluate a layer at clip (media) time `t`. `frame` is the graphic's canvas size; a NaN position
 /// means the canvas centre.
 pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<LayerSpec> {
@@ -421,8 +424,13 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         c[3] *= (ff(e, "shadow_opacity", t) / 100.0).clamp(0.0, 1.0);
         // Premiere: 135° casts the shadow down and to the right.
         let a = (ff(e, "shadow_angle", t) - 90.0).to_radians();
-        let d = ff(e, "shadow_distance", t);
-        Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: ff(e, "shadow_size", t).max(0.0), blur: ff(e, "shadow_blur", t).max(0.0) }
+        // Distance, size and blur size the layer's raster (and its blur kernel): keep them within
+        // the parameters' own 0..1000 range, whatever a stored project or template says.
+        // clamped as stored (f64): converting first would turn a huge finite value into infinity
+        let d = val(e, "shadow_distance", t).as_f64().unwrap_or(0.0);
+        let d = if d.is_finite() { d.clamp(0.0, f64::from(MAX_SHADOW_PX)) as f32 } else { 0.0 };
+        let extent = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, MAX_SHADOW_PX) };
+        Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: extent(ff(e, "shadow_size", t)), blur: extent(ff(e, "shadow_blur", t)) }
     });
     let pos = vv(e, "position", t);
     let position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
@@ -617,6 +625,27 @@ mod tests {
         assert_eq!(unique.len(), uids.len(), "every layer keeps its own identity: {uids:?}");
         // Idempotent: a second pass changes nothing.
         assert!(!ensure_layer_uids(&mut effects));
+    }
+
+    #[test]
+    fn hostile_shadow_values_are_held_to_the_parameter_range() {
+        let mut e = crate::effect::find_effect(SHAPE_LAYER).unwrap().instance();
+        e.params.get_mut("shadow").unwrap().value = ParamValue::Bool(true);
+        for (name, v) in [("shadow_distance", 1e30), ("shadow_size", f64::INFINITY), ("shadow_blur", 1e9)] {
+            e.params.get_mut(name).unwrap().value = ParamValue::Float(v);
+        }
+        let sh = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap();
+        assert!(sh.offset.0.abs() <= MAX_SHADOW_PX && sh.offset.1.abs() <= MAX_SHADOW_PX);
+        assert_eq!((sh.size, sh.blur), (MAX_SHADOW_PX, MAX_SHADOW_PX));
+        // below the parameter's range the shadow must not flip to the opposite side of its angle
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(-50.0);
+        assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
+        // a finite value beyond f32 range is capped, not dropped
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::MAX);
+        let (ox, oy) = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset;
+        assert!((ox.hypot(oy) - MAX_SHADOW_PX).abs() < 0.01, "{ox} {oy}");
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::NAN);
+        assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
     }
 
     #[test]

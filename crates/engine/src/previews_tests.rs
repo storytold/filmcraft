@@ -362,6 +362,16 @@ fn float_wav_round_trip() {
 }
 
 #[test]
+fn wav_header_matches_the_whole_file_writer_and_refuses_what_does_not_fit() {
+    let x = vec![0.5f32; 200];
+    let whole = crate::previews::write_wav_f32(&x, 44_100);
+    assert_eq!(&crate::previews::wav_header_f32(100, 44_100).unwrap()[..], &whole[..44]);
+    // 2^29 frames of 8 bytes is 4 GiB: the format's 32-bit sizes cannot hold it
+    assert!(crate::previews::wav_header_f32(1 << 29, 48_000).is_none());
+    assert!(crate::previews::wav_header_f32(u64::MAX, 48_000).is_none());
+}
+
+#[test]
 fn bar_state_serializes_lowercase() {
     assert_eq!(serde_json::to_value(BarState::Green).unwrap(), json!("green"));
 }
@@ -389,4 +399,47 @@ fn preview_files_are_streamed_not_read_whole() {
         assert!(crate::previews::open_preview_file(&s.media, "still.png", &png).is_none());
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+fn job_error(s: &Session, v: &Value) -> String {
+    let id = v["job"].as_u64().expect("a job was started");
+    let j = s.jobs.iter().find(|j| j.id == id).unwrap().to_json();
+    assert!(j["finished"].as_bool().unwrap(), "{j}");
+    j["result"]["error"].as_str().unwrap_or_else(|| panic!("the job should have failed: {j}")).to_string()
+}
+
+/// A stored clip length that overflows the WAV header is a failed job, not a buffer sized from it.
+#[test]
+fn an_audio_segment_too_long_for_a_wav_fails_the_job() {
+    let (mut s, _) = session("audio-too-long");
+    s.edit_sequence("stretch", |q, _, _| {
+        q.audio_tracks[0].items[0].duration = Tick(4 * 3600 * TICKS_PER_SECOND);
+        Ok(())
+    })
+    .unwrap();
+    let v = s.execute("sequence.renderAudio", json!({"wait": true})).unwrap();
+    assert!(job_error(&s, &v).contains("too long"));
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
+/// A preview folder that cannot be written ends the job with the OS error and leaves no preview.
+#[cfg(unix)]
+#[test]
+fn an_unwritable_preview_folder_fails_the_audio_job() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut s, _) = session("audio-unwritable");
+    let dir = s.previews.dir().unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::File::create(dir.join("probe")).is_ok() {
+        // running as a user the mode does not bind (root)
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let v = s.execute("sequence.renderAudio", json!({"wait": true})).unwrap();
+    let e = job_error(&s, &v);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!e.is_empty());
+    assert!(!s.previews.audio_segments(&s.project, s.state.active_sequence.unwrap()).iter().any(|g| s.previews.has_audio(&g.hash)));
+    let _ = std::fs::remove_dir_all(&dir);
 }

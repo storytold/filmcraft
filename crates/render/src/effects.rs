@@ -19,6 +19,9 @@ pub struct FxCtx<'a> {
     pub t: Tick,
     /// Working-image pixels per full-resolution clip pixel.
     pub px_scale: f32,
+    /// [`px_scale`](Self::px_scale) without the cap on effect sizes: mask outlines are placed in the
+    /// working image by the true ratio, however far the stored width is off the decoded one.
+    pub mask_scale: f32,
     /// Seconds since the clip start (for animated generators such as Noise/Strobe).
     pub seconds: f64,
     /// Formatted sequence timecode (for the Timecode effect).
@@ -958,6 +961,7 @@ mod tests {
         FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "00:00:01:00",
             clip_name: "x",
@@ -1769,6 +1773,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",
@@ -1809,6 +1814,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",
