@@ -172,6 +172,25 @@ pub fn register_audio_encoder(f: AudioEncoderFactory) {
 
 type FormatProbe = (Format, fn() -> bool);
 
+fn av1_probes() -> &'static RwLock<Vec<(super::BitrateMode, fn() -> bool)>> {
+    static P: OnceLock<RwLock<Vec<(super::BitrateMode, fn() -> bool)>>> = OnceLock::new();
+    P.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register an AV1 backend probe: CRF is SVT-AV1; VBR1Pass is NVENC VBR CQ.
+pub fn register_av1_probe(mode: super::BitrateMode, probe: fn() -> bool) {
+    let mut probes = av1_probes().write().unwrap_or_else(PoisonError::into_inner);
+    if !probes.iter().any(|(m, p)| *m == mode && std::ptr::fn_addr_eq(*p, probe)) {
+        probes.push((mode, probe));
+    }
+}
+
+/// Whether this host can export with the selected AV1 encoder.
+pub fn av1_encoder_available(mode: super::BitrateMode) -> bool {
+    let probes: Vec<fn() -> bool> = av1_probes().read().unwrap_or_else(PoisonError::into_inner).iter().filter(|(m, _)| *m == mode).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
 fn format_probes() -> &'static RwLock<Vec<FormatProbe>> {
     static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
     P.get_or_init(|| RwLock::new(Vec::new()))

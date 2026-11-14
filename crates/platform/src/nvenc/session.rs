@@ -9,6 +9,10 @@ use std::sync::OnceLock;
 
 use super::device::Device;
 use super::ffi::{
+    AV1_CHROMA_FORMAT_MASK, AV1_CHROMA_FORMAT_SHIFT, AV1_DISABLE_SEQ_HDR, AV1_INPUT_DEPTH_MASK, AV1_INPUT_DEPTH_SHIFT, AV1_OUTPUT_ANNEX_B,
+    AV1_OUTPUT_DEPTH_MASK, AV1_OUTPUT_DEPTH_SHIFT, AV1_REPEAT_SEQ_HDR, NV_ENC_AV1_PROFILE_MAIN_GUID, NV_ENC_CODEC_AV1_GUID,
+};
+use super::ffi::{
     CreateInstanceFn, Guid, H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS,
     HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD, HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn,
     NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX, NV_ENC_CAPS_HEIGHT_MIN,
@@ -106,6 +110,7 @@ fn load() -> Result<Api, String> {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 impl Codec {
@@ -113,6 +118,7 @@ impl Codec {
         match self {
             Codec::H264 => NV_ENC_CODEC_H264_GUID,
             Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+            Codec::Av1 => NV_ENC_CODEC_AV1_GUID,
         }
     }
 }
@@ -160,6 +166,7 @@ pub struct Params {
     pub bitrate: u32,
     pub max_bitrate: u32,
     pub cbr: bool,
+    pub quality: Option<f32>,
     pub gop: u32,
     /// H.264 only: 0 baseline, 1 main, 2 high (HEVC is Main, or Main 10 with `ten_bit`).
     pub profile: u8,
@@ -326,8 +333,8 @@ impl Session {
     /// Configure the encoder (preset P5, high quality tuning, the settings' rate control) and
     /// create `ring` pairs of input / output buffers.
     pub fn initialize(&mut self, p: &Params, ring: usize) -> Result<(), String> {
-        if p.ten_bit && p.codec != Codec::Hevc {
-            return Err("10-bit encoding is HEVC Main 10 here".into());
+        if p.ten_bit && (p.codec != Codec::Hevc && p.codec != Codec::Av1) {
+            return Err("10-bit encoding is HEVC Main 10 or AV1 Main 10 here".into());
         }
         if !p.signal.sei.is_empty() && p.codec != Codec::Hevc {
             return Err("SEI messages are written for HEVC only".into());
@@ -365,6 +372,7 @@ impl Session {
             let mut cfg: Box<NV_ENC_CONFIG> = Box::new(preset.presetCfg);
             cfg.version = NV_ENC_CONFIG_VER;
             cfg.profileGUID = match (p.codec, p.profile) {
+                (Codec::Av1, _) => NV_ENC_AV1_PROFILE_MAIN_GUID,
                 (Codec::Hevc, _) if p.ten_bit => NV_ENC_HEVC_PROFILE_MAIN10_GUID,
                 (Codec::Hevc, _) => NV_ENC_HEVC_PROFILE_MAIN_GUID,
                 (Codec::H264, 0) => NV_ENC_H264_PROFILE_BASELINE_GUID,
@@ -381,6 +389,15 @@ impl Session {
             // a one-second buffer, the usual for streaming-style rate control
             rc.vbvBufferSize = rc.maxBitRate;
             rc.vbvInitialDelay = rc.vbvBufferSize;
+            if let Some(q) = p.quality {
+                rc.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+                rc.averageBitRate = 0;
+                rc.maxBitRate = 0;
+                rc.vbvBufferSize = 0;
+                rc.vbvInitialDelay = 0;
+                rc.targetQuality = q.floor() as u8;
+                rc.targetQualityLSB = ((q.fract() * 256.0).round() as u16).min(255) as u8;
+            }
             match p.codec {
                 Codec::H264 => {
                     let h = &mut cfg.encodeCodecConfig.h264Config;
@@ -436,6 +453,19 @@ impl Session {
                     vui.timingInfoPresentFlag = 0;
                     vui.numUnitInTicks = 0;
                     vui.timeScale = 0;
+                }
+                Codec::Av1 => {
+                    let a = &mut cfg.encodeCodecConfig.av1Config;
+                    a.flags &= !(AV1_OUTPUT_ANNEX_B | AV1_DISABLE_SEQ_HDR | AV1_CHROMA_FORMAT_MASK | AV1_INPUT_DEPTH_MASK | AV1_OUTPUT_DEPTH_MASK);
+                    a.flags |= AV1_REPEAT_SEQ_HDR | (1 << AV1_CHROMA_FORMAT_SHIFT);
+                    if p.ten_bit {
+                        a.flags |= (2 << AV1_INPUT_DEPTH_SHIFT) | (2 << AV1_OUTPUT_DEPTH_SHIFT);
+                    }
+                    a.idrPeriod = p.gop.max(1);
+                    a.colorPrimaries = u32::from(p.signal.primaries);
+                    a.transferCharacteristics = u32::from(p.signal.transfer);
+                    a.matrixCoefficients = u32::from(p.signal.matrix);
+                    a.colorRange = 0;
                 }
             }
 

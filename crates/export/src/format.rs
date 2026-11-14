@@ -18,8 +18,8 @@ pub enum Format {
     /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
-    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
-    /// where a hardware encoder registers one.
+    /// Matroska (default) or MPEG-4 AV1: SVT-AV1 CRF (10-bit 4:2:0) or NVENC VBR CQ.
+    /// Available when a registered software or hardware encoder probe succeeds.
     #[serde(rename = "av1", alias = "Av1")]
     Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
@@ -73,6 +73,9 @@ pub enum Format {
     /// FLAC (RFC 9639): lossless compressed audio.
     #[serde(rename = "flac", alias = "Flac")]
     Flac,
+    /// Opus audio in Ogg (.opus), from an optional native encoder.
+    #[serde(rename = "opus", alias = "Opus")]
+    Opus,
     /// MXF OP1a (SMPTE ST 378): frame-wrapped DNxHR, ProRes or H.264 ([`MxfVideoCodec`]) + PCM.
     #[serde(rename = "mxf-op1a", alias = "MxfOp1a")]
     MxfOp1a,
@@ -108,6 +111,7 @@ impl Format {
             "aac" | "aacaudio" | "m4a" | "adts" => Format::Aac,
             "mp3" | "mp3audio" | "mpeg3" | "mpeglayer3" => Format::Mp3,
             "flac" | "fla" => Format::Flac,
+            "opus" => Format::Opus,
             _ => return None,
         })
     }
@@ -134,13 +138,15 @@ impl Format {
             Format::Aac => "aac",
             Format::Mp3 => "mp3",
             Format::Flac => "flac",
+            Format::Opus => "opus",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
         }
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 | Format::Hevc | Format::Av1 => "mp4",
+            Format::H264 | Format::Hevc => "mp4",
+            Format::Av1 => "mkv",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -155,6 +161,7 @@ impl Format {
             Format::Aac => "m4a",
             Format::Mp3 => "mp3",
             Format::Flac => "flac",
+            Format::Opus => "opus",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
     }
@@ -180,6 +187,7 @@ impl Format {
             Format::Aac => "AAC Audio",
             Format::Mp3 => "MP3",
             Format::Flac => "FLAC",
+            Format::Opus => "Opus",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
         }
@@ -204,25 +212,29 @@ impl Format {
     /// Whether the crate carries an encoder for the format; the others need one registered at runtime
     /// ([`register_format_probe`]).
     pub fn has_builtin_encoder(self) -> bool {
-        !matches!(self, Format::Hevc | Format::Av1)
+        !matches!(self, Format::Hevc | Format::Av1 | Format::Opus)
     }
     /// Sound without picture: Waveform Audio, AIFF, AAC Audio, MP3 and FLAC.
     pub fn is_audio_only(self) -> bool {
-        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Mp3 | Format::Flac)
+        matches!(self, Format::Wav | Format::Aiff | Format::Aac | Format::Mp3 | Format::Flac | Format::Opus)
     }
     /// H.264 or H.265: MPEG-4 (or QuickTime) with AAC audio, set up with the same bitrate controls.
     pub fn is_h26x(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc)
     }
-    /// A bitrate-controlled MPEG-4 video format with AAC audio: H.264, H.265 or AV1 (MPEG-4 only).
+    /// Delivery video formats with selectable containers: H.264, H.265 or AV1.
     pub fn is_mp4_video(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc | Format::Av1)
     }
     /// Whether the file is MPEG-4 rather than QuickTime for `mux`.
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
-        self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
+        (self == Format::Av1 && matches!(mux, Multiplexer::Mp4 | Multiplexer::Mov)) || (self.is_h26x() && matches!(mux, Multiplexer::Auto | Multiplexer::Mp4))
     }
-    pub const ALL: [Format; 22] = [
+    /// AV1's default container; an explicit MP4 setting stays MP4.
+    pub fn is_mkv_with(self, mux: Multiplexer) -> bool {
+        self == Format::Av1 && matches!(mux, Multiplexer::Auto | Multiplexer::Mkv)
+    }
+    pub const ALL: [Format; 23] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -243,6 +255,7 @@ impl Format {
         Format::Aac,
         Format::Mp3,
         Format::Flac,
+        Format::Opus,
         Format::MxfOp1a,
         Format::MxfOpAtom,
     ];
@@ -331,7 +344,7 @@ pub struct ExportSettings {
     /// stream needs is raised.
     pub h264_level: Option<u8>,
     pub bitrate_mode: BitrateMode,
-    /// Constant rate factor of [`BitrateMode::Crf`], 0 (best) to 51 (smallest); 23 by default,
+    /// Constant rate factor of [`BitrateMode::Crf`], 0 (best) to 51 (smallest), or 63 for SVT-AV1; 23 by default,
     /// 18 is visually near-lossless.
     #[serde(default = "default_crf")]
     pub crf: f32,
@@ -351,6 +364,8 @@ pub struct ExportSettings {
     pub adaptive_bitrate: Option<f32>,
     /// Frames between keyframes (None = 2 seconds).
     pub keyframe_distance: Option<u32>,
+    /// SVT-AV1 speed preset (0 slowest, 13 fastest).
+    pub av1_preset: u8,
     /// Render at Maximum Depth. FilmCraft always composites in 32-bit float, so this changes
     /// nothing; it is kept so presets round-trip.
     pub render_at_max_depth: bool,
@@ -464,10 +479,11 @@ impl Default for ExportSettings {
             max_bitrate_kbps: None,
             adaptive_bitrate: None,
             keyframe_distance: None,
+            av1_preset: 6,
             render_at_max_depth: false,
             max_render_quality: false,
             audio: AudioSettings::default(),
-            multiplexer: Multiplexer::Mp4,
+            multiplexer: Multiplexer::Auto,
             caption_sidecar: None,
             effects: ExportEffects::default(),
             metadata: ExportMetadata::default(),
@@ -494,9 +510,22 @@ impl ExportSettings {
         if self.audio.float && self.audio.bits != 32 {
             return Err(ExportError::Unsupported("floating-point audio is 32-bit: set the sample size to 32".into()));
         }
+        if self.multiplexer == Multiplexer::Mkv && self.format != Format::Av1 {
+            return Err(ExportError::Unsupported("Matroska export is currently supported for AV1".into()));
+        }
+        if self.format.is_mkv_with(self.multiplexer) && self.has_audio() && self.audio_codec() == AudioCodec::Pcm {
+            return Err(ExportError::Unsupported("Matroska AV1 supports AAC, Opus or FLAC audio".into()));
+        }
+        if self.audio_codec() == AudioCodec::Opus
+            && (!(6..=510).contains(&self.audio.bitrate_kbps)
+                || self.audio.sample_rate.is_some_and(|r| r != 48000)
+                || (self.format != Format::Opus && !self.format.is_mp4_with(self.multiplexer) && !self.format.is_mkv_with(self.multiplexer)))
+        {
+            return Err(ExportError::Unsupported("Opus needs 48000 Hz, 6..510 kbps and an MP4, Matroska or Ogg container".into()));
+        }
         let sample_format = self.audio.sample_format();
         if (self.has_audio() || self.format.is_audio_only())
-            && !matches!(self.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3)
+            && !matches!(self.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus)
             && !self.supports_sample_format(sample_format)
         {
             let codec = if self.audio_codec() == AudioCodec::Flac { "FLAC" } else { self.format.label() };
@@ -509,17 +538,21 @@ impl ExportSettings {
         if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
         }
-        if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
+        if self.format == Format::Av1 {
+            if !matches!(self.bitrate_mode, BitrateMode::Crf | BitrateMode::Vbr1Pass) {
+                return Err(ExportError::Unsupported("AV1 has no CBR or two-pass mode: choose SVT-AV1 CRF or NVENC VBR CQ".into()));
+            }
+            let max = if self.bitrate_mode == BitrateMode::Crf { 63.0 } else { 51.0 };
+            if !self.crf.is_finite() || !(0.0..=max).contains(&self.crf) || self.av1_preset > 13 {
+                return Err(ExportError::Unsupported("invalid AV1 quality or SVT preset".into()));
+            }
         }
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
                 return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
             }
-            if self.format == Format::Av1 {
-                return Err(ExportError::Unsupported("AV1 export has no CRF mode: choose CBR or VBR, 1 pass".into()));
-            }
-            if !self.crf.is_finite() || !(0.0..=51.0).contains(&self.crf) {
+            let max = if self.format == Format::Av1 { 63.0 } else { 51.0 };
+            if !self.crf.is_finite() || !(0.0..=max).contains(&self.crf) {
                 return Err(ExportError::Unsupported("CRF must be between 0 and 51".into()));
             }
         }

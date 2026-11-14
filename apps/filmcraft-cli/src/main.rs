@@ -82,7 +82,7 @@ SUBCOMMANDS
          [--scale f] [--quality 0-100] [--no-audio] [--queue] [--allow-offline]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac|mp3, guessed
+                                a format (h264|hevc|av1|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac|mp3|opus, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
@@ -241,6 +241,7 @@ fn format_for(path: &str) -> Option<&'static str> {
     let ext = path.rsplit_once('.')?.1.to_ascii_lowercase();
     Some(match ext.as_str() {
         "mp4" | "m4v" => "h264",
+        "mkv" => "av1",
         "mov" => "prores",
         "mxf" => "mxf-op1a",
         "png" => "png",
@@ -251,6 +252,7 @@ fn format_for(path: &str) -> Option<&'static str> {
         "aif" | "aiff" => "aiff",
         "m4a" | "aac" => "aac",
         "mp3" => "mp3",
+        "opus" => "opus",
         _ => return None,
     })
 }

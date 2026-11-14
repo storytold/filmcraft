@@ -40,6 +40,9 @@ pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+mod native_codecs;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
@@ -55,6 +58,18 @@ pub mod videotoolbox_encode;
 
 pub use hybrid::HybridDecoder;
 
+/// Whether the optional SVT-AV1 mainline library can be loaded on this host.
+pub fn svt_av1_available() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        native_codecs::svt_available()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// What [`register`] made available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Availability {
@@ -68,6 +83,8 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    #[cfg(target_os = "windows")]
+    native_codecs::register();
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
@@ -90,7 +107,11 @@ pub fn register() -> Availability {
         // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
         // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+        filmcraft_export::register_av1_probe(filmcraft_export::BitrateMode::Vbr1Pass, nvenc::av1_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         nvenc::warm_hevc_probe();
+        nvenc::warm_av1_probe();
     }
     #[cfg(target_os = "windows")]
     {
@@ -129,6 +150,13 @@ pub fn register() -> Availability {
                 available = Availability::Available("NVDEC");
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
+        }
+        // Short-lived Linux processes must not exit while a probe thread is inside the driver.
+        #[cfg(target_pointer_width = "64")]
+        {
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+            filmcraft_export::register_av1_probe(filmcraft_export::BitrateMode::Vbr1Pass, nvenc::av1_available);
+            filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         }
         available
     }

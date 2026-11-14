@@ -128,12 +128,15 @@ impl BitrateMode {
     }
 }
 
-/// Container of H.264 exports.
+/// Delivery video container; Auto resolves according to the selected format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Multiplexer {
+    /// Choose the format's default: Matroska for AV1, MP4 for H.264/H.265.
     #[default]
+    Auto,
     Mp4,
+    Mkv,
     /// QuickTime.
     Mov,
 }
@@ -225,6 +228,7 @@ pub enum AudioCodec {
     Mp3,
     /// Lossless compression (the FLAC format).
     Flac,
+    Opus,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -565,7 +569,16 @@ impl ExportSettings {
             6.. => 6,
             _ => 2,
         };
-        Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
+        Resolved {
+            width: w,
+            height: h,
+            rate,
+            sample_rate: if self.audio_codec() == AudioCodec::Opus { 48000 } else { self.audio.sample_rate.unwrap_or(seq_sr) },
+            channels,
+            target_kbps: target,
+            max_kbps: max,
+            keyint,
+        }
     }
 
     /// The sample rate, channel count and bit rate (kbit/s) of the MP3 stream these settings
@@ -583,7 +596,7 @@ impl ExportSettings {
     /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC and MP3 none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
-            AudioCodec::Aac | AudioCodec::Mp3 => false,
+            AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus => false,
             AudioCodec::Flac => !f.is_float(),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
@@ -592,12 +605,14 @@ impl ExportSettings {
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
+            (Format::Opus, _) => AudioCodec::Opus,
             (Format::Flac, _) => AudioCodec::Flac,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
             (Format::Mp3, _) => AudioCodec::Mp3,
             // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`)
             (_, AudioCodec::Flac) => AudioCodec::Flac,
+            (f, AudioCodec::Opus) if f.is_mp4_with(self.multiplexer) || f.is_mkv_with(self.multiplexer) => AudioCodec::Opus,
             (f, _) if f.is_mp4_with(self.multiplexer) => AudioCodec::Aac,
             (_, AudioCodec::Auto | AudioCodec::Mp3) if self.format.is_mp4_video() => AudioCodec::Aac,
             (_, AudioCodec::Auto | AudioCodec::Mp3) => AudioCodec::Pcm,
@@ -617,7 +632,13 @@ impl ExportSettings {
 
     /// File extension of the output.
     pub fn extension(&self) -> &'static str {
-        if self.format.is_h26x() && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
+        if self.format == Format::Av1 {
+            if self.format.is_mkv_with(self.multiplexer) { "mkv" } else { "mp4" }
+        } else if self.format.is_h26x() && self.multiplexer == Multiplexer::Mov {
+            "mov"
+        } else {
+            self.format.extension()
+        }
     }
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
@@ -627,7 +648,7 @@ impl ExportSettings {
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
-            Format::Aac | Format::Mp3 => 0.0,
+            Format::Aac | Format::Mp3 | Format::Opus => 0.0,
             Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
@@ -667,7 +688,7 @@ impl ExportSettings {
         let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
-                AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
+                AudioCodec::Aac | AudioCodec::Opus => self.audio.bitrate_kbps as f64 * 1000.0,
                 AudioCodec::Mp3 => self.mp3_stream(seq_sr).2 as f64 * 1000.0,
                 // typical of music and dialogue; noise compresses less, silence far more
                 AudioCodec::Flac => pcm * 0.6,
@@ -728,12 +749,14 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Av1 => {
-                    v += &format!(", AV1 Main (hardware encoder), {}", self.bitrate_mode.label());
-                    v += &match self.bitrate_mode {
-                        BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
-                        _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
-                    };
-                    v += &format!(", keyframe every {} frames", r.keyint);
+                    let software = self.bitrate_mode == BitrateMode::Crf;
+                    let mode = if software { "SVT-AV1 CRF" } else { "NVENC VBR CQ" };
+                    v += &format!(", AV1 Main{}, {mode} {}", if software { " 10 (10-bit)" } else { "" }, self.crf);
+                    v += &self
+                        .keyframe_distance
+                        .filter(|k| *k > 0)
+                        .map(|k| format!(", keyframe every {k} frames"))
+                        .unwrap_or_else(|| ", automatic keyframes".into());
                 }
                 Format::ProRes => {
                     use craft_video::prores::Profile;
@@ -768,6 +791,7 @@ impl ExportSettings {
                 _ => "Stereo",
             };
             match self.audio_codec() {
+                AudioCodec::Opus => format!("Opus, {} kbps, 48000 Hz, {ch}", self.audio.bitrate_kbps),
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
                 AudioCodec::Mp3 => {
                     let (rate, channels, kbps) = self.mp3_stream(seq_sr);
@@ -785,6 +809,7 @@ impl ExportSettings {
             "No audio".to_string()
         };
         let container = match self.format {
+            Format::Av1 if self.format.is_mkv_with(self.multiplexer) => "Matroska",
             Format::H264 | Format::Hevc if self.multiplexer == Multiplexer::Mov => "QuickTime",
             Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",
