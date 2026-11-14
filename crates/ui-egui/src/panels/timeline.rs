@@ -34,6 +34,8 @@ mod menus;
 mod ruler;
 mod scrollbars;
 mod snap;
+#[cfg(test)]
+mod transition_menu_tests;
 mod waveforms;
 
 #[cfg(test)]
