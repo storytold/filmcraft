@@ -505,6 +505,7 @@ impl eframe::App for FilmcraftApp {
     /// state, shut the session down so its recovery journal is flushed or removed, and start an
     /// update that waits for the exit.
     fn on_exit(&mut self) {
+        self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {
