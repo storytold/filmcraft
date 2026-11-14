@@ -993,6 +993,29 @@ mod tests {
         }
     }
 
+    /// #4417: an animated Lumetri curve renders its keyframed value, not the static default.
+    #[test]
+    fn lumetri_animated_curve_renders_its_keyframes() {
+        let later = Tick(1_016_064_000_000);
+        let red_at = |animated: bool, t: Tick| {
+            let mut e = find_effect("lumetri").unwrap().instance();
+            if animated {
+                let p = e.params.get_mut("curve_red").unwrap();
+                p.toggle_animation(Tick::ZERO);
+                p.put_keyframe(Tick::ZERO, ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]));
+                p.put_keyframe(later, ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.2], [1.0, 1.0]]));
+            }
+            let l = srgb_to_linear(0.5);
+            let mut img = Image::filled(2, 2, [l, l, l, 1.0]);
+            apply(&mut img, &e, &FxCtx { t, ..cx() });
+            img.get(0, 0)[0]
+        };
+        let plain = red_at(false, Tick::ZERO);
+        let (first, second) = (red_at(true, Tick::ZERO), red_at(true, later));
+        assert!(first > plain + 0.05, "first keyframe lifts the mids: {first} vs {plain}");
+        assert!(second < plain - 0.05, "second keyframe lowers the mids: {second} vs {plain}");
+    }
+
     #[test]
     fn gaussian_preserves_mean_and_blurs() {
         let mut img = Image::new(64, 64);
@@ -1286,8 +1309,12 @@ pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     (!points.is_empty()).then(|| curve_lut(points, n))
 }
 
-pub(crate) fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
-    e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
+/// The curve at clip time `t` (keyframed curves hold the earlier keyframe).
+pub(crate) fn curve_param(e: &EffectInstance, id: &str, t: Tick) -> Option<Vec<[f32; 2]>> {
+    e.param(id).and_then(|p| match p.value_at(t) {
+        ParamValue::Curve(c) => Some(c),
+        _ => None,
+    })
 }
 
 pub(crate) fn is_identity_curve(c: &[[f32; 2]]) -> bool {
@@ -1338,10 +1365,10 @@ pub fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
 fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     const N: usize = 1024;
     let (creative_on, curves_on, wheels_on) = (on(e, "creative_on"), on(e, "curves_on"), on(e, "wheels_on"));
-    let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
+    let lut = |id: &str| curve_param(e, id, cx.t).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
-    let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
-    let vs_sat = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
+    let hue = |id: &str| curve_param(e, id, cx.t).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
+    let vs_sat = |id: &str| curve_param(e, id, cx.t).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
     let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), vs_sat("luma_vs_sat"), vs_sat("sat_vs_sat"));
     // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
     let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
