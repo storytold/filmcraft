@@ -50,6 +50,7 @@ mod craft_wasm_tests {
         }
         assert!(CRAFT_WASM_FACES.contains(&("BIZ UDPGothic", "Regular")), "{CRAFT_WASM_FACES:?}");
         assert!(CRAFT_WASM_FACES.contains(&("Noto Sans Thai", "Regular")), "{CRAFT_WASM_FACES:?}");
+        assert!(CRAFT_WASM_FACES.contains(&("Noto Sans Devanagari", "Regular")), "{CRAFT_WASM_FACES:?}");
         // every listed face is a real craft-fonts entry, and the Thai one carries the Thai script
         for (family, style) in CRAFT_WASM_FACES {
             assert!(CRAFT_FONTS.iter().any(|f| f.family == *family && f.style == *style), "{family} {style}");
