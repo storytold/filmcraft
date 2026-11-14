@@ -72,6 +72,8 @@ pub struct Tokens {
     pub field_border: Color32,
     pub separator: Color32,
     pub row_alt: Color32,
+    /// The Video / Audio headings' band in Effect Controls.
+    pub section_band: Color32,
     pub row_selected: Color32,
     /// Scrubby (hot-text) numeric value colour.
     pub hot_text: Color32,
@@ -174,6 +176,7 @@ impl Tokens {
             field_border: Color32::from_rgb(0x30, 0x30, 0x30),
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
             row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
+            section_band: Color32::from_rgb(0x2a, 0x2a, 0x2a),
             row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
             hot_text: Color32::from_rgb(0x40, 0x96, 0xf3),
             pill_active_bg: Color32::from_rgb(0x3a, 0x3a, 0x3a),
@@ -256,6 +259,7 @@ impl Tokens {
                 tl_ruler_bg: Color32::from_rgb(0x32, 0x32, 0x32),
                 monitor_bg: Color32::from_rgb(0x32, 0x32, 0x32),
                 row_alt: Color32::from_rgb(50, 50, 50),
+                section_band: Color32::from_rgb(0x3e, 0x3e, 0x3e),
                 hover: Color32::from_rgb(64, 64, 64),
                 ..dark
             },
@@ -276,6 +280,7 @@ impl Tokens {
                 field_border: Color32::from_rgb(170, 170, 170),
                 separator: Color32::from_rgb(200, 200, 200),
                 row_alt: Color32::from_rgb(224, 224, 224),
+                section_band: Color32::from_rgb(216, 216, 216),
                 row_selected: Color32::from_rgb(170, 200, 240),
                 pill_active_bg: Color32::from_rgb(196, 196, 196),
                 clip_bar_bg: Color32::from_rgb(190, 203, 224),
