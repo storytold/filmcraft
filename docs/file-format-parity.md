@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (AVI import #650 and VP8 WebM #1064 ship; GIF export binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-31 · **Change:** minor (Kdenlive and MLT projects import, #1089) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -22,6 +22,7 @@ only). "Tested" names the evidence.
 | EDL (CMX 3600) | read + write | yes | yes | tests | 85% |
 | OpenTimelineIO | read + write (26.0) | yes | yes | tests | 80% |
 | Avid Log Exchange (ALE) | write | no | yes | — | 70% |
+| Kdenlive project `.kdenlive`, MLT XML `.mlt` | no (not in Adobe's supported-formats list) | yes: tracks, clips, gaps, colour clips, linked audio / video; transitions, effects, titles, guides reported (#1089) | no | synthetic projects | ahead |
 | Marker CSV / text | write | — | yes (#454) | — | 80% |
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
 | Templates (`.prproj` templates) | yes | — | our templates | — | 70% |
@@ -97,3 +98,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-10 | major | Created: format-by-format comparison with Premiere 26.5.2 from the import / export registries, crate READMEs, the installed bundle's exporter listings and open issues |
 | 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
 | 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
+| 2026-10-31 | minor | Kdenlive projects (`.kdenlive`) and MLT XML (`.mlt`) import (#1089) |
