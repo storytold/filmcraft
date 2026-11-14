@@ -41,6 +41,29 @@ fn catalogs_are_well_formed() {
     }
 }
 
+/// A renamed feature label has to read differently from every other label in the same catalog:
+/// before this, "Color Grading" and "Color Correction" both read "Farbkorrektur" in German and
+/// "Цветокоррекция" in Russian, and two different features showed the same words.
+#[test]
+fn feature_labels_do_not_repeat_another_label() {
+    for l in Language::ALL {
+        let Some(text) = catalog_text(l) else { continue };
+        let code = l.code();
+        let (entries, errors) = catalog::parse_entries(text);
+        assert!(errors.is_empty(), "{code}: {errors:?}");
+        for feature in ["Color Grading", "Video Scopes"] {
+            let shown = l.tr(feature);
+            assert_ne!(shown, feature, "{code}: {feature} is translated");
+            for (_, source, translated) in &entries {
+                if source == feature {
+                    continue;
+                }
+                assert_ne!(translated, &shown, "{code}: {feature} → {shown:?} repeats {source:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn unknown_strings_pass_through_and_languages_round_trip() {
     for l in Language::ALL {
@@ -305,7 +328,7 @@ fn dynamic_names() -> Vec<String> {
     }
     filmcraft_engine::settings::DURATION_UNITS.iter().for_each(|(_, l)| push(&mut out, l));
     for top in filmcraft_project::vtransition::EFFECT_TOP_FOLDERS {
-        push(&mut out, top);
+        push(&mut out, filmcraft_project::vtransition::effect_folder_label(top));
     }
     for d in filmcraft_project::effect_defs() {
         push(&mut out, d.name);
@@ -323,7 +346,7 @@ fn dynamic_names() -> Vec<String> {
     crate::panels::project::NEW_ITEMS.iter().for_each(|(l, _)| push(&mut out, l));
     // section headers keyed by their English name (collapsed state), translated when drawn
     let sections = [
-        // Lumetri Color
+        // Color Grading
         "Basic Correction",
         "Creative",
         "Curves",
@@ -884,4 +907,55 @@ fn system_language_picks_bosnian() {
         assert_eq!(l(&[tag]), Language::Bs, "{tag}");
     }
     assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
+}
+
+// Check presentation values, never compatibility ids, saved keys or user-supplied text.
+// Ultra Key, Warp Stabilizer and Morph Cut are not retired: they stay the shipped labels until
+// RFC-0029 decides the trademark names.
+fn retired_feature_label(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    ["lumetri", "mercury transmit"].into_iter().find(|retired| {
+        lower.match_indices(retired).any(|(start, _)| !retired.is_ascii() || lower[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
+    })
+}
+
+#[test]
+fn retired_feature_labels_stay_out_of_visible_and_translated_names() {
+    let source_labels = interface_strings();
+    for label in &source_labels {
+        assert_eq!(retired_feature_label(label), None, "English display label: {label}");
+    }
+    for language in Language::ALL {
+        for label in &source_labels {
+            let shown = language.tr(label);
+            assert_eq!(retired_feature_label(shown), None, "{}: {label} → {shown}", language.code());
+        }
+        if let Some(text) = catalog_text(language) {
+            for (_, source, translated) in catalog::parse_entries(text).0 {
+                assert_eq!(retired_feature_label(&translated), None, "{}: {source} → {translated}", language.code());
+            }
+        }
+        // Naming guards must not replace the documented English fallback or alter user text.
+        assert_eq!(language.tr("A future descriptive feature"), "A future descriptive feature");
+    }
+}
+
+#[test]
+fn display_guard_catches_retired_marks_without_banning_descriptive_terms() {
+    for label in ["LUMETRI Color", "Enable Mercury Transmit", "Mercury Transmit"] {
+        assert!(retired_feature_label(label).is_some(), "{label}");
+    }
+    for label in [
+        "Color Grading",
+        "Video Scopes",
+        "Ultra Key",
+        "Warp Stabilizer",
+        "Morph Cut",
+        "ウルトラキー",
+        "Enable External Video Output",
+        "Volumetric Rays",
+        "Volumetrijske zrake",
+    ] {
+        assert_eq!(retired_feature_label(label), None, "{label}");
+    }
 }

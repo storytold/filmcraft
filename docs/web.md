@@ -111,13 +111,15 @@ eframe creates a WebGPU device when the browser has one, else WebGL2. FilmCraft'
 The control channel of the desktop app (`docs/control-protocol.md`) as promises. Results resolve
 with the method's `result`, errors reject.
 
+`request`, `execute`, `commands`, `uiInspect` and `screenshot` come from [`craft-web-api`](https://github.com/storytold/craft-libs/tree/main/crates/web-api) (storytold/craft-libs#413), the same shape in every Craft app; a call the app does not answer within 30 seconds rejects. The rest are FilmCraft's own.
+
 | Call | |
 |---|---|
 | `filmcraft.execute(command, params)` | run an engine command (same ids and params as MCP / `filmcraft-cli`) |
 | `filmcraft.request(method, params)` | any control method: `ui.inspect`, `ui.click`, `ui.key`, `ui.playback`, `ui.menu.invoke`… |
 | `filmcraft.commands()` | the command list |
-| `filmcraft.inspect()` | `ui.inspect` |
-| `filmcraft.screenshot(params)` | `{pngBase64, width, height}` of the canvas (or `{panel}`) |
+| `filmcraft.inspect()` / `filmcraft.uiInspect(params)` | `ui.inspect` |
+| `filmcraft.screenshot(params)` | `{pngBase64, width, height}` of the canvas (or `{panel}`), and the same PNG as `data` |
 | `filmcraft.importFiles(files)` | import `File` / `FileList` / `File[]`; resolves `{items, errors, paths}` |
 | `filmcraft.importUrl(url, name?)` | fetch a URL and import it (tests) |
 | `filmcraft.openProject(fileOrUrl)` | open a `.fcproj` |

@@ -1,4 +1,4 @@
-//! Headless UI tests of the M8.9 / M12.6 panels: Lumetri Scopes (layouts, the settings menu,
+//! Headless UI tests of the M8.9 / M12.6 panels: Video Scopes (layouts, the settings menu,
 //! footer), Metadata (edit a field by typing, undo), Timecode, Events, Progress and the Reference
 //! Monitor, each opened from Window ▸ and driven by automation id through the control channel.
 //!
@@ -174,7 +174,7 @@ fn every_panel_opens_from_the_window_menu() {
     let menu = d.ok("ui.menu.list", json!({}));
     let window: Vec<String> =
         menu.as_array().unwrap().iter().filter(|m| m["path"] == json!(["Window"])).filter_map(|m| m["label"].as_str().map(str::to_string)).collect();
-    for p in ["Events", "Lumetri Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
+    for p in ["Events", "Video Scopes", "Metadata", "Progress", "Project Notes", "Reference Monitor", "Timecode"] {
         assert!(window.iter().any(|w| w == p), "{p} not in Window: {window:?}");
     }
     for (panel, key) in [
@@ -864,7 +864,7 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
 
 /// #2329: in the Effects panel what a folder holds is indented under it: an effect's label starts
 /// right of its sub-folder's, a sub-folder's right of its top folder's, and the same for presets
-/// and Lumetri presets.
+/// and Color Grading presets.
 #[test]
 fn effects_are_indented_under_their_folders() {
     fn text_x(d: &mut Driver, text: &str) -> f32 {
@@ -881,9 +881,9 @@ fn effects_are_indented_under_their_folders() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));
     d.frames(3);
-    // Presets is opened last: its Import/Scan rows push the Lumetri sub-folders below the
+    // Presets is opened last: its Import/Scan rows push the Color Grading sub-folders below the
     // panel's visible area, where they can no longer be clicked.
-    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Lumetri Presets", "Lumetri Presets/Monochrome", "Presets"] {
+    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Color Grading Presets", "Color Grading Presets/Monochrome", "Presets"] {
         d.click(&format!("effects.folder.{folder}"));
     }
     d.frames(2);
@@ -893,7 +893,7 @@ fn effects_are_indented_under_their_folders() {
         ("Video Effects", "Blur & Sharpen"),
         ("Blur & Sharpen", "Gaussian Blur"),
         ("Presets", preset.as_str()),
-        ("Lumetri Presets", "Monochrome"),
+        ("Color Grading Presets", "Monochrome"),
         ("Monochrome", lumetri),
     ] {
         let (a, b) = (text_x(&mut d, outer), text_x(&mut d, inner));

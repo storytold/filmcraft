@@ -294,6 +294,7 @@ struct Input<P> {
 }
 
 struct Pool {
+    /// Built for every thread count, also 1: rayon calls outside `install` run on the global pool (all cores).
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
 }
@@ -337,6 +338,7 @@ struct Core<P> {
     held: Vec<Packet>,
     frame_pool: Vec<Frame<P>>,
     hpel_pool: Vec<[picture::Plane<P>; 3]>,
+    mbs_pool: Vec<Vec<MbInfo>>,
     sei_sent: bool,
     slices: usize,
     pool: Pool,
@@ -565,7 +567,14 @@ impl<P: Pixel> Core<P> {
         let threads = if cfg.threads == 0 { std::thread::available_parallelism().map_or(1, |n| n.get()) } else { cfg.threads };
         let slices = if cfg.slices > 0 { cfg.slices.min(mbh) } else { threads.min(mbh.div_ceil(4)).max(1) };
         #[cfg(feature = "threads")]
-        let pool = Pool { pool: if threads > 1 { rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok() } else { None } };
+        let pool = Pool {
+            pool: Some(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .map_err(|e| Error::InvalidConfig(format!("cannot build the {threads}-thread pool: {e}")))?,
+            ),
+        };
         #[cfg(not(feature = "threads"))]
         let pool = Pool {};
         let record_pass1 = cfg.pass == Pass::First;
@@ -597,6 +606,7 @@ impl<P: Pixel> Core<P> {
             held: Vec::new(),
             frame_pool: Vec::new(),
             hpel_pool: Vec::new(),
+            mbs_pool: Vec::new(),
             sei_sent: false,
             slices,
             pool,
@@ -786,6 +796,17 @@ impl<P: Pixel> Core<P> {
         self.frame_pool.pop().unwrap_or_else(|| Frame::new(self.params.mbw * 16, self.params.mbh * 16))
     }
 
+    fn new_mbs(&mut self) -> Vec<MbInfo> {
+        let n = self.params.mbw * self.params.mbh;
+        match self.mbs_pool.pop() {
+            Some(mut m) => {
+                m.fill(MbInfo::default());
+                m
+            }
+            None => vec![MbInfo::default(); n],
+        }
+    }
+
     fn recycle(&mut self, f: Frame<P>) {
         if self.frame_pool.len() < 8 {
             self.frame_pool.push(f);
@@ -874,7 +895,7 @@ impl<P: Pixel> Core<P> {
             beta_offset_div2: 0,
         };
         let rec = self.new_frame();
-        let mbs = vec![MbInfo::default(); self.params.mbw * self.params.mbh];
+        let mbs = self.new_mbs();
         Job { input, st, idr, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() }
     }
 
@@ -1050,6 +1071,7 @@ impl<P: Pixel> Core<P> {
             self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
         } else {
             self.recycle(rec);
+            self.recycle_mbs(mbs);
         }
         if idr {
             self.idr_count += 1;
@@ -1076,6 +1098,13 @@ impl<P: Pixel> Core<P> {
         self.recycle(r.frame);
         if self.hpel_pool.len() < 4 {
             self.hpel_pool.push(r.hpel);
+        }
+        self.recycle_mbs(r.mbs);
+    }
+
+    fn recycle_mbs(&mut self, m: Vec<MbInfo>) {
+        if self.mbs_pool.len() < 8 {
+            self.mbs_pool.push(m);
         }
     }
 }
@@ -1194,4 +1223,35 @@ fn jobs_stride_y(mbw: usize) -> usize {
 
 fn jobs_stride_c(mbw: usize) -> usize {
     mbw * 8 + 2 * CHROMA_PAD
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A recycled `MbInfo` buffer must come back as all-default entries, whatever the previous picture left in it.
+    #[test]
+    fn recycled_mb_buffers_are_cleared() {
+        let mut core = Core::<u8>::new(EncoderConfig::new(64, 48, 30, 1)).unwrap();
+        let n = core.params.mbw * core.params.mbh;
+        let mut m = core.new_mbs();
+        assert_eq!(m.len(), n);
+        for (i, mb) in m.iter_mut().enumerate() {
+            mb.slice = 1 + i as u16;
+            mb.qp = 40;
+            mb.cbp = 0x2f;
+            mb.t8x8 = true;
+            mb.nnz = [7; 16];
+            mb.imodes = [3; 16];
+            mb.ref_idx = [[2; 4]; 2];
+            mb.mvd = [[[9; 2]; 16]; 2];
+        }
+        core.recycle_mbs(m);
+        assert_eq!(core.mbs_pool.len(), 1);
+        let again = core.new_mbs();
+        assert!(core.mbs_pool.is_empty(), "the recycled buffer is reused, not reallocated");
+        let want = format!("{:?}", MbInfo::default());
+        assert_eq!(again.len(), n);
+        assert!(again.iter().all(|mb| format!("{mb:?}") == want));
+    }
 }

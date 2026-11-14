@@ -364,6 +364,52 @@ fn basic_3d_keeps_its_perspective_at_every_render_scale() {
     }
 }
 
+#[test]
+fn a_burn_in_on_an_adjustment_layer_honours_its_time_format() {
+    let render_with = |format: u32| {
+        let mut s = scene(2);
+        let black = matte(&mut s.p, &mut s.map, [0.0, 0.0, 0.0, 1.0]);
+        place(&mut s.p, s.seq, 0, black);
+        let adj = adjustment(&mut s.p, s.seq, 1);
+        fx(&mut s, adj, "metadata_burnin");
+        clip(&mut s, adj).effect_mut("metadata_burnin").unwrap().params.get_mut("time_format").unwrap().value = ParamValue::Choice(format);
+        render(&s).px
+    };
+    let timecode = render_with(0);
+    assert!(timecode.iter().any(|v| *v > 0.5), "the burn-in draws text");
+    assert_ne!(render_with(3), timecode, "Frames is not the timecode");
+    assert_ne!(render_with(1), timecode, "Feet + Frames is not the timecode");
+    assert_ne!(render_with(1), render_with(3));
+}
+
+#[test]
+fn media_time_counts_frames_at_the_source_rate() {
+    use crate::vfx::FxEnv;
+    // a 30 fps clip in a 24 fps sequence: one second in is source frame 30 (1+14), not 24
+    let mut s = scene(1);
+    let m =
+        media(&mut s.p, &mut s.map, GeneratorSource::new(Generator::ColorMatte { color: [0.0; 4] }, 320, 180, FrameRate::FPS_30, Tick(10 * TICKS_PER_SECOND)));
+    let c = place(&mut s.p, s.seq, 0, m);
+    let seq = s.p.sequence(s.seq).unwrap();
+    let item = seq.find_item(c).unwrap().1;
+    let env = crate::vfx::ItemEnv {
+        project: &s.p,
+        seq,
+        item,
+        t: Tick(TICKS_PER_SECOND),
+        opts: RenderOptions::default(),
+        sources: &s.map,
+        want: 1.0,
+        layer_size: (320, 180),
+        layer_to_output: Affine::IDENTITY,
+        tc: "",
+    };
+    assert_eq!(env.media_time(TimeDisplay::Frames).as_deref(), Some("30"));
+    assert_eq!(env.media_time(TimeDisplay::Feet35).as_deref(), Some("1+14"));
+    // the sequence time still counts the sequence's frames
+    assert_eq!(env.sequence_time(TimeDisplay::Frames).as_deref(), Some("24"));
+}
+
 fn set(s: &mut Scene, c: ClipId, effect: &str, param: &str, v: ParamValue) {
     clip(s, c).effect_mut(effect).unwrap().params.get_mut(param).unwrap().value = v;
 }
