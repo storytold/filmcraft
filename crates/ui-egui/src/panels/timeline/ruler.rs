@@ -189,8 +189,22 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
 fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
     let ruler = layout.ruler;
     let marker_y = ruler.min.y + 2.0;
+    // a marker being moved or stretched (#1348) is drawn where the pointer has it
+    let dragged = match &app.tl.drag {
+        Some(Drag::MarkerEnd { marker, duration, .. }) => seq.markers.iter().find(|m| m.id == *marker).map(|m| (*marker, m.start, *duration)),
+        Some(Drag::MarkerMove { marker, start, .. }) => seq.markers.iter().find(|m| m.id == *marker).map(|m| (*marker, *start, m.duration)),
+        _ => None,
+    };
     // Point flags stay whole; ranges split the same glyph across their endpoints.
     for m in &seq.markers {
+        let shown;
+        let m = match dragged {
+            Some((id, start, duration)) if id == m.id => {
+                shown = filmcraft_project::Marker { start, duration, ..m.clone() };
+                &shown
+            }
+            _ => m,
+        };
         let x = layout.x_of(m.start);
         let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);
@@ -216,6 +230,21 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
             egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
                 ui.label(&m.name);
             });
+        }
+    }
+    // the exact time a marker drag lands on (#1348)
+    if let Some((id, start, duration)) = dragged {
+        let rate = seq.settings.frame_rate;
+        let tc = |t: Tick| format_time(t, rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, seq.settings.sample_rate as i64);
+        let text = if duration > Tick::ZERO {
+            format!("{} {}\n{} {}\n{} {}", tl!("In"), tc(start), tl!("Out"), tc(Tick(start.0.saturating_add(duration.0))), tl!("Duration"), tc(duration))
+        } else {
+            tc(start)
+        };
+        let r = egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("mkdrag", id.0)), egui::PopupAnchor::Pointer)
+            .show(|ui| ui.label(&text));
+        if let Some(r) = r {
+            app.auto.add("timeline.markerDrag.time", r.response.rect, &text);
         }
     }
 }

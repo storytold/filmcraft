@@ -1,7 +1,7 @@
 use filmcraft_project::{Track, Transition};
 
 use super::layout::Layout;
-use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
+use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, hit, json};
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
 pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
@@ -131,9 +131,17 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
     let kind = match grab {
         Grab::Edge { kind, .. } => json!(kind.name()),
         Grab::Volume { .. } => json!("volume"),
+        Grab::MarkerEnd(_) => json!("markerEnd"),
+        Grab::Marker(_) => json!("marker"),
         Grab::Other(_) => Value::Null,
     };
-    match grab.hit() {
+    // a marker grab keeps the geometry under the pointer (it may overlap the work area bar) and adds the marker
+    let marker = match grab {
+        Grab::MarkerEnd(m) | Grab::Marker(m) => Some(m.0),
+        _ => None,
+    };
+    let under = if marker.is_some() { hit(seq, layout, pos) } else { grab.hit() };
+    let mut v = match under {
         Hit::Ruler => json!({"hit": "ruler", "time": t.0}),
         Hit::WorkArea { edge } => json!({"hit": "workArea", "edge": edge.map(|e| format!("{e:?}")), "time": t.0}),
         Hit::Clip { track, clip, edge } => {
@@ -142,7 +150,12 @@ pub fn hit_json(app: &FilmcraftApp, pos: Pos2, mods: egui::Modifiers) -> Value {
         Hit::Transition { track, id, edge } => json!({"hit": "transition", "track": track.0, "transition": id.0, "edge": edge.map(|e| format!("{e:?}"))}),
         Hit::Empty { track } => json!({"hit": "empty", "track": track.0, "time": t.0}),
         Hit::None => json!({"hit": "none"}),
+    };
+    if let (Some(m), Some(o)) = (marker, v.as_object_mut()) {
+        o.insert("kind".into(), kind);
+        o.insert("marker".into(), json!(m));
     }
+    v
 }
 
 /// Screen point of a clip (centre, or its in/out edge).
