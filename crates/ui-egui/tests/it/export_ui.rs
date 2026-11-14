@@ -125,6 +125,55 @@ impl Drop for Driver {
     }
 }
 
+/// The export settings are saved with the project and come back when it is opened again. Each
+/// sequence keeps its own file name and range; a project without saved settings starts from its
+/// sequence's name and the whole sequence, with the format and folder last used.
+#[test]
+fn export_settings_are_saved_with_the_project() {
+    let mut d = Driver::new("saved-settings");
+    let (project, folder) = (d.path("kept.fcproj"), d.path("out"));
+    let kept = json!({"range": "custom", "customStart": 1.5, "customEnd": 4.25, "fileName": "Final Cut", "location": folder, "settings": {"format": "gif"}});
+    let export = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["export"].clone();
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    d.ok("ui.set", json!({"export": kept.clone()}));
+    d.frames(2);
+    let first = export(&mut d)["forSequence"].clone();
+    // a second sequence starts from its own name and the whole sequence, and keeps its own
+    d.exec("file.newSequence", json!({"name": "Second", "video": 1, "audio": 1}));
+    d.frames(3);
+    let ex = export(&mut d);
+    let second = ex["forSequence"].clone();
+    assert_ne!(second, first);
+    assert_eq!((&ex["fileName"], &ex["range"]), (&json!("Second"), &json!("entire")), "{ex}");
+    d.ok("ui.set", json!({"export": {"fileName": "Second Cut", "range": "inOut"}}));
+    d.frames(2);
+    d.exec("sequence.open", json!({"item": first}));
+    d.frames(3);
+    assert_eq!(export(&mut d)["fileName"], kept["fileName"]);
+    d.exec("file.save", json!({"path": project}));
+    // a project without saved settings: nothing of this one's file name or range
+    d.exec("file.openDemoProject", json!({}));
+    d.frames(3);
+    let ex = export(&mut d);
+    assert_ne!(ex["fileName"], kept["fileName"], "{ex}");
+    assert_eq!(ex["range"], json!("entire"), "{ex}");
+    assert_eq!((&ex["location"], &ex["settings"]["format"]), (&kept["location"], &json!("gif")), "the folder and format last used carry over: {ex}");
+    d.ok("ui.set", json!({"export": {"fileName": "Other", "location": "", "settings": {"format": "h264"}}}));
+    d.frames(2);
+    d.exec("file.open", json!({"path": project}));
+    d.frames(3);
+    let ex = export(&mut d);
+    for key in ["range", "customStart", "customEnd", "fileName", "location"] {
+        assert_eq!(ex[key], kept[key], "{key} after reopening: {ex}");
+    }
+    assert_eq!(ex["settings"]["format"], json!("gif"), "{ex}");
+    d.exec("sequence.open", json!({"item": second}));
+    d.frames(3);
+    let ex = export(&mut d);
+    assert_eq!((&ex["fileName"], &ex["range"]), (&json!("Second Cut"), &json!("inOut")), "{ex}");
+}
+
 #[test]
 fn single_frame_in_out_warning_updates_with_range_and_marks() {
     let mut d = Driver::new("single-frame-warning");
