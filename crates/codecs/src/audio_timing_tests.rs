@@ -22,7 +22,7 @@ use crate::{MkvSource, Mp4Source};
 fn aac(rate: u32) -> (Vec<u8>, Vec<Vec<u8>>) {
     let tone = |hz: f32| (0..rate as usize).map(|i| 0.5 * (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin()).collect::<Vec<f32>>();
     let (l, r) = (tone(440.0), tone(660.0));
-    let mut enc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(rate, 2, 160_000)).unwrap();
+    let mut enc = craft_audio::aac::Encoder::new(craft_audio::aac::EncoderConfig::cbr(rate, 2, 160_000)).unwrap();
     let mut units = enc.encode(&[&l, &r]);
     units.extend(enc.flush());
     (enc.audio_specific_config(), units)

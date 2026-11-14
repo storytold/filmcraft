@@ -173,6 +173,8 @@ pub struct Recording {
     pub punch_out: Option<Tick>,
     pub format: InputFormat,
     pub channel: u32,
+    /// `Session::document_epoch` when the take started: its sequence and track ids belong to that project.
+    pub epoch: u64,
 }
 
 /// Voice-over state of a session: the input device and the recording in progress.
@@ -370,7 +372,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     let channel = vo.input_channel.min(format.channels.saturating_sub(1) as u32);
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
-    s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel });
+    s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -403,27 +405,30 @@ fn sync(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Directory recordings are written to.
-fn record_dir(s: &Session, p: &Value) -> String {
+fn record_dir(s: &Session, p: &Value) -> Result<String> {
     media_dir(s, p, "Voice-over Recordings")
 }
 
 /// Directory generated media (recordings, narrations) is written to: `dir`, else Project
 /// Settings ▸ Scratch Disks ▸ Captured, else next to the project, else `fallback` in the data or
 /// temporary directory.
-pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
+pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> Result<String> {
     if let Some(d) = str_p(p, "dir") {
-        return d.to_string();
+        return Ok(d.to_string());
     }
     if let Some(d) =
         crate::project_tools::trusted_scratch(s.project.settings.scratch.captured.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
     {
-        return d.to_string_lossy().into_owned();
+        return Ok(d.to_string_lossy().into_owned());
     }
     if let Some(d) = s.path.as_deref().and_then(|x| std::path::Path::new(x).parent()).filter(|d| !d.as_os_str().is_empty()) {
-        return d.to_string_lossy().into_owned();
+        return Ok(d.to_string_lossy().into_owned());
     }
-    let base = s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(|| crate::temp_dir().join("FilmCraft"));
-    base.join(fallback).to_string_lossy().into_owned()
+    let base = match s.prefs_path.as_ref().and_then(|p| p.parent()) {
+        Some(d) => d.to_path_buf(),
+        None => crate::private_temp_dir().map_err(|e| EngineError::Other(format!("no private temporary folder: {e}")))?,
+    };
+    Ok(base.join(fallback).to_string_lossy().into_owned())
 }
 
 /// `<dir>/<base> <n>.wav` with the first `n` used by neither a project item nor an existing file;
@@ -448,6 +453,14 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
         return Ok(json!({"recording": false, "placed": false}));
+    }
+    if rec.epoch != s.document_epoch {
+        // another project was installed since the take started: its ids name other tracks now
+        s.voiceover.input().stop();
+        s.voiceover.rec = None;
+        s.voiceover.pending_stop = None;
+        s.voiceover.captured.clear();
+        return Err(bad("audio.voiceover.stop", "the project was replaced; the take was not placed"));
     }
     let t_stop = s.voiceover.pending_stop.unwrap_or_else(|| time_p(s, p, "").unwrap_or(s.playhead()));
     let sr = rec.format.sample_rate.max(1) as i64;
@@ -497,7 +510,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("audio.voiceover.stop", "the record track was deleted or locked; restore it before saving the take"));
     }
     // write the file
-    let dir = record_dir(s, p);
+    let dir = record_dir(s, p)?;
     let base = s.prefs.voice_over.name.clone();
     let path = unique_wav_path(s, &dir, &base)?;
     if !cfg!(target_arch = "wasm32") {
@@ -560,7 +573,7 @@ fn spec(
     run: fn(&mut Session, &Value) -> Result<Value>,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

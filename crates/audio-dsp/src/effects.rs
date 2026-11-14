@@ -1,34 +1,37 @@
 //! Audio effects and their registry.
 
-pub mod channel;
-pub mod declick;
-pub mod dynamics;
-pub mod eq;
-pub mod essential;
-pub mod filters;
-pub mod modulation;
-pub mod multiband;
-pub mod pitch;
-pub mod restoration;
-pub mod reverbs;
-pub mod special;
+pub(crate) mod channel;
+pub(crate) mod declick;
+pub(crate) mod dynamics;
+pub(crate) mod eq;
+pub(crate) mod essential;
+pub(crate) mod filters;
+pub(crate) mod modulation;
+pub(crate) mod multiband;
+pub(crate) mod pitch;
+pub(crate) mod restoration;
+pub(crate) mod reverbs;
+pub(crate) mod special;
 mod stft;
-pub mod time;
+pub(crate) mod time;
 pub(crate) mod util;
 
-pub use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
-pub use declick::ClickRemover;
-pub use dynamics::{Compressor, Gate, Limiter};
-pub use eq::{ParametricEq, SimpleEq};
-pub use essential::{DeEsser, DeReverb, SpeechEnhance, StereoWidth};
-pub use filters::{FftFilter, FullParametricEq, GraphicEq, NotchFilter, ScientificFilter};
-pub use modulation::{AnalogDelay, ChorusFlanger, Flanger, MultitapDelay, Phaser};
-pub use multiband::{DynamicsRack, MultibandCompressor, TubeCompressor};
+pub(crate) use channel::{Amplify, Balance, ChannelVolume, Invert, Route, Routing};
+pub(crate) use declick::ClickRemover;
+pub(crate) use dynamics::Gate;
+pub use dynamics::{Compressor, Limiter};
+pub(crate) use eq::{ParametricEq, SimpleEq};
+pub use essential::DeEsser;
+pub(crate) use essential::{DeReverb, SpeechEnhance, StereoWidth};
+pub(crate) use filters::{FftFilter, FullParametricEq, GraphicEq, NotchFilter, ScientificFilter};
+pub(crate) use modulation::{AnalogDelay, ChorusFlanger, Flanger, MultitapDelay, Phaser};
+pub(crate) use multiband::{DynamicsRack, MultibandCompressor, TubeCompressor};
 pub use pitch::PitchShifter;
-pub use restoration::{DeHum, DeNoise};
-pub use reverbs::{ConvolutionReverb, SurroundReverb};
-pub use special::{AmbisonicsPanner, Binauralizer, ChannelMixer, Distortion, GuitarSuite, LoudnessMeterFx, Mastering, Mute, StereoExpander, VocalEnhancer};
-pub use time::{Delay, Reverb};
+pub(crate) use restoration::{DeHum, DeNoise};
+pub(crate) use reverbs::{ConvolutionReverb, SurroundReverb};
+pub use special::LoudnessMeterFx;
+pub(crate) use special::{AmbisonicsPanner, Binauralizer, ChannelMixer, Distortion, GuitarSuite, Mastering, Mute, StereoExpander, VocalEnhancer};
+pub(crate) use time::{Delay, Reverb};
 
 use crate::{AudioEffect, ParamSpec};
 

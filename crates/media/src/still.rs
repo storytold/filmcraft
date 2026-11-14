@@ -64,6 +64,7 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     if ycbcr_tiff::sniff(bytes) {
         return ycbcr_tiff::decode(name, bytes);
     }
+    check_pixel_count(name, bytes)?;
     let orientation = exif_orientation(bytes);
     let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
     let has_alpha = img.color().has_alpha();
@@ -71,6 +72,19 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha })
+}
+
+/// Most pixels a decoded still may have: 1 GiB of RGBA, as the other raster decoders allow. The
+/// image crate's own allocation limit covers the native decode only, not the RGBA copy made after it.
+const MAX_PIXELS: u64 = 1 << 28;
+
+/// Refuse a picture whose header (read without decoding pixels) declares more than [`MAX_PIXELS`].
+fn check_pixel_count(name: &str, bytes: &[u8]) -> Result<()> {
+    let dims = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()).map(|d| d.dimensions());
+    match dims {
+        Some((w, h)) if u64::from(w) * u64::from(h) > MAX_PIXELS => Err(MediaError::Unsupported(format!("{name}: picture of {w} x {h} pixels is too large"))),
+        _ => Ok(()),
+    }
 }
 
 /// The EXIF Orientation of a JPEG, PNG, WebP or TIFF, from its headers alone (no pixels are

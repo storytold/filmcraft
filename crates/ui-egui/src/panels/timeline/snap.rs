@@ -1,3 +1,5 @@
+use filmcraft_project::{Track, Transition};
+
 use super::layout::Layout;
 use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
 
@@ -13,8 +15,20 @@ pub(super) fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Lay
 }
 
 fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Tick {
+    match targets(app, seq, layout, t, exclude, to_playhead).first() {
+        Some(&(_, c)) => {
+            app.tl.snap_x = Some(layout.x_of(c));
+            c
+        }
+        None => t,
+    }
+}
+
+/// The candidates [`snap_to`] can snap `t` to, within `SNAP_PX` and nearest first (in candidate
+/// order on a tie, the one it takes): none with snapping off.
+fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Vec<(f32, Tick)> {
     if !app.session.state.snapping {
-        return t;
+        return Vec::new();
     }
     let mut cands: Vec<Tick> = Vec::with_capacity(64);
     for tr in seq.all_tracks() {
@@ -33,19 +47,45 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
     let x = layout.x_of(t);
-    let mut best: Option<(f32, Tick)> = None;
-    for c in cands {
-        let d = (layout.x_of(c) - x).abs();
-        if d < SNAP_PX && best.is_none_or(|b| d < b.0) {
-            best = Some((d, c));
-        }
-    }
-    match best {
-        Some((_, c)) => {
+    let mut near: Vec<(f32, Tick)> = cands.into_iter().map(|c| ((layout.x_of(c) - x).abs(), c)).filter(|(d, _)| *d < SNAP_PX).collect();
+    // stable: ties keep candidate order
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near
+}
+
+/// Where transition `tr` on `track` goes (start, duration) when its `edge` (both ends when
+/// `None`) is dragged by `delta` (#4328): on the nearest of [`snap`]'s targets for the end that
+/// moves (for a move, either end's) that [`filmcraft_edit::transitions::drag_span`] lets it reach;
+/// a nearer one it can't reach is passed over, and with none it moves by `delta` as far as it can.
+/// Transitions are not snap targets themselves; an end on a clip edge or the playhead holds there
+/// as a clip edge does.
+pub(super) fn snap_transition(
+    app: &mut FilmcraftApp,
+    seq: &Sequence,
+    layout: &Layout,
+    track: &Track,
+    tr: &Transition,
+    edge: Option<filmcraft_edit::Edge>,
+    delta: Tick,
+) -> Option<(Tick, Tick)> {
+    let span = |d: Tick| filmcraft_edit::transitions::drag_span(track, tr, edge, d, seq.settings.frame_rate.frame_duration());
+    // how far the dragged end (the start, for a move) goes
+    let moved = |(s, d): (Tick, Tick)| if edge == Some(filmcraft_edit::Edge::Out) { s + d - tr.end() } else { s - tr.start };
+    let ends = match edge {
+        Some(filmcraft_edit::Edge::In) => vec![tr.start],
+        Some(filmcraft_edit::Edge::Out) => vec![tr.end()],
+        None => vec![tr.start, tr.end()],
+    };
+    // (distance, move, target) of each end's targets, nearest first (the start's on a tie)
+    let mut snaps: Vec<(f32, Tick, Tick)> =
+        ends.into_iter().flat_map(|base| targets(app, seq, layout, base + delta, &[], true).into_iter().map(move |(px, c)| (px, c - base, c))).collect();
+    snaps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    match snaps.into_iter().find_map(|(_, d, c)| span(d).filter(|s| moved(*s) == d).map(|s| (s, c))) {
+        Some((s, c)) => {
             app.tl.snap_x = Some(layout.x_of(c));
-            c
+            Some(s)
         }
-        None => t,
+        None => span(delta),
     }
 }
 

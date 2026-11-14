@@ -215,7 +215,7 @@ pub fn quant4(c: &mut [i32; 16], qt: &QuantTables, qp: u8, dz: Deadzone, skip_dc
     let dc = c[0];
     let mut nz = 0;
     for (v, &m) in c.iter_mut().zip(mf) {
-        // Residual coefficients stay below 2^14; the clamp keeps the u32 product from overflowing on any input.
+        // Residual coefficients stay below 2^14 at 8 bits and 2^16 at 10; the clamp keeps the u32 product from overflowing on any input.
         let a = ((v.unsigned_abs().min(0xffff) * m + f) >> qbits) as i32;
         nz += (a != 0) as u32;
         *v = if *v < 0 { -a } else { a };
@@ -248,7 +248,7 @@ pub fn quant8(c: &mut [i32; 64], qt: &QuantTables, qp: u8, dz: Deadzone) -> u32 
     for (v, &m) in c.iter_mut().zip(mf) {
         // |v| * m needs up to 36 bits. Splitting |v| at bit 8 keeps both partial products in u32, and
         // (256 * hi + lo) >> qbits == (hi + (lo >> 8)) >> (qbits - 8) keeps the result exact.
-        // Residual coefficients stay below 2^21; the clamp keeps the sums from overflowing on any input.
+        // Residual coefficients stay below 2^20 at 8 bits and 2^22 at 10; the clamp keeps the sums from overflowing on any input.
         let x = v.unsigned_abs().min(0xff_ffff);
         let a = (((x >> 8) * m + (((x & 0xff) * m + f) >> 8)) >> (qbits - 8)) as i32;
         nz += (a != 0) as u32;
@@ -392,9 +392,10 @@ mod tests {
     #[test]
     fn quant4_matches_i64() {
         let qt = QuantTables::new();
-        for qp in 0..52u8 {
+        // every QP' up to 51 + QpBdOffset at 10 bits
+        for qp in 0..=crate::pixel::QP_PRIME_MAX as u8 {
             for dz in DEADZONES {
-                // Every magnitude below 2^16 (4x4 residual coefficients stay below 2^14) at every position.
+                // Every magnitude below 2^16 (4x4 residual coefficients stay below 2^14 at 8 bits, 2^16 at 10) at every position.
                 for base in (0..1 << 16).step_by(16) {
                     for rot in [0, 5, 10] {
                         let mut c: [i32; 16] = std::array::from_fn(|i| {
@@ -422,7 +423,8 @@ mod tests {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             seed
         };
-        for qp in 0..52u8 {
+        // every QP' up to 51 + QpBdOffset at 10 bits
+        for qp in 0..=crate::pixel::QP_PRIME_MAX as u8 {
             for dz in DEADZONES {
                 // Every magnitude below 2^21 (8x8 residual coefficients stay below 2^20), rotated over positions.
                 for (n, base) in (0..1 << 21).step_by(64).enumerate() {
@@ -434,8 +436,9 @@ mod tests {
                     assert_eq!(quant8(&mut c, &qt, qp, dz), quant8_i64(&mut r, &mf8, qp, dz), "qp {qp} base {base}");
                     assert_eq!(c, r, "qp {qp} base {base}");
                 }
+                // 8x8 coefficients of 10-bit residuals stay below 2^22
                 for _ in 0..2000 {
-                    let mut c: [i32; 64] = std::array::from_fn(|_| (rnd() >> 10) as i32 - (1 << 21));
+                    let mut c: [i32; 64] = std::array::from_fn(|_| (rnd() >> 9) as i32 - (1 << 22));
                     let mut r = c;
                     assert_eq!(quant8(&mut c, &qt, qp, dz), quant8_i64(&mut r, &mf8, qp, dz), "qp {qp}");
                     assert_eq!(c, r, "qp {qp}");

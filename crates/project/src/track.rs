@@ -105,6 +105,10 @@ pub struct TrackItem {
     /// Video Options ▸ Time Interpolation: how frames are made when the clip's speed is changed.
     #[serde(default, skip_serializing_if = "TimeInterpolation::is_default")]
     pub time_interpolation: TimeInterpolation,
+    /// Speed/Duration ▸ Maintain Audio Pitch: at another speed the clip's audio is time-stretched
+    /// and keeps its pitch, instead of being resampled (varispeed) and sounding higher or lower.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maintain_pitch: bool,
     /// Frame Hold Options ▸ Hold Filters: effects are evaluated at the held frame's time instead
     /// of animating through the hold.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -81,6 +81,7 @@ fn captions_import_edit_export_and_burn_in() {
         s.state.active_sequence.unwrap(),
         s.playhead(),
         filmcraft_render::RenderOptions { scale: 0.25, captions: true, ..Default::default() },
+        filmcraft_render::plan::DeviceCaps::ALL,
         &s.media.provider(s.project.clone(), s.services.clone()),
     );
     let cpu = filmcraft_render::plan::execute_cpu(&plan);
