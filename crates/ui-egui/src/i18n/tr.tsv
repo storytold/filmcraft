@@ -3643,3 +3643,9 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+
+# Export: H.264 High 4:2:2 (#1221).
+	High 4:2:2	High 4:2:2
+	10-bit color with full-height chroma (4:2:2), for broadcast and editing	Tam yükseklikte renklilik ile 10 bit renk (4:2:2), yayın ve kurgu için
+	H.264 High 4:2:2 Intra	H.264 High 4:2:2 Intra
+	QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate	QuickTime, H.264 High 4:2:2 Intra (10 bit 4:2:2, her kare anahtar kare), CRF 12, 24 bit 48 kHz PCM; kurguya uygun bir ara dosya

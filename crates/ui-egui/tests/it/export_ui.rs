@@ -632,3 +632,38 @@ fn the_export_range_follows_the_sequence_marks() {
     d.frames(2);
     assert_eq!(d.app().ui.export.range, "inOut");
 }
+
+/// H.264's Profile list offers High 4:2:2 after High 10; picking it makes the summary say 10-bit
+/// 4:2:2, and the High 4:2:2 Intra preset turns All Intra on (#1221 stage 2).
+#[test]
+fn h264_profile_offers_high_422() {
+    use filmcraft_engine::export::{ExportSettings, Format, H264Profile};
+    let mut d = Driver::new("high422");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.app().ui.export.settings = ExportSettings { format: Format::H264, ..Default::default() };
+    d.frames(4);
+    d.click("export.video.profile");
+    let labels: Vec<String> = (0..5)
+        .map(|i| {
+            let id = format!("export.video.profile.option.{i}");
+            let e = d.ok("ui.elements", json!({"prefix": id}));
+            e.as_array().and_then(|a| a.iter().find(|e| e["id"] == json!(id))).and_then(|e| e["label"].as_str()).unwrap_or_default().to_string()
+        })
+        .collect();
+    assert_eq!(labels, ["Baseline", "Main", "High", "High 10", "High 4:2:2"]);
+    d.ok("ui.move", json!({"id": "export.video.profile.option.4"}));
+    d.frames(30);
+    d.snapshot("export-h264-profile-high422");
+    d.click("export.video.profile.option.4");
+    assert_eq!(d.app().ui.export.settings.h264_profile, H264Profile::High422);
+    let sum = d.ok("ui.elements", json!({"prefix": "export.summary"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(sum.contains("High 4:2:2 (10-bit 4:2:2)"), "{sum}");
+    d.ok("ui.set", json!({"export": {"preset": "H.264 High 4:2:2 Intra"}}));
+    d.frames(4);
+    let s = &d.app().ui.export.settings;
+    assert_eq!((s.h264_profile, s.h264_intra_only), (H264Profile::High422, true));
+    let sum = d.ok("ui.elements", json!({"prefix": "export.summary"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(sum.contains("High 4:2:2 Intra (10-bit 4:2:2)") && sum.contains("every frame a keyframe"), "{sum}");
+    d.snapshot("export-h264-high422-intra-preset");
+}

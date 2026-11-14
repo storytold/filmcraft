@@ -238,6 +238,8 @@ fn h264_profile_and_intra_parameters() {
     let r = s.execute("export.resolve", json!({"format": "h264", "settings": {"h264Profile": "high10"}})).unwrap();
     assert_eq!(r["settings"]["h264Profile"], "high10");
     assert_eq!(r["settings"]["h264IntraOnly"], false);
+    let r = s.execute("export.resolve", json!({"format": "h264", "h264Profile": "high422"})).unwrap();
+    assert_eq!(r["settings"]["h264Profile"], "high422");
     for bad in [json!({"h264Profile": "high12"}), json!({"settings": {"h264Profile": "high444"}})] {
         assert!(s.execute("export.resolve", bad.clone()).is_err(), "{bad}");
     }
@@ -492,16 +494,24 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
     }
 }
 
+/// Check an exported H.264 preset: MP4, the profile and pixel format its settings name, and its audio.
 fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
     assert!(format_name.contains("mp4"), "{name}: {format_name}");
     assert_eq!(video["codec_name"], "h264", "{name}");
     let (profile, pix) = match (settings["h264Profile"].as_str(), settings["h264IntraOnly"].as_bool().unwrap_or(false)) {
         (Some("high10"), true) => ("High 10 Intra", "yuv420p10le"),
         (Some("high10"), false) => ("High 10", "yuv420p10le"),
+        (Some("high422"), true) => ("High 4:2:2 Intra", "yuv422p10le"),
+        (Some("high422"), false) => ("High 4:2:2", "yuv422p10le"),
         _ => ("High", "yuv420p"),
     };
     assert_eq!(video["profile"], profile, "{name}");
     assert_eq!(video["pix_fmt"], pix, "{name}");
+    if settings["audio"]["codec"] == "pcm" {
+        // the QuickTime intermediates carry 24-bit PCM
+        assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
+        return;
+    }
     assert_eq!(audio["codec_name"], "aac", "{name}");
     assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
 }

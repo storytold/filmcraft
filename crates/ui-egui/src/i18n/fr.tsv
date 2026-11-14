@@ -3745,3 +3745,9 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+
+# Export: H.264 High 4:2:2 (#1221).
+	High 4:2:2	High 4:2:2
+	10-bit color with full-height chroma (4:2:2), for broadcast and editing	Couleur 10 bits avec chrominance pleine hauteur (4:2:2), pour la diffusion et le montage
+	H.264 High 4:2:2 Intra	H.264 High 4:2:2 Intra
+	QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate	QuickTime, H.264 High 4:2:2 Intra (10 bits 4:2:2, chaque image est une image clé), CRF 12, PCM 24 bits 48 kHz ; un intermédiaire facile à monter

@@ -216,7 +216,8 @@ pub fn write_residual<S: BinSink>(s: &mut S, cat: Cat, coeffs: &[i16], cbf_inc: 
     let (sig_base, last_base, abs_base) = if cat == Cat::Luma8x8 { (402, 417, 426) } else { (105 + SIG_OFF[ci], 166 + SIG_OFF[ci], 227 + ABS_OFF[ci]) };
     for i in 0..n - 1 {
         let (si, li) = match cat {
-            Cat::ChromaDc => (i.min(2), i.min(2)),
+            // ctxIdxInc = Min(numDecodAbsLevel / NumC8x8, 2): 4 coefficients for 4:2:0, 8 for 4:2:2
+            Cat::ChromaDc => ((i / (n / 4).max(1)).min(2), (i / (n / 4).max(1)).min(2)),
             Cat::Luma8x8 => (SIG8X8_FRAME[i] as usize, LAST8X8[i] as usize),
             _ => (i, i),
         };
@@ -399,13 +400,13 @@ fn write_chroma_residual<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
     let chroma = c.cbp >> 4;
     if chroma != 0 {
         for comp in 0..2 {
-            write_residual(s, Cat::ChromaDc, &c.cdc[comp], cbf_dc(nb, 1 + comp as u8));
+            write_residual(s, Cat::ChromaDc, &c.cdc[comp][..nb.nc4()], cbf_dc(nb, 1 + comp as u8));
         }
     }
     if chroma == 2 {
         for comp in 0..2 {
-            for b in 0..4 {
-                write_residual(s, Cat::ChromaAc, &c.cac[comp * 4 + b][1..16], cbf_chroma_ac(nb, comp, b));
+            for b in 0..nb.nc4() {
+                write_residual(s, Cat::ChromaAc, &c.cac[comp * 8 + b][1..16], cbf_chroma_ac(nb, comp, b));
             }
         }
     }

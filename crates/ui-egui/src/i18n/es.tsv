@@ -3755,3 +3755,9 @@
 	Toggle Color Grading Section	Alternar sección de gradación de color
 	Color Grading Section	Sección de gradación de color
 	Read Video Scopes	Leer medidores de vídeo
+
+# Export: H.264 High 4:2:2 (#1221).
+	High 4:2:2	High 4:2:2
+	10-bit color with full-height chroma (4:2:2), for broadcast and editing	Color de 10 bits con crominancia a altura completa (4:2:2), para emisión y edición
+	H.264 High 4:2:2 Intra	H.264 High 4:2:2 Intra
+	QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate	QuickTime, H.264 High 4:2:2 Intra (10 bits 4:2:2, cada fotograma es clave), CRF 12, PCM de 24 bits y 48 kHz; un intermedio fácil de editar
