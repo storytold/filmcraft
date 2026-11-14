@@ -45,7 +45,7 @@ fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
             let dir = d.join(id);
             std::fs::create_dir(&dir).unwrap();
             std::fs::write(dir.join("snapshot.fcproj"), b"retained snapshot").unwrap();
-            autosave::RecoveryCandidate { id: id.into(), dir, meta: Default::default() }
+            autosave::RecoveryCandidate { id: id.into(), dir, meta: Default::default(), actions: Vec::new() }
         })
         .collect();
     s.persistence.as_mut().unwrap().candidates = candidates;
@@ -186,7 +186,16 @@ fn crash_recovery_end_to_end() {
     assert_eq!(list[0]["projectPath"], proj.as_str());
     assert_eq!(list[0]["cleanExit"], false);
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);
+    // The last edit names itself and the run-up is listed: a crash keeps both.
+    assert_eq!(list[0]["lastAction"], "Add Edit", "{list}");
+    assert!(list[0]["lastActionAt"].as_str().unwrap().len() == 19, "{list}");
+    let actions = list[0]["actions"].as_array().unwrap();
+    assert!(actions.iter().any(|a| a["command"] == "sequence.addEdit"), "{list}");
+    assert_eq!(actions.last().unwrap()["label"], "Add Edit");
+    assert!(actions.last().unwrap()["at"].as_str().unwrap().len() == 19);
     c.execute("file.recover", json!({})).unwrap();
+    // Recovering keeps the actions: the recovered project's journal still knows what was done.
+    assert!(c.actions.iter().any(|a| a.command == "sequence.addEdit"));
     assert_eq!(*c.project, edited);
     assert!(c.is_dirty(), "recovered changes are unsaved");
     assert_eq!(c.path.as_deref(), Some(proj.as_str()));
@@ -206,6 +215,48 @@ fn crash_recovery_end_to_end() {
     start(&mut e, &d);
     assert!(e.recovery_candidates().is_empty());
     e.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn action_log_keeps_the_newest_hundred_and_reads_back() {
+    let d = temp_dir("actions");
+    let mut a = demo();
+    start(&mut a, &d);
+    for i in 0..120 {
+        a.execute("sequence.addEdit", json!({"seconds": 0.5 + f64::from(i) * 0.25})).unwrap();
+    }
+    assert_eq!(a.actions.len(), Session::ACTION_HISTORY);
+    assert!(a.actions.first().unwrap().revision > 0);
+    assert!(a.actions.first().unwrap().revision < a.actions.last().unwrap().revision, "oldest first");
+    a.persistence.as_ref().unwrap().flush().unwrap();
+    let dir = a.persistence.as_ref().unwrap().session_dir.clone();
+    let saved = autosave::load_actions(&dir);
+    assert_eq!(saved.len(), 100, "one line per action, the newest 100");
+    assert_eq!(saved, *a.actions, "what the worker wrote is what the session recorded");
+    assert_eq!(saved.last().unwrap().label, "Add Edit");
+    assert_eq!(saved.last().unwrap().command, "sequence.addEdit");
+    let meta: autosave::JournalMeta = serde_json::from_slice(&std::fs::read(dir.join("session.json")).unwrap()).unwrap();
+    assert_eq!(meta.actions, 100);
+    assert_eq!(meta.last_action.as_deref(), Some("Add Edit"));
+    assert!(meta.last_action_unix.is_some_and(|t| t > 0));
+    a.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn queries_and_edits_that_change_nothing_are_not_actions() {
+    let d = temp_dir("noactions");
+    let mut a = demo();
+    start(&mut a, &d);
+    let before = a.actions.len();
+    a.execute("file.recoveryList", json!({})).unwrap();
+    a.execute("project.inspect", json!({})).unwrap();
+    assert_eq!(a.actions.len(), before, "queries are not edits");
+    // a command that changes nothing is not an undo step either
+    let _ = a.execute("timeline.delete", json!({"clips": []}));
+    assert_eq!(a.actions.len(), before);
+    a.shutdown();
     let _ = std::fs::remove_dir_all(&d);
 }
 

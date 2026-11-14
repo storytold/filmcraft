@@ -12,9 +12,16 @@
 //! the next launch any session directory whose lock can be taken and that holds a snapshot is a
 //! recovery candidate ("Recover unsaved changes from <time>?").
 //!
+//! **Action log** (FilmCraft addition): beside the snapshot the journal keeps `actions.jsonl`, the
+//! newest 100 commands that changed the project — command id, the History panel's label, the
+//! parameters, the revision and the time. A crash therefore loses neither the identity of the last
+//! edit (the recovery prompt names it) nor the run-up to it (the prompt lists the 100). The file is
+//! a few kilobytes of JSON and is written with the snapshot.
+//!
 //! **Threading.** The UI thread only hands the worker an `Arc<Project>` (the immutable snapshot the
-//! engine already keeps for undo) — a pointer copy and a channel send. Serialization and all file
-//! I/O happen on the worker thread, so neither ever stalls the UI.
+//! engine already keeps for undo) plus an `Arc<Vec<ActionRecord>>` (shared, rebuilt only when an
+//! action is added) — pointer copies and a channel send. Serialization and all file I/O happen on
+//! the worker thread, so neither ever stalls the UI.
 
 use std::fs::{self, File};
 use std::io;
@@ -527,6 +534,22 @@ pub fn unix_now() -> i64 {
 
 // ------------------------------------------------------------------ recovery candidates
 
+/// One command that changed the project, kept in the recovery journal (`actions.jsonl`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ActionRecord {
+    /// When the command ran (unix seconds).
+    pub unix: i64,
+    /// Command id, e.g. `timeline.delete`.
+    pub command: String,
+    /// The undo step's label (`Delete 3 clips`) — what the History panel shows.
+    pub label: String,
+    /// The command's parameters, verbatim (what it was asked to do).
+    pub params: Value,
+    /// Project revision after the command.
+    pub revision: u64,
+}
+
 /// Snapshot meta written next to `snapshot.fcproj`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -541,6 +564,12 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
+    /// Label of the newest journaled action (`Delete 3 clips`), for the recovery prompt.
+    pub last_action: Option<String>,
+    /// When that action ran (unix seconds).
+    pub last_action_unix: Option<i64>,
+    /// How many actions `actions.jsonl` held when this meta was written.
+    pub actions: usize,
 }
 
 /// Unsaved changes left behind by a session that is no longer running.
@@ -553,10 +582,14 @@ pub struct RecoveryCandidate {
     pub dir: PathBuf,
     #[serde(flatten)]
     pub meta: JournalMeta,
+    /// The newest commands that changed the project, oldest first (`actions.jsonl`).
+    #[serde(skip)]
+    pub actions: Vec<ActionRecord>,
 }
 
 const SNAPSHOT: &str = "snapshot.fcproj";
 const META: &str = "session.json";
+const ACTIONS: &str = "actions.jsonl";
 const LOCK: &str = "lock";
 
 pub fn recovery_root(data_dir: &Path) -> PathBuf {
@@ -594,10 +627,18 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         // Keep the snapshot even when session.json is missing or unreadable: the project
         // is still recoverable. Meta fields fall back to defaults.
         let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()).unwrap_or_default();
-        out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
+        let actions = load_actions(&dir);
+        out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta, actions });
     }
     out.sort_by(|a, b| b.meta.saved_unix.cmp(&a.meta.saved_unix).then(b.id.cmp(&a.id)));
     out
+}
+
+/// Read a session directory's action log. A line that does not parse (a crash mid-write) is
+/// skipped: the rest of the log is still worth showing.
+pub fn load_actions(dir: &Path) -> Vec<ActionRecord> {
+    let Ok(text) = fs::read_to_string(dir.join(ACTIONS)) else { return Vec::new() };
+    text.lines().filter_map(|l| serde_json::from_str::<ActionRecord>(l).ok()).collect()
 }
 
 /// Load a candidate's snapshot.
@@ -640,6 +681,8 @@ struct Snapshot {
     project: Arc<Project>,
     revision: u64,
     path: Option<String>,
+    /// The session's newest actions (shared; rebuilt only when one is added).
+    actions: Arc<Vec<ActionRecord>>,
 }
 
 enum Msg {
@@ -787,8 +830,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>, actions: Arc<Vec<ActionRecord>>) {
+        self.send(Msg::Dirty(Snapshot { project, revision, path, actions }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -913,6 +956,20 @@ impl Persistence {
                 .map(|c| {
                     let mut v = serde_json::to_value(c).unwrap_or_default();
                     v["savedAt"] = json!(self.local_time(c.meta.saved_unix));
+                    v["lastActionAt"] = match c.meta.last_action_unix {
+                        Some(t) => json!(self.local_time(t)),
+                        None => Value::Null,
+                    };
+                    v["actions"] = Value::Array(
+                        c.actions
+                            .iter()
+                            .map(|a| {
+                                let mut r = serde_json::to_value(a).unwrap_or_default();
+                                r["at"] = json!(self.local_time(a.unix));
+                                r
+                            })
+                            .collect(),
+                    );
                     v
                 })
                 .collect(),
@@ -1043,8 +1100,27 @@ impl Worker {
         meta.project_name = s.project.name.clone();
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
-        // Snapshot first, then the meta that makes it a candidate.
+        // The newest action names itself in the meta, so the prompt can say what the last edit was.
+        match s.actions.last() {
+            Some(a) => {
+                meta.last_action = Some(a.label.clone());
+                meta.last_action_unix = Some(a.unix);
+            }
+            None => {
+                meta.last_action = None;
+                meta.last_action_unix = None;
+            }
+        }
+        meta.actions = s.actions.len();
+        // Snapshot first, then the action log, then the meta that makes it a candidate.
+        // One record per line, so a crash mid-write costs the last line and not the log.
+        let mut log = String::new();
+        for a in s.actions.iter() {
+            log.push_str(&serde_json::to_string(a).unwrap_or_default());
+            log.push('\n');
+        }
         let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
+            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(ACTIONS), log.as_bytes()))
             .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
@@ -1068,6 +1144,7 @@ impl Worker {
     fn clear_journal(&mut self) {
         let _ = fs::remove_file(self.session_dir.join(META));
         let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
+        let _ = fs::remove_file(self.session_dir.join(ACTIONS));
         self.journaled = 0;
     }
 

@@ -520,6 +520,9 @@ pub struct Session {
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
+    /// The newest commands that changed the project — what the recovery journal records so a
+    /// crash keeps the last edit's name and its run-up. Shared: rebuilt only when one is added.
+    pub actions: Arc<Vec<autosave::ActionRecord>>,
     /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
     /// Export job → the offline items it drew the slate for, filled when the export finishes
@@ -648,6 +651,7 @@ impl Session {
             services,
             events: Vec::new(),
             journal: Vec::new(),
+            actions: Arc::new(Vec::new()),
             jobs: Vec::new(),
             export_offline: Default::default(),
             prefs: Default::default(),
@@ -743,6 +747,21 @@ impl Session {
 
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
+    /// How many actions the recovery journal keeps (`actions.jsonl`).
+    pub const ACTION_HISTORY: usize = 100;
+
+    /// Remember one action for the recovery journal. The vector is shared with the worker, so it is
+    /// copied here (100 small records) and never on the frame path.
+    fn note_action(&mut self, command: &str, label: String, params: &Value) {
+        let mut v = (*self.actions).clone();
+        v.push(autosave::ActionRecord { unix: autosave::unix_now(), command: command.to_string(), label, params: params.clone(), revision: self.revision });
+        if v.len() > Self::ACTION_HISTORY {
+            let over = v.len() - Self::ACTION_HISTORY;
+            v.drain(..over);
+        }
+        self.actions = Arc::new(v);
+    }
+
     pub fn sync_persistence(&mut self) {
         let dirty = self.is_dirty();
         let Some(p) = self.persistence.as_mut() else { return };
@@ -751,7 +770,7 @@ impl Session {
             return;
         }
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            p.send_dirty(self.project.clone(), self.revision, self.path.clone(), self.actions.clone());
         } else {
             p.send_clean();
         }
@@ -858,6 +877,7 @@ impl Session {
             && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
         .then(|| self.project.clone());
         let outermost = self.exec_depth == 0;
+        let revision_before = self.revision;
         if outermost {
             self.command_origin = Some(id.to_string());
         }
@@ -892,15 +912,24 @@ impl Session {
         {
             self.log.push(panels::Level::Error, id, e.to_string());
         }
-        self.sync_persistence();
-        // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
-        self.previews.live.publish_project(self.project.clone());
+        // The action log is recorded before the journal handoff below, so the snapshot the worker
+        // writes already has this command in it (a crash right after it names the right edit).
         if r.is_ok() && journal {
+            // A command that changed the project joins the recovery journal's action log, named by
+            // the undo step it made (`Delete 3 clips`) so the prompt after a crash says what the
+            // last edit was. Queries and edits that changed nothing are not actions.
+            if self.revision != revision_before {
+                let label = self.history.undo.last().map(|u| u.0.clone()).unwrap_or_else(|| spec.label.to_string());
+                self.note_action(id, label, &params);
+            }
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
             }
         }
+        self.sync_persistence();
+        // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
+        self.previews.live.publish_project(self.project.clone());
         r
     }
 

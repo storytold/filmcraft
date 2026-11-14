@@ -5425,6 +5425,11 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    // The recovered session's action log comes along, so the project opens knowing what the last
+    // edits were (and a crash right after recovery keeps them).
+    if !c.actions.is_empty() {
+        s.actions = std::sync::Arc::new(c.actions.clone());
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
