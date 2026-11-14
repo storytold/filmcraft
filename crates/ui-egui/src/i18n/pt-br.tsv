@@ -3593,6 +3593,10 @@
 	Open a sequence to search its graphics	Abra uma sequência para pesquisar nos gráficos dela
 	No text graphics in this sequence. Add text with the Type tool.	Esta sequência não tem gráficos com texto. Adicione texto com a ferramenta Texto.
 	No matching text.	Nenhum texto corresponde.
+	Stop Returns to Start	Parar volta ao início
+	Play/Stop, Other Way	Reproduzir/Parar, do outro jeito
+	Stop returns the playhead to where playback started	Parar volta o indicador ao ponto onde a reprodução começou
+	Toggle Stop Returns to Start	Alternar: parar volta ao início
 	Enter a positive duration within the supported speed range.	Insira uma duração positiva dentro do intervalo de velocidade compatível.
 	Show Video Names	Mostrar nomes de vídeo
 	Show Audio Names	Mostrar nomes de áudio
