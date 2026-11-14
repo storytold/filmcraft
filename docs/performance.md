@@ -726,7 +726,7 @@ one thread the code path is the old one.
 
 Linux, AMD Ryzen 7 7800X3D (8 cores / 16 threads), 2026-10-11, shared with other agents' builds;
 base = `2ff3f5e`, after = this change, 16 decoder threads, SVT-AV1 preset 8 fixtures from
-`crates/av1/tests/it/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
+craft-libs `crates/video/tests/av1_decode/perf.rs` (`perf_1080p_lowdelay` and `perf_2160p_gop` are new there).
 
 `av1dec` example (`AV1_LOOPS=2 AV1_THREADS=16`), 8 rounds alternating base / after per fixture,
 load average 11–27; speed-up = base wall time / after wall time of the adjacent pair:
@@ -948,7 +948,7 @@ round). On an idle machine the 4K clip needs about two cores.
    all threads (bit-exact each time). A separate deblocking thread was not added: a picture's rows
    are published about two rows after they are reconstructed, so a reference chain advances a few
    rows behind its predecessor and the pool already has more pictures in flight than cores
-   (crates/h264/README.md, "Threading model").
+   (craft-libs `crates/video/src/h264/decode/README.md`, "Threading model").
 5. **Draft decoding** (Settings ▸ Playback ▸ Draft decoding, off by default; `perf.stats`
    `playback.draftDecode`, `decode.draftFrames`, `decode.h264Threads`): while the Program monitor
    plays at 1/2 or 1/4, H.264 non-reference pictures skip deblocking (no other picture can change),
