@@ -56,6 +56,11 @@ pub use atomic::{atomic_write, atomic_write_new};
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";
 
+/// Largest project file this build will read (256 MiB, matching the rest of the family). A
+/// `.fcproj` is JSON and is read whole, so a larger file would commit several times its size in
+/// memory before any validation (audit: FilmCraft F1).
+pub const MAX_PROJECT_BYTES: u64 = 256 << 20;
+
 /// A migration upgrades a whole document from schema `n` to `n + 1`.
 pub type Migration = fn(Value) -> Result<Value, String>;
 
@@ -202,6 +207,9 @@ fn probe_version(p: &Probe) -> Result<u32, FormatError> {
 
 /// Read a project file (any supported schema).
 pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
+    if bytes.len() as u64 > MAX_PROJECT_BYTES {
+        return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
+    }
     let probe: Probe = serde_json::from_slice(bytes)
         .map_err(|e| if e.is_syntax() || e.is_eof() { FormatError::Corrupt(e.to_string()) } else { FormatError::NotAProject(e.to_string()) })?;
     let found = probe_version(&probe)?;

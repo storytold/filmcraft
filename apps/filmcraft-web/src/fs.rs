@@ -345,6 +345,18 @@ impl Services for WebServices {
         filmcraft_media::reader::read_range(&*r, 0, r.len() as usize)
     }
 
+    fn read_file_bounded(&self, path: &str, max: u64) -> io::Result<Vec<u8>> {
+        let r = Self::entry_reader(path)?;
+        let len = r.len();
+        if len > max {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {len} bytes is over the {max} byte limit")));
+        }
+        if len > WHOLE_FILE_MAX {
+            return Err(io::Error::other(format!("{path}: too large to read whole in the browser")));
+        }
+        filmcraft_media::reader::read_range(&*r, 0, len as usize)
+    }
+
     fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
         if let Some(rel) = path.strip_prefix("/opfs/") {
             crate::opfs::write(rel.to_string(), data.to_vec());
