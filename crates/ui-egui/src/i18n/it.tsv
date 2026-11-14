@@ -797,6 +797,7 @@
 	Always Deinterlace	Deinterlaccia sempre
 	Flicker Removal	Rimozione sfarfallio
 	Save changes to “{project_name}” before closing?	Salvare le modifiche a “{project_name}” prima di chiudere?
+	Quitting now will interrupt the export.	Se esci ora, l’esportazione verrà interrotta.
 	Don't Save	Non salvare
 	All media is online.	Tutti i media sono online.
 	{name} (copy)	{name} (copia)

@@ -801,6 +801,7 @@
 	Always Deinterlace	Toujours désentrelacer
 	Flicker Removal	Suppression du scintillement
 	Save changes to “{project_name}” before closing?	Enregistrer les modifications de « {project_name} » avant de fermer ?
+	Quitting now will interrupt the export.	Si vous quittez maintenant, l’exportation sera interrompue.
 	Don't Save	Ne pas enregistrer
 	All media is online.	Tous les médias sont en ligne.
 	{name} (copy)	{name} (copie)

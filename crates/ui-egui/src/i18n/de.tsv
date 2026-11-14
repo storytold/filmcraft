@@ -829,6 +829,7 @@
 	Always Deinterlace	Immer Deinterlacing anwenden
 	Flicker Removal	Flimmerentfernung
 	Save changes to “{project_name}” before closing?	Änderungen an „{project_name}“ vor dem Schließen speichern?
+	Quitting now will interrupt the export.	Wenn Sie das Programm jetzt beenden, wird der Export abgebrochen.
 	Don't Save	Nicht speichern
 	All media is online.	Alle Medien sind online.
 	{name} (copy)	{name} (Kopie)

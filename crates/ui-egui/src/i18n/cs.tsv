@@ -792,6 +792,7 @@
 	Always Deinterlace	Vždy odstranit prokládání
 	Flicker Removal	Odstranit blikání
 	Save changes to “{project_name}” before closing?	Uložit změny v projektu „{project_name}“ před zavřením?
+	Quitting now will interrupt the export.	Pokud nyní aplikaci ukončíte, export se přeruší.
 	Don't Save	Neukládat
 	All media is online.	Všechna média jsou dostupná.
 	{name} (copy)	{name} (kopie)

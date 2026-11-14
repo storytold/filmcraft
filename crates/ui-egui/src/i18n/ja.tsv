@@ -809,6 +809,7 @@
 	Always Deinterlace	常にインターレース解除
 	Flicker Removal	フリッカー除去
 	Save changes to “{project_name}” before closing?	閉じる前に「{project_name}」への変更を保存しますか？
+	Quitting now will interrupt the export.	今終了すると、書き出しが中断されます。
 	Don't Save	保存しない
 	All media is online.	すべてのメディアがオンラインです。
 	{name} (copy)	{name} (コピー)

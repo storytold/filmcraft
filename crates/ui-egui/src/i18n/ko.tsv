@@ -2651,6 +2651,7 @@
 	Save As…	다른 이름으로 저장…
 	Save Changes to this Workspace	이 작업 영역에 변경 사항 저장
 	Save changes to “{project_name}” before closing?	닫기 전에 “{project_name}” 변경 사항을 저장할까요?
+	Quitting now will interrupt the export.	지금 종료하면 내보내기가 중단됩니다.
 	Save current settings as:	현재 설정 저장 이름:
 	Save Current View Preset	현재 보기 사전 설정 저장
 	Save Guides as Template	안내선을 템플릿으로 저장

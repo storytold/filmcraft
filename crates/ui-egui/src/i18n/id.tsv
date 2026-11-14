@@ -806,6 +806,7 @@
 	Always Deinterlace	Selalu Deinterlace
 	Flicker Removal	Penghilangan Kedip
 	Save changes to “{project_name}” before closing?	Simpan perubahan pada “{project_name}” sebelum menutup?
+	Quitting now will interrupt the export.	Jika Anda keluar sekarang, proses ekspor akan terhenti.
 	Don't Save	Jangan Simpan
 	All media is online.	Semua media online.
 	{name} (copy)	{name} (salinan)

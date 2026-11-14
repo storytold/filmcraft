@@ -793,6 +793,7 @@
 	Always Deinterlace	Avfläta alltid
 	Flicker Removal	Flimmerborttagning
 	Save changes to “{project_name}” before closing?	Spara ändringarna i “{project_name}” innan du stänger?
+	Quitting now will interrupt the export.	Om du avslutar nu avbryts exporten.
 	Don't Save	Spara inte
 	All media is online.	All media är online.
 	{name} (copy)	{name} (kopia)
