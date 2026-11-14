@@ -3559,6 +3559,10 @@
 	Dark Theme	Tema escuro
 	Light Theme	Tema claro
 	Next Appearance Mode	Próximo modo de aparência
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	ComfyUI…	ComfyUI…
+	Generate ComfyUI Clip	Gerar clipe do ComfyUI
 	Sync with system	Sincronizar com o sistema
 	UI Scale	Escala da interface
 	Auto (system)	Automática (sistema)
@@ -3574,6 +3578,46 @@
 	Text to Speech	Texto para fala
 	Edit Narration	Editar narração
 	Project Notes	Notas do projeto
+	A project can come from anyone: its files are sent to the server only after you allow them	Um projeto pode vir de qualquer pessoa: seus arquivos só são enviados ao servidor depois que você permitir
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Um fluxo de trabalho salvo com Workflow ▸ Export (API) do ComfyUI
+	All Inputs ({count})	Todas as entradas ({count})
+	Allow Uploads	Permitir envios
+	Applied	Aplicado
+	Back to the workflow's value	Voltar ao valor do fluxo de trabalho
+	Choose a file to upload	Escolher um arquivo para enviar
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Configurações do clipe do ComfyUI
+	ComfyUI Settings	Configurações do ComfyUI
+	ComfyUI workflow (API)	Fluxo de trabalho do ComfyUI (API)
+	Connected (ComfyUI {ver})	Conectado (ComfyUI {ver})
+	Create & Generate	Criar e gerar
+	Create Clip	Criar clipe
+	Created {name}	{name} criado
+	Expose ComfyUI Inputs	Expor entradas do ComfyUI
+	Expose: show this input first for this workflow	Expor: mostrar esta entrada primeiro neste fluxo de trabalho
+	Exposed	Expostas
+	Exposed {input}	{input} exposta
+	Exposed: shown first for this workflow (click to stop)	Exposta: mostrada primeiro neste fluxo de trabalho (clique para deixar de expor)
+	Generate again with new random seeds	Gerar novamente com novas sementes aleatórias
+	Generating…	Gerando…
+	Inspect ComfyUI Workflow	Inspecionar fluxo de trabalho do ComfyUI
+	Load Workflow…	Carregar fluxo de trabalho…
+	Load a workflow, or select a ComfyUI clip	Carregue um fluxo de trabalho ou selecione um clipe do ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Indicado pelo arquivo do projeto: enviado somente após Permitir envios
+	New ComfyUI Clip	Novo clipe do ComfyUI
+	New Seeds	Novas sementes
+	New clip	Novo clipe
+	Selected ComfyUI clip	Clipe do ComfyUI selecionado
+	Send these files to the ComfyUI server when the clip is generated	Enviar estes arquivos ao servidor do ComfyUI quando o clipe for gerado
+	Server	Servidor
+	Test	Testar
+	Text output	Saída de texto
+	This clip uploads files named by the project file: {files}	Este clipe envia arquivos indicados pelo arquivo do projeto: {files}
+	not reachable	inacessível
+	select a ComfyUI clip	selecione um clipe do ComfyUI
+	{input} no longer exposed	{input} não está mais exposta
+	{n} file(s) allowed	{n} arquivo(s) permitido(s)
+	{n} inputs	{n} entradas
 
 	Appearance Settings…	Configurações de aparência…
 

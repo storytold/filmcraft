@@ -71,8 +71,10 @@ SUBCOMMANDS
   exec <id> [key=value ...]     run one command; prints its result as JSON
   exec <id> '<json params>'     same, params as one JSON object
   run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok), in
-                                order: file.exportMedia waits for its file before the next line
-                                (and before exit) unless its params say \"wait\": false
+                                order: file.exportMedia, masks.track and comfyui.generate (or
+                                comfyui.newClip with \"generate\": true) wait for their result
+                                before the next line (and before exit) unless their params say
+                                \"wait\": false
   commands [filter] [--json]    list commands (id, label, shortcut, params)
   describe <id>                 one command as JSON (menu, shortcut, params, enabled now)
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
@@ -197,8 +199,10 @@ impl Backend {
             // this process exits after the command, so a background export would never be written:
             // long commands wait unless the caller says otherwise (#2342)
             Backend::Local(s) => {
-                // mask tracking is applied when its job finishes, which this process never sees (#3302)
-                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
+                // mask tracking and ComfyUI generations are applied when their job finishes, which
+                // this process never sees (#3302)
+                let generates = id == "comfyui.generate" || (id == "comfyui.newClip" && params.get("generate").and_then(Value::as_bool) == Some(true));
+                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track" || generates)
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits

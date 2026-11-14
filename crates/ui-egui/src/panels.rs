@@ -6,6 +6,7 @@ pub mod caption_export;
 pub mod clip_dialogs;
 pub mod clip_mismatch;
 pub mod color_dialogs;
+pub mod comfyui;
 pub mod dialogs;
 pub mod effect_controls;
 pub mod effects;

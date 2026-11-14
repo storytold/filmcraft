@@ -3638,3 +3638,47 @@
 	Toggle Color Grading Section	Przełącz sekcję korekcji kolorów
 	Color Grading Section	Sekcja korekcji kolorów
 	Read Video Scopes	Odczytaj wskaźniki wideo
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Projekt może pochodzić od każdego: jego pliki trafiają na serwer dopiero po twojej zgodzie
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Przepływ pracy zapisany w ComfyUI poleceniem Workflow ▸ Export (API)
+	All Inputs ({count})	Wszystkie wejścia ({count})
+	Allow Uploads	Zezwól na wysyłanie
+	Applied	Zastosowano
+	Back to the workflow's value	Przywróć wartość z przepływu pracy
+	Choose a file to upload	Wybierz plik do wysłania
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Ustawienia klipu ComfyUI
+	ComfyUI Settings	Ustawienia ComfyUI
+	ComfyUI workflow (API)	Przepływ pracy ComfyUI (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Połączono (ComfyUI {ver})
+	Create & Generate	Utwórz i generuj
+	Create Clip	Utwórz klip
+	Created {name}	Utworzono: {name}
+	Expose ComfyUI Inputs	Wyeksponuj wejścia ComfyUI
+	Expose: show this input first for this workflow	Wyeksponuj: pokazuj to wejście jako pierwsze w tym przepływie pracy
+	Exposed	Wyeksponowane
+	Exposed {input}	Wyeksponowano: {input}
+	Exposed: shown first for this workflow (click to stop)	Wyeksponowane: pokazywane jako pierwsze w tym przepływie pracy (kliknij, aby wyłączyć)
+	Generate ComfyUI Clip	Generuj klip ComfyUI
+	Generate again with new random seeds	Generuj ponownie z nowymi losowymi ziarnami
+	Generating…	Generowanie…
+	Inspect ComfyUI Workflow	Sprawdź przepływ pracy ComfyUI
+	Load Workflow…	Wczytaj przepływ pracy…
+	Load a workflow, or select a ComfyUI clip	Wczytaj przepływ pracy lub zaznacz klip ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Wskazany w pliku projektu: wysyłany dopiero po Zezwól na wysyłanie
+	New ComfyUI Clip	Nowy klip ComfyUI
+	New Seeds	Nowe ziarna
+	New clip	Nowy klip
+	Selected ComfyUI clip	Zaznaczony klip ComfyUI
+	Send these files to the ComfyUI server when the clip is generated	Wyślij te pliki na serwer ComfyUI podczas generowania klipu
+	Server	Serwer
+	Test	Testuj
+	Text output	Wyjście tekstowe
+	This clip uploads files named by the project file: {files}	Ten klip wysyła pliki wskazane w pliku projektu: {files}
+	not reachable	nieosiągalny
+	select a ComfyUI clip	zaznacz klip ComfyUI
+	{input} no longer exposed	Już nie wyeksponowano: {input}
+	{n} file(s) allowed	Dozwolone pliki: {n}
+	{n} inputs	Wejścia: {n}

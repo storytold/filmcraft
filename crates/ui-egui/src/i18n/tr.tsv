@@ -3643,3 +3643,47 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Bir proje herkesten gelebilir: dosyaları ancak siz izin verdikten sonra sunucuya gönderilir
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	ComfyUI'da Workflow ▸ Export (API) ile kaydedilmiş bir iş akışı
+	All Inputs ({count})	Tüm Girdiler ({count})
+	Allow Uploads	Yüklemelere İzin Ver
+	Applied	Uygulandı
+	Back to the workflow's value	İş akışının değerine dön
+	Choose a file to upload	Yüklenecek bir dosya seçin
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	ComfyUI Klibi Ayarları
+	ComfyUI Settings	ComfyUI Ayarları
+	ComfyUI workflow (API)	ComfyUI iş akışı (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Bağlandı (ComfyUI {ver})
+	Create & Generate	Oluştur ve Üret
+	Create Clip	Klip Oluştur
+	Created {name}	{name} oluşturuldu
+	Expose ComfyUI Inputs	ComfyUI Girdilerini Öne Çıkar
+	Expose: show this input first for this workflow	Öne çıkar: bu iş akışında bu girdiyi önce göster
+	Exposed	Öne çıkanlar
+	Exposed {input}	{input} öne çıkarıldı
+	Exposed: shown first for this workflow (click to stop)	Öne çıkarıldı: bu iş akışında önce gösterilir (durdurmak için tıklayın)
+	Generate ComfyUI Clip	ComfyUI Klibi Üret
+	Generate again with new random seeds	Yeni rastgele tohumlarla yeniden üret
+	Generating…	Üretiliyor…
+	Inspect ComfyUI Workflow	ComfyUI İş Akışını İncele
+	Load Workflow…	İş Akışı Yükle…
+	Load a workflow, or select a ComfyUI clip	Bir iş akışı yükleyin veya bir ComfyUI klibi seçin
+	Named by the project file: uploaded only after Allow Uploads	Proje dosyasında belirtilmiş: yalnızca Yüklemelere İzin Ver'den sonra yüklenir
+	New ComfyUI Clip	Yeni ComfyUI Klibi
+	New Seeds	Yeni Tohumlar
+	New clip	Yeni klip
+	Selected ComfyUI clip	Seçili ComfyUI klibi
+	Send these files to the ComfyUI server when the clip is generated	Klip üretilirken bu dosyaları ComfyUI sunucusuna gönder
+	Server	Sunucu
+	Test	Sına
+	Text output	Metin çıktısı
+	This clip uploads files named by the project file: {files}	Bu klip, proje dosyasında belirtilen dosyaları yükler: {files}
+	not reachable	erişilemiyor
+	select a ComfyUI clip	bir ComfyUI klibi seçin
+	{input} no longer exposed	{input} artık öne çıkarılmıyor
+	{n} file(s) allowed	{n} dosyaya izin verildi
+	{n} inputs	{n} girdi

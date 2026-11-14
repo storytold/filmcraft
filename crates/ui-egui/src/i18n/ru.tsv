@@ -3740,3 +3740,47 @@
 	Toggle Color Grading Section	Переключить раздел грейдинга
 	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Проект может прийти от кого угодно: его файлы отправляются на сервер только после вашего разрешения
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Рабочий процесс, сохранённый в ComfyUI командой Workflow ▸ Export (API)
+	All Inputs ({count})	Все входы ({count})
+	Allow Uploads	Разрешить загрузку
+	Applied	Применено
+	Back to the workflow's value	Вернуть значение из рабочего процесса
+	Choose a file to upload	Выбрать файл для загрузки
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Параметры клипа ComfyUI
+	ComfyUI Settings	Параметры ComfyUI
+	ComfyUI workflow (API)	Рабочий процесс ComfyUI (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Подключено (ComfyUI {ver})
+	Create & Generate	Создать и сгенерировать
+	Create Clip	Создать клип
+	Created {name}	Создан: {name}
+	Expose ComfyUI Inputs	Вынести входы ComfyUI
+	Expose: show this input first for this workflow	Вынести: показывать этот вход первым для этого рабочего процесса
+	Exposed	Вынесенные
+	Exposed {input}	Вход вынесен: {input}
+	Exposed: shown first for this workflow (click to stop)	Вынесен: показывается первым для этого рабочего процесса (нажмите, чтобы убрать)
+	Generate ComfyUI Clip	Сгенерировать клип ComfyUI
+	Generate again with new random seeds	Сгенерировать заново с новыми случайными сидами
+	Generating…	Генерация…
+	Inspect ComfyUI Workflow	Просмотреть рабочий процесс ComfyUI
+	Load Workflow…	Загрузить рабочий процесс…
+	Load a workflow, or select a ComfyUI clip	Загрузите рабочий процесс или выберите клип ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Указан в файле проекта: загружается только после «Разрешить загрузку»
+	New ComfyUI Clip	Новый клип ComfyUI
+	New Seeds	Новые сиды
+	New clip	Новый клип
+	Selected ComfyUI clip	Выбранный клип ComfyUI
+	Send these files to the ComfyUI server when the clip is generated	Отправить эти файлы на сервер ComfyUI при генерации клипа
+	Server	Сервер
+	Test	Проверить
+	Text output	Текстовый вывод
+	This clip uploads files named by the project file: {files}	Этот клип загружает файлы, указанные в файле проекта: {files}
+	not reachable	недоступен
+	select a ComfyUI clip	выберите клип ComfyUI
+	{input} no longer exposed	Вход больше не вынесен: {input}
+	{n} file(s) allowed	Разрешено файлов: {n}
+	{n} inputs	Входов: {n}

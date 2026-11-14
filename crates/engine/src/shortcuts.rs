@@ -415,6 +415,8 @@ impl CommandInfo {
     }
 }
 
+/// The Keyboard Shortcuts category of a command: by its id prefix, else its top menu, else the
+/// prefix capitalised.
 fn category_of(id: &str, menu: &[&str]) -> String {
     let prefix = id.split('.').next().unwrap_or("");
     match prefix {
@@ -429,6 +431,7 @@ fn category_of(id: &str, menu: &[&str]) -> String {
         // Keep legacy command ids stable without exposing their old feature name.
         "lumetri" => "Color Grading".into(),
         "tts" => "Text to Speech".into(),
+        "comfyui" => "ComfyUI".into(),
         _ => menu.first().map(|s| s.to_string()).unwrap_or_else(|| {
             let mut c = prefix.chars();
             c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
