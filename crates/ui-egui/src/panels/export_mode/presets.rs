@@ -1,11 +1,13 @@
 use super::quick::list_row;
 use super::settings::check;
-use super::{Align2, Color32, FileDialog, FilmcraftApp, Rect, Reg, Sense, Value, apply_preset, json, pos2, preset_key, settings_json, vec2};
+use super::{Align2, Color32, FileDialog, FilmcraftApp, Rect, Reg, Sense, Tokens, Value, apply_preset, json, pos2, preset_key, settings_json, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // Preset Manager
 // ---------------------------------------------------------------------------------------------
 
+/// Show the Preset Manager window (Export ▸ More presets…), listing every preset by category with
+/// search, favourite toggles, import/export, and custom preset creation/deletion.
 pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut m) = app.ui.export.manager.clone() else { return };
     let t = app.tokens;
@@ -35,6 +37,11 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             ui.separator();
             egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, false]).show(ui, |ui| {
+                let row_w = all
+                    .iter()
+                    .map(|p| ui.painter().layout_no_wrap(crate::i18n::t(&p.name).to_string(), Tokens::ui(12.5), t.text).size().x + 12.0)
+                    .fold(300.0_f32, f32::max)
+                    .min((ui.available_width() - 120.0).max(300.0));
                 let mut cat = String::new();
                 for p in all.iter().filter(|p| {
                     (crate::i18n::matches_query(&p.name, &q) || crate::i18n::matches_query(&p.description, &q) || crate::i18n::matches_query(&p.category, &q))
@@ -54,7 +61,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                             cmd = Some(("export.presets.favorite", json!({"name": p.name})));
                         }
                         let sel = preset_key(&m.selected) == preset_key(&p.name);
-                        let r = list_row(ui, &t, sel, crate::i18n::t(&p.name), 300.0);
+                        let r = list_row(ui, &t, sel, crate::i18n::t(&p.name), row_w);
                         reg.add(format!("presetManager.item.{}", p.name), r.rect, p.name.clone());
                         if r.clicked() {
                             m.selected = p.name.clone();
@@ -64,7 +71,8 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                         let r = r.on_hover_text(crate::i18n::t(&p.description));
                         let _ = r;
-                        ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
+                        let fmt = ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
+                        reg.add(format!("presetManager.format.{}", p.name), fmt.rect, p.settings.format.label());
                         if !p.builtin {
                             ui.label(egui::RichText::new(tl!("User")).color(t.accent).size(10.5));
                         }
