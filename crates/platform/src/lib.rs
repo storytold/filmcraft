@@ -98,6 +98,11 @@ pub fn register() -> Availability {
         // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
         // export only when asked for and when NVENC can do it
         ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+        let zero_copy = std::env::var_os("FILMCRAFT_HW_ZERO_COPY").as_deref() != Some(std::ffi::OsStr::new("0"));
+        media_foundation::set_zero_copy(zero_copy);
+        if zero_copy {
+            filmcraft_gpu::register_gpu_surface_importer(media_foundation::import_wgpu_surface);
+        }
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")

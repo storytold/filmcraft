@@ -33,15 +33,30 @@ mod mft;
 mod stream;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use filmcraft_codecs::hw::{NalCodec, StreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
+pub use self::gpu::import_wgpu_surface;
 use self::gpu::{Gpu, Readback, SurfaceFormat};
 use self::mft::{MfApi, Mft, Poll};
 use self::stream::Stream;
 use crate::biplanar::{self, Geometry};
+
+static ZERO_COPY: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable zero-copy D3D11 surface output from [`MfDecoder`] (when enabled, decoded
+/// pictures stay in GPU memory as `PixelData::GpuSurface` and import directly into Vulkan `wgpu`).
+pub fn set_zero_copy(enabled: bool) {
+    ZERO_COPY.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether zero-copy D3D11 surface output is currently enabled.
+pub fn zero_copy() -> bool {
+    ZERO_COPY.load(Ordering::Relaxed)
+}
 
 /// Pictures the decoder may hold back (a DPB is at most 16 frames; more means it lost track).
 const MAX_IN_FLIGHT: usize = 64;
@@ -226,16 +241,24 @@ impl MfDecoder {
                         self.check_size()?;
                     }
                     let geometry = self.geometry;
-                    let (t0, mut convert) = (Instant::now(), Duration::ZERO);
-                    let frame = self.readback.read(&self.gpu, &sample, self.format, |b| {
-                        let c0 = Instant::now();
-                        let f = biplanar::to_frame(b, &geometry);
-                        convert = c0.elapsed();
+                    let frame = if zero_copy() {
+                        let t0 = Instant::now();
+                        let f = self.gpu.export_surface(&sample, self.format, geometry)?;
+                        self.timings.readback += t0.elapsed();
                         f
-                    })?;
+                    } else {
+                        let (t0, mut convert) = (Instant::now(), Duration::ZERO);
+                        let f = self.readback.read(&self.gpu, &sample, self.format, |b| {
+                            let c0 = Instant::now();
+                            let f = biplanar::to_frame(b, &geometry);
+                            convert = c0.elapsed();
+                            f
+                        })?;
+                        self.timings.convert += convert;
+                        self.timings.readback += t0.elapsed().saturating_sub(convert);
+                        f
+                    };
                     self.timings.frames += 1;
-                    self.timings.convert += convert;
-                    self.timings.readback += t0.elapsed().saturating_sub(convert);
                     let pts = self.take_pts(t);
                     out.push(DecodedFrame { pts, frame, draft: false });
                 }

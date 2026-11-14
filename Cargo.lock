@@ -2202,6 +2202,7 @@ version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
+ "log",
  "rayon",
  "serde",
 ]
@@ -2325,6 +2326,8 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
+ "filmcraft-geom",
+ "filmcraft-gpu",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
@@ -2337,7 +2340,9 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "pollster 1.0.1",
  "tempfile",
+ "wgpu",
  "windows 0.62.2",
 ]
 
