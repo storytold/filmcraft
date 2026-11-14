@@ -633,7 +633,9 @@ pub fn vectorscope_yuv(s: &Signal, p: &Params) -> Vectorscope {
 
 /// Angle (degrees, counter-clockwise from +Cb, 0..360) of a chroma point.
 pub fn angle_deg(cb: f32, cr: f32) -> f32 {
-    cr.atan2(cb).to_degrees().rem_euclid(360.0)
+    let a = cr.atan2(cb).to_degrees().rem_euclid(360.0);
+    // A tiny negative angle rounds up to exactly 360 in f32.
+    if a >= 360.0 { 0.0 } else { a }
 }
 
 /// The angle of pure red on a matrix's vectorscope (BT.709 ≈ 103°): the HLS scope puts hue 0 there.
