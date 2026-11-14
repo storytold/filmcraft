@@ -501,6 +501,12 @@ impl eframe::App for FilmcraftApp {
         self.finish_ime_reset_logic(ctx);
     }
 
+    /// The desktop app persists only the window geometry (#1994): the UI state has its own
+    /// storage, and egui's memory (open menus, scroll offsets, …) starts fresh.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
     /// state, shut the session down so its recovery journal is flushed or removed, and start an
     /// update that waits for the exit.
