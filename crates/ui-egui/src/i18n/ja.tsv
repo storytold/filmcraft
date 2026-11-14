@@ -315,6 +315,8 @@
 	Select	選択
 	Select All	すべて選択
 	Select All Matching	一致するクリップをすべて選択
+	Select Backward	後方を選択
+	Select Forward	前方を選択
 	Select Label Group	ラベルグループを選択
 	Select Next Graphic	次のグラフィックを選択
 	Select Next Layer	次のレイヤーを選択

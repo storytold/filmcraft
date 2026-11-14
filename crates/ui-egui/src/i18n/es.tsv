@@ -309,6 +309,8 @@
 	Select	Seleccionar
 	Select All	Seleccionar todo
 	Select All Matching	Seleccionar todos los coincidentes
+	Select Backward	Seleccionar hacia atrás
+	Select Forward	Seleccionar hacia delante
 	Select Label Group	Seleccionar grupo de etiquetas
 	Select Next Graphic	Seleccionar siguiente gráfico
 	Select Next Layer	Seleccionar siguiente capa

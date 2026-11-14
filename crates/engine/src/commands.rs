@@ -882,6 +882,27 @@ fn with_groups(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     out
 }
 
+/// Select Forward / Select Backward (Edit menu): every clip on every track and every caption
+/// whose start is at or after the playhead (forward), or whose end is at or before it
+/// (backward). Both selections are replaced, like `edit.selectAll`; the gap selection clears.
+fn select_from_playhead(s: &mut Session, p: &Value, forward: bool) -> Result<Value> {
+    let ph = time_p(s, p, "").unwrap_or_else(|| s.playhead());
+    let (clips, captions) = match s.active_sequence() {
+        Some(q) => {
+            let clips: Vec<ClipId> =
+                q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| if forward { i.start >= ph } else { i.end() <= ph }).map(|i| i.id).collect();
+            let captions: Vec<ClipId> =
+                q.caption_tracks.iter().flat_map(|t| t.captions.iter()).filter(|c| if forward { c.start >= ph } else { c.end() <= ph }).map(|c| c.id).collect();
+            (clips, captions)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    s.state.selection = clips;
+    s.state.caption_selection = captions;
+    s.state.gap_selection = None;
+    Ok(json!({"clips": s.state.selection.len(), "captions": s.state.caption_selection.len()}))
+}
+
 /// The delta a trim of `clips` (a clip and its linked partners) can apply together: `delta`
 /// clamped by each one's media and neighbours.
 fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, ctx: &edit::EditCtx) -> Result<Tick> {
@@ -2286,6 +2307,12 @@ fn build() -> Vec<CommandSpec> {
             s.state.gap_selection = None;
             Ok(json!({"selected": s.state.selection.len()}))
         }),
+        cmd!("edit.selectBackward", "Select Backward", ["Edit"], Some("Cmd+Alt+Shift+Up"), r#"{"time":ticks?}"#, has_seq, |s, p| select_from_playhead(
+            s, p, false
+        )),
+        cmd!("edit.selectForward", "Select Forward", ["Edit"], Some("Cmd+Alt+Shift+Down"), r#"{"time":ticks?}"#, has_seq, |s, p| select_from_playhead(
+            s, p, true
+        )),
         cmd!("edit.deselectAll", "Deselect All", ["Edit"], Some("Cmd+Shift+A"), "{}", always, |s, _| {
             s.state.selection.clear();
             s.state.caption_selection.clear();
