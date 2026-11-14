@@ -54,7 +54,7 @@ first frame header to label the stream.
   independently and in parallel, writing straight into their 16-line bands.
 - VLCs are decoded with two-level lookup tables (11-bit primary) built from the Annex E lists.
 - Inverse quantisation with the CID's Annex D weights; IDCT: the exact orthonormal 8×8 inverse DCT
-  of equation 8.3, evaluated separably in `f32` (shared design with `filmcraft-prores`).
+  of equation 8.3, evaluated separably in `f32` (shared design with craft-video ProRes).
   Output: `floor(x·s + 2^(b−1) + ½)` clipped to `[0, 2^b − 1]`, where `s = 4` at 12 bits (the
   12-bit coefficient domain is ¼ of the orthonormal DCT, as Table 14's 13-bit IDCT input range
   for 12-bit samples implies) and 1 otherwise.
@@ -121,7 +121,7 @@ decoder within ±2 (90–99% identical). Luma PSNR against the source: HQ 58.8 d
 
 `cargo test --release -p filmcraft-dnx --test it perf:: -- --ignored --nocapture` on an M4 Pro
 (14 cores) while the machine was **heavily overloaded** by other jobs (load average ≈ 190).
-Under the same load `filmcraft-prores`' perf test measured 30 fps threaded / 11.8 fps single
+Under the same load the former FilmCraft-local ProRes codec measured 30 fps threaded / 11.8 fps single
 for a 1080p HQ frame, against 318 / 53 fps in its README on a less loaded machine, so these are
 lower bounds by a factor of roughly 4–10:
 

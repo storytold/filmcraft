@@ -32,6 +32,7 @@ macro_rules! out {
 
 mod args;
 mod probe;
+mod project_lock;
 
 use args::{Args, parse_value};
 use filmcraft_automation::BridgeClient;
@@ -81,7 +82,7 @@ SUBCOMMANDS
          [--scale f] [--quality 0-100] [--no-audio] [--queue] [--allow-offline]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac, guessed
+                                a format (h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|aac|mp3, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --scale renders at a fraction of the frame size (0.5 =
@@ -104,7 +105,8 @@ SUBCOMMANDS
 OPTIONS
   --project <p.fcproj>          open this project first (headless)
   --demo                        open the built-in demo project (headless)
-  --save                        save the project back to --project when done
+  --save                        save the project back to --project when done; runs saving one
+                                project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
@@ -195,7 +197,8 @@ impl Backend {
             // this process exits after the command, so a background export would never be written:
             // long commands wait unless the caller says otherwise (#2342)
             Backend::Local(s) => {
-                if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
+                // mask tracking is applied when its job finishes, which this process never sees (#3302)
+                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits
@@ -247,6 +250,7 @@ fn format_for(path: &str) -> Option<&'static str> {
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
         "m4a" | "aac" => "aac",
+        "mp3" => "mp3",
         _ => return None,
     })
 }
@@ -276,6 +280,10 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
             filmcraft_export::note_gpu_render_disabled(&why);
         }
         image
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
     }
 }
 
@@ -402,6 +410,7 @@ async fn cli_commands(a: &Args, cmd: &str) {
 async fn cli_exec(a: &Args) {
     let id = a.pos(1).unwrap_or_else(|| usage("exec <id> [key=value ...]"));
     let params = a.params_from(2).unwrap_or_else(|e| usage(e));
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec(id, params).await {
         Ok(v) => print(a, &v),
@@ -417,6 +426,7 @@ async fn cli_run(a: &Args) {
     } else {
         read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
     };
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     let mut failed = 0;
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
@@ -457,6 +467,7 @@ async fn cli_import(a: &Args) {
     if paths.is_empty() {
         usage("import <file>...");
     }
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec("file.import", json!({"paths": paths})).await {
         Ok(v) => print(a, &v),
@@ -526,6 +537,9 @@ async fn cli_export(a: &Args) {
             for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                 diag(format_args!("filmcraft-cli: warning: {warning} (CLI: --range entire)"));
             }
+            for warning in export_warnings(&v) {
+                diag(format_args!("filmcraft-cli: warning: {warning}"));
+            }
             check_offline(a, &offline_media(&v), &format!("export: {written}"));
             diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
         }
@@ -573,7 +587,11 @@ async fn cli_mcp(a: &Args) {
 /// `requested` when the result names none.
 fn written_paths(result: &Value, requested: &str) -> Vec<String> {
     let paths: Vec<String> = match result.get("path").and_then(Value::as_str) {
-        Some(p) => vec![p.to_string()],
+        // an image sequence: its first and last stills
+        Some(p) => vec![match result.get("lastPath").and_then(Value::as_str) {
+            Some(last) => format!("{p} to {last}"),
+            None => p.to_string(),
+        }],
         None => result
             .get("items")
             .and_then(Value::as_array)
@@ -597,6 +615,17 @@ fn offline_media(result: &Value) -> Vec<Value> {
         }
     }
     out
+}
+
+/// What the exports in a result reported about how they ran (hardware encoding asked for, but the
+/// software encoder ran): the warnings of a direct export's report (`result`), or of each queued
+/// item's. `export.queue.add` answers with the whole queue, so only the items it `added` count: one
+/// that finished earlier (in the app, with `--bridge`) is not this export's.
+fn export_warnings(result: &Value) -> Vec<&str> {
+    let added: Vec<&Value> = result.get("added").and_then(Value::as_array).into_iter().flatten().collect();
+    let queued = result.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| i.get("id").is_some_and(|id| added.contains(&id)));
+    let reports = std::iter::once(result).chain(queued).filter_map(|r| r.get("result"));
+    reports.filter_map(|r| r.get("warnings").and_then(Value::as_array)).flatten().filter_map(Value::as_str).collect()
 }
 
 /// One stderr line per offline item that rendered as placeholder frames (#1054).
@@ -717,6 +746,37 @@ mod format_tests {
         assert!(super::offline_media(&json!({"path": "x.mp4"})).is_empty());
         let w = super::offline_warning(&[a, b]);
         assert!(w.contains("2 offline media item(s)") && w.contains("item 8 a.mp4 (missing): /m/a.mp4") && w.contains("item 9 b.mov (offline)"), "{w}");
+    }
+
+    #[test]
+    fn export_warnings_from_direct_and_queued_results() {
+        use serde_json::json;
+        let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+        // `export.queue.add` answers with the whole queue; `added` names the items this call queued
+        let older = json!({"id": 1, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}});
+        let cases: [(&str, serde_json::Value, &[&str]); 8] = [
+            ("direct", json!({"path": "a.mp4", "result": {"encoder": "software", "warnings": [fell_back]}}), &[fell_back]),
+            ("direct, nothing to say", json!({"path": "a.mp4", "result": {"encoder": "NVENC"}}), &[]),
+            (
+                "queued, one of two",
+                json!({"added": [1, 2], "items": [{"id": 1, "status": "done", "result": {"warnings": [fell_back]}}, {"id": 2, "status": "done", "result": {"encoder": "software"}}]}),
+                &[fell_back],
+            ),
+            ("queued, failed", json!({"added": [1], "items": [{"id": 1, "status": "failed", "result": null}]}), &[]),
+            // an item finished earlier is not this export's: NVENC ran for the new one
+            ("queued after an older fallback", json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "NVENC"}}]}), &[]),
+            (
+                "queued, falls back after an older one did",
+                json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}}]}),
+                &[fell_back],
+            ),
+            // the range advisory is printed on its own, with its CLI hint
+            ("range warning only", json!({"warnings": ["In/Out range is 1 frame"], "result": {}}), &[]),
+            ("no result", json!({}), &[]),
+        ];
+        for (name, result, want) in cases {
+            assert_eq!(super::export_warnings(&result), want, "{name}");
+        }
     }
 
     #[test]

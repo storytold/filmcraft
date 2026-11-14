@@ -1,4 +1,4 @@
-//! Headless UI tests of colour features: the Lumetri Color panel's LUT menus and section
+//! Headless UI tests of colour features: the Color Grading panel's LUT menus and section
 //! switches, Interpret Footage ▸ Color Management and the sequence colour settings, driven by
 //! automation id through the control channel.
 //!
@@ -173,7 +173,7 @@ fn effect_controls_lut_rows_pick_a_lut() {
     let clip = select_first_clip(&mut d);
     d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
     d.ok("ui.panel.show", json!({"panel": "EffectControls"}));
-    // maximized, so the Lumetri rows fit
+    // maximized, so the Color Grading rows fit
     d.ok("ui.set", json!({"focused": "EffectControls"}));
     d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
     d.frames(4);
@@ -394,7 +394,7 @@ fn lumetri_presets_in_the_effects_panel() {
     d.click("effects.folder.Lumetri Presets/Monochrome");
     let rows = d.ids("effects.lumetriPreset.");
     assert!(rows.iter().any(|r| r == "effects.lumetriPreset.Neutral Mono"), "{rows:?}");
-    // double-click a preset row: Lumetri Color configured as the preset on the selected clip
+    // double-click a preset row: Color Grading configured as the preset on the selected clip
     d.ok("ui.click", json!({"id": "effects.lumetriPreset.Neutral Mono", "button": "right"}));
     d.frames(3);
     d.click("effects.presetMenu.apply");
@@ -407,7 +407,7 @@ fn lumetri_presets_in_the_effects_panel() {
     assert!(!d.ids("effects.presetGrid").is_empty(), "no grid: {:?}", d.ids("effects."));
     let cells = d.ids("effects.presetGrid.");
     assert!(cells.iter().any(|c| c == "effects.presetGrid.Sepia Tone"), "{cells:?}");
-    d.click("effects.folder.Lumetri Presets/Cinematic");
+    d.click("effects.folder.Color Grading Presets/Cinematic");
     let cells = d.ids("effects.presetGrid.");
     assert!(cells.iter().any(|c| c == "effects.presetGrid.Golden Dusk"), "{cells:?}");
     d.snapshot("color-lumetri-presets-grid", None);
@@ -427,8 +427,8 @@ fn lumetri_presets_drag_onto_a_timeline_clip() {
     let selected = select_first_clip(&mut d);
     let seq = d.exec("sequence.inspect", json!({}));
     let target = seq["video"][0]["items"][1]["clip"].as_u64().unwrap_or_else(|| panic!("no second clip: {seq}"));
-    d.click("effects.folder.Lumetri Presets");
-    d.click("effects.folder.Lumetri Presets/Monochrome");
+    d.click("effects.folder.Color Grading Presets");
+    d.click("effects.folder.Color Grading Presets/Monochrome");
     d.frames(2);
     assert!(d.element(&format!("timeline.clip.{target}")).is_some(), "target clip not on screen");
     d.ok("ui.drag", json!({"from": {"id": "effects.lumetriPreset.Neutral Mono"}, "to": {"id": format!("timeline.clip.{target}")}, "steps": 8}));
@@ -499,7 +499,7 @@ fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
     assert_eq!(over(&mut d, c), json!("slog3-sgamut3cine"));
     assert_eq!(over(&mut d, a), before[0]);
 }
-/// #2682: a curve point dragged in Lumetri Color is one undo step: Cmd+Z puts the curve back, and
+/// #2682: a curve point dragged in Color Grading is one undo step: Cmd+Z puts the curve back, and
 /// Cmd+Shift+Z brings the edit back.
 #[test]
 fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
@@ -542,7 +542,7 @@ fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
     assert_eq!(curve(&mut d), edited, "one Cmd+Z undoes the second drag only");
 }
 
-/// #3431: a plain click on the Lumetri luma curve places a point where it landed; a click away
+/// #3431: a plain click on the Color Grading luma curve places a point where it landed; a click away
 /// from the curve adds nothing.
 #[test]
 fn a_click_on_the_lumetri_curve_places_a_point() {
@@ -569,4 +569,91 @@ fn a_click_on_the_lumetri_curve_places_a_point() {
     d.ok("ui.click", json!({"id": "lumetri.curve.curve_luma", "fx": 0.1, "fy": 0.1}));
     d.frames(3);
     assert_eq!(points(&mut d), before + 1, "a click off the curve adds none");
+}
+
+#[test]
+fn lumetri_panel_menu_offers_export_cube() {
+    // #4127: the Color Grading panel menu has Export .cube… for the selected clip's grade
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "exposure", "value": 0.7}));
+    d.frames(3);
+    d.click("panel.menu.LumetriColor");
+    assert!(d.element("panel.menu.LumetriColor.exportCube").is_some(), "Export .cube… is in the panel menu");
+    // with a path the menu command exports straight away; without one it asks where (a save dialog)
+    let path = std::env::temp_dir().join(format!("filmcraft-ui-grade-{}.cube", std::process::id()));
+    let r = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"path": path.to_string_lossy(), "size": 9}}));
+    assert_eq!(r["size"], 9, "{r}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("LUT_3D_SIZE 9"), "{text}");
+    std::fs::remove_file(&path).ok();
+}
+
+/// An explicit clip does not require a timeline selection when the save dialog is opened.
+#[test]
+fn export_cube_dialog_honours_an_explicit_clip_without_a_selection() {
+    let mut d = Driver::demo();
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.harness.state_mut().session.state.selection.clear();
+    let path = std::env::temp_dir().join(format!("filmcraft-explicit-grade-{}.cube", std::process::id()));
+    let answer = path.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    let result = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"clip": clip, "size": 9}}));
+    assert_eq!(result["size"], 9, "{result}");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("LUT_3D_SIZE 9"));
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// The panel menu's Export .cube… follows the clip the Lumetri panel shows (the first selected
+/// video clip), not another selected clip with Lumetri, and the status names what the LUT leaves out.
+#[test]
+fn panel_export_cube_uses_the_shown_clip_and_names_what_is_left_out() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["video"][0]["items"].as_array().unwrap().clone();
+    let (a, b) = (items[0]["clip"].as_u64().unwrap(), items[1]["clip"].as_u64().unwrap());
+    d.exec("effects.apply", json!({"clips": [a, b], "effect": "lumetri"}));
+    d.exec("timeline.select", json!({"clips": [a, b]}));
+    let shown = d.harness.state().session.state.selection[0].0;
+    let other = if shown == a { b } else { a };
+    let toggle = |d: &mut Driver, clip: u64| {
+        let idx = lumetri_index(d, clip);
+        d.exec("effects.toggleEnabled", json!({"clip": clip, "index": idx}));
+    };
+    // the shown clip's Lumetri is off, the other selected clip's is on: nothing to export
+    toggle(&mut d, shown);
+    d.frames(3);
+    d.click("panel.menu.LumetriColor");
+    let entry = d.ok("ui.elements", json!({"prefix": "panel.menu.LumetriColor.exportCube"}));
+    assert_eq!(entry[0]["enabled"], json!(false), "{entry}");
+    // now the shown clip has an enabled Lumetri with a vignette, the other clip has none enabled
+    toggle(&mut d, shown);
+    toggle(&mut d, other);
+    d.exec("effects.setParam", json!({"clip": shown, "effect": "lumetri", "param": "vignette_amount", "value": -2.0}));
+    let path = std::env::temp_dir().join(format!("filmcraft-shown-grade-{}.cube", std::process::id()));
+    let answer = path.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
+    d.frames(3);
+    // the open menu follows the change
+    let entry = d.ok("ui.elements", json!({"prefix": "panel.menu.LumetriColor.exportCube"}));
+    assert_eq!(entry[0]["enabled"], json!(true), "{entry}");
+    d.click("panel.menu.LumetriColor.exportCube");
+    let status = d.harness.state().ui.status.clone();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("LUT_3D_SIZE"), "{status}");
+    std::fs::remove_file(&path).unwrap();
+    assert!(status.contains(&*path.to_string_lossy()) && status.contains("Vignette"), "{status}");
+}
+
+/// The index of the Lumetri Color effect on `clip`.
+fn lumetri_index(d: &mut Driver, clip: u64) -> usize {
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["video"][0]["items"].as_array().unwrap().clone();
+    let it = items.into_iter().find(|i| i["clip"] == clip).unwrap();
+    it["effects"].as_array().unwrap().iter().position(|e| e["effect"] == "lumetri").unwrap()
 }
