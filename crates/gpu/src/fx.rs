@@ -57,6 +57,7 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_FRAME_MIX: u32 = 38;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -66,6 +67,8 @@ pub(crate) struct FxStage {
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
+    /// Optical Flow's passes ([`crate::flow`]).
+    flow: crate::flow::FlowStage,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
     /// Open [`begin_frame`](Self::begin_frame)s.
@@ -74,9 +77,22 @@ pub(crate) struct FxStage {
     created: u64,
 }
 
+/// The pipeline of a compute pass.
+#[derive(Clone, Copy)]
+pub(crate) enum Pipe {
+    /// One invocation per pixel (`fx_px`).
+    Px,
+    /// The running-sum box blur (`fx_run`).
+    Run,
+    /// Optical Flow (`flow.wgsl`): per pixel, then its splat's two passes.
+    FlowPx,
+    FlowScore,
+    FlowWin,
+}
+
 /// One compute pass of a job.
 struct Dispatch {
-    run: bool,
+    pipe: Pipe,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -86,6 +102,8 @@ struct Dispatch {
 pub(crate) struct FxJob {
     source_bg: wgpu::BindGroup,
     source_target: wgpu::TextureView,
+    /// Frame Blending: the next frame's source draw and the working image it is drawn onto.
+    mix_source: Option<(wgpu::BindGroup, wgpu::TextureView)>,
     dispatches: Vec<Dispatch>,
     /// The texture holding the result.
     pub(crate) result: wgpu::TextureView,
@@ -407,7 +425,17 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            flow: crate::flow::FlowStage::new(device),
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            frames: 0,
+            created: 0,
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -464,15 +492,17 @@ impl FxStage {
     }
 
     /// Prepare the passes of `fx`, whose source draw uses `source_bg` (a layer bind group whose
-    /// uniforms map the frame onto the working image). None when the working image does not fit
-    /// in a texture (the layer is then drawn without its effects — never larger than the source
-    /// frame, which would not have uploaded either).
+    /// uniforms map the frame onto the working image) and, for Frame Blending (`fx.mix`),
+    /// `mix_bg` the next frame's. None when the working image does not fit in a texture (the
+    /// layer is then drawn without its effects — never larger than the source frame, which would
+    /// not have uploaded either) or when `fx.mix` comes without `mix_bg`.
     pub(crate) fn job(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         fx: &LayerFx,
         source_bg: wgpu::BindGroup,
+        mix_bg: Option<wgpu::BindGroup>,
         dummy: &wgpu::TextureView,
     ) -> Option<FxJob> {
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
@@ -480,12 +510,60 @@ impl FxStage {
         if w > max || h > max {
             return None;
         }
+        let mix = match (&fx.mix, mix_bg) {
+            (Some(m), Some(bg)) => Some((m.weight, m.flow, bg)),
+            (Some(_), None) => return None,
+            (None, _) => None,
+        };
         let all: Vec<Step> = fx.ops.iter().flat_map(|op| steps(op, w, h)).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
+        let n = if all.iter().any(|s| s.combine) || mix.is_some() { 3 } else { 2 };
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
-        let mut dispatches = Vec::with_capacity(all.len());
+        let mut dispatches = Vec::with_capacity(all.len() + 1);
         let mut cur = 0usize;
+        // Frame Blending: the next frame is drawn onto working image 1 and mixed with the frame's
+        // (0) into 2, where the effects start
+        let mut mix_source = None;
+        if let Some((weight, flow, bg)) = mix {
+            let (src, aux, dst) = (views.first()?, views.get(1)?, views.get(2)?);
+            // Optical Flow strictly between the frames (at an end point it is that frame, as the mix)
+            if flow && weight > 0.0 && weight < 1.0 {
+                let (s, sizes) = crate::flow::levels(w, h);
+                let mut levels = Vec::with_capacity(sizes.len());
+                let mut between = None;
+                for (i, &size) in sizes.iter().enumerate() {
+                    // past the working images when a level is their size (frames up to WORK_W wide)
+                    let skip = if size == (w, h) { n } else { 0 };
+                    let k = crate::flow::LEVEL_IMAGES + if i == 0 { crate::flow::FINEST_EXTRA } else { 0 };
+                    let v: Vec<wgpu::TextureView> = self.targets(device, size, skip + k).into_iter().skip(skip).map(|t| t.1).collect();
+                    let [a, b, scratch, tensor, f0, f1, g0, g1, rest @ ..] = v.as_slice() else { return None };
+                    if let [e0, e1] = rest {
+                        between = Some([e0.clone(), e1.clone()]);
+                    }
+                    let c = |v: &wgpu::TextureView| v.clone();
+                    levels.push(crate::flow::Level {
+                        size,
+                        a: c(a),
+                        b: c(b),
+                        scratch: c(scratch),
+                        tensor: c(tensor),
+                        f01: [c(f0), c(f1)],
+                        f10: [c(g0), c(g1)],
+                    });
+                }
+                let passes = self.flow.passes(device, queue, (src, aux, dst), (w, h), weight, s, &levels, &between?, dummy)?;
+                dispatches.extend(passes.into_iter().map(|p| Dispatch { pipe: p.pipe, bg: p.bg, groups: p.groups }));
+            } else {
+                let s = step(OP_FRAME_MIX, [0; 4], &[weight]);
+                dispatches.push(Dispatch {
+                    pipe: Pipe::Px,
+                    bg: self.step_group(device, queue, &s, (w, h), src, dst, aux),
+                    groups: (w.div_ceil(16), h.div_ceil(16)),
+                });
+            }
+            mix_source = Some((bg, aux.clone()));
+            cur = 2;
+        }
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
         for s in &all {
@@ -501,37 +579,14 @@ impl FxStage {
                 (_, _, Some(k)) => k,
                 _ => dummy,
             };
-            let mut bytes = Vec::with_capacity(128);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in &s.p {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fx-u"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buf, 0, &bytes);
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("fx"),
-                layout: &self.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
-                ],
-            });
+            let bg = self.step_group(device, queue, s, (w, h), views.get(cur)?, views.get(dst)?, aux);
             let groups = if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
                 (lines.div_ceil(64), 1)
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            dispatches.push(Dispatch { pipe: if s.run { Pipe::Run } else { Pipe::Px }, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -540,19 +595,61 @@ impl FxStage {
         Some(FxJob {
             source_bg,
             source_target: views.first()?.clone(),
+            mix_source,
             dispatches,
             result: views.get(cur)?.clone(),
             result_texture: targets.get(cur)?.0.clone(),
         })
     }
 
-    /// Record a job (source draw, then its compute passes) into `enc`.
+    /// The bind group of one compute pass of `s` on a `size` working image: `src` read, `dst`
+    /// written, `aux` the extra input (the original image, a kernel, or the dummy).
+    #[expect(clippy::too_many_arguments, reason = "a pass's device, uniforms and its three images")]
+    fn step_group(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        s: &Step,
+        size: (u32, u32),
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        aux: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut bytes = Vec::with_capacity(128);
+        for v in [s.code, size.0, size.1, 0].iter().chain(&s.i1) {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &s.p {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-u"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, &bytes);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fx"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dst) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+            ],
+        })
+    }
+
+    /// Record a job (source draw, the next frame's for Frame Blending, then its compute passes)
+    /// into `enc`.
     pub(crate) fn record(&self, enc: &mut wgpu::CommandEncoder, job: &FxJob) {
-        {
+        let sources = std::iter::once((&job.source_bg, &job.source_target)).chain(job.mix_source.as_ref().map(|(bg, view)| (bg, view)));
+        for (bg, view) in sources {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fx-source"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &job.source_target,
+                    view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
@@ -563,7 +660,7 @@ impl FxStage {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.source);
-            pass.set_bind_group(0, &job.source_bg, &[]);
+            pass.set_bind_group(0, bg, &[]);
             pass.draw(0..6, 0..1);
         }
         if job.dispatches.is_empty() {
@@ -571,7 +668,13 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(match d.pipe {
+                Pipe::Px => &self.px,
+                Pipe::Run => &self.run,
+                Pipe::FlowPx => &self.flow.px,
+                Pipe::FlowScore => &self.flow.score,
+                Pipe::FlowWin => &self.flow.win,
+            });
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }

@@ -34,14 +34,14 @@ pub const WORK_W: usize = 640;
 /// Window radius of the per-pixel Lucas–Kanade sums.
 pub const WIN: usize = 4;
 /// Pyramid levels stop above this size (either dimension).
-const MIN_LEVEL: usize = 12;
-const MAX_LEVELS: usize = 7;
+pub const MIN_LEVEL: usize = 12;
+pub const MAX_LEVELS: usize = 7;
 /// Gauss–Newton iterations per pyramid level.
-const ITERS: usize = 6;
+pub const ITERS: usize = 6;
 /// Gradient noise floor (square-root luma per pixel): texture weaker than this, summed over the
 /// window, is not trusted to show motion. Damps the structure tensor (Tikhonov).
 const NOISE: f32 = 0.01;
-const DAMP: f32 = ((2 * WIN + 1) * (2 * WIN + 1)) as f32 * NOISE * NOISE;
+pub const DAMP: f32 = ((2 * WIN + 1) * (2 * WIN + 1)) as f32 * NOISE * NOISE;
 /// Largest flow update per iteration (level pixels).
 const MAX_STEP: f32 = 2.0;
 /// Weight of the forward–backward error (pixels) against the luma error when splats collide.
@@ -52,7 +52,9 @@ const AGREE_PX: f32 = 1.0;
 /// the motion-compensated result fades in over the next `STILL_LUMA`.
 const STILL_LUMA: f32 = 0.004;
 /// Hole-filling passes after splatting (remaining holes keep zero motion).
-const FILL_PASSES: usize = 64;
+pub const FILL_PASSES: usize = 64;
+/// Error slack (squared luma over the window) within which standing still is preferred.
+pub const STILL_SLACK: f32 = ((2 * WIN + 1) * (2 * WIN + 1)) as f32 * NOISE * NOISE * 0.25;
 
 /// A dense flow field on a working-resolution grid (pixel centres at integers).
 #[derive(Clone, Debug, PartialEq)]
@@ -263,9 +265,8 @@ fn prefer_still(a: &Gray, b: &Gray, flow: &mut Flow) {
         })
         .collect();
     let sums = box_sum(w, h, &errs, WIN);
-    let slack = ((2 * WIN + 1) * (2 * WIN + 1)) as f32 * NOISE * NOISE * 0.25;
     flow.uv.par_iter_mut().zip(sums.par_iter()).for_each(|(f, e)| {
-        if e[1] <= e[0] + slack {
+        if e[1] <= e[0] + STILL_SLACK {
             *f = [0.0; 2];
         }
     });
