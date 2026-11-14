@@ -849,6 +849,16 @@ fn clear_and_automate_buttons_need_a_selection() {
     assert!(d.app().session.project.item(item).is_none(), "Clear removes the selected item");
 }
 
+#[test]
+fn clear_and_automate_disabled_with_empty_selection() {
+    let mut d = project_driver();
+    d.exec("project.select", serde_json::json!({"items": []}));
+    d.app().ui.project_panel.selected_bin = None;
+    d.frames(2);
+    assert!(!d.app().session.is_enabled("project.delete"), "project.delete must be disabled with empty selection");
+    assert!(!d.app().session.is_enabled("clip.automateToSequence"), "clip.automateToSequence must be disabled with empty selection");
+}
+
 // ------------------------------------------------------------------------------------ Media Browser
 
 fn media_dir(tag: &str) -> std::path::PathBuf {
