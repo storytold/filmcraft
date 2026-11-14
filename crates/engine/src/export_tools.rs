@@ -502,7 +502,21 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
 }
 
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
-pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+    let media = s.media.clone();
+    spawn_export_with_media(s, media, project, seq, settings, label, wait)
+}
+
+/// Export the supplied project through its pool; services and job bookkeeping come from the session.
+fn spawn_export_with_media(
+    s: &mut Session,
+    media: Arc<crate::MediaPool>,
+    project: Arc<Project>,
+    seq: ItemId,
+    mut settings: ExportSettings,
+    label: String,
+    wait: bool,
+) -> Result<u64> {
     let format = settings.format;
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
@@ -519,7 +533,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says, from its own
     // copies of the files so the monitors keep their decoders.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources().recording();
+    let provider = media.full_res_provider(project.clone(), s.services.clone()).own_sources().recording();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let offline = s.export_offline.entry(id).or_default().clone();
     if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
@@ -668,6 +682,13 @@ pub struct QueueItem {
     /// The project as it was when the item was queued.
     #[serde(skip)]
     pub project: Arc<Project>,
+    /// The media pool as it was when the item was queued, released once the item has finished
+    /// so a queue of past exports does not keep an earlier project's readers open.
+    #[serde(skip)]
+    pub media: Option<Arc<crate::MediaPool>>,
+    /// Original path resolution and host openers, without readers or cached frames.
+    #[serde(skip)]
+    pub media_context: Arc<crate::MediaPool>,
 }
 
 /// The export queue (session state).
@@ -753,6 +774,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
                     it.error = Some(e);
                 }
             }
+            it.media = None;
             finished_any = true;
         }
         if s.export_queue.items.iter().any(|i| i.status == QueueStatus::Encoding) || !s.export_queue.running {
@@ -769,7 +791,8 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
         };
         let it = s.export_queue.items[i].clone();
         let label = format!("Queue: {} → {}", it.sequence_name, file_name(&it.settings.path));
-        match spawn_export(s, it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
+        let media = it.media.clone().unwrap_or_else(|| Arc::new(it.media_context.fresh_for_retry()));
+        match spawn_export_with_media(s, media, it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
             Ok(job) => {
                 let x = &mut s.export_queue.items[i];
                 x.status = QueueStatus::Encoding;
@@ -780,6 +803,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
                 let x = &mut s.export_queue.items[i];
                 x.status = QueueStatus::Failed;
                 x.error = Some(e.to_string());
+                x.media = None;
             }
         }
         if !wait {
@@ -793,6 +817,7 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
     s.export_queue.items.iter().position(|i| i.id == id).ok_or_else(|| bad(cmd, format!("no queued export {id}")))
 }
 
+/// Resolve queue requests and capture their project, initial pool and reader-free retry context as one batch.
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
     let (preset, settings) = settings_from_params(s, p, cmd)?;
@@ -835,6 +860,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
+    let media_context = Arc::new(s.media.fresh_for_retry());
     for (seq, st) in items {
         s.export_queue.next_id += 1;
         let id = s.export_queue.next_id;
@@ -849,6 +875,8 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             job: None,
             error: None,
             project: project.clone(),
+            media: Some(s.media.clone()),
+            media_context: media_context.clone(),
         });
         ids.push(id);
     }
@@ -883,6 +911,7 @@ fn queue_stop(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({"running": false, "items": queue_list_json(s)}))
 }
 
+/// Request cancellation of an active job or release the captured pool of an item that has not started.
 fn cancel_item(s: &mut Session, i: usize) {
     let it = &mut s.export_queue.items[i];
     match it.status {
@@ -892,7 +921,10 @@ fn cancel_item(s: &mut Session, i: usize) {
             }
             // settled to Cancelled by `pump_queue` when the job stops
         }
-        QueueStatus::Ready => it.status = QueueStatus::Cancelled,
+        QueueStatus::Ready => {
+            it.status = QueueStatus::Cancelled;
+            it.media = None;
+        }
         _ => {}
     }
 }
