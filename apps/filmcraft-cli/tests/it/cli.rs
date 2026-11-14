@@ -612,3 +612,53 @@ fn export_with_missing_media_fails_unless_allowed() {
     assert!(String::from_utf8_lossy(&render.stderr).contains("still.png"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #4775: an effect preset imported by one CLI process is listed by the next one using the same
+/// `--data-dir`, and `presets.scan` finds files under `<data dir>/Effect Presets`.
+#[test]
+fn effect_presets_persist_in_data_dir_across_invocations() {
+    let dir = private_dir("fc-cli-effect-presets");
+    let data = dir.join("data");
+    let data_s = data.to_str().unwrap();
+    let preset = |name: &str| {
+        json!({
+            "format": "filmcraft.effect-presets",
+            "version": 1,
+            "presets": [{
+                "name": name,
+                "description": "",
+                "keyframes": "Scale",
+                "source_duration": 0,
+                "source_size": [1920, 1080],
+                "effects": [{
+                    "effect": "noise",
+                    "enabled": true,
+                    "params": {"amount": {"value": {"Float": 4.0}}},
+                    "masks": [],
+                    "post_fader": false,
+                    "essential": false,
+                    "layer": null
+                }]
+            }]
+        })
+        .to_string()
+    };
+    let has = |v: &Value, name: &str| v["presets"].as_array().unwrap().iter().any(|p| p["name"] == name);
+
+    let file = dir.join("preset.json");
+    std::fs::write(&file, preset("cli import 4775")).unwrap();
+    let params = json!({"path": file.to_str().unwrap()}).to_string();
+    let imported = json_out(&cli(&["--data-dir", data_s, "exec", "presets.import", &params]));
+    assert_eq!(imported["imported"], json!(["cli import 4775"]));
+    let listed = json_out(&cli(&["--data-dir", data_s, "exec", "presets.list"]));
+    assert!(has(&listed, "cli import 4775"), "{listed}");
+
+    let library = data.join("Effect Presets");
+    std::fs::create_dir_all(&library).unwrap();
+    std::fs::write(library.join("Scanned.json"), preset("cli scan 4775")).unwrap();
+    let scanned = json_out(&cli(&["--data-dir", data_s, "exec", "presets.scan"]));
+    assert_eq!(scanned["errors"], json!([]), "{scanned}");
+    let listed = json_out(&cli(&["--data-dir", data_s, "exec", "presets.list"]));
+    assert!(has(&listed, "cli scan 4775"), "{listed}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
