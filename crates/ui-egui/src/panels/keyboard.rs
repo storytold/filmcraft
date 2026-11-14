@@ -223,12 +223,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             Ok(json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h}))
         }
         "timeline.nextScreen" | "timeline.prevScreen" => {
-            let tv = &mut app.ui.timeline;
-            let w = (app.last_timeline_width.max(200.0) - tv.header_w) as f64;
-            let page = w / tv.pps.max(1e-6);
-            let d = if id == "timeline.nextScreen" { page } else { -page };
-            tv.target_scroll = (tv.target_scroll + d).max(0.0);
-            Ok(json!({"scroll": tv.target_scroll}))
+            let scroll = crate::panels::timeline::page_screen(app, id == "timeline.nextScreen");
+            Ok(json!({"scroll": scroll}))
         }
         "mixer.showHideTracks" => Ok(crate::panels::mixer::open_show_hide_tracks(app, ctx)),
         "mixer.meterInputOnly" => crate::panels::mixer::set_meter_input_only(app, params),

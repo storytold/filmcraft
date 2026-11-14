@@ -528,3 +528,66 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
 }
+
+/// Show Next / Previous Screen (Page Down / Page Up in the Timeline) move the view by exactly one
+/// screen of content, so nothing is skipped or shown twice. `last_timeline_width` is already the
+/// width right of the track headers; the headers used to be taken off a second time, which paged
+/// about 80 % of a screen in this window and less the narrower the Timeline got.
+#[test]
+fn next_and_previous_screen_page_by_the_visible_width() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    let width = f64::from(d.app().last_timeline_width);
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, pps, ..) = d.view();
+    assert!((scroll - width / pps).abs() < 1e-6, "Page Down shows the next screen: scroll {scroll}, screen {}", width / pps);
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, ..) = d.view();
+    assert!((scroll - 2.0 * width / pps).abs() < 1e-6, "twice: scroll {scroll}");
+    d.exec("timeline.prevScreen", json!({}));
+    let (scroll, ..) = d.view();
+    assert!((scroll - width / pps).abs() < 1e-6, "Page Up goes back one screen: scroll {scroll}");
+}
+
+/// Paged while a zoom is still easing in, Show Next Screen moves by a screen at the zoom the view
+/// is heading to, not at the zoom of the frame it was pressed in, so it lands where a page from the
+/// settled view would.
+#[test]
+fn next_screen_during_a_zoom_pages_at_the_target_zoom() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    assert_eq!(d.view().1, 100.0);
+    let width = f64::from(d.app().last_timeline_width);
+    d.app().ui.timeline.target_pps = 400.0;
+    d.exec("timeline.nextScreen", json!({}));
+    let v = &d.app().ui.timeline;
+    assert!(v.pps < 400.0, "the zoom is still easing in: {}", v.pps);
+    let (scroll, pps, ..) = d.view();
+    assert_eq!(pps, 400.0);
+    assert!((scroll - width / 400.0).abs() < 1e-6, "one screen at the target zoom: scroll {scroll}, screen {}", width / 400.0);
+}
+
+/// Paged in the middle of an Option + wheel zoom, Show Next Screen still moves a screen on. The
+/// zoom keeps the time under the pointer in place every frame until it settles, and that used to
+/// put the left edge back where the zoom alone would leave it, so the page was lost.
+#[test]
+fn next_screen_during_a_wheel_zoom_is_not_undone_by_the_zoom() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    let width = f64::from(d.app().last_timeline_width);
+    d.ok("ui.scroll", json!({"id": "timeline.tracks", "fx": 0.5, "fy": 0.2, "dx": 0.0, "dy": 100.0, "modifiers": {"alt": true}}));
+    d.frames(1);
+    let v = &d.app().ui.timeline;
+    assert_eq!(v.target_pps, 200.0, "Option + wheel zooms in");
+    assert!(v.pps < 200.0, "the zoom is still easing in: {}", v.pps);
+    // where the zoom alone leaves the left edge
+    let zoomed = v.target_scroll;
+    assert!(zoomed > 0.0);
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, pps, ..) = d.view();
+    assert_eq!(pps, 200.0, "the zoom still lands");
+    assert!((scroll - (zoomed + width / 200.0)).abs() < 1e-6, "one screen on from the zoomed view: scroll {scroll}, zoomed {zoomed}, screen {}", width / 200.0);
+}
