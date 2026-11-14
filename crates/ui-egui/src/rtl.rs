@@ -1,8 +1,8 @@
 //! Right-to-left scripts (Arabic, Hebrew) in the interface: fallback fonts and reading order.
 //!
-//! Fonts: like [`crate::cjk`], the craft-fonts faces for these scripts (`Arab`, `Hebr`) become the
-//! last fallbacks of every UI font family. A build without them looks up one installed face per
-//! script once (Noto Sans Arabic, SF Arabic, Segoe UI…) and reuses it across theme changes.
+//! Fonts: like [`crate::cjk`], the craft-fonts faces for these scripts (`Arab`, `Hebr`, and the
+//! left-to-right `Geor`, which needs the same fallback) become the last fallbacks of every UI
+//! font family. A build without them looks up one installed face per script once (Noto Sans Arabic, SF Arabic, Segoe UI…) and reuses it across theme changes.
 //!
 //! Reading order: the egui 0.37 fork performs UAX #9 shaping, run ordering and bracket mirroring.
 //! [`Lines`] lays out document text (captions) with one logical `LayoutJob` and
@@ -17,7 +17,7 @@ use egui::{Align, Color32, FontData, FontDefinitions, FontId, Galley, Painter, R
 use filmcraft_text::fonts::{CraftFont, Face};
 use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
 
-/// A right-to-left script: its ISO 15924 code (as in the craft-fonts manifest), letters a face
+/// A script without letters in the UI fonts: its ISO 15924 code (as in the craft-fonts manifest), letters a face
 /// must cover, and installed families to prefer, best first.
 struct Script {
     code: &'static str,
@@ -47,9 +47,10 @@ const SCRIPTS: &[Script] = &[
         sample: "אבגדהוזחטיכךלמםנןסעפףצץקרשת",
         preferred: &["Noto Sans Hebrew", "SF Hebrew", "Arial Hebrew", "Segoe UI", "Arial", "Tahoma", "DejaVu Sans"],
     },
+    Script { code: "Geor", sample: "აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ", preferred: &[] },
 ];
 
-/// The craft-fonts faces for right-to-left scripts (empty unless built with `CRAFT_FONTS_DIR`).
+/// The craft-fonts faces for these scripts (empty unless built with `CRAFT_FONTS_DIR`).
 pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| SCRIPTS.iter().any(|x| x.code == *s)))
 }
@@ -59,37 +60,59 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
 fn system_fonts() -> &'static [(String, Arc<FontData>)] {
     static FONTS: OnceLock<Vec<(String, Arc<FontData>)>> = OnceLock::new();
     FONTS.get_or_init(|| {
-        if cfg!(target_arch = "wasm32") {
-            return Vec::new();
-        }
-        let missing: Vec<&Script> = SCRIPTS.iter().filter(|s| !craft_fonts().any(|f| f.scripts.contains(&s.code))).collect();
-        if missing.is_empty() {
-            return Vec::new();
-        }
-        filmcraft_text::fonts::scan_system();
-        let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
-        let by_weight = |f: &&Arc<Face>| f.info.weight.abs_diff(400);
-        let mut chosen: Vec<&Arc<Face>> = Vec::new();
-        let mut out = Vec::new();
-        for s in missing {
-            if chosen.iter().any(|f| f.covers_text(s.sample)) {
-                continue;
-            }
-            let covers = |f: &&Arc<Face>| f.covers_text(s.sample);
-            let preferred =
-                s.preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name)).filter(covers).min_by_key(by_weight));
-            let Some(face) = preferred.or_else(|| faces.iter().filter(covers).min_by_key(by_weight)) else {
-                continue;
-            };
-            let Some(data) = face.data() else {
-                continue;
-            };
-            let font = FontData::from_blob(Arc::new(data), face.info.index);
-            out.push((format!("system-{}", s.code.to_lowercase()), Arc::new(font)));
-            chosen.push(face);
-        }
+        let mut covered = Vec::new();
+        let out = scan(&mut covered);
+        let _ = SYSTEM_SCRIPTS.set(covered);
         out
     })
+}
+
+/// The scripts an installed face from [`system_fonts`] draws.
+static SYSTEM_SCRIPTS: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+/// Whether the faces [`install`] adds draw Georgian: the craft-fonts `Geor` face, else an
+/// installed one. False on the web without craft-fonts.
+pub(crate) fn georgian_available() -> bool {
+    craft_fonts().any(|f| f.scripts.contains(&"Geor")) || {
+        system_fonts();
+        SYSTEM_SCRIPTS.get().is_some_and(|s| s.contains(&"Geor"))
+    }
+}
+
+/// Look up the installed faces [`system_fonts`] keeps, noting the scripts they draw in `covered`.
+fn scan(covered: &mut Vec<&'static str>) -> Vec<(String, Arc<FontData>)> {
+    if cfg!(target_arch = "wasm32") {
+        return Vec::new();
+    }
+    let missing: Vec<&Script> = SCRIPTS.iter().filter(|s| !craft_fonts().any(|f| f.scripts.contains(&s.code))).collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    filmcraft_text::fonts::scan_system();
+    let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
+    let by_weight = |f: &&Arc<Face>| f.info.weight.abs_diff(400);
+    let mut chosen: Vec<&Arc<Face>> = Vec::new();
+    let mut out = Vec::new();
+    for s in missing {
+        if chosen.iter().any(|f| f.covers_text(s.sample)) {
+            covered.push(s.code);
+            continue;
+        }
+        let covers = |f: &&Arc<Face>| f.covers_text(s.sample);
+        let preferred =
+            s.preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name)).filter(covers).min_by_key(by_weight));
+        let Some(face) = preferred.or_else(|| faces.iter().filter(covers).min_by_key(by_weight)) else {
+            continue;
+        };
+        let Some(data) = face.data() else {
+            continue;
+        };
+        let font = FontData::from_blob(Arc::new(data), face.info.index);
+        out.push((format!("system-{}", s.code.to_lowercase()), Arc::new(font)));
+        chosen.push(face);
+        covered.push(s.code);
+    }
+    out
 }
 
 /// Append the right-to-left faces (craft-fonts, else installed ones) after the other fallbacks of

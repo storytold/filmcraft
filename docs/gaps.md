@@ -263,7 +263,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** Spanish, Japanese, Simplified Chinese, French (#498, #804), Portuguese (Brazil) (#859,
   #866), Indonesian (#867, #878), Korean (#508), Italian, German (#630), Russian, Czech, Polish,
   Swedish, Turkish and Bosnian catalogs cover the whole interface (about 99–100% of the cataloged
-  strings); Ukrainian is menus only (~10%).
+  strings); Ukrainian is menus only (~10%); Georgian (not a key language) the whole interface.
 - **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
   fallback fonts and shows captions in reading order, but other names and fields keep egui's
   left-to-right run order; Arabic titles reported broken, #395),
