@@ -332,8 +332,10 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   premultiplied linear `f32` images, 33 MB at 1080p, so what it does not allocate, convert or mix
   is time saved. Three shortcuts, each of which gives the general path's bits (compared bit for
   bit, with every blend mode, in `render/src/region_tests.rs`): the canvas stays unallocated
-  until a layer needs it, and an opaque bottom layer (an 8-bit or 16-bit Y'CbCr frame without an
-  alpha plane, opacity 100 %, Normal) simply becomes the canvas; a plain media frame with an alpha
+  until a layer needs it, and a bottom layer at opacity 100 % with Normal blending becomes the
+  canvas: an opaque one (an 8-bit or 16-bit Y'CbCr frame without an alpha plane) as it is, any
+  other after its mix over transparent black is worked out in place (`blend::over_transparent_black`,
+  such as a picture enlarged to fill a vertical frame); a plain media frame with an alpha
   plane (a ProRes 4444 banner) is converted and mixed only inside the rectangle where its alpha is
   not zero (`VideoFrame::alpha_region`, `to_linear_f32_region`, `blend::composite_at`), the rest
   being transparent anyway; and working images are recycled through `filmcraft_frame::pool`
