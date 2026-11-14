@@ -678,6 +678,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `prores` | `craft_video::prores` (Proxy / LT / 422 / HQ) | MOV |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
+| `uncompressed` | built in (8-bit 4:2:2 `2vuy`, 10-bit 4:2:2 `v210`, 24-bit RGB `raw `), one sample a frame | MOV (BT.709 limited range, signalled in a `colr` box: uncompressed video carries no colour description of its own) |
 | `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
 | `mp3` | `craft_audio::mp3` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`craft_media::mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
@@ -703,7 +704,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
   H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920 and its
   TikTok / Instagram Reels / YouTube Shorts variants with loudness normalized to −14 LUFS, ProRes,
-  DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
+  DNxHR, uncompressed QuickTime, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
   adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences

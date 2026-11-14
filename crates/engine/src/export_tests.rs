@@ -487,9 +487,28 @@ fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &V
         "prores" => verify_prores_preset(name, settings, video, audio, video_bitrate, pixel_rate, format_name),
         "dnxhr" => verify_dnx_preset(name, settings, video, audio, video_bitrate, pixel_rate),
         "apv" => verify_apv_preset(name, settings, video, audio, format_name),
+        "uncompressed" => verify_uncompressed_preset(name, settings, video, audio, format_name),
         "mxf-op1a" => verify_op1a_preset(name, settings, video, audio, format_name),
         other => panic!("{name}: unexpected format {other}"),
     }
+}
+
+fn verify_uncompressed_preset(name: &str, settings: &Value, video: &Value, audio: &Value, format_name: &str) {
+    assert!(format_name.contains("mov"), "{name}: {format_name}");
+    let expected = match settings["uncompressedPixelFormat"].as_str().unwrap_or("uyvy8") {
+        "v210" => "v210",
+        "rgb24" => "rawvideo",
+        _ => "rawvideo",
+    };
+    // ffmpeg names 2vuy and raw RGB both `rawvideo`; the pixel format says which
+    let pix = video["pix_fmt"].as_str().unwrap_or("");
+    match settings["uncompressedPixelFormat"].as_str().unwrap_or("uyvy8") {
+        "v210" => assert_eq!(video["codec_name"], "v210", "{name}"),
+        "rgb24" => assert_eq!(pix, "rgb24", "{name}: {pix}"),
+        _ => assert_eq!(pix, "uyvy422", "{name}: {pix}"),
+    }
+    let _ = expected;
+    assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
 }
 
 fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &Value, audio: &Value) {
