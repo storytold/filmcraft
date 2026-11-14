@@ -260,12 +260,34 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
     assert_eq!(c.cpu_transitions, 0);
     eprintln!("Push 72 cases: worst p99 {}, mean {}", worst.0, worst.1);
+    for id in ["cross_dissolve", "dip_to_black", "dip_to_white"] {
+        for progress in [0.0, 0.25, 0.37, 0.5, 0.75, 1.0] {
+            let plan = FramePlan::Composite {
+                width: w,
+                height: h,
+                steps: vec![
+                    PlanStep::Layers(vec![layer(1)]),
+                    PlanStep::Transition {
+                        inputs: [vec![layer(0)], vec![layer(1)]],
+                        effect: filmcraft_project::find_effect(id).unwrap().instance(),
+                        progress,
+                        scale: 1.0,
+                    },
+                ],
+            };
+            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            let (_, _, gpu) = c.read_output().expect("dissolve readback");
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "{id}@{progress} exceeded one byte level");
+        }
+    }
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6);
     let fallback = FramePlan::Composite {
         width: w,
         height: h,
         steps: vec![PlanStep::Transition {
             inputs: [vec![layer(0)], vec![layer(1)]],
-            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
             progress: 0.37,
             scale: 1.0,
         }],
@@ -275,7 +297,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     let expected = execute_cpu(&fallback).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
     assert_eq!(c.cpu_transitions, 1);
-    assert_eq!(c.gpu_transitions, 4 * 3 * 6);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6);
 
     // Reuse both input targets across ordered transitions; preparation advances past intervening layers.
     let transition = |progress| PlanStep::Transition {
@@ -296,7 +318,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
     assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
-    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6 + 2);
     assert_eq!(c.cpu_transitions, 1);
 }
 

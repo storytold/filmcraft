@@ -1,5 +1,19 @@
 use filmcraft_project::{EffectInstance, ParamValue};
 
+pub(crate) fn kind(id: &str) -> Option<u32> {
+    match id {
+        "push" => Some(0),
+        "cross_dissolve" | "cross_dissolve_legacy" => Some(1),
+        "dip_to_black" | "dip_to_black_legacy" => Some(2),
+        "dip_to_white" | "dip_to_white_legacy" => Some(3),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports(id: &str) -> bool {
+    kind(id).is_some()
+}
+
 pub(crate) struct PushStage {
     pipeline: wgpu::RenderPipeline,
     uniforms: super::UniformPool,
@@ -57,7 +71,8 @@ impl PushStage {
         let blur = effect.f64_at("motion_blur", Default::default()) as f32;
         let blur = if blur.is_finite() { (blur / 100.0).clamp(0.0, 1.0) } else { 0.0 };
         let progress = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 0.0 };
-        let values = [size.0 as f32, size.1 as f32, progress, blur, direction as f32, 0.0, 0.0, 0.0];
+        let tx_kind = kind(&effect.effect).unwrap_or(0);
+        let values = [size.0 as f32, size.1 as f32, progress, blur, direction as f32, tx_kind as f32, 0.0, 0.0];
         let mut bytes = [0u8; 32];
         for (dst, v) in bytes.chunks_exact_mut(4).zip(values) {
             dst.copy_from_slice(&v.to_le_bytes());

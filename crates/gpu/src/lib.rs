@@ -1251,7 +1251,7 @@ impl GpuCompositor {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             c.record_plan(enc, &FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, resolve)
         };
-        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
+        if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if !transition::supports(&effect.effect))) {
             self.cpu_transitions += 1;
             return cpu(self, enc);
         }

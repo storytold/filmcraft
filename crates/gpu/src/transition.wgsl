@@ -44,6 +44,19 @@ fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let p = params.image.z;
     if p <= 0.0 { return pixel(0u,vec2<u32>(at.xy)); }
     if p >= 1.0 { return pixel(1u,vec2<u32>(at.xy)); }
+    let kind = u32(params.direction.y + 0.5);
+    if kind == 1u {
+        let va = pixel(0u, vec2<u32>(at.xy));
+        let vb = pixel(1u, vec2<u32>(at.xy));
+        return va * (1.0 - p) + vb * p;
+    }
+    if kind == 2u || kind == 3u {
+        let src = select(pixel(1u, vec2<u32>(at.xy)), pixel(0u, vec2<u32>(at.xy)), p < 0.5);
+        let k = select((p - 0.5) * 2.0, 1.0 - p * 2.0, p < 0.5);
+        let s = src * k;
+        let bg = select(vec3(0.0), vec3(1.0), kind == 3u);
+        return vec4(bg * (1.0 - s.a) + s.rgb, 1.0);
+    }
     var direction = vec2(0.0,1.0);
     switch u32(params.direction.x) { case 1u: { direction=vec2(-1.0,0.0); } case 2u: { direction=vec2(0.0,-1.0); } case 3u: { direction=vec2(1.0,0.0); } default: {} }
     let travel = max(dot(abs(direction),params.image.xy),1.0);
