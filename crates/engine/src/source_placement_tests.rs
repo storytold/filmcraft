@@ -95,6 +95,123 @@ fn place_source_range_in_frames_and_timecode_equals_ticks() {
     assert_eq!(place(json!(sin.0), json!({"timecode": "00:00:02:00"})), by_ticks, "48 frames at 24 fps");
 }
 
+/// A 40 s, 25 fps offline file whose timecode starts at 14:30:42:00, in a 25 fps sequence.
+fn timecoded_session() -> (Session, ItemId) {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"Timecode test","fps":25})).unwrap();
+    let p = json!({"name":"A001","audio":false,"fps":25,"seconds":40,"timecode":"14:30:42:00"});
+    let item = s.execute("file.newOfflineFile", p).unwrap()["item"].as_u64().unwrap();
+    (s, ItemId(item))
+}
+
+/// `{"sourceTimecode": …}` is the timecode on the clip, read against its start timecode (a
+/// subclip's against its parent's); `{"timecode": …}` still counts from the clip's first frame.
+#[test]
+fn place_source_in_by_source_timecode_reads_the_clip_start_timecode() {
+    let (mut s, item) = timecoded_session();
+    let sub = s.execute("clip.makeSubclip", json!({"item":item.0,"startFrame":25,"endFrame":100})).unwrap()["item"].as_u64().unwrap();
+    let want = s.project.item(item).unwrap().frame_rate().tick_of(50);
+    for (i, (it, source_in)) in
+        [(item.0, json!({"sourceTimecode":"14:30:44:00"})), (item.0, json!({"timecode":"00:00:02:00"})), (sub, json!({"sourceTimecode":"14:30:44:00"}))]
+            .into_iter()
+            .enumerate()
+    {
+        s.execute("timeline.place", json!({"item":it,"track":"V1","seconds":i * 10,"sourceIn":source_in,"duration":{"seconds":1}})).unwrap();
+    }
+    let items = &s.active_sequence().unwrap().video_tracks[0].items;
+    assert_eq!(items.iter().map(|c| c.source_in).collect::<Vec<_>>(), [want; 3]);
+}
+
+/// A drop-frame source timecode (`;`) counts as drop-frame, as the start timecode a file carries does.
+#[test]
+fn place_source_in_by_drop_frame_source_timecode() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"Drop-frame test","fps":29.97})).unwrap();
+    let item = s.execute("file.newOfflineFile", json!({"name":"B001","audio":false,"fps":29.97,"seconds":40})).unwrap()["item"].as_u64().unwrap();
+    // 01:00:00;00 drop-frame is frame 107892
+    s.execute("clip.modifyTimecode", json!({"item":item,"frame":107_892})).unwrap();
+    s.execute("timeline.place", json!({"item":item,"track":"V1","time":0,"sourceIn":{"sourceTimecode":"01:00:02;00"}})).unwrap();
+    let rate = s.project.item(ItemId(item)).unwrap().frame_rate();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].source_in, rate.tick_of(60));
+}
+
+/// A `sourceIn` outside the clip is refused and changes nothing (#3955): the timecode on the clip
+/// passed as `timecode` (52 244 s into a 40 s clip), source timecodes before its first frame and
+/// past its last, and malformed source timecodes. The first and last frames are accepted.
+#[test]
+fn place_source_in_outside_the_clip_is_refused() {
+    let (mut s, item) = timecoded_session();
+    let before = s.project.to_json();
+    for source_in in [
+        json!({"timecode":"14:30:44:00"}),
+        json!({"seconds":40.0}),
+        json!({"sourceTimecode":"14:30:41:24"}),
+        json!({"sourceTimecode":"14:31:22:00"}),
+        json!({"sourceTimecode":"nope"}),
+        json!({"sourceTimecode":5}),
+    ] {
+        let e = s.execute("timeline.place", json!({"item":item.0,"track":"V1","time":0,"sourceIn":source_in})).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { cmd, .. } if cmd == "timeline.place"), "{source_in}: {e:?}");
+        assert_eq!(s.project.to_json(), before, "{source_in}");
+    }
+    let e = s.execute("timeline.place", json!({"item":item.0,"track":"V1","time":0,"sourceIn":{"timecode":"14:30:44:00"}})).unwrap_err().to_string();
+    assert!(e.contains("00:00:39:24") && e.contains("14:30:42:00") && e.contains("sourceTimecode"), "{e}");
+    for source_in in [json!({"sourceTimecode":"14:30:42:00"}), json!({"sourceTimecode":"14:31:21:24"}), json!({"timecode":"00:00:39:24"}), json!({"frame":0})] {
+        s.execute("timeline.place", json!({"item":item.0,"track":"V1","time":0,"sourceIn":source_in,"duration":{"frame":1}})).unwrap();
+    }
+}
+
+/// The error names the frames the check accepts when the item's bounds fall between frame
+/// boundaries: a subclip from 10.5 to 25.5 frames takes frames 11 to 25, not 10 to 24.
+#[test]
+fn place_source_in_error_names_the_frames_it_accepts() {
+    let (mut s, item) = timecoded_session();
+    let fd = s.project.item(item).unwrap().frame_rate().frame_duration().0;
+    let p = json!({"item":item.0,"start":fd * 10 + fd / 2,"end":fd * 25 + fd / 2});
+    let sub = s.execute("clip.makeSubclip", p).unwrap()["item"].as_u64().unwrap();
+    for frame in [11, 25] {
+        s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":{"frame":frame},"duration":{"frame":1}})).unwrap();
+    }
+    for frame in [10, 26] {
+        let e = s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":{"frame":frame}})).unwrap_err().to_string();
+        assert!(e.contains("whose frames run 00:00:00:11 to 00:00:01:00"), "frame {frame}: {e}");
+    }
+}
+
+/// A `sourceIn` between frame starts (only ticks or seconds give one), or one on a clip that no
+/// frame starts in, is reported in ticks: as a frame it would read as frame 25 of a clip whose
+/// frames run to 25, or as a clip with no frames that still takes some ticks.
+#[test]
+fn place_source_in_between_frames_is_reported_in_ticks() {
+    let (mut s, item) = timecoded_session();
+    let fd = s.project.item(item).unwrap().frame_rate().frame_duration().0;
+    let (first, end) = (fd * 10 + fd / 2, fd * 25 + fd / 2);
+    let sub = s.execute("clip.makeSubclip", json!({"item":item.0,"start":first,"end":end})).unwrap()["item"].as_u64().unwrap();
+    for sin in [fd * 25 + fd * 3 / 4, end, fd * 10 + fd / 4] {
+        let e = s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":sin})).unwrap_err().to_string();
+        assert!(e.contains(&format!("`sourceIn` {sin} ticks is outside the clip, which takes {first} to {end} ticks")), "{e}");
+        // the clip has a start timecode: the hint names its first frame there, in ticks too
+        assert!(e.contains("it starts at 14:30:42:11") && e.contains("sourceTimecode"), "{e}");
+    }
+    let tiny = json!({"item":item.0,"start":fd * 10 + fd / 4,"end":fd * 10 + fd * 3 / 4});
+    let tiny = s.execute("clip.makeSubclip", tiny).unwrap()["item"].as_u64().unwrap();
+    let e = s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":{"frame":10}})).unwrap_err().to_string();
+    assert!(e.contains("ticks is outside the clip, which takes") && !e.contains("frame") && !e.contains("sourceTimecode"), "{e}");
+    s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":fd * 10 + fd / 2,"duration":{"frame":1}})).unwrap();
+}
+
+/// An item with no frames (an empty sequence) takes no `sourceIn`: frame 0 is already its end.
+#[test]
+fn place_source_in_on_an_item_with_no_frames_is_refused() {
+    let mut s = Session::default();
+    let empty = s.execute("file.newSequence", json!({"name":"Empty"})).unwrap()["sequence"].as_u64().unwrap();
+    s.execute("file.newSequence", json!({"name":"Main"})).unwrap();
+    let before = s.project.to_json();
+    let e = s.execute("timeline.place", json!({"item":empty,"track":"V1","time":0,"sourceIn":{"frame":0}})).unwrap_err();
+    assert!(matches!(&e, EngineError::BadParams { cmd, msg } if cmd == "timeline.place" && msg.contains("no frames")), "{e:?}");
+    assert_eq!(s.project.to_json(), before);
+}
+
 /// A `sourceIn` or `duration` that is neither ticks nor a time object (or is negative) is refused
 /// before anything changes, also when `track` or `audioTrack` is `"new"`: no new track, the same
 /// revision, and the redo history intact.
@@ -429,4 +546,77 @@ fn placement_lanes_are_the_tracks_a_placement_fills() {
     s.execute("timeline.place", json!({"item":demo.0,"track":"V1","audioTrack":"A1","time":0})).unwrap();
     assert_eq!(lanes, filled_tracks(&s));
     assert_eq!(lanes, (1, 1));
+}
+
+/// A media timecode is drop-frame when `;` comes before its frames, wherever it is typed: the start
+/// of a new offline file or of Modify ▸ Timecode, a `sourceTimecode`, and Frame Hold Options'
+/// source timecode all count 01:00:00;00 at 29.97 as frame 107892 (what a drop-frame file stores)
+/// and 01:00:00:00 as 108000, so a source timecode 2 s after the start is 60 frames in.
+#[test]
+fn media_timecodes_read_drop_frame_alike_wherever_typed() {
+    // (start timecode, the command that sets it, the timecode 2 s later, the start in frames)
+    for (start, set_by, later, frames) in [
+        ("01:00:00;00", "file.newOfflineFile", "01:00:02;00", 107_892),
+        ("01:00:00;00", "clip.modifyTimecode", "01:00:02;00", 107_892),
+        ("01:00:00:00", "file.newOfflineFile", "01:00:02:00", 108_000),
+        ("01:00:00:00", "clip.modifyTimecode", "01:00:02:00", 108_000),
+    ] {
+        let why = format!("{start} set by {set_by}");
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"name":"Drop-frame test","fps":29.97})).unwrap();
+        let mut p = json!({"name":"B001","audio":false,"fps":29.97,"seconds":40});
+        if set_by == "file.newOfflineFile" {
+            p["timecode"] = json!(start);
+        }
+        let item = s.execute("file.newOfflineFile", p).unwrap()["item"].as_u64().unwrap();
+        if set_by == "clip.modifyTimecode" {
+            s.execute("clip.modifyTimecode", json!({"item":item,"timecode":start})).unwrap();
+        }
+        let it = s.project.item(ItemId(item)).unwrap();
+        assert_eq!(it.as_media().unwrap().info.start_timecode, Some(frames), "{why}: start");
+        let two_s = it.frame_rate().tick_of(60);
+        let r = s.execute("timeline.place", json!({"item":item,"track":"V1","time":0,"sourceIn":{"sourceTimecode":later}})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].source_in, two_s, "{why}: sourceTimecode");
+        s.execute("clip.frameHoldOptions", json!({"clips":[r["clips"][0]],"holdOn":"sourceTimecode","timecode":later})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].frame_hold, Some(two_s), "{why}: Frame Hold Options");
+    }
+}
+
+/// With `matchSequence` the sequence takes the clip's settings in the same undo step as the
+/// placement. A placement its parameters refuse is refused before that, so the project, its
+/// revision and its history stay as they were (a rolled-back group still moves the revision on).
+#[test]
+fn place_with_match_sequence_refuses_before_changing_the_sequence() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"Match test","fps":24})).unwrap();
+    // a 25 fps clip with no sound, 40 s from 14:30:42:00
+    let p = json!({"name":"A001","audio":false,"fps":25,"seconds":40,"timecode":"14:30:42:00"});
+    let item = s.execute("file.newOfflineFile", p).unwrap()["item"].as_u64().unwrap();
+    let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+    let before = s.project.to_json();
+    let revision = s.revision;
+    for (params, why) in [
+        (json!({"item":item,"sourceIn":{"sourceTimecode":"14:30:41:00"}}), "a source timecode before the clip"),
+        (json!({"item":item,"sourceIn":{"frame":5000}}), "a sourceIn past the clip's end"),
+        (json!({"item":item,"track":"A1"}), "an audio track for a clip with no sound"),
+        (json!({"item":item,"video":"yes"}), "a stream flag that is not a boolean"),
+        (json!({"items":[item],"sourceIn":0}), "sourceIn with items"),
+        (json!({"items":[item, 999_999]}), "an item that does not exist"),
+    ] {
+        let mut p = params;
+        p["matchSequence"] = json!(true);
+        p["time"] = json!(0);
+        if p.get("track").is_none() {
+            p["track"] = json!("V1");
+        }
+        assert!(s.execute("timeline.place", p).is_err(), "{why}");
+        assert_eq!(s.project.to_json(), before, "{why}: project");
+        assert_eq!(s.revision, revision, "{why}: revision");
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{why}: history");
+    }
+    // a placement that is right still takes the clip's rate, in one undo step
+    s.execute("timeline.place", json!({"item":item,"track":"V1","time":0,"matchSequence":true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.frame_rate, s.project.item(ItemId(item)).unwrap().frame_rate());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.to_json(), before);
 }
