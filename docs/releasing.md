@@ -76,8 +76,11 @@ deliberately, in every job at once.
   `entitlements.plist`. The Developer ID certificate is imported into a temporary keychain by
   `packaging/macos/import-cert.sh`.
 - **Notarization:** the app is sent with `xcrun notarytool submit`, then the ticket is stapled
-  and checked with `stapler validate`. The app goes on a DMG (`hdiutil makehybrid`), which is
-  signed and notarized too. The universal `filmcraft-cli` is signed the same way, zipped, and the zip is notarized.
+  and checked with `stapler validate`. The app goes on a DMG (`hdiutil create`), which is
+  signed and notarized too. Before notarizing it, the script mounts the DMG and checks the app in
+  it, and a copy installed from it, with `codesign --verify --strict --deep` (an image made with
+  `makehybrid` failed that, #882; `packaging/macos/dmg-test.sh` tests it).
+  The universal `filmcraft-cli` is signed the same way, zipped, and the zip is notarized.
   Its Finder window (background, icon size and positions) comes from
   [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `FilmCraft`
   without the version, which the window's background needs; the DMG file name keeps the version.
