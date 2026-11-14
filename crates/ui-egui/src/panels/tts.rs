@@ -122,7 +122,7 @@ fn start(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: boo
             }
             None => run_now(app, cmd, params, play),
         },
-        Err(e) => app.ui.status = e.to_string(),
+        Err(e) => app.ui.fail(e.to_string()),
     }
 }
 
@@ -131,7 +131,7 @@ fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: b
         Ok(r) => {
             if play {
                 if let Err(e) = app.play_tts_preview() {
-                    app.ui.status = e;
+                    app.ui.fail(e);
                 }
             } else {
                 app.ui.status = match cmd {
@@ -140,7 +140,7 @@ fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: b
                 };
             }
         }
-        Err(e) => app.ui.status = e.to_string(),
+        Err(e) => app.ui.fail(e.to_string()),
     }
 }
 
@@ -155,7 +155,7 @@ fn poll(app: &mut FilmcraftApp) {
             }
             Some(Err(e)) => {
                 app.ui.tts.pending = None;
-                app.ui.status = format!("Text to Speech: {e}");
+                app.ui.fail(format!("Text to Speech: {e}"));
             }
         }
     }
@@ -163,10 +163,10 @@ fn poll(app: &mut FilmcraftApp) {
         && let Some(r) = job_outcome(app, j)
     {
         app.ui.tts.download_job = None;
-        app.ui.status = match r {
-            Ok(()) => "Natural voices installed".into(),
-            Err(e) => format!("Download of the natural voices failed: {e}"),
-        };
+        match r {
+            Ok(()) => app.ui.status = "Natural voices installed".into(),
+            Err(e) => app.ui.fail(format!("Download of the natural voices failed: {e}")),
+        }
     }
 }
 
@@ -437,7 +437,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.ui.tts.confirm_download = false;
                 match app.session.execute("tts.downloadVoices", json!({})) {
                     Ok(r) => app.ui.tts.download_job = r["job"].as_u64(),
-                    Err(e) => app.ui.status = e.to_string(),
+                    Err(e) => app.ui.fail(e.to_string()),
                 }
             }
             Action::CancelDownload => {

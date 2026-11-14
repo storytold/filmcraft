@@ -296,7 +296,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         app.ui.language = language;
         crate::i18n::set_current(language);
         if let Err(e) = saved {
-            app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
+            app.ui.fail(tlf!("The language changed but could not be saved: {e}", e));
         }
         ctx.request_repaint();
         return Ok(json!(app.ui.language));
@@ -340,7 +340,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if let Some(r) = crate::panels::multicam::route(app, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
@@ -352,7 +352,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
@@ -361,25 +361,25 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if let Some(r) = crate::panels::graphics_templates::route(app, ctx, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
     if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
     if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
     if let Some(r) = crate::panels::monitor_view::route(app, id, &params) {
         if let Err(e) = &r {
-            app.ui.status = e.clone();
+            app.ui.fail(e.clone());
         }
         return r;
     }
@@ -605,7 +605,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         "file.newBin" if params.get("name").is_none() => {
             let r = crate::panels::project::new_bin(app, &params);
             if let Err(e) = &r {
-                app.ui.status = e.clone();
+                app.ui.fail(e.clone());
             }
             return r;
         }
@@ -674,7 +674,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
     }
     if r.is_ok() {
         let path = save_path.or_else(|| app.session.path.clone());

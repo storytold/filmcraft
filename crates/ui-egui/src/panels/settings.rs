@@ -82,7 +82,7 @@ pub fn label_color(app: &FilmcraftApp, l: Label) -> Color32 {
 /// Choose a theme from View ▸ Appearance or `ui.set`: stored as Settings ▸ Appearance ▸ Color Theme.
 pub fn set_theme(app: &mut FilmcraftApp, ctx: &egui::Context, k: crate::theme::ThemeKind) {
     if let Err(e) = app.session.execute("prefs.set", json!({"key": "appearance.colorTheme", "value": k.pref_name()})) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     app.apply_prefs(ctx);
     app.set_theme(ctx, k);
@@ -93,7 +93,7 @@ pub fn set_theme(app: &mut FilmcraftApp, ctx: &egui::Context, k: crate::theme::T
 pub fn cycle_appearance(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let next = app.session.prefs.appearance.next_mode();
     if let Err(e) = app.session.execute("prefs.set", json!({"key": "appearance.appearanceMode", "value": next})) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     app.apply_prefs(ctx);
 }
@@ -102,7 +102,7 @@ pub fn cycle_appearance(app: &mut FilmcraftApp, ctx: &egui::Context) {
 pub fn appearance_context_menu(app: &mut FilmcraftApp, ui: &mut Ui) {
     if ui.button(tl!("Appearance Settings…")).clicked() {
         if let Err(error) = open(app, "appearance") {
-            app.ui.status = error;
+            app.ui.fail(error);
         }
         ui.close();
     }

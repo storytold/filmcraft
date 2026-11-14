@@ -57,10 +57,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                     app.ui.status =
                                         tlf!("Preset library updated: {imported} loaded, {removed} removed", imported = imported, removed = removed);
                                 } else if let Some(e) = v["errors"].as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                                    app.ui.status = e.to_string();
+                                    app.ui.fail(e.to_string());
                                 }
                             }
-                            Err(e) => app.ui.status = e.to_string(),
+                            Err(e) => app.ui.fail(e.to_string()),
                         }
                     }
                     preset_action = crate::panels::presets::folder_rows(app, ui, filter).or(preset_action.take());
@@ -149,7 +149,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(name) = lumetri_apply
         && let Err(e) = app.session.execute("lumetri.applyPreset", json!({"name": name}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if let Some((cmd, name)) = preset_action {
         crate::panels::presets::run(app, ui.ctx(), &cmd, &name);
@@ -157,12 +157,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if let Some(id) = set_default
         && let Err(e) = app.session.execute("effects.setDefaultTransition", json!({"effect": id}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if let Some(id) = apply {
         let r = app.session.execute("effects.apply", json!({"effect": id}));
         if let Err(e) = r {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
 }
