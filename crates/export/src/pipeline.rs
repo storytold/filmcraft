@@ -343,18 +343,22 @@ impl Pipeline {
             composite(img, ov, x.round() as i64, y.round() as i64, o.opacity / 100.0);
         }
         if fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty() {
-            self.text(img, &fx.name_overlay, fx.name_overlay.text.trim());
+            Self::text(img, &fx.name_overlay, fx.name_overlay.text.trim());
         }
         if fx.timecode_overlay.enabled {
             let frame = self.seq_rate.frame_at(t) + self.start_tc;
             let tc = filmcraft_time::format_timecode_frames(frame, self.seq_rate, self.drop_frame);
             let text = if fx.timecode_overlay.text.trim().is_empty() { tc } else { format!("{} {tc}", fx.timecode_overlay.text.trim()) };
-            self.text(img, &fx.timecode_overlay, &text);
+            Self::text(img, &fx.timecode_overlay, &text);
         }
     }
 
     /// White text on a translucent black box (the Timecode / Clip Name burn-in look).
-    fn text(&self, img: &mut Image, o: &TextOverlay, text: &str) {
+    fn text(img: &mut Image, o: &TextOverlay, text: &str) {
+        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
+        if op == 0.0 {
+            return;
+        }
         let px = (img.h as f32 * o.size_percent.clamp(1.0, 50.0) / 100.0).max(6.0);
         let family = filmcraft_text::fonts::DEFAULT_FAMILY;
         let st = filmcraft_text::TextStyle { family: family.into(), style: "Regular".into(), size: px, ..Default::default() };
@@ -363,15 +367,11 @@ impl Pipeline {
         let (bw, bh) = (l.bounds[2] - l.bounds[0] + 2.0 * pad, px * 1.1 + 2.0 * pad);
         let (x, y) = anchor(o.placement, o.offset, img.w as f32, img.h as f32, bw, bh);
         let centre = Vec2::new((x + bw / 2.0) as f64, (y + bh / 2.0) as f64);
-        let op = (o.opacity / 100.0).clamp(0.0, 1.0);
         if op >= 0.999 {
             filmcraft_render::graphics::burn_text(img, text, family, centre, px, 0.6);
-            return;
+        } else if let Some(layer) = filmcraft_render::graphics::burn_text_layer((img.w, img.h), text, family, centre, px, 0.6) {
+            filmcraft_render::blend::composite_at(img, &layer.img, layer.x as usize, layer.y as usize, op, filmcraft_render::Blend::Normal);
         }
-        // draw on a transparent layer, then composite it at the overlay's opacity
-        let mut layer = Image::new(img.w, img.h);
-        filmcraft_render::graphics::burn_text(&mut layer, text, family, centre, px, 0.6);
-        composite(img, &layer, 0, 0, op);
     }
 }
 
@@ -549,6 +549,23 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
 #[cfg(test)]
 mod overlay_budget_tests {
     use super::*;
+
+    #[test]
+    fn partial_burn_in_matches_full_frame_compositing() {
+        let background = Image::filled(192, 108, [0.18, 0.34, 0.09, 0.65]);
+        for (text, offset) in [("01:02:03:12", (0.25, 0.5)), ("Clip name\nSecond line", (-90.5, -51.25)), ("Clip name\nSecond line", (91.5, 50.25))] {
+            let overlay = TextOverlay { placement: Placement::Center, size_percent: 12.0, offset, ..Default::default() };
+            let mut full = Image::new(background.w, background.h);
+            Pipeline::text(&mut full, &overlay, text);
+            assert!(full.px.as_chunks::<4>().0.iter().any(|p| p[0] > 0.0), "expected visible glyphs for {offset:?}");
+
+            let mut expected = background.clone();
+            composite(&mut expected, &full, 0, 0, 0.375);
+            let mut actual = background.clone();
+            Pipeline::text(&mut actual, &TextOverlay { opacity: 37.5, ..overlay }, text);
+            assert!(actual.px == expected.px, "burn-in pixels differ for {offset:?}");
+        }
+    }
 
     #[test]
     fn overlay_pixel_budget_is_checked_without_overflow() {
