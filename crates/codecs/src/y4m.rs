@@ -132,8 +132,9 @@ impl Y4mSource {
         }
         let (mut w, mut h, mut rate, mut par, mut colour, mut full) = (0u32, 0u32, None, (1u32, 1u32), "420jpeg".to_string(), false);
         for p in params.filter(|p| !p.is_empty()) {
-            let (tag, v) = p.split_at(1);
-            match tag {
+            let Some(tag) = p.chars().next() else { continue };
+            let v = p.get(tag.len_utf8()..).unwrap_or_default();
+            match tag.encode_utf8(&mut [0; 4]) as &str {
                 "W" => w = v.parse().map_err(|_| bad("invalid width"))?,
                 "H" => h = v.parse().map_err(|_| bad("invalid height"))?,
                 "F" => match parse_ratio(v) {
@@ -283,6 +284,13 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multibyte_header_param_is_ignored() {
+        let mut data = "YUV4MPEG2 W2 H2 éX\nFRAME\n".as_bytes().to_vec();
+        data.extend([0u8; 6]);
+        assert!(Y4mSource::open("a.y4m", Arc::from(data)).is_ok());
+    }
 
     #[test]
     fn colour_space_names() {
