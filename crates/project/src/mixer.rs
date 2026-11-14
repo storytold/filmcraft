@@ -211,13 +211,21 @@ pub fn lane_info(key: &str) -> Option<LaneInfo> {
 }
 
 pub fn parse_send_lane(key: &str) -> Option<usize> {
-    key.strip_prefix("send.")?.strip_suffix(".level")?.parse().ok()
+    key.strip_prefix("send.")?.strip_suffix(".level").and_then(parse_slot)
+}
+
+/// Plain ASCII digits only; `usize::from_str` would also accept a leading '+'.
+fn parse_slot(s: &str) -> Option<usize> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 pub fn parse_fx_lane(key: &str) -> Option<(usize, &str)> {
     let rest = key.strip_prefix("fx.")?;
     let (slot, param) = rest.split_once('.')?;
-    Some((slot.parse().ok()?, param))
+    Some((parse_slot(slot)?, param))
 }
 
 impl Track {
@@ -640,5 +648,13 @@ mod tests {
         let j = serde_json::to_string(&t).unwrap();
         let back: Track = serde_json::from_str(&j).unwrap();
         assert_eq!(back, t);
+    }
+
+    #[test]
+    fn lane_keys_reject_signed_slots() {
+        assert_eq!(parse_send_lane("send.1.level"), Some(1));
+        assert_eq!(parse_send_lane("send.+1.level"), None);
+        assert_eq!(parse_fx_lane("fx.1.gain"), Some((1, "gain")));
+        assert_eq!(parse_fx_lane("fx.+1.gain"), None);
     }
 }
