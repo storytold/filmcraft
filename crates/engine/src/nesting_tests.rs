@@ -385,6 +385,34 @@ fn clips_with_their_sound_on_several_tracks_nest_as_picture_only_and_the_sound_s
     }
 }
 
+/// A picture linked to two sound clips on two tracks nests as picture only. The two sound clips
+/// stay behind together and keep their link to each other, with an Alt selection too.
+#[test]
+fn sound_clips_left_behind_together_stay_linked_to_each_other() {
+    for alt in [false, true] {
+        let mut s = demo();
+        // the fifth V1 clip's sound goes to A3 under the fourth clip, and is linked to it as well
+        let picture = s.active_sequence().unwrap().video_tracks[0].items[3].clone();
+        let sound = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.link == picture.link).unwrap().clone();
+        let (_, other) = move_sound(&mut s, 4, "A3");
+        s.execute("timeline.move", json!({"moves": [{"clip": other.id.0, "track": "A3", "time": picture.start.0}], "linked": false})).unwrap();
+        s.execute("timeline.select", json!({"clips": [picture.id.0, other.id.0]})).unwrap();
+        s.execute("clip.link", json!({})).unwrap();
+        s.execute("clip.link", json!({"clips": [picture.id.0, sound.id.0, other.id.0]})).unwrap();
+        let link = s.active_sequence().unwrap().find_item(picture.id).unwrap().1.link;
+        let q = s.active_sequence().unwrap();
+        assert!(link.is_some() && [sound.id, other.id].iter().all(|c| q.find_item(*c).unwrap().1.link == link), "{alt}: all three linked");
+        let selection = if alt { vec![picture.id.0, sound.id.0, other.id.0] } else { vec![picture.id.0] };
+        s.execute("timeline.select", json!({"clips": selection, "linked": !alt})).unwrap();
+        let r = s.execute("clip.nest", json!({"name": "Picture"})).unwrap();
+        assert_eq!(r["clips"].as_array().unwrap().len(), 1, "{alt}: picture only");
+        let q = s.active_sequence().unwrap();
+        q.check().unwrap();
+        let (a, b) = (q.find_item(sound.id).unwrap().1.link, q.find_item(other.id).unwrap().1.link);
+        assert!(a.is_some() && a == b, "{alt}: the sound left behind is still linked together");
+    }
+}
+
 #[test]
 fn a_nest_whose_sound_track_is_taken_is_picture_only_and_moves_up_a_video_track() {
     let mut s = demo();
