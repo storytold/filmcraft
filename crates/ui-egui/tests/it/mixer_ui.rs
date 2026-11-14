@@ -11,6 +11,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
+use filmcraft_ui_egui::frames::PREROLL_TIMEOUT_S;
 use serde_json::{Value, json};
 
 struct Driver {
@@ -474,11 +475,15 @@ fn audio_gain_dialog_normalizes_the_selection() {
 /// window sleep. Run only frames requested by egui; forcing frames would hide the original bug.
 #[test]
 fn paused_meters_repaint_without_input_and_settle_after_release() {
+    // 0.1 s per frame: play past the preroll timeout (the clock waits for it when the demo's
+    // frames are not ready) plus half a second of playback, so the meters have audio to show.
+    let step_s = 0.1;
+    let playing_frames = ((PREROLL_TIMEOUT_S + 0.5) / step_s).ceil() as usize;
     for workspace in ["Editing", "Audio"] {
         let mut d = Driver::demo_with_step_dt(Some(0.1));
         d.ok("ui.set", json!({"workspace": workspace}));
         d.ok("ui.playback", json!({"action": "play"}));
-        d.frames(10);
+        d.frames(playing_frames.max(10));
         let prefix = if workspace == "Audio" { "mixer.Mix.meter" } else { "audioMeters.channel." };
         let playing = d.ok("ui.elements", json!({"prefix": prefix}));
         let labels = |elements: &Value| elements.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap().to_string()).collect::<Vec<_>>();
