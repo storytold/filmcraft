@@ -45,6 +45,9 @@ pub struct FilmcraftMcp {
     /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
     /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
     render_lock: Arc<tokio::sync::Mutex<()>>,
+    /// While confined, bridge commands take turns: the check that the app's ingest is off and the command it
+    /// lets through are two requests, and a `file.open` sent in parallel could turn ingest on between them.
+    confined_lock: Arc<tokio::sync::Mutex<()>>,
     /// The folders commands may read and write (`--automation-read-root/--automation-write-root`);
     /// `None`: nothing is confined.
     roots: Option<Arc<AutomationRoots>>,
@@ -214,13 +217,20 @@ const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 impl FilmcraftMcp {
     /// A server on an in-process `session`, with nothing confined.
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), roots: None, tool_router: Self::tool_router() }
+        Self {
+            backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))),
+            render_lock: Arc::default(),
+            confined_lock: Arc::default(),
+            roots: None,
+            tool_router: Self::tool_router(),
+        }
     }
     /// A server on the app listening at `addr`, with nothing confined.
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
         Ok(Self {
             backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))),
             render_lock: Arc::default(),
+            confined_lock: Arc::default(),
             roots: None,
             tool_router: Self::tool_router(),
         })
@@ -322,19 +332,31 @@ impl FilmcraftMcp {
     /// Run an engine command on whichever backend. With roots in force, the command's file
     /// parameters are checked first: one outside them is an error the agent can act on.
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
+        let _turn = match (&self.roots, &*self.backend) {
+            (Some(_), Backend::Bridge(_)) => Some(self.confined_lock.lock().await),
+            _ => None,
+        };
         let params = match self.roots.clone() {
             Some(roots) => {
-                if matches!(&*self.backend, Backend::Bridge(_)) {
+                let on_bridge = matches!(&*self.backend, Backend::Bridge(_));
+                if on_bridge {
                     AutomationRoots::check_bridge_command(id, &params).map_err(AutomationError::BadRequest)?;
                 }
                 // The check of a write walks folders, which doesn't belong on an async worker.
                 let id = id.to_string();
                 let checked = {
                     let id = id.clone();
-                    tokio::task::spawn_blocking(move || roots.check_command(&id, &params).map(|()| params))
-                        .await
-                        .map_err(join_error)?
-                        .map_err(AutomationError::BadRequest)?
+                    tokio::task::spawn_blocking(move || {
+                        roots.check_command(&id, &params)?;
+                        // Only now, with the paths inside the roots, may the files themselves be looked at.
+                        if on_bridge {
+                            AutomationRoots::check_bridge_media_files(&id, &params)?;
+                        }
+                        Ok::<_, String>(params)
+                    })
+                    .await
+                    .map_err(join_error)?
+                    .map_err(AutomationError::BadRequest)?
                 };
                 // A session in the app isn't confined, so its ingest would still run. Only a clear "off" will do.
                 if let Backend::Bridge(b) = &*self.backend
@@ -647,6 +669,7 @@ impl FilmcraftMcp {
         description = "Live app: screenshot of the window or one panel (PNG).",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
+    /// A PNG of the live app or one panel; bridge mode only.
     async fn ui_screenshot(&self, Parameters(p): Parameters<ShotParams>) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
             Some(b) => self.screenshot(&b, p.panel, p.max_side.unwrap_or(1600)).await,
@@ -660,6 +683,7 @@ impl FilmcraftMcp {
         description = "Live app: call any control-channel method directly (ui.set, ui.scroll, ui.timeline.hit, ui.timeline.locate, ui.playback, ui.panel.show, ui.menu.list, …).",
         annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
+    /// Any control-channel method; refused outright while confined.
     async fn ui_control(&self, Parameters(p): Parameters<ControlParams>) -> Result<CallToolResult, McpError> {
         if let Some(roots) = &self.roots {
             return Ok(fail(format!(

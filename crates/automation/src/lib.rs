@@ -16,6 +16,9 @@ pub mod long_job;
 pub mod roots;
 pub mod server;
 
+#[cfg(test)]
+mod scratch;
+
 pub use bridge::BridgeClient;
 pub use roots::AutomationRoots;
 pub use server::FilmcraftMcp;

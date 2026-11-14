@@ -181,6 +181,7 @@ mod tests {
         }
     }
 
+    /// An option outside the list is reported by name, and the roots are on `mcp`'s list.
     #[test]
     fn unknown_opt_reports_first_unlisted_option() {
         // `mcp`'s option list, the automation roots included (#985).

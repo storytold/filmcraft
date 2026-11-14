@@ -18,6 +18,11 @@
 //!   spelling of the root still matches, and a folder that differs only in case does not.
 //! - A path must be absolute. A relative one is refused: it would be checked against this
 //!   process's working directory and, in bridge mode, opened against the app's.
+//! - On Windows, a path on a server, device or volume other than the root's is refused before any
+//!   file call, and so is a link leading to one: looking at `\\host\share\x` would contact a host
+//!   the agent chose and send it this user's credentials. A share is only used when a root stands
+//!   on the same server and share. Reserved device names (`NUL`, `COM1:`…) are refused before any
+//!   file call too.
 //! - Every command is classified, and an unclassified one is refused (it fails closed): [`READS`]
 //!   and [`WRITES`] name its file parameters, [`REFUSED`] says why it can't run confined, and
 //!   [`no_files::NO_FILES`] lists the commands that touch no file an agent chooses. A test walks the
@@ -52,7 +57,7 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use serde_json::Value;
 
@@ -130,7 +135,7 @@ impl AutomationRoots {
         let Some(root) = root else {
             return Err(format!("automation path rejected: no {kind} root is in force: {path}"));
         };
-        if inside(&resolve(path)?, &root.resolved) {
+        if inside(&resolve(path, &root.resolved)?, &root.resolved) {
             return Ok(());
         }
         Err(format!("automation path rejected: outside the {kind} root {}: {path}", root.shown.display()))
@@ -148,6 +153,11 @@ impl AutomationRoots {
         self.check(path, Access::Write)?;
         let given = Path::new(path);
         let folder = if path.ends_with(['/', '\\']) || given.is_dir() { Some(given) } else { given.parent() };
+        // `path` may be a link that leads into the root while the file is made beside the link, so the folder it
+        // stands in has to be inside the root too.
+        if let Some(text) = folder.and_then(Path::to_str) {
+            self.check(text, Access::Write)?;
+        }
         let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folders of {path}: {e}");
         let mut folders: Vec<PathBuf> = folder.map(Path::to_path_buf).into_iter().collect();
         let mut seen = HashSet::new();
@@ -206,19 +216,29 @@ impl AutomationRoots {
             return Err(format!("`{id}` is not available while file access is confined: it reads the app's project from wherever it's saved"));
         }
         if IMPORTS.contains(&id) {
-            for key in ["path", "paths"] {
-                let named = params.get(key).map_or(vec![], |v| v.as_array().map_or(vec![v], |a| a.iter().collect()));
-                for path in named.into_iter().filter_map(Value::as_str).map(Path::new) {
-                    if !filmcraft_media::is_importable(path) {
-                        return Err(format!(
-                            "`{id}` takes only media files on the bridge while file access is confined, and not {}: the app adds a preset file to its library and writes a document's audio beside it",
-                            path.display()
-                        ));
-                    }
+            for path in import_paths(params) {
+                if !filmcraft_media::is_importable(path) {
+                    return Err(format!(
+                        "`{id}` takes only media files on the bridge while file access is confined, and not {}: the app adds a preset file to its library and writes a document's audio beside it",
+                        path.display()
+                    ));
                 }
             }
         }
         Ok(())
+    }
+
+    /// The rest of the bridge's import rule, once [`Self::check_command`] has passed the paths: each must be a
+    /// file. A folder named like media (`batch.mp4`) has the right extension, and the app would take all it holds.
+    /// This looks at the files, so it comes after the roots have been asked.
+    pub fn check_bridge_media_files(id: &str, params: &Value) -> Result<(), String> {
+        if !IMPORTS.contains(&id) {
+            return Ok(());
+        }
+        match import_paths(params).into_iter().find(|p| !std::fs::metadata(p).is_ok_and(|m| m.is_file())) {
+            Some(path) => Err(format!("`{id}` takes only media files on the bridge while file access is confined, and {} is not a file", path.display())),
+            None => Ok(()),
+        }
     }
 
     /// Does command `id` name files? On the bridge those are refused while the app's project has
@@ -238,6 +258,11 @@ impl AutomationRoots {
         if id == "media.makeOffline" && params.get("deleteFiles").is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false))) {
             return Err(format!("`{id}` with `deleteFiles` is not available while file access is confined: it deletes the files the project names"));
         }
+        if let Some((_, flag)) =
+            GOES_ELSEWHERE.iter().find(|(c, flag)| *c == id && params.get(*flag).is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false))))
+        {
+            return Err(format!("`{id}` with `{flag}` is not available while file access is confined: it goes to a folder that no path names"));
+        }
         let named = |table: &[(&str, &'static [&'static str])]| table.iter().find(|(c, _)| *c == id).map(|(_, keys)| *keys);
         let (writes, reads) = (named(WRITES), named(READS));
         if writes.is_none() && reads.is_none() && !NO_FILES.contains(&id) {
@@ -254,9 +279,16 @@ impl AutomationRoots {
             for key in keys {
                 match params.get(*key).filter(|v| !v.is_null()) {
                     None => {}
+                    // The engine reads `paths` as a list only, so a text there would name nothing it opens.
+                    Some(Value::String(_)) if *key == "paths" => return Err(format!("`{id}`: `{key}` must be a list of file paths")),
                     Some(Value::String(s)) if NAME_OR_PATH.contains(&(id, *key)) && !s.contains(['/', '\\', '.']) => {}
                     Some(Value::String(s)) => check(s, access)?,
-                    Some(Value::Array(a)) => {
+                    // A list names files only under `paths`; elsewhere the command reads the value as text,
+                    // finds none and picks the place itself, so what the list names would go unused.
+                    Some(Value::Array(a)) if *key == "paths" => {
+                        if a.is_empty() {
+                            return Err(format!("`{id}`: `{key}` must name at least one file while file access is confined"));
+                        }
                         for v in a {
                             match v.as_str() {
                                 Some(s) => check(s, access)?,
@@ -273,10 +305,18 @@ impl AutomationRoots {
         {
             check(p, Access::Write).map_err(|e| format!("{e} (`{id}` writes the embedded audio beside the file)"))?;
         }
+        if let (Some(suffix), Some(path)) = (derived_folder_suffix(id), params.get("path").and_then(Value::as_str))
+            && let Some(folder) = folder_beside(path, suffix)
+        {
+            check(&folder, Access::Write).map_err(|e| format!("{e} (`{id}` also writes a folder named after `path` with `{suffix}` added, beside it)"))?;
+        }
         // The rest of the params: what a command writes is held to the write root throughout.
         let access = if writes.is_some() { Access::Write } else { Access::Read };
         let skip: Vec<&str> =
             reads.unwrap_or(&[]).iter().chain(writes.unwrap_or(&[])).copied().chain(IGNORED_KEYS.iter().filter(|(c, _)| *c == id).map(|(_, k)| *k)).collect();
+        if id == "prefs.set" {
+            absolute_folder_prefs(params)?;
+        }
         let mut other = vec![];
         other_paths(params, &skip, id == "prefs.set", &mut other).map_err(|e| format!("`{id}`: {e}"))?;
         for p in other {
@@ -285,6 +325,81 @@ impl AutomationRoots {
         Ok(())
     }
 }
+
+/// What an export adds to the name of its `path` for the folder it also writes beside it: the audio
+/// and the mixdown of an AAF, the audio files of an OMF. With the write root itself as `path` that
+/// folder is a sibling of the root, outside it.
+fn derived_folder_suffix(id: &str) -> Option<&'static str> {
+    match id {
+        "file.exportAaf" => Some(" Media"),
+        "file.exportOmf" => Some(" Audio Files"),
+        _ => None,
+    }
+}
+
+/// `<parent of path>/<stem of path><suffix>`, named as the engine names it. `None` when `path` has
+/// no parent or stem to take, which `check` of `path` itself already refuses.
+fn folder_beside(path: &str, suffix: &str) -> Option<String> {
+    let path = Path::new(path);
+    let stem = path.file_stem()?.to_str()?;
+    path.parent()?.join(format!("{stem}{suffix}")).to_str().map(str::to_string)
+}
+
+/// Flags that take a command to a folder no parameter names: the parent of the current one, or one from the
+/// history. The folder is read by the app, which is not confined, so the check can't see it.
+const GOES_ELSEWHERE: &[(&str, &str)] = &[("mediaBrowser.navigate", "up"), ("mediaBrowser.navigate", "back"), ("mediaBrowser.navigate", "forward")];
+
+/// The files an import names: under `path`, or each one under `paths`.
+fn import_paths(params: &Value) -> Vec<&Path> {
+    ["path", "paths"]
+        .iter()
+        .filter_map(|key| params.get(*key))
+        .flat_map(|v| v.as_array().map_or(vec![v], |a| a.iter().collect()))
+        .filter_map(Value::as_str)
+        .map(Path::new)
+        .collect()
+}
+
+/// Preferences that make the app write somewhere on its own later, which the roots can't see: only `false` is allowed.
+const REFUSED_PREFS: &[&str] = &["autoSave.saveCurrentProject"];
+
+/// The preference values a `prefs.set` gives: `key` with `value`, and each of `values`.
+fn prefs_given(params: &Value) -> Vec<(&str, &Value)> {
+    let mut given: Vec<(&str, &Value)> = vec![];
+    if let (Some(key), Some(value)) = (params.get("key").and_then(Value::as_str), params.get("value")) {
+        given.push((key, value));
+    }
+    if let Some(values) = params.get("values").and_then(Value::as_object) {
+        given.extend(values.iter().map(|(k, v)| (k.as_str(), v)));
+    }
+    given
+}
+
+/// Preferences that hold a folder the app writes into later. A test checks this against the settings
+/// schema, so a new one can't be left out.
+const FOLDER_PREFS: &[&str] = &["mediaCache.location", "mediaCache.databaseLocation"];
+
+/// A [`FOLDER_PREFS`] value in `prefs.set` must be empty (the default folder) or absolute. A bare name
+/// such as `cache` has no separator for [`other_paths`] to see, and the app reads it against the
+/// server's working folder, which no root covers.
+fn absolute_folder_prefs(params: &Value) -> Result<(), String> {
+    for (key, value) in prefs_given(params) {
+        if REFUSED_PREFS.contains(&key) && value != &Value::Bool(false) {
+            return Err(format!("`prefs.set`: `{key}` stays off while file access is confined: the app saves its open project in place"));
+        }
+    }
+    for (key, value) in prefs_given(params).into_iter().filter(|(k, _)| FOLDER_PREFS.contains(k)) {
+        match value {
+            Value::Null => {}
+            Value::String(text) if text.trim().is_empty() || Path::new(text.trim()).is_absolute() => {}
+            _ => return Err(format!("`prefs.set`: `{key}` must be an absolute folder, or empty, while file access is confined")),
+        }
+    }
+    Ok(())
+}
+
+/// How many links [`refuse_other_hosts`] follows on the way to one path, as a file system would.
+const MAX_LINKS: usize = 40;
 
 /// How many files and folders one write looks at for links: unchecked ones could hold a link out,
 /// so past this the write is refused.
@@ -345,6 +460,7 @@ const WRITES: &[(&str, &[&str])] = &[
     ("file.projectSettings.scratchDisks", &["captured", "videoPreviews", "audioPreviews", "autoSave"]),
     ("markers.exportCsv", &["path"]),
     ("lut.export", &["path"]),
+    ("lumetri.exportCube", &["path"]),
     ("captions.export", &["path"]),
     ("graphics.template.export", &["path"]),
     ("graphics.template.thumbnail", &["path"]),
@@ -477,19 +593,25 @@ const TEXT_KEYS: &[&str] =
     &["text", "name", "comment", "description", "title", "label", "author", "query", "value", "values", "logNote", "note", "notes", "category"];
 
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
-/// existing folder's links followed and the rest appended.
-fn resolve(path: &str) -> Result<PathBuf, String> {
+/// existing folder's links followed and the rest appended. A server, device or volume that `root`
+/// doesn't stand on is refused first, before any file call ([`refuse_other_host`]).
+fn resolve(path: &str, root: &Path) -> Result<PathBuf, String> {
     if path.is_empty() {
         return Err("automation path rejected: path is empty".into());
     }
+    // A server or device is refused by name before anything else, even when no file is named.
+    refuse_other_host(Path::new(path), path, root)?;
     if !Path::new(path).is_absolute() {
         return Err(format!("automation path rejected: give an absolute path: {path}"));
     }
     // Checked as given: making `…\NUL` absolute gives the device path `\\.\NUL` on Windows.
-    if cfg!(windows) && Path::new(path).components().any(|c| matches!(c, Component::Normal(n) if is_device_name(&n.to_string_lossy()))) {
+    if cfg!(windows) && Path::new(path).components().any(|c| matches!(c, Component::Normal(n) if n.to_str().is_some_and(is_device_name))) {
         return Err(format!("automation path rejected: reserved device names are not allowed: {path}"));
     }
     let absolute = std::path::absolute(path).map_err(|e| format!("automation path rejected: cannot resolve {path}: {e}"))?;
+    if cfg!(windows) {
+        refuse_other_hosts(&absolute, path, root)?;
+    }
     // The names below the nearest existing folder, last first.
     let mut missing: Vec<OsString> = vec![];
     let mut at = absolute.as_path();
@@ -522,6 +644,87 @@ fn resolve(path: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// What a Windows path's prefix reaches besides a drive, in one spelling however it is written: the
+/// server and share of `\\server\share` or `\\?\UNC\server\share`, a `\\.\` device, or a `\\?\`
+/// name such as a volume. `None` for a drive, and for every path on other systems, which have no
+/// prefix. Windows ignores the case of servers and shares, so these are compared without it; this
+/// only decides who may be asked, and [`inside`] still compares the real path exactly.
+fn remote_prefix(path: &Path) -> Option<(&'static str, OsString, OsString)> {
+    let Some(Component::Prefix(prefix)) = path.components().next() else { return None };
+    let (kind, first, second) = match prefix.kind() {
+        Prefix::Disk(_) | Prefix::VerbatimDisk(_) => return None,
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => ("share", server, share),
+        Prefix::DeviceNS(name) => ("device", name, std::ffi::OsStr::new("")),
+        Prefix::Verbatim(name) => ("volume", name, std::ffi::OsStr::new("")),
+    };
+    Some((kind, first.to_ascii_lowercase(), second.to_ascii_lowercase()))
+}
+
+/// `Err`, naming the prefix, when `path` starts on a server, device or volume that `root` doesn't
+/// stand on. It calls no file function: even a look at such a path contacts that host and offers it
+/// this user's credentials. `given` is what the agent asked for, for the message.
+fn refuse_other_host(path: &Path, given: &str, root: &Path) -> Result<(), String> {
+    let Some(prefix) = remote_prefix(path) else { return Ok(()) };
+    if remote_prefix(root).as_ref() == Some(&prefix) {
+        return Ok(());
+    }
+    let shown = path.components().next().map_or_else(|| given.to_string(), |c| Path::new(c.as_os_str()).display().to_string());
+    Err(format!("automation path rejected: {shown} is a network or device path that no root stands on, so it isn't opened: {given}"))
+}
+
+/// [`refuse_other_host`] for `path` and for every link on the way to it, taken from the top one at
+/// a time, since following a link to a share is what contacts it. Only folders already passed are
+/// looked at, so nothing is asked of a host before it is refused. What can't be looked at is left
+/// to [`resolve`], which refuses what it can't resolve.
+fn refuse_other_hosts(path: &Path, given: &str, root: &Path) -> Result<(), String> {
+    let mut at = path.to_path_buf();
+    for _ in 0..=MAX_LINKS {
+        refuse_other_host(&at, given, root)?;
+        match first_link_replaced(&at, given)? {
+            Some(next) => at = next,
+            None => return Ok(()),
+        }
+    }
+    Err(format!("automation path rejected: over {MAX_LINKS} links on the way to {given}"))
+}
+
+/// `at` with the first link on the way to it (from the top) replaced by what it points to, or `None`
+/// when no link is there to read. A target that can't be checked from its text is refused: one in the
+/// NT namespace, one that isn't text, and one that goes down a name and back up (`a\..\b`), since
+/// `a` may itself be a link that the text hides and the file system follows.
+fn first_link_replaced(at: &Path, given: &str) -> Result<Option<PathBuf>, String> {
+    let names: Vec<Component> = at.components().collect();
+    let mut so_far = PathBuf::new();
+    for (i, name) in names.iter().enumerate() {
+        so_far.push(name);
+        if !matches!(name, Component::Normal(_)) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&so_far) else { return Ok(None) };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let target = std::fs::read_link(&so_far).map_err(|e| format!("automation path rejected: cannot read the link {}: {e}", so_far.display()))?;
+        let refuse = |why: &str| Err(format!("automation path rejected: the link {} {why}: {given}", so_far.display()));
+        if target.to_str().is_none_or(|t| t.starts_with(r"\??\")) {
+            return refuse("leads into the NT namespace or has a target that isn't text");
+        }
+        let mut down = false;
+        for part in target.components() {
+            match part {
+                Component::Normal(_) => down = true,
+                Component::ParentDir if down => return refuse("goes down a name and back up, so what it reaches can't be read from its text"),
+                _ => {}
+            }
+        }
+        // A relative target stands in the link's folder, and an absolute one replaces it all.
+        let mut next = so_far.parent().map_or_else(PathBuf::new, Path::to_path_buf).join(target);
+        next.extend(&names[i + 1..]);
+        return std::path::absolute(&next).map(Some).map_err(|e| format!("automation path rejected: cannot resolve {given}: {e}"));
+    }
+    Ok(None)
+}
+
 /// Is `path` (resolved) the root or inside it, component by component?
 fn inside(path: &Path, root: &Path) -> bool {
     let mut path = path.components();
@@ -530,7 +733,7 @@ fn inside(path: &Path, root: &Path) -> bool {
 
 /// A canonical path without Windows' `\\?\` (or `\\?\UNC\`) prefix, for people.
 fn plain(p: PathBuf) -> PathBuf {
-    let s = p.as_os_str().to_string_lossy();
+    let Some(s) = p.to_str() else { return p };
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
     }
@@ -603,12 +806,12 @@ fn other_paths(params: &Value, skip: &[&str], every: bool, out: &mut Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
     use serde_json::json;
 
     /// A fresh folder holding `in` (read root), `out` (write root) and `outside`.
-    fn folders(name: &str) -> (PathBuf, AutomationRoots) {
-        let base = std::env::temp_dir().join(format!("fc-roots-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+    fn folders(name: &str) -> (Scratch, AutomationRoots) {
+        let base = Scratch::new(&format!("roots-{name}"));
         for d in ["in/sub", "out", "outside", "in2"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
@@ -618,10 +821,12 @@ mod tests {
         (base, roots)
     }
 
+    /// `p` as the text a command would be given.
     fn s(p: PathBuf) -> String {
         p.to_string_lossy().into_owned()
     }
 
+    /// Each root allows its own kind of access inside it and nothing outside.
     #[test]
     fn paths_inside_the_roots_pass_and_others_dont() {
         let (base, roots) = folders("inside");
@@ -634,15 +839,14 @@ mod tests {
         // Read and write access are separate.
         assert!(roots.check(&s(base.join("in/a.cube")), Access::Write).unwrap_err().contains("outside the write root"));
         assert!(roots.check(&s(base.join("out/x.png")), Access::Read).unwrap_err().contains("outside the read root"));
-        let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Roots compare whole components, so `/work2` is not inside `/work`.
     #[test]
     fn a_sibling_with_the_same_prefix_is_outside() {
         let (base, roots) = folders("prefix");
         assert!(roots.check(&s(base.join("in2/a.cube")), Access::Read).is_err(), "in2 is not inside in");
         assert!(roots.check(&format!("{}2/c.cube", s(base.join("in"))), Access::Read).is_err());
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// `..` is followed where it exists and refused below a folder that doesn't.
@@ -658,17 +862,16 @@ mod tests {
         let e = roots.check(&missing, Access::Write).unwrap_err();
         // Windows resolves `..` by name first (so does opening the file there): then it's outside.
         assert!(e.contains("`..` below a folder that doesn't exist") || e.contains("outside the write root"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A relative path is refused rather than checked against this process's working folder.
     #[test]
     fn relative_paths_are_refused() {
-        let (base, roots) = folders("relative");
+        let (_base, roots) = folders("relative");
         for p in ["a.cube", "../a.cube", "~/a.cube", "file:///etc/passwd"] {
             assert!(roots.check(p, Access::Read).unwrap_err().contains("give an absolute path"), "{p}");
         }
         assert_eq!(roots.check("", Access::Read).unwrap_err(), "automation path rejected: path is empty");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// A root must be an existing folder; no roots at all confines nothing, and one root grants only its own access.
@@ -689,7 +892,6 @@ mod tests {
         let e = read_only.check(&s(base.join("in/x.cube")), Access::Write).unwrap_err();
         assert!(e.contains("no write root is in force"), "{e}");
         assert!(AutomationRoots::new(None, Some(&base.join("out").to_string_lossy())).unwrap().unwrap().describe().contains("read root none"));
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// A link at `link` leading to `target`, if this system lets us make one.
@@ -709,7 +911,6 @@ mod tests {
         std::fs::write(base.join("outside/old.mp4"), b"old").unwrap();
         if !made(&base.join("outside/old.mp4"), &base.join("out/result.mp4")) {
             eprintln!("skipped: symbolic links can't be made here");
-            let _ = std::fs::remove_dir_all(base);
             return;
         }
         let out = base.join("out");
@@ -752,7 +953,6 @@ mod tests {
         assert!(roots.check_command("file.exportMedia", &params).unwrap_err().contains("a link that leads nowhere"));
         // A folder that doesn't exist yet holds nothing.
         assert_eq!(roots.check_command("file.exportMedia", &json!({"path": s(out.join("new/deeper/result"))})), Ok(()));
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// A write looks at so many files for links and no more, and what it hasn't seen can't pass.
@@ -767,7 +967,6 @@ mod tests {
         assert_eq!(roots.scan_write_target(&target, 3), Ok(()));
         let e = roots.scan_write_target(&target, 2).unwrap_err();
         assert!(e.contains("write to a smaller folder"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// A link whose name can't be written as text can't be checked, so it refuses the write.
@@ -781,12 +980,10 @@ mod tests {
         // macOS file systems refuse such names: nothing to test there.
         if !made(&base.join("outside/old.mp4"), &link) {
             eprintln!("skipped: this file system refuses such names");
-            let _ = std::fs::remove_dir_all(base);
             return;
         }
         let e = roots.check_command("file.exportMedia", &json!({"path": s(out.join("result"))})).unwrap_err();
         assert!(e.contains("isn't text"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// Links out of a root are outside it, dangling ones are refused, and links that stay inside pass.
@@ -796,7 +993,6 @@ mod tests {
         // Windows needs Developer Mode or elevation to make links: nothing to test without them.
         if !made(&base.join("outside/secret.cube"), &base.join("in/leak.cube")) {
             eprintln!("skipped: symbolic links can't be made here");
-            let _ = std::fs::remove_dir_all(base);
             return;
         }
         assert!(roots.check(&s(base.join("in/leak.cube")), Access::Read).unwrap_err().contains("outside the read root"), "a file link out");
@@ -813,9 +1009,9 @@ mod tests {
         assert!(made(&base.join("in"), &base.join("in-link")));
         let linked = AutomationRoots::new(Some(&base.join("in-link").to_string_lossy()), None).unwrap().unwrap();
         assert_eq!(linked.check(&s(base.join("in/a.cube")), Access::Read), Ok(()));
-        let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Another case of a name that exists matches it, and device names are refused.
     #[cfg(windows)]
     #[test]
     fn windows_ignores_case_and_refuses_devices() {
@@ -827,7 +1023,142 @@ mod tests {
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(&s(base.join("out/com1.txt")), Access::Write).is_err());
         assert_eq!(roots.check(&s(base.join("out/console.txt")), Access::Write), Ok(()));
-        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A server, device or volume that no root stands on is refused by name, however it is spelled,
+    /// and never reaches `canonicalize`, whose error would say `cannot resolve`. Needs no network:
+    /// the addresses are reserved for documentation, and a call that reached one would hang first.
+    #[cfg(windows)]
+    #[test]
+    fn network_paths_are_refused_before_any_file_call() {
+        let (_base, roots) = folders("network");
+        for (path, prefix) in [
+            (r"\\203.0.113.5\s\x.mp4", r"\\203.0.113.5\s"),
+            ("//203.0.113.5/s/x.mp4", "//203.0.113.5/s"),
+            (r"\\?\UNC\203.0.113.5\s\x.mp4", r"\\?\UNC\203.0.113.5\s"),
+            (r"\\host.invalid@SSL\s\x.mp4", r"\\host.invalid@SSL\s"),
+            (r"\\host.invalid@SSL@8443\DavWWWRoot\x.mp4", r"\\host.invalid@SSL@8443\DavWWWRoot"),
+            (r"\\.\COM1\x", r"\\.\COM1"),
+            (r"\\203.0.113.5\s", r"\\203.0.113.5\s"),
+            (r"\\.\UNC\203.0.113.5\s\x.mp4", r"\\.\UNC"),
+            (r"\\?\GLOBALROOT\Device\Mup\203.0.113.5\s\x.mp4", r"\\?\GLOBALROOT"),
+            (r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x.mp4", r"\\?\Volume{00000000-0000-0000-0000-000000000000}"),
+        ] {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check(path, access).unwrap_err();
+                assert!(e.contains(prefix), "{path}: the refusal names the prefix: {e}");
+                assert!(e.contains("network or device path") && !e.contains("cannot resolve"), "{path}: {e}");
+            }
+        }
+    }
+
+    /// A share is used only when the root stands on the same server and share, in either spelling,
+    /// and a drive is never held to this: the rest of the check decides those.
+    #[cfg(windows)]
+    #[test]
+    fn a_root_on_a_share_allows_that_share_alone() {
+        let root = Path::new(r"\\?\UNC\Server\Share\root");
+        for same in [r"\\server\share\root\x.mp4", r"\\?\UNC\SERVER\SHARE\x.mp4", "//server/share/x.mp4"] {
+            assert_eq!(refuse_other_host(Path::new(same), same, root), Ok(()), "{same}");
+        }
+        for other in [r"\\server\other\x.mp4", r"\\other\share\x.mp4", r"\\server@SSL\share\x.mp4", r"\\.\server\share"] {
+            assert!(refuse_other_host(Path::new(other), other, root).is_err(), "{other}");
+        }
+        for drive in [r"C:\x.mp4", r"\\?\C:\x.mp4"] {
+            assert_eq!(refuse_other_host(Path::new(drive), drive, Path::new(r"D:\root")), Ok(()), "{drive}");
+        }
+    }
+
+    /// A link to a share is read, not followed, wherever it stands on the way to a path, also
+    /// through another link, and when a write looks around for links. Skipped where links can't be
+    /// made.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_share_is_refused_without_following_it() {
+        let (base, roots) = folders("link-share");
+        let share = Path::new(r"\\203.0.113.5\s");
+        let link = |name: &str, target: &Path| std::os::windows::fs::symlink_dir(target, base.join(name)).is_ok();
+        if !link("in/share", share) || !link("in/hop", Path::new("share")) || !link("out/share", share) {
+            // On a CI runner the links must be possible, or this proves nothing and passes unseen.
+            assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+            eprintln!("skipped: links can't be made here");
+            return;
+        }
+        for path in ["in/share", "in/share/x.mp4", "in/hop/x.mp4"] {
+            let e = roots.check(&s(base.join(path)), Access::Read).unwrap_err();
+            assert!(e.contains(r"203.0.113.5\s") && !e.contains("cannot resolve"), "{path}: {e}");
+        }
+        let e = roots.check_write_target(&s(base.join("out/x.mp4"))).unwrap_err();
+        assert!(e.contains(r"203.0.113.5\s") && !e.contains("cannot list"), "{e}");
+    }
+
+    /// `COM1:` and `NUL:x`, as well as a bare device name, are refused before a file call, and a
+    /// plain name holding such a word isn't.
+    #[cfg(windows)]
+    #[test]
+    fn device_names_with_a_stream_are_refused() {
+        let (base, roots) = folders("device-stream");
+        for name in ["COM1:", "NUL:x", "nul", "COM¹.mp4", "CONIN$"] {
+            let e = roots.check(&s(base.join("out").join(name)), Access::Write).unwrap_err();
+            assert!(e.contains("reserved device names"), "{name}: {e}");
+        }
+        assert_eq!(roots.check(&s(base.join("out/null.mp4")), Access::Write), Ok(()));
+    }
+
+    /// Links that lead back into each other are given up on after [`MAX_LINKS`], not followed for ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_loop_of_links_is_given_up_on() {
+        let (base, _roots) = folders("link-loop");
+        let (a, b) = (base.join("in/a"), base.join("in/b"));
+        if !made(&b, &a) || !made(&a, &b) {
+            // On a CI runner the links must be possible, or this proves nothing and passes unseen.
+            assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+            eprintln!("skipped: links can't be made here");
+            return;
+        }
+        let given = s(a.join("x.mp4"));
+        let e = refuse_other_hosts(Path::new(&given), &given, &base).unwrap_err();
+        assert!(e.contains("links on the way to"), "{e}");
+    }
+
+    /// A link standing outside the write root that leads into it: the file is made beside the link, outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_outside_the_write_root_leading_into_it_is_refused() {
+        let (base, roots) = folders("link-in");
+        let real = base.join("out/real.mp4");
+        std::fs::write(&real, "x").unwrap();
+        let link = base.join("outside/result");
+        if !made(&real, &link) {
+            assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+            eprintln!("skipped: links can't be made here");
+            return;
+        }
+        let e = roots.check_write_target(&s(link)).unwrap_err();
+        assert!(e.contains("outside the write root"), "{e}");
+        assert_eq!(roots.check_write_target(&s(real)), Ok(()));
+    }
+
+    /// A link whose target goes down a name and back up can't be read from its text, so it is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_goes_down_and_back_up_is_refused() {
+        let (base, _roots) = folders("link-updown");
+        let link = base.join("in/l");
+        if !made(Path::new("hop/../x"), &link) {
+            // On a CI runner the links must be possible, or this proves nothing and passes unseen.
+            assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+            eprintln!("skipped: links can't be made here");
+            return;
+        }
+        let given = s(link.join("x.mp4"));
+        let e = refuse_other_hosts(Path::new(&given), &given, &base).unwrap_err();
+        assert!(e.contains("goes down a name and back up"), "{e}");
+        let plain_up = base.join("in/m");
+        assert!(made(Path::new("../outside"), &plain_up));
+        let given = s(plain_up.join("secret.cube"));
+        assert_eq!(refuse_other_hosts(Path::new(&given), &given, &base), Ok(()), "a way up first is fine");
     }
 
     /// A folder can be set to tell case apart, and then `Root` is not `root`.
@@ -840,7 +1171,6 @@ mod tests {
         let set = std::process::Command::new("fsutil").args(["file", "setCaseSensitiveInfo"]).arg(&parent).arg("enable").output();
         if !set.is_ok_and(|o| o.status.success()) {
             eprintln!("skipped: can't set a folder to tell case apart here");
-            let _ = std::fs::remove_dir_all(base);
             return;
         }
         std::fs::create_dir(parent.join("root")).unwrap();
@@ -849,7 +1179,6 @@ mod tests {
         assert_eq!(roots.check(&s(parent.join("root/x.png")), Access::Write), Ok(()));
         let e = roots.check(&s(parent.join("Root/x.png")), Access::Write).unwrap_err();
         assert!(e.contains("outside the write root"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// Importing on the bridge takes media files: the app would add a preset file to its library and
@@ -882,6 +1211,106 @@ mod tests {
         }
     }
 
+    /// A list in place of a single path, or an empty list of paths, names no checked place: the command
+    /// would pick its own, so both are refused.
+    #[test]
+    fn a_list_that_names_no_checked_place_is_refused() {
+        let (base, roots) = folders("lists");
+        let inside = s(base.join("out/a.fcproj"));
+        for params in [json!({"path": []}), json!({"path": [inside.clone()]}), json!({"path": {"x": inside.clone()}})] {
+            let e = roots.check_command("file.save", &params).unwrap_err();
+            assert!(e.contains("must be a file path"), "{params}: {e}");
+        }
+        let e = roots.check_command("file.import", &json!({"paths": []})).unwrap_err();
+        assert!(e.contains("at least one file"), "{e}");
+        let e = roots.check_command("file.import", &json!({"paths": s(base.join("in/a.cube"))})).unwrap_err();
+        assert!(e.contains("list of file paths"), "{e}");
+        assert_eq!(roots.check_command("file.save", &json!({"path": inside})), Ok(()));
+        assert_eq!(roots.check_command("file.import", &json!({"paths": [s(base.join("in/a.cube"))]})), Ok(()));
+    }
+
+    /// With the write root itself as `path`, an AAF or OMF export writes a folder beside the root.
+    /// Both backends refuse it: the engine does, headless, and the command check does, so the bridge.
+    #[test]
+    fn a_folder_derived_beside_the_write_root_is_refused() {
+        let (base, roots) = folders("derived-folder");
+        let out = base.join("out");
+        for id in ["file.exportAaf", "file.exportOmf"] {
+            for given in [s(out.clone()), format!("{}/", s(out.clone()))] {
+                let e = roots.check_command(id, &json!({"path": given})).unwrap_err();
+                assert!(e.contains("outside the write root") && e.contains("also writes a folder"), "{id} {given}: {e}");
+            }
+            assert_eq!(roots.check_command(id, &json!({"path": s(out.join("edit.aaf"))})), Ok(()), "{id}: a file inside the root is fine");
+        }
+        let as_path = |p: Option<String>| p.map(PathBuf::from);
+        assert_eq!(as_path(folder_beside("/w/out", " Media")), Some(PathBuf::from("/w/out Media")));
+        assert_eq!(as_path(folder_beside("/w/out/edit.aaf", " Media")), Some(PathBuf::from("/w/out/edit Media")));
+        assert_eq!(folder_beside("/", " Media"), None);
+    }
+
+    /// A media-named folder is not a media file, and the app's autosave of the open project stays off.
+    #[test]
+    fn the_bridge_takes_files_and_leaves_autosave_of_the_project_off() {
+        let (base, roots) = folders("bridge-media");
+        let folder = base.join("in/batch.mp4");
+        std::fs::create_dir(&folder).unwrap();
+        let file = base.join("in/clip.mp4");
+        std::fs::write(&file, "x").unwrap();
+        let named = |p: &Path| json!({"paths": [s(p.to_path_buf())]});
+        assert_eq!(roots.check_command("file.import", &named(&folder)), Ok(()), "inside the root, so the roots pass it");
+        assert_eq!(AutomationRoots::check_bridge_command("file.import", &named(&folder)), Ok(()), "the extension is right");
+        let e = AutomationRoots::check_bridge_media_files("file.import", &named(&folder)).unwrap_err();
+        assert!(e.contains("is not a file"), "{e}");
+        assert_eq!(AutomationRoots::check_bridge_media_files("file.import", &named(&file)), Ok(()));
+        assert!(AutomationRoots::check_bridge_media_files("file.import", &json!({"paths": [s(base.join("in/none.mp4"))]})).is_err());
+        for params in [json!({"key": "autoSave.saveCurrentProject", "value": true}), json!({"values": {"autoSave.saveCurrentProject": "yes"}})] {
+            let e = roots.check_command("prefs.set", &params).unwrap_err();
+            assert!(e.contains("stays off while file access is confined"), "{params}: {e}");
+        }
+        assert_eq!(roots.check_command("prefs.set", &json!({"key": "autoSave.saveCurrentProject", "value": false})), Ok(()));
+    }
+
+    /// A folder preference given as a bare name would be read against the server's working folder.
+    #[test]
+    fn a_folder_preference_must_be_absolute_or_empty() {
+        let (base, roots) = folders("folder-prefs");
+        for key in FOLDER_PREFS {
+            for params in [json!({"key": key, "value": "cache"}), json!({"values": {(*key): "cache"}}), json!({"key": key, "value": 7})] {
+                let e = roots.check_command("prefs.set", &params).unwrap_err();
+                assert!(e.contains("must be an absolute folder"), "{params}: {e}");
+            }
+            assert_eq!(roots.check_command("prefs.set", &json!({"key": key, "value": ""})), Ok(()), "{key}: empty is the default");
+            assert_eq!(roots.check_command("prefs.set", &json!({"key": key, "value": s(base.join("out/cache"))})), Ok(()), "{key}");
+        }
+        assert_eq!(roots.check_command("prefs.set", &json!({"key": "autoSave.maxVersions", "value": 5})), Ok(()));
+    }
+
+    /// [`FOLDER_PREFS`] names every preference the settings schema types as a path.
+    #[test]
+    fn folder_prefs_match_the_settings_schema() {
+        /// The `key` of every field in `v` whose `kind` is a path.
+        fn paths(v: &Value, out: &mut Vec<String>) {
+            match v {
+                Value::Object(o) => {
+                    if let (Some(Value::String(k)), Some("path")) = (o.get("key"), o.get("kind").and_then(|k| k.get("type")).and_then(Value::as_str)) {
+                        out.push(k.clone());
+                    }
+                    o.values().for_each(|x| paths(x, out));
+                }
+                Value::Array(a) => a.iter().for_each(|x| paths(x, out)),
+                _ => {}
+            }
+        }
+        let mut session = filmcraft_engine::Session::default();
+        let schema = session.execute("prefs.schema", json!({})).unwrap();
+        let mut found = vec![];
+        paths(&schema, &mut found);
+        found.sort();
+        let mut known: Vec<String> = FOLDER_PREFS.iter().map(|k| k.to_string()).collect();
+        known.sort();
+        assert_eq!(found, known);
+    }
+
     /// Named parameters are held to the command's own root, and paths in unnamed keys are caught.
     #[test]
     fn commands_check_their_file_parameters() {
@@ -906,9 +1335,9 @@ mod tests {
         // A non-string in a path parameter is refused in so many words.
         let e = roots.check_command("file.import", &json!({"paths": [7]})).unwrap_err();
         assert!(e.contains("`file.import`"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Preferences naming a folder the app writes into later are held to the write root.
     #[test]
     fn preferences_are_held_to_the_write_root() {
         let (base, roots) = folders("prefs");
@@ -918,7 +1347,6 @@ mod tests {
         // Scratch disks name folders the app writes into later.
         let e = roots.check_command("file.projectSettings.scratchDisks", &json!({"captured": s(base.join("outside"))})).unwrap_err();
         assert!(e.contains("outside the write root"), "{e}");
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// Every command in the engine's registry is classified exactly once, so a new one fails here
@@ -974,18 +1402,16 @@ mod tests {
             let e = roots.check_command("no.suchCommand", &params).unwrap_err();
             assert!(e.contains("isn't known to stay inside the roots"), "{e}");
         }
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// A refused command names its reason; `media.makeOffline` is refused only when it would delete.
     #[test]
     fn a_refused_command_says_why() {
-        let (base, roots) = folders("refused");
+        let (_base, roots) = folders("refused");
         let e = roots.check_command("clip.updateMetadata", &json!({})).unwrap_err();
         assert!(e.contains("not available while file access is confined") && e.contains("sidecar"), "{e}");
         assert!(roots.check_command("media.makeOffline", &json!({"deleteFiles": true})).is_err());
         assert_eq!(roots.check_command("media.makeOffline", &json!({"deleteFiles": false})), Ok(()));
-        let _ = std::fs::remove_dir_all(base);
     }
 
     /// The commands the review named: the take's folder is held to the write root, and leaving it
@@ -1015,8 +1441,13 @@ mod tests {
         assert_eq!(roots.check_command("audio.voiceover.stop", &json!({"discard": true})), Ok(()), "a discarded take writes nothing");
         // Listing the current folder, or walking out of the one given, is a read of a place not named.
         assert!(roots.check_command("mediaBrowser.list", &json!({})).unwrap_err().contains("needs `path`"));
-        assert!(roots.check_command("mediaBrowser.navigate", &json!({"up": true})).unwrap_err().contains("needs `path`"));
-        let _ = std::fs::remove_dir_all(base);
+        assert!(roots.check_command("mediaBrowser.navigate", &json!({"up": true})).unwrap_err().contains("not available"));
+        let inside = s(base.join("in"));
+        for flag in ["up", "back", "forward"] {
+            let e = roots.check_command("mediaBrowser.navigate", &json!({"path": inside.clone(), (flag): true})).unwrap_err();
+            assert!(e.contains(&format!("`{flag}`")) && e.contains("goes to a folder that no path names"), "{flag}: {e}");
+            assert_eq!(roots.check_command("mediaBrowser.navigate", &json!({"path": inside.clone(), (flag): false})), Ok(()), "{flag}: false is no flag");
+        }
     }
 
     /// Path-like keys are checked with relative values too; text is left alone.
@@ -1036,8 +1467,7 @@ mod tests {
         }
         assert!(roots.check_command("playhead.set", &json!({"a": deep})).unwrap_err().contains("nested too deeply"));
         let e = roots.check_command("prefs.set", &json!({"key": "mediaCache.location", "value": "../cache"})).unwrap_err();
-        assert!(e.contains("give an absolute path"), "{e}");
+        assert!(e.contains("must be an absolute folder"), "{e}");
         assert_eq!(roots.check_command("prefs.set", &json!({"key": "theme", "value": "dark"})), Ok(()));
-        let _ = std::fs::remove_dir_all(base);
     }
 }

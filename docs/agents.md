@@ -27,6 +27,17 @@ with neither flag, nothing is confined. While confined:
   must land inside the root, or the tool returns an error naming the root so the agent can correct
   itself. The named file parameters, any string under a path-like key, and any other absolute path
   in the parameters are all checked.
+- On Windows, a network path (`\\host\share\x`, `\\?\UNC\…`, `\\host@SSL\…`), a `\\.\` device or a
+  `\\?\` volume is refused before any file call, because even looking at it would contact that host
+  and send it your Windows credentials. So is a link leading to one, and a reserved device name such
+  as `NUL` or `COM1:`. The one exception is a share that a root itself stands on: when a root is
+  `\\host\share\media`, paths on that server and share (in any spelling or case) work, and no other
+  network path does.
+- `mediaBrowser.navigate` with `up`, `back` or `forward` is refused: they go to a folder that no path
+  names. Give the folder as `path`.
+- `file.exportAaf` and `file.exportOmf` also write a folder named after `path` with ` Media` or
+  ` Audio Files` added, beside it. That folder is checked too, so with the write root itself as `path`
+  the export is refused: give a file name inside the root.
 - Every command has to be known to stay inside the roots. One that isn't is refused, and so are
   commands that can't be kept inside them, each with its reason: render previews, proxies, Project
   Manager, XMP sidecars, ingest, recovery, and adding to the app's libraries.
@@ -48,10 +59,25 @@ with neither flag, nothing is confined. While confined:
   It refuses `file.revert` too, which reads the app's project from wherever it's saved.
 - Bridge mode refuses every command that names files while the app's project has ingest on, which
   would copy what is imported to a folder of its own. Turn ingest off in the app's Project Settings.
-- Bridge mode imports media files only. The app would add a preset file to its library, write a
+  The server checks that and then sends the command, one command at a time. Another client of the
+  same app, or the person at its keyboard, can still turn ingest on in between, so confine an app that
+  nobody else is driving.
+- A headless session skips ingest while confined: `file.import` still adds the files, without copying
+  or transcoding them, and its result says so in `ingest.skipped`. An import is not a media copy.
+- Folder preferences (`mediaCache.location`, `mediaCache.databaseLocation`) must be given as an
+  absolute folder, or empty for the default one; a bare name would be read against the server's
+  working folder.
+- `prefs.set` with `autoSave.saveCurrentProject` on is refused: the app would write its open project to
+  wherever it is saved. Switch it off in the app's settings first.
+- Bridge mode imports media files only: each named path must be a file, not a folder named like one. The app would add a preset file to its library, write a
   document's audio beside it, and take all that a folder holds. `captions.import` still reads
   captions, `file.importAaf` still imports a document inside both roots, and a headless session
   can import documents.
+
+A path is checked and opened a moment later. Another program on the same computer that changes a
+folder in between can redirect the open outside the root: the roots keep an agent to the files it
+was given, and don't stop other local programs. On a shared server, run the agent under an account
+that other users can't write to, and put both roots in folders other users can't change.
 
 Not confined: the `--project` file the server was started with (the footage it names is), temporary
 files, the settings and libraries the app keeps in its data folder, and the desktop app's own

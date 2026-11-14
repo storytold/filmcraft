@@ -1,5 +1,6 @@
 use super::*;
 use crate::AutomationError;
+use crate::scratch::Scratch;
 
 #[test]
 fn render_scale_zero_means_no_limit() {
@@ -210,8 +211,7 @@ async fn modern_clients_get_result_type_and_cache_hints() {
 /// it, deletes the partial file and sends no response.
 #[tokio::test(flavor = "multi_thread")]
 async fn export_progress_and_cancel() {
-    let dir = std::env::temp_dir().join(format!("filmcraft-mcp-progress-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("mcp-progress");
     let mut c = Client::start(demo());
     c.init().await;
     let export = |id: u64, name: &str, token: Option<Value>, seconds: f64| {
@@ -313,7 +313,6 @@ async fn export_progress_and_cancel() {
             break;
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A command that panicked used to poison the session lock, and every later call failed with
@@ -508,8 +507,7 @@ async fn failed_output_stops_the_reader() {
 /// write root is refused with an error the agent can act on, and one inside passes.
 #[tokio::test(flavor = "multi_thread")]
 async fn confined_server_rejects_paths_outside_the_roots() {
-    let base = std::env::temp_dir().join(format!("fc-mcp-roots-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = Scratch::new("mcp-roots");
     for d in ["in", "out", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
@@ -528,16 +526,13 @@ async fn confined_server_rejects_paths_outside_the_roots() {
     // Inside the root the check passes: what the engine then says is about the file, not its place.
     let e = m.run("file.mediaPropertiesFile", json!({"path": base.join("in/clip.wav").to_string_lossy()})).await.unwrap_err();
     assert!(!e.to_string().contains("automation path rejected"), "{e}");
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// #985: while confined, the tools that drive the live app's input are refused (they could
 /// drive its file dialogs past the roots), and `initialize` names the confinement.
 #[tokio::test(flavor = "multi_thread")]
 async fn driving_the_ui_is_refused_while_confined() {
-    let base = std::env::temp_dir().join(format!("fc-mcp-roots-ui-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
+    let base = Scratch::new("mcp-roots-ui");
     let roots = AutomationRoots::new(Some(&base.to_string_lossy()), None).unwrap().unwrap();
     let plain = FilmcraftMcp::headless(Session::default());
     assert!(!plain.get_info().instructions.unwrap().contains("confined"), "unconfined by default");
@@ -550,13 +545,12 @@ async fn driving_the_ui_is_refused_while_confined() {
     assert!(text.contains("not available while file access is confined"), "{text}");
     let r = m.ui_control(Parameters(ControlParams { method: "ui.set".into(), params: None })).await.unwrap();
     assert_eq!(r.is_error, Some(true), "{r:?}");
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// A fresh `in` (read root), `out` (write root) and `outside`, with an all-red PNG in `outside`.
-fn roots_base(name: &str) -> (std::path::PathBuf, Arc<AutomationRoots>) {
-    let base = std::env::temp_dir().join(format!("fc-mcp-roots-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+/// The folder goes when the guard does, also if the test fails.
+fn roots_base(name: &str) -> (Scratch, Arc<AutomationRoots>) {
+    let base = Scratch::new(&format!("mcp-roots-{name}"));
     for d in ["in", "out", "outside"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
@@ -590,7 +584,6 @@ async fn voiceover_take_is_held_to_the_write_root() {
     }
     m.run("audio.voiceover.stop", json!({"dir": base.join("out").to_string_lossy()})).await.unwrap();
     assert!(file_names(&base.join("outside")) == ["secret.png"] && file_names(&base.join("in")).is_empty());
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// #985: a project inside the read root that names footage outside it. Unconfined the footage
@@ -619,7 +612,6 @@ async fn footage_a_project_names_is_held_to_the_read_root() {
     let confined = FilmcraftMcp::headless(Session::default()).with_roots(Some(roots)).unwrap();
     confined.run("file.open", json!({"path": project})).await.unwrap();
     assert_ne!(frame(&confined, "confined.png").await[..3], [255, 0, 0], "the footage outside the read root reached the frame");
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// #985: a project's ingest settings can't copy an imported file to a folder of their own.
@@ -634,7 +626,6 @@ async fn ingest_is_skipped_while_confined() {
     let r = m.run("file.import", json!({"paths": [clip.to_string_lossy()]})).await.unwrap();
     assert_eq!(r["ingest"]["skipped"], "file access is confined", "{r}");
     assert_eq!(file_names(&base.join("outside")), ["secret.png"]);
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// #985: sources a session opened before it was confined (`--project` at start-up, say) were made
@@ -667,9 +658,9 @@ async fn sources_opened_before_confinement_are_dropped() {
         m.run("file.exportFrame", json!({"path": after.to_string_lossy(), "seconds": 0.5})).await.unwrap();
         assert_ne!(image::open(&after).unwrap().to_rgba8().get_pixel(32, 32).0[..3], [255, 0, 0], "case {n}: footage outside the read root reached the frame");
     }
-    let _ = std::fs::remove_dir_all(base);
 }
 
+/// A session holding one export job, still running while `result` is `None`.
 fn session_with_job(result: Option<Result<filmcraft_engine::export::Report, String>>) -> Session {
     let mut s = Session::default();
     s.jobs.push(filmcraft_engine::Job { id: 1, label: "export".into(), progress: Arc::default(), result: Arc::new(Mutex::new(result)) });
@@ -717,6 +708,8 @@ async fn the_bridge_refuses_commands_naming_files_unless_ingest_is_off() {
         }
     });
     let m = FilmcraftMcp::bridge(&addr).unwrap().with_roots(Some(roots)).unwrap();
+    // The bridge takes files only, so the one imported has to exist.
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 255, 0, 255])).save(base.join("in/ok.png")).unwrap();
     let import = json!({"paths": [base.join("in/ok.png").to_string_lossy()]});
     for what in ["on", "not said"] {
         let e = m.run("file.import", import.clone()).await.unwrap_err().to_string();
@@ -724,7 +717,6 @@ async fn the_bridge_refuses_commands_naming_files_unless_ingest_is_off() {
     }
     assert_eq!(m.run("project.selectAll", json!({})).await.unwrap(), Value::Null);
     assert_eq!(m.run("file.import", import).await.unwrap(), json!({"items": []}));
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// A queued export keeps its output path, and starting it doesn't check that path again.
@@ -750,7 +742,6 @@ async fn a_confined_session_can_queue_and_start_inside_the_write_root() {
     let q = base.join("out/q.mp4");
     m.run("export.queue.add", json!({"path": q.to_string_lossy(), "format": "h264", "start": true, "wait": true})).await.unwrap();
     assert!(q.exists(), "the queued export was written");
-    let _ = std::fs::remove_dir_all(base);
 }
 
 /// The app's queue can hold its user's exports to anywhere, so a confined client keeps out of it.
@@ -776,7 +767,43 @@ async fn the_bridge_refuses_the_apps_export_queue() {
     // A direct export gets past the checks, and fails only on reaching the app.
     let e = m.run("file.exportMedia", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
     assert!(!e.contains("confined"), "{e}");
-    let _ = std::fs::remove_dir_all(base);
+}
+
+/// Confined bridge commands take turns, so the ingest check and the command it lets through can't
+/// have a `file.open` sent in parallel between them. Not confined, nothing waits.
+#[tokio::test]
+async fn confined_bridge_commands_take_turns() {
+    let (_base, roots) = roots_base("bridge-turns");
+    let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots)).unwrap();
+    let held = m.confined_lock.clone().lock_owned().await;
+    let pending = {
+        let m = m.clone();
+        tokio::spawn(async move { m.run("project.inspect", json!({})).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!pending.is_finished(), "a command ran while another held its turn");
+    drop(held);
+    let e = pending.await.unwrap().unwrap_err().to_string();
+    assert!(!e.contains("outside"), "{e}");
+    let plain = FilmcraftMcp::bridge("127.0.0.1:9").unwrap();
+    let _held = plain.confined_lock.clone().lock_owned().await;
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(20), plain.run("project.inspect", json!({}))).await.is_ok(), "unconfined commands don't wait");
+}
+
+/// Over the bridge the app writes the derived folder, so the command check has to refuse it: the
+/// write root itself as `path` would put `<name> Media` and `<name> Audio Files` beside the root.
+#[tokio::test]
+async fn the_bridge_refuses_a_folder_derived_beside_the_write_root() {
+    let (base, roots) = roots_base("bridge-aaf");
+    let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots)).unwrap();
+    let root = base.join("out");
+    for id in ["file.exportAaf", "file.exportOmf"] {
+        let e = m.run(id, json!({"path": root.to_string_lossy(), "mixdownVideo": true})).await.unwrap_err().to_string();
+        assert!(e.contains("outside the write root"), "{id}: {e}");
+        // A file inside the root gets past the checks, and fails only on reaching the app.
+        let e = m.run(id, json!({"path": root.join("edit.aaf").to_string_lossy()})).await.unwrap_err().to_string();
+        assert!(!e.contains("outside the write root"), "{id}: {e}");
+    }
 }
 
 /// `file.exportAaf` with the write root itself as `path` derives `<name> Media` beside that
@@ -800,5 +827,4 @@ async fn aaf_mixdown_of_the_write_root_does_not_write_beside_it() {
     assert!(e.contains("the sequence is empty"), "{e}");
     assert!(root.join("edit Media").is_dir(), "the checked mixdown folder was not created inside the write root");
     assert!(!sibling.exists(), "the outside mixdown folder appeared after the in-root export");
-    let _ = std::fs::remove_dir_all(base);
 }

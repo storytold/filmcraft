@@ -637,6 +637,7 @@ impl Default for Session {
 }
 
 impl Session {
+    /// An untitled, empty project with nothing done yet, reading and writing through `services`.
     pub fn new(services: Arc<dyn Services>) -> Self {
         Self {
             project: Arc::new(Project::new("Untitled")),
