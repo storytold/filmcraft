@@ -32,6 +32,8 @@ pub struct SeqWord {
     pub end: Tick,
     /// The track item it is heard through and that item's media.
     pub clip: ClipId,
+    /// The sequence time that track item covers.
+    pub clip_range: TimeRange,
     pub item: ItemId,
     /// Index of the word in the media item's transcript.
     pub index: usize,
@@ -86,6 +88,7 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
                     start: a.max(it.start),
                     end: b.min(it.end()).max(a.max(it.start)),
                     clip: it.id,
+                    clip_range: it.range(),
                     item: it.item,
                     index: wi,
                     track: ti,
@@ -266,17 +269,44 @@ pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Rang
 }
 
 /// Timeline ranges removing the filler words `hits`: each word range snapped to the nearest frames
-/// (never into the neighbouring words' frames).
+/// (never into the neighbouring words' frames). A filler that spans no frame once snapped (a
+/// zero-length word, as speech recognition often gives one, or one shorter than half a frame)
+/// takes the time from the frame it starts in up to the next word's start in the same clip, as a
+/// filler with real length takes its own span; with no later word in its clip, one frame (#4622).
+/// That time stays inside its clip on whole frames, so the ripple keeps every later clip on the
+/// frame grid. One the word before it ends inside the frame of, whose next word starts in that
+/// frame, or whose clip has no whole frame around it (a clip edge inside the frame: a recorded take
+/// ends on a sample) has no time of its own and is left.
 pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: FrameRate) -> Vec<TimeRange> {
     let mut out = Vec::new();
     for h in hits {
         let (a, b) = (h.start, h.end - 1);
         let mut s = rate.snap_nearest(words[a].start);
         let mut e = rate.snap_nearest(words[b].end);
+        let next = words.get(b + 1);
+        // Spanning no frame: from the frame it starts in, so the cut holds its moment.
+        let no_frame = e <= s;
+        if no_frame {
+            // Not before its clip's first whole frame: the frame a clip edge falls in is shared.
+            let first = rate.snap(words[a].clip_range.start);
+            let first = if first < words[a].clip_range.start { first + rate.frame_duration() } else { first };
+            s = rate.snap(words[a].start).max(first);
+        }
         if a > 0 && s < words[a - 1].end {
             s = rate.snap(words[a - 1].end) + rate.frame_duration();
         }
-        if let Some(n) = words.get(b + 1)
+        if no_frame {
+            // Its moment has to be in the cut; past it, only the word before's frame holds it.
+            if s > words[a].start {
+                continue;
+            }
+            e = match next {
+                Some(n) if n.clip == words[b].clip => rate.snap(n.start),
+                _ => s + rate.frame_duration(),
+            }
+            .min(rate.snap(words[b].clip_range.end()));
+        }
+        if let Some(n) = next
             && e > n.start
         {
             e = rate.snap(n.start);
