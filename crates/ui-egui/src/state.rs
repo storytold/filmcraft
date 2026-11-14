@@ -165,9 +165,10 @@ impl PlaybackRes {
     }
 }
 
-/// Header mode (Import / Edit / Export).
+/// Header mode (Import / Edit / Export), or the Home screen (the header's Home button).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
+    Home,
     Import,
     #[default]
     Edit,
