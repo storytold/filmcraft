@@ -1092,6 +1092,39 @@ fn merge(v: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 }
 
 #[test]
+fn speed_change_keeps_clip_edges_on_frames() {
+    // V1: a [0,30), b [30,60). At 70% a's 30 source frames last 42.86 frames: a takes 42 whole
+    // frames, as the Speed/Duration dialog reads it, and the ripple moves b by whole frames.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 30, 0);
+    fx.put(v1, 30, 30, 0);
+    let mut n = fx.next;
+    set_speed(&mut fx.seq, a, 0.7, false, true, &mut Fx::ctx(&mut n)).unwrap();
+    let items = &fx.seq.video_tracks[0].items;
+    assert_eq!((items[0].start, items[0].duration, items[1].start), (f(0), f(42), f(42)));
+    assert_eq!(items[0].speed, 0.7);
+    // other lengths and speeds, with and without a ripple: every edge stays on a frame, and the
+    // clip reads no further into its source than before
+    for (len, speed) in [(1, 0.7), (7, 0.45), (10, 0.333), (13, 1.5), (30, 2.5), (24, 3.0)] {
+        for ripple in [false, true] {
+            let mut fx = Fx::new();
+            let v1 = fx.v(0);
+            let a = fx.put(v1, 0, len, 0);
+            fx.put(v1, 100, 10, 0);
+            let mut n = fx.next;
+            set_speed(&mut fx.seq, a, speed, false, ripple, &mut Fx::ctx(&mut n)).unwrap();
+            for it in &fx.seq.video_tracks[0].items {
+                assert_eq!((R.snap(it.start), R.snap(it.end())), (it.start, it.end()), "{len} frames at {speed}, ripple {ripple}");
+                assert!(it.duration >= f(1), "{len} frames at {speed}, ripple {ripple}");
+            }
+            let (_, it) = fx.seq.find_item(a).unwrap();
+            assert!(it.source_out() <= f(len), "{len} frames at {speed}, ripple {ripple}");
+        }
+    }
+}
+
+#[test]
 fn unused_kind_import() {
     let _ = TrackKind::Video;
 }

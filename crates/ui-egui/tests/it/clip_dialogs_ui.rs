@@ -796,6 +796,25 @@ fn speed_edits_preserve_one_frame_minimum() {
     }
 }
 
+/// The Duration the dialog shows for a typed speed is the length the clip gets.
+#[test]
+fn speed_readout_matches_the_applied_duration() {
+    let mut d = Driver::new();
+    let original = d.v1(0);
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    d.exec("timeline.trim", json!({"clip": original.id.0, "edge": "out", "deltaFrames": 30 - rate.frame_at(original.duration)}));
+    assert_eq!(d.v1(0).duration, rate.tick_of(30));
+    d.exec("timeline.select", json!({"clips": [original.id.0]}));
+    d.menu("clip.speedDuration");
+    d.app().ui.clip_dialog.as_mut().unwrap().params["speed"] = json!(70.0);
+    d.frames(3);
+    // 30 frames at 70% last 42.86 frames: the readout and the clip both take 42
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["duration"], json!("00:00:01:18"));
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "a valid speed edit must apply");
+    assert_eq!(d.v1(0).duration, rate.tick_of(42));
+}
+
 /// A file the OS dropped on the window, as the native integration hands it to egui.
 #[derive(Debug)]
 struct OsFile(std::path::PathBuf);
