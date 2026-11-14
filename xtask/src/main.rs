@@ -327,11 +327,26 @@ fn web(args: &[String]) -> Result<(), String> {
             std::fs::copy(e.path(), dist.join(&name)).map_err(|e| format!("{name}: {e}"))?;
         }
     }
+    if let Some(fonts) = std::env::var_os("CRAFT_FONTS_DIR").filter(|p| !p.is_empty()) {
+        copy_web_language_fonts(std::path::Path::new(&fonts), &dist)?;
+    }
     let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let total: u64 = std::fs::read_dir(&dist).map_err(|e| e.to_string())?.flatten().map(|e| size(&e.path())).sum();
     println!("web: {} ({:.1} MB wasm, {:.1} MB total)", dist.display(), size(&bg) as f64 / 1e6, total as f64 / 1e6);
     if let Some(port) = serve {
         serve_dir(&dist, port)?;
+    }
+    Ok(())
+}
+
+/// Keep large CJK faces as separate static assets rather than adding them to the wasm file.
+fn copy_web_language_fonts(fonts: &std::path::Path, dist: &std::path::Path) -> Result<(), String> {
+    for (source, dest) in [
+        ("fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf", "filmcraft-cjk-sc.otf"),
+        ("fonts/nanum-gothic/NanumGothic-Regular.ttf", "filmcraft-hangul.ttf"),
+        ("fonts/biz-ud-pgothic/BIZUDPGothic-Regular.ttf", "filmcraft-japanese.ttf"),
+    ] {
+        std::fs::copy(fonts.join(source), dist.join(dest)).map_err(|e| format!("copying web font {source}: {e}"))?;
     }
     Ok(())
 }
@@ -599,6 +614,38 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn web_language_fonts_are_copied_as_separate_assets() {
+        let root = std::env::temp_dir().join(format!("filmcraft-web-fonts-{}", std::process::id()));
+        let input = root.join("input");
+        let out = root.join("dist");
+        std::fs::create_dir_all(input.join("fonts/noto-sans-cjk-sc")).unwrap();
+        std::fs::create_dir_all(input.join("fonts/nanum-gothic")).unwrap();
+        std::fs::create_dir_all(input.join("fonts/biz-ud-pgothic")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(input.join("fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf"), b"chinese").unwrap();
+        std::fs::write(input.join("fonts/nanum-gothic/NanumGothic-Regular.ttf"), b"korean").unwrap();
+        std::fs::write(input.join("fonts/biz-ud-pgothic/BIZUDPGothic-Regular.ttf"), b"japanese").unwrap();
+        super::copy_web_language_fonts(&input, &out).unwrap();
+        assert_eq!(std::fs::read(out.join("filmcraft-cjk-sc.otf")).unwrap(), b"chinese");
+        assert_eq!(std::fs::read(out.join("filmcraft-hangul.ttf")).unwrap(), b"korean");
+        assert_eq!(std::fs::read(out.join("filmcraft-japanese.ttf")).unwrap(), b"japanese");
+        std::fs::remove_file(input.join("fonts/nanum-gothic/NanumGothic-Regular.ttf")).unwrap();
+        assert!(super::copy_web_language_fonts(&input, &out).is_err());
+        std::fs::remove_file(out.join("filmcraft-cjk-sc.otf")).unwrap();
+        std::fs::remove_file(out.join("filmcraft-hangul.ttf")).unwrap();
+        std::fs::remove_file(out.join("filmcraft-japanese.ttf")).unwrap();
+        std::fs::remove_file(input.join("fonts/biz-ud-pgothic/BIZUDPGothic-Regular.ttf")).unwrap();
+        std::fs::remove_file(input.join("fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf")).unwrap();
+        std::fs::remove_dir(input.join("fonts/noto-sans-cjk-sc")).unwrap();
+        std::fs::remove_dir(input.join("fonts/nanum-gothic")).unwrap();
+        std::fs::remove_dir(input.join("fonts/biz-ud-pgothic")).unwrap();
+        std::fs::remove_dir(input.join("fonts")).unwrap();
+        std::fs::remove_dir(input).unwrap();
+        std::fs::remove_dir(out).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     fn macos_packaging(file: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../packaging/macos").join(file);

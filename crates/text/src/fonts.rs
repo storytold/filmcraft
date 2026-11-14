@@ -15,6 +15,13 @@ use skrifa::{FontRef, MetadataProvider};
 
 use crate::sfnt::{FaceNames, read_faces, read_faces_bytes};
 
+/// Validate a font supplied by a web host and check that it covers the requested script sample.
+pub fn font_bytes_cover(bytes: &[u8], sample: &str) -> bool {
+    let Ok(font) = FontRef::from_index(bytes, 0) else { return false };
+    let charmap = font.charmap();
+    sample.chars().all(|ch| charmap.map(ch).is_some_and(|glyph| glyph.to_u32() != 0))
+}
+
 /// Bundled fonts (SIL OFL 1.1; see `assets/fonts/*.attribution` and ATTRIBUTION.md).
 pub static INTER_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
 pub static INTER_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Inter-Medium.ttf");
@@ -39,6 +46,13 @@ include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
 #[cfg(test)]
 mod craft_wasm_tests {
     use super::*;
+
+    #[test]
+    fn web_font_validation_rejects_invalid_or_wrong_script_data() {
+        assert!(!font_bytes_cover(b"not a font", "中文"));
+        assert!(!font_bytes_cover(INTER_REGULAR, "한국어입력테스트"));
+        assert!(font_bytes_cover(INTER_REGULAR, "FilmCraft"));
+    }
 
     /// The web build embeds the UI font and Noto Sans Thai, so Thai names draw on a browser
     /// without a Thai font (#3374). Skipped without craft-fonts.

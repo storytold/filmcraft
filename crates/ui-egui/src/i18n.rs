@@ -461,7 +461,7 @@ pub fn craft_japanese_font() -> bool {
 /// pass on. Returns false (and changes nothing) when no Japanese font is installed. Call it again
 /// after `theme::install`, which replaces the font definitions.
 pub fn install_japanese_font(ctx: &egui::Context) -> bool {
-    if craft_japanese_font() {
+    if craft_japanese_font() || crate::cjk::web_japanese_available() {
         return true;
     }
     let Some(font) = system_japanese_font() else { return false };

@@ -19,6 +19,15 @@ cargo xtask web --dev           # unoptimised build (faster to compile, slow to 
 cargo xtask web --serve 8765    # build, then serve dist on http://127.0.0.1:8765/
 ```
 
+The Chinese, Korean, and Japanese interface fonts are separate static assets copied from the
+`CRAFT_FONTS_DIR` checkout. The app fetches each face when it is needed, and leaves the current
+language in place if loading fails. To exercise the language flow without a media fixture, serve
+a build made with that input and run:
+
+```sh
+node apps/filmcraft-web/tests/smoke.mjs --url http://127.0.0.1:8765/ --language-fonts-only
+```
+
 `--serve` is a tiny localhost-only static server that sends `Cross-Origin-Opener-Policy` /
 `Cross-Origin-Embedder-Policy`, so the page is cross-origin isolated like a production deployment
 should be. Any static server works (`python3 -m http.server -d target/web/dist 8765`); it must

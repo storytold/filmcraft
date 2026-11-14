@@ -32,6 +32,9 @@ impl FilmcraftApp {
         let ime_document_epoch = session.document_epoch;
         let ime_active_sequence = session.state.active_sequence;
         Self {
+            pending_web_language: None,
+            web_font_request_id: 0,
+            pending_web_restore: false,
             session,
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
@@ -197,6 +200,28 @@ impl FilmcraftApp {
 
     pub fn status(&mut self, s: impl Into<String>) {
         self.ui.status = s.into();
+    }
+
+    /// Complete a web font request only if no later language choice superseded it.
+    pub fn finish_web_language_font(&mut self, ctx: &egui::Context, language: &str, request_id: u64, bytes: Vec<u8>) -> Result<(), String> {
+        if self.pending_web_language.as_deref() != Some(language) || self.web_font_request_id != request_id {
+            return Ok(());
+        }
+        crate::register_web_language_font(ctx, language, bytes)?;
+        self.pending_web_language = None;
+        if std::mem::take(&mut self.pending_web_restore) {
+            // Reapply the preference without replacing a system-language choice with a fixed one.
+            self.applied_prefs = None;
+            ctx.request_repaint();
+            return Ok(());
+        }
+        let command = match language {
+            "ja" => "app.language.japanese",
+            "zh-cn" => "app.language.chinese",
+            "ko" => "app.language.korean",
+            _ => return Err("unsupported web language font".into()),
+        };
+        crate::menus::invoke(self, ctx, command, json!({})).map(|_| ())
     }
 }
 
