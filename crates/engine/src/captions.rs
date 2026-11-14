@@ -443,12 +443,26 @@ pub fn commands() -> Vec<CommandSpec> {
                     s.execute("captions.newTrack", json!({}))?;
                 }
                 let tid = track_param(s, p).ok_or_else(|| bad("captions.add", "no such caption track"))?;
-                let t = time_p(s, p, "").unwrap_or(s.playhead());
+                // `add_caption` moves a start before zero to zero and keeps the duration, so the
+                // start moves first and the end is snapped from there. A span snapped below zero
+                // and then moved keeps its own length, which can differ by a frame from the
+                // duration snapped at zero and can end between frames at a rate whose frame is not
+                // a whole number of ticks.
+                let t = time_p(s, p, "").unwrap_or(s.playhead()).max(Tick::ZERO);
                 let rate = s.sequence_rate();
-                let dur = Tick::from_seconds_f64(f64_p(p, "durationSeconds").unwrap_or(edit::captions::DEFAULT_SECONDS as f64));
-                let dur = rate.snap_nearest(dur).max(rate.frame_duration());
+                let want = Tick::from_seconds_f64(f64_p(p, "durationSeconds").unwrap_or(edit::captions::DEFAULT_SECONDS as f64));
+                // The caption goes on the frame grid as a clip does in `timeline.place` (#1101): its
+                // start and its end (`time + duration`) each snap to the nearest frame, so a caption
+                // asked for at a clip's time starts with the clip, and one asked for at another
+                // caption's end starts there.
+                let end = rate.snap_nearest(Tick(t.0.saturating_add(want.0)));
+                let t = rate.snap_nearest(t);
+                // At least one frame: to the start of the next frame. `frame_duration` is rounded
+                // down at a rate whose frame is not a whole number of ticks (37.516 fps, 11 fps), so
+                // `t + frame_duration` can fall one tick short of that frame.
+                let end = end.max(rate.tick_of(rate.frame_at(t).saturating_add(1)));
+                let dur = end - t;
                 let text = str_p(p, "text").unwrap_or("New caption").to_string();
-                let t = rate.snap(t);
                 let id = s.edit_sequence("Add Caption", |q, ctx, st| {
                     let id = edit::captions::add_caption(q, tid, t, dur, &text, ctx)?;
                     st.caption_selection = vec![id];
