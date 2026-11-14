@@ -115,6 +115,9 @@ pub enum BitrateMode {
     /// Constant quality: every frame is coded at [`ExportSettings::crf`] and the bitrate follows the
     /// picture (H.264, built-in encoder only).
     Crf,
+    /// Constant quantizer parameter (QP): fixed quantization for hardware and supported encoders.
+    #[serde(rename = "cqp")]
+    Cqp,
 }
 
 impl BitrateMode {
@@ -124,6 +127,7 @@ impl BitrateMode {
             BitrateMode::Vbr1Pass => "VBR, 1 pass",
             BitrateMode::Vbr2Pass => "VBR, 2 pass",
             BitrateMode::Crf => "CRF (constant quality)",
+            BitrateMode::Cqp => "CQP (constant quantizer)",
         }
     }
 }
@@ -713,6 +717,7 @@ impl ExportSettings {
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         BitrateMode::Crf => format!(" {}", self.crf),
+                        BitrateMode::Cqp => format!(", QP {}", self.qp.unwrap_or(23)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
                     v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
@@ -723,6 +728,7 @@ impl ExportSettings {
                     v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
+                        BitrateMode::Cqp => format!(", QP {}", self.qp.unwrap_or(23)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
@@ -731,6 +737,7 @@ impl ExportSettings {
                     v += &format!(", AV1 Main (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
+                        BitrateMode::Cqp => format!(", QP {}", self.qp.unwrap_or(23)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);

@@ -40,6 +40,7 @@ fn config(w: u32, h: u32) -> Config {
         level: None,
         sar: None,
         bframes: true,
+        ..Config::default()
     }
 }
 
