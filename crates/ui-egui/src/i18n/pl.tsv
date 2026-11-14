@@ -32,6 +32,8 @@
 	Align to Video Frame as Group	Wyrównaj do klatki wideo jako grupę
 	All Panels	Wszystkie panele
 	Alpha	Alfa
+	Alternate Drag Speed	Alternatywna prędkość przeciągania
+	Alternate Drag Speed:	Alternatywna prędkość przeciągania:
 	Appearance	Wygląd
 	Appearance…	Wygląd…
 	Apply Audio Transition	Zastosuj przejście audio
@@ -68,6 +70,7 @@
 	Captions…	Napisy…
 	Caribbean	Karaibski
 	Center Horizontally	Wyśrodkuj w poziomie
+	Center on Playhead:	Wyśrodkuj na głowicy:
 	Center Vertically	Wyśrodkuj w pionie
 	Cerulean	Lazurowy
 	Clear	Wyczyść
@@ -87,6 +90,7 @@
 	Comparison View	Widok porównania
 	Composite Video	Wideo kompozytowe
 	Consolidate Duplicates	Scal duplikaty
+	Controls	Sterowanie
 	Copy	Kopiuj
 	Copy Paste Includes Sequence Markers	Kopiowanie i wklejanie obejmuje znaczniki sekwencji
 	Create Captions from Transcript…	Utwórz napisy z transkrypcji…
@@ -120,9 +124,11 @@
 	Ellipse	Elipsa
 	Enable	Włącz
 	Enable Remix	Włącz remiks
+	Enter Shortcut	Wprowadź skrót
 	Essential Graphics	Podstawowa grafika
 	Essential Sound	Podstawowy dźwięk
 	Events	Zdarzenia
+	Explode Slider:	Rozwiń suwak:
 	Export	Eksportuj
 	Export As Motion Graphics Template…	Eksportuj jako szablon grafiki ruchomej…
 	Extract	Wyodrębnij
@@ -177,6 +183,7 @@
 	Insert Frame Hold Segment	Wstaw segment stopklatki
 	Install Motion Graphics Template…	Zainstaluj szablon grafiki ruchomej…
 	Interpret Footage…	Interpretuj materiał…
+	Invert Scrolling	Odwróć przewijanie
 	Join the ArtCraft Discord…	Dołącz do Discorda ArtCraft…
 	Keyboard Shortcuts…	Skróty klawiaturowe…
 	Label	Etykieta
@@ -190,6 +197,7 @@
 	Light	Jasny
 	Link	Połącz
 	Link Media…	Połącz multimedia…
+	Playhead Centering Range	Zakres wyśrodkowania głowicy
 	Refresh Changed Media	Odśwież zmienione multimedia
 	Linked Selection	Połączone zaznaczanie
 	Lock Guides	Zablokuj linie pomocnicze
@@ -323,6 +331,7 @@
 	Simplify Sequence…	Uprość sekwencję…
 	Snap in Program Monitor	Przyciągaj w monitorze programu
 	Snap in Timeline	Przyciągaj na osi czasu
+	Snap to Tracks	Przyciągaj do ścieżek
 	Source	Źródło
 	Source Settings…	Ustawienia źródła…
 	Speed/Duration…	Szybkość/czas trwania…

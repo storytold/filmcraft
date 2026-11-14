@@ -30,6 +30,23 @@ fn start(s: &mut Session, data: &std::path::Path) {
     s.start_autosave(cfg).unwrap();
 }
 
+#[test]
+fn view_only_changes_do_not_write_recovery_snapshots() {
+    let d = temp_dir("view-only-recovery");
+    let mut s = Session::default();
+    start(&mut s, &d);
+
+    s.view_changed();
+    s.sync_persistence();
+
+    let persistence = s.persistence.as_ref().unwrap();
+    assert_eq!(persistence.flush().unwrap(), None);
+    assert!(!persistence.session_dir.join("snapshot.fcproj").exists());
+
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision
@@ -277,6 +294,25 @@ fn recovery_keeps_original_when_metadata_write_fails() {
 #[test]
 fn recovery_keeps_original_when_journal_is_disabled() {
     recovery_preserves_original("recover-journal-disabled", None, false);
+}
+
+#[test]
+fn scan_keeps_clean_journal_when_session_lock_is_held() {
+    let d = temp_dir("clean-lock-held");
+    let dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("snapshot.fcproj"), b"snapshot").unwrap();
+    std::fs::write(dir.join("session.json"), serde_json::to_vec(&autosave::JournalMeta { dirty: false, ..Default::default() }).unwrap()).unwrap();
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(dir.join("lock")).unwrap();
+    lock.lock().unwrap();
+
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(dir.join("snapshot.fcproj").is_file(), "an active session's journal must be preserved");
+
+    drop(lock);
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(!dir.exists(), "the unlocked clean journal can now be removed");
+    std::fs::remove_dir_all(&d).unwrap();
 }
 
 #[test]

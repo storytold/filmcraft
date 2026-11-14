@@ -23,6 +23,8 @@
 	Align to Video Frame as Group	Выровнять как группу по видеокадру
 	All Panels	Все панели
 	Alpha	Альфа
+	Alternate Drag Speed	Альтернативная скорость перетаскивания
+	Alternate Drag Speed:	Альтернативная скорость перетаскивания:
 	Appearance	Оформление
 	Appearance…	Оформление…
 	Apply Audio Transition	Применить аудиопереход
@@ -59,6 +61,7 @@
 	Captions…	Субтитры…
 	Caribbean	Карибский
 	Center Horizontally	По центру по горизонтали
+	Center on Playhead:	Центрировать на головке воспроизведения:
 	Center Vertically	По центру по вертикали
 	Cerulean	Лазурный
 	Clear	Очистить
@@ -78,6 +81,7 @@
 	Comparison View	Режим сравнения
 	Composite Video	Композитное видео
 	Consolidate Duplicates	Объединить дубликаты
+	Controls	Управление
 	Copy	Копировать
 	Copy Paste Includes Sequence Markers	Копирование и вставка включают маркеры последовательности
 	Create Captions from Transcript…	Создать субтитры из транскрипта…
@@ -111,9 +115,11 @@
 	Ellipse	Эллипс
 	Enable	Включить
 	Enable Remix	Включить ремикс
+	Enter Shortcut	Введите сочетание клавиш
 	Essential Graphics	Основные графические элементы
 	Essential Sound	Основной звук
 	Events	События
+	Explode Slider:	Развернуть ползунок:
 	Export	Экспорт
 	Export As Motion Graphics Template…	Экспортировать как шаблон анимированной графики…
 	Extract	Извлечь
@@ -168,6 +174,7 @@
 	Insert Frame Hold Segment	Вставить сегмент стоп-кадра
 	Install Motion Graphics Template…	Установить шаблон анимированной графики…
 	Interpret Footage…	Интерпретировать материал…
+	Invert Scrolling	Инвертировать прокрутку
 	Join the ArtCraft Discord…	Присоединиться к Discord ArtCraft…
 	Keyboard Shortcuts…	Сочетания клавиш…
 	Label	Метка
@@ -181,6 +188,7 @@
 	Light	Светлый
 	Link	Связать
 	Link Media…	Связать медиа…
+	Playhead Centering Range	Диапазон центрирования головки воспроизведения
 	Refresh Changed Media	Обновить изменённые медиа
 	Linked Selection	Связанное выделение
 	Lock Guides	Заблокировать направляющие
@@ -315,6 +323,7 @@
 	Simplify Sequence…	Упростить последовательность…
 	Snap in Program Monitor	Привязка в мониторе программы
 	Snap in Timeline	Привязка на таймлайне
+	Snap to Tracks	Привязка к дорожкам
 	Source	Источник
 	Source Settings…	Настройки источника…
 	Speed/Duration…	Скорость/Длительность…
