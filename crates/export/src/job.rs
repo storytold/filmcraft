@@ -185,6 +185,7 @@ pub struct Exporter {
     mux: Option<Mp4Writer<Out>>,
     /// MXF exports write through this instead of `mux`.
     mxf: Option<MxfMux>,
+    mkv: Option<crate::mkv_out::MkvMux>,
     seq: ItemId,
     project: Arc<Project>,
     vt: usize,
@@ -207,7 +208,7 @@ pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_avail
         && !sdr
         && match format {
             Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv => true,
-            Format::Hevc => hdr_available(Format::Hevc),
+            Format::Hevc | Format::Av1 => hdr_available(format),
             _ => false,
         }
 }
@@ -290,7 +291,9 @@ impl Exporter {
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         settings.bitrate_kbps = r.target_kbps;
         settings.max_bitrate_kbps = Some(r.max_kbps);
-        settings.keyframe_distance = Some(r.keyint);
+        if settings.format != Format::Av1 {
+            settings.keyframe_distance = Some(r.keyint);
+        }
         settings.adaptive_bitrate = None;
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;
         settings.h264_pass = if two_pass { H264Pass::First } else { H264Pass::Single };
@@ -311,10 +314,10 @@ impl Exporter {
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
-            (Some(a), AudioCodec::Aac) => {
+            (Some(a), AudioCodec::Aac | AudioCodec::Opus) => {
                 let found =
                     audio_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|f| f(settings.format, a.sr, a.channels as u32, &settings));
-                Some(found.ok_or_else(|| ExportError::Unsupported("AAC encoder not available".into()))??)
+                Some(found.ok_or_else(|| ExportError::Unsupported(format!("{:?} encoder not available", settings.audio_codec())))??)
             }
             (Some(a), AudioCodec::Flac) => Some(Box::new(crate::FlacAudio::new(a.sr, a.channels as u32, &settings)?)),
             _ => None,
@@ -340,6 +343,7 @@ impl Exporter {
             queued: Vec::new(),
             mux: None,
             mxf: None,
+            mkv: None,
             seq,
             project: project.clone(),
             vt: 0,
@@ -402,6 +406,14 @@ impl Exporter {
     }
 
     fn write_audio(&mut self, planar: Option<Vec<Vec<f32>>>) -> Result<()> {
+        if let Some(m) = self.mkv.as_mut() {
+            let Some(buf) = planar else {
+                return Ok(());
+            };
+            let enc = self.aenc.as_mut().ok_or_else(|| ExportError::Unsupported("Matroska AV1 needs AAC, Opus or FLAC audio".into()))?;
+            let size = enc.frame_size();
+            return m.write_audio(enc.encode(&buf)?.into_iter().map(|p| (p, size)).collect());
+        }
         if let Some(m) = self.mxf.as_mut() {
             return match planar {
                 Some(buf) => m.write_audio(&buf),
@@ -433,6 +445,9 @@ impl Exporter {
     }
 
     fn write_video(&mut self, packets: Vec<EncodedPacket>) -> Result<()> {
+        if let Some(m) = self.mkv.as_mut() {
+            return m.write_video(packets);
+        }
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
         }
@@ -446,6 +461,26 @@ impl Exporter {
 
     /// Create the muxer and its tracks (after the first batch was encoded).
     fn open_mux(&mut self) -> Result<()> {
+        if self.settings.format.is_mkv_with(self.settings.multiplexer) {
+            let range = export_range(&self.project, self.seq, &self.settings)?;
+            let audio = match (self.audio.as_ref(), self.aenc.as_deref()) {
+                (Some(a), Some(enc)) => {
+                    Some((enc, a.sr, range.end().to_units_floor(i64::from(a.sr)).saturating_sub(range.start.to_units_floor(i64::from(a.sr))) as u64))
+                }
+                (None, _) => None,
+                _ => return Err(ExportError::Unsupported("Matroska AV1 needs AAC, Opus or FLAC audio".into())),
+            };
+            self.mkv = Some(crate::mkv_out::MkvMux::new(crate::mkv_out::Setup {
+                settings: &self.settings,
+                video: self.venc.sample_entry(),
+                timescale: self.venc.timescale(),
+                video_start: self.venc.media_start().unwrap_or(0),
+                frame_duration: self.pipe.rate.den as u32,
+                duration_ns: self.pipe.rate.tick_of(self.f1 - self.f0).to_units_floor(1_000_000_000),
+                audio,
+            })?);
+            return Ok(());
+        }
         if self.settings.format.is_mxf() {
             let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
             // start timecode of the first exported frame, at the output rate
@@ -466,6 +501,10 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        // Opus edit durations must retain individual 48 kHz samples, including a partial millisecond.
+        if self.settings.audio_codec() == AudioCodec::Opus {
+            opts.movie_timescale = 48000;
+        }
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
@@ -475,6 +514,16 @@ impl Exporter {
             (Some(a), Some(enc)) => {
                 let mut c = TrackConfig::new(enc.sample_entry(), a.sr);
                 c.media_start = Some(enc.priming() as i64);
+                if self.settings.audio_codec() == AudioCodec::Opus {
+                    c.edits = vec![filmcraft_isobmff::Edit {
+                        segment_duration: {
+                            let range = export_range(&self.project, self.seq, &self.settings)?;
+                            range.end().to_units_floor(48000).saturating_sub(range.start.to_units_floor(48000)) as u64
+                        },
+                        media_time: i64::from(enc.priming()),
+                        media_rate: 0x10000,
+                    }];
+                }
                 Some(mux.add_track(c).map_err(|e| ExportError::Io(e.to_string()))?)
             }
             (Some(a), None) => {
@@ -538,13 +587,16 @@ impl Exporter {
         if filmcraft_media::pending::take() {
             return Ok(Step::Pending);
         }
-        if self.mux.is_none() && self.mxf.is_none() {
+        if self.mux.is_none() && self.mxf.is_none() && self.mkv.is_none() {
             self.open_mux()?;
         }
         let mut tail = std::mem::take(&mut self.queued);
         tail.extend(self.venc.flush()?);
         self.write_video(tail)?;
         self.write_audio(mixed)?;
+        if let (Some(m), Some(a)) = (self.mkv.as_mut(), self.aenc.as_mut()) {
+            m.write_audio(a.flush_timed()?)?;
+        }
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
             let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
             for (au, duration) in a.flush_timed()? {
@@ -554,14 +606,18 @@ impl Exporter {
                 mux.set_sample_entry(at, entry).map_err(|e| ExportError::Io(e.to_string()))?;
             }
         }
-        let (bytes, extra_files) = match self.mxf.take() {
-            Some(m) => m.finish(&self.settings)?,
-            None => {
-                let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
-                // Upload services and progressive players need the MP4 metadata before media.
-                // The muxer relocates data in bounded chunks and adjusts every sample offset.
-                let w = if self.brand == Brand::Mp4 { mux.finish_faststart() } else { mux.finish() }.map_err(|e| ExportError::Io(e.to_string()))?;
-                (w.finish(&self.settings)?, Vec::new())
+        let (bytes, extra_files) = if let Some(m) = self.mkv.take() {
+            m.finish(&self.settings)?
+        } else {
+            match self.mxf.take() {
+                Some(m) => m.finish(&self.settings)?,
+                None => {
+                    let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
+                    // Upload services and progressive players need the MP4 metadata before media.
+                    // The muxer relocates data in bounded chunks and adjusts every sample offset.
+                    let w = if self.brand == Brand::Mp4 { mux.finish_faststart() } else { mux.finish() }.map_err(|e| ExportError::Io(e.to_string()))?;
+                    (w.finish(&self.settings)?, Vec::new())
+                }
             }
         };
         note_stage(Stage::Finish, finishing.elapsed());
@@ -681,7 +737,7 @@ impl Exporter {
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
                 timed(Stage::Mux, || -> Result<()> {
-                    if self.mux.is_none() && self.mxf.is_none() {
+                    if self.mux.is_none() && self.mxf.is_none() && self.mkv.is_none() {
                         self.open_mux()?;
                     }
                     let packets = std::mem::take(&mut self.queued);

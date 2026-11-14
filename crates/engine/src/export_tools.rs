@@ -206,6 +206,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         && let Some(f) = str_p(p, "format")
     {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
+        if settings.format == Format::Av1 {
+            settings.bitrate_mode = BitrateMode::Crf;
+        }
     }
     apply_nested_settings(&mut settings, p, cmd)?;
     apply_flat_overrides(&mut settings, p, cmd)?;
@@ -293,7 +296,7 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.h264_intra_only = v;
     }
     if let Some(v) = str_p(p, "audioCodec") {
-        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
+        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac | opus"))?;
     }
     if let Some(v) = u64_p(p, "flacLevel") {
         settings.audio.flac_level = v.min(8) as u8;

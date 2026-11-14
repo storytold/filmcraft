@@ -1138,3 +1138,20 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+#[test]
+fn av1_crf_defaults_and_opus_reach_export_settings() {
+    let session = demo();
+    let settings = |p: Value| crate::export_tools::settings_from_params(&session, &p, "file.exportMedia").unwrap().1;
+    let software = settings(json!({"format":"av1", "path":"a.mp4"}));
+    assert_eq!(software.bitrate_mode, filmcraft_export::BitrateMode::Crf);
+    assert_eq!(software.av1_preset, 6);
+    assert_eq!(software.extension(), "mkv");
+    let hardware = settings(json!({"format":"av1", "path":"a.mp4", "settings":{"bitrateMode":"vbr1Pass", "crf":31.5, "audio":{"codec":"opus"}}}));
+    assert_eq!(hardware.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    assert_eq!(hardware.audio_codec(), filmcraft_export::AudioCodec::Opus);
+    assert_eq!(hardware.crf, 31.5);
+    let audio = settings(json!({"format":"opus", "path":"a.opus"}));
+    assert!(!audio.has_video());
+    assert_eq!(audio.extension(), "opus");
+}

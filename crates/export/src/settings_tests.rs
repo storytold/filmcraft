@@ -1375,18 +1375,18 @@ fn a_time_left_reads_like_a_clock() {
 }
 
 #[test]
-fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
+fn av1_is_a_container_selectable_format_that_needs_an_encoder() {
     for name in ["av1", "AV1", "av01"] {
         assert_eq!(Format::from_name(name), Some(Format::Av1), "{name}");
     }
     assert_eq!(Format::from_name(Format::Av1.id()), Some(Format::Av1));
-    assert_eq!((Format::Av1.extension(), Format::Av1.label()), ("mp4", "AV1"));
+    assert_eq!((Format::Av1.extension(), Format::Av1.label()), ("mkv", "AV1"));
     assert!(Format::ALL.contains(&Format::Av1));
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "av1"})).unwrap();
     assert_eq!(s.format, Format::Av1);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "av1");
     // MP4 with AAC only: a QuickTime multiplexer setting left over from H.264 does not apply
-    let a = ExportSettings { format: Format::Av1, ..Default::default() };
+    let a = ExportSettings { format: Format::Av1, multiplexer: Multiplexer::Mp4, ..Default::default() };
     assert_eq!((a.audio_codec(), a.extension()), (AudioCodec::Aac, "mp4"));
     let mov = ExportSettings { multiplexer: Multiplexer::Mov, ..a.clone() };
     assert_eq!((mov.audio_codec(), mov.extension()), (AudioCodec::Aac, "mp4"));
@@ -1397,8 +1397,7 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
     assert!(summary.video.contains("AV1 Main"), "{}", summary.video);
     let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..a.clone() }.validate().unwrap_err();
     assert!(e.to_string().contains("two-pass"), "{e}");
-    let e = ExportSettings { bitrate_mode: BitrateMode::Crf, ..a.clone() }.validate().unwrap_err();
-    assert!(e.to_string().contains("no CRF mode"), "{e}");
+    assert!(ExportSettings { bitrate_mode: BitrateMode::Crf, ..a.clone() }.validate().is_ok());
     assert!(!Format::Av1.has_builtin_encoder());
     assert!(!available(Format::Av1), "nothing registered an encoder for it");
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 96, None);
@@ -1416,7 +1415,7 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     }
     assert_eq!(Format::from_name(Format::Hevc.id()), Some(Format::Hevc));
     assert_eq!((Format::Hevc.extension(), Format::Hevc.label()), ("mp4", "H.265 (HEVC)"));
-    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 22);
+    assert!(Format::ALL.contains(&Format::Hevc) && Format::ALL.len() == 23);
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "hevc"})).unwrap();
     assert_eq!(s.format, Format::Hevc);
     assert_eq!(serde_json::to_value(&s).unwrap()["format"], "hevc");
@@ -1824,4 +1823,21 @@ fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error(
     std::fs::write(&path, b"decoy").unwrap();
     assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
+}
+
+#[test]
+fn av1_crf_accepts_the_svt_range() {
+    for crf in [0.0, 35.0, 63.0] {
+        assert!(ExportSettings { format: Format::Av1, bitrate_mode: BitrateMode::Crf, crf, ..Default::default() }.validate().is_ok());
+    }
+}
+
+#[test]
+fn av1_defaults_to_mkv_with_an_explicit_mp4_override() {
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format":"av1","bitrateMode":"crf"})).unwrap();
+    assert_eq!(s.extension(), "mkv");
+    assert!(s.summary(320, 180, FrameRate::FPS_24, 48000, Tick(TICKS_PER_SECOND)).format.contains("Matroska"));
+    let s: ExportSettings = serde_json::from_value(serde_json::json!({"format":"av1","multiplexer":"mp4"})).unwrap();
+    assert_eq!(s.extension(), "mp4");
+    assert_eq!(ExportSettings::default().extension(), "mp4");
 }

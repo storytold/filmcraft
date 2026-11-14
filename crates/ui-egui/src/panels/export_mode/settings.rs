@@ -82,7 +82,7 @@ fn unavailable_why(format: Format) -> Option<&'static str> {
         Format::Hevc => tl!(
             "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
         ),
-        Format::Av1 => tl!("AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet."),
+        Format::Av1 => tl!("AV1 needs the SVT-AV1 library or an AV1-capable NVIDIA encoder; neither was found."),
         _ => tl!("Not supported by FilmCraft's encoders yet"),
     })
 }
@@ -326,6 +326,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                         let keep = ex.settings.clone();
                         ex.settings = ExportSettings {
                             format: f,
+                            bitrate_mode: if f == Format::Av1 { BitrateMode::Crf } else { BitrateMode::Vbr1Pass },
                             frame_size: keep.frame_size,
                             frame_rate: keep.frame_rate,
                             effects: keep.effects,
@@ -357,11 +358,18 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             {
                 audio_section(ui, &mut reg, s, &t, seq_sr);
             }
-            if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
+            if (s.format.is_h26x() || s.format == Format::Av1) && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
                 row(ui, &t, tl!("Multiplexer"), |ui| {
-                    let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
-                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
-                        s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
+                    if s.format == Format::Av1 {
+                        let cur = if s.format.is_mkv_with(s.multiplexer) { "Matroska (MKV)" } else { "MP4" };
+                        if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["Matroska (MKV)", "MP4"]), 160.0) {
+                            s.multiplexer = if i == 0 { Multiplexer::Mkv } else { Multiplexer::Mp4 };
+                        }
+                    } else {
+                        let cur = if s.multiplexer == Multiplexer::Mov { "QuickTime" } else { "MP4" };
+                        if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
+                            s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
+                        }
                     }
                 });
             }
@@ -503,23 +511,18 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     match s.video_format() {
-        f @ (Format::H264 | Format::Hevc | Format::Av1) => {
+        f @ (Format::H264 | Format::Hevc) => {
             // H.265 and AV1: hardware encoders only (one profile, level chosen by the encoder)
             let hevc = f != Format::H264;
             if hevc {
-                if f == Format::Av1 {
-                    row(ui, t, tl!("Profile"), |ui| ui.label(tl!("Main (8-bit)")));
-                    row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (AV1 has no software encoder)")));
-                } else {
-                    // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
-                    let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
-                        (true, true) => tl!("Main 10 (10-bit, HDR)"),
-                        (true, false) => tl!("Main (8-bit; Main 10 for HDR sequences)"),
-                        (false, _) => tl!("Main (8-bit)"),
-                    };
-                    row(ui, t, tl!("Profile"), |ui| ui.label(label));
-                    row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (H.265 has no software encoder)")));
-                }
+                // the hardware encoder writes Main (8-bit 4:2:0), or Main 10 for HDR sequences where it can; level chosen by the encoder
+                let label = match (filmcraft_engine::export::hdr_available(Format::Hevc), seq_hdr && !s.sdr) {
+                    (true, true) => tl!("Main 10 (10-bit, HDR)"),
+                    (true, false) => tl!("Main (8-bit; Main 10 for HDR sequences)"),
+                    (false, _) => tl!("Main (8-bit)"),
+                };
+                row(ui, t, tl!("Profile"), |ui| ui.label(label));
+                row(ui, t, tl!("Encoder"), |ui| ui.label(tl!("Hardware (H.265 has no software encoder)")));
             } else {
                 row(ui, t, tl!("Profile"), |ui| {
                     let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
@@ -609,6 +612,54 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 });
             }
         }
+        Format::Av1 => {
+            let software = s.bitrate_mode == BitrateMode::Crf;
+            row(ui, t, tl!("Encoder"), |ui| {
+                let labels = vec![
+                    ("SVT-AV1 (CRF)".into(), filmcraft_engine::export::av1_encoder_available(BitrateMode::Crf)),
+                    ("NVIDIA NVENC (VBR CQ)".into(), filmcraft_engine::export::av1_encoder_available(BitrateMode::Vbr1Pass)),
+                ];
+                if let Some(i) = combo(ui, reg, "export.video.av1Encoder", if software { "SVT-AV1 (CRF)" } else { "NVIDIA NVENC (VBR CQ)" }, &labels, 220.0) {
+                    s.bitrate_mode = if i == 0 { BitrateMode::Crf } else { BitrateMode::Vbr1Pass };
+                    s.crf = s.crf.min(if i == 0 { 63.0 } else { 51.0 });
+                }
+            });
+            row(ui, t, tl!("Profile"), |ui| ui.label(if software || (seq_hdr && !s.sdr) { "Main 10 (10-bit 4:2:0)" } else { "Main (8-bit 4:2:0)" }));
+            row(ui, t, if software { "CRF" } else { "CQ" }, |ui| {
+                let mut q = f64::from(s.crf);
+                if drag(
+                    ui,
+                    reg,
+                    "export.video.crf",
+                    &mut q,
+                    DragOptions { range: 0.0..=if software { 63.0 } else { 51.0 }, speed: 0.1, suffix: "", decimals: 1 },
+                ) {
+                    s.crf = q as f32;
+                }
+            });
+            if software {
+                row(ui, t, tl!("Preset"), |ui| {
+                    let mut p = f64::from(s.av1_preset);
+                    if drag(ui, reg, "export.video.av1Preset", &mut p, DragOptions { range: 0.0..=13.0, speed: 1.0, suffix: "", decimals: 0 }) {
+                        s.av1_preset = p as u8;
+                    }
+                });
+            }
+            row(ui, t, tl!("Key Frame Distance"), |ui| {
+                let mut fixed = s.keyframe_distance.is_some();
+                if check(ui, reg, "export.video.keyframeOn", &mut fixed, tl!("Fixed interval")) {
+                    s.keyframe_distance = fixed.then_some(48);
+                }
+                if let Some(k) = s.keyframe_distance.as_mut() {
+                    let mut v = f64::from(*k);
+                    if drag(ui, reg, "export.video.keyframe", &mut v, DragOptions { range: 1.0..=10000.0, speed: 1.0, suffix: " frames", decimals: 0 }) {
+                        *k = v as u32;
+                    }
+                } else {
+                    ui.label(if software { tl!("Automatic (SCD)") } else { tl!("Automatic") });
+                }
+            });
+        }
         Format::ProRes => {
             row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
@@ -689,22 +740,29 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             AudioCodec::Mp3 => "MP3",
+            AudioCodec::Opus => "Opus",
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
         // MP4 takes AAC or FLAC; QuickTime any of the three
         let labels = vec![
             ("AAC".to_string(), !audio_only),
-            (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),
+            (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer) && !s.format.is_mkv_with(s.multiplexer)),
             (tl!("FLAC (lossless)").to_string(), true),
+            ("Opus".to_string(), s.format.is_mp4_with(s.multiplexer) || s.format.is_mkv_with(s.multiplexer)),
         ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
-            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
+            s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Opus][i.min(3)];
         }
     });
     row(ui, t, tl!("Sample Rate"), |ui| {
+        if s.audio_codec() == AudioCodec::Opus {
+            s.audio.sample_rate = Some(48000);
+            ui.label("48000 Hz");
+            return;
+        }
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
@@ -723,7 +781,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
-    if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3) {
+    if matches!(s.audio_codec(), AudioCodec::Aac | AudioCodec::Mp3 | AudioCodec::Opus) {
         row(ui, t, tl!("Audio Bitrate"), |ui| {
             // MP3 bit rates are Layer III's (16-24 kHz streams stop at 160 kbps)
             let rates: &[u32] = if s.audio_codec() == AudioCodec::Mp3 { &[64, 96, 128, 160, 192, 256, 320] } else { &[128, 160, 192, 256, 320] };
