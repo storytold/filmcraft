@@ -254,6 +254,64 @@ fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A run that stops at a failed line skips its save, all or nothing, and says so; `--keep-going`
+/// saves the lines that pass. A malformed line is caught before anything runs (#4598).
+#[test]
+fn a_run_that_stops_saves_nothing_and_says_so() {
+    let (dir, proj) = lock_test_project("run-stops");
+    let run = |args: &[&str], script: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+            .args(["--project", &proj])
+            .args(args)
+            .args(["run", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let saved = |name: &str| std::fs::read_to_string(&proj).unwrap().contains(&format!("\"{name}\""));
+    let fails = "{\"id\":\"no.such.command\"}\n";
+    let bin = |name: &str| format!("{{\"id\":\"file.newBin\",\"params\":{{\"name\":\"{name}\"}}}}\n");
+
+    let (code, stdout, stderr) = run(&["--save"], &(bin("stopped") + fails));
+    assert_eq!(code, Some(1));
+    assert!(stdout.contains("\"ok\":true"), "{stdout}");
+    assert!(stderr.contains("line 2 failed, so the run stopped before saving to"), "{stderr}");
+    assert!(!saved("stopped"));
+
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    let (code, _, stderr) = run(&["--save-as", &other], &(bin("stopped-as") + fails));
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains(&format!("stopped before saving to {other}.")), "{stderr}");
+    assert!(!dir.join("other.fcproj").exists());
+    // a line of the script saved the file already: the message mustn't call it unchanged
+    let save_line = format!("{}\n", json!({"id": "file.saveAs", "params": {"path": other}}));
+    let (code, _, stderr) = run(&["--save-as", &other], &(bin("saved-by-a-line") + &save_line + fails));
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains(&format!("stopped before saving to {other}.")) && !stderr.contains("unchanged"), "{stderr}");
+    assert!(std::fs::read_to_string(&other).unwrap().contains("saved-by-a-line"));
+
+    let (code, _, stderr) = run(&["--save", "--keep-going"], &(bin("kept") + fails));
+    assert_eq!(code, Some(1));
+    assert!(!stderr.contains("stopped before saving"), "{stderr}");
+    assert!(saved("kept"));
+
+    let (code, stdout, stderr) = run(&[], &(bin("not-saving") + fails));
+    assert_eq!(code, Some(1));
+    assert!(stdout.contains("\"ok\":false"), "{stdout}");
+    assert!(!stderr.contains("stopped before saving"), "a run that doesn't save has nothing to say about it: {stderr}");
+
+    let (code, stdout, stderr) = run(&["--save", "--keep-going"], &(bin("before-bad-json") + "{not json\n"));
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stdout.is_empty(), "a line ran before the malformed one was read: {stdout}");
+    assert!(!saved("before-bad-json"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn exec_save_as_then_reopen() {
     let dir = private_dir("fc-cli");
