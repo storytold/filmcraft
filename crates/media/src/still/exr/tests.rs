@@ -362,3 +362,16 @@ fn huge_scan_lines_are_refused_before_allocating() {
     g[at..at + 16].copy_from_slice(&box2i([0, 0, (1 << 26) - 1, 0]));
     assert!(decode("h.exr", &g).is_err());
 }
+
+#[test]
+fn uncompressed_chunk_of_the_wrong_size_fails_before_the_picture_is_allocated() {
+    let (w, h) = (7, 3);
+    let mut f = exr_file(RGBA_HALF, [0, 0, w - 1, h - 1], [0, 0, w - 1, h - 1], 0, pattern);
+    // the offset table follows the header; shorten chunk 0's stored length by one byte
+    let table = f.len() - (h as usize) * (4 + 4 + 7 * 4 * 2) - (h as usize) * 8;
+    let off = u64::from_le_bytes(f[table..table + 8].try_into().unwrap()) as usize;
+    let size = u32::from_le_bytes(f[off + 4..off + 8].try_into().unwrap());
+    f[off + 4..off + 8].copy_from_slice(&(size - 1).to_le_bytes());
+    let e = decode("a.exr", &f).err().expect("a wrong-size chunk is an error").to_string();
+    assert!(e.contains("chunk 0 has the wrong size"), "{e}");
+}

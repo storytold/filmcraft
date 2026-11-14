@@ -888,7 +888,9 @@ pub(crate) fn mix_graph_at(
     live: Option<&LiveMix>,
     depth: u32,
 ) -> AudioBuffer {
-    let sr = seq.settings.sample_rate.max(1);
+    // the same bounded clock `audio::nested_mix` sizes its requests with: a damaged rate (1 Hz)
+    // would otherwise multiply every nested request by the clamp at each level
+    let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
     let key = plan.structure_hash(sr);

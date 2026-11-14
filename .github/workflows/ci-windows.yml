@@ -1,0 +1,76 @@
+name: CI (Windows)
+
+# The Windows leg of the gate: clippy and the tests of the crates with Windows-only code, on pull
+# requests and pushes to main that touch that code, and on pull requests labelled `full-ci`.
+# The Linux gate (ci.yml) still runs everything else on every pull request.
+#
+# Most bug reports come from Windows, and code there differs: WASAPI audio (the scrub output and
+# playback, #2633), the graphics test start and the registry driver lookup (#1061), Media
+# Foundation and D3D11 decoding (crates/platform). Nothing else runs these crates' tests on
+# Windows. Not the full `cargo xtask ci`: on a cold windows-latest runner that is well over an
+# hour, and its wasm, layering and asset steps don't differ by platform.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # `labeled`: adding `full-ci` starts it. Other labels skip (see concurrency and the scope job).
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Its own group, so the Windows leg never cancels the Linux gate. A newer push to a PR branch
+# cancels its older run; a label other than `full-ci` gets a group of its own, so it cancels nothing.
+concurrency:
+  group: ci-windows-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-label-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows-scope:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    uses: storytold/craft-common-actions/.github/workflows/changed-paths.yml@main
+    with:
+      label: full-ci
+      # The crates and files with `cfg(windows)` code or Windows-only behaviour, and what decides
+      # how they build: their manifests, the lockfile and cargo's configuration (a dependency bump
+      # can break only Windows).
+      paths: |
+        .github/workflows/ci-windows.yml
+        apps/filmcraft/*
+        crates/platform/*
+        crates/media/*
+        crates/engine/src/autosave*
+        crates/engine/Cargo.toml
+        crates/gpu/*
+        crates/testkit/*
+        crates/ui-egui/src/frames.rs
+        crates/ui-egui/src/scrub.rs
+        crates/ui-egui/src/hooks.rs
+        crates/ui-egui/src/app/playback.rs
+        crates/ui-egui/src/app/playback/*
+        crates/ui-egui/src/app/prefs.rs
+        crates/ui-egui/tests/it/scrub_*
+        crates/ui-egui/Cargo.toml
+        Cargo.toml
+        Cargo.lock
+        .cargo/*
+
+  gate-windows:
+    needs: windows-scope
+    if: needs.windows-scope.outputs.matched == 'true'
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      os: '["windows-latest"]'
+      # Same craft-fonts commit as ci.yml and release.yml.
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      timeout-minutes: 120
+      # The tests run under nextest (the gate installs it), as in `cargo xtask ci` on Linux: each
+      # test in a process of its own, with .config/nextest.toml's groups. Under `cargo test` the
+      # tests of one binary share a process, rayon's global pool included, so one test's work
+      # waits behind another's and the timing-bound UI tests fail now and then.
+      windows-command: |
+        pkgs=(-p filmcraft -p filmcraft-platform -p filmcraft-media -p filmcraft-engine -p filmcraft-gpu -p filmcraft-ui-egui)
+        cargo clippy "${pkgs[@]}" --all-targets --locked --keep-going -- -D warnings
+        cargo nextest run "${pkgs[@]}" --locked --lib --bins --tests --no-fail-fast

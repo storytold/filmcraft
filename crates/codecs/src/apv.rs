@@ -29,12 +29,12 @@ pub struct ApvSource {
     video: GopCache,
 }
 
-pub(crate) fn apv_pixfmt_label(chroma: filmcraft_apv::ChromaFormat, bit_depth: u8) -> String {
+pub(crate) fn apv_pixfmt_label(chroma: craft_video::apv::ChromaFormat, bit_depth: u8) -> String {
     let sub = match chroma {
-        filmcraft_apv::ChromaFormat::Monochrome => "Monochrome",
-        filmcraft_apv::ChromaFormat::Yuv422 => "YUV 4:2:2",
-        filmcraft_apv::ChromaFormat::Yuv444 => "YUV 4:4:4",
-        filmcraft_apv::ChromaFormat::Yuv4444 => "YUVA 4:4:4:4",
+        craft_video::apv::ChromaFormat::Monochrome => "Monochrome",
+        craft_video::apv::ChromaFormat::Yuv422 => "YUV 4:2:2",
+        craft_video::apv::ChromaFormat::Yuv444 => "YUV 4:4:4",
+        craft_video::apv::ChromaFormat::Yuv4444 => "YUVA 4:4:4:4",
     };
     format!("{sub} {bit_depth}-bit")
 }
@@ -71,7 +71,7 @@ impl ApvSource {
             return Err(CodecError::Container("APV: no valid access units".into()));
         };
         let first = filmcraft_media::reader::read_range(&*reader, off0, sz0 as usize).map_err(|e| CodecError::Container(e.to_string()))?;
-        let fh = filmcraft_apv::probe(&first).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let fh = craft_video::apv::probe(&first).map_err(|e| CodecError::Decode(e.to_string()))?;
         let mut color = ColorInfo { matrix: filmcraft_frame::default_matrix(fh.width, fh.height), ..ColorInfo::REC709 };
         let mut explicit_color = None;
         let codes = fh.color_description_present.then_some(crate::stream_color::ColorCodes {
@@ -101,7 +101,7 @@ impl ApvSource {
         let total_bits: u64 = samples.iter().map(|s| s.1 as u64 * 8).sum();
         let secs = duration.seconds();
         let bitrate = (secs > 0.0).then(|| (total_bits as f64 / secs) as u64);
-        let codec = match filmcraft_apv::Profile::from_idc(fh.profile_idc) {
+        let codec = match craft_video::apv::Profile::from_idc(fh.profile_idc) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         };
@@ -117,7 +117,7 @@ impl ApvSource {
                 codec,
                 pixel_format: apv_pixfmt_label(fh.chroma, fh.bit_depth),
                 color,
-                has_alpha: fh.chroma == filmcraft_apv::ChromaFormat::Yuv4444,
+                has_alpha: fh.chroma == craft_video::apv::ChromaFormat::Yuv4444,
                 bitrate,
                 hdr: None,
                 color_assumed: Some(assumed),

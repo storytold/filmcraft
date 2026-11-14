@@ -59,7 +59,8 @@ impl Remix {
         let e = item.effects.iter().find(|e| e.effect == EFFECT)?;
         let f = |k: &str| e.param(k).and_then(|p| p.value.as_f64());
         let plan = match e.param("plan").map(|p| &p.value) {
-            Some(ParamValue::Text(s)) => dsp::Plan::from_text(s),
+            // stored in ticks: the limit is the longest project, not the sample-domain one
+            Some(ParamValue::Text(s)) => dsp::Plan::from_text_within(s, Tick::MAX.0),
             _ => None,
         };
         let (xfade, pieces) = match plan {
@@ -196,6 +197,21 @@ mod tests {
         assert!(it.effects[0].def().is_none(), "no definition: hidden from panels and the fx chain");
         assert_eq!(take(&mut it), Some(r));
         assert!(it.effects.is_empty());
+    }
+
+    #[test]
+    fn a_stored_plan_longer_than_the_sample_limit_round_trips() {
+        // 20 s pieces are 5e12 ticks each: past the sample-domain limit, far inside the project's
+        let s = |x: f64| Tick::from_seconds_f64(x);
+        let r = Remix { pieces: vec![TickPiece { src: Tick::ZERO, len: s(20.0) }, TickPiece { src: s(30.0), len: s(20.0) }], xfade: s(0.1), ..remix() };
+        let mut it = item();
+        r.store(&mut it);
+        assert_eq!(Remix::of(&it), Some(r));
+        // a stored plan past the longest project is still refused
+        let hostile =
+            Remix { pieces: vec![TickPiece { src: Tick::ZERO, len: Tick::MAX }, TickPiece { src: Tick::ZERO, len: Tick(1) }], xfade: Tick::ZERO, ..remix() };
+        hostile.store(&mut it);
+        assert!(Remix::of(&it).is_some_and(|r| r.pieces.is_empty()));
     }
 
     #[test]

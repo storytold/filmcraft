@@ -116,6 +116,31 @@ fn self_referencing_compound_media_is_ignored_without_recursing() {
 }
 
 #[test]
+fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+    // m0 … m64 nest one inside the next. Project A reaches m63 at the depth limit, so m64 is left
+    // out of it; project B refers to m63 directly, where m64 fits, and must not get the cut-off copy.
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence format="r1"><spine><ref-clip ref="m{}" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
+    }
+    media.push_str(r#"<media id="m64" name="M64"><sequence format="r1"><spine/></sequence></media>"#);
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources><format id="r1" frameDuration="1/24s" width="1920" height="1080"/>{media}</resources>
+        <library><event>
+          <project name="A"><sequence format="r1"><spine><ref-clip ref="m0" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine><ref-clip ref="m63" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    let m63 = imp.project.sequences().find(|i| i.name == "M63").and_then(|i| imp.project.sequence(i.id)).unwrap();
+    assert_eq!(m63.video_tracks[0].items.len(), 1, "M63 keeps its nested M64");
+}
+
+#[test]
 fn golden_connected_clips() {
     let d = doc();
     assert_eq!(detect(d.as_bytes(), Some("fcpxml")), Some(Format::Fcpxml));

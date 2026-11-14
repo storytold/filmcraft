@@ -37,6 +37,24 @@ pub fn note_hw_encode_declined() {
     HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+thread_local! {
+    /// Why a hardware encoder last declined a request on this thread ([`note_hw_encode_declined_by`]).
+    static HW_DECLINE: std::cell::Cell<Option<String>> = const { std::cell::Cell::new(None) };
+}
+
+/// A hardware encoder (`encoder`: "NVENC", "VideoToolbox") declined a request, and why: counted as
+/// [`note_hw_encode_declined`], and kept for the export that asked (factories run on its thread), so
+/// its report can say that the software encoder took over and why.
+pub fn note_hw_encode_declined_by(encoder: &str, why: &str) {
+    note_hw_encode_declined();
+    HW_DECLINE.set(Some(format!("{encoder}: {why}")));
+}
+
+/// Take the reason [`note_hw_encode_declined_by`] kept on this thread.
+pub(crate) fn take_hw_encode_decline() -> Option<String> {
+    HW_DECLINE.take()
+}
+
 /// The stages of an export whose wall time [`stage_times`] adds up (`perf.stats` `export.stages`). The
 /// render of one batch overlaps the encoding of the previous one (`Exporter::overlapping`), so
 /// [`Stage::Render`] and [`Stage::Encode`] with its neighbours can sum to more than the export took;
