@@ -30,8 +30,8 @@ use crate::edit_in::EditInError;
 /// Frames of source kept before and after the used range, so EffectCraft can trim outward.
 pub const HANDLE_FRAMES: i64 = 12;
 
-/// The cache stops growing here. The oldest movies go first when a render starts.
-const CACHE_LIMIT_BYTES: u64 = 20 * 1024 * 1024 * 1024;
+/// The cache stops growing here, as far as [`prune`] may delete. See [`prune`] for what it keeps.
+pub const CACHE_LIMIT_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 
 /// Changes when the render recipe changes, so old movies are not reused.
 const KEY_VERSION: u32 = 1;
@@ -46,6 +46,8 @@ pub struct PrepareOptions {
     pub cache_dir: Option<PathBuf>,
     /// Block until the render ends. For callers that draw nothing.
     pub wait: bool,
+    /// `None` is [`CACHE_LIMIT_BYTES`].
+    pub cache_limit: Option<u64>,
 }
 
 /// One clip of the nest whose source has no file.
@@ -376,7 +378,7 @@ pub fn resolve(session: &mut Session, nest: ItemId, options: &PrepareOptions) ->
             continue;
         }
         drop(registry);
-        prune(&dir, CACHE_LIMIT_BYTES);
+        prune(&dir, options.cache_limit.unwrap_or(CACHE_LIMIT_BYTES), &pinned(&project, &wanted));
         start(session, &project, nest, need, &dir)?;
         started = true;
     }
@@ -416,20 +418,43 @@ fn touch(path: &Path) {
     }
 }
 
+/// The movies [`prune`] must keep: the ones `wanted` names, and the ones every link of `project`
+/// handed to EffectCraft. A link's movies are what its nest needs now ([`needs`]): the nest is the
+/// payload the link was opened from, and an unchanged nest gives the same keys, so the same files.
+fn pinned(project: &Project, wanted: &[Need]) -> HashSet<String> {
+    let mut keep: HashSet<String> = wanted.iter().map(Need::file_name).collect();
+    for (_, record) in crate::manager::linked_items(project) {
+        if let Ok(nest) = record.nested_sequence.parse::<u64>() {
+            keep.extend(needs(project, ItemId(nest)).iter().map(Need::file_name));
+        }
+    }
+    keep
+}
+
 /// Delete the oldest movies until the folder fits in `limit` bytes.
-fn prune(dir: &Path, limit: u64) {
+///
+/// The cache rule: a movie is a source that EffectCraft opens by path. The OTIO of a link names it,
+/// and EffectCraft keeps that path in the comp and in its sidecar project. So a movie named in
+/// `keep` ([`pinned`]: the current hand-off and every link of the open project) is never deleted,
+/// even when the folder stays over `limit`. Other movies go oldest first. A link of another project
+/// can still lose its movie here; `link.editIn` on that link renders it again before it asks
+/// EffectCraft to reopen the comp ([`crate::reopen::reopen`]).
+fn prune(dir: &Path, limit: u64, keep: &HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
+    let mut files: Vec<(SystemTime, u64, PathBuf, bool)> = entries
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "mov"))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            Some((meta.modified().ok()?, meta.len(), entry.path()))
+            let pinned = keep.contains(entry.file_name().to_string_lossy().as_ref());
+            Some((meta.modified().ok()?, meta.len(), entry.path(), pinned))
         })
         .collect();
-    let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
+    // Pinned movies count towards the folder size, so the others make room for them.
+    let mut total: u64 = files.iter().fold(0, |sum, (_, size, _, _)| sum.saturating_add(*size));
+    files.retain(|(_, _, _, pinned)| !pinned);
     files.sort();
-    for (_, size, path) in files {
+    for (_, size, path, _) in files {
         if total <= limit {
             break;
         }

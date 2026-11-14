@@ -76,6 +76,12 @@ pub fn reopen(
     linked: &Linked,
 ) -> Result<Value, EditInError> {
     let record = &linked.record;
+    // The comp names the movies `prepare` rendered for the hand-off. The cache may have lost one
+    // since (renders for another project, a cleared cache). Render it again at the same path first,
+    // or EffectCraft opens the comp with missing footage. A cached movie is only touched.
+    if let Some(nest) = nest_of(session, record) {
+        crate::prepare::resolve(session, nest, &opts.prepare())?;
+    }
     let mut reply = match peer.attach(&record.link_id, &record.target_project, &record.target_comp)? {
         Attached::Reopened => reply_of(linked, peer, false),
         Attached::Missing(why) => {
@@ -85,6 +91,11 @@ pub fn reopen(
     };
     activate_peer(peer, backend, &mut reply);
     Ok(reply)
+}
+
+/// The nest the link was opened from, while the project still holds it.
+fn nest_of(session: &Session, record: &LinkRecord) -> Option<ItemId> {
+    record.nested_sequence.parse::<u64>().ok().map(ItemId).filter(|id| session.project.sequence(*id).is_some())
 }
 
 fn reply_of(linked: &Linked, peer: &dyn LinkPeer, rebuilt: bool) -> Value {
@@ -103,16 +114,11 @@ fn reply_of(linked: &Linked, peer: &dyn LinkPeer, rebuilt: bool) -> Value {
 /// Open the link again from its nest, with the same `link_id` and result path.
 fn rebuild(session: &mut Session, peer: &mut dyn LinkPeer, opts: &EditInOptions, linked: &Linked, why: &str) -> Result<(), EditInError> {
     let record = &linked.record;
-    let nest = record
-        .nested_sequence
-        .parse::<u64>()
-        .ok()
-        .map(ItemId)
-        .filter(|id| session.project.sequence(*id).is_some())
+    let nest = nest_of(session, record)
         .ok_or_else(|| EditInError::Failed(format!("EffectCraft cannot reopen the comp ({why}) and the nest of this link is no longer in the project")))?;
     let place = Place::capture(session, place_view(session)).map_err(|err| EditInError::Failed(err.to_string()))?;
     // Sources with no file are rendered first, like the first hand-off does.
-    let exported = crate::prepare::resolve(session, nest, &crate::prepare::PrepareOptions { cache_dir: opts.cache_dir.clone(), wait: opts.wait })?;
+    let exported = crate::prepare::resolve(session, nest, &opts.prepare())?;
     let data = export_otio(&exported, nest)?;
     let params = open_params(&record.link_id, &data, &place, &record.result_path, &new_uuid()?, nest);
     let opened = peer.open(params)?;

@@ -64,6 +64,8 @@ pub struct EditInOptions {
     pub wait: bool,
     /// Where rendered sources go ([`crate::prepare`]). `None` is the user's link cache.
     pub cache_dir: Option<std::path::PathBuf>,
+    /// Size limit of that folder. `None` is [`crate::prepare::CACHE_LIMIT_BYTES`].
+    pub cache_limit: Option<u64>,
 }
 
 impl EditInOptions {
@@ -83,7 +85,12 @@ impl EditInOptions {
             Some(Value::String(text)) if !text.is_empty() => Some(std::path::PathBuf::from(text)),
             Some(_) => return Err(EditInError::Refused("`cache_dir` must be a non-empty string".to_string())),
         };
-        Ok(Self { instance, wait, cache_dir })
+        Ok(Self { instance, wait, cache_dir, cache_limit: None })
+    }
+
+    /// What [`crate::prepare::resolve`] needs of these options.
+    pub fn prepare(&self) -> crate::prepare::PrepareOptions {
+        crate::prepare::PrepareOptions { cache_dir: self.cache_dir.clone(), wait: self.wait, cache_limit: self.cache_limit }
     }
 }
 
@@ -308,7 +315,7 @@ fn edit_in_body(
     let active = session.state.active_sequence.ok_or_else(|| EditInError::Failed("no sequence is open".to_string()))?;
     let lifted = crate::lift::lift_unimported(session, active, nest_sequence, &video_clips).map_err(failed)?;
     // Sources with no file are rendered to movies first. The export reads the project that names them.
-    let exported = crate::prepare::resolve(session, nest_sequence, &crate::prepare::PrepareOptions { cache_dir: opts.cache_dir.clone(), wait: opts.wait })?;
+    let exported = crate::prepare::resolve(session, nest_sequence, &opts.prepare())?;
     let data = export_otio(&exported, nest_sequence)?;
     let link_id = new_uuid()?;
     // FilmCraft Project has no document id, so the source id is a new uuid.
@@ -1457,7 +1464,7 @@ mod tests {
     fn options_reject_wrong_types() {
         assert!(EditInOptions::from_params(&json!({"instance": 4})).is_err());
         let ok = EditInOptions::from_params(&json!({"instance": "abc"})).unwrap();
-        assert_eq!(ok, EditInOptions { instance: Some("abc".to_string()), wait: false, cache_dir: None });
+        assert_eq!(ok, EditInOptions { instance: Some("abc".to_string()), wait: false, cache_dir: None, cache_limit: None });
         assert!(EditInOptions::from_params(&json!({"wait": true})).unwrap().wait);
         assert!(EditInOptions::from_params(&json!({"wait": "yes"})).is_err());
         assert_eq!(EditInOptions::from_params(&json!({})).unwrap(), EditInOptions::default());
@@ -1736,6 +1743,53 @@ mod tests {
         let cache = std::path::Path::new(&saved.path).with_file_name("cache");
         let movies = std::fs::read_dir(cache).unwrap().filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "mov")).count();
         assert_eq!(movies, SCENES.len());
+    }
+
+    /// The movies of a link are footage EffectCraft keeps by path in the comp and its sidecar. A
+    /// full cache must not delete them to make room for the next link's movie, and a reopen
+    /// renders a movie that went missing anyway before it asks EffectCraft for the comp.
+    #[test]
+    fn a_full_cache_keeps_the_movies_of_every_link_and_a_reopen_renders_a_lost_one() {
+        let _serial = prepare_serial();
+        let saved = TempProject::new("prep-pinned");
+        let (mut session, _seq) = crate::fixtures::demo_edit(&SCENES[..2], 64, 36, 48);
+        session.path = Some(saved.path.clone());
+        // One byte: every render starts with the cache over its limit.
+        let full = |wait: bool| EditInOptions { cache_limit: Some(1), ..options_in(&saved, wait) };
+        let video = |session: &Session, index: usize| session.active_sequence().unwrap().video_tracks[0].items[index].id;
+
+        session.state.selection = vec![video(&session, 0)];
+        let mut first = Recording::ok();
+        let reply = edit_in(&mut session, &mut first, &Headless, &full(true)).expect("first link");
+        let first_item = ItemId(reply["item"].as_u64().unwrap());
+        let first_movie = file_of(&sent_clip(&first));
+        assert!(first_movie.is_file());
+
+        session.state.selection = vec![video(&session, 1)];
+        let mut second = Recording::ok();
+        edit_in(&mut session, &mut second, &Headless, &full(true)).expect("second link");
+        let second_movie = file_of(&sent_clip(&second));
+        assert_ne!(first_movie, second_movie);
+        assert!(first_movie.is_file(), "the second link's render deleted the first link's source {}", first_movie.display());
+        assert!(second_movie.is_file());
+
+        // A movie that went anyway (another project's renders, a cleared cache) is rendered again
+        // at the same path before EffectCraft reopens the comp that names it.
+        std::fs::remove_file(&first_movie).unwrap();
+        select_outer(&mut session, first_item);
+        let err = edit_in(&mut session, &mut first, &Headless, &full(false)).expect_err("the lost source renders first");
+        assert!(matches!(err, EditInError::Preparing(_)), "{err:?}");
+        assert!(first.attaches.is_empty(), "EffectCraft was asked to reopen a comp whose footage is missing");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while crate::prepare::state() != crate::prepare::State::Idle {
+            assert!(std::time::Instant::now() < until, "the render did not end");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let reply = edit_in(&mut session, &mut first, &Headless, &full(false)).expect("reopen");
+        assert_eq!(reply["reopened"], true);
+        assert_eq!(first.attaches.len(), 1);
+        assert!(first_movie.is_file(), "the reopen did not bring back {}", first_movie.display());
+        assert!(second_movie.is_file(), "the regenerated movie pushed out the other link's source");
     }
 
     /// Clips prepared by an earlier call (another job) are reused, the rest render now.

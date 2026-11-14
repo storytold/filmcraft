@@ -93,7 +93,10 @@ has another owner or has looser permissions. FilmCraft never falls back to the s
 cache folder can be chosen, `link.editIn` fails with a message that names `CRAFT_LINK_CACHE_DIR`.
 
 A movie is named by a hash of what it shows, so a later run with the same source reuses it. When a render
-starts and the folder holds more than 20 GiB, the oldest movies go first.
+starts and the folder holds more than 20 GiB, the oldest movies go first. A movie that a link of the open
+project uses, or that the current hand-off uses, is never deleted: EffectCraft keeps its path in the comp
+and in the sidecar project. A link of another project can lose its movie. Choosing Edit in EffectCraft on
+that link renders the movie again, at the same path, before EffectCraft opens the comp.
 
 ## Project Links
 
