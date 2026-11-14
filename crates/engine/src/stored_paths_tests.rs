@@ -231,3 +231,27 @@ fn a_document_given_by_a_relative_path_links_its_relative_media() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Preferences ▸ Media ▸ Trusted Network Folders: a stored path on a listed share is followed
+/// from a document saved elsewhere, and only while the share is listed.
+#[test]
+fn trusted_network_folders_are_followed_from_any_document() {
+    let mut s = Session::default();
+    let doc = std::env::temp_dir().join("films").join("cut.fcproj").to_string_lossy().into_owned();
+    let nas = r"\\192.0.2.1\share\a.mov".to_string();
+    s.media.add_stored_paths([nas.clone()], Some(&doc));
+    assert!(s.media.follow(&nas).is_err());
+    let mut prefs = s.prefs.clone();
+    prefs.media.trusted_shares = r"\\192.0.2.1\share".into();
+    s.set_prefs(prefs).unwrap();
+    assert_eq!(*s.media.trusted_shares(), vec![r"\\192.0.2.1\share".to_string()]);
+    // A share path names a file only on Windows.
+    assert_eq!(s.media.follow(&nas).ok(), cfg!(windows).then(|| nas.clone()));
+    assert!(s.media.follow(r"\\192.0.2.1\other\a.mov").is_ok(), "a path the user picked is followed as given");
+    s.media.add_stored_paths([r"\\192.0.2.1\other\a.mov".to_string()], Some(&doc));
+    assert!(s.media.follow(r"\\192.0.2.1\other\a.mov").is_err());
+    let mut prefs = s.prefs.clone();
+    prefs.media.trusted_shares.clear();
+    s.set_prefs(prefs).unwrap();
+    assert!(s.media.follow(&nas).is_err());
+}

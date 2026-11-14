@@ -718,6 +718,7 @@ impl Session {
         self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
+        self.media.set_trusted_shares(doc_path::trusted_shares(&self.prefs.media.trusted_shares));
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
@@ -796,6 +797,10 @@ impl Session {
         }
         if self.media.use_proxies() != self.prefs.media.enable_proxies {
             self.media.set_use_proxies(self.prefs.media.enable_proxies);
+            self.bump_view();
+        }
+        // Trusted Network Folders: media refused (or opened) under the old list is looked up again.
+        if self.media.set_trusted_shares(doc_path::trusted_shares(&self.prefs.media.trusted_shares)) {
             self.bump_view();
         }
         if let Some(w) = &self.persistence {

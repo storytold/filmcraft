@@ -111,6 +111,10 @@ OPTIONS
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
+  --trust-share <share>         a network share root (\\\\server\\share or //server/share): media a
+                                project or an imported document names on it is opened wherever
+                                the document is saved (repeatable; Settings > Media > Trusted
+                                Network Folders for this run)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -178,6 +182,18 @@ impl Backend {
             return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
+        // Settings ▸ Media ▸ Trusted Network Folders for this run (the desktop app keeps it in its
+        // preferences): media on these shares is opened from a document saved anywhere.
+        let shares = a.opts("--trust-share");
+        if !shares.is_empty() {
+            let text = shares.join(";");
+            let trusted = filmcraft_engine::doc_path::trusted_shares(&text);
+            if trusted.len() != shares.len() {
+                usage("--trust-share takes a network share root such as \\\\server\\share or //server/share");
+            }
+            s.prefs.media.trusted_shares = text;
+            s.media.set_trusted_shares(trusted);
+        }
         // user export presets (and other per-user libraries) from the data directory
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
@@ -551,7 +567,7 @@ async fn cli_render(a: &Args) {
 }
 
 async fn cli_mcp(a: &Args) {
-    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--trust-share"]) {
         usage(format!("unknown mcp option `{opt}`"));
     }
     let server = match a.opt("--bridge") {
