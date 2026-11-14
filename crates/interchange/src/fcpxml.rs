@@ -472,7 +472,15 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     }
 
     /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
-    fn element_inner(&mut self, seq: &mut Sequence, ctx: &Ctx, el: Node<'a, 'i>, t0: Tick, lane: i32, primary: bool) -> (Tick, Option<filmcraft_project::ClipId>) {
+    fn element_inner(
+        &mut self,
+        seq: &mut Sequence,
+        ctx: &Ctx,
+        el: Node<'a, 'i>,
+        t0: Tick,
+        lane: i32,
+        primary: bool,
+    ) -> (Tick, Option<filmcraft_project::ClipId>) {
         let tag = el.tag_name().name();
         let dur = attr_time(el, "duration").unwrap_or(Tick::ZERO);
         let local_start = attr_time(el, "start").unwrap_or(Tick::ZERO);
