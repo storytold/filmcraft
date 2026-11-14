@@ -651,7 +651,7 @@ fn custom_color_dialogs_do_not_follow_a_different_project_or_saved_ui_state() {
     d.right_marker(marker, false);
     d.click("timeline.markerMenu.properties");
     d.click("markerProperties.addColor");
-    d.exec("file.openDemoProject", json!({}));
+    d.exec("file.openDemoProject", json!({"discard": true}));
     d.frames(2);
     assert!(d.app().ui.marker_properties.is_none());
     assert!(d.app().session.project.custom_colors.is_empty());
@@ -946,7 +946,7 @@ fn native_marker_color_preview_cancel_and_undo_preserve_project_ownership() {
     d.right_marker(marker, false);
     d.click("timeline.markerMenu.properties");
     d.click("markerProperties.addColor");
-    d.exec("file.openDemoProject", json!({}));
+    d.exec("file.openDemoProject", json!({"discard": true}));
     d.frames(3);
     assert_eq!(probe.drops.get(), 4, "switching projects releases the native picker");
     assert!(d.app().ui.marker_properties.is_none());
