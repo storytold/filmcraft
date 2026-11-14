@@ -33,12 +33,18 @@ impl AudioOut for Device {
     }
 }
 
+/// Checks that `shuttle_mix_rate` returns the expected mix rate for forward and reverse speeds,
+/// and that forward shuttle playback opens the audio device and keeps it as the master clock.
 #[test]
 fn forward_shuttle_playback_keeps_audio_enabled() {
     assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));
     assert_eq!(shuttle_mix_rate(48_000, 2.0), Some(24_000));
     assert_eq!(shuttle_mix_rate(48_000, 4.0), Some(12_000));
-    assert_eq!(shuttle_mix_rate(48_000, -1.0), None);
+    // Reverse speeds now return Some(device_rate); the mixer closure handles reversal.
+    assert_eq!(shuttle_mix_rate(48_000, -0.5), Some(48_000));
+    assert_eq!(shuttle_mix_rate(48_000, -1.0), Some(48_000));
+    assert_eq!(shuttle_mix_rate(48_000, -2.0), Some(48_000));
+    assert_eq!(shuttle_mix_rate(48_000, -4.0), Some(48_000));
     assert_eq!(shuttle_mix_rate(0, 2.0), None);
     assert_eq!(shuttle_mix_rate(48_000, f64::NAN), None);
 
@@ -51,6 +57,44 @@ fn forward_shuttle_playback_keeps_audio_enabled() {
     app.end_preroll(0.0);
     assert_eq!(starts.load(Ordering::Relaxed), 1, "2x playback must start audio output");
     assert!(app.playback.audio_clock, "the device is still the master clock");
+    app.stop();
+}
+
+/// Verifies that `play(-1.0)` opens the audio device and uses it as the master clock,
+/// matching the contract introduced by the reverse-audio-playback feature.
+#[test]
+fn reverse_shuttle_playback_starts_audio() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+    app.play(-1.0);
+    app.end_preroll(0.0);
+    assert_eq!(starts.load(Ordering::Relaxed), 1, "reverse playback must start audio output");
+    assert!(app.playback.audio_clock, "the device is still the master clock");
+    app.stop();
+}
+
+/// Verifies that stopping reverse playback and resuming forward playback opens a fresh audio stream,
+/// keeping the device as the master clock for the new direction.
+#[test]
+fn stopping_reverse_and_resuming_forward_restarts_audio() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+    app.play(-1.0);
+    app.end_preroll(0.0);
+    assert_eq!(starts.load(Ordering::Relaxed), 1, "reverse must start audio");
+    assert!(app.playback.audio_clock);
+    app.stop();
+    assert!(!app.playback.playing, "must be stopped");
+    app.play(1.0);
+    app.end_preroll(0.0);
+    assert_eq!(starts.load(Ordering::Relaxed), 2, "forward after reverse must open a fresh audio stream");
+    assert!(app.playback.audio_clock, "device must be master clock for forward play");
     app.stop();
 }
 
@@ -131,6 +175,8 @@ fn maintain_pitch_shuttling_controls_the_samples_sent_to_the_device() {
     }
 }
 
+/// Verifies that toggling the maintain-pitch preference while playing restarts the audio device
+/// at the current playhead position, and that out-of-range speeds keep audio silent.
 #[test]
 fn changing_pitch_preference_restarts_audio_at_the_current_playhead() {
     let mut session = Session::default();
@@ -157,7 +203,7 @@ fn changing_pitch_preference_restarts_audio_at_the_current_playhead() {
         app.apply_prefs(&ctx);
         assert_eq!(starts.load(Ordering::Relaxed), expected_starts, "unchanged settings do not restart");
     }
-    for speed in [-1.0, 8.0] {
+    for speed in [-8.0, 8.0] {
         app.play(speed);
         app.end_preroll(0.0);
         assert!(!app.playback.audio_clock, "unsupported speed {speed} remains silent");
