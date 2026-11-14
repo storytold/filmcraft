@@ -114,6 +114,7 @@ impl FilmcraftApp {
         }
         self.ui.project_panel.active_tab = None;
         self.ui.project_panel.selected_bin = None;
+        self.ui.project_panel.selected_bins.clear();
         self.ui.project_search.clear();
         self.show_panel(PanelKind::Project);
     }
