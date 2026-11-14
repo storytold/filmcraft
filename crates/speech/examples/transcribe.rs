@@ -12,7 +12,11 @@ fn main() {
     let dir = std::path::PathBuf::from(args.next().expect("model dir"));
     let id = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let t0 = std::time::Instant::now();
-    let w = filmcraft_speech::whisper::Whisper::load(&dir, &id).expect("load");
+    let w: Box<dyn Transcriber> = if id.starts_with("parakeet") {
+        Box::new(filmcraft_speech::parakeet::Parakeet::load(&dir, &id).expect("load"))
+    } else {
+        Box::new(filmcraft_speech::whisper::Whisper::load(&dir, &id).expect("load"))
+    };
     eprintln!("loaded {id} in {:.2}s", t0.elapsed().as_secs_f64());
     let mut show_words = false;
     let mut diarize = false;
