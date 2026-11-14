@@ -222,7 +222,8 @@ pub(super) static CATEGORIES: &[Category] = &[
                 Kind::Choice(&[
                     ("system", "System Language"),
                     ("en", "English"),
-                    // Alphabetical by the language's own name after English; Cyrillic, then
+                    ("ar", "العربية"),
+                    // Arabic is listed after English; remaining names follow the existing Latin, Cyrillic and CJK order.
                     // CJK names follow the Latin ones. Edit ▸ Language lists them the same way.
                     ("id", "Bahasa Indonesia"),
                     ("bs", "Bosanski"),

@@ -4,6 +4,7 @@ use super::*;
 fn catalog_text(l: Language) -> Option<&'static str> {
     match l {
         Language::En => None,
+        Language::Ar => Some(include_str!("ar.tsv")),
         Language::Ja => Some(include_str!("ja.tsv")),
         Language::Es => Some(include_str!("es.tsv")),
         Language::PtBr => Some(include_str!("pt-br.tsv")),
@@ -76,12 +77,16 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         assert_eq!(serde_json::from_str::<Language>(&json).unwrap(), l);
     }
     assert_eq!(Language::En.tr("File"), "File");
+    assert_eq!(Language::Ar.bcp47(), "ar");
+    assert_eq!(Language::from_locales(&["ar-LY".to_string()]), Language::Ar);
+    assert_eq!(Language::from_locales(&["ar_EG.UTF-8".to_string()]), Language::Ar);
     assert_eq!(Language::parse("xx"), None);
     for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE"] {
         assert_eq!(Language::parse(code), None, "the preference stores the bare code");
     }
     // language names are always shown in their own language
     for (l, name) in [
+        (Language::Ar, "العربية"),
         (Language::PtBr, "Português (Brasil)"),
         (Language::Uk, "Українська"),
         (Language::ZhCn, "简体中文"),
