@@ -96,6 +96,19 @@ impl Segment {
     }
 }
 
+/// The hash naming the preview of content `hash` rendered with `variant` (how its frames were
+/// made, e.g. on the GPU): `hash` itself for the empty variant, else a hash of both, so previews
+/// of one variant are never shown for another.
+pub fn variant_hash(hash: &str, variant: &str) -> String {
+    if variant.is_empty() {
+        return hash.to_string();
+    }
+    let mut h = Fnv128::new();
+    h.json(hash);
+    h.json(variant);
+    h.hex()
+}
+
 /// First frame whose start is at or after `t`.
 fn frame_ceil(rate: FrameRate, t: Tick) -> i64 {
     let f = rate.frame_at(t);

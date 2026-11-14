@@ -101,6 +101,11 @@ pub struct PlaybackPrefs {
     /// or `off` (always FilmCraft's own decoders). Media already open keeps its decoder until it
     /// is reopened.
     pub hardware_decoding: String,
+    /// "Render previews on the GPU": `off` (default: render previews composite on the CPU, as
+    /// exports do unless asked) or `auto` (on the GPU when the host has one, as the monitor
+    /// composites; frames the GPU can't render go to the CPU). Previews rendered with the other
+    /// setting are not reused.
+    pub preview_gpu_rendering: String,
 }
 
 impl Default for PlaybackPrefs {
@@ -114,6 +119,7 @@ impl Default for PlaybackPrefs {
             disable_video_in_background: true,
             draft_decode: false,
             hardware_decoding: "auto".into(),
+            preview_gpu_rendering: "off".into(),
         }
     }
 }
