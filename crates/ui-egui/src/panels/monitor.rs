@@ -899,6 +899,9 @@ fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Wh
     }
 }
 
+/// A monitor's time ruler and scrub bar over `origin`..`end` (zoomed by the monitor's zoom bar),
+/// with ticks, the In / Out range and the playhead at `time`. Clicking or dragging it moves that
+/// monitor's playhead; on the Source monitor it also stops Source playback.
 #[allow(clippy::too_many_arguments)]
 fn mini_timeline(
     app: &mut FilmcraftApp,
@@ -1054,6 +1057,9 @@ fn mini_timeline(
                 app.session.set_playhead(tk);
             }
             Which::Source => {
+                // a scrub stops Source playback as it stops the Program's (#4609): left running, it
+                // restarted its sound at every move, whatever Settings ▸ Audio says about scrubbing
+                app.stop_source();
                 let _ = app.session.execute("source.setPlayhead", json!({"time": tk.0}));
             }
         }

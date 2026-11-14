@@ -191,3 +191,57 @@ fn a_press_on_the_ruler_while_the_source_plays_stops_it() {
     d.click_ruler();
     assert!(!d.harness.state().source_playback.clock.playing, "the press stopped the Source monitor");
 }
+
+/// #4609: dragging the Source monitor's scrub bar while the Source plays stops it, as the Program
+/// monitor's scrub bar and the Timeline ruler stop playback. Source playback used to keep running
+/// and restart its sound at every new position, so the scrub was heard even with Settings ▸ Audio ▸
+/// "Play audio while scrubbing in Source and Program Monitors" off.
+#[test]
+fn dragging_the_source_scrub_bar_while_the_source_plays_stops_it() {
+    let mut d = Driver::empty_sequence();
+    d.harness.state_mut().session.prefs.audio.scrub_audio = false;
+    let item = d.with_contents();
+    d.harness.state_mut().session.execute("source.open", json!({"item": item})).unwrap();
+    d.frames(2);
+    d.harness.state_mut().play_source().unwrap();
+    d.frames(2);
+    assert!(d.harness.state().source_playback.clock.playing, "the Source monitor is playing");
+    let r = d.rect("source.scrubBar");
+    let from = egui::pos2(r.min.x + r.width() * 0.5, r.center().y);
+    let to = egui::pos2(r.min.x + r.width() * 0.25, r.center().y);
+    d.send(egui::Event::PointerMoved(from));
+    d.send(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    d.send(egui::Event::PointerMoved(egui::pos2(from.x - 10.0, from.y)));
+    d.send(egui::Event::PointerMoved(to));
+    assert!(!d.harness.state().source_playback.clock.playing, "the scrub stopped the Source monitor");
+    d.send(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    d.frames(2);
+    assert!(!d.harness.state().source_playback.clock.playing, "and it stays stopped after the release");
+    assert!(!d.harness.state().scrub.is_open(), "with the setting off no scrub stream opened");
+}
+
+/// #4609: a horizontal drag on the Source monitor's audio waveform scrubs too, and stops the Source
+/// the same way.
+#[test]
+fn dragging_the_source_waveform_while_the_source_plays_stops_it() {
+    let mut d = Driver::empty_sequence();
+    d.harness.state_mut().session.prefs.audio.scrub_audio = false;
+    let item = d.with_contents();
+    d.harness.state_mut().session.execute("source.open", json!({"item": item})).unwrap();
+    d.ok("ui.set", json!({"source": {"display": "AudioWaveform"}}));
+    d.frames(3);
+    d.harness.state_mut().play_source().unwrap();
+    d.frames(2);
+    assert!(d.harness.state().source_playback.clock.playing, "the Source monitor is playing");
+    let r = d.rect("source.waveform");
+    let from = egui::pos2(r.min.x + r.width() * 0.5, r.center().y);
+    let to = egui::pos2(r.min.x + r.width() * 0.25, r.center().y);
+    d.send(egui::Event::PointerMoved(from));
+    d.send(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    d.send(egui::Event::PointerMoved(egui::pos2(from.x - 10.0, from.y)));
+    d.send(egui::Event::PointerMoved(to));
+    assert!(!d.harness.state().source_playback.clock.playing, "the scrub stopped the Source monitor");
+    d.send(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    d.frames(2);
+    assert!(!d.harness.state().source_playback.clock.playing, "and it stays stopped after the release");
+}
