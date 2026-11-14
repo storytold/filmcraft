@@ -77,6 +77,37 @@ fn legacy_project_opens_and_first_save_keeps_a_backup() {
 }
 
 #[test]
+fn failed_save_as_keeps_the_current_project_identity() {
+    let d = temp_dir("failed-save-identity");
+    for previously_saved in [false, true] {
+        let mut s = demo();
+        if previously_saved {
+            let original = d.join("original.fcproj").to_string_lossy().to_string();
+            s.execute("file.saveAs", json!({"path": original})).unwrap();
+            s.execute("file.newSequence", json!({"name": "Unsaved edit"})).unwrap();
+        }
+        let project = s.project.clone();
+        let path = s.path.clone();
+        let (revision, saved_revision) = (s.revision, s.saved_revision);
+        let rejected = d.join("missing-parent").join("renamed.fcproj").to_string_lossy().to_string();
+        assert!(s.execute("file.saveAs", json!({"path": rejected})).is_err());
+        assert_eq!(s.project.name, project.name, "failed Save As must not rename the current project");
+        assert_eq!(s.project.root.name, project.root.name);
+        assert!(std::sync::Arc::ptr_eq(&s.project, &project));
+        assert_eq!(s.path, path);
+        assert_eq!((s.revision, s.saved_revision), (revision, saved_revision));
+        let accepted = d.join("accepted.fcproj").to_string_lossy().to_string();
+        s.execute("file.saveAs", json!({"path": accepted})).unwrap();
+        assert_eq!(s.project.name, "accepted");
+        assert_eq!(s.project.root.name, "accepted");
+        let loaded = filmcraft_format::decode(&std::fs::read(&accepted).unwrap()).unwrap();
+        assert_eq!(loaded.project.name, "accepted");
+        assert_eq!(loaded.project.root.name, "accepted");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn project_is_named_after_its_file() {
     let d = temp_dir("name");
     let mut s = demo();

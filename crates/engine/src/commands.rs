@@ -5326,16 +5326,17 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
-    // Save As renames the project after its new file (not an edit: no undo step, not dirty).
+    // Stage Save As identity with the output; a failed write must leave the live project intact.
+    let mut project = s.project.clone();
     if adopt
         && let Some(name) = project_name_for(path)
-        && s.project.name != name
+        && project.name != name
     {
-        name_project(std::sync::Arc::make_mut(&mut s.project), name);
+        name_project(std::sync::Arc::make_mut(&mut project), name);
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
-    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    let bytes = filmcraft_format::encode_with_view(&project, Some(&view), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -5348,6 +5349,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     if adopt {
+        s.project = project;
         s.path = Some(path.to_string());
         s.previews_follow_path();
         s.note_recent_project();
