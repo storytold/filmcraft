@@ -181,6 +181,34 @@ impl PlanStack {
         self.steps.push(PlanStep::Adjust { ops });
     }
 
+    fn append(&mut self, other: PlanStack) {
+        if self.exhausted {
+            return;
+        }
+        if other.cpu_only {
+            self.cpu_only = true;
+        }
+        if other.exhausted || self.layers.saturating_add(other.layers) > MAX_PLAN_LAYERS {
+            self.exhausted = true;
+            return;
+        }
+        for step in other.steps {
+            match step {
+                PlanStep::Layers(mut ls) => {
+                    if let Some(PlanStep::Layers(prev)) = self.steps.last_mut() {
+                        prev.append(&mut ls);
+                    } else {
+                        self.steps.push(PlanStep::Layers(ls));
+                    }
+                }
+                step @ (PlanStep::Transition { .. } | PlanStep::Adjust { .. }) => {
+                    self.steps.push(step);
+                }
+            }
+        }
+        self.layers = self.layers.saturating_add(other.layers);
+    }
+
     fn into_layers(self, width: usize, height: usize) -> Option<Vec<PlanLayer>> {
         if self.exhausted || self.cpu_only {
             return None;
@@ -401,74 +429,125 @@ fn push_adjustment(sc: Scene, item: &TrackItem, out: &mut PlanStack) {
 /// Push the layers of every video track of the scene's sequence at its time, bottom track first
 /// (the sequence must be [`layered_at`] that time).
 fn push_tracks(sc: Scene, layers: &mut PlanStack) {
-    let Scene { project, seq, t, opts, .. } = sc;
+    if layers.exhausted {
+        return;
+    }
+    let Scene { seq, t, opts, .. } = sc;
     let (w, h) = output_size(seq, opts.scale);
-    for tr in &seq.video_tracks {
+    let active: Vec<&filmcraft_project::Track> = seq
+        .video_tracks
+        .iter()
+        .filter(|tr| tr.enabled && (tr.transitions.iter().any(|x| x.range().contains(t)) || tr.item_at(t).is_some_and(|i| i.enabled)))
+        .collect();
+    if active.len() <= 1 {
+        for tr in active {
+            if layers.exhausted {
+                return;
+            }
+            layers.append(push_one_track(sc, tr, w, h));
+        }
+        return;
+    }
+    use rayon::prelude::*;
+    let ctx = filmcraft_media::cancel::Context::current();
+    let stacks: Vec<PlanStack> = active.into_par_iter().map(|tr| ctx.clone().run(|| push_one_track(sc, tr, w, h))).collect();
+    for s in stacks {
         if layers.exhausted {
             return;
         }
-        if !tr.enabled {
-            continue;
-        }
-        if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
-            let p = trn.progress(t) as f32;
-            let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
-            let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
-            match trn.effect.effect.as_str() {
-                "push" => {
-                    let mut inputs = [Vec::new(), Vec::new()];
-                    for (slot, item) in inputs.iter_mut().zip([a, b]) {
-                        if let Some(item) = item {
-                            let mut input = PlanStack::default();
-                            push_item(sc, item, 1.0, Some(Blend::Normal), &mut input);
-                            let Some(input_layers) = input.into_layers(w, h) else {
-                                layers.exhausted = true;
-                                return;
-                            };
-                            *slot = input_layers;
-                        }
-                    }
-                    let progress = if trn.reverse {
-                        inputs.swap(0, 1);
-                        1.0 - p
-                    } else {
-                        p
-                    };
-                    layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
+        layers.append(s);
+    }
+}
+
+fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) -> PlanStack {
+    let Scene { project, t, opts, .. } = sc;
+    let mut layers = PlanStack::default();
+    if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
+        // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
+        let p = trn.progress(t) as f32;
+        let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
+        let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
+        match trn.effect.effect.as_str() {
+            "push" => {
+                let eval_side = |item: Option<&TrackItem>| -> Option<Vec<PlanLayer>> {
+                    let Some(item) = item else { return Some(Vec::new()) };
+                    let mut input = PlanStack::default();
+                    push_item(sc, item, 1.0, Some(Blend::Normal), &mut input);
+                    input.into_layers(w, h)
+                };
+                let (res_a, res_b) = if a.is_some() && b.is_some() {
+                    let ctx = filmcraft_media::cancel::Context::current();
+                    let (ctx_a, ctx_b) = (ctx.clone(), ctx);
+                    rayon::join(|| ctx_a.run(|| eval_side(a)), || ctx_b.run(|| eval_side(b)))
+                } else {
+                    (eval_side(a), eval_side(b))
+                };
+                let (Some(la), Some(lb)) = (res_a, res_b) else {
+                    layers.exhausted = true;
+                    return layers;
+                };
+                let mut inputs = [la, lb];
+                let progress = if trn.reverse {
+                    inputs.swap(0, 1);
+                    1.0 - p
+                } else {
+                    p
+                };
+                layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
+            }
+            "dip_to_black" | "dip_to_white" => {
+                let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+                layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
+                let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
+                if let Some(it) = it {
+                    push_item(sc, it, k, Some(Blend::Normal), &mut layers);
                 }
-                "dip_to_black" | "dip_to_white" => {
-                    let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
-                    layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
-                    let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
-                    if let Some(it) = it {
-                        push_item(sc, it, k, Some(Blend::Normal), layers);
-                    }
-                }
-                _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+            }
+            _ => {
+                // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                let mut stack_a = PlanStack::default();
+                let mut stack_b = PlanStack::default();
+                if a.is_some() && b.is_some() {
+                    let ctx = filmcraft_media::cancel::Context::current();
+                    let (ctx_a, ctx_b) = (ctx.clone(), ctx);
+                    rayon::join(
+                        || ctx_a.run(|| {
+                            if let Some(it) = a {
+                                push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a);
+                            }
+                        }),
+                        || ctx_b.run(|| {
+                            if let Some(it) = b {
+                                push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
+                            }
+                        }),
+                    );
+                } else {
                     if let Some(it) = a {
-                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
+                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut stack_a);
                     }
                     if let Some(it) = b {
-                        push_item(sc, it, p, Some(Blend::Normal), layers);
+                        push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
                     }
                 }
+                layers.append(stack_a);
+                layers.append(stack_b);
             }
-            continue;
         }
-        let Some(item) = tr.item_at(t) else { continue };
-        if !item.enabled {
-            continue;
-        }
-        if is_adjustment(project, item) {
-            if opts.effects {
-                push_adjustment(sc, item, layers);
-            }
-            continue;
-        }
-        push_item(sc, item, 1.0, None, layers);
+        return layers;
     }
+    let Some(item) = tr.item_at(t) else { return layers };
+    if !item.enabled {
+        return layers;
+    }
+    if is_adjustment(project, item) {
+        if opts.effects {
+            push_adjustment(sc, item, &mut layers);
+        }
+        return layers;
+    }
+    push_item(sc, item, 1.0, None, &mut layers);
+    layers
 }
 
 /// Whether a nested sequence can be drawn by pushing its own layers into the plan of the sequence

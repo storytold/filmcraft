@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -277,10 +277,36 @@ pub fn process_cpu_time() -> Option<Duration> {
 }
 
 thread_local! {
-    /// (wall, cpu) spent in source `video_frame` calls by this worker during the current job.
+    /// (wall, cpu) spent in source `video_frame` calls directly on this worker thread.
     static SOURCE_TIME: Cell<(Duration, Duration)> = const { Cell::new((Duration::ZERO, Duration::ZERO)) };
     /// This worker is profiling the current job (thread CPU of source calls is measured).
     static PROFILING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Atomic source-decode timing shared across any rayon tasks a frame job spawns.
+#[derive(Default)]
+struct SourceAcc {
+    wall_ns: AtomicU64,
+    cpu_ns: AtomicU64,
+    profiling: bool,
+}
+
+impl SourceAcc {
+    fn timed<R>(&self, f: impl FnOnce() -> R) -> R {
+        let cpu = || if self.profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
+        let (w0, c0) = (Instant::now(), cpu());
+        let r = f();
+        let (dw, dc) = (w0.elapsed(), cpu().saturating_sub(c0));
+        self.wall_ns.fetch_add(dw.as_nanos() as u64, Ordering::Relaxed);
+        if self.profiling {
+            self.cpu_ns.fetch_add(dc.as_nanos() as u64, Ordering::Relaxed);
+        }
+        r
+    }
+
+    fn totals(&self) -> (Duration, Duration) {
+        (Duration::from_nanos(self.wall_ns.load(Ordering::Relaxed)), Duration::from_nanos(self.cpu_ns.load(Ordering::Relaxed)))
+    }
 }
 
 /// Run `f`, adding its wall/CPU time to this thread's source-time accumulator.
@@ -297,18 +323,18 @@ fn timed_source<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// A media source that times its `video_frame` calls (see [`JobRecord::source_wall`]).
-struct TimedSource(filmcraft_media::SharedSource);
+struct TimedSource(filmcraft_media::SharedSource, Arc<SourceAcc>);
 
 impl filmcraft_media::MediaSource for TimedSource {
     fn info(&self) -> &filmcraft_media::MediaInfo {
         self.0.info()
     }
     fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
-        timed_source(|| self.0.video_frame(req))
+        self.1.timed(|| self.0.video_frame(req))
     }
     /// The inner source's unturned frame, timed like [`Self::video_frame`].
     fn video_frame_unturned(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<(Arc<filmcraft_frame::VideoFrame>, u8)> {
-        timed_source(|| self.0.video_frame_unturned(req))
+        self.1.timed(|| self.0.video_frame_unturned(req))
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
         self.0.audio(start, frames, sample_rate)
@@ -322,12 +348,13 @@ impl filmcraft_media::MediaSource for TimedSource {
 /// [`FrameServer::render_cost`] and, while profiling, [`JobRecord`]).
 struct JobProvider {
     inner: filmcraft_engine::media_pool::PoolProvider,
+    acc: Arc<SourceAcc>,
 }
 
 impl filmcraft_render::SourceProvider for JobProvider {
     fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
         let s = self.inner.pool.monitor_source(item, self.inner.source(item)?);
-        Some(Arc::new(TimedSource(s)))
+        Some(Arc::new(TimedSource(s, self.acc.clone())))
     }
 }
 
@@ -354,8 +381,8 @@ struct PlanCache {
 }
 
 impl PlanCache {
-    const MAX: usize = 96;
-    const BUDGET: usize = 1 << 30;
+    const MAX: usize = 128;
+    const BUDGET: usize = 3 << 29;
 
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
@@ -447,7 +474,7 @@ pub const PREROLL_FRAMES: i64 = 6;
 /// Seconds before a scrubbed-to frame whose frames a seek still decodes in full (see
 /// [`FrameServer::request`]); earlier non-reference pictures are skipped on the way.
 pub const SCRUB_KEEP_S: f64 = 2.0;
-pub const PREROLL_TIMEOUT_S: f64 = 0.5;
+pub const PREROLL_TIMEOUT_S: f64 = 1.5;
 
 /// How many revisions behind the project a playing monitor's picture may be while the frame due
 /// is not ready at the current one (#1673). A value dragged during playback makes a revision per
@@ -535,7 +562,7 @@ impl FrameServer {
 
     /// The default number of frame workers for this machine.
     pub fn default_workers() -> usize {
-        std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3)
+        std::thread::available_parallelism().map(|n| n.get().clamp(2, 8)).unwrap_or(4)
     }
 
     pub fn set_context(&self, ctx: &egui::Context) {
@@ -734,12 +761,19 @@ impl FrameServer {
         let (target, rev, cur) = (key.target, key.revision, key.frame);
         let span = (lead + ahead * stride) * step + 26;
         let ahead_of = |k: &FrameKey| (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span;
+        // Let running jobs up to 6 frames behind the playhead finish: cancelling a multi-layer
+        // job moments after the playhead advances discards partial decodes, breaks GOP progress,
+        // and starves `nearest_plan(6)` into a cancellation spiral.
+        let running_window = |k: &FrameKey| {
+            let d = (k.frame - cur) * dir;
+            d >= -6 * step && d < span
+        };
         // Queued jobs of an older revision are dropped, but one already rendering a frame still
-        // ahead is left to finish (#1673): a value dragged during playback asks for a new
-        // revision on every pass, and cancelling those jobs each time left nothing ever ready.
+        // ahead (or just passed) is left to finish (#1673): a value dragged during playback asks
+        // for a new revision on every pass, and cancelling those jobs each time left nothing ready.
         self.retain_jobs(
             |k| k.target != target || (k.revision == rev && ahead_of(k)),
-            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && ahead_of(k)),
+            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && running_window(k)),
         );
     }
 
@@ -992,17 +1026,21 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
     SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
     PROFILING.with(|p| p.set(profiling));
+    let acc = Arc::new(SourceAcc { profiling, ..Default::default() });
     // A cancelled job may have missed layers (its source gave up): its result is not cached.
     // A job whose media bytes were still loading (web) rendered with missing layers: like a
     // cancelled one, its result is not cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
+    let mut eval_wall = Duration::ZERO;
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq, caps) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                        let t0 = Instant::now();
+                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews, &acc);
+                        eval_wall = t0.elapsed();
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
@@ -1011,7 +1049,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         }
                         pv
                     } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
+                        let t0 = Instant::now();
+                        let (img, pv) = render_job(job, pool, services, previews, &acc);
+                        eval_wall = t0.elapsed();
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
@@ -1024,11 +1064,15 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    let (tl_wall, tl_cpu) = SOURCE_TIME.with(|s| s.get());
+    let (acc_wall, acc_cpu) = acc.totals();
+    let source_wall = (tl_wall + acc_wall).min(eval_wall);
+    let source_cpu = tl_cpu + acc_cpu;
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
         // only tells that the work takes at least this long.
-        let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
+        let cost = started.elapsed().saturating_sub(source_wall).as_secs_f64();
         let mut c = sh.render_cost.lock().unwrap_or_else(PoisonError::into_inner);
         if !cancelled || cost > *c {
             *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
@@ -1036,8 +1080,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     }
     {
         let job_wall = started.elapsed();
-        let source = SOURCE_TIME.with(|s| s.get()).0;
-        let (src_ms, render_ms) = (source.as_secs_f64() * 1e3, job_wall.saturating_sub(source).as_secs_f64() * 1e3);
+        let (src_ms, render_ms) = (source_wall.as_secs_f64() * 1e3, job_wall.saturating_sub(source_wall).as_secs_f64() * 1e3);
         let mut st = sh.stats.lock().unwrap_or_else(PoisonError::into_inner);
         st.jobs += 1;
         st.cancelled += cancelled as u64;
@@ -1052,7 +1095,6 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         st.recent.push_back((src_ms as f32, render_ms as f32));
     }
     if profiling {
-        let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
         let rec = JobRecord {
             key: job.key,
             prio: job.prio,
@@ -1076,8 +1118,8 @@ fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewSto
     timed_source(|| previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale))
 }
 
-fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> JobProvider {
-    JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
+fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, acc: &Arc<SourceAcc>) -> JobProvider {
+    JobProvider { inner: pool.provider(job.project.clone(), services.clone()), acc: acc.clone() }
 }
 
 fn plan_job(
@@ -1087,6 +1129,7 @@ fn plan_job(
     pool: &Arc<MediaPool>,
     services: &Arc<dyn Services>,
     previews: &PreviewStore,
+    acc: &Arc<SourceAcc>,
 ) -> (filmcraft_render::plan::FramePlan, bool) {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     if let Some(frame) = preview_frame(job, seq, pool, previews)
@@ -1109,12 +1152,12 @@ fn plan_job(
         }
         return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
     }
-    let provider = provider(job, pool, services);
+    let provider = provider(job, pool, services, acc);
     (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, caps, &provider), false)
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
-fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (Rgba, bool) {
+fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore, acc: &Arc<SourceAcc>) -> (Rgba, bool) {
     if let Target::Sequence(seq) | Target::SequencePlan(seq, _) = job.key.target
         && let Some(f) = preview_frame(job, seq, pool, previews)
         && let Some(q) = job.project.sequence(seq)
@@ -1133,7 +1176,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
         }
         return (Rgba { w: img.w, h: img.h, px: img.over_black_with_alpha_rgba8() }, true);
     }
-    let provider = provider(job, pool, services);
+    let provider = provider(job, pool, services, acc);
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
         Target::Sequence(seq) | Target::SequencePlan(seq, _) | Target::SequenceLive(seq) => {

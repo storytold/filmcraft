@@ -298,7 +298,7 @@ impl Drop for DecodingGuard {
 /// A decoder keeps its reference and in-flight pictures (hundreds of MB for a frame-threaded
 /// 4K decoder), so only this many caches keep theirs once idle: a timeline's other clips make a
 /// new one when the playhead reaches them, which costs what a seek costs.
-const MAX_LIVE_DECODERS: usize = 4;
+const MAX_LIVE_DECODERS: usize = 12;
 
 /// A cache asked for a frame this recently may be needed again soon (the next clip being
 /// prefetched, a clip the user scrubs back to): it keeps its decoder up to [`HARD_DECODERS`], and
@@ -306,7 +306,7 @@ const MAX_LIVE_DECODERS: usize = 4;
 /// within [`FRAME_BUDGET`] once it has been idle for [`RECENT`]: going back to a clip left (or
 /// paused) more than that long ago may cost a re-decode from its keyframe when other clips have
 /// filled the budget meanwhile. Frames go least recently used cache first, earliest frames first.
-const IDLE: Duration = Duration::from_secs(3);
+const IDLE: Duration = Duration::from_secs(6);
 
 /// A cache asked for a frame this recently is in use (a layer of the frame being composited): it
 /// keeps its decoder and frames whatever the count. Caches idle for less than [`IDLE`] but longer
@@ -315,16 +315,16 @@ const IDLE: Duration = Duration::from_secs(3);
 /// and frames beyond [`FRAME_BUDGET`]. Without this, everything touched within [`IDLE`] counted
 /// as in use, so a burst held every clip's decoder (42 live hardware sessions, 6.5 GB of VRAM)
 /// and hundreds of MB of frames per clip.
-const RECENT: Duration = Duration::from_millis(500);
+const RECENT: Duration = Duration::from_millis(1500);
 
 /// Most decoders caches idle for [`RECENT`] to [`IDLE`] keep together (a composite of a few
 /// layers plus the clips just left behind).
-const HARD_DECODERS: usize = 8;
+const HARD_DECODERS: usize = 16;
 
 /// Decoded frames all caches may hold together before idle ones give theirs up. Each cache also
 /// has its own budget, which alone let every clip on a timeline keep hundreds of MB of frames
 /// nobody was looking at.
-pub const FRAME_BUDGET: usize = 1 << 30;
+pub const FRAME_BUDGET: usize = 2 << 30;
 
 /// What the caches of a process share: the cap on live decoders and the frame budget.
 struct Pool {
