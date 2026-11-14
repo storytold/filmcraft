@@ -134,6 +134,35 @@ fn select_clip_at_playhead_next_previous_and_go_to_selected_clip() {
     assert!(s.execute("playhead.selectedClipStart", json!({})).is_err());
 }
 
+/// End parks on the first frame at or after the sequence end, as in Premiere Pro: flush with the
+/// last clip's end, never a frame short inside it, even when that clip ends between frames (moved
+/// to a sub-frame time, or sound that runs to the sample).
+#[test]
+fn end_parks_after_a_last_clip_that_ends_between_frames() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "End", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let placed = s.execute("timeline.place", json!({"item": item.0, "frame": 0, "sourceIn": 0, "duration": rate.tick_of(48).0})).unwrap();
+    let clips: Vec<u64> = placed["clips"].as_array().unwrap().iter().filter_map(|v| v.as_u64()).collect();
+    let (v1, a1) = s.active_sequence().map(|q| (q.video_tracks[0].id.0, q.audio_tracks[0].id.0)).unwrap();
+    let third = rate.frame_duration().0 / 3;
+    s.execute("timeline.move", json!({"moves": [{"clip": clips[0], "track": v1, "time": third}, {"clip": clips[1], "track": a1, "time": third}]})).unwrap();
+    let end = s.active_sequence().unwrap().duration();
+    assert_ne!(rate.snap(end), end, "the sequence ends between frames");
+
+    s.execute("playhead.end", json!({})).unwrap();
+    let ph = s.playhead();
+    assert!(ph >= end, "End stops inside the last clip: playhead {ph:?}, sequence end {end:?}");
+    assert!(ph - end < rate.frame_duration(), "and less than a frame past its end");
+    assert_eq!(rate.snap(ph), ph, "on a frame");
+
+    // a sequence that ends on a frame: End parks exactly there
+    s.execute("timeline.move", json!({"moves": [{"clip": clips[0], "track": v1, "time": 0}, {"clip": clips[1], "track": a1, "time": 0}]})).unwrap();
+    s.execute("playhead.end", json!({})).unwrap();
+    assert_eq!(s.playhead(), rate.tick_of(48));
+}
+
 #[test]
 fn extend_previous_and_next_edit_roll_cuts_to_the_playhead() {
     let mut s = demo();
