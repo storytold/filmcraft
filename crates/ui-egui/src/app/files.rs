@@ -67,10 +67,7 @@ impl FilmcraftApp {
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                if let Some(asked) = crate::panels::clip_dialogs::ask_before_open(app, &path) {
-                    return asked;
-                }
-                app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+                crate::panels::clip_dialogs::open_chosen_project(app, &path)
             }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();

@@ -104,6 +104,16 @@ pub fn put(path: &str, data: Vec<u8>) {
     FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
 }
 
+/// Remove the in-memory file at `path`. Blob entries (opened media) are left alone.
+pub fn remove_mem(path: &str) {
+    FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        if matches!(fs.entries.get(path), Some(Entry::Mem(_))) {
+            fs.entries.remove(path);
+        }
+    });
+}
+
 /// The in-memory bytes written at `path` (saved projects and exports are held here; host mode
 /// hands them to the host at the next frame instead of downloading them). Blob entries — opened
 /// media — are never written, only registered, so a written path is always in memory.
