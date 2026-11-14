@@ -664,6 +664,9 @@ multi-camera clip = nested source + TrackItem::multicam {enabled, angle}
 
 ```text
 file.exportMedia {path, preset?, settings?, format?, range?, …}     export.quick {preset?, path?}
+clip.export {clip?|clips?, path?, preset?, …}  (Timeline clip menu ▸ Export Clip…)
+  → a project copy with one more sequence holding only those clips, at the first video clip's
+    source size/rate/pixel aspect and the first audio clip's sample rate
   → engine::export_tools: preset ⊕ settings JSON ⊕ flat overrides → ExportSettings; range resolved
   → a Job {id, label, progress, result} on a background thread (export.queue.* runs them in order)
   → export: per output frame render (output rate) → fit into the output frame → overlays → limiter

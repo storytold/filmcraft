@@ -83,11 +83,38 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 app.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
             }),
+            "clip.export" => self.export_clip_dialog(params),
             _ => match EXPORT_SAVE_DIALOGS.iter().find(|(c, ..)| *c == id) {
                 Some(&(_, filter, ext)) => self.export_save_dialog(id, filter, ext, params),
                 None => Err(format!("no dialog for {id}")),
             },
         }
+    }
+
+    /// The Timeline's clip menu ▸ Export Clip…: ask where to save the selected clips, suggesting
+    /// what `clip.export` would write by default (the clip's name, an MP4 in its source's quality
+    /// or a WAV when only sound is selected, or the chosen preset's or format's file), then export
+    /// them in the background. Without a save dialog (the web app) the file goes to the default
+    /// export folder.
+    fn export_clip_dialog(&mut self, params: &Value) -> Result<Value, String> {
+        filmcraft_engine::find_command("clip.export").map_or(Ok(()), |c| (c.enabled)(&self.session))?;
+        // the engine resolves the clips (and their linked partners), the format and the name, so
+        // the suggestion is the file the export writes; bad parameters are refused before asking
+        if self.session.state.selection.is_empty() && params.get("clip").is_none() && params.get("clips").is_none() {
+            return Err(tl!("Select a clip to export").into());
+        }
+        let (format, name) = filmcraft_engine::export_tools::clip_export_suggestion(&self.session, params).map_err(|e| e.to_string())?;
+        let ext = format.extension();
+        let mut p = params.as_object().cloned().unwrap_or_default();
+        let dialog = FileDialog::save_as(format.label(), &[ext], &name);
+        if !dialog.available(&self.hooks) {
+            return export_clip_now(self, Value::Object(p));
+        }
+        self.pick(dialog, move |app, paths| {
+            let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+            p.insert("path".into(), json!(path));
+            export_clip_now(app, Value::Object(p))
+        })
     }
 
     /// File ▸ Export ▸ EDL…, Final Cut Pro XML… etc. from the menus (#382): ask where to save, then
@@ -119,4 +146,17 @@ impl FilmcraftApp {
             r
         })
     }
+}
+
+/// Run `clip.export` with `params` and say in the status line where the file is going.
+fn export_clip_now(app: &mut FilmcraftApp, params: Value) -> Result<Value, String> {
+    let r = app.session.execute("clip.export", params).map_err(|e| e.to_string());
+    app.ui.status = match &r {
+        Ok(v) => {
+            let path = v["path"].as_str().unwrap_or_default().to_string();
+            tlf!("Exporting clip to {path}", path)
+        }
+        Err(e) => e.clone(),
+    };
+    r
 }

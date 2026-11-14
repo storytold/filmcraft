@@ -21,13 +21,14 @@
 //! `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_export::{BitrateMode, ExportPreset, ExportSettings, Format, GpuRendering, HardwareEncoding};
-use filmcraft_project::{ItemId, Project};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Project, SplitMarks, TrackKind};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -467,10 +468,15 @@ fn is_folder(x: &str) -> bool {
 /// `<default dir>/<sequence name>.<ext>`; `suffix` distinguishes several items.
 fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+    output_path_named(s, p, &name, settings, suffix)
+}
+
+/// [`output_path`] for an output named `name` (when `path` is absent or a folder).
+fn output_path_named(s: &Session, p: &Value, name: &str, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let base = match str_p(p, "path").map(expand_home) {
-        Some(x) if is_folder(&x) => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
+        Some(x) if is_folder(&x) => Path::new(&x).join(file_safe(name)).to_string_lossy().to_string(),
         Some(x) => x,
-        None => default_export_dir(s).join(file_safe(&name)).to_string_lossy().to_string(),
+        None => default_export_dir(s).join(file_safe(name)).to_string_lossy().to_string(),
     };
     let path = with_extension(&base, settings);
     match suffix {
@@ -574,6 +580,13 @@ fn file_name(path: &str) -> String {
 /// For an image sequence, the first and last numbered stills it writes: it never writes
 /// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
 fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+    let count = sequence_count(project, seq, settings)?;
+    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+}
+
+/// How many stills an image-sequence export of `seq` writes (`None` when `settings` is not an
+/// image sequence, or nothing would be written).
+fn sequence_count(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<u64> {
     if !settings.is_image_sequence() {
         return None;
     }
@@ -581,8 +594,7 @@ fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> 
     let range = filmcraft_export::export_range(project, seq, settings).ok()?;
     let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let count = u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)?;
-    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+    u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)
 }
 
 /// An export's `path` in a command result: the file written, for an image sequence its first
@@ -620,6 +632,11 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
+    finish_export_json(s, id, wait, out)
+}
+
+/// The rest of an export command's answer: where to follow the job, or (with `wait`) its result.
+fn finish_export_json(s: &Session, id: u64, wait: bool, mut out: Value) -> Result<Value> {
     if !wait {
         // where the job can be followed (#1544: it is not in `export.queue.list`, which only lists
         // the Export Queue, so agents looked there and found nothing)
@@ -635,6 +652,307 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         out["offlineMedia"] = offline_media_json(s, id);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------------------------
+// export clip
+// ---------------------------------------------------------------------------------------------
+
+/// What `clip.export` encodes: a copy of the project with one more sequence, which holds only
+/// the exported clips (at their places on their tracks) and is never added to the user's project.
+pub(crate) struct ClipSnapshot {
+    pub project: Project,
+    pub sequence: ItemId,
+    /// The timeline span of the clips, from the first one's start to the last one's end.
+    pub range: TimeRange,
+    /// The output's default name: the first video clip's (else the first clip's) without its
+    /// file extension.
+    pub name: String,
+    /// A clip is on a video track (otherwise only sound is exported).
+    pub video: bool,
+    /// The media files the clips play, which the export must never overwrite.
+    pub sources: Vec<String>,
+}
+
+/// The frame size, frame rate (`None` for a still) and pixel aspect of `item`'s source.
+fn source_frame(project: &Project, item: ItemId) -> Option<(u32, u32, Option<FrameRate>, (u32, u32))> {
+    if let Some(ItemKind::Sequence(q)) = project.item(item).map(|i| &i.kind) {
+        return Some((q.settings.width, q.settings.height, Some(q.settings.frame_rate), q.settings.par));
+    }
+    let (_, m, _) = project.resolve_media(item)?;
+    let v = m.info.video.as_ref()?;
+    let rate = (m.info.kind != filmcraft_media::MediaKind::Still).then(|| m.frame_rate());
+    Some((v.width, v.height, rate, m.pixel_aspect()))
+}
+
+/// The sample rate of `item`'s source sound.
+fn source_sample_rate(project: &Project, item: ItemId) -> Option<u32> {
+    if let Some(ItemKind::Sequence(q)) = project.item(item).map(|i| &i.kind) {
+        return Some(q.settings.sample_rate);
+    }
+    let (_, m, _) = project.resolve_media(item)?;
+    m.info.audio().map(|a| a.sample_rate.max(8000))
+}
+
+/// Build the [`ClipSnapshot`] for `clips` of sequence `seq`.
+///
+/// The snapshot's sequence is a copy of `seq` with every other clip, the transitions that touch
+/// another clip, the captions and the marks removed. It takes the frame size, frame rate and pixel
+/// aspect of the first video clip's source (a nested sequence's settings for a nested clip; the
+/// sequence's rate for a still) and the sample rate of the first audio clip's source, with Motion
+/// scaled to the new frame as Sequence Settings' Scale Motion does, so a 4K clip shown at 50 % in an
+/// HD sequence is exported at 100 % in a 4K frame. Settings that would not validate (a damaged
+/// file's size or rate) keep the sequence's. The exported clips and their tracks are enabled and
+/// unmuted and no track is soloed: the clips are exported because they were asked for.
+pub(crate) fn clip_snapshot(project: &Project, seq: ItemId, clips: &[ClipId]) -> Result<ClipSnapshot> {
+    let cmd = "clip.export";
+    let mut q = project.sequence(seq).ok_or(EngineError::NoSequence)?.clone();
+    let wanted: HashSet<ClipId> = clips.iter().copied().collect();
+    let keep = |id: ClipId| wanted.contains(&id);
+    let mut span: Option<(Tick, Tick)> = None;
+    // (on a video track, project item, name, label) of every kept clip, in track order
+    let mut kept: Vec<(bool, ItemId, String, Label)> = Vec::new();
+    for t in q.all_tracks_mut() {
+        t.items.retain(|i| keep(i.id));
+        t.transitions.retain(|x| (x.from.is_some() || x.to.is_some()) && x.from.is_none_or(keep) && x.to.is_none_or(keep));
+        t.solo = false;
+        if !t.items.is_empty() {
+            t.enabled = true;
+            t.muted = false;
+        }
+        let video = t.kind == TrackKind::Video;
+        for i in &mut t.items {
+            i.enabled = true;
+            let end = i.start.0.checked_add(i.duration.0).map(Tick).ok_or_else(|| bad(cmd, "the clip ends past the supported time range"))?;
+            span = Some(match span {
+                None => (i.start, end),
+                Some((a, b)) => (a.min(i.start), b.max(end)),
+            });
+            kept.push((video, i.item, i.name.clone(), i.label));
+        }
+    }
+    let (start, end) = span.ok_or_else(|| bad(cmd, "none of the clips is in the sequence"))?;
+    let range = TimeRange::from_bounds(start, end);
+    filmcraft_export::validate_range(range).map_err(|e| bad(cmd, e.to_string()))?;
+    q.caption_tracks.clear();
+    q.markers.clear();
+    (q.mark_in, q.mark_out, q.work_area) = (None, None, None);
+    q.split = SplitMarks::default();
+    (q.multicam, q.merged) = (None, None);
+
+    let first_video = kept.iter().find(|k| k.0).cloned();
+    let first_audio = kept.iter().find(|k| !k.0).cloned();
+    // the picture's and the sound's settings are taken separately, so a damaged file's frame size
+    // or rate does not also discard a good sample rate
+    let mut st = q.settings.clone();
+    if let Some((w, h, rate, par)) = first_video.as_ref().and_then(|k| source_frame(project, k.1)) {
+        let mut t = st.clone();
+        (t.width, t.height, t.par) = (w, h, par);
+        if let Some(r) = rate {
+            t.frame_rate = r;
+        }
+        t.drop_frame &= t.frame_rate.supports_drop_frame();
+        if t.validate().is_ok() {
+            st = t;
+        }
+    }
+    if let Some(sr) = first_audio.as_ref().and_then(|k| source_sample_rate(project, k.1)) {
+        let mut t = st.clone();
+        t.sample_rate = sr;
+        if t.validate().is_ok() {
+            st = t;
+        }
+    }
+    if st != q.settings {
+        st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
+        let from = (q.settings.width, q.settings.height);
+        filmcraft_edit::frame_size::scale_motion(&mut q, from, (st.width, st.height));
+        q.settings = st;
+    }
+
+    let video = first_video.is_some();
+    let (_, _, clip_name, label) = first_video.or_else(|| kept.first().cloned()).ok_or_else(|| bad(cmd, "none of the clips is in the sequence"))?;
+    let stem = Path::new(&clip_name).file_stem().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.trim().is_empty()).unwrap_or(clip_name);
+    let sources = media_files(project, kept.iter().map(|k| k.1));
+    let mut out = project.clone();
+    let sequence = out.add_item(&stem, label, ItemKind::Sequence(Arc::new(q)), None);
+    Ok(ClipSnapshot { project: out, sequence, range, name: stem, video, sources })
+}
+
+/// Nothing is at `path`, not even a broken symbolic link (which `Path::exists` would follow).
+fn free_path(path: &str) -> bool {
+    std::fs::symlink_metadata(path).is_err()
+}
+
+/// `path`, or when something is there already the first free `path_2`, `path_3`… up to `_999`:
+/// a default output name must not replace a file, the clip's own media least of all. An error
+/// when all of them are taken. `written` maps a candidate to the file an export to it writes
+/// first, which is what must be free: for an image sequence `a.png` that is `a000.png`.
+pub(crate) fn unused_path(path: &str, written: impl Fn(&str) -> String) -> Result<String> {
+    if free_path(&written(path)) {
+        return Ok(path.to_string());
+    }
+    let (stem, ext) = match path.rsplit_once('.') {
+        Some((a, e)) if !e.contains(['/', '\\']) => (a, Some(e)),
+        _ => (path, None),
+    };
+    (2..=999)
+        .map(|n| match ext {
+            Some(e) => format!("{stem}_{n}.{e}"),
+            None => format!("{stem}_{n}"),
+        })
+        .find(|x| free_path(&written(x)))
+        .ok_or_else(|| bad("clip.export", format!("{path} and its numbered names up to _999 are all taken; choose another file")))
+}
+
+/// The media files `items` play, through nested sequences (and multi-camera sources) at any
+/// depth: what a clip export must never overwrite. Each item is visited once, so a damaged
+/// project whose sequences contain each other ends, and at most [`MAX_MEDIA_WALK`] items are.
+fn media_files(project: &Project, items: impl IntoIterator<Item = ItemId>) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut seen: HashSet<ItemId> = HashSet::new();
+    let mut todo: Vec<ItemId> = items.into_iter().collect();
+    while let Some(id) = todo.pop() {
+        if seen.len() >= MAX_MEDIA_WALK || !seen.insert(id) {
+            continue;
+        }
+        if let Some((_, m, _)) = project.resolve_media(id) {
+            if let filmcraft_project::MediaRef::File { path } = &m.media
+                && !files.contains(path)
+            {
+                files.push(path.clone());
+            }
+        } else if let Some(q) = project.sequence(id) {
+            todo.extend(q.all_tracks().flat_map(|t| &t.items).map(|i| i.item));
+        }
+    }
+    files
+}
+
+/// How many project items [`media_files`] looks at, at most.
+const MAX_MEDIA_WALK: usize = 100_000;
+
+/// An image sequence written to `path` (`a.png` → `a000.png`, `a001.png`…) could replace `src`:
+/// it is in the same folder, starts with the same name and has the same extension.
+pub(crate) fn sequence_may_write(path: &str, src: &str) -> bool {
+    let (out, src) = (Path::new(path), Path::new(src));
+    let folder = |p: &Path| p.parent().map(|d| std::fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf()));
+    let ext = |p: &Path| p.extension().map(|e| e.to_string_lossy().to_lowercase());
+    let (Some(stem), Some(name)) = (out.file_stem(), src.file_name()) else { return false };
+    folder(out) == folder(src) && ext(out) == ext(src) && name.to_string_lossy().starts_with(&*stem.to_string_lossy())
+}
+
+/// `a` and `b` name the same file (compared canonically when both exist).
+fn same_file(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => Path::new(a) == Path::new(b),
+    }
+}
+
+/// What `clip.export` will do with its parameters, worked out before anything is written.
+struct ClipExportPlan {
+    clips: Vec<ClipId>,
+    snap: ClipSnapshot,
+    /// The parameters with the clip export's default preset or format filled in.
+    params: Value,
+    preset: Option<ExportPreset>,
+    settings: ExportSettings,
+}
+
+/// The clips (the selection, or `clip` / `clips` with their linked partners), their snapshot and
+/// the export settings for `clip.export`, with the output path not yet chosen.
+fn plan_clip_export(s: &Session, p: &Value) -> Result<ClipExportPlan> {
+    let cmd = "clip.export";
+    let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    if p.get("range").is_some() {
+        return Err(bad(cmd, "a clip is exported over its own span; use file.exportMedia for a range of the sequence"));
+    }
+    if p.get("sequence").is_some() {
+        return Err(bad(cmd, "clips are exported from the active sequence"));
+    }
+    // the selection already holds what the user picked: linked partners, or one alone after an
+    // Alt-click, so only clips named by id are widened to their partners
+    let clips = match crate::commands::target_clips_p(s, p, cmd)? {
+        Some(c) => crate::commands::with_links(s, &c),
+        None => s.state.selection.clone(),
+    };
+    if clips.is_empty() {
+        return Err(bad(cmd, "select a clip in the Timeline"));
+    }
+    let snap = clip_snapshot(&s.project, seq, &clips)?;
+    let mut q = if p.is_object() { p.clone() } else { json!({}) };
+    // Match Source (or WAV for sound alone) unless a preset or a format is chosen; other settings
+    // apply on top of it
+    let nested_format = q.get("settings").and_then(|x| x.get("format")).is_some_and(|f| !f.is_null());
+    if str_p(&q, "preset").is_none() && str_p(&q, "format").is_none() && !nested_format {
+        if snap.video {
+            q["preset"] = json!(DEFAULT_PRESET);
+        } else {
+            q["format"] = json!("wav");
+        }
+    }
+    let (preset, mut settings) = settings_from_params(s, &q, cmd)?;
+    settings.range = Some(snap.range);
+    Ok(ClipExportPlan { clips, snap, params: q, preset, settings })
+}
+
+/// What Export Clip…'s save dialog suggests for `p` (as `clip.export` takes it): the output's
+/// format and its default file name, named after the clip with the format's extension.
+pub fn clip_export_suggestion(s: &Session, p: &Value) -> Result<(Format, String)> {
+    let plan = plan_clip_export(s, p)?;
+    let mut q = plan.params;
+    if let Some(o) = q.as_object_mut() {
+        o.remove("path");
+    }
+    let path = output_path_named(s, &q, &plan.snap.name, &plan.settings, None);
+    Ok((plan.settings.format, file_name(&path)))
+}
+
+/// `clip.export` (the Timeline's clip menu ▸ Export Clip…): export the selected clips (or `clip` /
+/// `clips` with their linked partners) alone, over their own span, in their source's quality: the
+/// source's frame size, frame rate and sample rate with the Match Source – Adaptive High Bitrate
+/// preset, or WAV when only sound is exported, unless `preset` or `format` chooses another;
+/// `settings` and the flat overrides apply on top, as for `file.exportMedia`. Without `path` (or
+/// with a folder) the file is named after the clip and never replaces an existing file; an
+/// explicit file path is used as given (the save dialog has asked), but no output may replace the
+/// clip's own media. The project, the selection and the undo history do not change.
+pub fn export_clip(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "clip.export";
+    let ClipExportPlan { clips, snap, params: q, preset, mut settings } = plan_clip_export(s, p)?;
+    settings.path = output_path_named(s, &q, &snap.name, &settings, None);
+    if str_p(&q, "path").is_none_or(|x| is_folder(&expand_home(x))) {
+        // an image sequence never writes its base name, only the numbered stills
+        let count = sequence_count(&snap.project, snap.sequence, &settings);
+        settings.path = unused_path(&settings.path, |x| match count {
+            Some(n) => filmcraft_export::image_sequence_path(x, 0, n),
+            None => x.to_string(),
+        })?;
+    }
+    let image_sequence = settings.is_image_sequence();
+    let own = |src: &&String| same_file(src, &settings.path) || (image_sequence && sequence_may_write(&settings.path, src));
+    if let Some(src) = snap.sources.iter().find(own) {
+        return Err(bad(cmd, format!("{src} is the clip's own media; export to another file")));
+    }
+    let wait = bool_p(p, "wait").unwrap_or(false);
+    let path = settings.path.clone();
+    let project = Arc::new(snap.project);
+    let files = sequence_files(&project, snap.sequence, &settings);
+    let source = project
+        .sequence(snap.sequence)
+        .map(|x| json!({"width": x.settings.width, "height": x.settings.height, "fps": x.settings.frame_rate.label(), "sampleRate": x.settings.sample_rate}));
+    let id = spawn_export(s, project, snap.sequence, settings, format!("Export Clip {}", file_name(&path)), wait)?;
+    let mut out = json!({
+        "job": id,
+        "clips": clips.iter().map(|c| c.0).collect::<Vec<_>>(),
+        "range": {"start": snap.range.start.0, "duration": snap.range.duration.0, "seconds": snap.range.duration.seconds()},
+        "source": source,
+    });
+    output_json(&mut out, &path, files);
+    if let Some(pr) = preset {
+        out["preset"] = json!(pr.name);
+    }
+    finish_export_json(s, id, wait, out)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1253,6 +1571,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
         spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec(
+            "clip.export",
+            "Export Clip…",
+            r#"{"clip":id?,"clips":[id]?,"preset":str?,"path":str|dir?,"wait":bool?, …settings params}"#,
+            has_seq,
+            export_clip,
+            true,
+        ),
     ]
 }
 
