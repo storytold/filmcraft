@@ -46,7 +46,7 @@ stays a binary of its own in `tests/`. Select one file's tests with its module p
 | Program monitor while dragging | `crates/ui-egui/tests/it/perf_ui.rs` | headless: a parameter changed on every UI pass (a value dragged in Effect Controls or Properties) and a backward scrub leave the Program monitor's picture at most one step behind (it shows the frame asked for the pass before while the frame due renders; it used to freeze until the mouse rested); a frame still rendering is kept when the same frame is asked for at a newer revision, so frames slower than a refresh (CPU effects) are shown too; `perf.stats` reports the picture's frame and revision against the playhead and the project |
 | Performance | `*/tests/{,it/}perf.rs` (`#[ignore]`) | §5 |
 
-Commit `*.proptest-regressions` files so failing cases are re-run.
+Commit proptest's seed files so failing cases are re-run. From the crate root, a test in `tests/it/<name>.rs` reads `tests/proptest-regressions/<name>.txt` and one in `src/<name>.rs` reads `proptest-regressions/<name>.txt`. Proptest finds them from the test's source path and ignores any seed file elsewhere without a warning, so move the seed file when you move its test.
 
 ### 32-bit parser regressions
 
