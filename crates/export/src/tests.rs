@@ -75,6 +75,74 @@ fn mjpeg_mov_roundtrip() {
     }
 }
 
+/// An export is rendered beside its destination and replaces it only once complete (#2793): a
+/// cancelled export leaves the earlier file at that path as it was, a finished one replaces it, and
+/// neither leaves the staging file behind.
+#[test]
+fn an_export_replaces_its_destination_only_once_complete() {
+    let (p, seq, m) = project();
+    let dir = std::path::PathBuf::from(tmp("staged-2793"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("out.mov").to_string_lossy().to_string();
+    std::fs::write(&path, b"earlier export").unwrap();
+    let mut s = ExportSettings { format: Format::Mjpeg, path: path.clone(), scale: 0.25, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(48)));
+    let files = || std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect::<Vec<_>>();
+
+    // cancelled while rendering, as soon as the export has opened its output
+    let cancelled = Progress::default();
+    let cancel_once_writing = |item| {
+        if files() != ["out.mov"] || std::fs::metadata(&path).map_or(true, |f| f.len() != 14) {
+            cancelled.cancel.store(true, Ordering::Relaxed);
+        }
+        m.source(item)
+    };
+    assert!(matches!(export(&p, seq, &s, &cancel_once_writing, &cancelled), Err(ExportError::Cancelled)));
+    assert!(std::fs::read(&path).unwrap() == b"earlier export", "the cancelled export changed the earlier file");
+    assert_eq!(files(), ["out.mov"]);
+
+    // a panic while writing (a worker's, which rayon passes on) cleans up the same way
+    let panicked = Progress::default();
+    let panic_once_writing = |item| {
+        if files() != ["out.mov"] {
+            panic!("a source failed while the export was writing");
+        }
+        m.source(item)
+    };
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| export(&p, seq, &s, &panic_once_writing, &panicked)));
+    assert!(caught.is_err());
+    assert!(std::fs::read(&path).unwrap() == b"earlier export", "the panicked export changed the earlier file");
+    assert_eq!(files(), ["out.mov"], "the panicked export left its staging file");
+    assert!(!panicked.staged.load(Ordering::Relaxed), "finished is still held back");
+
+    // finished only once the destination is the new file (the UI and Quick Export read it so)
+    let done = Progress::default();
+    let r = std::thread::scope(|t| {
+        let job = t.spawn(|| export(&p, seq, &s, &m, &done));
+        while !done.finished.load(Ordering::Relaxed) && !job.is_finished() {
+            std::thread::yield_now();
+        }
+        assert!(std::fs::read(&path).unwrap() != b"earlier export", "finished before the export took the destination's name");
+        job.join().unwrap().unwrap()
+    });
+    assert!(done.finished.load(Ordering::Relaxed));
+    assert_eq!(r.path, path);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes.len() as u64, r.bytes);
+    assert!(bytes != b"earlier export", "the finished export did not replace the earlier file");
+    assert_eq!(files(), ["out.mov"]);
+
+    // a staging file another export holds is left alone: this one reserves the next name
+    std::fs::write(dir.join(".out.part.mov"), b"another export").unwrap();
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    assert!(std::fs::read(dir.join(".out.part.mov")).unwrap() == b"another export", "the other staging file was truncated");
+    let mut left = files();
+    left.sort();
+    assert_eq!(left, [".out.part.mov", "out.mov"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn wav_png_gif() {
     let (p, seq, m) = project();
