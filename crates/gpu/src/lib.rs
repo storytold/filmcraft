@@ -2055,11 +2055,40 @@ fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
     (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0))
 }
 
+impl GpuCompositor {
+    /// Drain external GPU surface owners out of `uploads`/`pending_retire` and hand them to the
+    /// queue's completion callback before polling with a bounded wait so a stalled submission cannot
+    /// block teardown indefinitely without dropping external handles early.
+    fn teardown_with_poll(&mut self, poll: impl FnOnce(&wgpu::Device) -> bool) {
+        if !self.has_gpu_surface {
+            return;
+        }
+        let mut retained = std::mem::take(&mut self.pending_retire);
+        let keys: Vec<_> =
+            self.uploads.iter().filter_map(|(&k, u)| (!u.owned_textures.is_empty() || matches!(u._pixels, PixelData::GpuSurface(_))).then_some(k)).collect();
+        for k in keys {
+            if let Some(mut up) = self.uploads.remove(&k) {
+                self.upload_cache_bytes = self.upload_cache_bytes.saturating_sub(up.gpu_bytes);
+                let planes = std::mem::take(&mut up.planes);
+                self.recycle_planes(planes);
+                retained.push(up);
+            }
+        }
+        if !retained.is_empty() {
+            self.queue.on_submitted_work_done(move || drop(retained));
+        }
+        let _ = poll(&self.device);
+    }
+}
+
 impl Drop for GpuCompositor {
     fn drop(&mut self) {
-        if self.has_gpu_surface {
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        }
+        self.teardown_with_poll(|device| {
+            matches!(
+                device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }),
+                Ok(wgpu::PollStatus::WaitSucceeded | wgpu::PollStatus::QueueEmpty)
+            )
+        });
     }
 }
 

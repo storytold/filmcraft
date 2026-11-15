@@ -1099,3 +1099,92 @@ fn gpu_surface_retires_after_submitted_work_done() {
     let _ = dev.poll(wgpu::PollType::wait_indefinitely());
     assert!(dropped.load(Ordering::Acquire), "retired GpuSurface must drop once GPU work completes");
 }
+
+#[test]
+fn compositor_teardown_timeout_retains_gpu_surface_until_queue_completes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct TeardownDropSurface {
+        id: usize,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for TeardownDropSurface {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    impl filmcraft_frame::GpuSurface for TeardownDropSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([40u8, 50, 60, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+
+    // Case 1: Simulated teardown poll timeout returns without blocking and keeps external surface
+    // owners alive inside the queue completion closure until the GPU finishes or the device drops.
+    let dropped_timeout = Arc::new(AtomicBool::new(false));
+    {
+        let mut c = GpuCompositor::new(&dev, &q);
+        let surf = Arc::new(TeardownDropSurface { id: 0x1111_2222, dropped: dropped_timeout.clone() });
+        let frame = Arc::new(VideoFrame {
+            width: 4,
+            height: 4,
+            data: PixelData::GpuSurface(surf),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Default::default(),
+        });
+        let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plan);
+        drop(plan);
+        assert!(!dropped_timeout.load(Ordering::Acquire));
+
+        let enc = dev.create_command_encoder(&Default::default());
+        q.submit([enc.finish()]);
+        c.teardown_with_poll(|_| false);
+        assert!(c.uploads.is_empty() && c.pending_retire.is_empty(), "external surface owners must be detached from compositor on teardown");
+        assert!(!dropped_timeout.load(Ordering::Acquire), "timed-out teardown must not release GpuSurface before queue completes");
+    }
+    let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+    assert!(dropped_timeout.load(Ordering::Acquire), "retained GpuSurface must drop once queue work completes");
+
+    // Case 2: Normal Drop runs bounded Wait and releases the cached GpuSurface synchronously on completion.
+    let dropped_sync = Arc::new(AtomicBool::new(false));
+    {
+        let mut c = GpuCompositor::new(&dev, &q);
+        let surf = Arc::new(TeardownDropSurface { id: 0x3333_4444, dropped: dropped_sync.clone() });
+        let frame = Arc::new(VideoFrame {
+            width: 4,
+            height: 4,
+            data: PixelData::GpuSurface(surf),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Default::default(),
+        });
+        let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plan);
+        drop(plan);
+    }
+    assert!(dropped_sync.load(Ordering::Acquire), "normal Drop must still release GpuSurface once bounded wait completes");
+}
