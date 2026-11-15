@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-12 · **Change:** minor (Tamil covers the whole interface with a Tamil font; previously minor: Bosnian covers the strings added since it landed; German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (Tamil reviewed by native speakers in the running app; previously minor: Tamil covers the whole interface with a Tamil font; Bosnian covers the strings added since it landed; German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -60,7 +60,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | *Other shipped:* Swedish | sv | 3,581 (100%) | as Spanish | Latin (bundled fonts, å ä ö) | not recorded; welcome | partial | review |
 | *Other shipped:* Turkish | tr | 3,590 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
 | *Other shipped:* Bosnian | bs | 3,749 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
-| *Other shipped:* Tamil | ta | 3,734 (every Swedish entry) | as Spanish | Tamil script: a craft-fonts `Taml` face or an installed Tamil font (Nirmala UI, Tamil Sangam MN, Noto Sans Tamil, Lohit Tamil, Latha…); without one the interface stays in English | most entries from the craft-i18n Tamil catalog (native-reviewed for terminology); 161 AI-assisted, review welcome | partial | review |
+| *Other shipped:* Tamil | ta | 3,734 (every Swedish entry) | as Spanish | Tamil script: a craft-fonts `Taml` face or an installed Tamil font (Nirmala UI, Tamil Sangam MN, Noto Sans Tamil, Lohit Tamil, Latha…); without one the interface stays in English | most entries from the craft-i18n Tamil catalog, 161 AI-assisted; reviewed in the running app by native speakers (Radhika and Mohan Raj, 2026-11-15) | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the

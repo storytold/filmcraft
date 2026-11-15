@@ -7,7 +7,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (Tamil reviewed by native speakers in the running app; previously minor: ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -97,7 +97,7 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,593 strings
 | German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
 | Vietnamese | none | 0% |
 
-Also shipped: Swedish (whole interface; native review welcome, ~100%), Ukrainian (menus only, 10%), Polish (whole interface; AI-drafted, native review welcome) and Tamil (whole interface with a Tamil font, installed or from craft-fonts; native review welcome for the newest entries). Detail: [docs/localization-parity.md](docs/localization-parity.md).
+Also shipped: Swedish (whole interface; native review welcome, ~100%), Ukrainian (menus only, 10%), Polish (whole interface; AI-drafted, native review welcome) and Tamil (whole interface with a Tamil font, installed or from craft-fonts; reviewed by native speakers). Detail: [docs/localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
