@@ -15,12 +15,19 @@ filmcraft-cli --save-as /path/to/episode.fcproj exec premiere.import \
 The same JSON command works through MCP `command_run` or the desktop control channel.
 File → Import and `filmcraft-cli import source.prproj` also dispatch to this importer. Their
 default is linked media and a new `source.filmcraft-import-N` directory beside the source project.
-Use the explicit command for a custom destination, copied media or frame rate. Existing destination
-directories are refused. As with other documents, the project's items go into `bin` (File → Import
-passes its own `bin`), or the root when it is absent or no longer exists, in the import's one undo step. `sequence` optionally chooses the active sequence by ObjectUID or unique
+Use the explicit command for a custom destination, copied media or frame rate. An existing
+destination is refused as invalid parameters (`destination … already exists; choose a new
+directory`). As with other documents, the project's items go into `bin` (File → Import passes its
+own `bin`), or the root when it is absent or no longer exists, in the import's one undo step.
+`sequence` optionally chooses the active sequence by ObjectUID or unique
 name; an ambiguous requested name requires its ObjectUID. All sequences
 are imported. Without it, the sequence with the most video items wins; “Sequence 01” is only
 a tie-break, followed by the latest video end time.
+
+The result has the new `sequences`, the `destination`, `sourceSha256`, `mediaMode`,
+`offlineMedia` (the names of this import's media items left offline), `report` (the import's
+diagnostic messages) and `reportEntries`: the same diagnostics, in the same order, as
+`{"level": "info" | "warning", "message", "count"}` like `events.list` entries.
 
 The destination contains the unchanged `source.prproj`, `provenance.json`, and (copy mode) a
 `media/` directory with full SHA-256 named files. Link mode uses original absolute paths without

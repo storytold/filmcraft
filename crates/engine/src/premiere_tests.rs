@@ -424,6 +424,32 @@ fn premiere_copy_reads_media_in_one_pass() {
 }
 
 #[test]
+fn premiere_import_reports_levels_and_names_an_existing_destination() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.0.join("source.png")).unwrap();
+    let doc = fixture.0.join("source.prproj");
+    let destination = fixture.0.join("levels");
+    let mut s = Session::default();
+    let result = s.execute("premiere.import", json!({"path":doc,"destination":destination})).unwrap();
+    // `report` stays the list of messages; `reportEntries` adds each one's level and count.
+    let report = result["report"].as_array().unwrap();
+    let entries = result["reportEntries"].as_array().expect("reportEntries");
+    assert_eq!(entries.len(), report.len(), "{result}");
+    for (entry, message) in entries.iter().zip(report) {
+        assert_eq!(&entry["message"], message);
+        assert!(matches!(entry["level"].as_str(), Some("info" | "warning")), "{entry}");
+        assert!(entry["count"].as_u64().is_some_and(|n| n >= 1), "{entry}");
+    }
+    assert!(entries.iter().any(|e| e["level"] == "warning" && e["message"].as_str().unwrap().contains("offline placeholder")), "{result}");
+    // (The project holds NaN auto anchors, so it is compared by identity: no edit at all.)
+    let before = s.project.clone();
+    let error = s.execute("premiere.import", json!({"path":doc,"destination":destination})).unwrap_err();
+    assert!(matches!(error, crate::EngineError::BadParams { .. }) && error.to_string().contains("already exists"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before));
+    assert!(destination.join("provenance.json").is_file(), "the existing destination is left as it was");
+}
+
+#[test]
 fn premiere_import_opens_each_source_file_once() {
     /// The native host, recording each media file it opens.
     #[derive(Default)]
