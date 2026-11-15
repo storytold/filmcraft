@@ -210,12 +210,23 @@ impl PlanStack {
     }
 
     fn into_layers(self, width: usize, height: usize) -> Option<Vec<PlanLayer>> {
+        self.into_layers_inner(width, height, false).ok().flatten()
+    }
+
+    fn try_into_layers(self, width: usize, height: usize) -> Result<Option<Vec<PlanLayer>>, String> {
+        self.into_layers_inner(width, height, true)
+    }
+
+    fn into_layers_inner(self, width: usize, height: usize, strict: bool) -> Result<Option<Vec<PlanLayer>>, String> {
         if self.exhausted || self.cpu_only {
-            return None;
+            return Ok(None);
         }
         match self.finish(width, height) {
-            FramePlan::Layers { layers, .. } => Some(layers),
-            plan => Some(vec![PlanLayer::new(cpu_frame(execute_cpu(&plan)), Affine::IDENTITY, 1.0, Blend::Normal)]),
+            FramePlan::Layers { layers, .. } => Ok(Some(layers)),
+            plan => {
+                let img = if strict { try_execute_cpu(&plan)? } else { execute_cpu(&plan) };
+                Ok(Some(vec![PlanLayer::new(cpu_frame(img), Affine::IDENTITY, 1.0, Blend::Normal)]))
+            }
         }
     }
 
@@ -506,7 +517,7 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
                     let Some(item) = item else { return Ok(Some(Vec::new())) };
                     let mut input = PlanStack::default();
                     push_item(sc, item, 1.0, Some(Blend::Normal), &mut input)?;
-                    Ok(input.into_layers(w, h))
+                    if sc.strict_readback { input.try_into_layers(w, h) } else { Ok(input.into_layers(w, h)) }
                 };
                 let (res_a, res_b) = if a.is_some() && b.is_some() {
                     let ctx = filmcraft_media::cancel::Context::current();
@@ -962,6 +973,50 @@ mod tests {
         let got = execute_cpu(&FramePlan::Layers { width: 1, height: 1, layers });
         assert_eq!(got.px, expected.px);
         assert!(got.px.iter().any(|v| *v != 0.0));
+    }
+
+    #[test]
+    fn try_into_layers_propagates_readback_failure_on_composite_transition_input() {
+        #[derive(Debug)]
+        struct FailingGpuSurface;
+        impl filmcraft_frame::GpuSurface for FailingGpuSurface {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn id(&self) -> usize {
+                0xBAD_C011
+            }
+            fn gpu_bytes(&self) -> u64 {
+                4
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn chroma(&self) -> filmcraft_frame::Chroma {
+                filmcraft_frame::Chroma::C444
+            }
+            fn to_cpu(&self) -> Result<filmcraft_frame::PixelData, String> {
+                Err("synthetic into_layers readback failure".to_string())
+            }
+        }
+        let frame = Arc::new(VideoFrame {
+            width: 1,
+            height: 1,
+            data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        });
+        let steps = vec![PlanStep::Transition {
+            inputs: [vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)], vec![]],
+            effect: filmcraft_project::find_effect("push").unwrap().instance(),
+            progress: 0.0,
+            scale: 1.0,
+        }];
+        let err = PlanStack { steps: steps.clone(), exhausted: false, cpu_only: false, layers: 1 }.try_into_layers(1, 1).err();
+        assert!(err.as_deref().is_some_and(|m| m.contains("synthetic into_layers readback failure")), "unexpected result: {err:?}");
+        // Non-strict preview path preserves infallible flattening behaviour.
+        assert!(PlanStack { steps, exhausted: false, cpu_only: false, layers: 1 }.into_layers(1, 1).is_some());
     }
 
     #[test]
