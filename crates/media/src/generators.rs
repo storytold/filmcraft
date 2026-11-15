@@ -107,6 +107,7 @@ impl GeneratorSource {
             has_alpha: matches!(generator, Generator::TransparentVideo),
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         });
         let audio =
             generator.has_audio().then(|| AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM (synthetic)".into(), bits_per_sample: Some(32) });
@@ -166,6 +167,7 @@ impl MediaSource for GeneratorSource {
         if !self.generator.has_audio() {
             return Err(MediaError::NoStream("audio"));
         }
+        crate::validate_audio_buffer_shape(2, frames)?;
         let mut out = AudioBuffer::silence(sample_rate, 2, frames);
         let sr = f64::from(sample_rate.max(1));
         let total = self.info.duration.to_units_floor(sample_rate as i64);
@@ -601,6 +603,15 @@ mod tests {
         let a = g.audio(0, 480, 48000).unwrap();
         let peak = a.peaks()[0];
         assert!((peak - db(-20.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn hostile_audio_request_is_rejected_before_allocation() {
+        let g = GeneratorSource::new(Generator::BarsAndTone, 800, 600, FrameRate::FPS_25, Tick(TICKS_PER_SECOND));
+        // a project-stored speed of 1e12 on a 1 s block asks for this many source frames
+        assert!(g.audio(0, crate::MAX_AUDIO_BUFFER_BYTES, 48_000).is_err());
+        assert!(g.audio(0, usize::MAX / 8, 48_000).is_err());
+        assert!(g.audio(0, 480, 48_000).is_ok());
     }
 
     /// #1265: the demo sound is a pad with a soft texture, not hiss: per-sample white noise has a

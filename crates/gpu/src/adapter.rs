@@ -127,8 +127,20 @@ fn wgpu_choice(candidates: &[Candidate], power: PowerPreference) -> Option<usize
 /// GL driver and its Vulkan ICD); instances created and devices dropped concurrently then deadlock
 /// in that driver (#3418). Elsewhere GL stays, for machines where it is the only working backend.
 pub(crate) fn native_instance() -> wgpu::Instance {
-    let backends = if cfg!(windows) { wgpu::Backends::PRIMARY } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL };
-    wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() })
+    wgpu::Instance::new(native_descriptor())
+}
+
+/// [`native_instance`]'s descriptor. wgpu's environment variables apply to its flags and backend
+/// options, as they do to the window's instance: `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1`
+/// lists a Vulkan driver that reports no conformance version, such as Mesa's Dozen (the only one on
+/// WSL2), and `WGPU_VALIDATION`, `WGPU_DX12_COMPILER` and the others work here too. The backends stay
+/// as above: `WGPU_BACKEND` narrows the adapters chosen from them instead (`ExportRenderer::new`).
+fn native_descriptor() -> wgpu::InstanceDescriptor {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = if cfg!(windows) { wgpu::Backends::PRIMARY } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL };
+    desc.flags = desc.flags.with_env();
+    desc.backend_options = desc.backend_options.with_env();
+    desc
 }
 
 /// The index of the adapter to draw with: [`wgpu_choice`], or the entry exposing the most
@@ -461,6 +473,29 @@ mod tests {
             offscreen,
             "\"AMD Radeon(TM) Graphics\" (Dx12, integrated GPU, driver 30.0.13002.13003, 36 features, bus 0000:08:00.0, cannot draw to the window)"
         );
+    }
+
+    /// The off-screen instance reads wgpu's flag variables, as the window's does, and keeps its
+    /// own backends whatever `WGPU_BACKEND` says (#4084). Run in a child process, which has them set.
+    #[test]
+    fn native_descriptor_reads_wgpu_flags_but_keeps_its_backends() {
+        const CHILD: &str = "FILMCRAFT_TEST_NATIVE_DESCRIPTOR_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "adapter::tests::native_descriptor_reads_wgpu_flags_but_keeps_its_backends", "--nocapture"])
+                .env(CHILD, "1")
+                .env("WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER", "1")
+                .env("WGPU_BACKEND", "gl")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && stdout.contains("1 passed"), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+            return;
+        }
+        let desc = native_descriptor();
+        assert!(desc.flags.contains(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER), "{:?}", desc.flags);
+        let backends = if cfg!(windows) { wgpu::Backends::PRIMARY } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL };
+        assert_eq!(desc.backends, backends);
     }
 
     /// Against the adapters of the machine running the tests: [`wgpu_choice`] is what wgpu's

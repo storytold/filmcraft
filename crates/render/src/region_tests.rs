@@ -85,6 +85,12 @@ fn sticker(w: usize, h: usize, rect: (usize, usize, usize, usize)) -> Arc<VideoF
     frame(w, h, PixelData::Rgba8(Arc::new(px)))
 }
 
+/// An 8-bit RGBA still with alpha 255 everywhere, as an RGB PNG or a JPEG decodes.
+fn card(w: usize, h: usize) -> Arc<VideoFrame> {
+    let px: Vec<u8> = (0..w * h).flat_map(|i| [(i * 11 % 251) as u8, (i * 5 % 241) as u8, (i * 23 % 239) as u8, 255]).collect();
+    frame(w, h, PixelData::Rgba8(Arc::new(px)))
+}
+
 struct Spec {
     frame: Arc<VideoFrame>,
     opacity: f64,
@@ -205,6 +211,14 @@ fn shortcuts_give_the_general_paths_bits() {
     check("banner under the camera", &[ban(bar), cam()], 1.0);
     check("camera + sticker", &[cam(), Spec::new(sticker(W, H, corner))], 1.0);
     check("camera + transparent banner", &[cam(), ban((0, 0, 0, 0))], 1.0);
+    // an opaque 8-bit still: the canvas itself as the bottom layer, mixed like any layer above it
+    let crd = || Spec::new(card(W, H));
+    check("card only", &[crd()], 1.0);
+    check("card + bar banner", &[crd(), ban(bar)], 1.0);
+    check("card over the camera", &[cam(), crd()], 1.0);
+    check("card at half opacity", &[Spec { opacity: 50.0, ..crd() }, ban(bar)], 1.0);
+    check("card at half scale", &[crd(), ban(corner)], 0.5);
+    check("card alone at a third", &[crd()], 1.0 / 3.0);
     // opacity and blend modes (every mode, over the camera and as the first layer)
     for mode in 0..Blend::ALL.len() as u32 {
         check(&format!("banner blend {mode}"), &[cam(), Spec { opacity: 70.0, blend: mode, ..ban(corner) }], 1.0);
@@ -248,6 +262,19 @@ fn which_layers_take_a_shortcut() {
     match layer(1, true) {
         Some(Layer::Region { image, x, y, .. }) => assert_eq!((x, y, image.w, image.h), (0, H - 9, W, 9)),
         _ => panic!("the banner should be a region"),
+    }
+    // an 8-bit still with alpha 255 everywhere (an RGB PNG, a JPEG) is opaque too: the whole
+    // picture, taken as the canvas instead of mixed over a zero-filled one; one pixel that is not
+    // opaque keeps it a region
+    let first_layer = |spec: Spec| {
+        let (p, seq, map) = scene(&[spec]);
+        let s = p.sequence(seq).expect("sequence");
+        item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true })
+    };
+    assert!(matches!(first_layer(Spec::new(card(W, H))), Some(Layer::Full { opaque: true, .. })));
+    match first_layer(Spec::new(sticker(W, H, (0, 0, W, H)))) {
+        Some(Layer::Region { image, x, y, .. }) => assert_eq!((x, y, image.w, image.h), (0, 0, W, H)),
+        _ => panic!("a still with a half-transparent rim should be a region"),
     }
     // without permission every layer is a whole image, and none is known to be opaque
     assert!(matches!(layer(0, false), Some(Layer::Full { opaque: false, .. })));
@@ -331,7 +358,7 @@ fn hdr_media_is_planned_for_the_gpu_with_its_colour_management() {
         let f = Arc::new(VideoFrame { color, ..(*camera(W, H)).clone() });
         let (p, seq, map) = scene(&[Spec::new(f)]);
         let opts = RenderOptions::default();
-        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map);
+        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, plan::DeviceCaps::ALL, &map);
         let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{name}: not a layer plan") };
         assert_eq!(layers.len(), 1, "{name}");
         assert!(matches!(layers[0].frame.data, PixelData::Yuv8 { .. }), "{name}: converted on the CPU");

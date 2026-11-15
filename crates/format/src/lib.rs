@@ -39,6 +39,8 @@
 //!   would drop them when saving.
 //! - **v15**: project notes (`Project::notes`, Window ▸ Project Notes). No-op step; older builds
 //!   would drop them when saving.
+//! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
+//! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -54,13 +56,20 @@ pub use atomic::{atomic_write, atomic_write_new};
 /// The `format` tag written in every envelope.
 pub const FORMAT_ID: &str = "filmcraft.project";
 
+/// Largest project file this build will read (256 MiB, matching the rest of the family). A
+/// `.fcproj` is JSON and is read whole, so a larger file would commit several times its size in
+/// memory before any validation (audit: FilmCraft F1).
+pub const MAX_PROJECT_BYTES: u64 = 256 << 20;
+
 /// A migration upgrades a whole document from schema `n` to `n + 1`.
 pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] =
-    &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15];
+pub const MIGRATIONS: &[Migration] = &[
+    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
+    v15_to_v16, v16_to_v17,
+];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -198,6 +207,9 @@ fn probe_version(p: &Probe) -> Result<u32, FormatError> {
 
 /// Read a project file (any supported schema).
 pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
+    if bytes.len() as u64 > MAX_PROJECT_BYTES {
+        return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
+    }
     let probe: Probe = serde_json::from_slice(bytes)
         .map_err(|e| if e.is_syntax() || e.is_eof() { FormatError::Corrupt(e.to_string()) } else { FormatError::NotAProject(e.to_string()) })?;
     let found = probe_version(&probe)?;
@@ -392,13 +404,23 @@ fn v14_to_v15(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v15 → v16: existing colors remain presets; authors and the named custom palette default empty.
+fn v15_to_v16(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
+/// v16 → v17: marker URLs default empty. Older builds must not silently drop saved URLs.
+fn v16_to_v17(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 15);
+        assert_eq!(SCHEMA_VERSION, 17);
     }
 
     #[test]

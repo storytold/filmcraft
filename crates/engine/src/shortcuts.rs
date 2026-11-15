@@ -53,7 +53,7 @@ pub const PANELS: &[&str] = &[
     "Essential Graphics",
     "Text",
     "Properties",
-    "Lumetri Color",
+    "Color Grading",
 ];
 
 pub const DEFAULT_PRESET: &str = "FilmCraft Default";
@@ -426,6 +426,8 @@ fn category_of(id: &str, menu: &[&str]) -> String {
         "view" => "View".into(),
         "app" | "help" | "mode" => "Application".into(),
         "captions" => "Captions".into(),
+        // Keep legacy command ids stable without exposing their old feature name.
+        "lumetri" => "Color Grading".into(),
         "tts" => "Text to Speech".into(),
         _ => menu.first().map(|s| s.to_string()).unwrap_or_else(|| {
             let mut c = prefix.chars();
@@ -661,9 +663,22 @@ impl Shortcuts {
         v
     }
 
-    fn preset_path(&self, name: &str) -> Option<PathBuf> {
+    pub(crate) fn preset_path(&self, name: &str) -> Option<PathBuf> {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
-        self.presets_dir().map(|d| d.join(format!("{}.json", safe.trim())))
+        let mut file = format!("{}.json", safe.trim());
+        let dir = self.presets_dir()?;
+        // A preset called "active" must not replace the active set restored at startup. It is saved as
+        // "active~.json": `~` is never kept in a sanitised name, so no other preset can share that path.
+        // A file that already has this exact (differently cased) name is a preset saved by an earlier
+        // version on a case-sensitive file system, and stays reachable; a case-insensitive one lists
+        // `active.json` instead, so it is not mistaken for one.
+        if file.eq_ignore_ascii_case(ACTIVE_FILE) {
+            let legacy = file != ACTIVE_FILE && std::fs::read_dir(&dir).is_ok_and(|rd| rd.flatten().any(|e| e.file_name() == file.as_str()));
+            if !legacy {
+                file = format!("{}~.json", safe.trim());
+            }
+        }
+        Some(dir.join(file))
     }
 
     /// Use the per-user data directory: loads the active set saved there (if any).
@@ -1042,6 +1057,7 @@ fn check_panel(panel: Option<&str>) -> std::result::Result<Option<&'static str>,
                 "sourcemonitor" => "source",
                 "projects" => "project",
                 "timelines" => "timeline",
+                "lumetricolor" | "colorgrade" => "colorgrading",
                 _ => n.as_str(),
             };
             PANELS
@@ -1158,7 +1174,17 @@ fn list(s: &Session, p: &Value) -> Value {
 pub fn commands() -> Vec<CommandSpec> {
     macro_rules! sc {
         ($id:literal, $label:literal, $params:literal, $journal:expr, $run:expr) => {
-            CommandSpec { id: $id, label: $label, menu: &[], shortcut: None, params: $params, enabled: always, run: $run, journal: $journal }
+            CommandSpec {
+                id: $id,
+                label: $label,
+                menu: &[],
+                shortcut: None,
+                params: $params,
+                enabled: always,
+                run: $run,
+                journal: $journal,
+                named: crate::commands::NamedKeys::NONE,
+            }
         };
     }
     vec![
@@ -1245,4 +1271,29 @@ pub fn commands() -> Vec<CommandSpec> {
             Ok(json!({"count": a.len(), "assigned": a}))
         }),
     ]
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::{Binding, CommandInfo, Platform, check_panel, convert};
+
+    #[test]
+    fn grading_shortcut_category_preserves_legacy_command_identity() {
+        let command = CommandInfo::new("lumetri.setLook", "Set Creative Look", &[], Some("Cmd+Alt+L"));
+        assert_eq!(command.category, "Color Grading");
+        assert_eq!(command.id, "lumetri.setLook");
+        assert_eq!(command.label, "Set Creative Look");
+        assert!(command.menu.is_empty());
+        assert_eq!(command.defaults, [("Cmd+Alt+L".to_string(), None)]);
+    }
+
+    #[test]
+    fn grading_shortcuts_import_old_and_current_panel_names() {
+        for name in ["Lumetri Color", "Color Grade", "Color Grading"] {
+            assert_eq!(check_panel(Some(name)).unwrap(), Some("Color Grading"));
+            let bindings = convert(vec![Binding::new("playback.toggle", "Cmd+1", Some(name))], Some(Platform::Mac));
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].panel.as_deref(), Some("Color Grading"));
+        }
+    }
 }

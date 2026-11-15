@@ -157,6 +157,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
     let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();
+    let (now, texts) = (app.now(), &mut app.steady_texts);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let mut shown = 0;
         for j in &jobs {
@@ -176,25 +177,27 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => tl!("Cancelled").to_string(),
                 (true, Some(e)) => tlf!("Failed: {e}", e),
                 (true, None) => tl!("Done").to_string(),
-                (false, _) => {
+                (false, _) => texts.get(&format!("job.{id}"), now, || {
                     let s = j["status"].as_str().unwrap_or("");
                     let n = format!("{} / {}", j["done"].as_u64().unwrap_or(0), j["total"].as_u64().unwrap_or(0));
                     let left = super::eta_suffix(j);
                     if s.is_empty() { format!("{:.0} %  ({n}){left}", frac * 100.0) } else { format!("{:.0} %  {s}{left}", frac * 100.0) }
-                }
+                }),
             };
             let bar = Rect::from_min_max(pos2(r.min.x + 8.0, r.min.y + 24.0), pos2(r.max.x - 36.0, r.min.y + 30.0));
             ui.painter().rect_filled(bar, 3.0, t.field_bg);
             let fill = if err.is_some() && done { t.danger } else { t.accent };
             let f = if done && err.is_none() { 1.0 } else { frac };
             ui.painter().rect_filled(Rect::from_min_max(bar.min, pos2(bar.min.x + bar.width() * f, bar.max.y)), 3.0, fill);
-            ui.painter().text(
-                pos2(r.min.x + 8.0, r.max.y - 4.0),
-                Align2::LEFT_BOTTOM,
-                &status,
-                Tokens::ui(10.5),
-                if err.is_some() { t.danger } else { t.text_dim },
-            );
+            let col = if err.is_some() { t.danger } else { t.text_dim };
+            if done {
+                ui.painter().text(pos2(r.min.x + 8.0, r.max.y - 4.0), Align2::LEFT_BOTTOM, &status, Tokens::ui(10.5), col);
+            } else {
+                // once a second, with digits of one width, so the counts and the time left don't shuffle the line
+                let (pieces, _) = crate::widgets::tabular_text(ui.painter(), &status, &Tokens::ui(10.5), col);
+                let h = pieces.iter().map(|(_, g)| g.size().y).fold(0.0, f32::max);
+                crate::widgets::paint_tabular(ui.painter(), pos2(r.min.x + 8.0, r.max.y - 4.0 - h / 2.0), pieces, col);
+            }
             elems.push((format!("progress.job.{id}"), r, format!("{label}: {status}")));
             if !done {
                 let cr = Rect::from_center_size(pos2(r.max.x - 18.0, bar.center().y), vec2(20.0, 20.0));
@@ -224,5 +227,40 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if active > 0 {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// A running job's row made its text on every repaint (four times a second), so its count and
+    /// its time left shuffled the line.
+    #[test]
+    fn a_running_jobs_row_changes_once_a_second() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let job = filmcraft_engine::Job { id: 7, label: "Proxies".into(), progress: Default::default(), result: Default::default() };
+        let p = job.progress.clone();
+        p.total.store(100, Ordering::Relaxed);
+        p.done.store(10, Ordering::Relaxed);
+        app.session.jobs.push(job);
+        let ctx = egui::Context::default();
+        let draw = |app: &mut FilmcraftApp, now: f64| {
+            app.set_now_for_test(now);
+            app.auto.begin_frame();
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                let rect = ui.max_rect();
+                progress(app, ui, rect);
+            })
+            .textures_delta
+            .clear();
+            app.auto.find("progress.job.7").map(|e| e.label.clone())
+        };
+        assert_eq!(draw(&mut app, 8.0).as_deref(), Some("Proxies: 10 %  (10 / 100)"));
+        p.done.store(50, Ordering::Relaxed);
+        assert_eq!(draw(&mut app, 8.5).as_deref(), Some("Proxies: 10 %  (10 / 100)"), "not before a second has passed");
+        assert_eq!(draw(&mut app, 9.0).as_deref(), Some("Proxies: 50 %  (50 / 100)"));
     }
 }

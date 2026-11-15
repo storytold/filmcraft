@@ -256,3 +256,52 @@ fn caption_export_writes_the_file_the_save_panel_named_and_never_replaces_one_un
     assert!(read("keep.vtt").starts_with("WEBVTT"), "replaced");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// With two caption tracks the dialog offers a Caption Track menu, so the file is the track chosen and
+/// not always the first (#4060).
+#[test]
+fn caption_export_writes_the_caption_track_chosen_in_the_dialog() {
+    let dir = tmp("track");
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Main Edit", "audio": 1, "video": 1})).unwrap();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    s.execute("captions.newTrack", json!({})).unwrap();
+    s.execute("captions.add", json!({"track": "C1", "text": "Hello captions", "seconds": 1.0})).unwrap();
+    s.execute("captions.add", json!({"track": "C2", "text": "Second track line", "seconds": 1.0})).unwrap();
+    let mut d = Driver::new(s, dir.clone());
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+
+    // untouched, it starts on the first track
+    d.export_vtt_as("first");
+    assert!(read("first.vtt").contains("Hello captions"), "{}", read("first.vtt"));
+
+    // the second track chosen in the dialog
+    *d.typed.lock().unwrap() = Some("second".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.track"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.track.option.2"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    let second = read("second.vtt");
+    assert!(second.contains("Second track line") && !second.contains("Hello captions"), "{second}");
+
+    // a track given by the command is the one the menu starts on
+    *d.typed.lock().unwrap() = Some("given".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt", "track": "C2"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(read("given.vtt").contains("Second track line"));
+
+    // a track that does not exist shows the first one, and OK exports that one
+    *d.typed.lock().unwrap() = Some("missing".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt", "track": "C9"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(read("missing.vtt").contains("Hello captions"), "{}", d.status());
+    let _ = std::fs::remove_dir_all(dir);
+}

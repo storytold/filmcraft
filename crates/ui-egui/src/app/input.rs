@@ -16,7 +16,7 @@ impl FilmcraftApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
             let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
-            self.import_dropped(&dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
+            self.import_dropped(ctx, &dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
         }
         for files in std::mem::take(&mut self.window_files) {
             // Only the Timeline places files at the pointer; elsewhere they go to the bin.
@@ -27,19 +27,46 @@ impl FilmcraftApp {
                 self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
             }
             if !files.dropped.is_empty() {
-                self.import_dropped(&files.dropped, pointer.map(|p| (p, files.viewport)));
+                self.import_dropped(ctx, &files.dropped, pointer.map(|p| (p, files.viewport)));
             }
         }
     }
 
-    /// Import the dropped files that exist; with a pointer and Timeline ▸ drop imports to the
-    /// timeline, queue the new items for the Timeline drawn in that viewport.
-    fn import_dropped(&mut self, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+    /// Import the dropped files and folders that exist (a folder as a bin of its media, each
+    /// sub-folder a bin within it, as in Premiere); with a pointer and Timeline ▸ drop imports to the
+    /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
+    /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
+    fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
         let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
+            // one project is open at a time: the rest of the drop is not imported into either
+            let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
+            return;
+        }
         if paths.is_empty() {
             return;
         }
-        let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+        // A dropped folder becomes a bin named after it, with its sub-folders as bins inside it
+        // (Premiere's behaviour): `mediaBrowser.import` walks it with the Media Browser's depth and
+        // folder budgets. Plain files import exactly as before: `imageSequence: false` keeps
+        // `file.import`'s single-file behaviour.
+        let imported = self.session.execute("mediaBrowser.import", json!({"paths": paths, "bin": self.import_bin().0, "imageSequence": false}));
+        // Say why a drop did not fully import (a folder without media, an unsupported file), as the
+        // Import dialog does.
+        match &imported {
+            Ok(v) => {
+                if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
+                    self.ui.status = errs.iter().filter_map(|e| e.as_str()).collect::<Vec<_>>().join("; ");
+                } else if let Some(presets) = v["presets"].as_array().filter(|p| !p.is_empty()) {
+                    // dropped preset files land in the Presets bin: open it and say how many
+                    if !self.ui.expanded_fx.iter().any(|k| k == "Presets") {
+                        self.ui.expanded_fx.push("Presets".to_string());
+                    }
+                    self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
+                }
+            }
+            Err(e) => self.ui.status = e.to_string(),
+        }
         if let Ok(v) = imported
             && let Some((pos, viewport)) = pointer
             && self.session.prefs.timeline.drop_import_to_timeline
@@ -108,6 +135,11 @@ impl FilmcraftApp {
             self.value_press = Some((press, self.session.undo_mark()));
         }
     }
+}
+
+/// Whether a dropped file is a FilmCraft project (opened, not imported).
+fn is_project_file(path: &str) -> bool {
+    std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
 }
 
 /// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.

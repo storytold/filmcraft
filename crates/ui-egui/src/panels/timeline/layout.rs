@@ -38,16 +38,23 @@ impl Layout {
     /// row only counts inside its own pane (video above the divider, audio between the divider
     /// and the Mix row). Without this a press on an audio track hit the hidden V1 row.
     pub fn row_at(&self, y: f32) -> Option<&Row> {
-        let audio_top = self.split_y + DIVIDER_H;
-        let audio_bottom = self.content.max.y - MASTER_H;
         self.rows.iter().find(|r| {
-            r.rect.min.y <= y
-                && y < r.rect.max.y
-                && match r.kind {
-                    TrackKind::Video => y < self.split_y,
-                    TrackKind::Audio => y >= audio_top && y < audio_bottom,
-                }
+            let s = self.shown(r);
+            s.min.y <= y && y < s.max.y
         })
+    }
+
+    /// The part of `row` its own pane shows (see `row_at`); empty when it is scrolled out.
+    pub fn shown(&self, row: &Row) -> Rect {
+        let mut r = row.rect;
+        match row.kind {
+            TrackKind::Video => r.max.y = r.max.y.min(self.split_y),
+            TrackKind::Audio => {
+                r.min.y = r.min.y.max(self.split_y + DIVIDER_H);
+                r.max.y = r.max.y.min(self.content.max.y - MASTER_H);
+            }
+        }
+        r
     }
 }
 

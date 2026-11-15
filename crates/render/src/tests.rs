@@ -212,7 +212,7 @@ fn plan_matches_reference_renderer() {
     for f in [0, 12, 20, 40] {
         let opts = RenderOptions { scale: 0.5, ..Default::default() };
         let reference = render_sequence(&p, seq, r.tick_of(f), opts, &map);
-        let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, &map);
+        let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
         assert!(matches!(plan, plan::FramePlan::Layers { .. }), "simple frame should be GPU-drawable");
         let got = plan::execute_cpu(&plan);
         assert_eq!((got.w, got.h), (reference.w, reference.h));
@@ -251,7 +251,7 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
                 tr.to = if missing { None } else { Some(b) };
                 for f in [18, 21, 24, 29] {
                     let opts = RenderOptions { scale, ..Default::default() };
-                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, &map);
+                    let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
                     assert!(matches!(plan, plan::FramePlan::Composite { .. }));
                     let got = plan::execute_cpu(&plan);
                     let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
@@ -282,9 +282,9 @@ fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
         reverse: false,
     });
     let opts = RenderOptions { scale: 0.5, ..Default::default() };
-    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
-    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10)), "outside the transition the frame stays on the GPU");
-    let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, &map);
+    assert!(plan::is_cpu_frame(&p, seq, rate.tick_of(24), opts, plan::DeviceCaps::ALL));
+    assert!(!plan::is_cpu_frame(&p, seq, rate.tick_of(10), opts, plan::DeviceCaps::ALL), "outside the transition the frame stays on the GPU");
+    let plan = plan::plan_frame(&p, seq, rate.tick_of(24), opts, plan::DeviceCaps::ALL, &map);
     assert!(matches!(plan, plan::FramePlan::Image(_)));
     assert_eq!(plan::execute_cpu(&plan).px, render_sequence(&p, seq, rate.tick_of(24), opts, &map).px);
 }
@@ -417,7 +417,7 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
     for draft in [false, true] {
         for (scale, small_w) in [(1.0f32, 320u32), (0.5, 160), (0.25, 80)] {
             let opts = RenderOptions { scale, ..Default::default() };
-            let plan = filmcraft_media::cancel::with_draft(draft, || plan::plan_frame(&p, seq, t, opts, &map));
+            let plan = filmcraft_media::cancel::with_draft(draft, || plan::plan_frame(&p, seq, t, opts, plan::DeviceCaps::ALL, &map));
             let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU-drawable") };
             // exact playback hands over the decoded picture; draft playback planes at the drawn size
             assert_eq!(layers[0].frame.width, if draft { small_w } else { 320 }, "scale {scale}, draft {draft}");
@@ -445,7 +445,7 @@ fn a_multicam_clip_showing_itself_plans_and_renders_to_an_end() {
     p.sequence_mut(a).unwrap().video_tracks[0].items.push(it);
     let opts = RenderOptions { scale: 0.1, ..Default::default() };
     let sources = SourceMap::default();
-    let img = plan::execute_cpu(&plan::plan_frame(&p, a, Tick::ZERO, opts, &sources));
+    let img = plan::execute_cpu(&plan::plan_frame(&p, a, Tick::ZERO, opts, plan::DeviceCaps::ALL, &sources));
     assert!(img.w > 0 && img.h > 0);
     let img = render_sequence(&p, a, Tick::ZERO, opts, &sources);
     assert!(img.w > 0 && img.h > 0);
@@ -510,7 +510,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let shown = |p: &Project, f: i64, planned: bool| -> Vec<i64> {
         src.asked.lock().unwrap().clear();
         if planned {
-            plan::execute_cpu(&plan::plan_frame(p, seq, r.tick_of(f), opts, &map));
+            plan::execute_cpu(&plan::plan_frame(p, seq, r.tick_of(f), opts, plan::DeviceCaps::ALL, &map));
         } else {
             render_sequence(p, seq, r.tick_of(f), opts, &map);
         }
@@ -557,5 +557,59 @@ fn over_black_rows_match_the_per_value_conversion() {
         let want = if i % 4 == 3 { (s.clamp(0.0, 1.0) * 255.0).round() as u8 } else { filmcraft_color::linear_to_srgb_u8(*s) };
         assert_eq!(with_alpha[i], want, "{s:e} at {i}");
         assert_eq!(opaque[i], if i % 4 == 3 { 255 } else { want }, "{s:e} at {i}");
+    }
+}
+
+#[test]
+fn a_still_image_needs_no_in_between_frame() {
+    // a still reports 29.97 fps, so in a 23.976 sequence at 100 % it looks like a frame rate
+    // conform, but its one picture needs neither Frame Blending nor Optical Flow (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let rate = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::OpticalFlow;
+    let t = rate.tick_of(1);
+    let still: SharedSource = Arc::new(filmcraft_media::still::StillSource::from_rgba("still.png", 4, 4, vec![128; 64], false, 64));
+    assert_eq!(still.info().frame_rate(), FrameRate::FPS_29_97);
+    assert!(interpolation_blend(&it, t, FrameRate::FPS_29_97, rate).is_some());
+    assert!(media_interpolation(&it, t, &still, rate).is_none());
+    // a 29.97 source that is not a still still gets the in-between frame
+    let movie: SharedSource =
+        Arc::new(GeneratorSource::new(Generator::ColorMatte { color: [1.0; 4] }, 4, 4, FrameRate::FPS_29_97, Tick(10 * TICKS_PER_SECOND)));
+    let (_, w) = media_interpolation(&it, t, &movie, rate).unwrap();
+    assert!((w - 0.25).abs() < 1e-3, "a quarter into the source frame: {w}");
+}
+
+#[test]
+fn in_between_frames_stay_inside_the_source_range() {
+    // the later frame of a Frame Blending / Optical Flow pair never comes from the clip's source
+    // out on: a reversed clip starts just before it, and a forward one can end next to it (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let src = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), src).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    it.source_in = src.tick_of(10);
+    // 100 % on 29.97 moves 0.8 of a source frame per frame, so 5 frames end exactly on source frame
+    // 14; 50 % at the media's own rate ends half-way into frame 13 (7 frames) or on frame 14 (8)
+    for (seq, speed, frames) in [(FrameRate::FPS_29_97, 1.0, 5), (src, 0.5, 7), (src, 0.5, 8)] {
+        for reverse in [false, true] {
+            it.speed = speed;
+            it.reverse = reverse;
+            it.start = seq.tick_of(3);
+            it.duration = seq.tick_of(frames);
+            let (source_in, out) = (it.source_in, it.source_out());
+            let mut blended = 0;
+            for k in 0..frames {
+                let t = seq.tick_of(3 + k);
+                if let Some((next, w)) = interpolation_blend(&it, t, src, seq) {
+                    assert!(
+                        next > source_in && next < out,
+                        "{seq:?} at {speed}, reverse {reverse}, frame {k}: next {next:?} outside {source_in:?}..{out:?} (w {w})"
+                    );
+                    blended += 1;
+                }
+            }
+            assert!(blended > 0, "{seq:?} at {speed}, reverse {reverse}: no frame blended");
+        }
     }
 }

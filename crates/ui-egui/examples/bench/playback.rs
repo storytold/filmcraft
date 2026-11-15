@@ -119,7 +119,8 @@ pub struct Display {
 impl Display {
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            let instance = eframe::wgpu::Instance::default();
+            // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
+            let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
             adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
@@ -136,7 +137,10 @@ impl Display {
     }
 
     fn target(&self, seq: ItemId) -> Target {
-        if self.gpu.is_some() { Target::SequencePlan(seq) } else { Target::Sequence(seq) }
+        match &self.gpu {
+            Some((c, _)) => Target::SequencePlan(seq, c.caps()),
+            None => Target::Sequence(seq),
+        }
     }
 
     /// Show the exact frame, or the nearest earlier cached one; returns whether it was exact.
