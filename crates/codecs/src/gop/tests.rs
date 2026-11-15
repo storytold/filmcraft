@@ -23,6 +23,7 @@ struct Samples {
     intra: bool,
     resets: Arc<AtomicUsize>,
     decodes: Arc<AtomicUsize>,
+    reads: Arc<AtomicUsize>,
 }
 
 /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
@@ -99,6 +100,7 @@ impl VideoSamples for Samples {
         (i < self.n).then_some(i)
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         Ok(vec![i as u8])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
@@ -115,7 +117,7 @@ impl VideoSamples for Samples {
 }
 
 fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default(), reads: Default::default() }
 }
 
 /// Every picture is an IDR picture: its samples carry the independence mark (see `Dec::is_independent`).
@@ -129,12 +131,13 @@ impl VideoSamples for IdrSamples {
         self.0.pts(i)
     }
     fn sync_before(&self, i: usize) -> usize {
-        self.0.sync_before(i)
+        i
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
         self.0.sample_at(t)
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.reads.fetch_add(1, Ordering::Relaxed);
         Ok(vec![i as u8, 1])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
@@ -174,6 +177,7 @@ fn an_idr_seek_decodes_only_its_own_sample_whatever_the_order() {
     }
     assert_eq!(s.0.decodes.load(Ordering::Relaxed), order.len(), "one sample decoded per seek");
     assert_eq!(s.0.resets.load(Ordering::Relaxed), order.len(), "each seek starts a reset decoder");
+    assert_eq!(s.0.reads.load(Ordering::Relaxed), order.len(), "one sample read per seek");
 }
 
 #[test]
@@ -183,6 +187,8 @@ fn samples_that_are_not_idr_keep_the_decode_forward_window() {
     let c = GopCache::new(None);
     assert_eq!(index_of(&c.frame(&s, 200_000).expect("frame")), 200);
     assert!(s.decodes.load(Ordering::Relaxed) > 200, "decoded from the sync sample, not the sample alone");
+    // nothing is read ahead of the decode: each sample is read once, as it is fed
+    assert_eq!(s.reads.load(Ordering::Relaxed), s.decodes.load(Ordering::Relaxed));
 }
 
 /// Marks every tenth sample as an IDR sample, though the container's only sync sample is the first.
@@ -273,6 +279,9 @@ fn an_isolated_decode_without_a_picture_falls_back_to_decoding_forward() {
     let c = GopCache::new(None);
     assert_eq!(index_of(&c.frame(&s, 40_000).expect("frame")), 40);
     assert!(s.0.0.decodes.load(Ordering::Relaxed) > 1, "the window path decoded the following samples");
+    // the sample read for the isolated decode is the one the window path starts with (read once, not
+    // twice); the window path's random-access probe reads its first sample once more
+    assert_eq!(s.0.0.reads.load(Ordering::Relaxed), s.0.0.decodes.load(Ordering::Relaxed));
 }
 
 #[test]
@@ -295,7 +304,30 @@ fn concurrent_idr_seeks_decode_one_sample_each_with_a_bounded_spare_pool() {
     assert_eq!(s.0.decodes.load(Ordering::Relaxed), 64);
     assert_eq!(s.0.resets.load(Ordering::Relaxed), 64);
     let spare = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).spare.len();
-    assert!(spare <= 16, "{spare} spare decoders");
+    assert!(spare <= MAX_SPARE_DECODERS, "{spare} spare decoders");
+    assert_eq!(c.shared.pool.spares.load(Ordering::Relaxed), spare, "the pool counts the spares");
+}
+
+#[test]
+fn spare_decoders_of_many_idr_sources_stay_within_the_process_cap() {
+    // each source is its own cache; the pool is shared, so their spares are counted together
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET));
+    let sources: Vec<_> = (0..10).map(|_| (IdrSamples(samples(8, 8, 0, false)), GopCache::in_pool(None, pool.clone()))).collect();
+    std::thread::scope(|scope| {
+        for (s, c) in &sources {
+            scope.spawn(move || {
+                for i in [3usize, 5, 1] {
+                    assert_eq!(index_of(&c.frame(s, i as i64 * 1000).expect("frame")), i);
+                }
+            });
+        }
+    });
+    let held: usize = sources.iter().map(|(_, c)| c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).spare.len()).sum();
+    assert!(held <= MAX_SPARE_DECODERS, "{held} spare decoders for 10 sources");
+    assert_eq!(pool.spares.load(Ordering::Relaxed), held);
+    // dropping the caches gives them back
+    drop(sources);
+    assert_eq!(pool.spares.load(Ordering::Relaxed), 0);
 }
 
 #[test]

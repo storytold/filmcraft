@@ -263,6 +263,7 @@ impl State {
     /// makes a new one and restarts at a sync sample. Returned so they are dropped off the lock.
     fn release_decoder(&mut self, pool: &Pool) -> Vec<Box<dyn VideoDecoder>> {
         let mut out = std::mem::take(&mut self.spare);
+        pool.spares.fetch_sub(out.len(), Ordering::Relaxed);
         if let Some(d) = self.decoder.take() {
             pool.decoders.fetch_sub(1, Ordering::Relaxed);
             out.push(d);
@@ -437,6 +438,13 @@ const RECENT: Duration = Duration::from_millis(1500);
 /// layers plus the clips just left behind).
 const HARD_DECODERS: usize = 16;
 
+/// Most spare decoders the caches keep together for isolated decodes of independent (IDR)
+/// samples ([`GopCache::independent_frame`]). Each is a full decoder (a hardware session or the
+/// frame threads of a software one) that no cache's decoder count covers, so with many IDR-only
+/// sources a per-cache cap alone would multiply them. Decodes beyond it use a decoder made for the
+/// request and dropped after it.
+const MAX_SPARE_DECODERS: usize = 6;
+
 /// Decoded frames all caches may hold together before idle ones give theirs up. Each cache also
 /// has its own budget, which alone let every clip on a timeline keep hundreds of MB of frames
 /// nobody was looking at.
@@ -447,6 +455,8 @@ struct Pool {
     caches: Mutex<Vec<Weak<Shared>>>,
     /// Caches that hold a decoder.
     decoders: AtomicUsize,
+    /// Spare decoders the caches hold for parallel one-sample decodes (see [`MAX_SPARE_DECODERS`]).
+    spares: AtomicUsize,
     max_decoders: usize,
     idle: Duration,
     /// Caches idle at least this long are no longer in use (see [`RECENT`]).
@@ -486,6 +496,7 @@ impl Pool {
         Self {
             caches: Mutex::new(Vec::new()),
             decoders: AtomicUsize::new(0),
+            spares: AtomicUsize::new(0),
             max_decoders,
             idle,
             recent: idle,
@@ -1160,8 +1171,10 @@ impl GopCache {
         }
         // A seek to an IDR sample decodes that sample alone (`independent_frame`): no window of
         // samples after it is fed to the decoder. A running cursor that can still reach `i` keeps
-        // decoding forward as before, and a failed or empty isolated decode falls back to it.
-        if !cursor_can_continue(st.next, st.start, st.out_max, i, want_pts, i, n) {
+        // decoding forward as before, and a failed or empty isolated decode falls back to it. Only a
+        // sample that starts its own decode run is read here, under the lock; `decode_until` reuses it.
+        let mut pre = None;
+        if decode_start(s, i) == i && !cursor_can_continue(st.next, st.start, st.out_max, i, want_pts, i, n) {
             let sample = s.read(i)?;
             if st.decoder.as_deref().is_some_and(|d| d.is_independent(&sample)) {
                 match self.independent_frame(st, s, want_pts, &sample, draft)? {
@@ -1169,14 +1182,27 @@ impl GopCache {
                     Independent::Fallback(back) => st = back,
                 }
             }
+            pre = Some(sample);
         }
         // with the lock held: see `isolated`
         let st = &mut *st;
-        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
+        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft, pre))
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
-    fn decode_until(&self, st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>, draft: bool) -> crate::Result<Taken> {
+    /// `pre` is sample `i` when the caller has read it already.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_until(
+        &self,
+        st: &mut State,
+        s: &dyn VideoSamples,
+        i: usize,
+        want_pts: i64,
+        late_before: Option<i64>,
+        draft: bool,
+        pre: Option<Vec<u8>>,
+    ) -> crate::Result<Taken> {
+        let mut pre = pre;
         let n = s.count();
         let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
@@ -1216,7 +1242,13 @@ impl GopCache {
                 return Err(CodecError::Cancelled);
             }
             let k = st.next;
-            let data = s.read(k)?;
+            let data = match pre.take() {
+                Some(d) if k == i => d,
+                other => {
+                    pre = other;
+                    s.read(k)?
+                }
+            };
             if k != i && s.pts(k) < late && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
                 st.next += 1;
                 SKIPPED.fetch_add(1, Ordering::Relaxed);
@@ -1318,36 +1350,37 @@ impl GopCache {
         draft: bool,
     ) -> crate::Result<Independent<'a>> {
         let mut st = st;
-        let spare = st.spare.pop();
+        let spare = self.take_spare(&mut st);
         drop(st);
+        let lock = || self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut dec = match spare {
             Some(d) => d,
             None => match s.make_decoder() {
                 Ok(d) => d,
-                Err(_) => return Ok(Independent::Fallback(self.shared.state.lock().unwrap_or_else(PoisonError::into_inner))),
+                Err(_) => return Ok(Independent::Fallback(lock())),
             },
         };
         dec.reset();
         dec.set_draft(draft);
         DECODED.fetch_add(1, Ordering::Relaxed);
+        // No decoder reports `Cancelled` (only this cache does, above): an error here is a decoder failure.
         let res = timed(|| dec.decode(sample, want_pts)).map(|mut out| {
             out.extend(timed(|| dec.flush()));
             out
         });
-        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let out = match res {
             Ok(out) => out,
-            Err(CodecError::Cancelled) => return Err(CodecError::Cancelled),
             Err(e) => {
-                // the decoder may be in an odd state: drop it, decode the old way
+                // the decoder may be in an odd state: drop it (off the lock: a hardware session can
+                // block) and decode the old way
+                drop(dec);
                 log::debug!("isolated decode of an independent sample failed ({e}); decoding forward instead");
-                return Ok(Independent::Fallback(st));
+                return Ok(Independent::Fallback(lock()));
             }
         };
         count_frames(&out);
-        if st.spare.len() < 16 {
-            st.spare.push(dec);
-        }
+        let mut st = lock();
+        let surplus = self.keep_spare(&mut st, dec, MAX_SPARE_DECODERS);
         // what this decode produced, kept apart from the cache: a concurrent request can move the pin
         // and have the cache evict this frame before it is read back
         let mut mine: Option<Taken> = None;
@@ -1358,17 +1391,45 @@ impl GopCache {
                 mine = Some(t);
             }
         }
+        if let Some(dec) = surplus {
+            // over the spare cap: dropped with no cache lock held
+            drop(st);
+            drop(dec);
+            st = lock();
+        }
         match mine {
             Some(t) => Ok(Independent::Done(t)),
             None => Ok(Independent::Fallback(st)),
         }
     }
 
+    /// A spare decoder, if the cache keeps one (see [`MAX_SPARE_DECODERS`]).
+    fn take_spare(&self, st: &mut State) -> Option<Box<dyn VideoDecoder>> {
+        let d = st.spare.pop()?;
+        self.shared.pool.spares.fetch_sub(1, Ordering::Relaxed);
+        Some(d)
+    }
+
+    /// Keep `dec` as a spare while the cache holds fewer than 16 and the process fewer than `cap`;
+    /// otherwise hand it back, for the caller to drop with no lock held.
+    #[must_use = "drop the surplus decoder with no cache lock held"]
+    fn keep_spare(&self, st: &mut State, dec: Box<dyn VideoDecoder>, cap: usize) -> Option<Box<dyn VideoDecoder>> {
+        if st.spare.len() >= 16 {
+            return Some(dec);
+        }
+        if self.shared.pool.spares.fetch_add(1, Ordering::Relaxed) >= cap {
+            self.shared.pool.spares.fetch_sub(1, Ordering::Relaxed);
+            return Some(dec);
+        }
+        st.spare.push(dec);
+        None
+    }
+
     /// Intra-only streams: decode the one sample outside the lock, so several frame workers
     /// decode different frames of the same source at once.
     fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Taken> {
         let mut st = st;
-        let spare = st.spare.pop();
+        let spare = self.take_spare(&mut st);
         drop(st);
         let mut dec = match spare {
             Some(d) => d,
@@ -1380,9 +1441,7 @@ impl GopCache {
         });
         let res = res.inspect(|out| count_frames(out));
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if st.spare.len() < 16 {
-            st.spare.push(dec);
-        }
+        let _surplus = self.keep_spare(&mut st, dec, usize::MAX);
         // cached raw: the request that takes a frame crops and turns it off the lock, or leaves
         // the turn to the GPU (`frame_late_unturned`)
         // what this decode produced, kept apart from the cache: a concurrent request can move the pin and

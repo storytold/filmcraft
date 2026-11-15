@@ -249,4 +249,37 @@ fn h264_seeks_decode_only_the_requested_idr_picture_and_match_ffmpeg() {
     for c in &cases {
         run_case(&ff, c);
     }
+    interlaced_idr_samples_are_not_decoded_alone(&ff);
+}
+
+/// With field coding (`frame_mbs_only_flag` 0) a sample can be one field of a frame, so an IDR
+/// sample is not taken to be a whole picture: seeks keep the decode-forward path.
+fn interlaced_idr_samples_are_not_decoded_alone(ff: &Path) {
+    let args = [
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=320x240:r=30:d=2",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-flags",
+        "+ilme+ildct",
+        "-x264-params",
+        "interlaced=1:tff=1:keyint=1:scenecut=0",
+        "-pix_fmt",
+        "yuv420p",
+    ];
+    let Some(file) = fixture(ff, "idrseek_interlaced.mp4", &args) else {
+        eprintln!("SKIPPED: ffmpeg could not make an interlaced H.264 fixture");
+        return;
+    };
+    // the first sample of the file: the IDR picture
+    let data = std::fs::read(&file).expect("read");
+    let mp4 = filmcraft_isobmff::open(data.clone()).expect("mp4");
+    let track = mp4.track_of_kind(filmcraft_isobmff::TrackKind::Video).expect("video track");
+    let sample = mp4.read_sample(&data, track, 0).expect("sample");
+    let dec = filmcraft_codecs::software_video_decoder(&mp4.tracks[track].entries[0]).expect("decoder");
+    assert!(!dec.is_independent(&sample), "an IDR sample of a field-coded stream is not decoded alone");
 }
