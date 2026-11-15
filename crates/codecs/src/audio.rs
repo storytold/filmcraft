@@ -140,6 +140,14 @@ fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
     })
 }
 
+/// [`aac_to_wav_order`] for a stream's configuration. Configuration 0 takes the speakers its
+/// program config element spells out (`craft_audio::aac::speaker_config`), so a PCE carried in an
+/// MP4 `esds` or in LATM's `StreamMuxConfig` in the shape of 5.1 is reordered like configuration 6;
+/// a layout that cannot be told keeps the decoded order.
+fn aac_wav_order(asc: &craft_audio::aac::AudioSpecificConfig) -> Option<&'static [usize]> {
+    aac_to_wav_order(craft_audio::aac::speaker_config(asc))
+}
+
 /// `channels` reordered by `order` (output channel → decoded channel). A decode whose channel count
 /// does not match the order is returned unchanged.
 fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>> {
@@ -259,7 +267,7 @@ impl PacketDecoder {
         let dec = match &mut self.inner {
             Inner::Aac { dec, .. } => {
                 let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
-                let out = reorder(out, aac_to_wav_order(dec.config().channel_config));
+                let out = reorder(out, aac_wav_order(dec.config()));
                 self.channels = out.len();
                 return Ok(out);
             }
@@ -1124,6 +1132,27 @@ mod surround_order_tests {
         let chans = vec![vec![1.0], vec![2.0]];
         assert_eq!(reorder(chans.clone(), aac_to_wav_order(6)), chans);
         assert_eq!(reorder(vec![vec![0.0], vec![1.0], vec![2.0]], aac_to_wav_order(3)), vec![vec![1.0], vec![2.0], vec![0.0]]);
+    }
+
+    /// Configuration 0 with a program config element listing centre, front pair, back pair and LFE
+    /// (5.1 as configuration 6 lays it out) is reordered to WAV order like configuration 6; a
+    /// pair-first PCE (ffmpeg's 5.1(side)) already decodes in WAV order and is left alone.
+    #[test]
+    fn a_program_config_element_in_the_shape_of_5_1_is_reordered_like_configuration_6() {
+        use craft_audio::aac::{AudioSpecificConfig, ProgramConfig};
+        let with = |front: Vec<(bool, u8)>, side: Vec<(bool, u8)>, back: Vec<(bool, u8)>, lfe: Vec<u8>| {
+            let mut pce = ProgramConfig::default();
+            (pce.front, pce.side, pce.back, pce.lfe) = (front, side, back, lfe);
+            let mut asc = AudioSpecificConfig::lc(3, 0);
+            asc.pce = Some(pce);
+            asc
+        };
+        assert!(aac_to_wav_order(6).is_some());
+        let centre_first = with(vec![(false, 0), (true, 0)], vec![], vec![(true, 1)], vec![0]);
+        assert_eq!(aac_wav_order(&centre_first), aac_to_wav_order(6));
+        let pair_first = with(vec![(true, 0), (false, 0)], vec![(false, 1)], vec![(true, 1)], vec![]);
+        assert_eq!(aac_wav_order(&pair_first), None);
+        assert_eq!(aac_wav_order(&AudioSpecificConfig::lc(3, 6)), aac_to_wav_order(6));
     }
 }
 
