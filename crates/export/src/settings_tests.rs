@@ -1800,7 +1800,7 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
     }
 }
 
-/// Apple Lossless (`.m4a`) at 16, 24 and 32 bits decodes to the WAV export's samples exactly,
+/// Apple Lossless (`.m4a`) at 16 and 24 bits decodes to the WAV export's samples exactly,
 /// through FilmCraft's own import and through ffmpeg; the cookie records the largest frame and the
 /// bitrate, and the last frame's duration ends the file on the last sample.
 #[test]
