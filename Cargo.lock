@@ -1061,7 +1061,7 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2#b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2"
+source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
 dependencies = [
  "craft-media",
  "log",
@@ -1124,7 +1124,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2#b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2"
+source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
 dependencies = [
  "chrono",
  "thiserror 2.0.21",
@@ -1189,7 +1189,7 @@ dependencies = [
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2#b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2"
+source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
 dependencies = [
  "craft-media",
  "rayon",
@@ -2164,7 +2164,6 @@ dependencies = [
  "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-geom",
- "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
@@ -2249,16 +2248,6 @@ dependencies = [
  "rayon",
  "tempfile",
  "wgpu",
-]
-
-[[package]]
-name = "filmcraft-h264enc"
-version = "0.20.1"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
 ]
 
 [[package]]
