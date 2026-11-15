@@ -241,7 +241,7 @@ fn right_clicking_a_narrow_gap_opens_its_menu_and_closes_it() {
     assert_eq!(q.audio_tracks[0].items[1].start.0, f48, "linked sound moves with picture");
     assert_eq!(d.gap(), Value::Null);
     assert_eq!(d.harness.state_mut().session.undo().as_deref(), Some("Ripple Delete"));
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
 }
 
 #[test]
@@ -278,6 +278,6 @@ fn a_narrow_gap_menu_keeps_sync_lock_protection() {
     assert!(!session.is_enabled("edit.clear"));
     d.ok("ui.click", json!({"id": "timeline.gapMenu.edit.rippleDelete"}));
     d.frames(3);
-    assert_eq!(*d.harness.state().session.project, *before, "disabled menu cannot move any track");
+    assert_eq!(**d.harness.state().session.project, *before, "disabled menu cannot move any track");
     assert_eq!(d.harness.state().session.history.undo.len(), undo);
 }
