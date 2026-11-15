@@ -80,9 +80,9 @@ impl SymphoniaDecoder {
 
 enum Inner {
     /// Our own AAC decoder (craft-audio): AAC-LC, and HE-AAC with its SBR high band when the
-    /// stream plays at twice the core rate (`sbr`, see [`craft_audio::aac::Decoder::set_sbr`]).
+    /// stream plays at twice the core rate (see [`craft_audio::aac::Decoder::set_sbr`]).
     /// Surround output is reordered to WAV/SMPTE order (see [`aac_to_wav_order`]).
-    Aac { dec: Box<craft_audio::aac::Decoder>, asc: Vec<u8>, sbr: bool },
+    Aac { dec: Box<craft_audio::aac::Decoder>, asc: Vec<u8> },
     /// AAC whose configuration arrives with the first frame (ADTS / LATM).
     AacPending,
     /// MPEG audio at this rate whose layer arrives with the first frame (MP4 / QuickTime name the
@@ -194,7 +194,7 @@ impl PacketDecoder {
         if let Ok(mut dec) = craft_audio::aac::Decoder::new(asc) {
             let sbr = decodes_sbr(dec.sample_rate(), sample_rate);
             dec.set_sbr(sbr);
-            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), sbr }, channels: 0 });
+            return Ok(Self { inner: Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() }, channels: 0 });
         }
         Self::new(CODEC_TYPE_AAC, sample_rate, Some(asc.to_vec()))
     }
@@ -234,7 +234,7 @@ impl PacketDecoder {
             return Ok(());
         }
         let dec = craft_audio::aac::Decoder::new(asc).map_err(|e| CodecError::Unsupported(format!("AAC: {e}")))?;
-        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec(), sbr: false };
+        self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() };
         Ok(())
     }
     /// AC-3 and E-AC-3 (ATSC A/52, Annex E).
@@ -339,12 +339,10 @@ impl PacketDecoder {
     }
     pub fn reset(&mut self) {
         match &mut self.inner {
-            Inner::Aac { dec, asc, sbr } => {
-                if let Ok(mut d) = craft_audio::aac::Decoder::new(asc) {
-                    d.set_sbr(*sbr);
-                    **dec = d;
-                }
-            }
+            // craft-audio's reset clears the overlap, noise and SBR signal state but keeps the
+            // SBR header the stream last sent, so packets after a seek that carry no header still
+            // get their high band. Rebuilding the decoder would drop it until the next header.
+            Inner::Aac { dec, .. } => dec.reset(),
             Inner::Mpa(d) => d.reset(),
             Inner::Opus { dec, .. } => dec.reset(),
             Inner::Symphonia(d) => {
