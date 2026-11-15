@@ -604,8 +604,10 @@ fn import_d3d11_plane(device: &wgpu::Device, handle: HANDLE, w: u32, h: u32, for
         view_formats: &[],
     };
     // SAFETY: `hal_tex` was just imported on `device` with matching `wgpu_desc` and holds valid
-    // decoded image contents.
-    Some(unsafe { device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(hal_tex, &wgpu_desc, wgpu::TextureUses::UNINITIALIZED) })
+    // decoded image contents written by D3D11. Passing `RESOURCE | COPY_SRC` maps to
+    // `VK_IMAGE_LAYOUT_GENERAL` without skipping the initial barrier, preserving texels across the
+    // transition to `SHADER_READ_ONLY_OPTIMAL`.
+    Some(unsafe { device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(hal_tex, &wgpu_desc, wgpu::TextureUses::RESOURCE | wgpu::TextureUses::COPY_SRC) })
 }
 
 fn extract_sample_texture(sample: &IMFSample, format: SurfaceFormat) -> Result<(ID3D11Texture2D, u32, D3D11_TEXTURE2D_DESC), String> {

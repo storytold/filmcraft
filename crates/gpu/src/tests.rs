@@ -1029,3 +1029,73 @@ fn failing_gpu_surface_readback_is_not_cached_and_fails_export() {
     let (_, _, px) = c.render_export_prepared(&plan, None).expect("subsequent readback must recover and not hit cached blank pixels");
     assert!(px[0] > 0.9 && px[1] < 0.01 && px[3] > 0.9, "expected red pixel after recovery, got {:?}", &px[..4]);
 }
+
+#[test]
+fn gpu_surface_retires_after_submitted_work_done() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct DropSurface {
+        id: usize,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropSurface {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    impl filmcraft_frame::GpuSurface for DropSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([10u8, 20, 30, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let surf = Arc::new(DropSurface { id: 0xCAFE_BABE, dropped: dropped.clone() });
+    let frame = Arc::new(VideoFrame {
+        width: 4,
+        height: 4,
+        data: PixelData::GpuSurface(surf),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    c.composite(&plan);
+    drop(plan);
+    assert!(!dropped.load(Ordering::Acquire), "cached GpuSurface must stay alive in compositor");
+
+    let make_rgba = |v: u8| {
+        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()))
+    };
+    c.begin_frame();
+    for i in 0..(UPLOAD_CACHE_MAX_ENTRIES + 2) {
+        assert!(c.upload(&make_rgba((i % 250) as u8), None).is_some());
+    }
+    assert!(!dropped.load(Ordering::Acquire), "evicted GpuSurface must not drop before submit completes");
+    c.end_frame();
+    c.finish_submit();
+    let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+    assert!(dropped.load(Ordering::Acquire), "retired GpuSurface must drop once GPU work completes");
+}

@@ -103,7 +103,6 @@ struct Uploaded {
     /// Y, Cb, Cr (or the RGBA texture) and the alpha plane (the dummy texture when there is none).
     views: [wgpu::TextureView; 4],
     planes: Vec<PooledTexture>,
-    #[expect(dead_code, reason = "keeps externally imported HAL textures alive alongside views")]
     owned_textures: Vec<wgpu::Texture>,
     gpu_bytes: u64,
     kind: u32,
@@ -138,6 +137,8 @@ pub struct GpuCompositor {
     upload_cache_bytes: u64,
     frame_uploads: HashSet<(usize, u32, u32)>,
     pending_recycle: Vec<PooledTexture>,
+    pending_retire: Vec<Uploaded>,
+    has_gpu_surface: bool,
     texture_pool: HashMap<(u32, u32, wgpu::TextureFormat), Vec<PooledTexture>>,
     texture_pool_bytes: u64,
     uniform_pool: UniformPool,
@@ -555,6 +556,8 @@ impl GpuCompositor {
             upload_cache_bytes: 0,
             frame_uploads: HashSet::new(),
             pending_recycle: Vec::new(),
+            pending_retire: Vec::new(),
+            has_gpu_surface: false,
             texture_pool: HashMap::new(),
             texture_pool_bytes: 0,
             uniform_pool: UniformPool::new("layer-u", (UNIFORM_FLOATS * 4) as u64),
@@ -586,14 +589,21 @@ impl GpuCompositor {
         self.frame_depth = self.frame_depth.saturating_sub(1);
     }
 
-    /// Return textures evicted during frame recording back to the pool and trim any
-    /// single-frame cache overshoot once the command buffer has been submitted.
+    /// Return textures evicted during frame recording back to the pool, trim any single-frame
+    /// cache overshoot, and tie retired external GPU surfaces to queue completion.
     fn finish_submit(&mut self) {
         if self.frame_depth == 0 {
             self.frame_uploads.clear();
             let pending = std::mem::take(&mut self.pending_recycle);
             self.recycle_planes(pending);
             self.evict_uploads(None);
+            let retired = std::mem::take(&mut self.pending_retire);
+            if !retired.is_empty() {
+                self.queue.on_submitted_work_done(move || drop(retired));
+            }
+            if self.has_gpu_surface {
+                let _ = self.device.poll(wgpu::PollType::Poll);
+            }
         }
     }
 
@@ -671,12 +681,22 @@ impl GpuCompositor {
         }
     }
 
-    fn recycle_uploaded(&mut self, up: Uploaded) {
+    fn recycle_uploaded(&mut self, mut up: Uploaded) {
         self.upload_cache_bytes = self.upload_cache_bytes.saturating_sub(up.gpu_bytes);
+        let planes = std::mem::take(&mut up.planes);
         if self.frame_depth > 0 {
-            self.pending_recycle.extend(up.planes);
+            self.pending_recycle.extend(planes);
         } else {
-            self.recycle_planes(up.planes);
+            self.recycle_planes(planes);
+        }
+        // Keep externally imported GPU surfaces alive until Vulkan finishes reading them so
+        // decoders cannot recycle backing shared textures while a submission is still in flight.
+        if !up.owned_textures.is_empty() || matches!(up._pixels, PixelData::GpuSurface(_)) {
+            if self.frame_depth > 0 {
+                self.pending_retire.push(up);
+            } else {
+                self.queue.on_submitted_work_done(move || drop(up));
+            }
         }
     }
 
@@ -735,6 +755,7 @@ impl GpuCompositor {
     }
 
     fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Option<Uploaded> {
+        self.has_gpu_surface = true;
         if let Some(importer) = SURFACE_IMPORTER.get()
             && let Some(imported) = importer(&self.device, &self.dummy, surf.as_ref(), f.width, f.height)
         {
@@ -1962,6 +1983,14 @@ fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
     let (x0, y0) = (px(x0.floor() - 1.0, w), px(y0.floor() - 1.0, h));
     let (x1, y1) = (px(x1.ceil() + 1.0, w), px(y1.ceil() + 1.0, h));
     (x1 > x0 && y1 > y0).then(|| (x0, y0, x1 - x0, y1 - y0))
+}
+
+impl Drop for GpuCompositor {
+    fn drop(&mut self) {
+        if self.has_gpu_surface {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+    }
 }
 
 #[cfg(test)]
