@@ -12,7 +12,7 @@ use filmcraft_time::FrameRate;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::commands::{CommandSpec, always, bad};
+use crate::commands::{CommandSpec, always, bad, u64_p};
 use crate::{EngineError, Result, Session};
 
 const COMMAND: &str = "premiere.import";
@@ -181,6 +181,9 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
     if !matches!(mode, "link" | "copy") {
         return Err(bad(COMMAND, "mediaMode must be link or copy"));
     }
+    // As for other documents (`file.import`, `file.importAaf`): the project's items go into this
+    // bin, or the root when it is absent or no longer exists.
+    let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
     let fps: Option<FrameRate> =
         p.get("frameRate").map(|v| serde_json::from_value(v.clone())).transpose().map_err(|e| bad(COMMAND, format!("frameRate: {e}")))?;
     let bytes = filmcraft_interchange::premiere::read_input(std::fs::File::open(&source).map_err(io)?).map_err(|e| bad(COMMAND, e.to_string()))?;
@@ -320,7 +323,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
     write_new(&destination.join("provenance.json"), &record_json)?;
     let before: std::collections::BTreeSet<_> = s.project.items.keys().copied().collect();
     let sequences = s.edit("Import Premiere project", |project, state| {
-        let sequences = filmcraft_interchange::merge_into(project, fragment, None);
+        let sequences = filmcraft_interchange::merge_into(project, fragment, bin);
         std::sync::Arc::make_mut(project.workflow.get_or_insert_default()).imports.push(std::sync::Arc::new(record));
         if let Some(&id) = sequences.first() {
             state.active_sequence = Some(id);
@@ -441,7 +444,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Import Premiere Project",
             menu: &[],
             shortcut: None,
-            params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str? (ObjectUID or unique name),"frameRate":{"num":int,"den":int}?}"#,
+            params: r#"{"path":str,"destination":str? (new directory),"mediaMode":"link"|"copy","sequence":str? (ObjectUID or unique name),"frameRate":{"num":int,"den":int}?,"bin":binId?}"#,
             enabled: always,
             run: import,
             journal: true,
