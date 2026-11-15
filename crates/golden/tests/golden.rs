@@ -276,6 +276,57 @@ fn crop() -> Scene {
     b.at(12)
 }
 
+/// A nested sequence whose single clip carries four GPU effects, flattened onto one GPU layer so
+/// its outer keyframed crop (feather 4) runs on the GPU: the compositor must reproduce the CPU
+/// render, which bakes the nest (with its effects) and crops it on the CPU.
+fn nested_flatten() -> Scene {
+    let mut b = Builder::new(1);
+    // one clip at the nest's own size (320×180), so Motion is identity and the nest flattens
+    let inner = b.p.new_sequence("inner", SequenceSettings { width: W, height: H, frame_rate: RATE, ..Default::default() }, 1, 0, None);
+    let src = GeneratorSource::new(Generator::BarsAndTone, W, H, RATE, Tick(10 * TICKS_PER_SECOND));
+    let info = src.info().clone();
+    let media = b.p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(src.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    b.map.0.insert(media, Arc::new(src) as SharedSource);
+    let ti = b.p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, RATE.tick_of(48)), RATE).unwrap();
+    let inner_clip = ti.id;
+    b.p.sequence_mut(inner).unwrap().video_tracks[0].items.push(ti);
+    for (fx, params) in [
+        ("brightness_contrast", &[("brightness", fl(12.0)), ("contrast", fl(-8.0))][..]),
+        ("color_balance", &[("mid_r", fl(20.0)), ("hi_b", fl(-10.0))][..]),
+        ("levels", &[("in_black", fl(8.0)), ("in_white", fl(240.0))][..]),
+        ("horizontal_flip", &[][..]),
+    ] {
+        let mut e = find_effect(fx).unwrap_or_else(|| panic!("no effect {fx}")).instance();
+        set(&mut e, params);
+        b.p.sequence_mut(inner).unwrap().find_item_mut(inner_clip).unwrap().1.effects.push(e);
+    }
+    // nest it (same size, identity Motion) and crop the nest keyframed with feather 4
+    let nest = b.place(0, inner, 0, 48);
+    let mut crop = find_effect("crop").unwrap().instance();
+    set(&mut crop, &[("feather", fl(4.0))]);
+    crop.params.get_mut("left").unwrap().put_keyframe(Tick::ZERO, fl(5.0));
+    crop.params.get_mut("left").unwrap().put_keyframe(RATE.tick_of(24), fl(17.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(Tick::ZERO, fl(8.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(RATE.tick_of(24), fl(16.0));
+    b.clip(nest).effects.push(crop);
+    b.at(12)
+}
+
 /// Two clips with a 12-frame transition centred on the cut at frame 24, rendered at `frame`.
 fn transition(effect: &str, frame: i64) -> Scene {
     let mut b = Builder::new(1);
@@ -617,6 +668,7 @@ fn scenes() -> Vec<(&'static str, &'static str, fn() -> Scene)> {
         ("gaussian_blur", "Gaussian Blur effect", gaussian_blur),
         ("lumetri_basic", "Color Grading basic correction", lumetri_basic),
         ("crop", "Crop effect", crop),
+        ("nested_flatten", "Nested sequence flattened with a GPU crop", nested_flatten),
         ("transition_cross_dissolve", "Cross Dissolve at 50%", || transition("cross_dissolve", 24)),
         ("transition_dip_to_black", "Dip to Black at 25%", || transition("dip_to_black", 21)),
         ("transition_wipe", "Wipe at 50%", || transition("wipe", 24)),
@@ -685,6 +737,7 @@ goldens!(
     gaussian_blur,
     lumetri_basic,
     crop,
+    nested_flatten,
     transition_cross_dissolve,
     transition_dip_to_black,
     transition_wipe,
@@ -797,6 +850,44 @@ fn gpu_matches_cpu_on_golden_scenes() {
         }
     }
     assert!(failures.is_empty(), "GPU differs from the CPU reference:\n{}", failures.join("\n"));
+}
+
+/// The flattened nest's appended outer chain (keyframed crop + feather 4) must reproduce the CPU's
+/// baked-nest picture pixel-closely: every frame plans to a single GPU effect layer, and the GPU
+/// compositor must reach PSNR ≥ 52 dB with a max channel error ≤ 2 against the CPU render.
+#[test]
+fn gpu_nested_flatten_matches_cpu() {
+    let s = nested_flatten();
+    let Some((dev, q)) = device("gpu nest flatten", true) else {
+        return;
+    };
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    let mut failures = Vec::new();
+    for frame in [0, 12, 30] {
+        let t = RATE.tick_of(frame);
+        let img = render_sequence(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+        let cpu = Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), c.caps(), &s.sources);
+        let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else {
+            failures.push(format!("frame {frame}: planned as a CPU image"));
+            continue;
+        };
+        assert_eq!(layers.len(), 1, "frame {frame}: one flattened layer");
+        assert!(layers[0].fx.as_ref().is_some_and(|fx| !fx.ops.is_empty()), "frame {frame}: the nest flattened to a GPU effect layer");
+        c.composite(&plan);
+        let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+        let gpu = Rgba8::new(gw, gh, px);
+        let d = diff(&cpu, &gpu).unwrap();
+        eprintln!("nested flatten @ {frame}: GPU vs CPU {d}");
+        if d.psnr < 52.0 || d.max_abs > 2 {
+            let dir = filmcraft_testkit::golden::failures_dir();
+            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("nest_flatten_{frame}.gpu.png")), &gpu);
+            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("nest_flatten_{frame}.cpu.png")), &cpu);
+            failures.push(format!("frame {frame}: {d}; images in {}", dir.display()));
+        }
+    }
+    assert!(failures.is_empty(), "GPU nested flatten differs from the CPU render:\n{}", failures.join("\n"));
 }
 
 /// Per-pixel max RGB difference (99th percentile, mean) over the pixels at least 1.5 px from every

@@ -431,3 +431,438 @@ fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
     let _ = r.frame(s, Tick::ZERO);
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+// ---- flattening a single-GPU-layer nest so its outer effects run on the GPU
+
+/// An effect instance with `set` applied to its parameters.
+fn fx(id: &str, set: impl FnOnce(&mut filmcraft_project::EffectInstance)) -> filmcraft_project::EffectInstance {
+    let mut e = filmcraft_project::effect::find_effect(id).unwrap().instance();
+    set(&mut e);
+    e
+}
+
+fn set(e: &mut filmcraft_project::EffectInstance, id: &str, v: ParamValue) {
+    e.params.get_mut(id).unwrap().value = v;
+}
+
+/// A crop instance (left/right percentages, edge feather in full-res pixels).
+fn crop_effect(left: f64, right: f64, feather: f64) -> filmcraft_project::EffectInstance {
+    fx("crop", |e| {
+        set(e, "left", ParamValue::Float(left));
+        set(e, "right", ParamValue::Float(right));
+        set(e, "feather", ParamValue::Float(feather));
+    })
+}
+
+/// A nest of one `w`×`h` colour matte carrying `inner_effects`, in an outer sequence of the same
+/// size, all at 24 fps. Returns (inner, outer, nest clip). The matte is the nest's own size and its
+/// motion is identity, so the nest flattens to a single GPU layer when every inner effect is
+/// GPU-capable.
+fn single_clip_nest(r: &mut Rig, w: u32, h: u32, inner_effects: Vec<filmcraft_project::EffectInstance>) -> (ItemId, ItemId, ClipId) {
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], w, h);
+    let inner = r.seq("inner", w, h, FrameRate::FPS_24);
+    let clip = r.put(inner, matte, 48);
+    r.clip(inner, clip).effects.extend(inner_effects);
+    let outer = r.seq("outer", w, h, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    (inner, outer, nest)
+}
+
+/// The plan of `seq` at `t`: the layer count (None when the whole frame went to the CPU) and whether
+/// the first layer carries a GPU effect stage (a flattened GPU nest) rather than a pre-rendered image
+/// (the CPU fallback).
+fn plan_shape(r: &Rig, seq: ItemId, t: Tick) -> (Option<usize>, bool) {
+    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), plan::DeviceCaps::ALL, &r.map) {
+        plan::FramePlan::Layers { layers, .. } => (Some(layers.len()), layers.first().is_some_and(|l| l.fx.is_some())),
+        _ => (None, false),
+    }
+}
+
+/// Max per-RGBA-channel error and the PSNR (over all four channels) of two same-size images.
+fn channel_error(a: &Image, b: &Image) -> ([f32; 4], f64) {
+    assert_eq!((a.w, a.h), (b.w, b.h));
+    let mut max = [0.0f32; 4];
+    let mut sq = 0.0f64;
+    for (x, y) in a.px.as_chunks::<4>().0.iter().zip(b.px.as_chunks::<4>().0.iter()) {
+        for c in 0..4 {
+            let d = (x[c] - y[c]).abs();
+            max[c] = max[c].max(d);
+            sq += (d as f64) * (d as f64);
+        }
+    }
+    let mse = sq / (a.w * a.h * 4) as f64;
+    let psnr = if mse <= 0.0 { f64::INFINITY } else { 10.0 * (1.0 / mse).log10() };
+    (max, psnr)
+}
+
+#[test]
+fn a_gpu_crop_on_a_single_gpu_clip_nest_flattens_and_matches() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(
+        &mut r,
+        320,
+        180,
+        vec![fx("brightness_contrast", |e| {
+            set(e, "brightness", ParamValue::Float(25.0));
+            set(e, "contrast", ParamValue::Float(-15.0));
+        })],
+    );
+    // crop left/right keyframed over the nest's time, feather 4
+    let mut crop = crop_effect(5.0, 8.0, 4.0);
+    crop.params.get_mut("left").unwrap().put_keyframe(Tick::ZERO, ParamValue::Float(5.0));
+    crop.params.get_mut("left").unwrap().put_keyframe(FrameRate::FPS_24.tick_of(24), ParamValue::Float(17.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(Tick::ZERO, ParamValue::Float(8.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(FrameRate::FPS_24.tick_of(24), ParamValue::Float(16.0));
+    r.clip(outer, nest).effects.push(crop);
+    for frame in [0, 12, 24] {
+        let t = FrameRate::FPS_24.tick_of(frame);
+        let (count, gpu) = plan_shape(&r, outer, t);
+        assert_eq!(count, Some(1), "frame {frame}: one layer");
+        assert!(gpu, "frame {frame}: the nest flattened to a GPU layer");
+        let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+        println!("crop keyframed frame {frame}: max channel err {max:?} PSNR {psnr:.2} dB");
+        assert!(max.iter().all(|&e| e < 0.01), "frame {frame}: max channel err {max:?}");
+    }
+}
+
+#[test]
+fn a_nest_of_four_gpu_effects_flattens_and_matches() {
+    let mut r = Rig::new();
+    let inner_effects = vec![
+        fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(12.0))),
+        fx("color_balance", |e| {
+            set(e, "mid_r", ParamValue::Float(20.0));
+            set(e, "hi_b", ParamValue::Float(-10.0));
+        }),
+        fx("levels", |e| {
+            set(e, "in_black", ParamValue::Float(8.0));
+            set(e, "in_white", ParamValue::Float(240.0));
+        }),
+        fx("horizontal_flip", |_| {}),
+    ];
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, inner_effects);
+    r.clip(outer, nest).effects.push(crop_effect(12.0, 18.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(gpu, "the nest flattened to a GPU layer");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("four gpu effects: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_nest_with_a_cpu_only_effect_falls_back_without_regression() {
+    let mut r = Rig::new();
+    // `ultra_key` has no GPU implementation today: the single-layer gate must refuse to flatten and
+    // keep the nest on its current CPU path, with the same picture as before.
+    let inner_effects = vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(12.0))), fx("ultra_key", |_| {})];
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, inner_effects);
+    r.clip(outer, nest).effects.push(crop_effect(12.0, 18.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1), "the nest renders as one CPU image");
+    assert!(!gpu, "the nest did not flatten (CPU-only inner effect)");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("cpu-only effect (fallback): max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_nest_with_a_sharpening_lumetri_falls_back_without_regression() {
+    // `lumetri` is in `GPU_EFFECTS`, so the single-layer gate passes on membership, but sharpen makes
+    // it evaluate CPU-only: the inner layer ends up with no GPU stage and the nest falls back to a
+    // CPU image layer, keeping the rest of the frame on the GPU, with the same picture.
+    let mut r = Rig::new();
+    let inner_effects = vec![fx("lumetri", |e| set(e, "sharpen", ParamValue::Float(20.0)))];
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, inner_effects);
+    r.clip(outer, nest).effects.push(crop_effect(12.0, 18.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1), "the nest renders as one CPU image layer, not a whole-frame fallback");
+    assert!(!gpu, "no GPU effect stage on the inner layer");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("sharpening lumetri (fallback): max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 1e-6), "max channel err {max:?}");
+}
+
+#[test]
+fn a_frame_blended_inner_clip_falls_back_to_a_cpu_layer_not_a_whole_frame() {
+    // A frame-blended inner clip is decoded and blended on the CPU, so its layer has no GPU effect
+    // stage; the nest then falls back to one CPU image layer (not a whole-frame fallback), keeping
+    // the rest of the frame on the GPU, exactly as before flattening.
+    let mut r = Rig::new();
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    let clip = r.put(inner, matte, 48);
+    r.clip(inner, clip).effects.push(fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0))));
+    let c = r.clip(inner, clip);
+    c.speed = 1.5;
+    c.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 15.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(5);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1), "the nest falls back to one CPU image layer, not a whole-frame fallback");
+    assert!(!gpu);
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+}
+
+#[test]
+fn a_nest_inside_a_nest_keeps_its_picture() {
+    // The outer nest holds a nested sequence (not a media clip), so the single-media-layer gate
+    // refuses it: the outer nest stays on the CPU, which renders the inner nest, and the picture is
+    // unchanged. The inner GPU nest still flattens on its own when planned directly.
+    let mut r = Rig::new();
+    let (inner, _mid, _) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(20.0)))]);
+    let mid = r.seq("mid", 320, 180, FrameRate::FPS_24);
+    r.put(mid, inner, 48);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, mid, 48);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 15.0, 3.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("nest in nest: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_two_clip_nest_does_not_flatten() {
+    let mut r = Rig::new();
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], 320, 180);
+    let top = r.matte([0.1, 0.5, 0.4, 1.0], 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    let clip = r.put(inner, matte, 48);
+    r.clip(inner, clip).effects.push(fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0))));
+    let mut top = r.p.make_track_item(top, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(48)), FrameRate::FPS_24).unwrap();
+    top.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    r.p.sequence_mut(inner).unwrap().video_tracks[1].items.push(top);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 10.0, 3.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1), "one CPU image of the nest");
+    assert!(!gpu, "two clips: no flatten");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+}
+
+#[test]
+fn speed_reverse_and_frame_hold_on_a_gpu_nest_keep_the_picture() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(15.0)))]);
+    r.clip(outer, nest).effects.push(crop_effect(8.0, 12.0, 3.0));
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    // double speed
+    r.clip(outer, nest).speed = 2.0;
+    for t in [f(2), f(10)] {
+        assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01, "speed 2x at {t:?}");
+    }
+    // reversed
+    let c = r.clip(outer, nest);
+    c.speed = 1.0;
+    c.reverse = true;
+    assert!(worst(&r.planned(outer, f(10)), &r.frame(outer, f(10))) < 0.01, "reverse");
+    // frame hold
+    let c = r.clip(outer, nest);
+    c.reverse = false;
+    c.frame_hold = Some(f(8));
+    for t in [f(4), f(30)] {
+        assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01, "frame hold at {t:?}");
+    }
+}
+
+#[test]
+fn source_in_offsets_and_edge_crop_keep_the_picture() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "contrast", ParamValue::Float(20.0)))]);
+    r.clip(outer, nest).source_in = FrameRate::FPS_24.tick_of(6);
+    // crop cuts the nest's edges
+    r.clip(outer, nest).effects.push(crop_effect(15.0, 15.0, 5.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("source_in offset + edge crop: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_video_less_nest_contributes_no_picture() {
+    let mut r = Rig::new();
+    // a sequence with an audio track but no video track
+    let audio_only =
+        r.p.new_sequence("audio_only", SequenceSettings { width: 320, height: 180, frame_rate: FrameRate::FPS_24, ..Default::default() }, 0, 1, None);
+    let tone = r.add(GeneratorSource::new(Generator::Tone { hz: 440.0, db: -20.0 }, 1, 1, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND)));
+    let ti = r.p.make_track_item(tone, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(48)), FrameRate::FPS_24).unwrap();
+    r.p.sequence_mut(audio_only).unwrap().audio_tracks[0].items.push(ti);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    r.put(outer, audio_only, 48);
+    let t = FrameRate::FPS_24.tick_of(10);
+    let img = r.planned(outer, t);
+    assert_eq!((img.w, img.h), (320, 180));
+    assert!(img.px.iter().all(|v| v.abs() < 1e-6), "a video-less nest draws nothing");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 1e-6);
+}
+
+#[test]
+fn an_empty_nest_plans_to_nothing() {
+    let mut r = Rig::new();
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    r.put(outer, inner, 48);
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, _) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(0), "the nest has no layers");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 1e-6);
+}
+
+#[test]
+fn a_self_nesting_sequence_stops_at_the_depth_guard() {
+    let mut r = Rig::new();
+    let red = r.matte(RED, 32, 32);
+    let s = r.seq("S", 32, 32, FrameRate::FPS_24);
+    r.put(s, red, 10);
+    // nest S inside itself
+    let ti = r.p.make_track_item(s, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(10)), FrameRate::FPS_24).unwrap();
+    r.p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    let img = r.planned(s, Tick::ZERO);
+    assert_eq!((img.w, img.h), (32, 32));
+    assert!(img.px.iter().all(|v| v.is_finite()), "the depth guard stops the descent");
+}
+
+#[test]
+fn a_zooming_crop_resamples_instead_of_being_forced_to_the_gpu() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0)))]);
+    // zoom crop that magnifies (stays on the GPU)
+    let mut zoom = crop_effect(10.0, 10.0, 0.0);
+    set(&mut zoom, "zoom", ParamValue::Bool(true));
+    r.clip(outer, nest).effects.push(zoom.clone());
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("zooming crop (magnify): max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+    // a negative (zoom-out) crop minifies: the gate must not force it onto the GPU
+    let c = r.clip(outer, nest);
+    c.effects.pop(); // drop the magnifying zoom crop (keep motion and opacity)
+    let mut out = crop_effect(-20.0, -20.0, 0.0);
+    set(&mut out, "zoom", ParamValue::Bool(true));
+    c.effects.push(out);
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01, "minifying zoom crop stays exact");
+}
+
+#[test]
+fn odd_dimensions_keep_the_picture() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(&mut r, 321, 181, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0)))]);
+    r.clip(outer, nest).effects.push(crop_effect(7.0, 11.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("odd dimensions: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn outer_opacity_and_blend_keep_the_nest_on_the_cpu() {
+    let mut r = Rig::new();
+    let (_, outer, nest) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0)))]);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 10.0, 3.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    // half transparent: the nest must not flatten (it would change how the crop blends)
+    r.clip(outer, nest).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(!gpu, "partial opacity keeps the nest on the CPU");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+}
+
+#[test]
+fn a_partial_opacity_inner_clip_keeps_the_nest_on_the_cpu() {
+    // The CPU bakes the inner clip's opacity into the nest's picture before the nest's outer
+    // effects; the flattened layer would apply it at the composite after them. A non-linear outer
+    // effect (gamma) makes the two orders differ, so the nest must not flatten.
+    let mut r = Rig::new();
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    let clip = r.put(inner, matte, 48);
+    r.clip(inner, clip).effects.push(fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0))));
+    r.clip(inner, clip).effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effects.push(fx("gamma_correction", |e| set(e, "gamma", ParamValue::Float(22.0))));
+    r.clip(outer, nest).effects.push(crop_effect(12.0, 18.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(!gpu, "partial inner opacity keeps the nest on the CPU");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("partial inner opacity: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_nest_with_visible_captions_keeps_its_picture_on_the_cpu() {
+    // The CPU bakes the nest's captions into its picture and then applies the outer crop, so the
+    // crop cuts the captions too; the flatten branch would draw the captions over the cropped layer.
+    // A visible caption therefore keeps the nest on the CPU.
+    let mut r = Rig::new();
+    let (inner, outer, nest) = single_clip_nest(&mut r, 320, 180, vec![fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0)))]);
+    let mut track = CaptionTrack::new(TrackId(9001), "Subtitles".into(), CaptionFormat::Subtitle);
+    track.captions.push(Caption {
+        id: ClipId(9002),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "NESTED".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    r.p.sequence_mut(inner).unwrap().caption_tracks.push(track);
+    r.clip(outer, nest).effects.push(crop_effect(15.0, 20.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(!gpu, "a visible caption keeps the nest on the CPU");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("nest with captions: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn a_nest_at_another_frame_rate_flattens_and_matches() {
+    let mut r = Rig::new();
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_30);
+    let clip = r.put(inner, matte, 60);
+    r.clip(inner, clip).effects.push(fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0))));
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 15.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(gpu, "the nest flattened across the frame-rate change");
+    let (max, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    println!("30fps nest in 24fps seq: max channel err {max:?} PSNR {psnr:.2} dB");
+    assert!(max.iter().all(|&e| e < 0.01), "max channel err {max:?}");
+}
+
+#[test]
+fn an_anamorphic_nest_stays_on_the_cpu_and_matches() {
+    // A square clip in an anamorphic (2:1) nest is not identity Motion (the pixel aspect differs),
+    // so the nest must not flatten; the picture still matches the CPU.
+    let mut r = Rig::new();
+    let matte = r.matte([0.6, 0.3, 0.2, 1.0], 320, 180);
+    let inner = r.seq("inner", 320, 180, FrameRate::FPS_24);
+    r.p.sequence_mut(inner).unwrap().settings.par = (2, 1);
+    let clip = r.put(inner, matte, 48);
+    r.clip(inner, clip).effects.push(fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(10.0))));
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 15.0, 4.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(!gpu, "an anamorphic nest keeps the nest on the CPU");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
+}

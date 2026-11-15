@@ -248,12 +248,11 @@ fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
-/// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
-/// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
-/// with effects off). None: the clip is rendered on the CPU.
-fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
-    let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    if !is_media || item.has_opacity_masks() {
+/// The enabled, unmasked standard effects of a clip whose effect names all have a GPU
+/// implementation, in clip order. None: an opacity mask, a masked effect or an effect without a GPU
+/// implementation. Empty: no standard effects, or effects are off.
+fn effect_gpu_chain(item: &TrackItem, opts: RenderOptions) -> Option<Vec<&filmcraft_project::EffectInstance>> {
+    if item.has_opacity_masks() {
         return None;
     }
     if !opts.effects {
@@ -271,6 +270,24 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
         chain.push(e);
     }
     Some(chain)
+}
+
+/// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
+/// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
+/// with effects off). None: the clip is rendered on the CPU.
+fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
+    if !project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. })) {
+        return None;
+    }
+    effect_gpu_chain(item, opts)
+}
+
+/// The standard effects of a nested-sequence clip that the GPU can run on the nest's flattened
+/// picture (see the nest-flattening branch of [`push_item`]): [`gpu_chain`] without the media gate
+/// (a nest is not a media clip; the caller decides whether the nest flattens). None: the nest stays
+/// on the CPU. Empty: no standard effects (the plain-nest path handles it).
+fn nest_gpu_chain(item: &TrackItem, opts: RenderOptions) -> Option<Vec<&filmcraft_project::EffectInstance>> {
+    effect_gpu_chain(item, opts)
 }
 
 /// Plan the frame at timeline `t` for a device that runs `caps`.
@@ -489,6 +506,71 @@ fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick,
         })
 }
 
+/// Whether a nested sequence at `ft` flattens to exactly one layer that can carry the nest's outer
+/// GPU effect chain: a single enabled media clip, blending Normal at full opacity, with no opacity
+/// masks, placed at identity in the nest's own frame (its source is the nest's size, so its working
+/// image is the nest's pixels), and with a non-empty GPU effect chain (so its layer already has an
+/// effect stage the outer chain appends to). A CPU-only inner effect (e.g. `ultra_key` before its
+/// GPU port) fails the last test and keeps the nest on its current CPU path, with no regression.
+fn nest_single_gpu_layer(project: &Project, nested: &Sequence, ft: Tick, opts: RenderOptions) -> bool {
+    let mut found = false;
+    for tr in nested.video_tracks.iter().filter(|tr| tr.enabled) {
+        if tr.transitions.iter().any(|x| x.range().contains(ft)) {
+            return false;
+        }
+        let Some(it) = tr.item_at(ft).filter(|i| i.enabled) else { continue };
+        if found {
+            return false;
+        }
+        found = true;
+        let kind_ok = matches!(project.item(it.item).map(|p| &p.kind), Some(ItemKind::Media(_) | ItemKind::Subclip { .. }));
+        let size_ok = crate::source_size(project, it.item) == Some((nested.settings.width, nested.settings.height));
+        let chain_ok = gpu_chain(project, it, opts).is_some_and(|c| !c.is_empty());
+        let emt = it.effect_time_at(ft);
+        // The CPU bakes the clip's own opacity into the nest's picture before the nest's outer
+        // effects; the flattened layer instead applies it at the final composite, after those
+        // effects. Non-linear RGB ops (gamma, levels, lumetri, …) do not commute with that
+        // multiplication, so a clip at partial opacity keeps the nest on the CPU.
+        let (iop, ibl) = crate::opacity_blend(it, emt);
+        if !kind_ok
+            || !size_ok
+            || it.has_opacity_masks()
+            || !chain_ok
+            || ibl != Blend::Normal
+            || iop < 1.0 - 1e-6
+            || !near_identity(&motion_matrix(nested, it, (nested.settings.width, nested.settings.height), crate::source_par(project, it.item), emt))
+        {
+            return false;
+        }
+    }
+    found
+}
+
+/// The preconditions shared by the plain-nest and flattened-nest branches of [`push_item`]: a nest
+/// without multi-camera, opacity masks, motion, a non-Normal blend or partial opacity, whose own
+/// layers plan in the same colour pipeline as the sequence it is in.
+#[allow(clippy::too_many_arguments)]
+fn nest_common(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    nested: &Sequence,
+    ft: Tick,
+    mt: Tick,
+    opts: RenderOptions,
+    caps: DeviceCaps,
+    bl: Blend,
+    op: f32,
+    extra_opacity: f32,
+) -> bool {
+    item.multicam_angle(nested).is_none()
+        && !item.has_opacity_masks()
+        && bl == Blend::Normal
+        && extra_opacity * op >= 1.0 - 1e-6
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
+        && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
+}
+
 /// What a layer is pushed against: the sequence at time `t`, how it is rendered, what the
 /// compositing device runs and how many nests were followed to reach it.
 #[derive(Clone, Copy)]
@@ -540,13 +622,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
     // sequence, with no CPU pass over the nested sequence. Its captions are part of its picture.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
-        && item.multicam_angle(nested).is_none()
         && !(opts.effects && item.has_standard_effects())
-        && !item.has_opacity_masks()
-        && bl == Blend::Normal
-        && extra_opacity * op >= 1.0 - 1e-6
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
-        && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
+        && nest_common(project, seq, item, nested, ft, mt, opts, caps, bl, op, extra_opacity)
     {
         push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out);
         if out.exhausted {
@@ -561,6 +638,63 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 Blend::Normal,
             ));
         }
+        return;
+    }
+    // A plain nest whose standard effects all run on the GPU, flattened when it holds a single
+    // media clip placed at identity in the nest's own frame: the outer chain (crop, edge feather…)
+    // runs on that layer in the nest's pixel space — the space the CPU renders the nest before
+    // applying its effects. A CPU-only inner effect (`ultra_key` before its GPU port), a visible
+    // caption track or a partial-opacity inner clip fails the gates and keeps the nest on its
+    // current CPU path below, with no regression.
+    if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
+        && nest < crate::MAX_NEST_DEPTH
+        && let Some(outer) = nest_gpu_chain(item, opts)
+        && !outer.is_empty()
+        && nest_common(project, seq, item, nested, ft, mt, opts, caps, bl, op, extra_opacity)
+        && !nested.caption_tracks.iter().any(|tr| tr.enabled && tr.caption_at(ft).is_some())
+        && nest_single_gpu_layer(project, nested, ft, opts)
+    {
+        let (w, h) = output_size(nested, opts.scale);
+        let mut inner = PlanStack::default();
+        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, &mut inner);
+        // The single-layer gate should have left exactly one GPU effect layer; anything else (a
+        // frame-blended or colour-managed inner clip, an offline source, a CPU-only op evaluated
+        // just now) falls back to the per-item CPU path the nest used before flattening.
+        let Some(mut layers) = inner.into_layers(w, h) else {
+            push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+            return;
+        };
+        let [layer] = layers.as_mut_slice() else {
+            push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+            return;
+        };
+        // The inner layer already has an effect stage (the single-layer gate guaranteed a GPU
+        // chain); run the outer chain after its own effects, in the same working space.
+        let Some(fx) = layer.fx.as_mut() else {
+            push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+            return;
+        };
+        let (lw, lh) = (fx.size.0.max(1) as usize, fx.size.1.max(1) as usize);
+        let px_scale = lw as f32 / nested.settings.width.max(1) as f32;
+        let cx = crate::effects::FxCtx {
+            t: mt,
+            px_scale: px_scale.min(crate::MAX_EFFECT_PX_SCALE),
+            mask_scale: px_scale,
+            seconds: (t - item.start).seconds(),
+            timecode: "",
+            clip_name: &item.name,
+            project: Some(project),
+            env: None,
+            frame_rate: seq.settings.frame_rate.as_f64(),
+            working: seq.settings.color.working,
+        };
+        let ops: Option<Vec<FxOp>> = outer.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
+        let Some(ops) = ops else {
+            push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+            return;
+        };
+        Arc::make_mut(fx).ops.extend(ops);
+        out.push(layer.clone());
         return;
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
@@ -645,6 +779,24 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
+    push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+}
+
+/// Push `item` as one CPU-rendered image (the pre-flattening path): its captions and effects are
+/// baked in and handed to the GPU as a pre-composited canvas, keeping the rest of the frame on the
+/// GPU.
+#[allow(clippy::too_many_arguments)]
+fn push_cpu_item_layer(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &dyn SourceProvider,
+    extra_opacity: f32,
+    bl: Blend,
+    out: &mut PlanStack,
+) {
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
