@@ -1091,6 +1091,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 
 [[package]]
+name = "craft-dpx"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -1149,7 +1157,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
+source = "git+https://github.com/storytold/craft-libs?rev=0eaafeb5054f2113523c8844822a830865cf45f2#0eaafeb5054f2113523c8844822a830865cf45f2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1158,7 +1166,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=e79d9a8d5ff79d3e31c12748ecd45e90ee9d3168#e79d9a8d5ff79d3e31c12748ecd45e90ee9d3168"
+source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2100,7 +2108,6 @@ dependencies = [
  "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
- "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-isobmff",
  "filmcraft-matroska",
@@ -2129,22 +2136,12 @@ name = "filmcraft-dng"
 version = "0.20.1"
 dependencies = [
  "craft-raw",
- "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=e79d9a8d5ff79d3e31c12748ecd45e90ee9d3168)",
+ "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=0eaafeb5054f2113523c8844822a830865cf45f2)",
  "filmcraft-dng",
  "image",
  "rayon",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-dnx"
-version = "0.20.1"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
  "thiserror 2.0.21",
 ]
 
@@ -2209,7 +2206,6 @@ dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
- "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-isobmff",
@@ -2339,6 +2335,7 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.20.1"
 dependencies = [
+ "craft-dpx",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
@@ -6739,7 +6736,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
