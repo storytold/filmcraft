@@ -3638,3 +3638,11 @@
 	Toggle Color Grading Section	Przełącz sekcję korekcji kolorów
 	Color Grading Section	Sekcja korekcji kolorów
 	Read Video Scopes	Odczytaj wskaźniki wideo
+	CQP (constant quantizer)	CQP (stały kwantyzator)
+	Quantizer (QP)	Kwantyzator (QP)
+	Multipass	Wieloprzebiegowy
+	Spatial AQ	Przestrzenne AQ
+	Lookahead	Lookahead
+	Enable hardware two-pass / multipass rate control	Włącz sprzętową kontrolę przepływności dwu-/wieloprzebiegową
+	Enable spatial adaptive quantization	Włącz przestrzenną kwantyzację adaptacyjną
+	Enable lookahead frame analysis	Włącz analizę klatek z wyprzedzeniem

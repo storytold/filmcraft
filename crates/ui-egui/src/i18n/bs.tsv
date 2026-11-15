@@ -3758,3 +3758,11 @@
 	{count} selected	Odabrano: {count}
 	{frames} frames ({seconds} s)	{frames} sličica ({seconds} s)
 	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} već postoji, pa ništa nije izvezeno. Da ga zamijenite, odaberite ga u dijalogu za čuvanje.
+	CQP (constant quantizer)	CQP (konstantni kvantizator)
+	Quantizer (QP)	Kvantizator (QP)
+	Multipass	Višeprolazno
+	Spatial AQ	Prostorni AQ
+	Lookahead	Predviđanje unaprijed
+	Enable hardware two-pass / multipass rate control	Omogući hardversku dvoprolaznu / višeprolaznu kontrolu protoka
+	Enable spatial adaptive quantization	Omogući prostornu adaptivnu kvantizaciju
+	Enable lookahead frame analysis	Omogući analizu kadrova unaprijed

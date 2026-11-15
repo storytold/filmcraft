@@ -3650,3 +3650,11 @@
 	Toggle Color Grading Section	Přepnout sekci barevných úprav
 	Color Grading Section	Sekce barevných úprav
 	Read Video Scopes	Načíst videoskopy
+	CQP (constant quantizer)	CQP (konstantní kvantizátor)
+	Quantizer (QP)	Kvantizátor (QP)
+	Multipass	Víceprůchodový
+	Spatial AQ	Prostorová AQ
+	Lookahead	Lookahead
+	Enable hardware two-pass / multipass rate control	Povolit hardwarové dvouprůchodové / víceprůchodové řízení datového toku
+	Enable spatial adaptive quantization	Povolit prostorovou adaptivní kvantizaci
+	Enable lookahead frame analysis	Povolit dopřednou analýzu snímků

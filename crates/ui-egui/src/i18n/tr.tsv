@@ -3643,3 +3643,11 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+	CQP (constant quantizer)	CQP (sabit niceleyici)
+	Quantizer (QP)	Niceleyici (QP)
+	Multipass	Çok geçişli
+	Spatial AQ	Uzamsal AQ
+	Lookahead	İleri bakış
+	Enable hardware two-pass / multipass rate control	Donanımsal iki geçişli / çok geçişli bit hızı kontrolünü etkinleştir
+	Enable spatial adaptive quantization	Uzamsal uyarlamalı nicelemeyi etkinleştir
+	Enable lookahead frame analysis	İleri bakışlı kare analizini etkinleştir
