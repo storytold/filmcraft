@@ -12,6 +12,7 @@ fn cx() -> FxCtx<'static> {
     FxCtx {
         t: Tick::ZERO,
         px_scale: 1.0,
+        mask_scale: 1.0,
         seconds: 0.0,
         timecode: "01:00:00:00",
         clip_name: "clip",
@@ -488,6 +489,34 @@ fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     assert!(close(o.get(1, 1)[3], 1.0, 1e-3) && close(o.get(6, 1)[3], 0.0, 1e-4));
 }
 
+/// 4-Color Gradient has a position for each colour (#3682); the old fixed ones are the defaults.
+#[test]
+fn four_color_gradient_points_default_to_the_old_positions_and_move() {
+    let (w, h) = (40usize, 24usize);
+    let base = Image::filled(w, h, [0.0, 0.0, 0.0, 1.0]);
+    let (fw, fh) = (w as f64, h as f64);
+    let old = run("four_color_gradient", &inst("four_color_gradient"), &base, &cx());
+    // a project saved before the points existed has no such params
+    let mut legacy = inst("four_color_gradient");
+    for id in ["p1", "p2", "p3", "p4"] {
+        assert!(legacy.params.remove(id).is_some(), "no {id}");
+    }
+    assert_eq!(max_diff(&old, &run("four_color_gradient", &legacy, &base, &cx())), 0.0, "a project without the points renders as before");
+    // the defaults are the corners of the inner quarter box the gradient always used
+    let mut explicit = inst("four_color_gradient");
+    for (id, (x, y)) in [("p1", (0.25, 0.25)), ("p2", (0.75, 0.25)), ("p3", (0.25, 0.75)), ("p4", (0.75, 0.75))] {
+        set(&mut explicit, id, ParamValue::Vec2(Vec2::new(x * fw, y * fh)));
+    }
+    assert!(max_diff(&old, &run("four_color_gradient", &explicit, &base, &cx())) < 1e-5, "the default points are the old positions");
+    // moving the fourth point pulls its colour across the frame
+    let mut moved = inst("four_color_gradient");
+    set(&mut moved, "p4", ParamValue::Vec2(Vec2::new(0.25 * fw, 0.75 * fh)));
+    let m = run("four_color_gradient", &moved, &base, &cx());
+    assert!(max_diff(&old, &m) > 0.05, "moving Point 4 changes the picture");
+    let (a, b) = (old.get(w / 4, 3 * h / 4), m.get(w / 4, 3 * h / 4));
+    assert!(a[0] - b[0] > 0.3, "the pixel at the moved point loses Color 3's red to Color 4 (blue): {a:?} {b:?}");
+}
+
 #[test]
 fn keyers_known_values() {
     // Ultra Key: pure green screen → transparent, grey foreground → opaque
@@ -540,11 +569,19 @@ fn colour_replace_and_cineon() {
     assert!(p[2] > 0.9 && p[0] < 0.1, "{p:?}");
     // Cineon: code 685 → white, 95 → black; log→lin→log round trip
     let (b, w) = (95.0, 685.0);
-    assert!(close(color::cineon_value(685.0 / 1023.0, 0, b, w, 0.0, 1.0, 1.7, 0.0), 1.0, 1e-4));
-    assert!(close(color::cineon_value(95.0 / 1023.0, 0, b, w, 0.0, 1.0, 1.7, 0.0), 0.0, 1e-4));
+    assert!(close(
+        color::cineon_value(685.0 / 1023.0, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 }),
+        1.0,
+        1e-4
+    ));
+    assert!(close(
+        color::cineon_value(95.0 / 1023.0, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 }),
+        0.0,
+        1e-4
+    ));
     for v in [0.2f32, 0.4, 0.6] {
-        let l = color::cineon_value(v, 0, b, w, 0.0, 1.0, 1.7, 0.0);
-        let back = color::cineon_value(l, 1, b, w, 0.0, 1.0, 1.7, 0.0);
+        let l = color::cineon_value(v, &color::CineonParams { mode: 0, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 });
+        let back = color::cineon_value(l, &color::CineonParams { mode: 1, black: b, white: w, ib: 0.0, iw: 1.0, gamma: 1.7, roll: 0.0 });
         assert!(close(back, v, 2e-3), "{v} → {l} → {back}");
     }
 }
@@ -720,6 +757,14 @@ fn transform_presets_animate_over_the_clip() {
         fn media_timecode(&self) -> String {
             "00:00:10:00".into()
         }
+        fn sequence_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(40), r, false, display, 48_000))
+        }
+        fn media_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(240), r, false, display, 48_000))
+        }
         fn file_name(&self) -> String {
             "A001.mov".into()
         }
@@ -764,6 +809,26 @@ fn transform_presets_animate_over_the_clip() {
     assert_eq!(text::burnin_text(&e2, &end), "FILE A001.mov");
     set(&mut e2, "source", ParamValue::Choice(4));
     assert_eq!(text::burnin_text(&e2, &mid), "FILE 24");
+    // Time Format: the film formats replace the timecode of the timecode sources only
+    let mut e3 = e.clone();
+    set(&mut e3, "time_format", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "2+08");
+    set(&mut e3, "time_format", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "1+00");
+    set(&mut e3, "time_format", ParamValue::Choice(3));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    set(&mut e3, "source", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "240");
+    set(&mut e3, "source", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "clip", "clip name is unaffected");
+    // an out-of-range choice (a newer file) clamps instead of panicking
+    set(&mut e3, "source", ParamValue::Choice(0));
+    set(&mut e3, "time_format", ParamValue::Choice(99));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    // a project from before Time Format has no such parameter: Timecode
+    let mut old = e.clone();
+    old.params.remove("time_format");
+    assert_eq!(text::burnin_text(&old, &end), "01:00:00:00");
 }
 
 #[test]
@@ -876,6 +941,54 @@ fn bokeh_and_focus_blur() {
     assert!(max_diff(&o, &pic) > 0.01);
     let (a, b) = (o.get(32, 32), pic.get(32, 32));
     assert!((0..4).all(|k| close(a[k], b[k], 1e-4)));
+}
+
+/// Bokeh Blur gathers through a kernel of whole-pixel weights (`bokeh_kernel`). It must give what
+/// the mean of the bilinear taps it replaced gave (that gather, kept here), at the image's edges
+/// too, for every shape, rotation and radius, and radii larger than the image (3e9: offsets past
+/// `i32`, which the kernel keeps within its reach).
+#[test]
+fn bokeh_kernel_matches_the_bilinear_taps() {
+    let img = picture(37, 23);
+    for (sides, rot, rr, rings) in
+        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12), (6, 0.3, 3e9, 12)]
+    {
+        let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+        for ring in 1..=rings as usize {
+            let rad = rr * ring as f32 / rings as f32;
+            let n = (ring * 8).max(6);
+            for i in 0..n {
+                let th = std::f32::consts::TAU * (i as f32 + 0.5 * (ring % 2) as f32) / n as f32;
+                let pr = rad * blur::poly_radius(sides, th, rot);
+                taps.push((th.cos() * pr, th.sin() * pr));
+            }
+        }
+        let kernel = bokeh_kernel(sides, rot, rr, rings);
+        assert!(kernel.len() <= taps.len() * 4);
+        assert!(kernel.iter().all(|c| c.0.abs() <= KERNEL_REACH && c.1.abs() <= KERNEL_REACH), "offsets past the reach");
+        assert!(close(kernel.iter().map(|c| c.2).sum::<f32>(), 1.0, 1e-5));
+        let mut worst = 0f32;
+        for y in 0..img.h {
+            for x in 0..img.w {
+                let mut want = [0f32; 4];
+                for &(dx, dy) in &taps {
+                    let p = img.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+                    for k in 0..4 {
+                        want[k] += p[k] / taps.len() as f32;
+                    }
+                }
+                let mut got = [0f32; 4];
+                for &(dx, dy, wt) in &kernel {
+                    let p = img.get_clamped(x as isize + dx as isize, y as isize + dy as isize);
+                    for k in 0..4 {
+                        got[k] += p[k] * wt;
+                    }
+                }
+                worst = (0..4).map(|k| (want[k] - got[k]).abs()).fold(worst, f32::max);
+            }
+        }
+        assert!(worst < 2e-5, "{sides} sides, {rot} rad, radius {rr}: off by {worst}");
+    }
 }
 
 #[test]
@@ -1048,6 +1161,107 @@ fn warp_stabilizer_removes_camera_jitter() {
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
 }
 
+/// #1381: the stabilizer's analysis kept the pyramid of every frame of the clip until all steps
+/// were known, so a long clip took tens of gigabytes. It now works through the clip a block at a
+/// time and gives the same steps whatever the block size.
+mod stabilizer_analysis {
+    use super::super::temporal::{ANALYSIS_BLOCK, chunked_steps};
+    use filmcraft_geom::Affine;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A decoded frame that counts how many exist at once.
+    struct Frame<'a> {
+        id: usize,
+        w: usize,
+        live: &'a AtomicUsize,
+        most: &'a AtomicUsize,
+    }
+    impl<'a> Frame<'a> {
+        fn new(id: usize, w: usize, live: &'a AtomicUsize, most: &'a AtomicUsize) -> Self {
+            most.fetch_max(live.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            Frame { id, w, live, most }
+        }
+    }
+    impl Drop for Frame<'_> {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            let _ = self.most;
+        }
+    }
+
+    /// Steps of an `n`-frame clip where frames in `missing` can't be read and frames from
+    /// `narrow_from` on are narrower. Returns the steps, the size, and the most frames alive at once.
+    fn run(n: usize, block: usize, missing: &[usize], narrow_from: usize) -> (Option<(Vec<Affine>, (usize, usize))>, usize) {
+        let (live, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let r = chunked_steps(
+            n,
+            block,
+            |k| (!missing.contains(&k)).then(|| Frame::new(k, if k >= narrow_from { 30 } else { 40 }, &live, &most)),
+            |f: &Frame| (f.w, 10 + f.w),
+            // a step that tells which two frames it joins
+            |a: &Frame, b: &Frame, d| Affine::translate((a.id * 1000 + b.id) as f64, (d.0 * 7 + d.1) as f64),
+            || false,
+        );
+        assert_eq!(live.load(Ordering::SeqCst), 0, "every frame is dropped");
+        (r, most.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn the_steps_do_not_depend_on_the_block_size() {
+        let (reference, _) = run(37, 1000, &[], 1000);
+        let (steps, size) = reference.unwrap();
+        assert_eq!((steps.len(), size), (36, (40, 50)));
+        for block in [1, 2, 3, 5, 8, 36, 37, 38] {
+            let (r, _) = run(37, block, &[], 1000);
+            let (s, d) = r.unwrap();
+            assert_eq!(d, size, "block {block}");
+            assert_eq!(s.len(), steps.len(), "block {block}");
+            assert!(s.iter().zip(&steps).all(|(a, b)| (a.e - b.e).abs() < 1e-12 && (a.f - b.f).abs() < 1e-12), "block {block}");
+        }
+    }
+
+    #[test]
+    fn unreadable_and_resized_frames_give_identity_steps_and_the_first_size_is_used() {
+        // frames 0..=2 can't be read, so the size comes from frame 3; 6 is unreadable too; from
+        // frame 8 on the frames are narrower than their neighbour
+        let missing = [0, 1, 2, 6];
+        for block in [1, 3, 4, 100] {
+            let (r, _) = run(12, block, &missing, 8);
+            let (steps, size) = r.unwrap();
+            assert_eq!(size, (40, 50), "block {block}");
+            assert_eq!(steps.len(), 11);
+            let identity: Vec<bool> = steps.iter().map(|s| s.e == 0.0 && s.f == 0.0).collect();
+            // steps 0..=2 touch an unreadable frame, 3 and 4 are real, 5 and 6 touch frame 6, 7 joins
+            // frames of different widths, 8..=10 are real again
+            assert_eq!(identity, [true, true, true, false, false, true, true, true, false, false, false], "block {block}: {identity:?}");
+            assert_eq!(steps[3].e, 3004.0, "block {block}");
+        }
+    }
+
+    #[test]
+    fn a_clip_with_no_readable_frame_has_no_analysis() {
+        let (r, _) = run(5, 2, &[0, 1, 2, 3, 4], 100);
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn only_a_block_of_frames_is_alive_at_once() {
+        let (r, most) = run(2_000, ANALYSIS_BLOCK, &[], 100_000);
+        assert_eq!(r.unwrap().0.len(), 1_999);
+        assert!(most <= ANALYSIS_BLOCK + 1, "{most} frames alive at once for a block of {ANALYSIS_BLOCK}");
+        // reading every frame first, as the analysis did, would have held all of them
+        let (_, all) = run(300, 300, &[], 100_000);
+        assert!(all > 250, "{all}");
+    }
+
+    #[test]
+    fn cancelling_stops_the_analysis() {
+        let calls = AtomicUsize::new(0);
+        let r = chunked_steps(1_000, 10, Some, |_: &usize| (1, 1), |_: &usize, _: &usize, _| Affine::IDENTITY, || calls.fetch_add(1, Ordering::SeqCst) >= 12);
+        assert!(r.is_none());
+    }
+}
+
 #[test]
 fn auto_reframe_follows_the_subject() {
     fn subject(x: f64, y: f64, _t: f64) -> [f32; 3] {
@@ -1086,7 +1300,7 @@ mod pipeline {
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info,
                 interpret: Default::default(),
@@ -1096,7 +1310,7 @@ mod pipeline {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         map.0.insert(id, Arc::new(g) as SharedSource);
@@ -1182,4 +1396,200 @@ fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
     for frame in [60, 90, 120] {
         assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
     }
+}
+
+/// The corrections of an analysed path are worked out once per set of settings, not for every
+/// rendered frame: smoothing the whole path took 0.8 ms per frame for a 30 s clip, 7 ms for 2
+/// minutes and 15 ms for 10 minutes.
+mod stabilizer_corrections_cache {
+    use super::super::temporal::{CorrectedCache, StabilizerPath, corrections, cover_scale};
+    use filmcraft_geom::Affine;
+    use std::sync::Arc;
+
+    fn path(n: usize, seed: usize) -> Arc<StabilizerPath> {
+        // a shaky path: small steps with a drift and some turning, so the borders do get exposed
+        let steps = (0..n - 1)
+            .map(|k| {
+                let j = (k * 7919 + seed) % 13;
+                Affine::translate(j as f64 * 0.4 - 2.0, ((k * 104_729 + seed) % 11) as f64 * 0.3 - 1.4)
+            })
+            .collect();
+        Arc::new(StabilizerPath { w: 480, h: 270, steps, fps: 30.0 })
+    }
+
+    #[test]
+    fn the_same_path_and_settings_are_worked_out_once_and_match_the_direct_result() {
+        let p = path(400, 1);
+        let cache = CorrectedCache::default();
+        let a = cache.get(&p, 15.0, false, false);
+        let b = cache.get(&p, 15.0, false, false);
+        assert!(Arc::ptr_eq(&a, &b), "a second frame reuses the first frame's corrections");
+        let direct = corrections(&p, 15.0, false, false);
+        assert_eq!(a.corr.len(), direct.len());
+        assert!(a.corr.iter().zip(&direct).all(|(x, y)| (x.a, x.b, x.c, x.d, x.e, x.f) == (y.a, y.b, y.c, y.d, y.e, y.f)), "same numbers as `corrections`");
+    }
+
+    #[test]
+    fn other_settings_or_another_path_get_their_own_corrections() {
+        let p = path(300, 2);
+        let cache = CorrectedCache::default();
+        let base = cache.get(&p, 15.0, false, false);
+        for other in [
+            cache.get(&p, 16.0, false, false),
+            cache.get(&p, 15.0, true, false),
+            cache.get(&p, 15.0, false, true),
+            cache.get(&path(300, 2), 15.0, false, false),
+        ] {
+            assert!(!Arc::ptr_eq(&base, &other));
+        }
+        assert!(Arc::ptr_eq(&base, &cache.get(&p, 15.0, false, false)), "and the first set is still there");
+    }
+
+    #[test]
+    fn the_worst_border_matches_a_direct_scan_for_each_zoom_limit() {
+        let p = path(500, 3);
+        let c = CorrectedCache::default().get(&p, 4.0, false, false);
+        for max in [1.0, 1.2, 1.5, 4.0] {
+            let direct = c.corr.iter().map(|x| cover_scale(x, 480.0, 270.0, max)).fold(1.0, f64::max);
+            assert_eq!(c.worst_cover(480.0, 270.0, max), direct, "max {max}");
+            assert_eq!(c.worst_cover(480.0, 270.0, max), direct, "max {max}, again");
+        }
+        assert!(c.worst_cover(480.0, 270.0, 4.0) > 1.0, "the test path does expose borders");
+    }
+
+    #[test]
+    fn an_animated_smoothness_does_not_grow_the_cache_without_bound() {
+        let p = path(120, 4);
+        let cache = CorrectedCache::default();
+        for k in 0..100 {
+            let smooth = 5.0 + k as f64 * 0.1;
+            let c = cache.get(&p, smooth, false, false);
+            let direct = corrections(&p, smooth, false, false);
+            assert_eq!(c.corr[60].e, direct[60].e, "smooth {smooth}");
+        }
+    }
+}
+
+/// Hostile project values must finish in bounded time (each case is a few seconds of CPU at worst).
+mod hostile_work {
+    use super::super::temporal::{StabilizerPath, corrections};
+    use super::*;
+    use filmcraft_geom::Affine;
+    use std::time::{Duration, Instant};
+
+    fn finishes_quickly(id: &str, e: &EffectInstance, c: &FxCtx) {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        let t = Instant::now();
+        let o = run(id, e, &img, c);
+        assert!(t.elapsed() < Duration::from_secs(20), "{id} took {:?}", t.elapsed());
+        assert!(o.px.iter().all(|v| v.is_finite()), "{id}");
+    }
+
+    #[test]
+    fn lightning_with_huge_width_and_branching() {
+        let mut e = inst("lightning");
+        setf(&mut e, "width", 1e9);
+        setf(&mut e, "branching", 1e9);
+        setf(&mut e, "segments", 100.0);
+        setf(&mut e, "detail", 6.0);
+        finishes_quickly("lightning", &e, &cx());
+    }
+
+    #[test]
+    fn write_on_with_a_stationary_brush_and_a_long_history() {
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 4000.0);
+        let c = FxCtx { t: Tick::from_seconds_f64(600.0), seconds: 600.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_with_an_enormous_size_is_skipped_not_allocated() {
+        let mut e = inst("simple_text");
+        set(&mut e, "text", ParamValue::Text("Wide text".into()));
+        setf(&mut e, "size", 1e7);
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        assert_eq!(run("simple_text", &e, &img, &cx()), img);
+    }
+
+    #[test]
+    fn write_on_with_a_long_off_canvas_path_is_bounded() {
+        use filmcraft_project::{Interpolation, Keyframe};
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 2.0);
+        let key = |t: f64, x: f64| Keyframe {
+            time: Tick::from_seconds_f64(t),
+            value: ParamValue::Vec2(Vec2::new(x, -1e7)),
+            interp: Interpolation::Linear,
+            out_influence: 1.0 / 3.0,
+            in_influence: 1.0 / 3.0,
+        };
+        e.params.get_mut("brush").unwrap().keyframes = vec![key(0.0, -1e7), key(20.0, 1e7)];
+        let c = FxCtx { t: Tick::from_seconds_f64(20.0), seconds: 20.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_at_a_huge_position_is_skipped_not_overflowed() {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        for pos in [1e10, -1e10, 3e9] {
+            let mut e = inst("simple_text");
+            set(&mut e, "text", ParamValue::Text("Hi".into()));
+            set(&mut e, "position", ParamValue::Vec2(Vec2::new(pos, pos)));
+            assert_eq!(run("simple_text", &e, &img, &cx()), img, "position {pos}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_with_a_nan_smoothness_stays_finite() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::translate(1.0, 0.5); 5], fps: 24.0 };
+        for a in corrections(&path, f64::NAN, false, false) {
+            assert!([a.a, a.b, a.c, a.d, a.e, a.f].iter().all(|v| v.is_finite()), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_smoothing_radius_is_bounded() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::IDENTITY; 3], fps: 24.0 };
+        let t = Instant::now();
+        let c = corrections(&path, 1e12, false, false);
+        assert_eq!(c.len(), 4);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+}
+
+#[test]
+fn extreme_long_shadow_and_glint_lengths_finish() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // an infinite Long Shadow length used to keep its doubling loop running forever
+    for len in [f64::INFINITY, f64::MAX, 1e30] {
+        for id in ["long_shadow", "glint"] {
+            let mut e = inst(id);
+            setf(&mut e, "length", len);
+            let o = run(id, &e, &img, &cx());
+            assert!(o.px.iter().all(|v| !v.is_nan()), "{id} at {len}");
+        }
+    }
+}
+
+/// A length beyond the picture's extent still sets the weighting: only the work is capped.
+#[test]
+fn lengths_past_the_picture_keep_their_fade_and_weighting() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    let render = |id: &str, len: f64| {
+        let mut e = inst(id);
+        setf(&mut e, "length", len);
+        run(id, &e, &img, &cx())
+    };
+    let total = |o: &Image| o.px.iter().map(|&v| v as f64).sum::<f64>();
+    // 32 is the extent of this 16 x 16 picture
+    let (shadow_320, shadow_far) = (total(&render("long_shadow", 320.0)), total(&render("long_shadow", 1e9)));
+    assert!(shadow_320 > 0.9 * shadow_far, "fade over the requested 320 px ({shadow_320}) must stay near the unfaded shadow ({shadow_far})");
+    assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
+    let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
+    assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
 }

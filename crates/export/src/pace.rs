@@ -3,7 +3,10 @@
 //! A job's `done` counter goes up in batches, and the speed of an export changes with what is on the
 //! timeline (an intro, a banner, plain camera footage), so the estimate uses the speed of a trailing
 //! window, not the average since the start, and it stays quiet until a second of readings shows
-//! progress. A stall shows as a falling speed, so the estimate grows instead of freezing.
+//! progress. The speed is measured between the times the count moved (a batch landed), and the
+//! estimate counts down from the last of them, so it does not swing up while a batch is being made
+//! and down when it lands. A batch that is well overdue shows as a falling speed, so a stalled job's
+//! estimate grows instead of freezing.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -16,6 +19,8 @@ const WINDOW: Duration = Duration::from_secs(15);
 const MIN_GAP: Duration = Duration::from_millis(100);
 /// The estimate needs at least this much time between its first and last reading.
 const MIN_SPAN: Duration = Duration::from_secs(1);
+/// A batch this many times the mean interval between batches late means the job slowed down.
+const LATE: u32 = 3;
 /// The longest estimate given: a job that all but stopped would otherwise promise millennia.
 const MAX_ETA: Duration = Duration::from_secs(100 * 3600);
 
@@ -59,10 +64,35 @@ impl Pace {
         if span < MIN_SPAN || d1 <= d0 {
             return None;
         }
-        let per_second = (d1 - d0) as f64 / span.as_secs_f64();
-        let left = remaining as f64 / per_second;
+        // on time: the speed between batches, counting down since the last one landed
+        let countdown = self
+            .batches()
+            .filter(|(_, gap, since)| *since <= gap.saturating_mul(LATE))
+            .map(|(per_second, _, since)| remaining as f64 / per_second - since.as_secs_f64());
+        let left = match countdown {
+            Some(left) if left > 0.0 => left,
+            // a batch is overdue, the countdown ran out with work left, or the count moves too
+            // seldom to tell: the speed up to now
+            _ => remaining as f64 / ((d1 - d0) as f64 / span.as_secs_f64()),
+        };
         // `try_from_secs_f64` refuses what a `Duration` cannot hold; that is "more than the cap" here
         (left >= 0.0).then(|| Duration::try_from_secs_f64(left).map_or(MAX_ETA, |d| d.min(MAX_ETA)))
+    }
+}
+
+impl Pace {
+    /// The speed between the first and the last time the count moved in the window, the mean time
+    /// between those moves, and the time since the last one; `None` before two moves a second apart.
+    fn batches(&self) -> Option<(f64, Duration, Duration)> {
+        let now = self.readings.back()?.0;
+        let mut moves = self.readings.iter().zip(self.readings.iter().skip(1)).filter(|(a, b)| b.1 != a.1).map(|(_, b)| *b);
+        let (ta, da) = moves.next()?;
+        let (n, (tb, db)) = moves.fold((0u32, (ta, da)), |(n, _), m| (n.saturating_add(1), m));
+        let span = tb.saturating_duration_since(ta);
+        if span < MIN_SPAN || db <= da {
+            return None;
+        }
+        Some(((db - da) as f64 / span.as_secs_f64(), span.checked_div(n)?, now.saturating_duration_since(tb)))
     }
 }
 
@@ -147,6 +177,63 @@ mod tests {
         r.extend((1..=40).map(|i| (t + i as f64 * 0.15, d)));
         let after = eta(&r, 1000).unwrap();
         assert!(after > before * 1.5, "{before} -> {after}");
+    }
+
+    /// A job that finishes 16 units every 2 s (8 a second, as an export's batches of frames), read
+    /// every 0.1 s for `secs`; the estimate at each reading, with the time of the reading.
+    fn batched(secs: f64, total: u64) -> Vec<(f64, Option<f64>)> {
+        let t0 = Instant::now();
+        let mut p = Pace::default();
+        (0..=(secs * 10.0) as u64)
+            .map(|i| {
+                let s = i as f64 * 0.1;
+                let done = (i / 20) * 16;
+                p.observe(at(t0, s), done);
+                (s, p.eta(total.saturating_sub(done)).map(|d| d.as_secs_f64()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_estimate_counts_down_between_batches_instead_of_jumping() {
+        // 20 000 units at 8 a second end at 2500 s: once the window is full, each estimate plus the
+        // time it was made says so, at every reading, not only when a batch lands. Measured to the
+        // end of the window it swung by a batch (16 of ~120 units), ~13 %.
+        let ends: Vec<f64> = batched(40.0, 20_000).into_iter().filter(|r| r.0 >= 20.0).map(|(s, e)| s + e.unwrap_or(f64::NAN)).collect();
+        let (lo, hi) = ends.iter().fold((f64::MAX, f64::MIN), |(lo, hi), e| (lo.min(*e), hi.max(*e)));
+        assert!(hi - lo < 5.0 && (lo - 2500.0).abs() < 5.0, "the end moved between {lo} and {hi}");
+    }
+
+    #[test]
+    fn the_last_batch_never_shows_nothing_left_before_it_lands() {
+        // batches of 16 every 2 s; at 20 s 160 of 176 are done, and the last batch is a little late
+        let t0 = Instant::now();
+        let mut p = Pace::default();
+        for i in 0..=200u64 {
+            p.observe(at(t0, i as f64 * 0.1), (i / 20) * 16);
+        }
+        for i in 201..=260u64 {
+            p.observe(at(t0, i as f64 * 0.1), 160);
+            let left = p.eta(16).map(|d| d.as_secs_f64());
+            // the countdown runs out at 22 s; until the batch was overdue at 26 s it said 0
+            assert!(left.is_some_and(|l| l > 0.0), "{:.1} s in: {left:?} left of 16 units", i as f64 * 0.1);
+        }
+    }
+
+    #[test]
+    fn a_late_batch_makes_the_estimate_grow() {
+        // batches every 2 s for 20 s, then 8 s with nothing done (four batch intervals)
+        let t0 = Instant::now();
+        let mut p = Pace::default();
+        for i in 0..=200u64 {
+            p.observe(at(t0, i as f64 * 0.1), (i / 20) * 16);
+        }
+        let before = p.eta(1000 - 160).unwrap();
+        for i in 201..=280u64 {
+            p.observe(at(t0, i as f64 * 0.1), 160);
+        }
+        let after = p.eta(1000 - 160).unwrap();
+        assert!(after > before, "{before:?} -> {after:?}");
     }
 
     #[test]

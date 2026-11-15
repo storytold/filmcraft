@@ -23,7 +23,7 @@ MAC="$TMP/mac.svg"
 sed 's/viewBox="0 0 512 512"/viewBox="-62.14 -62.14 636.27 636.27"/' "$SVG" >"$MAC"
 grep -q 'viewBox="-62.14' "$MAC" || { echo "error: unexpected viewBox in $SVG" >&2; exit 1; }
 
-render() { resvg -w "$2" -h "$2" "$1" "$3" </dev/null; }
+render() { local input="$1" size="$2" output="$3"; resvg -w "$size" -h "$size" "$input" "$output" </dev/null; }
 
 render "$SVG" 1024 "$DIR/filmcraft-1024.png"
 # Runtime window/Dock icon on macOS (apps/filmcraft/src/main.rs embeds it).

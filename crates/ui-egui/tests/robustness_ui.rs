@@ -64,7 +64,7 @@ impl Driver {
         self.ok("engine.execute", json!({"command": "perf.stats"}))["frames"].clone()
     }
 
-    /// Step until the frame workers are idle.
+    /// Drain queued requests; running jobs can still finish after this returns.
     fn settle(&mut self) {
         for _ in 0..400 {
             self.frames(1);
@@ -85,18 +85,42 @@ fn frame_worker_survives_a_panicking_job_and_keeps_rendering() {
     let _serial = serial();
     let mut d = Driver::demo();
     d.settle();
-    let jobs_before = d.frame_stats()["jobs"].as_u64().unwrap_or(0);
-    let workers = d.harness.state().frames.workers() as u32;
+    let workers = d.harness.state().frames.workers() as u64;
+    let faults = workers + 2;
+    let jobs = |st: &Value| st["jobs"].as_u64().unwrap_or(0);
     // more faults than there are workers: before the fix every worker died and nothing rendered
-    filmcraft_ui_egui::frames::inject_job_panics(workers + 2);
-    for t in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] {
-        d.ok("engine.execute", json!({"command": "playhead.set", "params": {"seconds": t}}));
+    filmcraft_ui_egui::frames::inject_job_panics(faults as u32);
+    // Each new position needs a frame not rendered yet: the first jobs take the injected panics,
+    // later ones must render. `settle` waits for the queue, not for running jobs, so up to one job
+    // per worker may still finish after the last panic having started before it: more than
+    // `workers` finished jobs after that point include one that started after it. How many jobs a
+    // run of positions makes depends on timing (a slow machine merges requests), so the positions
+    // go on until that has happened.
+    let mut st = d.frame_stats();
+    let mut at_last_fault = None;
+    let started = std::time::Instant::now();
+    for k in 10..=100 {
+        if at_last_fault.is_none() && st["failedJobs"].as_u64() == Some(faults) {
+            at_last_fault = Some(jobs(&st));
+        }
+        let recovered = at_last_fault.is_some_and(|n| jobs(&st) > n + workers);
+        if recovered && d.harness.state().frames.queue_len() == 0 {
+            break;
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(120) {
+            break;
+        }
+        // A nonempty queue can mean busy workers. Keep waiting for their results rather than
+        // treating it as worker death. Once recovery is proven, stop adding work and drain it.
+        if !recovered {
+            d.ok("engine.execute", json!({"command": "playhead.set", "params": {"seconds": f64::from(k) * 0.1}}));
+        }
         d.settle();
+        st = d.frame_stats();
     }
-    let st = d.frame_stats();
-    assert_eq!(st["failedJobs"].as_u64(), Some(workers as u64 + 2), "{st}");
-    let done_after_faults = st["jobs"].as_u64().unwrap_or(0);
-    assert!(done_after_faults > jobs_before, "workers still finish jobs after the panics: {st}");
+    assert_eq!(st["failedJobs"].as_u64(), Some(faults), "{st}");
+    let at_last_fault = at_last_fault.unwrap_or(u64::MAX);
+    assert!(jobs(&st) > at_last_fault.saturating_add(workers), "workers still finish jobs after the panics (from {at_last_fault}): {st}");
     assert_eq!(d.harness.state().frames.queue_len(), 0, "no job stuck in the queue");
 }
 

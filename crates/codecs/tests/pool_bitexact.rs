@@ -3,6 +3,7 @@
 //! primed with buffers full of 0xAA before decoding, and every frame must still match ffmpeg bit
 //! for bit. (Its own process: the pool is global.)
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::sync::Arc;

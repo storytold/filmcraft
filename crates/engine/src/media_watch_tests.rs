@@ -98,3 +98,18 @@ fn a_background_look_reads_changed_media_again() {
     assert_eq!(look(&mut s), json!({"refreshed": [items[0].0]}));
     assert!(s.media_scan.is_none());
 }
+
+/// The interface asks on every frame whether there is anything to watch: file media that is not
+/// made offline. Generators are not files.
+#[test]
+fn only_file_media_is_watched() {
+    let mut s = Session::default();
+    s.execute("file.importDemoFootage", json!({"scene": "Aurora"})).unwrap();
+    assert!(!crate::media_watch::has_media_files(&s.project));
+    let a = tmp_dir("watch-has-files").join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let item = s.execute("file.import", json!({"paths": [a.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    assert!(crate::media_watch::has_media_files(&s.project));
+    s.execute("media.makeOffline", json!({"items": [item]})).unwrap();
+    assert!(!crate::media_watch::has_media_files(&s.project));
+}

@@ -2,6 +2,7 @@
 //!
 //! - [`oracle`]: find `ffmpeg` / `ffprobe` (env vars, `PATH`, well-known dirs) and skip — or, with
 //!   `FILMCRAFT_REQUIRE_ORACLES=1`, fail — when they are missing ([`require_ffmpeg!`] & co.).
+//! - [`cuts`]: assert that audio reads do not depend on where requests start.
 //! - [`fixtures`]: the shared fixture directory (`<workspace>/target/fixtures/<crate>`) and
 //!   collision-free temporary names for concurrent generators.
 //! - [`golden`]: RGBA8 images, PNG I/O, image-difference metrics and golden-file checks
@@ -10,14 +11,18 @@
 //! ffmpeg/ffprobe are external test oracles and fixture generators only; they are never linked
 //! or shipped (AGENTS.md §2).
 
+pub mod cuts;
+pub mod deadline;
 pub mod fixtures;
 pub mod golden;
 pub mod oracle;
 pub mod wav;
 
+pub use deadline::{set_progress, with_deadline};
 pub use fixtures::{fixtures_dir, temp_path, workspace_root};
 pub use oracle::{
-    ffmpeg, ffmpeg_or_skip, ffmpeg_supports_format, ffmpeg_version, ffmpeg_with_format_or_skip, ffprobe, ffprobe_or_skip, oracles_required, skip,
+    ffmpeg, ffmpeg_has_encoder, ffmpeg_or_skip, ffmpeg_supports_format, ffmpeg_version, ffmpeg_with_format_or_skip, ffprobe, ffprobe_or_skip, oracles_required,
+    skip,
 };
 
 /// `let ff = require_ffmpeg!();` — the ffmpeg path, or return from the test after printing

@@ -9,6 +9,9 @@ use std::collections::HashMap;
 
 use crate::SpeechError;
 
+/// Generous ceiling above every published Whisper vocabulary, before allocating a dense id table.
+const MAX_VOCAB_ID: u64 = 1_000_000;
+
 pub struct Tokenizer {
     /// Bytes of each regular token, by id.
     bytes: Vec<Vec<u8>>,
@@ -48,7 +51,11 @@ impl Tokenizer {
         let v: serde_json::Value = serde_json::from_str(json).map_err(|e| bad(&e.to_string()))?;
         let vocab = v["model"]["vocab"].as_object().ok_or_else(|| bad("no model.vocab"))?;
         let table = unicode_to_byte();
-        let max = vocab.values().filter_map(|x| x.as_u64()).max().unwrap_or(0) as usize;
+        let max = vocab.values().filter_map(|x| x.as_u64()).max().unwrap_or(0);
+        if max > MAX_VOCAB_ID {
+            return Err(bad("vocab id is too large"));
+        }
+        let max = usize::try_from(max).map_err(|_| bad("vocab id is too large"))?;
         let mut bytes = vec![Vec::new(); max + 1];
         for (tok, id) in vocab {
             let id = id.as_u64().ok_or_else(|| bad("vocab id"))? as usize;
@@ -163,4 +170,19 @@ pub fn group_words(tok: &Tokenizer, ids: &[u32]) -> Vec<(String, std::ops::Range
         groups.push((pre, start..ids.len()));
     }
     groups.into_iter().map(|(b, r)| (String::from_utf8_lossy(&b).trim().to_string(), r)).filter(|(t, _)| !t.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_huge_vocab_id_is_rejected_before_allocation() {
+        let json = format!(r#"{{"model":{{"vocab":{{"x":{}}}}},"added_tokens":[]}}"#, MAX_VOCAB_ID + 1);
+        let error = match Tokenizer::from_json(&json) {
+            Err(error) => error,
+            Ok(_) => panic!("huge sparse vocabulary was accepted"),
+        };
+        assert!(error.to_string().contains("vocab id is too large"));
+    }
 }

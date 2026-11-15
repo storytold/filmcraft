@@ -25,7 +25,7 @@ fn project() -> (Project, ItemId) {
     let a = p.add_item(
         "a.wav",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::File { path: "/m/a.wav".into() },
             info,
             interpret: Default::default(),
@@ -35,7 +35,7 @@ fn project() -> (Project, ItemId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let r = FrameRate::FPS_25;

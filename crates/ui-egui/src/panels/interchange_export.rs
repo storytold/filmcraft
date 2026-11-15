@@ -29,7 +29,7 @@ struct Draft {
 }
 
 fn draft_id() -> egui::Id {
-    egui::Id::new("interchange-export-draft")
+    egui::Id::unique("interchange-export-draft")
 }
 
 const RATES: [u32; 4] = [32_000, 44_100, 48_000, 96_000];
@@ -64,14 +64,14 @@ pub fn is_open(ctx: &egui::Context) -> bool {
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("interchange-export-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("interchange-export-before-drag"), &mut d);
     let p = if d.omf { "omfExport" } else { "aafExport" };
     let mut close = false;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let title = if d.omf { "OMF Export Settings" } else { "AAF Export Settings" };
     let shown = if d.omf { tl!("OMF Export Settings") } else { tl!("AAF Export Settings") };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
+    egui::Window::new(shown).id(egui::Id::unique(title)).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.set_min_width(380.0);
         egui::Grid::new("interchange-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             if d.omf {

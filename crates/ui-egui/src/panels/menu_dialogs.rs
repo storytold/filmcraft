@@ -48,7 +48,9 @@ impl Default for Extras {
 type Elems = Vec<(String, egui::Rect, String)>;
 
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
-    elems.push((id.into(), r.rect, label.into()));
+    let label = label.into();
+    crate::widgets::accessible_name(r.clone(), label.clone());
+    elems.push((id.into(), r.rect, label));
 }
 
 /// Dialog title, automation prefix and OK button text of a command's dialog.
@@ -131,14 +133,17 @@ pub fn open_path(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str, reveal
     }
 }
 
-/// Where Reveal Log Files points: `<data dir>/Logs` (the temp folder without a data directory).
-pub fn logs_dir(app: &FilmcraftApp) -> std::path::PathBuf {
-    app.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Logs")).unwrap_or_else(|| filmcraft_engine::temp_dir().join("FilmCraft Logs"))
+/// Where Reveal Log Files points: `<data dir>/Logs` (a private folder in the temp folder without a data directory).
+pub fn logs_dir(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
+    match app.session.prefs_path.as_ref().and_then(|p| p.parent()) {
+        Some(d) => Ok(d.join("Logs")),
+        None => filmcraft_engine::private_temp_dir().map(|d| d.join("Logs")).map_err(|e| format!("no private temporary folder: {e}")),
+    }
 }
 
 /// Write this session's log (system report and the command journal) into [`logs_dir`].
 fn write_session_log(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
-    let dir = logs_dir(app);
+    let dir = logs_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("session-{}.log", std::process::id()));
     let mut text = format!("{}\n", system_report(app));
@@ -168,7 +173,9 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
 
 /// Menu / shortcut entry points. Returns None for ids this module doesn't handle.
 pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
-    let empty = params.as_object().is_none_or(|m| m.is_empty());
+    // New Item sends the bin it was clicked in (null = root); the Color Matte dialog takes it
+    let carried = if id == "file.newColorMatte" { crate::panels::project::bin_only(params) } else { None };
+    let empty = params.as_object().is_none_or(|m| m.is_empty()) || carried.is_some();
     // UI commands
     match id {
         "view.dynamicAudioWaveforms" => {
@@ -228,6 +235,40 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.session.execute(&id, p).map_err(|e| e.to_string())
             }));
         }
+        // Color Grading panel menu ▸ Export .cube…: ask where to save the grade, then export it
+        "lumetri.exportCube" if params.get("path").is_none() => {
+            if let Err(e) = enabled(app, id) {
+                return Some(Err(e));
+            }
+            // the clip is fixed now, not when the dialog closes
+            let has_lumetri = |c: &filmcraft_project::ClipId| {
+                let (_, it) = app.session.active_sequence()?.find_item(*c)?;
+                it.effects.iter().any(|e| e.enabled && e.effect == "lumetri").then(|| (c.0, it.name.clone()))
+            };
+            let found = match params.get("clip").and_then(Value::as_u64) {
+                Some(c) => has_lumetri(&filmcraft_project::ClipId(c)),
+                None => app.session.state.selection.iter().find_map(has_lumetri),
+            };
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Color Grading".into())) };
+            let stem: String =
+                stem.unwrap_or_else(|| "Color Grading".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+            let mut p = params.as_object().cloned().unwrap_or_default();
+            p.entry("clip").or_insert(json!(clip));
+            let id = id.to_string();
+            return Some(app.pick(FileDialog::save_as(tl!("Cube LUT"), &["cube"], &format!("{stem}.cube")), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                p.insert("path".into(), json!(path));
+                let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+                // effects the LUT cannot hold (vignette, sharpen, other effects on the clip) are named
+                let left_out: Vec<&str> = r.as_ref().ok().and_then(|v| v["leftOut"].as_array()).into_iter().flatten().filter_map(Value::as_str).collect();
+                app.ui.status = match &r {
+                    Ok(_) if left_out.is_empty() => tlf!("Exported {path}", path),
+                    Ok(_) => tlf!("Exported {path}; not in the LUT: {effects}", path, effects = left_out.join(", ")),
+                    Err(e) => e.clone(),
+                };
+                r
+            }));
+        }
         "file.mediaPropertiesFile" if params.get("path").is_none() => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
@@ -252,7 +293,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         app.ui.status = e.clone();
         return Some(Err(e));
     }
-    let (params, info) = match defaults(app, cmd, id) {
+    let (params, info) = match defaults(app, cmd, id, carried) {
         Ok(x) => x,
         Err(e) => return Some(Err(e)),
     };
@@ -261,7 +302,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 }
 
 /// Initial parameters (and display info) of a dialog.
-fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value), String> {
+fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str, bin: Option<Option<u64>>) -> Result<(Value, Value), String> {
+    let shown_bin = bin.unwrap_or_else(|| crate::panels::project::shown_bin(app));
     let s = &mut app.session;
     Ok(match cmd {
         "edit.find" => {
@@ -347,7 +389,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
         "file.newColorMatte" => {
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0}), Value::Null)
+            (json!({"color": "#000000", "name": "Color Matte", "width": st.width, "height": st.height, "seconds": 5.0, "bin": shown_bin}), Value::Null)
         }
         "project.matteColor" => {
             let matte = match s.state.project_selection.as_slice() {
@@ -388,11 +430,16 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
     });
 }
 
-fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
+struct NumberOptions {
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &'static str,
+}
+
+fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(options.range).suffix(options.suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -420,7 +467,7 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         }
         let cur = value.as_str().unwrap_or_default().to_string();
         let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
-        let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
             for (k, l) in options {
                 if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
                     *value = json!(k);
@@ -453,7 +500,7 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("menu-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
         return;
@@ -463,7 +510,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut browse: Option<String> = None;
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
-    let id = egui::Id::new(("menu-dialog", pre));
+    let id = egui::Id::unique(("menu-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
@@ -704,8 +751,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     &[("sequentially", tl!("Sequentially")), ("unnumberedMarkers", tl!("At Unnumbered Markers"))],
                 );
                 radios(ui, &mut elems, pre, p, "method", tl!("Method:"), &[("insert", tl!("Insert Edit")), ("overwrite", tl!("Overwrite Edit"))]);
-                number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), 0.0..=600.0, " frames");
-                number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), 1.0..=100_000.0, " frames");
+                number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), NumberOptions { range: 0.0..=600.0, suffix: " frames" });
+                number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), NumberOptions { range: 1.0..=100_000.0, suffix: " frames" });
                 ui.label(RichText::new(tl!("Transitions")).strong());
                 check(ui, &mut elems, pre, p, "audioTransition", tl!("Apply Default Audio Transition"));
                 check(ui, &mut elems, pre, p, "videoTransition", tl!("Apply Default Video Transition"));
@@ -725,7 +772,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     p["sensitivity"] = json!(v);
                 });
             }
-            "sequence.normalizeMixTrack" => number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), -96.0..=24.0, " dB"),
+            "sequence.normalizeMixTrack" => {
+                number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), NumberOptions { range: -96.0..=24.0, suffix: " dB" })
+            }
             "sequence.simplify" => {
                 text(ui, &mut elems, pre, p, "name", tl!("Sequence Name:"), 240.0);
                 ui.label(RichText::new(tl!("Remove")).strong());
@@ -767,9 +816,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "file.newColorMatte" => {
                 color(ui, &mut elems, pre, p, "color", tl!("Color:"));
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                number(ui, &mut elems, pre, p, "width", tl!("Width:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "height", tl!("Height:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.04..=36000.0, " s");
+                number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
+                number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.04..=36000.0, suffix: " s" });
             }
             "project.matteColor" => color(ui, &mut elems, pre, p, "color", tl!("Color:")),
             "markers.addFlashCue" => {
@@ -974,5 +1023,17 @@ pub fn search_bin_rows(
                 filmcraft_project::Bin { id: sb.id, name: sb.name.clone(), children: matches.into_iter().map(filmcraft_project::BinEntry::Item).collect() };
             draw_items(app, ui, &bin, row, actions);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_with_a_menu_dialog_can_be_bound() {
+        // project.matteColor recolours the selected matte and needs a colour: the engine refuses it
+        // without one, so its parameter is required and its dialog is reached from the matte itself
+        crate::panels::clip_dialogs::tests::assert_dialog_commands_bindable("menu_dialogs::meta", |id| meta(id).is_some(), &["project.matteColor"]);
     }
 }

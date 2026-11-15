@@ -2,8 +2,10 @@
 
 use crate::dsp::{block_var, sad, satd};
 use crate::picture::Frame;
+use crate::pixel::Pixel;
 
-/// Half-resolution luma (2x2 box filtered) of the macroblock-aligned picture.
+/// Half-resolution 8-bit luma (2x2 box filtered) of the macroblock-aligned picture. Higher bit depths are
+/// scaled down to 8 bits, so rate control and scene-cut decisions see the same numbers at every depth.
 pub struct LowRes {
     pub w: usize,
     pub h: usize,
@@ -11,15 +13,15 @@ pub struct LowRes {
 }
 
 impl LowRes {
-    pub fn new(f: &Frame) -> Self {
+    pub fn new<P: Pixel>(f: &Frame<P>, shift: u32) -> Self {
         let (w, h) = (f.y.w / 2, f.y.h / 2);
         let mut data = vec![0u8; w * h];
         let row = |y: usize, out: &mut [u8]| {
             let r0 = f.y.idx(0, (2 * y) as isize);
             let r1 = f.y.idx(0, (2 * y + 1) as isize);
             for x in 0..w {
-                let s = f.y.data[r0 + 2 * x] as u32 + f.y.data[r0 + 2 * x + 1] as u32 + f.y.data[r1 + 2 * x] as u32 + f.y.data[r1 + 2 * x + 1] as u32;
-                out[x] = ((s + 2) >> 2) as u8;
+                let s = f.y.data[r0 + 2 * x].get() + f.y.data[r0 + 2 * x + 1].get() + f.y.data[r1 + 2 * x].get() + f.y.data[r1 + 2 * x + 1].get();
+                out[x] = ((s + (2 << shift)) >> (2 + shift)).min(255) as u8;
             }
         };
         #[cfg(feature = "threads")]
@@ -128,9 +130,11 @@ pub fn complexity(cur: &LowRes, prev: Option<&LowRes>) -> Complexity {
     Complexity { intra, inter }
 }
 
-/// Variance-based adaptive quantisation offsets per macroblock (QP units, mean ~0).
-pub fn aq_offsets(f: &Frame, mbw: usize, mbh: usize, strength: f32) -> Vec<f32> {
+/// Variance-based adaptive quantisation offsets per macroblock (QP units, mean ~0). Variances are measured
+/// in 8-bit units (divided by 4^`shift`).
+pub fn aq_offsets<P: Pixel>(f: &Frame<P>, mbw: usize, mbh: usize, strength: f32, shift: u32) -> Vec<f32> {
     let mut e = vec![0f32; mbw * mbh];
+    let norm = (1u32 << (2 * shift)) as f32;
     let row = |my: usize, e: &mut [f32]| {
         for mx in 0..mbw {
             let i = f.y.idx((mx * 16) as isize, (my * 16) as isize);
@@ -139,7 +143,7 @@ pub fn aq_offsets(f: &Frame, mbw: usize, mbh: usize, strength: f32) -> Vec<f32> 
             let vu = block_var(&f.u.data[iu..], f.u.stride, 8, 8) as f32 / 64.0;
             let iv = f.v.idx((mx * 8) as isize, (my * 8) as isize);
             let vv = block_var(&f.v.data[iv..], f.v.stride, 8, 8) as f32 / 64.0;
-            e[mx] = (vy + 0.5 * (vu + vv) + 1.0).log2();
+            e[mx] = ((vy + 0.5 * (vu + vv)) / norm + 1.0).log2();
         }
     };
     #[cfg(feature = "threads")]

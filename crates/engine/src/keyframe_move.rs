@@ -1,5 +1,6 @@
-//! Atomic movement of keys across effect/mask parameters; the common timeline delta keeps
-//! relative timing intact, including at the clip boundaries. Selection itself is a UI concern.
+//! Atomic edits of keys across effect/mask parameters: movement, where the common timeline delta
+//! keeps relative timing intact, including at the clip boundaries, and interpolation. Selection
+//! itself is a UI concern.
 use std::collections::{BTreeMap, HashSet};
 
 use filmcraft_project::{ClipId, Keyframe, Param, Sequence, TrackItem};
@@ -25,14 +26,14 @@ struct Key {
 
 type Lane = (u64, usize, Option<usize>, String);
 
-fn param_mut<'a>(sequence: &'a mut Sequence, lane: &Lane) -> Result<&'a mut Param> {
-    let (_, it) = sequence.find_item_mut(ClipId(lane.0)).ok_or_else(|| bad(COMMAND, "clip does not exist"))?;
-    let effect = it.effects.get_mut(lane.1).ok_or_else(|| bad(COMMAND, "effect does not exist"))?;
+fn param_mut<'a>(sequence: &'a mut Sequence, lane: &Lane, command: &str) -> Result<&'a mut Param> {
+    let (_, it) = sequence.find_item_mut(ClipId(lane.0)).ok_or_else(|| bad(command, "clip does not exist"))?;
+    let effect = it.effects.get_mut(lane.1).ok_or_else(|| bad(command, "effect does not exist"))?;
     match lane.2 {
         Some(mask) => effect.masks.get_mut(mask).and_then(|m| m.param_mut(&lane.3)),
         None => effect.params.get_mut(&lane.3),
     }
-    .ok_or_else(|| bad(COMMAND, "parameter does not exist"))
+    .ok_or_else(|| bad(command, "parameter does not exist"))
 }
 
 fn direction(it: &TrackItem) -> f64 {
@@ -94,7 +95,7 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit_sequence("Move Keyframes", |sequence, _, _| {
         for (lane, moved) in lanes {
-            let param = param_mut(sequence, &lane)?;
+            let param = param_mut(sequence, &lane, COMMAND)?;
             let from: HashSet<_> = moved.iter().map(|(t, _)| *t).collect();
             let to: HashSet<_> = moved.iter().map(|(_, k)| k.time).collect();
             // Remove all originals before inserting any destination: selected keys can move into
@@ -108,9 +109,32 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"delta":delta,"keyframes":keys}))
 }
 
+/// `effects.setInterpolation` given a `keyframes` list: every listed key changes in one undo step,
+/// so a menu applies to the whole selection (#1916).
+pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
+    const SET: &str = "effects.setInterpolation";
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(SET, "need keyframes"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(SET, "keyframe count must be between 1 and 4096"));
+    }
+    let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(SET, "invalid keyframe reference"))?;
+    let kind = crate::commands::interpolation_p(p);
+    s.edit_sequence("Keyframe Interpolation", |sequence, _, _| {
+        for key in &keys {
+            let lane = (key.clip, key.effect, key.mask, key.param.clone());
+            let param = param_mut(sequence, &lane, SET)?;
+            let k = param.keyframes.iter_mut().find(|k| k.time == key.time).ok_or_else(|| bad(SET, "keyframe does not exist"))?;
+            k.interp = kind;
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filmcraft_project::Interpolation;
     use std::sync::Arc;
 
     fn fixture() -> (Session, Vec<Value>) {
@@ -193,6 +217,36 @@ mod tests {
             assert!(s.execute(COMMAND, request).is_err());
             assert!(Arc::ptr_eq(&before, &s.project));
             assert_eq!(s.history.undo.len(), undo);
+        }
+    }
+
+    #[test]
+    fn interpolation_of_listed_keys_across_lanes_is_one_undo_step() {
+        const SET: &str = "effects.setInterpolation";
+        let (mut s, keys) = fixture();
+        let project = s.project.clone();
+        let undo = s.history.undo.len();
+        s.execute(SET, json!({"keyframes":[keys[0],keys[2]],"interpolation":"hold"})).unwrap();
+        let interps = |s: &Session, key: &Value| values(s, key).iter().map(|k| k.interp).collect::<Vec<_>>();
+        assert_eq!(interps(&s, &keys[0]), [Interpolation::Hold, Interpolation::Linear], "the unlisted Scale key stays linear");
+        assert_eq!(interps(&s, &keys[2]), [Interpolation::Hold]);
+        assert_eq!(s.history.undo.len(), undo + 1);
+        s.undo();
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), serde_json::to_value(&project).unwrap());
+
+        let before = s.project.clone();
+        let mut invalid = keys[1].clone();
+        invalid["time"] = json!(invalid["time"].as_i64().unwrap() + 1);
+        for request in [
+            json!({"keyframes":[keys[0],invalid],"interpolation":"hold"}),
+            json!({"keyframes":[],"interpolation":"hold"}),
+            json!({"keyframes":vec![keys[0].clone();MAX_KEYS+1],"interpolation":"hold"}),
+            json!({"keyframes":[{"clip":keys[0]["clip"],"effect":u64::MAX,"param":"scale","time":0}],"interpolation":"hold"}),
+            json!({"keyframes":[{"clip":keys[0]["clip"],"effect":0,"param":"scale","mask":3,"time":0}],"interpolation":"hold"}),
+            json!({"keyframes":"all","interpolation":"hold"}),
+        ] {
+            assert!(s.execute(SET, request).is_err());
+            assert!(Arc::ptr_eq(&before, &s.project));
         }
     }
 

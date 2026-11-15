@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an improvement to a FilmCraft workflow.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues and describe one feature per request.
+        For usage questions, visit the [community chat](https://discord.gg/artcraft).
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem or workflow
+      description: What are you trying to accomplish, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Requested behavior
+      description: Describe how the feature would work from the user's point of view.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What have you tried, and where does it fall short?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Optional examples, related issues, or your platform/version if relevant. Share only material you have permission to publish.

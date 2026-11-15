@@ -18,6 +18,9 @@ use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
 
 /// Largest picture we decode (each pixel takes 16 bytes as RGBA floats).
 const MAX_PIXELS: u64 = 1 << 26;
+/// Widest or tallest picture we decode: validation expands one scan line into a scratch buffer
+/// of that many pixels before the whole picture is checked.
+const MAX_AXIS: usize = 1 << 15;
 /// Longest header we read (real ones are a few hundred bytes).
 const MAX_HEADER: usize = 64 << 10;
 
@@ -51,6 +54,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
             has_alpha: false,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: Vec::new(),
         container: "Image".into(),
@@ -190,15 +194,25 @@ pub fn decode(name: &str, b: &[u8]) -> Result<VideoFrame> {
     let n1: usize = n1.parse().map_err(|_| err(name, "bad resolution line"))?;
     let n2: usize = n2.parse().map_err(|_| err(name, "bad resolution line"))?;
     let (w, h) = if x1 { (n1, n2) } else { (n2, n1) };
-    if w == 0 || h == 0 || (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
+    // each axis is bounded as well: the scan-line scratch below is one axis wide
+    if w == 0 || h == 0 || w > MAX_AXIS || h > MAX_AXIS || (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
         return Err(err(name, "picture size out of range"));
     }
     // a scan line takes at least a few bits of file, so a header cannot ask for more than the data has
     if (b.len().saturating_sub(pos) as u64).saturating_mul(4096) < (w as u64).saturating_mul(h as u64) {
         return Err(err(name, "truncated pixel data"));
     }
-    let mut px = vec![1f32; w * h * 4];
+    // Validate every encoded scanline before allocating the complete float image. A short HDR
+    // header can otherwise request up to a GiB of zero-initialized pixels and only then fail on
+    // its first missing or malformed scanline.
+    let pixel_data = pos;
     let mut scan = vec![[0u8; 4]; n2];
+    for _ in 0..n1 {
+        scanline(name, b, &mut pos, &mut scan)?;
+    }
+
+    let mut px = vec![1f32; w * h * 4];
+    pos = pixel_data;
     for i in 0..n1 {
         scanline(name, b, &mut pos, &mut scan)?;
         for (j, &p) in scan.iter().enumerate() {

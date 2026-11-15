@@ -291,3 +291,134 @@ fn chains_filling_the_file_still_read() {
         assert_eq!(CompoundFile::open(&b).unwrap().read_path("big").unwrap(), data);
     }
 }
+
+#[test]
+fn nul_in_a_name_is_rejected() {
+    assert!(validate_name("a\0b").is_err());
+    assert!(validate_name("\0").is_err());
+    let mut w = Writer::default();
+    assert!(matches!(w.stream(Writer::ROOT, "a\0b", vec![1]), Err(Error::BadName(_))));
+    assert!(matches!(w.storage(Writer::ROOT, "x\0", [0; 16]), Err(Error::BadName(_))));
+}
+
+#[test]
+fn span_is_checked() {
+    use crate::read::span;
+    assert_eq!(span(0, 1, 512), Some((512, 1024)));
+    assert_eq!(span(3, 0, 64), Some((192, 256)));
+    // On a 32-bit `usize` these are the overflows of `sector` and `read_mini_chain`; the checked
+    // arithmetic is the same code on 64-bit, so usize::MAX exercises it here. (A real 32-bit
+    // target is not run.)
+    assert_eq!(span(usize::MAX, 1, 512), None);
+    assert_eq!(span(usize::MAX, 0, 64), None);
+    assert_eq!(span(usize::MAX / 64, 0, 64), None, "start fits, end does not");
+    assert_eq!(span(usize::MAX - 1, 1, 1), None);
+}
+
+/// The allocating comparison compare_names used before the iterator rewrite.
+fn compare_names_old(a: &str, b: &str) -> std::cmp::Ordering {
+    let ua: Vec<u16> = a.encode_utf16().collect();
+    let ub: Vec<u16> = b.encode_utf16().collect();
+    ua.len().cmp(&ub.len()).then_with(|| ua.iter().map(|&u| upper(u)).cmp(ub.iter().map(|&u| upper(u))))
+}
+
+#[test]
+fn compare_names_matches_the_allocating_version() {
+    let names = [
+        "",
+        "a",
+        "A",
+        "b",
+        "B",
+        "ab",
+        "AB",
+        "aB",
+        "abc",
+        "ABD",
+        "Abc",
+        "aBC",
+        "z",
+        "Z",
+        "{",
+        "_",
+        "ß",
+        "SS",
+        "ss",
+        "ü",
+        "Ü",
+        "é",
+        "É",
+        "ǆ",
+        "ǅ",
+        "Ǆ",
+        "ストリーム",
+        "ｓｔ",
+        "Ｓｔ",
+        "😀",
+        "😁",
+        "a😀",
+        "A😀",
+        "\u{ffff}",
+        "\u{10000}",
+        "Header-2",
+        "HEADER-2",
+        "header-2",
+        "Mobs-1901{a}",
+        "mobs-1901{A}",
+    ];
+    for a in names {
+        for b in names {
+            assert_eq!(compare_names(a, b), compare_names_old(a, b), "{a:?} vs {b:?}");
+        }
+    }
+    // every BMP scalar against a few fixed names
+    for c in (0u32..=0x10FFFF).filter_map(char::from_u32) {
+        let s = c.to_string();
+        for other in ["a", "Z", "ü", "ǆ"] {
+            assert_eq!(compare_names(&s, other), compare_names_old(&s, other));
+            assert_eq!(compare_names(other, &s), compare_names_old(other, &s));
+        }
+    }
+}
+
+/// Name lookups go through a sorted per-storage index: every child of a wide storage resolves
+/// (in any case), and a hostile file whose sibling tree is out of order still resolves by name,
+/// with the first child in tree order winning a duplicated name.
+#[test]
+fn child_lookup_uses_a_sorted_index() {
+    let mut w = Writer::default();
+    for i in 0..2000 {
+        w.stream(Writer::ROOT, &format!("m{i}"), vec![i as u8]).unwrap();
+    }
+    let b = w.finish();
+    let cf = CompoundFile::open(&b).unwrap();
+    for i in (0..2000).step_by(37) {
+        let id = cf.child(0, &format!("M{i}")).unwrap();
+        assert_eq!(cf.read(id).unwrap(), vec![i as u8]);
+    }
+    assert_eq!(cf.child(0, "m2000"), None);
+    assert_eq!(cf.child(12345, "m1"), None);
+
+    let mut w = Writer::default();
+    for name in ["aa", "bb", "cc"] {
+        w.stream(Writer::ROOT, name, name.as_bytes().to_vec()).unwrap();
+    }
+    let mut b = w.finish();
+    let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    let at = |b: &[u8], s: &str| b.windows(4).position(|w| w == utf16(s)).unwrap();
+    // swap the names "aa" and "cc": the tree's in-order walk is now cc, bb, aa
+    let (a, c) = (at(&b, "aa"), at(&b, "cc"));
+    b[a..a + 4].copy_from_slice(&utf16("cc"));
+    b[c..c + 4].copy_from_slice(&utf16("aa"));
+    let cf = CompoundFile::open(&b).unwrap();
+    let names: Vec<&str> = cf.root().children.iter().map(|&c| cf.entries[c].name.as_str()).collect();
+    assert_eq!(names, ["cc", "bb", "aa"]);
+    assert_eq!(cf.read_path("AA").unwrap(), b"cc");
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+    assert_eq!(cf.read_path("bb").unwrap(), b"bb");
+    // a duplicated name resolves to the first child in tree order
+    let bb = at(&b, "bb");
+    b[bb..bb + 4].copy_from_slice(&utf16("cc"));
+    let cf = CompoundFile::open(&b).unwrap();
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+}

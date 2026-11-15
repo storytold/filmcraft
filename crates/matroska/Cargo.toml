@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-media = { workspace = true, features = ["matroska"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

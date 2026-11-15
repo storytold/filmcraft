@@ -54,12 +54,12 @@ first frame header to label the stream.
   independently and in parallel, writing straight into their 16-line bands.
 - VLCs are decoded with two-level lookup tables (11-bit primary) built from the Annex E lists.
 - Inverse quantisation with the CID's Annex D weights; IDCT: the exact orthonormal 8×8 inverse DCT
-  of equation 8.3, evaluated separably in `f32` (shared design with `filmcraft-prores`).
+  of equation 8.3, evaluated separably in `f32` (shared design with craft-video ProRes).
   Output: `floor(x·s + 2^(b−1) + ½)` clipped to `[0, 2^b − 1]`, where `s = 4` at 12 bits (the
   12-bit coefficient domain is ¼ of the orthonormal DCT, as Table 14's 13-bit IDCT input range
   for 12-bit samples implies) and 1 otherwise.
 - Robustness: every offset and size is validated, run lengths past coefficient 63 are rejected,
-  and corrupted or truncated streams return `Err` without panicking (`tests/roundtrip.rs`).
+  and corrupted or truncated streams return `Err` without panicking (`tests/it/roundtrip.rs`).
 
 ### Where we follow ffmpeg rather than the letter of the standard
 
@@ -100,7 +100,7 @@ the prose of §7.3.1.2; we follow the prose (normative text takes precedence).
 
 ## Accuracy (vs ffmpeg as an external oracle)
 
-`tests/oracle_decode.rs` decodes 22 fixtures made by ffmpeg's VC-3 encoder: CIDs 1235, 1237,
+`tests/it/oracle_decode.rs` decodes 22 fixtures made by ffmpeg's VC-3 encoder: CIDs 1235, 1237,
 1238, 1241, 1242, 1243, 1244, 1250, 1251, 1252, 1253, 1258, 1259 and DNxHR LB/SQ/HQ/HQX/444
 (Y′CbCr and RGB), with testsrc2, mandelbrot and heavy noise, at 1920×1080, 1280×720, 960×720,
 1440×1080 (thin raster, interlaced), 1000×562, 640×360, 256×120 and 3840×2160. Compared with
@@ -111,7 +111,7 @@ decoder evaluates the exact IDCT of equation 8.3, so decode is **not bit-exact, 
 precision** of ffmpeg. (ffmpeg wraps rather than clips 10-bit reconstructions that overflow
 1023, so the noise fixtures keep their samples inside 24…231 before encoding.)
 
-`tests/oracle_encode.rs` encodes 1920×1080 frames with every profile and writes them into a
+`tests/it/oracle_encode.rs` encodes 1920×1080 frames with every profile and writes them into a
 minimal test-only MOV. ffmpeg decodes them with `-xerror`, without errors, and agrees with our
 decoder within ±2 (90–99% identical). Luma PSNR against the source: HQ 58.8 dB (mandelbrot) and
 66.3 dB (testsrc2), SQ 57.5 dB, LB 56.1 dB, HQX 10-bit 67.5 dB, HQX 12-bit 80.2 dB, 444 10-bit
@@ -119,9 +119,9 @@ decoder within ±2 (90–99% identical). Luma PSNR against the source: HQ 58.8 d
 
 ## Performance
 
-`cargo test --release -p filmcraft-dnx --test perf -- --ignored --nocapture` on an M4 Pro
+`cargo test --release -p filmcraft-dnx --test it perf:: -- --ignored --nocapture` on an M4 Pro
 (14 cores) while the machine was **heavily overloaded** by other jobs (load average ≈ 190).
-Under the same load `filmcraft-prores`' perf test measured 30 fps threaded / 11.8 fps single
+Under the same load the former FilmCraft-local ProRes codec measured 30 fps threaded / 11.8 fps single
 for a 1080p HQ frame, against 318 / 53 fps in its README on a less loaded machine, so these are
 lower bounds by a factor of roughly 4–10:
 

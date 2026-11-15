@@ -17,7 +17,7 @@
 
 use candle_core::{D, Device, Tensor};
 
-use super::layers::*;
+use super::layers::{AdaLayerNorm, AdaResBlock, BiLstm, Conv, ConvT, LayerNorm, Linear, R, SnakeResBlock, leaky};
 use super::weights::{Weights, err};
 
 const HEADS: usize = 12;

@@ -72,6 +72,15 @@ enum Seg {
     At(u64, u32),
 }
 
+/// Bento values are metadata, not essence payloads. Limit reassembled segments so repeated
+/// references cannot amplify a small OMF into an enormous allocation.
+const MAX_VALUE_BYTES: usize = 16 << 20;
+
+/// Most bytes of global names (property and type names) kept for one container. Real files name a
+/// few hundred short strings; without a cap, many objects naming one large shared range would each
+/// retain their own copy.
+const MAX_NAME_BYTES: usize = 4 << 20;
+
 /// Builds a Bento container.
 pub(crate) struct Writer {
     data: Vec<u8>,
@@ -289,9 +298,14 @@ impl<'a> Container<'a> {
         }
         // global names
         let ids: Vec<u32> = c.objects.keys().copied().collect();
+        let mut name_bytes = 0usize;
         for id in ids {
             let name = c.objects[&id].iter().find(|p| p.prop == GLOBAL_PROP_NAME || p.prop == GLOBAL_TYPE_NAME).and_then(|p| c.value(p).ok());
             if let Some(n) = name {
+                name_bytes = name_bytes.saturating_add(n.len());
+                if name_bytes > MAX_NAME_BYTES {
+                    return Err("Bento global names exceed the name budget".into());
+                }
                 let s = String::from_utf8_lossy(&n).trim_end_matches('\0').to_string();
                 c.by_name.insert(s.clone(), id);
                 c.names.insert(id, s);
@@ -311,7 +325,18 @@ impl<'a> Container<'a> {
 
     /// The bytes of a value.
     pub fn value(&self, p: &Prop) -> Result<Vec<u8>, String> {
+        let total = p.segs.iter().try_fold(0usize, |total, s| {
+            let len = match s {
+                Seg::Imm(b) => b.len(),
+                Seg::At(_, len) => *len as usize,
+            };
+            total.checked_add(len).ok_or_else(|| "Bento value length overflows".to_string())
+        })?;
+        if total > MAX_VALUE_BYTES {
+            return Err("Bento value exceeds the decoded-value budget".into());
+        }
         let mut out = Vec::new();
+        out.try_reserve_exact(total).map_err(|_| "cannot allocate Bento value")?;
         for s in &p.segs {
             match s {
                 Seg::Imm(b) => out.extend_from_slice(b),
@@ -353,5 +378,29 @@ impl<'a> Container<'a> {
             }
         }
         key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn many_objects_cannot_name_themselves_with_one_shared_range() {
+        let mut w = Writer::new();
+        w.data = vec![b'a'; 1 << 20];
+        let ids: Vec<u32> = (0..8).map(|_| w.new_object()).collect();
+        for id in ids {
+            w.entries.push((id, GLOBAL_PROP_NAME, TYPE_7BIT_ASCII, vec![Seg::At(0, 1 << 20)]));
+        }
+        let file = w.finish();
+        assert!(Container::open(&file).err().is_some_and(|e| e.contains("name budget")));
+    }
+
+    #[test]
+    fn repeated_segments_cannot_expand_a_value_past_its_budget() {
+        let p = Prop { prop: 1, ty: 1, segs: vec![Seg::At(0, MAX_VALUE_BYTES as u32), Seg::Imm(vec![0])] };
+        let c = Container { data: &[], objects: BTreeMap::new(), names: HashMap::new(), by_name: HashMap::new() };
+        assert!(c.value(&p).unwrap_err().contains("budget"));
     }
 }

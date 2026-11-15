@@ -16,7 +16,10 @@
 //!   lists, against a reference list (default: the local `plan/premiere/<area>.json`), presence and
 //!   placement reported separately (`parity.rs`, docs/gaps.md G7).
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
-//! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
+//! - `i18n-report`: print the interface strings each language's catalog lacks (they show in
+//!   English). It never fails.
+//! - `ci`: fmt check, clippy -D warnings, tests (`cargo nextest run` when installed) and doctests,
+//!   the i18n report, layers, assets, wasm.
 
 mod ico;
 mod parity;
@@ -34,30 +37,15 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("bitstream", 0),
     ("isobmff", 0),
-    ("avi", 0),
     ("matroska", 0),
-    ("mxf", 0),
     ("cfb", 0),
-    ("mpegts", 0),
-    ("mpeg2v", 0),
-    ("ac3", 0),
-    ("mpa", 0),
-    ("ogg", 0),
     ("riff", 0),
-    ("h264", 0),
     ("h264enc", 0),
-    ("hevc", 0),
     ("vp8", 0),
-    ("vp9", 0),
     ("prores", 0),
     ("mjpeg", 0),
     ("dnx", 0),
-    ("apv", 0),
     ("dng", 0),
-    ("av1", 0),
-    ("aac", 0),
-    ("flac", 0),
-    ("opus", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -259,7 +247,7 @@ const WEB_CRATES: &[&str] = &["filmcraft-ui-egui", "filmcraft-web"];
 fn wasm() -> Result<(), String> {
     let md = metadata()?;
     let mut cmd = Command::new(env!("CARGO"));
-    cmd.args(["check", "--target", "wasm32-unknown-unknown"]);
+    cmd.args(["check", "--target", "wasm32-unknown-unknown", "--keep-going"]);
     let mut n = 0;
     for (name, _) in workspace_crates(&md) {
         if layer_of(&name).is_some_and(|l| l <= 4) || WEB_CRATES.contains(&name.as_str()) {
@@ -354,15 +342,36 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("127.0.0.1:{port}: {e}"))?;
     println!("serving {} on http://127.0.0.1:{port}/", dir.display());
+    // Idle or slow clients hold a thread each: cap the threads, the header bytes and each wait.
+    const MAX_CONNECTIONS: usize = 64;
+    const MAX_HEADER_BYTES: u64 = 16 * 1024;
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         let dir = dir.to_path_buf();
-        std::thread::spawn(move || {
+        if active.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= MAX_CONNECTIONS {
+            active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            continue; // dropped: the client sees a closed connection
+        }
+        let done = active.clone();
+        let spawned = std::thread::Builder::new().spawn(move || {
+            struct Release(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            let _release = Release(done);
             let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
             let mut line = String::new();
-            let mut reader = BufReader::new(match stream.try_clone() {
-                Ok(s) => s,
-                Err(_) => return,
-            });
+            let mut reader = BufReader::new(std::io::Read::take(
+                match stream.try_clone() {
+                    Ok(s) => s,
+                    Err(_) => return,
+                },
+                MAX_HEADER_BYTES,
+            ));
             if reader.read_line(&mut line).is_err() {
                 return;
             }
@@ -372,9 +381,8 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                     break;
                 }
             }
-            let path = line.split_whitespace().nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/").to_string();
-            let rel = if path == "/" { "index.html".to_string() } else { path.trim_start_matches('/').replace("..", "") };
-            let file = dir.join(&rel);
+            let path = line.split_whitespace().nth(1).unwrap_or("/").split(['?', '#']).next().unwrap_or("/");
+            let file = served_path(&dir, path);
             let (status, body) = match std::fs::read(&file) {
                 Ok(b) => ("200 OK", b),
                 Err(_) => ("404 Not Found", b"not found".to_vec()),
@@ -396,30 +404,64 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
             );
             let _ = stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(&body));
         });
+        if spawned.is_err() {
+            active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
     }
     Ok(())
 }
 
-/// (crate, test target) whose ignored `generate_fixtures` test builds that crate's fixture matrix.
-const FIXTURE_GENERATORS: &[(&str, &str)] = &[
-    ("h264", "conformance"),
-    ("hevc", "conformance"),
-    ("isobmff", "oracle_demux"),
-    ("matroska", "oracle"),
-    ("prores", "oracle_decode"),
-    ("dnx", "oracle_decode"),
-    ("codecs", "mxf_oracle"),
-    ("codecs", "mpeg_oracle"),
-    ("mpeg2v", "oracle"),
-    ("ac3", "oracle"),
-    ("mpa", "oracle"),
-    ("codecs", "ogg_oracle"),
+fn served_path(root: &std::path::Path, request_path: &str) -> std::path::PathBuf {
+    use std::path::Component;
+    if request_path == "/" {
+        return root.join("index.html");
+    }
+    let repeated_root = request_path.starts_with("//");
+    let raw = request_path.strip_prefix('/').unwrap_or(request_path);
+    let relative = std::path::Path::new(raw);
+    let windows_prefix = raw.contains('\\') || raw.split('/').next().is_some_and(|part| part.ends_with(':'));
+    if !repeated_root && !windows_prefix && relative.components().all(|part| matches!(part, Component::Normal(_))) {
+        root.join(relative)
+    } else {
+        // A path that cannot name a child of the document root deliberately misses.
+        root.join(".invalid-request-path")
+    }
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::served_path;
+    use std::path::Path;
+
+    #[test]
+    fn preview_paths_cannot_escape_the_document_root() {
+        let root = Path::new("/dist");
+        assert_eq!(served_path(root, "/"), root.join("index.html"));
+        assert_eq!(served_path(root, "/assets/app.js"), root.join("assets/app.js"));
+        for hostile in ["/../etc/passwd", "//etc/passwd", "/a/../../etc/passwd", r"C:\\Windows\\win.ini"] {
+            assert_eq!(served_path(root, hostile), root.join(".invalid-request-path"));
+        }
+    }
+}
+
+/// (crate, test target, test) whose ignored test builds that crate's fixture matrix.
+const FIXTURE_GENERATORS: &[(&str, &str, &str)] = &[
+    ("h264", "it", "conformance::generate_fixtures"),
+    ("hevc", "it", "conformance::generate_fixtures"),
+    ("isobmff", "it", "oracle_demux::generate_fixtures"),
+    ("matroska", "oracle", "generate_fixtures"),
+    ("prores", "it", "oracle_decode::generate_fixtures"),
+    ("dnx", "it", "oracle_decode::generate_fixtures"),
+    ("codecs", "it", "mxf_oracle::generate_fixtures"),
+    ("codecs", "it", "mpeg_oracle::generate_fixtures"),
+    ("mpeg2v", "it", "oracle::generate_fixtures"),
+    ("codecs", "it", "ogg_oracle::generate_fixtures"),
 ];
 
 fn fixtures(only: &[String]) -> Result<(), String> {
-    let unknown: Vec<&String> = only.iter().filter(|o| !FIXTURE_GENERATORS.iter().any(|(c, _)| *c == short(o))).collect();
+    let unknown: Vec<&String> = only.iter().filter(|o| !FIXTURE_GENERATORS.iter().any(|(c, _, _)| *c == short(o))).collect();
     if !unknown.is_empty() {
-        let known: Vec<&str> = FIXTURE_GENERATORS.iter().map(|(c, _)| *c).collect();
+        let known: Vec<&str> = FIXTURE_GENERATORS.iter().map(|(c, _, _)| *c).collect();
         return Err(format!("no fixture generator for {unknown:?} (known: {})", known.join(", ")));
     }
     let Some(ff) = filmcraft_testkit::ffmpeg() else {
@@ -429,11 +471,11 @@ fn fixtures(only: &[String]) -> Result<(), String> {
     println!("fixtures: {}", filmcraft_testkit::fixtures::fixtures_root().display());
     let (mut made, mut cached, mut skipped) = (0, 0, 0);
     let mut failed = Vec::new();
-    for (krate, target) in FIXTURE_GENERATORS.iter().filter(|(c, _)| only.is_empty() || only.iter().any(|o| short(o) == *c)) {
+    for (krate, target, test) in FIXTURE_GENERATORS.iter().filter(|(c, _, _)| only.is_empty() || only.iter().any(|o| short(o) == *c)) {
         let pkg = format!("filmcraft-{krate}");
-        println!("\n== {pkg} ({target})");
+        println!("\n== {pkg} ({test})");
         let mut cmd = Command::new(env!("CARGO"));
-        cmd.args(["test", "--release", "-p", &pkg, "--test", target, "--", "--ignored", "--exact", "generate_fixtures", "--nocapture"]);
+        cmd.args(["test", "--release", "-p", &pkg, "--test", target, "--", "--ignored", "--exact", test, "--nocapture"]);
         cmd.stderr(std::process::Stdio::inherit());
         let out = cmd.output().map_err(|e| e.to_string())?;
         for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -456,11 +498,41 @@ fn fixtures(only: &[String]) -> Result<(), String> {
 fn ci() -> Result<(), String> {
     let cargo = env!("CARGO");
     run(Command::new(cargo).args(["fmt", "--check"]))?;
-    run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
-    run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
+    run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))?;
+    let tested = tests();
+    i18n_report(true);
+    tested?;
     layers()?;
     assets()?;
     wasm()
+}
+
+/// Lib, bin and integration tests (examples aren't linked; clippy checked them), then doctests,
+/// which nextest doesn't run.
+fn tests() -> Result<(), String> {
+    let cargo = env!("CARGO");
+    let targets = ["--workspace", "--lib", "--bins", "--tests", "--no-fail-fast"];
+    let nextest = Command::new(cargo).args(["nextest", "--version"]).output().is_ok_and(|o| o.status.success());
+    if nextest {
+        run(Command::new(cargo).args(["nextest", "run"]).args(targets))?;
+    } else {
+        println!("cargo-nextest not found, running cargo test (install: cargo install cargo-nextest --locked)");
+        run(Command::new(cargo).arg("test").args(targets))?;
+    }
+    run(Command::new(cargo).args(["test", "--workspace", "--doc"]))
+}
+
+/// The missing-translations report (`i18n::tests::missing_translations_report` in
+/// `filmcraft-ui-egui`), printed to the log. A missing translation never fails a build, so
+/// neither does this. After `tests`, `workspace` selects the packages and targets the test run
+/// did, so it reuses that build: `-p filmcraft-ui-egui --lib` alone resolves features differently
+/// and recompiled for about 3 minutes.
+fn i18n_report(workspace: bool) {
+    let selection: &[&str] = if workspace { &["--workspace", "--lib", "--bins", "--tests"] } else { &["-p", "filmcraft-ui-egui", "--lib"] };
+    let filter = ["--", "--exact", "i18n::tests::missing_translations_report", "--nocapture"];
+    if let Err(e) = run(Command::new(env!("CARGO")).arg("test").args(selection).args(filter)) {
+        eprintln!("i18n report not printed: {e}");
+    }
 }
 
 /// The headless playback benchmark (`crates/ui-egui/examples/bench_playback.rs`); extra
@@ -491,6 +563,10 @@ fn main() -> ExitCode {
         "assets" => assets(),
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
+        "i18n-report" => {
+            i18n_report(false);
+            Ok(())
+        }
         "bench" => bench(),
         "bench-playback" => bench_playback(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),

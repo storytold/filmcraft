@@ -37,6 +37,23 @@ pub const CONTEXT: usize = 4;
 pub const MIN_PIECE_BEATS: usize = 4;
 /// Crossfade at each joint (seconds).
 pub const XFADE_S: f64 = 0.02;
+/// Long enough for a complete music cue while bounding the audio decoded and analysed by Remix.
+pub const MAX_ANALYSIS_SECONDS: u64 = 10 * 60;
+/// A dense similarity matrix is useful for planning, but must remain a bounded allocation.
+const MAX_SIMILARITY_CELLS: usize = 4_000_000;
+/// Remix analysis supports ordinary production and high-resolution audio rates, not arbitrary
+/// integers supplied through a public library API.
+pub const MAX_ANALYSIS_SAMPLE_RATE: u32 = 384_000;
+/// Most pieces a plan may have. A planned remix has a handful of joints (a few hundred for a very
+/// long extension); a stored plan with more is damaged or hostile.
+pub const MAX_PIECES: usize = 65_536;
+/// The longest a project may run, in seconds, rounded up: `Tick::MAX` (`i64::MAX / 4` ticks at 254 016 000 000
+/// ticks/s) is 9.08 million seconds. (This crate has no dependencies, so the figure is repeated here.)
+const MAX_PROJECT_SECONDS: i64 = 9_100_000;
+/// Most output samples a plan may describe: the longest project at the highest rate remix supports, so no
+/// valid plan reaches it. A render reads at most two pieces per output sample it produces, so the work of
+/// rendering a playable plan is bounded by its output samples, whatever the piece count.
+pub const MAX_OUTPUT_SAMPLES: i64 = MAX_ANALYSIS_SAMPLE_RATE as i64 * MAX_PROJECT_SECONDS;
 
 /// One piece of the output: `len` samples read from the source at `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +94,37 @@ impl Plan {
     /// The source positions each joint cuts at: (end of the outgoing piece, start of the incoming one).
     pub fn cuts(&self) -> Vec<(i64, i64)> {
         self.pieces.windows(2).map(|w| (w[0].src + w[0].len, w[1].src)).collect()
+    }
+    /// Whether playback can follow this plan with bounded work: at most [`MAX_PIECES`] pieces and [`MAX_OUTPUT_SAMPLES`] output samples, a
+    /// non-negative crossfade, non-negative lengths, and, when there are joints, every piece at
+    /// least as long as the crossfade and non-empty. Then no more than two pieces contribute to any
+    /// output sample, and every position [`render`] computes fits in `i64`.
+    pub fn is_playable(&self) -> bool {
+        self.is_playable_within(MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Self::is_playable`] with the output limit in the plan's own units: a plan stored in ticks
+    /// (see `filmcraft-render`'s `Remix`) passes the project's longest duration in ticks instead.
+    pub fn is_playable_within(&self, max_output: i64) -> bool {
+        if self.pieces.is_empty() || self.pieces.len() > MAX_PIECES || self.xfade < 0 {
+            return false;
+        }
+        let joined = self.pieces.len() > 1;
+        let x = self.xfade;
+        let mut total = 0i64;
+        for p in &self.pieces {
+            if p.len < 0 || (joined && (p.len == 0 || p.len < x)) {
+                return false;
+            }
+            // render reads from `src − xfade/2` to `src + len + xfade/2`
+            if p.src.checked_sub(x).is_none() || p.src.checked_add(p.len).and_then(|e| e.checked_add(x)).is_none() {
+                return false;
+            }
+            match total.checked_add(p.len) {
+                Some(t) if t <= max_output => total = t,
+                _ => return false,
+            }
+        }
+        total.checked_add(x).is_some()
     }
 }
 
@@ -139,6 +187,12 @@ impl Analysis {
 /// Why music cannot be remixed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemixError {
+    /// The source sample rate is zero or above the supported analysis limit.
+    InvalidSampleRate,
+    /// The source would exceed the bounded Remix analysis duration.
+    TooLong,
+    /// The detected beat grid would need too much similarity storage or work.
+    TooComplex,
     /// Not enough rhythmic content to find a beat (silence, noise, speech).
     NoBeat,
     /// The source has fewer beats than a remix needs.
@@ -150,6 +204,9 @@ pub enum RemixError {
 impl std::fmt::Display for RemixError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            RemixError::InvalidSampleRate => "the audio sample rate is not supported for remix analysis",
+            RemixError::TooLong => "the music is too long to remix",
+            RemixError::TooComplex => "the music has too many beats to remix",
             RemixError::NoBeat => "no beat found in the audio",
             RemixError::TooShort => "the music is too short to remix",
             RemixError::TargetTooShort => "the target duration is too short for this music",
@@ -188,7 +245,8 @@ fn stft_mag(x: &[f32], n: usize, hop: usize) -> Vec<Vec<f32>> {
 /// STFT frame for the onset envelope: the power of two nearest to 46 ms (1024 at 22.05 kHz, 2048
 /// at 44.1/48 kHz).
 fn onset_frame(sr: u32) -> usize {
-    let n = (sr as f64 * 0.046).max(256.0);
+    // `onset_envelope` is public on its own, so it must remain bounded even outside `analyze`.
+    let n = (sr.min(MAX_ANALYSIS_SAMPLE_RATE) as f64 * 0.046).max(256.0);
     1usize << n.log2().round() as u32
 }
 
@@ -292,6 +350,48 @@ fn mel_to_hz(m: f64) -> f64 {
     700.0 * (10f64.powf(m / 2595.0) - 1.0)
 }
 
+/// Mel bands of the cepstra.
+const BANDS: usize = 26;
+
+/// Triangular mel filterbank (26 bands, 30 Hz … min(8 kHz, Nyquist)) for an `n`-point STFT: per
+/// band, the bins it covers with their weights, in increasing bin order. Every other bin has
+/// weight 0 in that band.
+fn mel_weights(sr: u32, n: usize) -> Vec<Vec<(usize, f64)>> {
+    let hz = |k: usize| k as f64 * sr as f64 / n as f64;
+    let fmax = (sr as f64 / 2.0).min(8000.0);
+    let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
+    let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+    (0..BANDS)
+        .map(|b| {
+            let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
+            (0..n / 2 + 1)
+                .filter_map(|k| {
+                    let f = hz(k);
+                    if f > l && f < cn {
+                        Some((k, (f - l) / (cn - l)))
+                    } else if f >= cn && f < r {
+                        Some((k, (r - f) / (r - cn)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Mel band energies of one magnitude spectrum.
+fn mel_bands(mel: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
+    let mut band = [0f64; BANDS];
+    for (e, weights) in band.iter_mut().zip(mel) {
+        for &(k, w) in weights {
+            let v = mag[k];
+            *e += w * (v as f64) * (v as f64);
+        }
+    }
+    band
+}
+
 /// Per-beat chroma (12) and cepstra (12) from a 4× larger STFT.
 fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
     let n = (onset_frame(sr) * 2).max(1024);
@@ -306,11 +406,7 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
             (55.0..=5000.0).contains(&f).then(|| (((12.0 * (f / 440.0).log2()).round() as i64 + 9).rem_euclid(12)) as usize)
         })
         .collect();
-    // mel filterbank (26 bands, 30 Hz … min(8 kHz, Nyquist))
-    const BANDS: usize = 26;
-    let fmax = (sr as f64 / 2.0).min(8000.0);
-    let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
-    let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+    let mel = mel_weights(sr, n);
     let mut frame_chroma = Vec::with_capacity(mags.len());
     let mut frame_cep = Vec::with_capacity(mags.len());
     for m in &mags {
@@ -321,21 +417,7 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
             }
         }
         frame_chroma.push(c);
-        let mut band = [0f64; BANDS];
-        for (b, e) in band.iter_mut().enumerate() {
-            let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
-            for (k, v) in m.iter().enumerate() {
-                let f = hz(k);
-                let w = if f > l && f < cn {
-                    (f - l) / (cn - l)
-                } else if f >= cn && f < r {
-                    (r - f) / (r - cn)
-                } else {
-                    0.0
-                };
-                *e += w * (*v as f64) * (*v as f64);
-            }
-        }
+        let band = mel_bands(&mel, m);
         let lb: Vec<f64> = band.iter().map(|e| (e + 1e-10).ln()).collect();
         let mut cep = [0f32; 12];
         for (q, c) in cep.iter_mut().enumerate() {
@@ -344,31 +426,34 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
         }
         frame_cep.push(cep);
     }
-    let mut chroma = Vec::with_capacity(beats.len());
-    let mut cep = Vec::with_capacity(beats.len());
+    // Frames and beats are both ordered. Assign every frame once instead of scanning the entire
+    // feature timeline for every beat interval.
+    let mut chroma = vec![[0f32; 12]; beats.len()];
+    let mut cep = vec![[0f32; 12]; beats.len()];
+    let mut counts = vec![0f32; beats.len()];
     let end = x.len() as i64;
-    for (i, &b) in beats.iter().enumerate() {
-        let e = beats.get(i + 1).copied().unwrap_or(end);
-        let (mut c, mut q, mut cnt) = ([0f32; 12], [0f32; 12], 0f32);
-        for (t, (fc, fq)) in frame_chroma.iter().zip(&frame_cep).enumerate() {
-            let centre = (t * hop + n / 2) as i64;
-            if centre >= b && centre < e {
-                for k in 0..12 {
-                    c[k] += fc[k];
-                    q[k] += fq[k];
-                }
-                cnt += 1.0;
-            }
+    let mut beat = 0;
+    for (t, (fc, fq)) in frame_chroma.iter().zip(&frame_cep).enumerate() {
+        let centre = (t * hop + n / 2) as i64;
+        while beat + 1 < beats.len() && centre >= beats[beat + 1] {
+            beat += 1;
         }
-        if cnt > 0.0 {
-            q.iter_mut().for_each(|v| *v /= cnt);
+        if centre >= beats[beat] && centre < end {
+            for k in 0..12 {
+                chroma[beat][k] += fc[k];
+                cep[beat][k] += fq[k];
+            }
+            counts[beat] += 1.0;
+        }
+    }
+    for ((c, q), count) in chroma.iter_mut().zip(&mut cep).zip(counts) {
+        if count > 0.0 {
+            q.iter_mut().for_each(|v| *v /= count);
         }
         let norm = c.iter().map(|v| v * v).sum::<f32>().sqrt();
         if norm > 0.0 {
             c.iter_mut().for_each(|v| *v /= norm);
         }
-        chroma.push(c);
-        cep.push(q);
     }
     // z-score the cepstra across beats
     let m = cep.len().max(1) as f32;
@@ -380,11 +465,32 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
     (chroma, cep)
 }
 
-fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
+fn similarity_cells(beats: usize) -> Result<usize, RemixError> {
+    beats.checked_mul(beats).filter(|&n| n <= MAX_SIMILARITY_CELLS).ok_or(RemixError::TooComplex)
+}
+
+fn norm(a: &[f32; 12]) -> f32 {
+    a.iter().map(|v| v * v).sum::<f32>().sqrt()
+}
+
+/// Cosine similarity of `a` and `b`, given their norms.
+fn cos(a: &[f32; 12], na: f32, b: &[f32; 12], nb: f32) -> f32 {
     let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
-    let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
     if na > 0.0 && nb > 0.0 { d / (na * nb) } else { 0.0 }
+}
+
+/// Fills the beat self-similarity matrix `sim` (`m²`, row-major, symmetric).
+fn fill_similarity(sim: &mut [f32], chroma: &[[f32; 12]], cep: &[[f32; 12]]) {
+    let m = chroma.len();
+    let chroma_norm: Vec<f32> = chroma.iter().map(norm).collect();
+    let cep_norm: Vec<f32> = cep.iter().map(norm).collect();
+    for i in 0..m {
+        for j in i..m {
+            let s = 0.6 * cos(&chroma[i], chroma_norm[i], &chroma[j], chroma_norm[j]) + 0.4 * (1.0 + cos(&cep[i], cep_norm[i], &cep[j], cep_norm[j])) * 0.5;
+            sim[i * m + j] = s;
+            sim[j * m + i] = s;
+        }
+    }
 }
 
 /// How far [`Analysis::beats`] sit before the attack of each beat (half a crossfade), samples.
@@ -398,7 +504,13 @@ fn local_max(env: &[f32], t: usize, r: usize) -> f32 {
 
 /// Analyse planar audio (channels are summed to mono).
 pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
+    if sample_rate == 0 || sample_rate > MAX_ANALYSIS_SAMPLE_RATE {
+        return Err(RemixError::InvalidSampleRate);
+    }
     let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
+    if (len as u64) > u64::from(sample_rate).saturating_mul(MAX_ANALYSIS_SECONDS) {
+        return Err(RemixError::TooLong);
+    }
     let k = 1.0 / channels.len().max(1) as f32;
     let mono: Vec<f32> = (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect();
     let (env, n, hop) = onset_envelope(&mono, sample_rate);
@@ -434,17 +546,17 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     }
     let (chroma, cep) = beat_features(&mono, sample_rate, &beats);
     let m = beats.len();
-    let mut sim = vec![0f32; m * m];
-    for i in 0..m {
-        for j in 0..m {
-            sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
-        }
-    }
+    let mut sim = vec![0f32; similarity_cells(m)?];
+    fill_similarity(&mut sim, &chroma, &cep);
     let period_s = period * hop as f64;
     Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
 }
 
 // ------------------------------------------------------------------------------------- planning
+
+/// Most joints a plan may use. Extending a short source to a long target adds joints until each
+/// jump fits, which a degenerate source (a tiny span between the intro and outro) never satisfies.
+const MAX_PLAN_JOINTS: usize = 1024;
 
 /// Number of joints the Segments slider asks for.
 pub fn joints_for(segments: f64) -> usize {
@@ -455,12 +567,16 @@ pub fn joints_for(segments: f64) -> usize {
 pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixError> {
     let xfade = (XFADE_S * a.sample_rate as f64).round() as i64;
     let len = a.len;
+    let b = &a.beats;
+    let m = b.len();
+    // an invalid analysis is refused before the period is used for the identity check
+    if m < 2 || !a.period.is_finite() || a.period <= 0.0 {
+        return Err(RemixError::TooShort);
+    }
     let half = (a.period / 2.0) as i64;
     if (target - len).abs() <= half {
         return Ok(Plan::identity(len, xfade));
     }
-    let b = &a.beats;
-    let m = b.len();
     let min_piece = (MIN_PIECE_BEATS as f64 * a.period) as i64;
     if target < 2 * min_piece {
         return Err(RemixError::TargetTooShort);
@@ -474,7 +590,7 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
     // a backwards jump can span at most the music between the intro and outro pieces
     if target > len {
         let max_span = (len - 2 * min_piece).max(a.period as i64);
-        while ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
+        while k < MAX_PLAN_JOINTS && ((target - len) as f64 / k as f64) > max_span as f64 * 0.9 && (target / (k as i64 + 2)) >= min_piece {
             k += 1;
         }
     }
@@ -559,6 +675,10 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
 /// gains; the result does not depend on how the output is cut into requests.
 pub fn render(plan: &Plan, out0: i64, n: usize, channels: usize, read: &mut dyn FnMut(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0f32; n]; channels];
+    // a plan that would stack many pieces on the same output (or overflow its positions) plays silence
+    if !plan.is_playable() || out0.checked_add(n as i64).is_none() {
+        return out;
+    }
     let x = plan.xfade.max(0);
     let h0 = x / 2;
     let h1 = x - h0;
@@ -611,21 +731,31 @@ impl Plan {
         }
         s
     }
+    /// Parses [`Plan::to_text`]; `None` unless the plan [is playable](Plan::is_playable).
     pub fn from_text(s: &str) -> Option<Plan> {
+        Plan::from_text_within(s, MAX_OUTPUT_SAMPLES)
+    }
+    /// [`Plan::from_text`] with the output limit in the stored plan's units (see [`Plan::is_playable_within`]).
+    pub fn from_text_within(s: &str, max_output: i64) -> Option<Plan> {
         let mut it = s.split(';');
         let xfade = it.next()?.trim().parse().ok()?;
         let mut pieces = Vec::new();
         for p in it {
+            if pieces.len() >= MAX_PIECES {
+                return None;
+            }
             let (a, b) = p.split_once(',')?;
             pieces.push(Piece { src: a.trim().parse().ok()?, len: b.trim().parse().ok()? });
         }
-        (!pieces.is_empty()).then_some(Plan { pieces, xfade })
+        let plan = Plan { pieces, xfade };
+        plan.is_playable_within(max_output).then_some(plan)
     }
 }
 
 /// Generated rhythmic test music: drums on every beat, a bass note per beat and a chord pad per
 /// bar following `sections` of four-bar progressions. Returns stereo planar audio and the true
-/// beat positions (samples). Used by tests here and in the engine.
+/// beat positions (samples). Used by tests here, in the engine and in the UI.
+#[cfg(any(test, feature = "test-util"))]
 pub fn test_music(sr: u32, bpm: f64, bars: usize, seed: u32) -> (Vec<Vec<f32>>, Vec<i64>) {
     let beat = sr as f64 * 60.0 / bpm;
     let n = (bars as f64 * 4.0 * beat).round() as usize;
@@ -753,6 +883,7 @@ mod tests {
                         assert!(a.beats.contains(&out_end), "cut out at {out_end} is not a beat");
                         assert!(a.beats.contains(&in_start), "cut in at {in_start} is not a beat");
                     }
+                    assert!(p.is_playable(), "planned remix must survive a save and reload: {p:?}");
                     for pc in &p.pieces {
                         assert!(pc.len >= (MIN_PIECE_BEATS as f64 * a.period) as i64 - 2, "piece too short: {pc:?}");
                     }
@@ -794,6 +925,39 @@ mod tests {
             })
             .collect();
         assert!(analyze(&[&noise], SR).is_err());
+    }
+
+    #[test]
+    fn analysis_duration_and_similarity_storage_are_bounded() {
+        let too_long = vec![0.0; MAX_ANALYSIS_SECONDS as usize + 1];
+        assert_eq!(analyze(&[&too_long], 1), Err(RemixError::TooLong));
+        assert_eq!(similarity_cells(2_000), Ok(4_000_000));
+        assert_eq!(similarity_cells(2_001), Err(RemixError::TooComplex));
+    }
+
+    #[test]
+    fn planning_a_huge_target_from_a_tiny_source_terminates() {
+        let beats: Vec<i64> = (0..24).map(|i| i * 10).collect();
+        let m = beats.len();
+        let a = Analysis { sample_rate: 48_000, len: 240, beats, period: 10.0, bpm: 0.0, sim: vec![0.0; m * m] };
+        // 2^50 samples would need ~2^43 joints: the plan gives up at its joint limit instead
+        let _ = plan(&a, 1 << 50, Params::default());
+        // degenerate analyses are refused, not indexed
+        let empty = Analysis { beats: Vec::new(), sim: Vec::new(), ..a.clone() };
+        assert_eq!(plan(&empty, 100_000, Params::default()), Err(RemixError::TooShort));
+        let zero_period = Analysis { period: 0.0, ..a.clone() };
+        assert_eq!(plan(&zero_period, 100_000, Params::default()), Err(RemixError::TooShort));
+        // an infinite period must not turn a far target into an identity plan
+        let inf_period = Analysis { period: f64::INFINITY, ..a };
+        assert_eq!(plan(&inf_period, 100_000, Params::default()), Err(RemixError::TooShort));
+    }
+
+    #[test]
+    fn public_analysis_rate_is_bounded_before_fft_planning() {
+        assert_eq!(analyze(&[], 0), Err(RemixError::InvalidSampleRate));
+        assert_eq!(analyze(&[], u32::MAX), Err(RemixError::InvalidSampleRate));
+        let (_, n, _) = onset_envelope(&[], u32::MAX);
+        assert!(n <= onset_frame(MAX_ANALYSIS_SAMPLE_RATE));
     }
 
     #[test]
@@ -850,10 +1014,115 @@ mod tests {
         }
     }
 
+    /// The mel bands and similarity matrix as computed before the sparse filterbank and the
+    /// precomputed norms.
+    fn reference_bands(x: &[f32], sr: u32) -> Vec<[f64; BANDS]> {
+        let n = (onset_frame(sr) * 2).max(1024);
+        let hz = |k: usize| k as f64 * sr as f64 / n as f64;
+        let fmax = (sr as f64 / 2.0).min(8000.0);
+        let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
+        let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+        stft_mag(x, n, n / 2)
+            .iter()
+            .map(|m| {
+                let mut band = [0f64; BANDS];
+                for (b, e) in band.iter_mut().enumerate() {
+                    let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
+                    for (k, v) in m.iter().enumerate() {
+                        let f = hz(k);
+                        let w = if f > l && f < cn {
+                            (f - l) / (cn - l)
+                        } else if f >= cn && f < r {
+                            (r - f) / (r - cn)
+                        } else {
+                            0.0
+                        };
+                        *e += w * (*v as f64) * (*v as f64);
+                    }
+                }
+                band
+            })
+            .collect()
+    }
+
+    fn reference_similarity(chroma: &[[f32; 12]], cep: &[[f32; 12]]) -> Vec<f32> {
+        fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
+            let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if na > 0.0 && nb > 0.0 { d / (na * nb) } else { 0.0 }
+        }
+        let m = chroma.len();
+        let mut sim = vec![0f32; m * m];
+        for i in 0..m {
+            for j in 0..m {
+                sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
+            }
+        }
+        sim
+    }
+
+    #[test]
+    fn sparse_mel_bands_and_symmetric_similarity_are_bit_identical() {
+        for sr in [8_000, 11_025, 22_050, 44_100, 48_000, 96_000] {
+            let (m, truth) = test_music(sr, 120.0, 8, 3);
+            let x = &m[0];
+            let n = (onset_frame(sr) * 2).max(1024);
+            let mel = mel_weights(sr, n);
+            let mags = stft_mag(x, n, n / 2);
+            let want = reference_bands(x, sr);
+            assert_eq!(mags.len(), want.len());
+            for (frame, want) in mags.iter().zip(want) {
+                assert_eq!(mel_bands(&mel, frame).map(f64::to_bits), want.map(f64::to_bits), "{sr} Hz");
+            }
+            let (chroma, cep) = beat_features(x, sr, &truth);
+            let mut sim = vec![0f32; chroma.len() * chroma.len()];
+            fill_similarity(&mut sim, &chroma, &cep);
+            let want = reference_similarity(&chroma, &cep);
+            assert_eq!(sim.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{sr} Hz");
+        }
+        // zero vectors (silent beats) keep their 0 cosine
+        let z = [[0f32; 12]; 3];
+        let mut sim = vec![0f32; 9];
+        fill_similarity(&mut sim, &z, &z);
+        assert_eq!(sim, reference_similarity(&z, &z));
+    }
+
     #[test]
     fn text_roundtrip() {
         let p = Plan { pieces: vec![Piece { src: 0, len: 10 }, Piece { src: 50, len: 7 }], xfade: 3 };
         assert_eq!(Plan::from_text(&p.to_text()), Some(p));
         assert_eq!(Plan::from_text("x"), None);
+    }
+
+    #[test]
+    fn stored_plans_cannot_stack_pieces() {
+        // thousands of empty pieces under one huge crossfade would each read and mix the same window
+        let stacked = format!("1000000000{}", ";0,0".repeat(5000));
+        assert_eq!(Plan::from_text(&stacked), None);
+        // a crossfade longer than a piece lets three pieces overlap
+        assert_eq!(Plan::from_text("10;0,100;200,5;300,100"), None);
+        assert_eq!(Plan::from_text("-1;0,100;200,100"), None);
+        assert_eq!(Plan::from_text("0;0,-5"), None);
+        assert_eq!(Plan::from_text(&format!("0;0,{};0,{}", i64::MAX, i64::MAX)), None);
+        // the output budget counts samples: the longest project at the highest rate fits, one sample more does not
+        assert!(Plan::from_text(&format!("0;0,{}", MAX_OUTPUT_SAMPLES)).is_some());
+        assert_eq!(Plan::from_text(&format!("0;0,{};0,1", MAX_OUTPUT_SAMPLES)), None);
+        assert!(MAX_OUTPUT_SAMPLES as i128 >= 384_000 * (i64::MAX as i128 / 4 / 254_016_000_000));
+        assert_eq!(Plan::from_text(&format!("0;{},1", i64::MAX)), None);
+        let many = format!("0{}", ";0,1".repeat(MAX_PIECES + 1));
+        assert_eq!(Plan::from_text(&many), None);
+        // the identity plan of an empty clip is still a plan
+        assert!(Plan::identity(0, 960).is_playable());
+
+        // render refuses an unvalidated hostile plan instead of reading once per piece
+        let hostile = Plan { pieces: vec![Piece { src: 0, len: 0 }; 5000], xfade: 1_000_000_000 };
+        let mut reads = 0usize;
+        let out = render(&hostile, 0, 512, 2, &mut |_, len| {
+            reads += 1;
+            vec![vec![1.0; len]; 2]
+        });
+        assert_eq!(reads, 0);
+        assert!(out.iter().all(|c| c.len() == 512 && c.iter().all(|&v| v == 0.0)));
     }
 }

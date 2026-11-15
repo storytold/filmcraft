@@ -64,7 +64,7 @@ impl Rig {
             let id = p.add_item(
                 &info.name.clone(),
                 Label::Iris,
-                ItemKind::Media(MediaClip {
+                ItemKind::Media(Box::new(MediaClip {
                     media: MediaRef::File { path: format!("/sig{k}.wav") },
                     info: info.clone(),
                     interpret: Default::default(),
@@ -74,7 +74,7 @@ impl Rig {
                     offline: false,
                     proxy: None,
                     identity: None,
-                }),
+                })),
                 None,
             );
             map.0.insert(id, Arc::new(FnSource { info, f: *f, ch }));

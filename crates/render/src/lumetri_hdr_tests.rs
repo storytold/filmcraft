@@ -1,4 +1,4 @@
-//! Lumetri in HDR working spaces (known cd/m² values through PQ and HLG) and HSL Secondary ▸
+//! Color Grading in HDR working spaces (known cd/m² values through PQ and HLG) and HSL Secondary ▸
 //! Refine (Denoise, Blur of the key).
 
 use filmcraft_color::{GradeSpace, REFERENCE_WHITE_NITS, WorkingSpace};
@@ -11,7 +11,7 @@ use crate::effects::{FxCtx, apply};
 const RW: f32 = REFERENCE_WHITE_NITS as f32;
 
 fn cx(working: WorkingSpace) -> FxCtx<'static> {
-    FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working }
+    FxCtx { t: Tick::ZERO, px_scale: 1.0, mask_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working }
 }
 
 fn lumetri(params: &[(&str, ParamValue)]) -> EffectInstance {

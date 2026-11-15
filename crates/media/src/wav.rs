@@ -115,7 +115,13 @@ impl WavSource {
         let (tag, ch, rate, bits) = fmt.ok_or_else(|| MediaError::Decode(format!("{name}: missing fmt chunk")))?;
         let (off, dlen) = data.ok_or_else(|| MediaError::Decode(format!("{name}: missing data chunk")))?;
         let float = tag == 3;
-        if !(tag == 1 || float) || ch == 0 || !matches!(bits, 8 | 16 | 24 | 32 | 64) {
+        if !(tag == 1 || float)
+            || ch == 0
+            || rate == 0
+            || u32::from(ch) > crate::MAX_AUDIO_CHANNELS
+            || rate > crate::MAX_AUDIO_SAMPLE_RATE
+            || !matches!(bits, 8 | 16 | 24 | 32 | 64)
+        {
             return Err(MediaError::Unsupported(format!("{name}: WAV format tag {tag}, {bits} bits")));
         }
         let frame_bytes = u64::from(ch) * u64::from(bits / 8);
@@ -191,6 +197,7 @@ impl MediaSource for WavSource {
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
         let total = self.frames;
+        crate::validate_audio_buffer_shape(self.channels, frames)?;
         let mut out = AudioBuffer::silence(sample_rate, self.channels, frames);
         if total == 0 || sample_rate == 0 {
             return Ok(out);
@@ -342,5 +349,16 @@ mod tests {
         // a short bext (no TimeReference) is ignored
         let src = WavSource::parse("short.wav", with_chunk(&wav, b"bext", &[0u8; 100]).into()).unwrap();
         assert_eq!(src.time_reference(), None);
+    }
+
+    #[test]
+    fn hostile_header_dimensions_are_rejected_before_publishing_or_reading() {
+        let mut wav = write_wav16(&[0.0; 2], 1, 48_000);
+        // `fmt ` starts at byte 12: channels at +22, rate at +24.
+        wav[22..24].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(WavSource::parse("wide.wav", wav.into()).is_err());
+        let mut wav = write_wav16(&[0.0; 2], 1, 48_000);
+        wav[24..28].copy_from_slice(&(crate::MAX_AUDIO_SAMPLE_RATE + 1).to_le_bytes());
+        assert!(WavSource::parse("fast.wav", wav.into()).is_err());
     }
 }

@@ -84,6 +84,15 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
+    /// Length of the source each finished output was transcoded from (the worker's own copy, filled
+    /// as it goes): a generated proxy is as long as that source, which a project's stored duration
+    /// can overstate.
+    pub source_durations: Arc<Mutex<Vec<(ItemId, Tick)>>>,
+    /// What each item was when the job started: (item, path, stored duration). An output whose item
+    /// has been relinked or refreshed since was made from a different file and is not applied.
+    pub started_from: Vec<(ItemId, String, Tick)>,
+    /// `Session::document_epoch` when the job started: item ids mean something else in another project.
+    pub epoch: u64,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -97,6 +106,25 @@ pub fn transcode(
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
+    transcode_with_file(clip, name, src, range, Dest { path: out, file: None }, preset, progress)
+}
+
+/// Output path, plus the already-open file to write into when the caller holds one.
+struct Dest<'a> {
+    path: &'a str,
+    file: Option<Arc<std::fs::File>>,
+}
+
+fn transcode_with_file(
+    clip: &MediaClip,
+    name: &str,
+    src: SharedSource,
+    range: Option<TimeRange>,
+    dest: Dest<'_>,
+    preset: &Preset,
+    progress: &Progress,
+) -> std::result::Result<Report, String> {
+    let Dest { path: out, file: output_file } = dest;
     let info = &clip.info;
     let rate = clip.frame_rate();
     let mut st = SequenceSettings::default();
@@ -112,11 +140,12 @@ pub fn transcode(
     let mut c = clip.clone();
     c.offline = false;
     c.proxy = None;
-    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(c), None);
+    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(Box::new(c)), None);
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
-    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: info.duration });
+    // the opened source's length, not the project's stored one: a project can claim any duration
+    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: src.info().duration });
     let mut placed = Vec::new();
     if has_v && let Some(ti) = p.make_track_item(item, TrackKind::Video, Tick::ZERO, range, rate) {
         placed.push((TrackKind::Video, ti));
@@ -140,11 +169,69 @@ pub fn transcode(
             as u32,
         part_of_batch: true,
         prores_profile: preset.prores.to_string(),
+        output_file,
         ..Default::default()
     };
     let project = Arc::new(p);
     let provider = move |id: ItemId| (id == item).then(|| src.clone());
     filmcraft_export::export(&project, seq, &settings, &provider, progress).map_err(|e| e.to_string())
+}
+
+/// An output created exclusively while choosing its name. Unless kept after a successful
+/// transcode, dropping it removes only that file (including on a cancelled or rejected job).
+struct ReservedOutput {
+    path: PathBuf,
+    file: Option<Arc<std::fs::File>>,
+    keep: bool,
+}
+
+impl ReservedOutput {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn file(&self) -> Option<Arc<std::fs::File>> {
+        self.file.clone()
+    }
+
+    fn preserve(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for ReservedOutput {
+    fn drop(&mut self) {
+        if !self.keep {
+            // Only our own file goes: a replacement someone put at the path is theirs.
+            let ours = self.file.as_deref().is_none_or(|f| filmcraft_export::path_is_file(&self.path.to_string_lossy(), f));
+            // Release our handle before removal, which is required on Windows.
+            self.file.take();
+            if ours {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
+/// Reserve a numbered output name without following a later replacement of its pathname.
+fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[String]) -> Result<ReservedOutput> {
+    std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { format!("{stem}{suffix}.{ext}") } else { format!("{stem}{suffix} {n}.{ext}") };
+        let path = dir.join(name);
+        if taken.contains(&path.to_string_lossy().into_owned()) {
+            n += 1;
+            continue;
+        }
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                return Ok(ReservedOutput { path, file: Some(Arc::new(file)), keep: false });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(EngineError::Other(format!("{}: {e}", path.display()))),
+        }
+    }
 }
 
 /// Frames a transcode of `clip` will write (for progress totals).
@@ -160,7 +247,8 @@ pub fn unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[Str
     loop {
         let name = if n == 1 { format!("{stem}{suffix}.{ext}") } else { format!("{stem}{suffix} {n}.{ext}") };
         let p = dir.join(name);
-        if !p.exists() && !taken.contains(&p.to_string_lossy().into_owned()) {
+        // a dangling symbolic link is taken too: writing through it would create the file where it points
+        if std::fs::symlink_metadata(&p).is_err() && !taken.contains(&p.to_string_lossy().into_owned()) {
             return p;
         }
         n += 1;
@@ -184,44 +272,66 @@ fn items_param(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Start a background transcode job over `work` (item, output path, preset). Returns the job id.
-pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
+fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
     let mut tasks = Vec::new();
     let mut total = 0;
-    for (item, out, pr) in work {
-        let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
+    let mut started_from = Vec::new();
+    for (item, output, pr) in work {
+        let (clip, path, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
         let src = s.media.full_res_source(&s.project, item, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: no source")))?;
         if s.media.offline_status(item).is_some() {
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
-        total += frame_count(&clip, None);
-        tasks.push((item, clip, name, src, out, pr));
+        let source_duration = src.info().duration;
+        total += frame_count(&clip, Some(TimeRange { start: Tick::ZERO, duration: source_duration }));
+        started_from.push((item, path, clip.info.duration));
+        tasks.push((item, clip, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
-    let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
+    let source_durations: Arc<Mutex<Vec<(ItemId, Tick)>>> = Arc::default();
+    let (prog, res, outs, durs) = (job.progress.clone(), job.result.clone(), outputs.clone(), source_durations.clone());
+    // Media jobs run one after another, in the order they were started (#1831); the browser has no
+    // threads to wait on, and runs each job where it is started.
+    #[cfg(not(target_arch = "wasm32"))]
+    let ticket = {
+        let ahead = crate::media_queue::MEDIA_JOBS.ahead();
+        if ahead > 0 {
+            *job.progress.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Waiting for {ahead} earlier job{}", if ahead == 1 { "" } else { "s" });
+        }
+        crate::media_queue::MEDIA_JOBS.ticket()
+    };
+    let (pool, project, services) = (s.media.clone(), s.project.clone(), s.services.clone());
     let run = move || {
+        // a job cancelled while it waits raises the same flag the loop below checks
+        #[cfg(not(target_arch = "wasm32"))]
+        ticket.wait(&prog.cancel);
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
         let n = tasks.len();
-        for (k, (item, clip, name, src, out, pr)) in tasks.into_iter().enumerate() {
+        for (k, (item, clip, name, src, mut output, pr)) in tasks.into_iter().enumerate() {
             if prog.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 err = Some("cancelled".to_string());
                 break;
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{name} ({} of {n})", k + 1);
-            if let Some(d) = Path::new(&out).parent() {
-                let _ = std::fs::create_dir_all(d);
-            }
-            match transcode(&clip, &name, src, None, &out, pr, &prog) {
+            let out = output.path().to_string_lossy().into_owned();
+            // its own copy of the file, opened here rather than on the main thread, so the
+            // monitors keep their decoder
+            let src = pool.own_source(&project, item, &*services).unwrap_or(src);
+            // the length of the file actually transcoded: the cached source may be an older read of it
+            let source_duration = src.info().duration;
+            match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
+                    output.preserve();
+                    durs.lock().unwrap_or_else(|e| e.into_inner()).push((item, source_duration));
                     outs.lock().unwrap_or_else(|e| e.into_inner()).push((item, out));
                 }
                 Err(e) => {
-                    let _ = std::fs::remove_file(&out);
                     err = Some(format!("{name}: {e}"));
                     break;
                 }
@@ -234,7 +344,7 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
                 *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
                 Err(e)
             }
-            None => Ok(Report { path: String::new(), frames, seconds: secs, bytes, render_fps: frames as f64 / secs.max(1e-6), extra_files: Vec::new() }),
+            None => Ok(Report { path: String::new(), frames, seconds: secs, bytes, render_fps: frames as f64 / secs.max(1e-6), ..Default::default() }),
         };
         *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = match &r {
             Ok(_) => format!("Done in {secs:.1}s"),
@@ -245,7 +355,7 @@ pub fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, String, &'st
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations, started_from, epoch: s.document_epoch });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -268,11 +378,24 @@ pub fn poll(s: &mut Session) {
     for i in finished.into_iter().rev() {
         let pj = s.media_jobs.remove(i);
         let outs = std::mem::take(&mut *pj.outputs.lock().unwrap_or_else(|e| e.into_inner()));
+        let source_durations = std::mem::take(&mut *pj.source_durations.lock().unwrap_or_else(|e| e.into_inner()));
+        if pj.epoch != s.document_epoch {
+            // the project was replaced under the job: its ids may now name unrelated items
+            if !outs.is_empty() {
+                s.error_toast("job", "the project was replaced; the media copies were not applied");
+            }
+            continue;
+        }
+        let (outs, changed): (Vec<_>, Vec<_>) = outs.into_iter().partition(|(item, _)| unchanged_since_start(&s.project, *item, &pj.started_from));
+        for (item, _) in &changed {
+            let name = s.project.item(*item).map_or_else(|| format!("item {}", item.0), |i| i.name.clone());
+            s.error_toast("job", format!("{name} changed while its copy was made; the copy was not applied"));
+        }
         if outs.is_empty() {
             continue;
         }
         let r = match pj.on_done {
-            OnDone::AttachProxies => attach(s, &outs, false).map(|_| ()),
+            OnDone::AttachProxies => attach_checked(s, &outs, false, &source_durations).map(|_| ()),
             OnDone::ReplaceMedia => replace_media(s, &outs),
             OnDone::Nothing => Ok(()),
         };
@@ -282,18 +405,26 @@ pub fn poll(s: &mut Session) {
     }
 }
 
+/// Whether `item` is still the file (path and stored length) it was when the job started.
+pub(crate) fn unchanged_since_start(p: &Project, item: ItemId, started: &[(ItemId, String, Tick)]) -> bool {
+    let Some((_, path, dur)) = started.iter().find(|(i, ..)| *i == item) else { return true };
+    media_path(p, item).is_some_and(|(clip, now, _)| now == *path && clip.info.duration == *dur)
+}
+
 /// Check a proxy file against its clip: duration within one frame, same frame rate.
-fn check_proxy(s: &Session, item: ItemId, path: &str) -> Result<()> {
+/// `source_duration`: the length a generated proxy has (the opened source's), when known; otherwise the clip's stored duration.
+fn check_proxy(s: &Session, item: ItemId, path: &str, source_duration: Option<Tick>) -> Result<()> {
     let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.attachProxies", format!("item {} is not file media", item.0)))?;
     let src = s.media.open_file(path, &*s.services).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let pi = src.info();
     let fd = clip.info.frame_rate().frame_duration();
-    if (pi.duration - clip.info.duration).0.abs() > fd.0 {
+    let expected = source_duration.unwrap_or(clip.info.duration);
+    if (pi.duration - expected).0.abs() > fd.0 {
         return Err(EngineError::Other(format!(
             "{}: the proxy is {:.3}s long but {name} is {:.3}s",
             Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             pi.duration.seconds(),
-            clip.info.duration.seconds()
+            expected.seconds()
         )));
     }
     if let (Some(a), Some(b)) = (&pi.video, &clip.info.video)
@@ -309,9 +440,14 @@ fn check_proxy(s: &Session, item: ItemId, path: &str) -> Result<()> {
 
 /// Attach proxies (checked unless `force`). One undo step.
 pub fn attach(s: &mut Session, pairs: &[(ItemId, String)], force: bool) -> Result<Value> {
+    attach_checked(s, pairs, force, &[])
+}
+
+/// [`attach`] with the source lengths of generated proxies, which the check uses in place of the stored duration.
+fn attach_checked(s: &mut Session, pairs: &[(ItemId, String)], force: bool, source_durations: &[(ItemId, Tick)]) -> Result<Value> {
     if !force {
         for (i, p) in pairs {
-            check_proxy(s, *i, p)?;
+            check_proxy(s, *i, p, source_durations.iter().find(|(d, _)| d == i).map(|&(_, t)| t))?;
         }
     }
     let pairs = pairs.to_vec();
@@ -371,14 +507,15 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
             }
         };
         let stem = Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
-        let out = unique_path(&proxy_dir(&path, dest.as_deref()), &stem, "_Proxy", pr.extension, &taken).to_string_lossy().into_owned();
+        let output = reserve_unique_path(&proxy_dir(&path, dest.as_deref()), &stem, "_Proxy", pr.extension, &taken)?;
+        let out = output.path().to_string_lossy().into_owned();
         taken.push(out.clone());
-        work.push((i, out, pr));
+        work.push((i, output, pr));
     }
     if work.is_empty() {
         return Err(EngineError::Other(format!("nothing to proxy: {}", skipped.iter().filter_map(|v| v["reason"].as_str()).collect::<Vec<_>>().join("; "))));
     }
-    let outputs: Vec<Value> = work.iter().map(|(i, o, _)| json!({"item": i.0, "path": o})).collect();
+    let outputs: Vec<Value> = work.iter().map(|(i, o, _)| json!({"item": i.0, "path": o.path()})).collect();
     let n = work.len();
     let label = format!("Create Proxies ({n} clip{})", if n == 1 { "" } else { "s" });
     let attach = bool_p(p, "attach").unwrap_or(true);
@@ -442,13 +579,24 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     if !ing.enabled || items.is_empty() {
         return Ok(Value::Null);
     }
+    // Ingest settings travel in a project file. A destination only becomes active after this
+    // machine has chosen it, or when it is safely inside the project folder.
+    let destination = ing
+        .destination
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .and_then(|d| crate::project_tools::trusted_scratch(Some(d), s.path.as_deref(), &s.prefs.auto_save.scratch_folders));
+    if ing.destination.as_deref().is_some_and(|d| !d.is_empty()) && destination.is_none() {
+        s.toast("Ingest: ignoring an untrusted project destination; choose it locally in Ingest Settings to enable copying.");
+        return Ok(json!({"skipped": "untrusted ingest destination"}));
+    }
     let mut copied = Vec::new();
     let copy = matches!(ing.action, IngestAction::Copy | IngestAction::CopyAndCreateProxies);
     if copy {
         for &i in items {
             let Some((_, path, _)) = media_path(&s.project, i) else { continue };
-            let dir = match &ing.destination {
-                Some(d) if !d.is_empty() => PathBuf::from(d),
+            let dir = match &destination {
+                Some(d) => d.clone(),
                 _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
             };
             if Path::new(&path).file_name().is_some_and(|name| Path::new(&path) == dir.join(name)) {
@@ -461,7 +609,7 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     let mut job = Value::Null;
     match ing.action {
         IngestAction::CreateProxies | IngestAction::CopyAndCreateProxies => {
-            let p = json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "preset": if ing.preset.is_empty() { DEFAULT_PROXY_PRESET } else { ing.preset.as_str() }, "destination": ing.destination});
+            let p = json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "preset": if ing.preset.is_empty() { DEFAULT_PROXY_PRESET } else { ing.preset.as_str() }, "destination": destination.as_ref().map(|d| d.to_string_lossy().into_owned())});
             if items.iter().any(|i| s.project.item(*i).and_then(|x| x.as_media()).is_some_and(|m| m.info.video.is_some() && m.info.kind == MediaKind::Movie)) {
                 job = create(s, &p)?;
             }
@@ -476,14 +624,15 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
                 if clip.info.video.is_none() {
                     continue;
                 }
-                let dir = match &ing.destination {
-                    Some(d) if !d.is_empty() => PathBuf::from(d),
+                let dir = match &destination {
+                    Some(d) => d.clone(),
                     _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
                 };
                 let stem = Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
-                let out = unique_path(&dir, &stem, "", pr.extension, &taken).to_string_lossy().into_owned();
+                let output = reserve_unique_path(&dir, &stem, "", pr.extension, &taken)?;
+                let out = output.path().to_string_lossy().into_owned();
                 taken.push(out.clone());
-                work.push((i, out, pr));
+                work.push((i, output, pr));
             }
             if !work.is_empty() {
                 let id = start_job(s, format!("Ingest: transcode {} clip(s)", work.len()), work, OnDone::ReplaceMedia, false)?;
@@ -502,10 +651,11 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Create Proxies…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
-            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half","destination":str?,"attach":bool=true,"wait":bool=false}"#,
+            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half"?,"destination":str?,"attach":bool=true,"wait":bool=false}"#,
             enabled: has_file_media,
             run: create,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.attachProxies",
@@ -525,6 +675,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 attach(s, &pairs, bool_p(p, "force").unwrap_or(false))
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.detachProxies",
@@ -549,6 +700,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"detached": n}))
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.reconnectFullRes",
@@ -568,6 +720,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 crate::relink::relink(s, &q)
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.toggleProxies",
@@ -585,6 +738,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": on, "clipsWithProxies": attached}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.proxyPresets",
@@ -595,6 +749,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default()),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "project.ingestSettings",
@@ -613,6 +768,9 @@ pub fn commands() -> Vec<CommandSpec> {
                 }
                 if let Some(d) = p.get("destination") {
                     ing.destination = d.as_str().filter(|d| !d.is_empty()).map(str::to_string);
+                    if let Some(d) = ing.destination.as_ref() {
+                        crate::project_tools::remember_scratch_folders(s, std::slice::from_ref(d));
+                    }
                 }
                 if let Some(pr) = str_p(p, "preset") {
                     if !pr.is_empty() && preset(pr).is_none() {
@@ -630,6 +788,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(serde_json::to_value(&s.project.settings.ingest).unwrap_or_default())
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

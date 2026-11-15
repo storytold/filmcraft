@@ -1,17 +1,25 @@
-//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw) as media
+//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, Targa, DPX, OpenEXR, Radiance HDR, DNG camera raw, PSD) as media
 //! sources. Animated PNG and GIF files open as movies instead ([`crate::animated`]); here they would
 //! show their first frame.
+//!
+//! JPEG, PNG, WebP and TIFF stills are turned upright by their EXIF Orientation (a phone photo
+//! stored sideways decodes with its size swapped), so everything downstream sees the picture as
+//! the camera meant it. The uncompressed / PackBits YCbCr TIFFs read by our own decoder, DNG and
+//! the other formats ignore it.
 
 use std::sync::Arc;
 
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
+use image::ImageDecoder;
+use image::metadata::Orientation;
 
 use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
 pub mod dng;
 pub mod exr;
 pub mod hdr;
+pub mod psd;
 mod ycbcr_tiff;
 
 /// Default still duration (Premiere's preference default is 5 seconds).
@@ -21,6 +29,7 @@ pub const DEFAULT_STILL_DURATION: Tick = Tick(5 * TICKS_PER_SECOND);
 pub fn sniff(name: &str, b: &[u8]) -> bool {
     crate::dpx::sniff(b)
         || hdr::sniff(b)
+        || psd::sniff(b)
         || crate::tga::sniff(name, b)
         || b.starts_with(b"\x89PNG")
         || b.starts_with(&[0xFF, 0xD8, 0xFF])
@@ -49,14 +58,41 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     if crate::tga::sniff(name, bytes) {
         return crate::tga::decode(name, bytes);
     }
+    if psd::sniff(bytes) {
+        return psd::decode(name, bytes);
+    }
     if ycbcr_tiff::sniff(bytes) {
         return ycbcr_tiff::decode(name, bytes);
     }
-    let img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
+    check_pixel_count(name, bytes)?;
+    let orientation = exif_orientation(bytes);
+    let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
     let has_alpha = img.color().has_alpha();
-    let rgba = img.to_rgba8();
+    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha })
+}
+
+/// Most pixels a decoded still may have: 1 GiB of RGBA, as the other raster decoders allow. The
+/// image crate's own allocation limit covers the native decode only, not the RGBA copy made after it.
+const MAX_PIXELS: u64 = 1 << 28;
+
+/// Refuse a picture whose header (read without decoding pixels) declares more than [`MAX_PIXELS`].
+fn check_pixel_count(name: &str, bytes: &[u8]) -> Result<()> {
+    let dims = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()).map(|d| d.dimensions());
+    match dims {
+        Some((w, h)) if u64::from(w) * u64::from(h) > MAX_PIXELS => Err(MediaError::Unsupported(format!("{name}: picture of {w} x {h} pixels is too large"))),
+        _ => Ok(()),
+    }
+}
+
+/// The EXIF Orientation of a JPEG, PNG, WebP or TIFF, from its headers alone (no pixels are
+/// decoded; the probe's copy of the file is gone before the real decode starts). A missing,
+/// unknown or unreadable value means no transform: a damaged tag never fails an import.
+fn exif_orientation(bytes: &[u8]) -> Orientation {
+    let probe = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?.orientation().ok();
+    probe().unwrap_or(Orientation::NoTransforms)
 }
 
 pub struct StillSource {
@@ -94,6 +130,7 @@ impl StillSource {
                 has_alpha,
                 bitrate: None,
                 hdr: None,
+                color_assumed: None,
             }),
             audio_streams: Vec::new(),
             container: "Image".into(),

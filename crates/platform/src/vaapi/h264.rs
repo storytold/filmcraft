@@ -1,6 +1,6 @@
 //! The H.264 side of the VA-API decoder: everything a stateless hardware decoder needs from the
-//! host, done with the software decoder's own parsers (`filmcraft_h264::params`, `slice`) and its
-//! decoded picture buffer (`filmcraft_h264::dpb`: reference marking, reference lists, output
+//! host, done with the software decoder's own parsers (`craft_video::h264::decode::params`, `slice`) and its
+//! decoded picture buffer (`craft_video::h264::decode::dpb`: reference marking, reference lists, output
 //! order), so both decoders make the same decisions and output the same pictures in the same order.
 //!
 //! [`Front`] parses each access unit, fills the VA-API picture / matrix / slice buffers and hands
@@ -13,11 +13,11 @@
 
 use std::sync::Arc;
 
+use craft_video::h264::decode::dpb::{Dpb, DpbEntry, Output, OutputMeta, RefMark};
+use craft_video::h264::decode::params::{Pps, Sps};
+use craft_video::h264::decode::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, is_new_picture, nal_type};
 use filmcraft_bitstream::{length_prefixed_nals, unescape_rbsp};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result};
-use filmcraft_h264::dpb::{Dpb, DpbEntry, Output, OutputMeta, RefMark};
-use filmcraft_h264::params::{Pps, Sps};
-use filmcraft_h264::slice::{NalHeader, Poc, PocState, SliceHeader, SliceType, is_new_picture, nal_type};
 
 use super::Accel;
 use super::ffi::{self, VAIQMatrixBufferH264, VAPictureH264, VAPictureParameterBufferH264, VASliceParameterBufferH264, pic_bits, seq_bits};
@@ -176,7 +176,7 @@ impl<A: Accel> Front<A> {
         let (ppss, spss) = (&self.ppss, &self.spss);
         let mut found: Option<(Arc<Pps>, Arc<Sps>)> = None;
         let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
-            let missing = |what: String| filmcraft_h264::Error::MissingParameterSet(what);
+            let missing = |what: String| craft_video::h264::decode::Error::MissingParameterSet(what);
             let pps = ppss.get(id as usize).and_then(Option::as_ref).ok_or_else(|| missing(format!("PPS {id}")))?;
             let sps = spss.get(pps.sps_id as usize).and_then(Option::as_ref).ok_or_else(|| missing(format!("SPS {}", pps.sps_id)))?;
             found = Some((pps.clone(), sps.clone()));
@@ -333,7 +333,7 @@ impl<A: Accel> Front<A> {
         let fpoc = if mmco5 { 0 } else { p.poc.frame() };
         let meta = Arc::new(output_meta(&p.sps, p.pts, p.first.idr));
         let mut outs = Vec::new();
-        self.dpb.store_picture(&p.first, surface, fpoc, p.sps.max_frame_num(), p.sps.max_num_ref_frames as usize, meta, &mut outs);
+        self.dpb.store_picture(&p.first, surface, fpoc, (p.sps.max_frame_num(), p.sps.max_num_ref_frames as usize), meta, &mut outs).map_err(decode_err)?;
         self.read_out(outs, frames)
     }
 }

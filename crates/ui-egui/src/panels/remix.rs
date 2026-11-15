@@ -20,7 +20,7 @@ struct Draft {
 }
 
 fn draft_id() -> egui::Id {
-    egui::Id::new("remix-properties-draft")
+    egui::Id::unique("remix-properties-draft")
 }
 
 /// Open the dialog for the selected remixed clip (the menu entry without parameters).
@@ -44,12 +44,12 @@ pub fn is_open(ctx: &egui::Context) -> bool {
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("remix-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("remix-dialog-before-drag"), &mut d);
     let mut close = false;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     egui::Window::new(tl!("Remix Properties"))
-        .id(egui::Id::new("Remix Properties"))
+        .id(egui::Id::unique("Remix Properties"))
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)

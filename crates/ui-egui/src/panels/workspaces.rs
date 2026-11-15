@@ -56,17 +56,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 
 /// Save the current layout as the saved layout of `name`.
 fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
-    crate::dock::Layout { root: app.ui.dock.clone(), floating: app.ui.floating.clone() }.validate()?;
-    let layout = serde_json::to_value(&app.ui.dock).map_err(|e| e.to_string())?;
-    let floating = if app.ui.floating.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&app.ui.floating).map_err(|e| e.to_string())? };
+    let entry = dock::SavedWorkspace::new(name, &app.ui.dock)?;
     let mut next = app.workspaces.clone();
     let saved = &mut next.saved;
     match saved.iter_mut().find(|s| s.name == name) {
-        Some(s) => {
-            s.layout = layout;
-            s.floating = floating;
-        }
-        None => saved.push(dock::SavedWorkspace { name: name.to_string(), layout, floating }),
+        Some(s) => *s = entry,
+        None => saved.push(entry),
     }
     next.current = name.to_string();
     app.set_workspaces(next)
@@ -181,7 +176,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
     egui::Window::new(shown)
-        .id(egui::Id::new(title))
+        .id(egui::Id::unique(title))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)
@@ -218,7 +213,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let own = sel.as_deref().is_some_and(|s| !is_builtin(s));
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let r = ui.add_enabled(own, egui::TextEdit::singleline(name));
+                    let r = crate::widgets::accessible_name(ui.add_enabled(own, egui::TextEdit::singleline(name)), "Name");
                     push("workspaces.edit.name", &r, "Name");
                     let r = ui.add_enabled(own && sel.as_deref() != Some(name.trim()), egui::Button::new(tl!("Rename")));
                     push("workspaces.edit.rename", &r, "Rename");

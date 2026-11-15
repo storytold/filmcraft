@@ -77,6 +77,25 @@ fn metadata_edits_are_undoable_and_saved_in_the_project() {
     assert_eq!(back.item(id).unwrap().metadata["Scene"], "12");
 }
 
+/// The Out Point is the last frame the marks keep, the frame a Source edit places last and the
+/// Project panel's Video Out Point. It read one frame earlier.
+#[test]
+fn metadata_out_point_is_the_last_frame_kept() {
+    let mut s = demo();
+    let id = s.project.items.values().filter(|i| i.as_media().is_some() && i.has_video()).map(|i| i.id).min().expect("a video clip");
+    s.execute("source.open", json!({"item": id.0})).unwrap();
+    s.execute("markers.markIn", json!({"target": "source", "frame": 24})).unwrap();
+    s.execute("markers.markOut", json!({"target": "source", "frame": 71})).unwrap();
+    let g = s.execute("metadata.get", json!({"item": id.0})).unwrap();
+    let it = s.project.item(id).unwrap();
+    for (field_name, column) in [("In Point", "Video In Point"), ("Out Point", "Video Out Point")] {
+        assert_eq!(field(&g, field_name)["value"], json!(crate::project_panel::cell(&s.project, it, column).0), "{field_name}");
+    }
+    let (_, range) = crate::commands::source_range(&s).unwrap();
+    let rate = it.frame_rate();
+    assert_eq!((rate.frame_at(range.start), rate.frame_at(range.end())), (24, 72), "a Source edit places frames 24 to 71");
+}
+
 #[test]
 fn metadata_targets_follow_the_selection() {
     let mut s = demo();
@@ -142,7 +161,7 @@ fn events_report_background_jobs() {
     s.poll_persistence();
     assert_eq!(s.log.entries.iter().filter(|e| e.message.starts_with("Started:")).count(), 3);
     *a.result.lock().unwrap() =
-        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, extra_files: Vec::new() }));
+        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, ..Default::default() }));
     *b.result.lock().unwrap() = Some(Err("disk full".into()));
     c.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     *c.result.lock().unwrap() = Some(Err("cancelled".into()));
@@ -155,6 +174,38 @@ fn events_report_background_jobs() {
     // reported once
     s.poll_persistence();
     assert_eq!(s.log.entries.len(), 6);
+}
+
+/// #3952: a finished export's warnings (hardware encoding asked for, but the software encoder ran)
+/// show in Events after its "Finished" line, once each, so the desktop app says so too.
+#[test]
+fn events_show_a_finished_exports_warnings() {
+    let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+    let other = "another thing the export reported";
+    for (name, warnings) in [("none", vec![]), ("fallback", vec![fell_back]), ("two", vec![fell_back, other])] {
+        let mut s = demo();
+        s.execute("events.clear", json!({})).unwrap();
+        let job = crate::Job { id: 911, label: "Export a.mp4".into(), progress: Arc::new(Default::default()), result: Arc::new(std::sync::Mutex::new(None)) };
+        s.jobs.push(job.clone());
+        let warnings: Vec<String> = warnings.into_iter().map(String::from).collect();
+        let report = filmcraft_export::Report { path: "a.mp4".into(), encoder: Some("software".into()), warnings: warnings.clone(), ..Default::default() };
+        *job.result.lock().unwrap() = Some(Ok(report));
+        let l = s.execute("events.list", json!({})).unwrap();
+        let msgs: Vec<(String, String)> = l["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["level"].as_str().unwrap().into(), e["message"].as_str().unwrap().into()))
+            .filter(|(_, m): &(String, String)| m.contains("Export a.mp4"))
+            .collect();
+        let mut want = vec![("info".to_string(), "Started: Export a.mp4".to_string()), ("info".into(), "Finished: Export a.mp4".into())];
+        want.extend(warnings.iter().map(|w| ("warning".to_string(), format!("Export a.mp4: {w}"))));
+        assert_eq!(msgs, want, "{name}");
+        // reported once
+        let n = s.log.entries.len();
+        s.poll_persistence();
+        assert_eq!(s.log.entries.len(), n, "{name}");
+    }
 }
 
 /// #620: project notes are saved in the project file; typing (one `merge` key) is one undo step.
