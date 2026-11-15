@@ -198,11 +198,67 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     f.write_all(bytes).map_err(io)?;
     f.sync_all().map_err(io)
 }
-fn copy_new(source: &Path, dest: &Path) -> Result<()> {
-    let mut input = std::fs::File::open(source).map_err(io)?;
-    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(dest).map_err(io)?;
-    std::io::copy(&mut input, &mut output).map_err(io)?;
-    output.sync_all().map_err(io)
+/// Why copying media failed.
+#[derive(Debug)]
+pub(super) enum CopyError {
+    /// The source could not be read: the media stays an offline placeholder.
+    Unreadable(String),
+    /// The copy could not be written, or its source changed meanwhile: the import is cancelled.
+    Cancel(EngineError),
+}
+
+/// Copy `source` into the new file `dest` in one pass, hashing the bytes as they are written, and
+/// return their SHA-256 and count: the copy holds exactly the bytes the digest covers. A source
+/// whose size or modification time changes during the copy cancels the import.
+pub(super) fn copy_hashing(source: &Path, dest: &Path) -> std::result::Result<(String, u64), CopyError> {
+    let unreadable = |e: std::io::Error| CopyError::Unreadable(e.to_string());
+    let unwritable = |e: std::io::Error| CopyError::Cancel(io(e));
+    let mut input = std::fs::File::open(source).map_err(unreadable)?;
+    let before = input.metadata().map_err(unreadable)?;
+    if !before.is_file() {
+        return Err(CopyError::Unreadable("not a regular file".into()));
+    }
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(dest).map_err(unwritable)?;
+    let mut hash = Sha256::new();
+    let mut size = 0u64;
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = input.read(&mut buf).map_err(unreadable)?;
+        let chunk = buf.get(..n).ok_or_else(|| CopyError::Unreadable("read past the buffer".into()))?;
+        if chunk.is_empty() {
+            break;
+        }
+        hash.update(chunk);
+        output.write_all(chunk).map_err(unwritable)?;
+        size = size.saturating_add(chunk.len() as u64);
+    }
+    output.sync_all().map_err(unwritable)?;
+    let after = input.metadata().map_err(unreadable)?;
+    if before.len() != size || after.len() != size || before.modified().ok() != after.modified().ok() {
+        return Err(CopyError::Cancel(bad(COMMAND, "media changed while copying; import cancelled")));
+    }
+    Ok((format!("{:x}", hash.finalize()), size))
+}
+
+/// Remove what an unreadable source left of its copy (nothing when it could not be opened).
+fn remove_partial(partial: &Path) -> Result<()> {
+    match std::fs::remove_file(partial) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(e)),
+        _ => Ok(()),
+    }
+}
+
+/// Give a finished copy its content name `target`. When this import already holds that file (the
+/// same bytes from another source path), the existing copy is verified and kept instead.
+fn publish_copy(partial: &Path, target: &Path, digest: &str, hash: &dyn Fn(&Path) -> Result<(String, u64)>) -> Result<()> {
+    if std::fs::symlink_metadata(target).is_err() {
+        return std::fs::rename(partial, target).map_err(io);
+    }
+    std::fs::remove_file(partial).map_err(io)?;
+    if hash(target)?.0 != digest {
+        return Err(bad(COMMAND, "media changed while copying; import cancelled"));
+    }
+    Ok(())
 }
 
 /// Only a directory created by this invocation is removed on failure. Existing destinations are
@@ -219,11 +275,20 @@ impl Drop for OwnedDirectory {
     }
 }
 
-pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
-    import_with_hasher(s, p, &hash_file)
+/// The whole-file reads `premiere.import` makes, replaceable in tests.
+pub(super) struct FileIo<'a> {
+    /// SHA-256 and size of a whole file: the project file, and a copy this import already made.
+    pub hash: &'a dyn Fn(&Path) -> Result<(String, u64)>,
+    /// Copy media into a new file, hashing it on the way (copy mode).
+    pub copy: &'a dyn Fn(&Path, &Path) -> std::result::Result<(String, u64), CopyError>,
 }
 
-pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path) -> Result<(String, u64)>) -> Result<Value> {
+pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
+    import_with_io(s, p, &FileIo { hash: &hash_file, copy: &copy_hashing })
+}
+
+pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Result<Value> {
+    let hash = file_io.hash;
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "Premiere link/copy import requires a native filesystem host"));
     }
@@ -312,9 +377,13 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
                     record.imported_path = record.original_path.clone();
                     record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
                     if mode == "copy" {
-                        let (digest, size) = match hash(&src) {
-                            Ok(identity) => identity,
-                            Err(error) => {
+                        // One read: the copy is hashed as it is written, then named by its digest.
+                        // `records` grows by one per source, so the partial name is unique.
+                        let partial = media_dir.join(format!("{}.partial", records.len()));
+                        let (digest, size) = match (file_io.copy)(&src, &partial) {
+                            Ok(copied) => copied,
+                            Err(CopyError::Unreadable(error)) => {
+                                remove_partial(&partial)?;
                                 filmcraft_interchange::premiere::warning(
                                     &mut report,
                                     format!("unreadable media: {}; {error}; offline placeholder retained", stored_path(&src)),
@@ -323,6 +392,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
                                 m.offline = true;
                                 continue;
                             }
+                            Err(CopyError::Cancel(error)) => return Err(error),
                         };
                         record.sha256 = Some(digest.clone());
                         record.bytes = Some(size);
@@ -332,12 +402,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
                             .filter(|s| s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()))
                             .unwrap_or("media");
                         let target = media_dir.join(format!("{digest}.{ext}"));
-                        if !target.exists() {
-                            copy_new(&src, &target)?;
-                        }
-                        if hash(&target)?.0 != digest {
-                            return Err(bad(COMMAND, "media changed while copying; import cancelled"));
-                        }
+                        publish_copy(&partial, &target, &digest, hash)?;
                         record.imported_path = stored_path(&target);
                     } else {
                         // Linked media stays online after a successful probe without a full-file
@@ -591,6 +656,35 @@ mod tests {
         ] {
             assert_eq!(stored_path(Path::new(path)), expected);
         }
+    }
+    #[test]
+    fn copies_hold_exactly_the_hashed_bytes_and_never_replace_a_file() {
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-copy").join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.bin");
+        // Longer than one read buffer.
+        std::fs::write(&source, (0..200_000u32).map(|i| i as u8).collect::<Vec<_>>()).unwrap();
+        let partial = dir.join("0.partial");
+        let copied = copy_hashing(&source, &partial).unwrap();
+        assert_eq!(copied, hash_file(&source).unwrap());
+        assert_eq!(std::fs::read(&partial).unwrap(), std::fs::read(&source).unwrap());
+        assert!(matches!(copy_hashing(&source, &partial), Err(CopyError::Cancel(_))), "an existing file is never replaced");
+        let absent = dir.join("1.partial");
+        assert!(matches!(copy_hashing(&dir.join("missing.bin"), &absent), Err(CopyError::Unreadable(_))));
+        assert!(!absent.exists(), "an unreadable source writes nothing");
+        // A finished copy takes its digest name; the same bytes again keep the existing copy once
+        // it is verified, and a copy changed meanwhile cancels the import.
+        let target = dir.join(format!("{}.bin", copied.0));
+        publish_copy(&partial, &target, &copied.0, &hash_file).unwrap();
+        assert!(!partial.exists() && hash_file(&target).unwrap() == copied);
+        copy_hashing(&source, &partial).unwrap();
+        publish_copy(&partial, &target, &copied.0, &hash_file).unwrap();
+        assert!(!partial.exists() && hash_file(&target).unwrap() == copied);
+        std::fs::write(&target, b"changed").unwrap();
+        copy_hashing(&source, &partial).unwrap();
+        assert!(publish_copy(&partial, &target, &copied.0, &hash_file).unwrap_err().to_string().contains("changed while copying"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn folder_listings_read_each_folder_once_and_keep_the_one_match_rule() {

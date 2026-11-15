@@ -361,25 +361,66 @@ fn premiere_hash_inspection_rechecks_media_policy_and_copy_identity() {
 fn premiere_link_never_calls_media_hasher_but_copy_still_does() {
     let fixture = Fixture::new();
     let doc = fixture.0.join("source.prproj").canonicalize().unwrap();
-    let calls = std::cell::Cell::new(0);
-    let hasher = |path: &std::path::Path| {
+    let hashes = std::cell::Cell::new(0);
+    let copies = std::cell::Cell::new(0);
+    let hash = |path: &std::path::Path| {
         if path != doc {
-            calls.set(calls.get() + 1);
+            hashes.set(hashes.get() + 1);
             return Err(crate::EngineError::Other("media hasher unavailable".into()));
         }
         hash_file(path)
     };
+    // Copy mode hashes media while copying it; a source it cannot read stays offline.
+    let copy = |_: &std::path::Path, _: &std::path::Path| {
+        copies.set(copies.get() + 1);
+        Err(crate::premiere::CopyError::Unreadable("media reader unavailable".into()))
+    };
     for mode in ["link", "copy"] {
         let mut s = Session::default();
-        let result = crate::premiere::import_with_hasher(&mut s, &json!({"path":doc,"destination":fixture.0.join(mode),"mediaMode":mode}), &hasher).unwrap();
+        let dest = fixture.0.join(mode);
+        let io = crate::premiere::FileIo { hash: &hash, copy: &copy };
+        let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":dest,"mediaMode":mode}), &io).unwrap();
+        assert_eq!(hashes.get(), 0, "{mode}: media is read in full only by the copier");
         if mode == "link" {
-            assert_eq!(calls.get(), 0);
+            assert_eq!(copies.get(), 0);
             assert_eq!(result["offlineMedia"], json!([]));
         } else {
-            assert_eq!(calls.get(), 1);
+            assert_eq!(copies.get(), 1);
             assert_eq!(result["offlineMedia"], json!(["source.png"]));
+            assert!(result["report"].to_string().contains("media reader unavailable"), "{result}");
+            assert_eq!(std::fs::read_dir(dest.join("media")).unwrap().count(), 0);
         }
     }
+}
+
+#[test]
+fn premiere_copy_reads_media_in_one_pass() {
+    let fixture = Fixture::new();
+    let expected = hash_file(&fixture.0.join("source.png")).unwrap();
+    let doc = fixture.0.join("source.prproj").canonicalize().unwrap();
+    let hashes = std::cell::Cell::new(0);
+    let copies = std::cell::Cell::new(0);
+    let hash = |path: &std::path::Path| {
+        if path != doc {
+            hashes.set(hashes.get() + 1);
+        }
+        hash_file(path)
+    };
+    let copy = |from: &std::path::Path, to: &std::path::Path| {
+        copies.set(copies.get() + 1);
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let dest = fixture.0.join("copy");
+    let io = crate::premiere::FileIo { hash: &hash, copy: &copy };
+    let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":dest,"mediaMode":"copy"}), &io).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    assert_eq!((copies.get(), hashes.get()), (1, 0), "no separate full read of the source or of its copy");
+    let media = &s.project.workflow.as_ref().unwrap().imports[0].media[0];
+    assert_eq!((media.sha256.as_deref(), media.bytes), (Some(expected.0.as_str()), Some(expected.1)));
+    let copied: Vec<_> = std::fs::read_dir(dest.join("media")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(copied, [std::ffi::OsString::from(format!("{}.png", expected.0))], "only the finished copy, named by its digest");
+    assert_eq!(hash_file(std::path::Path::new(&media.imported_path)).unwrap(), expected);
 }
 
 #[test]
