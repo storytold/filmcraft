@@ -301,20 +301,6 @@ fn nul_in_a_name_is_rejected() {
     assert!(matches!(w.storage(Writer::ROOT, "x\0", [0; 16]), Err(Error::BadName(_))));
 }
 
-#[test]
-fn span_is_checked() {
-    use crate::read::span;
-    assert_eq!(span(0, 1, 512), Some((512, 1024)));
-    assert_eq!(span(3, 0, 64), Some((192, 256)));
-    // On a 32-bit `usize` these are the overflows of `sector` and `read_mini_chain`; the checked
-    // arithmetic is the same code on 64-bit, so usize::MAX exercises it here. (A real 32-bit
-    // target is not run.)
-    assert_eq!(span(usize::MAX, 1, 512), None);
-    assert_eq!(span(usize::MAX, 0, 64), None);
-    assert_eq!(span(usize::MAX / 64, 0, 64), None, "start fits, end does not");
-    assert_eq!(span(usize::MAX - 1, 1, 1), None);
-}
-
 /// The allocating comparison compare_names used before the iterator rewrite.
 fn compare_names_old(a: &str, b: &str) -> std::cmp::Ordering {
     let ua: Vec<u16> = a.encode_utf16().collect();
@@ -421,4 +407,24 @@ fn child_lookup_uses_a_sorted_index() {
     b[bb..bb + 4].copy_from_slice(&utf16("cc"));
     let cf = CompoundFile::open(&b).unwrap();
     assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+}
+
+// Reference implementation retained only for compatibility tests.
+fn upper(u: u16) -> u16 {
+    if (b'a' as u16..=b'z' as u16).contains(&u) {
+        return u - 32;
+    }
+    if u < 0x80 {
+        return u;
+    }
+    match char::from_u32(u as u32) {
+        Some(c) => {
+            let mut up = c.to_uppercase();
+            match (up.next(), up.next()) {
+                (Some(x), None) if (x as u32) <= 0xFFFF => x as u32 as u16,
+                _ => u,
+            }
+        }
+        None => u,
+    }
 }
