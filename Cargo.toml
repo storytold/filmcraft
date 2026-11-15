@@ -18,9 +18,9 @@ filmcraft-color = { path = "crates/color" }
 filmcraft-bitstream = { path = "crates/bitstream" }
 filmcraft-isobmff = { path = "crates/isobmff" }
 filmcraft-matroska = { path = "crates/matroska" }
-film# Shared YUV4MPEG2 parser and frame index.
+ # Shared YUV4MPEG2 parser and frame index.
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
-craft-cfb = { path = "crates/cfb" }
+filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
