@@ -181,31 +181,6 @@ pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
 /// A factory returns `None` when it does not handle the entry.
 pub type VideoDecoderFactory = fn(&SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>>;
 
-/// Read the Adobe APP14 transform byte needed for RGB/CMYK JPEG interpretation.
-fn jpeg_adobe_transform(jpeg: &[u8]) -> Option<u8> {
-    let mut at = 2usize;
-    if jpeg.get(..2) != Some(&[0xFF, 0xD8]) {
-        return None;
-    }
-    while at + 1 < jpeg.len() && jpeg[at] == 0xFF {
-        let marker = jpeg[at + 1];
-        if marker == 0xDA {
-            return None;
-        }
-        let len = usize::from(u16::from_be_bytes([*jpeg.get(at + 2)?, *jpeg.get(at + 3)?]));
-        if len < 2 {
-            return None;
-        }
-        let end = at.checked_add(2 + len)?;
-        let segment = jpeg.get(at + 4..end)?;
-        if marker == 0xEE && segment.get(..5) == Some(b"Adobe") {
-            return segment.get(11).copied();
-        }
-        at = end;
-    }
-    None
-}
-
 /// Motion-JPEG / Photo-JPEG (each sample is a complete JPEG).
 pub struct MjpegDecoder;
 
@@ -213,7 +188,7 @@ impl VideoDecoder for MjpegDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let sample = craft_jpeg::with_avi1_default_huffman(sample);
         // mjpa samples may contain two fields; decode the first image (field-merging lands with interlace support).
-        let adobe = jpeg_adobe_transform(&sample);
+        let adobe = craft_jpeg::adobe_transform(&sample);
         // `image::load_from_memory` previously used image::Limits::default(), which caps decoder
         // allocations at 512 MiB and has no pixel-count limit. Keep that memory ceiling and avoid
         // adding a separate pixel limit when routing through craft-jpeg.
