@@ -198,7 +198,12 @@ impl Image {
             return;
         }
         let w = self.w;
+        // A cancelled frame job stops at the next row; its picture is discarded by the caller.
+        let ctx = filmcraft_media::cancel::Context::current();
         self.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+            if ctx.is_cancelled() {
+                return;
+            }
             for x in 0..w {
                 let p = &mut row[x * 4..x * 4 + 4];
                 let a = p[3];

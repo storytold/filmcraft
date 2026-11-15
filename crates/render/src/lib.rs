@@ -443,6 +443,9 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
     };
     let ss = &seq.settings;
     for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
+        if filmcraft_media::cancel::cancelled() {
+            break;
+        }
         // no `env` here: a burn-in's Feet + Frames / Frames format comes as the sequence time in
         // the `timecode` string
         match vfx::film_time_format(e) {
@@ -711,6 +714,10 @@ fn item_layer_ex_inner(cx: ItemCtx<'_>, want: LayerWant<'_>) -> Result<Option<La
         // anything else takes the general path below, with the frame already fetched
         fetched = Some((src, frame, n));
     }
+    // decoding is over: a cancelled job stops before converting and effects
+    if filmcraft_media::cancel::cancelled() {
+        return Ok(None);
+    }
     let mut layer = match fetched {
         Some((src, frame, n)) => media_image_inner(cx, MediaFrame { src: &src, frame: &frame, n }, want)?,
         None => match base_layer_inner(cx, want)? {
@@ -761,6 +768,10 @@ fn item_layer_ex_inner(cx: ItemCtx<'_>, want: LayerWant<'_>) -> Result<Option<La
                 return Err(err);
             }
         }
+    }
+    // the last effect may have stopped part-way: the layer is incomplete, nobody uses it
+    if filmcraft_media::cancel::cancelled() {
+        return Ok(None);
     }
     mask::apply_opacity_masks(&mut layer, item, mt, mask_scale);
     let placed = if layer.w == w && layer.h == h && identity_placement(&m) { layer } else { layer.transformed(w, h, &m) };
@@ -1061,3 +1072,7 @@ mod region_tests;
 #[cfg(test)]
 #[path = "par_tests.rs"]
 mod par_tests;
+
+#[cfg(test)]
+#[path = "cancel_tests.rs"]
+mod cancel_tests;

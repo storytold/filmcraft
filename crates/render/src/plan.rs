@@ -506,6 +506,9 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) -> Result<(), String> {
 fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) -> Result<PlanStack, String> {
     let Scene { project, t, opts, .. } = sc;
     let mut layers = PlanStack::default();
+    if filmcraft_media::cancel::cancelled() {
+        return Ok(layers);
+    }
     if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
         // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
         let p = trn.progress(t) as f32;
@@ -643,6 +646,11 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
     if out.exhausted {
         return Ok(());
     }
+    // A cancelled frame job (playback moved on) stops before the next layer's decode and effects;
+    // its plan is incomplete and the caller discards it (it never reaches the plan cache).
+    if filmcraft_media::cancel::cancelled() {
+        return Ok(());
+    }
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
     let ft = item.source_time_at(t);
     let mt = item.effect_time_at(t);
@@ -777,6 +785,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
+    if filmcraft_media::cancel::cancelled() {
+        return Ok(());
+    }
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     let item_res = if strict_readback {
         crate::try_item_layer(project, seq, item, t, opts, sources, &tc)?
@@ -819,6 +830,9 @@ pub fn try_effect_image(frame: &VideoFrame, fx: &LayerFx) -> Result<crate::Image
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
     let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
     for op in &fx.ops {
+        if filmcraft_media::cancel::cancelled() {
+            break;
+        }
         op.apply(&mut img);
     }
     img
@@ -919,6 +933,9 @@ fn turned(img: crate::Image, q: u8) -> crate::Image {
 fn execute_layers_inner(canvas: &mut crate::Image, layers: &[PlanLayer], strict_readback: bool) -> Result<(), String> {
     let (width, height) = (canvas.w, canvas.h);
     for l in layers {
+        if filmcraft_media::cancel::cancelled() {
+            return Ok(());
+        }
         let src = match (&l.fx, strict_readback) {
             (Some(fx), true) => try_effect_image_with(&l.frame, fx, l.input.as_deref())?,
             (Some(fx), false) => effect_image_with(&l.frame, fx, l.input.as_deref()),

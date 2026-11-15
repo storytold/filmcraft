@@ -583,32 +583,40 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     } else {
         0
     };
-    img.px.par_chunks_mut(4).for_each(|p| {
-        if p[3] <= 0.0 {
+    // Keying is the heaviest per-pixel effect: a cancelled frame job stops at the next row.
+    let ctx = filmcraft_media::cancel::Context::current();
+    let row_len = img.w.max(1) * 4;
+    img.px.par_chunks_mut(row_len).for_each(|row| {
+        if ctx.is_cancelled() {
             return;
         }
-        let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
-        let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
-        let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
-        let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
-        let mut o = c;
-        if spill > 0.0 {
-            let others = (o[(dom + 1) % 3] + o[(dom + 2) % 3]) / 2.0;
-            if o[dom] > others {
-                o[dom] -= (o[dom] - others) * spill;
+        for p in row.chunks_exact_mut(4) {
+            if p[3] <= 0.0 {
+                continue;
             }
-        }
-        let a = p[3] * alpha;
-        let lo = dec(o);
-        match output {
-            1 => {
-                p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
+            let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+            let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+            let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
+            let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
+            let mut o = c;
+            if spill > 0.0 {
+                let others = (o[(dom + 1) % 3] + o[(dom + 2) % 3]) / 2.0;
+                if o[dom] > others {
+                    o[dom] -= (o[dom] - others) * spill;
+                }
             }
-            _ => {
-                p[0] = lo[0] * a;
-                p[1] = lo[1] * a;
-                p[2] = lo[2] * a;
-                p[3] = a;
+            let a = p[3] * alpha;
+            let lo = dec(o);
+            match output {
+                1 => {
+                    p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
+                }
+                _ => {
+                    p[0] = lo[0] * a;
+                    p[1] = lo[1] * a;
+                    p[2] = lo[2] * a;
+                    p[3] = a;
+                }
             }
         }
     });
@@ -845,12 +853,19 @@ pub(crate) fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> 
 
 /// Box passes of radii `rx` along rows, then `ry` along columns.
 pub(crate) fn box_blur(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
+    // A cancelled frame job stops between passes (the picture is discarded by the caller).
     for r in rx {
+        if filmcraft_media::cancel::cancelled() {
+            return;
+        }
         box_rows(&mut img.px, img.w, *r as usize, repeat_edge);
     }
     if !ry.is_empty() {
         let mut t = transpose(img);
         for r in ry {
+            if filmcraft_media::cancel::cancelled() {
+                return;
+            }
             box_rows(&mut t.px, t.w, *r as usize, repeat_edge);
         }
         *img = transpose(&t);

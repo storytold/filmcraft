@@ -678,8 +678,8 @@ fn queued_job_useful(frame: i64, cur: i64, plan: &StridePlan) -> bool {
 
 /// Whether a running job for `frame` is still worth finishing: not more than `grace` frames past
 /// its due time, and no ready frame at or before the playhead is already newer (`newest_ready`), in
-/// which case the monitor would not show it. (A cancelled plan job still runs to its end: its CPU
-/// effects do not poll the flag, so this only avoids caching and showing what nobody uses.)
+/// which case the monitor would not show it. (A cancelled plan job stops at its next layer, effect or
+/// row of a CPU effect, see `filmcraft_media::cancel`, and is never cached.)
 fn running_job_useful(frame: i64, cur: i64, newest_ready: Option<i64>, plan: &StridePlan) -> bool {
     frame.saturating_sub(cur) >= -plan.grace && newest_ready.is_none_or(|n| frame > n)
 }

@@ -112,6 +112,14 @@ impl Context {
         Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
     }
 
+    /// Whether the job these hints belong to has been cancelled. A parallel loop (rayon) runs on
+    /// pool threads that do not carry the thread-local flag, so it takes a [`Context`] first and
+    /// polls this once per row: one relaxed atomic load.
+    #[inline]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|f| f.load(Ordering::Relaxed))
+    }
+
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
     /// not keep another job's hints after a panic).
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
@@ -152,6 +160,19 @@ mod tests {
                 assert_eq!((cancelled(), draft(), background(), catch_up()), (false, false, false, None));
             });
         });
+    }
+
+    #[test]
+    fn a_context_sees_the_flag_from_any_thread() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let ctx = with_cancel(&flag, Context::current);
+        assert!(!ctx.is_cancelled());
+        flag.store(true, Ordering::Relaxed);
+        assert!(ctx.is_cancelled());
+        std::thread::scope(|s| {
+            s.spawn(|| assert!(ctx.is_cancelled() && !cancelled()));
+        });
+        assert!(!Context::default().is_cancelled());
     }
 
     #[test]
