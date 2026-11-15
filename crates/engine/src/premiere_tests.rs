@@ -516,3 +516,38 @@ fn premiere_offline_media_lists_only_items_added_by_this_import() {
     let offline = s.project.items.values().filter(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)).count();
     assert_eq!(offline, 1, "the earlier offline item stays in the project");
 }
+
+#[test]
+fn premiere_hash_media_addresses_an_import_by_its_destination() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let mut s = Session::default();
+    let first = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("first")})).unwrap();
+    let second = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("second"),"mediaMode":"copy"})).unwrap();
+    let observed = s.execute("premiere.hashMedia", json!({"import":second["destination"]})).unwrap();
+    assert_eq!((observed["import"].clone(), observed["destination"].clone()), (json!(1), second["destination"].clone()));
+    assert_eq!(observed["media"][0]["matchesImport"], true, "{observed}");
+    let destination = PathBuf::from(second["destination"].as_str().unwrap());
+    // The index form, the snapshot inside the destination and another spelling of it name the same import.
+    for selector in [json!(1), json!(destination.join("source.prproj")), json!(destination.join("..").join("second"))] {
+        assert_eq!(s.execute("premiere.hashMedia", json!({"import":selector})).unwrap(), observed, "{selector}");
+    }
+    // Undo the second import and import again: index 1 is now another import, but the
+    // destination still names only the one it was returned for.
+    s.execute("edit.undo", json!({})).unwrap();
+    let third = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("third")})).unwrap();
+    assert!(s.execute("premiere.hashMedia", json!({"import":second["destination"]})).is_err(), "an undone import is not replaced by a later one");
+    assert_eq!(s.execute("premiere.hashMedia", json!({"import":1})).unwrap()["destination"], third["destination"]);
+    assert_eq!(s.execute("premiere.hashMedia", json!({"import":first["destination"]})).unwrap()["import"], 0);
+    // A hand-edited project with two records for one destination is ambiguous, not a guess.
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    workflow.imports.push(workflow.imports[0].clone());
+    s.project = std::sync::Arc::new(project);
+    let ambiguous = s.execute("premiere.hashMedia", json!({"import":first["destination"]})).unwrap_err().to_string();
+    assert!(ambiguous.contains("index"), "{ambiguous}");
+    for selector in [json!(""), json!(fixture.0.join("missing")), json!(fixture.0.join("source.png")), json!({"path":first["destination"]})] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("premiere.hashMedia", json!({"import":selector}))));
+        assert!(result.unwrap().is_err(), "{selector}");
+    }
+}
