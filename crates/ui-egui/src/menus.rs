@@ -959,6 +959,9 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         if let Some(on) = engine_toggle(&app.session, &it.id) {
             it.checked = Some(on);
         }
+        if it.id == "clip.multicamEnable" {
+            it.checked = Some(multicam_enabled(&app.session));
+        }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
@@ -982,6 +985,15 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
         "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
         _ => return None,
     })
+}
+
+/// Checkmark of Clip ▸ Multi-Camera ▸ Enable (#4642): the selected nested sequence clips (with
+/// their linked clips) are all enabled multi-camera clips, as in the Timeline's clip menu.
+fn multicam_enabled(session: &filmcraft_engine::Session) -> bool {
+    let Some(q) = session.active_sequence() else { return false };
+    let clips = filmcraft_engine::commands::with_links(session, &session.state.selection);
+    let mut nests = clips.iter().filter_map(|c| q.find_item(*c)).map(|(_, it)| it).filter(|it| session.project.sequence(it.item).is_some()).peekable();
+    nests.peek().is_some() && nests.all(|it| it.multicam.is_some_and(|m| m.enabled))
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
