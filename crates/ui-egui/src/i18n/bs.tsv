@@ -3677,6 +3677,12 @@
 	Color Grading Section	Odjeljak gradacije boja
 	Read Video Scopes	Očitaj video skopove
 
+# Export: ALAC (Apple Lossless).
+	ALAC (Apple Lossless)	ALAC (Apple Lossless)
+	ALAC export writes 16 or 24 bit	ALAC izvoz piše samo 16 ili 24 bita
+	Apple Lossless (ALAC)	Apple Lossless (ALAC)
+	Apple Lossless 48 kHz 24-bit	Apple Lossless 48 kHz 24 bita
+	Apple Lossless (ALAC) in MPEG-4 audio (.m4a), stereo 48 kHz 24-bit	Apple Lossless (ALAC) u MPEG-4 zvuku (.m4a), stereo 48 kHz 24 bita
 # Strings added on main since (markers, custom colors, preset import, export messages).
 	1 frame ({seconds} s)	1 sličica ({seconds} s)
 	A range marker needs a positive duration	Marker raspona zahtijeva pozitivno trajanje

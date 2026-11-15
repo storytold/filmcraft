@@ -115,6 +115,94 @@ impl AudioEncoder for FlacAudio {
     }
 }
 
+/// ALAC (`craft_audio::alac`) in MP4 / QuickTime and `.m4a`: one packet of 4096 samples per
+/// access unit, the last one shorter. The mix's channels are in WAV order (5.1: L R C LFE Ls Rs)
+/// and go to the encoder in ALAC order (C L R Ls Rs LFE).
+pub(crate) struct AlacAudio {
+    enc: craft_audio::alac::Encoder,
+    format: SampleFormat,
+    /// Samples per channel waiting for a full packet, in WAV order.
+    pending: Vec<Vec<i32>>,
+}
+
+impl AlacAudio {
+    pub(crate) fn new(sample_rate: u32, channels: u32, s: &ExportSettings) -> Result<Self> {
+        let format = s.audio.sample_format();
+        if !matches!(format, SampleFormat::Int16 | SampleFormat::Int24) {
+            return Err(ExportError::Unsupported("ALAC export writes 16 or 24 bit: choose one of those sample sizes".into()));
+        }
+        let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("ALAC: too many audio channels".into()))?;
+        let cfg = craft_audio::alac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
+        let enc = craft_audio::alac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("ALAC: {e}")))?;
+        Ok(AlacAudio { enc, format, pending: vec![Vec::new(); usize::from(ch)] })
+    }
+
+    fn entry(&self) -> SampleEntry {
+        let cfg = self.enc.encoder_config();
+        let codec = filmcraft_isobmff::CodecConfig::Alac { cookie: self.enc.cookie() };
+        SampleEntry::audio(filmcraft_isobmff::FourCc(*b"alac"), codec, u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bit_depth))
+    }
+
+    fn frame_length(&self) -> usize {
+        self.enc.encoder_config().frame_length as usize
+    }
+
+    /// Encodes the first `n` pending samples of every channel as one packet.
+    fn packet(&mut self, n: usize) -> Result<Vec<u8>> {
+        let order = craft_audio::alac::alac_order(self.enc.encoder_config().channels);
+        let wav: Vec<&[i32]> = self.pending.iter().map(|c| c.get(..n).unwrap_or(c)).collect();
+        let refs: Vec<&[i32]> = match order {
+            Some(order) => order.iter().filter_map(|&i| wav.get(i).copied()).collect(),
+            None => wav,
+        };
+        let au = self.enc.encode(&refs).map_err(|e| ExportError::Encode(format!("ALAC: {e}")))?;
+        for c in &mut self.pending {
+            c.drain(..n.min(c.len()));
+        }
+        Ok(au)
+    }
+}
+
+impl AudioEncoder for AlacAudio {
+    fn sample_entry(&self) -> SampleEntry {
+        self.entry()
+    }
+    fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
+        if planar.len() != self.pending.len() {
+            return Err(ExportError::Encode("ALAC: channel count differs from the configuration".into()));
+        }
+        for (p, c) in self.pending.iter_mut().zip(planar) {
+            p.extend(c.iter().map(|&s| self.format.quantise(s)));
+        }
+        let n = self.frame_length();
+        let mut out = Vec::new();
+        while self.pending.iter().all(|c| c.len() >= n) && n > 0 {
+            out.push(self.packet(n)?);
+        }
+        Ok(out)
+    }
+    fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
+        Ok(self.flush_timed()?.into_iter().map(|(au, _)| au).collect())
+    }
+    fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
+        let tail = self.pending.iter().map(Vec::len).min().unwrap_or(0);
+        if tail == 0 {
+            return Ok(Vec::new());
+        }
+        let au = self.packet(tail)?;
+        Ok(vec![(au, u32::try_from(tail).unwrap_or(u32::MAX))])
+    }
+    fn priming(&self) -> u32 {
+        0
+    }
+    fn frame_size(&self) -> u32 {
+        self.enc.encoder_config().frame_length
+    }
+    fn final_sample_entry(&self) -> Option<SampleEntry> {
+        Some(self.entry())
+    }
+}
+
 pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &ExportSettings) -> Option<Result<Box<dyn AudioEncoder>>> {
     // AAC caps a frame at 6144 bits per channel (ISO/IEC 14496-3 §4.5.3.2): 6 bits per sample, so
     // 264.6 kbps for stereo at 22.05 kHz; a higher setting is capped instead of refused

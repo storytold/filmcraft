@@ -401,11 +401,12 @@ fn verify_image_sequence(name: &str, format: &str, output: &str, directory: &Pat
 
 fn verify_audio_preset(name: &str, format: &str, settings: &Value, probe_result: &Value, start: f64, end: f64) -> bool {
     match format {
-        "wav" | "aiff" | "flac" => {
+        "wav" | "aiff" | "flac" | "alac" => {
             let audio = stream(probe_result, "audio").unwrap();
             let bits = settings["audio"]["bits"].as_u64().unwrap();
             let codec = match (format, bits) {
                 ("flac", _) => "flac",
+                ("alac", _) => "alac",
                 ("wav", 24) => "pcm_s24le",
                 ("wav", _) => "pcm_s16le",
                 (_, 24) => "pcm_s24be",
