@@ -71,6 +71,7 @@ fn probe_with_fallbacks(
     relative: Option<&String>,
     document: &Path,
     report: &mut filmcraft_interchange::Report,
+    listings: &mut FolderListings,
 ) -> std::result::Result<(PathBuf, filmcraft_media::MediaInfo), String> {
     let error = match probe_media(s, original, document) {
         Ok(found) => return Ok(found),
@@ -87,7 +88,7 @@ fn probe_with_fallbacks(
         }
     }
     for candidate in std::iter::once(original).chain(relative.map(String::as_str)) {
-        let Some(variant) = crate::doc_path::resolve(candidate, Some(document)).ok().and_then(|p| case_variant(Path::new(&p))) else { continue };
+        let Some(variant) = crate::doc_path::resolve(candidate, Some(document)).ok().and_then(|p| case_variant(Path::new(&p), listings)) else { continue };
         let variant = stored_path(&variant);
         if let Ok(found) = probe_media(s, &variant, document) {
             filmcraft_interchange::premiere::warning(report, format!("{original}: {error}; using {variant}, whose name differs only in letter case"));
@@ -99,23 +100,68 @@ fn probe_with_fallbacks(
 
 /// The one entry of `path`'s folder whose name equals its file name apart from letter case, when
 /// `path` itself does not exist. None when there is no such entry, or more than one.
-fn case_variant(path: &Path) -> Option<PathBuf> {
-    const MAX_ENTRIES: usize = 100_000;
+fn case_variant(path: &Path, listings: &mut FolderListings) -> Option<PathBuf> {
     if std::fs::symlink_metadata(path).is_ok() {
         return None;
     }
     let name = path.file_name()?.to_str()?.to_lowercase();
-    let mut found = None;
-    for entry in std::fs::read_dir(path.parent()?).ok()?.take(MAX_ENTRIES) {
-        let Ok(entry) = entry else { continue };
-        if entry.file_name().to_str().is_some_and(|n| n.to_lowercase() == name) {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(entry.path());
-        }
+    let folder = path.parent()?;
+    listings.find(folder, &name).map(|entry| folder.join(entry))
+}
+
+/// Most entries read from one folder when looking for a letter-case variant.
+const MAX_FOLDER_ENTRIES: usize = 100_000;
+/// Most names the folder listings of one import keep (tens of megabytes at most); past it, a
+/// further folder is read again for each lookup, as without a cache.
+const MAX_LISTED_NAMES: usize = 250_000;
+
+/// A folder's entries by lower-case name: the entry's own name, or None when several entries
+/// have that lower-case name (ambiguous).
+type CaseIndex = std::collections::HashMap<String, Option<std::ffi::OsString>>;
+
+/// Folder listings one import reads while looking for letter-case variants: each folder is read
+/// once, however many of its files are missing, up to a bounded number of names in all.
+struct FolderListings {
+    /// Folder → its entries, or None when it could not be read.
+    folders: std::collections::HashMap<PathBuf, Option<CaseIndex>>,
+    /// Names kept so far (an unreadable folder counts as one).
+    names: usize,
+    /// Most names kept.
+    limit: usize,
+}
+
+impl FolderListings {
+    fn new(limit: usize) -> Self {
+        Self { folders: std::collections::HashMap::new(), names: 0, limit }
     }
-    found
+
+    /// The one entry of `folder` whose name is `lower` (lower case) apart from letter case; None
+    /// when there is no such entry, more than one, or the folder cannot be read.
+    fn find(&mut self, folder: &Path, lower: &str) -> Option<std::ffi::OsString> {
+        if let Some(listing) = self.folders.get(folder) {
+            return listing.as_ref()?.get(lower).cloned().flatten();
+        }
+        let listing = std::fs::read_dir(folder)
+            .ok()
+            .map(|entries| index_by_lower_case(entries.take(MAX_FOLDER_ENTRIES).filter_map(|entry| entry.ok().map(|entry| entry.file_name()))));
+        let found = listing.as_ref().and_then(|listing| listing.get(lower).cloned().flatten());
+        let cost = listing.as_ref().map_or(0, CaseIndex::len).max(1);
+        if let Some(names) = self.names.checked_add(cost).filter(|names| *names <= self.limit) {
+            self.names = names;
+            self.folders.insert(folder.to_path_buf(), listing);
+        }
+        found
+    }
+}
+
+/// Index entry names by lower case; names that are not valid Unicode are left out.
+fn index_by_lower_case(names: impl IntoIterator<Item = std::ffi::OsString>) -> CaseIndex {
+    let mut index = CaseIndex::new();
+    for name in names {
+        let Some(lower) = name.to_str().map(str::to_lowercase) else { continue };
+        index.entry(lower).and_modify(|unique| *unique = None).or_insert(Some(name));
+    }
+    index
 }
 
 pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
@@ -235,6 +281,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
     write_new(&snapshot, &bytes)?;
     let mut records = BTreeMap::<String, SourceMedia>::new();
     let mut probed = BTreeMap::new();
+    let mut listings = FolderListings::new(MAX_LISTED_NAMES);
     let media_dir = destination.join("media");
     if mode == "copy" {
         std::fs::create_dir(&media_dir).map_err(io)?;
@@ -247,7 +294,7 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
             let mut record = SourceMedia { original_path: original.clone(), imported_path: original.clone(), sha256: None, bytes: None, identity: None };
             // A project moved between computers keeps a project-relative path. It is tried only
             // when the stored path fails, and passes the same document policy and probe.
-            let probed_media = probe_with_fallbacks(s, &original, tree.relative_media.get(&original), &source, &mut report);
+            let probed_media = probe_with_fallbacks(s, &original, tree.relative_media.get(&original), &source, &mut report, &mut listings);
             match probed_media {
                 Ok((src, info)) => {
                     record.original_path = stored_path(&src);
@@ -475,6 +522,32 @@ mod tests {
         ] {
             assert_eq!(stored_path(Path::new(path)), expected);
         }
+    }
+    #[test]
+    fn folder_listings_read_each_folder_once_and_keep_the_one_match_rule() {
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-listings").join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Clip.MOV"), b"").unwrap();
+        std::fs::write(dir.join("other.mov"), b"").unwrap();
+        let mut listings = FolderListings::new(MAX_LISTED_NAMES);
+        assert_eq!(listings.find(&dir, "clip.mov"), Some("Clip.MOV".into()));
+        assert_eq!(listings.find(&dir, "missing.mov"), None);
+        // The folder was read once: a file added during the import is not listed.
+        std::fs::write(dir.join("Late.MOV"), b"").unwrap();
+        assert_eq!(listings.find(&dir, "late.mov"), None);
+        assert_eq!(listings.find(&dir.join("absent"), "clip.mov"), None, "a folder that cannot be read has no match");
+        // Past the limit a folder is read for every lookup, as without the cache.
+        let mut full = FolderListings::new(1);
+        assert_eq!(full.find(&dir, "late.mov"), Some("Late.MOV".into()));
+        std::fs::write(dir.join("Later.MOV"), b"").unwrap();
+        assert_eq!(full.find(&dir, "later.mov"), Some("Later.MOV".into()));
+        // Two entries whose names differ only in letter case are ambiguous: no match. Built from
+        // names, as a case-insensitive disk cannot hold both files.
+        let index = index_by_lower_case(["Take.mov", "take.MOV", "b.png"].map(std::ffi::OsString::from));
+        assert_eq!(index.get("take.mov"), Some(&None));
+        assert_eq!(index.get("b.png"), Some(&Some("b.png".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn snapshot_bytes_survive_link_copy_undo_and_save() {
