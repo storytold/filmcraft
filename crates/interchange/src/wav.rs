@@ -121,7 +121,14 @@ pub fn parse_aiff(b: &[u8]) -> Option<(Vec<u8>, u16, u32, u16)> {
             let ch = u16::from_be_bytes([body[0], body[1]]);
             let bits = u16::from_be_bytes([body[6], body[7]]);
             let sr = from_extended(body[8..18].try_into().ok()?).round() as u32;
-            let little = body.len() >= 22 && &body[18..22] == b"sowt";
+            let mut little = false;
+            if body.len() >= 22 {
+                match &body[18..22] {
+                    b"NONE" | b"twos" => {}
+                    b"sowt" => little = true,
+                    _ => return None,
+                }
+            }
             comm = Some((ch, sr, bits, little));
         } else if id == b"SSND" && body.len() >= 8 {
             let (ch, sr, bits, little) = comm?;
@@ -178,6 +185,41 @@ mod tests {
     }
 
     use super::*;
+
+    fn aifc(comp: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut comm = Vec::new();
+        comm.extend_from_slice(&1u16.to_be_bytes());
+        comm.extend_from_slice(&((data.len() / 4) as u32).to_be_bytes());
+        comm.extend_from_slice(&32u16.to_be_bytes());
+        comm.extend_from_slice(&extended(44_100.0));
+        comm.extend_from_slice(comp);
+        comm.extend_from_slice(&[0, 0]); // empty pascal-string name
+        let mut ssnd = vec![0u8; 8];
+        ssnd.extend_from_slice(data);
+        let mut body = b"AIFC".to_vec();
+        body.extend_from_slice(b"COMM");
+        body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+        body.extend_from_slice(&comm);
+        body.extend_from_slice(b"SSND");
+        body.extend_from_slice(&(ssnd.len() as u32).to_be_bytes());
+        body.extend_from_slice(&ssnd);
+        let mut v = b"FORM".to_vec();
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        v.extend_from_slice(&body);
+        v
+    }
+
+    #[test]
+    fn aifc_rejects_non_pcm_compression() {
+        let data = [0x3F, 0x80, 0, 0];
+        for c in [b"fl32", b"fl64", b"ulaw", b"alaw", b"ima4"] {
+            assert!(parse_aiff(&aifc(c, &data)).is_none(), "{c:?}");
+        }
+        let be = parse_aiff(&aifc(b"NONE", &data)).map(|r| r.0);
+        assert_eq!(be, Some(vec![0, 0, 0x80, 0x3F]));
+        assert_eq!(parse_aiff(&aifc(b"twos", &data)).map(|r| r.0), be);
+        assert_eq!(parse_aiff(&aifc(b"sowt", &data)).map(|r| r.0), Some(data.to_vec()));
+    }
 
     #[test]
     fn wav_and_aiff_round_trip() {
