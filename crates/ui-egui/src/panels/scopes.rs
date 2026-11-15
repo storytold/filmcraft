@@ -1,4 +1,4 @@
-//! Lumetri Scopes: Vectorscope YUV / HLS, Histogram, Parade (RGB / YUV / RGB-White) and Waveform
+//! Video Scopes: Vectorscope YUV / HLS, Histogram, Parade (RGB / YUV / RGB-White) and Waveform
 //! (RGB / Luma / YC / YC no Chroma) of the Program frame, in a grid when several are shown.
 //!
 //! The maths is in `filmcraft-scopes` (count grids from the decimated frame); this module turns
@@ -83,7 +83,7 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
     }
 }
 
-/// The Lumetri Scopes panel.
+/// The Video Scopes panel.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let st = app.ui.panels.scopes.clone();

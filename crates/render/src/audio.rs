@@ -109,7 +109,7 @@ pub(crate) fn track_input_at(
     let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
     let mut tbuf = AudioBuffer::silence(sr, w, frames);
     for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
-        mix_item(project, item, win, sources, &mut tbuf, 1.0, &live);
+        mix_item(project, item, item, win, sources, &mut tbuf, &live);
     }
     // audio transitions: attenuate the covered region of each side
     for tr in &track.transitions {
@@ -119,8 +119,9 @@ pub(crate) fn track_input_at(
         // Re-mix: recompute the covered samples with crossfade gains. Both sides play over the
         // whole transition, into their handles as the picture does, so a transition centred on a
         // cut overlaps the two clips instead of only fading each on its own side of the cut.
-        let from = tr.from.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
-        let to = tr.to.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
+        let (from_src, to_src) = (tr.from.and_then(|id| track.item(id)), tr.to.and_then(|id| track.item(id)));
+        let from = from_src.map(|i| with_handles(i, tr.start, tr.end()));
+        let to = to_src.map(|i| with_handles(i, tr.start, tr.end()));
         let s0 = tr.start.to_units_floor(sr as i64).max(start);
         let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
         if s1 <= s0 {
@@ -133,11 +134,11 @@ pub(crate) fn track_input_at(
         }
         let mut a = AudioBuffer::silence(sr, w, n);
         let mut b = AudioBuffer::silence(sr, w, n);
-        if let Some(f) = &from {
-            mix_item(project, f, Window { start: s0, frames: n, sr }, sources, &mut a, 1.0, &live);
+        if let (Some(f), Some(orig)) = (&from, from_src) {
+            mix_item(project, f, orig, Window { start: s0, frames: n, sr }, sources, &mut a, &live);
         }
-        if let Some(tt) = &to {
-            mix_item(project, tt, Window { start: s0, frames: n, sr }, sources, &mut b, 1.0, &live);
+        if let (Some(tt), Some(orig)) = (&to, to_src) {
+            mix_item(project, tt, orig, Window { start: s0, frames: n, sr }, sources, &mut b, &live);
         }
         let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
         let base = (s0 - tr.start.to_units_floor(sr as i64)) as f32;
@@ -167,7 +168,8 @@ fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
     // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
     // point, so the extra head (forward) or tail (reverse) moves source_in back
     let shift = if item.reverse { tail } else { head };
-    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    // the speed the clip's audio is read at, so the handles line up with it above the speed cap
+    ext.source_in = item.source_in - Tick((shift.0 as f64 * read_speed(item)).round() as i64);
     ext
 }
 
@@ -189,7 +191,9 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
     ((a.cos() * k).min(1.0), (a.sin() * k).min(1.0))
 }
 
-fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn SourceProvider, out: &mut AudioBuffer, extra: f32, live: &ClipLive) {
+/// `timing` is the clip as stored: keyframed volume and pan are evaluated on its media time, not on
+/// `item`'s, whose `source_in` a transition's handles have shifted.
+fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window, sources: &dyn SourceProvider, out: &mut AudioBuffer, live: &ClipLive) {
     let Window { start, frames, sr } = win;
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
@@ -239,7 +243,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
     let mut blk = 0usize;
     while blk < n {
         let t_tl = Tick::from_units((a0 + blk as i64).div_euclid(64) * 64, sr as i64);
-        let mt = item.source_time_at(t_tl);
+        let mt = timing.source_time_at(t_tl);
         let level = |auto: f64| live.vol.map(|o| o.at(t_tl, auto)).unwrap_or(auto);
         let v = match vol {
             Some(e) => db_to_gain(level(e.f64_at("level", mt))),
@@ -253,7 +257,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
             None if live.pan.is_some() => pan_gains((balance(0.0) / 100.0) as f32),
             None => (1.0, 1.0),
         };
-        let g = clip_gain * v * extra;
+        let g = clip_gain * v;
         let end = (((a0 + blk as i64).div_euclid(64) + 1) * 64 - a0).min(n as i64) as usize;
         if w == 2 {
             for i in blk..end {
@@ -284,7 +288,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
 fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
     let Window { start: m0, frames: len, sr } = win;
     // a damaged project can claim any rate: keep the buffer below sized by a real one
-    let own = nested.settings.sample_rate.clamp(1_000, 768_000);
+    let own = bounded_sample_rate(nested.settings.sample_rate);
     let sr = sr.max(1);
     // the nested sequence's samples that cover [m0, m0 + len) at `sr`
     let at = |i: i64| i as f64 * own as f64 / sr as f64;
@@ -368,6 +372,21 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
     Some(left == right)
 }
 
+/// A sequence's sample rate as the mixer runs it: a damaged project can claim any rate, and the
+/// request sizing in [`nested_mix`] and the mixing in `mixer::mix_graph_at` must agree.
+pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
+    rate.clamp(1_000, 768_000)
+}
+
+/// Fastest varispeed a clip is read at (Premiere's 10 000 %): a project can store any number, and
+/// the speed multiplies the source window a playback block requests.
+const MAX_CLIP_SPEED: f64 = 100.0;
+
+/// The speed a clip's audio is read at: its own, held to what [`MAX_CLIP_SPEED`] allows.
+fn read_speed(item: &TrackItem) -> f64 {
+    item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED)
+}
+
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
 /// the clip.
@@ -382,8 +401,10 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     }
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
-    let speed = item.speed.abs().max(1e-6);
-    let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
+    let speed = read_speed(item);
+    // Block starts follow the speed the span is read at, or consecutive blocks of a clip above the cap would leave gaps.
+    let at = Tick::from_units(a0, sr as i64);
+    let src_start_ticks = if speed == item.speed.abs() { item.source_time_at(at) } else { TrackItem { speed, ..item.clone() }.source_time_at(at) };
     let remixed = crate::remix::read(item, &|m0, len| src(m0, len), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
         remixed
@@ -509,4 +530,43 @@ pub fn source_pair(item: &TrackItem, available: usize) -> (usize, usize) {
 pub fn peaks(buf: &AudioBuffer, ch: usize, bucket: usize) -> Vec<(f32, f32)> {
     let Some(c) = buf.channels.get(ch) else { return Vec::new() };
     c.chunks(bucket.max(1)).map(|b| b.iter().fold((0f32, 0f32), |(lo, hi), s| (lo.min(*s), hi.max(*s)))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(speed: f64) -> TrackItem {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "item": 2, "name": "m", "label": "Violet", "start": 0, "duration": Tick::from_seconds_f64(1.0).0, "source_in": 0,
+            "speed": speed, "enabled": true, "effects": []
+        }))
+        .expect("track item")
+    }
+
+    /// Sample value = media sample index / 1e6, everywhere.
+    fn ramp(m: i64, len: usize) -> Option<AudioBuffer> {
+        let ch: Vec<f32> = (0..len as i64).map(|k| (m + k) as f32 / 1e6).collect();
+        Some(AudioBuffer { sample_rate: 48_000, channels: vec![ch.clone(), ch] })
+    }
+
+    #[test]
+    fn transition_handles_of_a_clip_above_the_speed_cap_line_up_with_its_audio() {
+        // A 1000x clip is read at 100x: half a second of head handle is 50 s of source, not 500 s.
+        let mut it = item(1000.0);
+        it.start = Tick::from_seconds_f64(2.0);
+        it.source_in = Tick::from_seconds_f64(600.0);
+        let ext = with_handles(&it, Tick::from_seconds_f64(1.5), Tick::from_seconds_f64(3.0));
+        assert_eq!(ext.source_in, Tick::from_seconds_f64(550.0));
+        // read at the capped speed, the extended item is at the original in point where the clip starts
+        assert_eq!(TrackItem { speed: MAX_CLIP_SPEED, ..ext }.source_time_at(it.start), it.source_in);
+    }
+
+    #[test]
+    fn blocks_of_a_clip_above_the_speed_cap_stay_contiguous() {
+        let it = item(1000.0);
+        let whole = raw_channels(&it, &ramp, 0, 200, 48_000, 2);
+        let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2);
+        assert!((second[0][0] - whole[0][100]).abs() < 1e-4, "block 2 starts at {}, the whole read has {} there", second[0][0], whole[0][100]);
+    }
 }

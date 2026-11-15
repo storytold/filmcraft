@@ -1,6 +1,6 @@
 //! Effect Controls: the selected clip's effects (fixed Motion/Opacity/Time Remapping first, as in
 //! Premiere, then standard effects), generated from parameter schemas, with stopwatches and a
-//! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
+//! keyframe lane on the right. Also hosts the Color Grading panel body (same editor, grouped).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem, TrackKind};
@@ -112,7 +112,7 @@ fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, TrackKind)> {
 
 /// The selected clip (video first) and the audio linked to it when that audio is selected or
 /// linked selection is on — so clip audio FX (Parametric EQ, Custom Setup) stay visible on A/V pairs.
-fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
+pub(crate) fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     let Some(seq) = app.session.active_sequence() else { return Vec::new() };
     let picked: Vec<(ClipId, &TrackItem, TrackKind)> = app
         .session
@@ -926,7 +926,7 @@ fn param_value_widget(
                 vui.data_mut(|d| d.remove::<String>(id));
             }
         }
-        // Lumetri's Input LUT / Look LUT: the Lumetri Color panel's menu (it showed only the name, #1123)
+        // Color Grading's Input LUT / Look LUT: the Color Grading panel's menu (it showed only the name, #1123)
         (ParamKind::Text, ParamValue::Text(cur)) => {
             let input = pd.id == "input_lut";
             let auto_id = format!("effectControls.{}.{}", e.effect, pkey);
@@ -1010,7 +1010,7 @@ fn keyframe_menu(
     }
 }
 
-/// Lumetri Color panel: edits (or adds) the Lumetri effect on the selected clip, grouped by section.
+/// Color Grading panel: edits (or adds) the Color Grading effect on the selected clip, grouped by section.
 pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, _)) = selected_clip(app) else {
@@ -1021,7 +1021,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).id_salt("lumetri"));
     bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
     let Some(idx) = idx else {
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
+        if bui.button(tl!("Add Color Grading to clip")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;
@@ -1315,7 +1315,7 @@ pub(crate) fn row_fill(r: Rect) -> Rect {
     Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y), r.max)
 }
 
-/// Run the panel's actions (also the Lumetri Color panel's). Parameter changes made
+/// Run the panel's actions (also the Color Grading panel's). Parameter changes made
 /// while the mouse button is down (a drag) share one undo step, which the first change of each
 /// press begins (#201); typed values and clicks stay separate steps. A drag value only changes once
 /// the mouse moves, after the press frame, so the press that already began a step is remembered by

@@ -457,6 +457,93 @@ fn upgrade_caption_to_graphic() {
 }
 
 #[test]
+fn select_all_then_upgrade_converts_every_caption() {
+    let mut s = demo("gt-caption-all");
+    for (i, t) in ["One", "Two", "Three"].iter().enumerate() {
+        s.execute("captions.add", json!({"text": t, "seconds": 600 + 3 * i, "durationSeconds": 2})).unwrap();
+    }
+    let n = s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().len();
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("edit.selectAll", json!({})).unwrap();
+    assert_eq!(s.state.caption_selection.len(), n, "Select All takes the captions too");
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    assert_eq!(r["upgraded"], n);
+    assert!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn select_all_then_delete_removes_clips_and_captions_in_one_undo() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        let mut s = demo("gt-caption-all-delete");
+        s.execute("captions.add", json!({"text": "One", "seconds": 600, "durationSeconds": 2})).unwrap();
+        let count = |s: &Session| {
+            let q = s.active_sequence().unwrap();
+            let clips: usize = q.all_tracks().map(|t| t.items.len()).sum();
+            let caps: usize = q.caption_tracks.iter().map(|t| t.captions.len()).sum();
+            (clips, caps)
+        };
+        let before = count(&s);
+        assert!(before.0 > 0 && before.1 > 0);
+        s.execute("edit.selectAll", json!({})).unwrap();
+        s.execute(cmd, json!({})).unwrap();
+        assert_eq!(count(&s), (0, 0), "{cmd}: one Delete takes clips and captions");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(count(&s), before, "{cmd}: one undo restores both");
+    }
+}
+
+#[test]
+fn select_all_then_delete_with_a_caption_inside_a_deleted_clip_and_a_locked_track() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        // a caption lying inside the clips: the clip ripple takes it before the caption delete runs
+        let mut s = demo("gt-caption-inside-delete");
+        s.execute("captions.add", json!({"text": "Inside", "seconds": 1, "durationSeconds": 2})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        assert!(!s.state.caption_selection.is_empty());
+        s.execute(cmd, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.all_tracks().map(|t| t.items.len()).sum::<usize>(), 0, "{cmd}: clips gone");
+        assert_eq!(q.caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), 0, "{cmd}: caption gone");
+        assert!(s.state.caption_selection.is_empty());
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(s.active_sequence().unwrap().all_tracks().any(|t| !t.items.is_empty()), "{cmd}: one undo restores");
+        // a caption on a locked track stays, and stays selected; the clips still go
+        let mut s = demo("gt-caption-locked-delete");
+        s.execute("captions.add", json!({"text": "Locked", "seconds": 600, "durationSeconds": 2})).unwrap();
+        s.execute("captions.setTrack", json!({"track": "C1", "locked": true})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        let caps = s.state.caption_selection.clone();
+        s.execute(cmd, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        assert_eq!(q.all_tracks().map(|t| t.items.len()).sum::<usize>(), 0, "{cmd}: the clips go");
+        assert_eq!(q.caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), caps.len(), "{cmd}: the locked caption stays");
+        assert_eq!(s.state.caption_selection, caps);
+    }
+}
+
+#[test]
+fn explicit_clip_deletion_keeps_selected_captions_and_rejects_invalid_targets() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        let mut s = demo("gt-caption-explicit-delete");
+        s.execute("captions.add", json!({"text": "Keep me", "seconds": 600, "durationSeconds": 2})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        let captions = s.state.caption_selection.clone();
+        let clips = s.state.selection.clone();
+        let count = s.active_sequence().unwrap().caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>();
+        for target in [json!({"clip": null}), json!({"clips": []}), json!({"clips": [u64::MAX]})] {
+            let before = s.project.clone();
+            assert!(s.execute(cmd, target).is_err());
+            assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+            assert_eq!(s.state.caption_selection, captions);
+            assert_eq!(s.state.selection, clips);
+        }
+        s.execute(cmd, json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>()})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), count);
+        assert_eq!(s.state.caption_selection, captions, "explicit clip targets leave captions selected");
+    }
+}
+
+#[test]
 fn caption_font_style_is_upgraded_listed_and_replaced() {
     let mut s = demo("gt-caption-font");
     s.execute("captions.add", json!({"text": "Styled", "seconds": 600, "durationSeconds": 2})).unwrap();
@@ -617,4 +704,30 @@ fn gradient_stop_keeps_its_alpha() {
     let start = col("gradient_start").unwrap();
     assert!((start[3] - 128.0 / 255.0).abs() < 1e-3, "{start:?}");
     assert_eq!(col("gradient_end").unwrap()[3], 1.0);
+}
+
+/// Remove works on library entries only, and a key that names two of them removes neither.
+#[test]
+fn remove_picks_one_library_file_and_never_a_path_outside_it() {
+    let mut s = demo("gt-remove");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Headline", "position": [200, 900]})).unwrap());
+    let r =
+        s.execute("graphics.template.export", json!({"clip": c.0, "name": "Dup", "controls": [{"layer": 0, "param": "text", "name": "Headline"}]})).unwrap();
+    let path = std::path::PathBuf::from(r["path"].as_str().unwrap());
+    let twin = path.with_file_name("twin.fcgt");
+    std::fs::copy(&path, &twin).unwrap();
+    // two files claim the id: the id removes neither
+    let e = s.execute("graphics.template.remove", json!({"template": "user:dup"})).unwrap_err().to_string();
+    assert!(e.contains("more than one"), "{e}");
+    assert!(path.exists() && twin.exists());
+    // a path outside the library is not a library template
+    let outside = tmp_dir("gt-remove-outside").join("elsewhere.fcgt");
+    std::fs::copy(&path, &outside).unwrap();
+    assert!(s.execute("graphics.template.remove", json!({"template": outside.to_string_lossy()})).is_err());
+    assert!(outside.exists());
+    // a library file is removed by its own path
+    s.execute("graphics.template.remove", json!({"template": twin.to_string_lossy()})).unwrap();
+    assert!(!twin.exists() && path.exists());
+    s.execute("graphics.template.remove", json!({"template": "user:dup"})).unwrap();
+    assert!(!path.exists());
 }

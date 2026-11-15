@@ -1041,3 +1041,145 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn eviction_reaches_interior_frames_when_both_ends_are_protected() {
+    // 1×1 RGBA pictures (4 bytes): the budget is the 64-frame playback reserve
+    let mut c = GopCache::new(None);
+    c.budget = 0;
+    let budget = c.cache_budget(4);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let pic = || VideoFrame::rgba8(1, 1, vec![0; 4]);
+    c.store_finished(&mut st, 0, pic(), false);
+    // each new decode is the newest frame and the request is the oldest: both ends protected
+    for k in 1..500 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    assert!(st.bytes <= budget, "{} bytes cached over a {budget}-byte budget", st.bytes);
+    assert!(st.frames.contains_key(&0) && st.frames.contains_key(&499_000));
+}
+
+#[test]
+fn two_frames_over_the_ceiling_keep_only_the_requested_one() {
+    // two ~200 MiB RGBA frames (zeroed, never touched) are over the 384 MiB ceiling together
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let big = || VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]);
+    c.store_finished(&mut st, 0, big(), false);
+    let second = c.store_finished(&mut st, 1000, big(), false);
+    assert!(st.bytes <= FRAME_CACHE_CEILING, "{} bytes cached over the ceiling", st.bytes);
+    assert!(st.frames.contains_key(&0), "the requested frame is kept");
+    // the frame a decode produced is handed back even though the cache had to drop it (another request owns the pin)
+    assert!(!st.frames.contains_key(&1000));
+    assert_eq!((second.width, second.height), (8192, 6400));
+}
+
+#[test]
+fn a_decode_whose_only_fallback_was_evicted_still_returns_it() {
+    // two ~200 MiB frames around the pin: the cache keeps the newest one and drops the older, which is the
+    // only frame at or before the wanted pts
+    let c = GopCache::new(None);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 1000;
+    let big = |pts| crate::video::DecodedFrame { pts, frame: VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]), draft: false };
+    let nearest = c.store_output(&mut st, vec![big(0), big(2000)], 1500).expect("the frame at 0");
+    assert_eq!(nearest.pts, 0);
+    assert!(!st.frames.contains_key(&0), "the cache dropped it");
+    assert_eq!((nearest.frame.width, nearest.frame.height), (8192, 6400));
+}
+
+/// Every sample claims to be a keyframe but none can start a decode: the search for a random-access
+/// sample gives up after a bounded number of probes instead of reading them all.
+#[test]
+fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
+    struct Aliased {
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl VideoSamples for Aliased {
+        fn count(&self) -> usize {
+            1 << 20
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            usize::try_from(t).ok()
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; 16])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Err(crate::CodecError::Unsupported("test".into()))
+        }
+    }
+    let s = Aliased { reads: Default::default() };
+    struct Huge(Aliased);
+    impl VideoSamples for Huge {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn sample_size(&self, _: usize) -> Option<u64> {
+            Some(MAX_RANDOM_ACCESS_PROBE_BYTES as u64 + 1)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    // a candidate declared larger than the byte budget is refused without being read
+    let h = Huge(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&h, 100, |_| Some(true)).is_err());
+    assert_eq!(h.0.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(random_access_at_or_before(&s, 1 << 19, |_| Some(false)).is_err());
+    assert!(s.reads.load(std::sync::atomic::Ordering::Relaxed) <= MAX_RANDOM_ACCESS_PROBES);
+    // a sample that can start a decode ends the search at once
+    assert_eq!(random_access_at_or_before(&s, 100, |_| Some(true)).unwrap(), 100);
+    assert_eq!(random_access_at_or_before(&s, 0, |_| Some(false)).unwrap(), 0);
+    // a container that cannot say a sample's size: the oversized candidate is refused after its one read
+    struct Unsized(Aliased);
+    impl VideoSamples for Unsized {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, _: usize) -> crate::Result<Vec<u8>> {
+            self.0.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![0; MAX_RANDOM_ACCESS_PROBE_BYTES + 1])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            self.0.make_decoder()
+        }
+    }
+    let u = Unsized(Aliased { reads: Default::default() });
+    assert!(random_access_at_or_before(&u, 100, |_| Some(true)).is_err());
+    assert_eq!(u.0.reads.load(std::sync::atomic::Ordering::Relaxed), 1);
+    // a cancelled request is refused even when the search starts at sample zero
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
+    assert!(matches!(r, Err(CodecError::Cancelled)));
+}

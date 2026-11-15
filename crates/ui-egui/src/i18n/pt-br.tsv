@@ -4,7 +4,7 @@
 # Brazilian Portuguese video-editing vocabulary. No proprietary localisation resource, string table
 # or product UI was consulted or copied; add entries the same way. Commands use the infinitive
 # ("Salvar como…"), instructions use the polite imperative ("Selecione um clipe…"), and labels use
-# sentence case. Product, format and technology names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS,
+# sentence case. Product, format and technology names (FilmCraft, ArtCraft, ProRes, LUFS,
 # EDL, AAF…) keep their spelling; decimals in prose use a comma ("29,97 fps"). This catalog has the
 # same entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English
 # until they are translated. A native-speaker review is welcome.
@@ -203,8 +203,8 @@
 	Refresh Changed Media	Atualizar mídia alterada
 	Linked Selection	Seleção vinculada
 	Lock Guides	Bloquear guias
-	Lumetri Color	Cor Lumetri
-	Lumetri Scopes	Escopos Lumetri
+	Color Grading	Gradação de cor
+	Video Scopes	Escopos de vídeo
 	Magnification	Ampliação
 	Make Offline…	Tornar offline…
 	Make Subclip…	Criar subclipe…
@@ -899,7 +899,7 @@
 	Clip Volume	Volume do clipe
 	(no clip selected)	(nenhum clipe selecionado)
 	Master · {name}	Mestre · {name}
-	Add Lumetri Color to clip	Adicionar Cor Lumetri ao clipe
+	Add Color Grading to clip	Adicionar gradação de cor ao clipe
 	Input LUT	LUT de entrada
 	Color	Cor
 	Temperature	Temperatura
@@ -1678,7 +1678,7 @@
 	Elliptical	Elíptico
 	Emboss	Relevo
 	Enable HSL Secondary	Ativar HSL secundário
-	Enable Mercury Transmit	Ativar Mercury Transmit
+	Enable External Video Output	Ativar saída de vídeo externa
 	Enable ProRes hardware accelerated encoding, if available	Ativar a codificação ProRes acelerada por hardware, se disponível
 	Enable clip and XMP metadata linking	Ativar a vinculação de metadados de clipe e XMP
 	Enable developer mode	Ativar o modo de desenvolvedor
@@ -1746,7 +1746,7 @@
 	Focus Size	Tamanho do foco
 	Fold Motion	Movimento de dobra
 	Foldback	Retorno
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Para os parâmetros de gerenciamento de cores, vá até a guia Configurações do painel Cor Lumetri.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Para os parâmetros de gerenciamento de cores, acesse a aba Configurações no painel Gradação de cor.
 	Format	Formato
 	Four Scopes (RGB, 8 bit)	Quatro escopos (RGB, 8 bits)
 	Four Scopes (YUV, float, no clamp)	Quatro escopos (YUV, ponto flutuante, sem limitar)
@@ -2015,7 +2015,7 @@
 	Luma Key	Chave de luma
 	Luma Source	Origem de luma
 	Luma and Chroma	Luma e croma
-	Lumetri Presets	Predefinições Lumetri
+	Color Grading Presets	Predefinições de gradação de cor
 	Luminance	Luminância
 	Luminance Threshold	Limiar de luminância
 	Luminosity	Luminosidade
@@ -3130,7 +3130,6 @@
 	Left align text	Alinhar texto à esquerda
 	Looping GIF, 640×360 at 15 fps	GIF em loop, 640×360 a 15 fps
 	Lower First	Inferior primeiro
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3685,3 +3684,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bits 4:2:0) com o tamanho da sequência, qualidade constante CRF 16, AAC 320 kbps; um master de 10 bits
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bits 4:2:0, todo quadro é um quadro-chave), CRF 12, AAC 320 kbps; um intermediário fácil de editar
+	List Color Grading Presets	Listar predefinições de gradação de cor
+	Apply Color Grading Preset	Aplicar predefinição de gradação de cor
+	Color Grading Preset Thumbnails	Miniaturas de predefinições de gradação de cor
+	Toggle Color Grading Section	Alternar seção de gradação de cor
+	Color Grading Section	Seção de gradação de cor
+	Read Video Scopes	Ler escopos de vídeo

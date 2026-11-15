@@ -120,11 +120,11 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
         let mixed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let seq = project.sequence(item)?;
             let sr = seq.settings.sample_rate.max(1);
-            let total = seq.duration().to_units_floor(sr as i64).max(0) as usize;
             // one peak per 256 samples at 48 kHz, whatever the sequence's own rate
             let bucket = ((256u64 * sr as u64) / 48_000).max(1) as usize;
+            let total = seq.duration().to_units_floor(sr as i64).max(0).min(MAX_PEAKS.saturating_mul(bucket) as i64) as usize;
             let chunk = (bucket * 750).max(1);
-            let mut out = Vec::with_capacity(total / bucket + 1);
+            let mut out = Vec::with_capacity((total / bucket + 1).min(INITIAL_PEAKS));
             let mut s = 0usize;
             while s < total {
                 let n = chunk.min(total - s);
@@ -151,11 +151,18 @@ fn request_sequence_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<Ve
     have
 }
 
+/// Most peaks one waveform keeps (16 Mi pairs, 128 MiB: over 24 hours of audio), and how many it
+/// reserves up front. The length comes from the project or the file's header, so it must not
+/// size an allocation.
+const MAX_PEAKS: usize = 1 << 24;
+const INITIAL_PEAKS: usize = 1 << 16;
+
 /// Min/max peaks (one per 256 samples at 48 kHz) of audio stream `stream` of `src`, `dur` long.
 pub(super) fn source_peaks(src: &dyn filmcraft_media::MediaSource, stream: usize, dur: Tick) -> Vec<(f32, f32)> {
     let sr = 48_000u32;
-    let total = dur.to_units_floor(sr as i64).max(0) as usize;
-    let mut out = Vec::with_capacity(total / 256 + 1);
+    // clamp in i64 before narrowing, and saturate so the limit itself fits a 32-bit usize
+    let total = dur.to_units_floor(sr as i64).max(0).min(MAX_PEAKS.saturating_mul(256) as i64) as usize;
+    let mut out = Vec::with_capacity((total / 256 + 1).min(INITIAL_PEAKS));
     let chunk = 48_000 * 4;
     let mut s = 0usize;
     while s < total {
@@ -206,4 +213,19 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId, stream: usize)
     #[cfg(target_arch = "wasm32")]
     run();
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_media::Generator;
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_time::FrameRate;
+
+    #[test]
+    fn a_source_claiming_an_absurd_duration_does_not_size_the_peak_buffer() {
+        // a color matte has no audio, so the read stops at once; the duration is what must not allocate
+        let src = GeneratorSource::new(Generator::ColorMatte { color: [0.0; 4] }, 16, 16, FrameRate::FPS_24, Tick(i64::MAX / 8));
+        assert!(source_peaks(&src, 0, Tick(i64::MAX / 8)).len() <= MAX_PEAKS);
+    }
 }
