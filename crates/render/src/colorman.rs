@@ -68,6 +68,18 @@ pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: Colo
     t.gpu_params().map(|_| t)
 }
 
+/// Like [`decode`], returning `Err` if a GPU-resident frame fails CPU readback instead of
+/// substituting transparent pixels.
+pub fn try_decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> Result<Image, String> {
+    if let Some(cpu) = frame.try_materialize_cpu()? {
+        if matches!(cpu.data, filmcraft_frame::PixelData::GpuSurface(_)) {
+            return Err("GPU surface readback returned another GPU surface".to_string());
+        }
+        return Ok(decode(project, item, &cpu, n, pipe));
+    }
+    Ok(decode(project, item, frame, n, pipe))
+}
+
 /// Decode a frame of `item` (box-decimated by `n`) into the working space of `pipe`.
 pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> Image {
     let cs = source_space(project, item, frame);

@@ -14,7 +14,7 @@
 use crate::GpuCompositor;
 use crate::SurfaceRender;
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
+use filmcraft_render::plan::{DeviceCaps, FramePlan, try_plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
 
@@ -324,7 +324,7 @@ impl ExportRenderer {
     /// Like [`Self::render`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
     /// fails CPU readback instead of falling back to CPU transparent pixels.
     pub fn try_render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
-        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        let plan = try_plan_frame(project, seq, t, opts, self.compositor.caps(), sources)?;
         match &plan {
             FramePlan::Image(img) => Ok(Some(img.clone())),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
@@ -849,6 +849,92 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    #[test]
+    fn try_render_propagates_readback_failure_on_opacity_masked_clip() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (try_render masked readback): no adapter");
+            return;
+        };
+        #[derive(Debug)]
+        struct FailingGpuSurface;
+        impl filmcraft_frame::GpuSurface for FailingGpuSurface {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn id(&self) -> usize {
+                0xBAD_CA5E
+            }
+            fn gpu_bytes(&self) -> u64 {
+                64 * 64 * 4
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn chroma(&self) -> filmcraft_frame::Chroma {
+                filmcraft_frame::Chroma::C444
+            }
+            fn to_cpu(&self) -> Result<filmcraft_frame::PixelData, String> {
+                Err("synthetic masked gpu readback failure".to_string())
+            }
+        }
+        struct FailingSource(filmcraft_media::MediaInfo);
+        impl MediaSource for FailingSource {
+            fn info(&self) -> &filmcraft_media::MediaInfo {
+                &self.0
+            }
+            fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+                Ok(Arc::new(filmcraft_frame::VideoFrame {
+                    width: 64,
+                    height: 64,
+                    data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+                    color: filmcraft_color::ColorInfo::REC709,
+                    par: (1, 1),
+                    pts: req.time,
+                }))
+            }
+            fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+                Err(filmcraft_media::MediaError::NoStream("audio"))
+            }
+        }
+        let g =
+            GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 64, 64, filmcraft_time::FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let mut p = Project::new("masked-fail");
+        let item = p.add_item(
+            "masked-gpu",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq =
+            p.new_sequence("s", SequenceSettings { width: 64, height: 64, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let mut clip = p
+            .make_track_item(
+                item,
+                TrackKind::Video,
+                Tick::ZERO,
+                TimeRange::new(Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(1)),
+                filmcraft_time::FrameRate::FPS_24,
+            )
+            .unwrap();
+        clip.effect_mut("opacity").unwrap().masks.push(filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 32.0)));
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+        let mut m = SourceMap::default();
+        m.0.insert(item, Arc::new(FailingSource(info)));
+        let res = r.try_render(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
+        assert!(matches!(res, Err(ref msg) if msg.contains("synthetic masked gpu readback failure")), "expected readback failure, got {res:?}");
     }
 
     #[test]

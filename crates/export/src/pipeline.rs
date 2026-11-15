@@ -322,7 +322,7 @@ impl Pipeline {
         if let Some(pool) = pool
             && pool.preparer.is_some()
         {
-            let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
+            let plan = filmcraft_render::plan::try_plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources).map_err(ExportError::Encode)?;
             if let filmcraft_render::plan::FramePlan::Image(img) = plan {
                 // the planner handed back a ready CPU image: no GPU renderer composited this frame
                 note_gpu_fallback();

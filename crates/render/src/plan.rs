@@ -303,15 +303,47 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 
 /// Plan the frame at timeline `t` for a device that runs `caps`.
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, caps: DeviceCaps, sources: &dyn SourceProvider) -> FramePlan {
-    let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
+    plan_frame_inner(project, seq_id, t, opts, caps, sources, false).unwrap_or_else(|_| FramePlan::Image(crate::Image::new(1, 1)))
+}
+
+/// Like [`plan_frame`], returning `Err` when CPU readback of a [`GpuSurface`](filmcraft_frame::GpuSurface)
+/// fails during layer pre-rendering or CPU fallback.
+pub fn try_plan_frame(
+    project: &Project,
+    seq_id: ItemId,
+    t: Tick,
+    opts: RenderOptions,
+    caps: DeviceCaps,
+    sources: &dyn SourceProvider,
+) -> Result<FramePlan, String> {
+    plan_frame_inner(project, seq_id, t, opts, caps, sources, true)
+}
+
+fn plan_frame_inner(
+    project: &Project,
+    seq_id: ItemId,
+    t: Tick,
+    opts: RenderOptions,
+    caps: DeviceCaps,
+    sources: &dyn SourceProvider,
+    strict_readback: bool,
+) -> Result<FramePlan, String> {
+    let Some(seq) = project.sequence(seq_id) else { return Ok(FramePlan::Image(crate::Image::new(1, 1))) };
     let (w, h) = output_size(seq, opts.scale);
+    let fallback = || {
+        if strict_readback {
+            crate::try_render_sequence(project, seq_id, t, opts, sources).map(FramePlan::Image)
+        } else {
+            Ok(FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources)))
+        }
+    };
     if whole_frame_on_cpu(project, seq, t, opts.scale, caps) {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
     let mut layers = PlanStack::default();
-    push_tracks(Scene { project, seq, t, opts, caps, sources, nest: 0 }, &mut layers);
+    push_tracks(Scene { project, seq, t, opts, caps, sources, nest: 0, strict_readback }, &mut layers)?;
     if layers.exhausted || layers.cpu_only {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
@@ -324,9 +356,9 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
     }
     if layers.exhausted {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
-    layers.finish(w, h)
+    Ok(layers.finish(w, h))
 }
 
 /// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]) for
@@ -428,9 +460,9 @@ fn push_adjustment(sc: Scene, item: &TrackItem, out: &mut PlanStack) {
 
 /// Push the layers of every video track of the scene's sequence at its time, bottom track first
 /// (the sequence must be [`layered_at`] that time).
-fn push_tracks(sc: Scene, layers: &mut PlanStack) {
+fn push_tracks(sc: Scene, layers: &mut PlanStack) -> Result<(), String> {
     if layers.exhausted {
-        return;
+        return Ok(());
     }
     let Scene { seq, t, opts, .. } = sc;
     let (w, h) = output_size(seq, opts.scale);
@@ -442,24 +474,25 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
     if active.len() <= 1 {
         for tr in active {
             if layers.exhausted {
-                return;
+                return Ok(());
             }
-            layers.append(push_one_track(sc, tr, w, h));
+            layers.append(push_one_track(sc, tr, w, h)?);
         }
-        return;
+        return Ok(());
     }
     use rayon::prelude::*;
     let ctx = filmcraft_media::cancel::Context::current();
-    let stacks: Vec<PlanStack> = active.into_par_iter().map(|tr| ctx.clone().run(|| push_one_track(sc, tr, w, h))).collect();
+    let stacks: Vec<Result<PlanStack, String>> = active.into_par_iter().map(|tr| ctx.clone().run(|| push_one_track(sc, tr, w, h))).collect();
     for s in stacks {
-        if layers.exhausted {
-            return;
+        let s = s?;
+        if !layers.exhausted {
+            layers.append(s);
         }
-        layers.append(s);
     }
+    Ok(())
 }
 
-fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) -> PlanStack {
+fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) -> Result<PlanStack, String> {
     let Scene { project, t, opts, .. } = sc;
     let mut layers = PlanStack::default();
     if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
@@ -469,11 +502,11 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
         let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
         match trn.effect.effect.as_str() {
             "push" => {
-                let eval_side = |item: Option<&TrackItem>| -> Option<Vec<PlanLayer>> {
-                    let Some(item) = item else { return Some(Vec::new()) };
+                let eval_side = |item: Option<&TrackItem>| -> Result<Option<Vec<PlanLayer>>, String> {
+                    let Some(item) = item else { return Ok(Some(Vec::new())) };
                     let mut input = PlanStack::default();
-                    push_item(sc, item, 1.0, Some(Blend::Normal), &mut input);
-                    input.into_layers(w, h)
+                    push_item(sc, item, 1.0, Some(Blend::Normal), &mut input)?;
+                    Ok(input.into_layers(w, h))
                 };
                 let (res_a, res_b) = if a.is_some() && b.is_some() {
                     let ctx = filmcraft_media::cancel::Context::current();
@@ -482,9 +515,9 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
                 } else {
                     (eval_side(a), eval_side(b))
                 };
-                let (Some(la), Some(lb)) = (res_a, res_b) else {
+                let (Some(la), Some(lb)) = (res_a?, res_b?) else {
                     layers.exhausted = true;
-                    return layers;
+                    return Ok(layers);
                 };
                 let mut inputs = [la, lb];
                 let progress = if trn.reverse {
@@ -500,7 +533,7 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
                 layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
                 let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
                 if let Some(it) = it {
-                    push_item(sc, it, k, Some(Blend::Normal), &mut layers);
+                    push_item(sc, it, k, Some(Blend::Normal), &mut layers)?;
                 }
             }
             _ => {
@@ -510,48 +543,52 @@ fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) 
                 if a.is_some() && b.is_some() {
                     let ctx = filmcraft_media::cancel::Context::current();
                     let (ctx_a, ctx_b) = (ctx.clone(), ctx);
-                    rayon::join(
+                    let (ra, rb) = rayon::join(
                         || {
-                            ctx_a.run(|| {
+                            ctx_a.run(|| -> Result<(), String> {
                                 if let Some(it) = a {
-                                    push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a);
+                                    push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a)?;
                                 }
+                                Ok(())
                             })
                         },
                         || {
-                            ctx_b.run(|| {
+                            ctx_b.run(|| -> Result<(), String> {
                                 if let Some(it) = b {
-                                    push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
+                                    push_item(sc, it, p, Some(Blend::Normal), &mut stack_b)?;
                                 }
+                                Ok(())
                             })
                         },
                     );
+                    ra?;
+                    rb?;
                 } else {
                     if let Some(it) = a {
-                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut stack_a);
+                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut stack_a)?;
                     }
                     if let Some(it) = b {
-                        push_item(sc, it, p, Some(Blend::Normal), &mut stack_b);
+                        push_item(sc, it, p, Some(Blend::Normal), &mut stack_b)?;
                     }
                 }
                 layers.append(stack_a);
                 layers.append(stack_b);
             }
         }
-        return layers;
+        return Ok(layers);
     }
-    let Some(item) = tr.item_at(t) else { return layers };
+    let Some(item) = tr.item_at(t) else { return Ok(layers) };
     if !item.enabled {
-        return layers;
+        return Ok(layers);
     }
     if is_adjustment(project, item) {
         if opts.effects {
             push_adjustment(sc, item, &mut layers);
         }
-        return layers;
+        return Ok(layers);
     }
-    push_item(sc, item, 1.0, None, &mut layers);
-    layers
+    push_item(sc, item, 1.0, None, &mut layers)?;
+    Ok(layers)
 }
 
 /// Whether a nested sequence can be drawn by pushing its own layers into the plan of the sequence
@@ -583,16 +620,17 @@ struct Scene<'a> {
     caps: DeviceCaps,
     sources: &'a dyn SourceProvider,
     nest: u32,
+    strict_readback: bool,
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
 /// the CPU reference mixes the clips and composites the result Normal, ignoring their modes.
 /// `nest` counts the multi-camera clips already followed to reach `item` (see
 /// [`crate::MAX_NEST_DEPTH`]).
-fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blend>, out: &mut PlanStack) {
-    let Scene { project, seq, t, opts, caps, sources, nest } = sc;
+fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blend>, out: &mut PlanStack) -> Result<(), String> {
+    let Scene { project, seq, t, opts, caps, sources, nest, strict_readback } = sc;
     if out.exhausted {
-        return;
+        return Ok(());
     }
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
     let ft = item.source_time_at(t);
@@ -614,9 +652,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, inner, extra_opacity * op, Some(bl), out);
+            push_item(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, inner, extra_opacity * op, Some(bl), out)?;
         }
-        return;
+        return Ok(());
     }
     // A nested sequence that is only shown (no effects, untransformed, fully opaque, blending
     // Normal) contributes its own layers: the compositor draws them like the clips of this
@@ -631,9 +669,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
     {
-        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out);
+        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out)?;
         if out.exhausted {
-            return;
+            return Ok(());
         }
         let (w, h) = output_size(nested, opts.scale);
         for o in crate::caption_overlays(nested, ft, w, h) {
@@ -644,31 +682,31 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 Blend::Normal,
             ));
         }
-        return;
+        return Ok(());
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
     if !(opts.effects && item.has_standard_effects() || item.has_opacity_masks())
         && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
     {
-        let Some(size) = crate::source_size(project, item.item) else { return };
+        let Some(size) = crate::source_size(project, item.item) else { return Ok(()) };
         let (w, h) = output_size(seq, opts.scale);
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, None, mt));
         if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(item, mt, size, &m, w, h) {
             out.push(PlanLayer::new(cpu_frame(img), Affine::translate(x as f64, y as f64), op * extra_opacity, bl));
         }
-        return;
+        return Ok(());
     }
     if let Some(chain) = gpu_chain(project, item, opts) {
-        let Some(src) = sources.source(item.item) else { return };
-        let Some(size) = crate::source_size(project, item.item) else { return };
+        let Some(src) = sources.source(item.item) else { return Ok(()) };
+        let Some(size) = crate::source_size(project, item.item) else { return Ok(()) };
         let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let time = crate::video_source_time(item, t, src.info().frame_rate());
         // The GPU turns the frame as decoded, the container's display rotation folded into the
         // layer's matrix or its effect stage: turning a 4K frame on the CPU is too slow to play (#3467).
-        let Ok((frame, turns)) = src.video_frame_unturned(FrameRequest { time, scale: want }) else { return };
+        let Ok((frame, turns)) = src.video_frame_unturned(FrameRequest { time, scale: want }) else { return Ok(()) };
         let upright = |f: &VideoFrame| if turns % 2 == 1 { (f.height, f.width) } else { (f.width, f.height) };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
@@ -706,7 +744,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
                 let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, turns, ops };
                 out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
-                return;
+                return Ok(());
             }
         } else if plain {
             // Draft playback at reduced resolution: hand over planes box-filtered to the size
@@ -724,14 +762,20 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 .then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale))
                 .then_apply(&quarter_turns(turns, frame.width as f64, frame.height as f64));
             out.push(PlanLayer { input, ..PlanLayer::new(frame, m, op * extra_opacity, bl) });
-            return;
+            return Ok(());
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
-    if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
+    let item_res = if strict_readback {
+        crate::try_item_layer(project, seq, item, t, opts, sources, &tc)?
+    } else {
+        crate::item_layer(project, seq, item, t, opts, sources, &tc)
+    };
+    if let Some((img, op2, _)) = item_res {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
     }
+    Ok(())
 }
 
 /// Maps a `w`×`h` frame's pixels to the frame turned clockwise by `q` quarter turns, as

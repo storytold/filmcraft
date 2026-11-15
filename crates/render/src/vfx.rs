@@ -86,6 +86,18 @@ pub(crate) struct ItemEnv<'a> {
     pub layer_size: (usize, usize),
     pub layer_to_output: Affine,
     pub tc: &'a str,
+    pub readback_error: Option<&'a std::sync::Mutex<Option<String>>>,
+}
+
+impl ItemEnv<'_> {
+    fn note_readback_error(&self, err: String) {
+        if let Some(slot) = self.readback_error {
+            let mut g = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if g.is_none() {
+                *g = Some(err);
+            }
+        }
+    }
 }
 
 fn resize(img: Image, w: usize, h: usize) -> Image {
@@ -104,7 +116,17 @@ pub fn is_temporal(id: &str) -> bool {
 impl FxEnv for ItemEnv<'_> {
     fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
-        let base = crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want)?;
+        let base = if self.readback_error.is_some() {
+            match crate::try_base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want) {
+                Ok(b) => b?,
+                Err(e) => {
+                    self.note_readback_error(e);
+                    return None;
+                }
+            }
+        } else {
+            crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, self.want)?
+        };
         let mut img = resize(base, self.layer_size.0, self.layer_size.1);
         let src = crate::source_size(self.project, self.item.item).unwrap_or((1, 1));
         let cx = FxCtx {
@@ -131,14 +153,35 @@ impl FxEnv for ItemEnv<'_> {
     }
     fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
-        crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale.clamp(1.0 / 64.0, 1.0))
+        let scale = scale.clamp(1.0 / 64.0, 1.0);
+        if self.readback_error.is_some() {
+            match crate::try_base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale) {
+                Ok(b) => b,
+                Err(e) => {
+                    self.note_readback_error(e);
+                    None
+                }
+            }
+        } else {
+            crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale)
+        }
     }
     fn track(&self, index: usize) -> Option<Image> {
         if index >= self.seq.video_tracks.len() {
             return None;
         }
         let o = RenderOptions { captions: false, working_output: true, depth: self.opts.depth + 1, ..self.opts };
-        Some(crate::render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index)))
+        if self.readback_error.is_some() {
+            match crate::try_render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index)) {
+                Ok(img) => Some(img),
+                Err(e) => {
+                    self.note_readback_error(e);
+                    None
+                }
+            }
+        } else {
+            Some(crate::render_seq_tracks(self.project, self.seq, self.t, o, self.sources, Some(index)))
+        }
     }
     fn layer_to_output(&self) -> Affine {
         self.layer_to_output

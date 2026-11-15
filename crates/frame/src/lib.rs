@@ -337,6 +337,24 @@ impl VideoFrame {
         self.to_linear_f32_decimated_with(n, None)
     }
 
+    /// Like [`VideoFrame::to_linear_f32_decimated`], returning `Err` if GPU-to-CPU readback fails
+    /// instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_decimated(&self, n: usize) -> Result<(usize, usize, Vec<f32>), String> {
+        self.try_to_linear_f32_decimated_with(n, None)
+    }
+
+    /// Like [`VideoFrame::to_linear_f32_decimated_with`], returning `Err` if GPU-to-CPU readback
+    /// fails instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_decimated_with(&self, n: usize, decode: Option<&DecodeTable>) -> Result<(usize, usize, Vec<f32>), String> {
+        if let Some(cpu) = self.try_materialize_cpu()? {
+            if matches!(cpu.data, PixelData::GpuSurface(_)) {
+                return Err("GPU surface readback returned another GPU surface".to_string());
+            }
+            return Ok(cpu.to_linear_f32_decimated_with(n, decode));
+        }
+        Ok(self.to_linear_f32_decimated_with(n, decode))
+    }
+
     /// Like [`VideoFrame::to_linear_f32_decimated`], decoding each channel's signal through
     /// `decode` (a colour-managed curve: log, PQ, HLG scene light…) instead of the frame's
     /// transfer. Float frames are already linear and ignore it.
@@ -359,6 +377,18 @@ impl VideoFrame {
     /// only: the rectangle (clipped to the picture) and its premultiplied linear RGBA pixels, row
     /// by row. Each pixel is exactly what the full conversion gives at that position. The buffer
     /// may come from the pool ([`pool::recycle_f32`] hands it back).
+    /// Like [`VideoFrame::to_linear_f32_region`], returning `Err` if GPU-to-CPU readback fails
+    /// instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_region(&self, n: usize, decode: Option<&DecodeTable>, region: Region) -> Result<(Region, Vec<f32>), String> {
+        if let Some(cpu) = self.try_materialize_cpu()? {
+            if matches!(cpu.data, PixelData::GpuSurface(_)) {
+                return Err("GPU surface readback returned another GPU surface".to_string());
+            }
+            return Ok(cpu.to_linear_f32_region(n, decode, region));
+        }
+        Ok(self.to_linear_f32_region(n, decode, region))
+    }
+
     pub fn to_linear_f32_region(&self, n: usize, decode: Option<&DecodeTable>, region: Region) -> (Region, Vec<f32>) {
         let n = self.bounded_decimation(n);
         let (ow, oh) = self.decimated_size(n);

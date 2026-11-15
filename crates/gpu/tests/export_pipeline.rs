@@ -371,4 +371,22 @@ fn gpu_export_matches_cpu_and_counts() {
         "export must fail rather than emit black pixels when GPU surface readback fails: {res:?}"
     );
     assert!(!fail_dir.join("img000.png").exists(), "failed GPU surface readback must not write output frames");
+
+    // Same failing GPU source with an opacity mask on the clip: skips the GPU source path
+    // (`gpu_chain` returns `None`) and goes through planning's `item_layer` decode path.
+    let mut masked_proj = (*fail_proj).clone();
+    let masked_clip = &mut masked_proj.sequence_mut(fail_seq).unwrap().video_tracks[0].items[0];
+    let mask = filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 32.0));
+    masked_clip.effect_mut("opacity").unwrap().masks.push(mask);
+    let masked_dir = base.join("fail-masked-gpu-readback");
+    std::fs::create_dir_all(&masked_dir).unwrap();
+    let mut s_masked = ExportSettings { format: Format::PngSequence, path: masked_dir.join("img.png").to_string_lossy().into_owned(), ..Default::default() };
+    s_masked.range = s_fail.range;
+    s_masked.gpu_rendering = GpuRendering::Auto;
+    let masked_res = export(&Arc::new(masked_proj), fail_seq, &s_masked, &fail_sources, &Progress::default());
+    assert!(
+        matches!(masked_res, Err(filmcraft_export::ExportError::Encode(ref msg)) if msg.contains("synthetic source gpu surface readback failure")),
+        "opacity-masked export must fail when GPU surface readback fails: {masked_res:?}"
+    );
+    assert!(!masked_dir.join("img000.png").exists(), "failed masked GPU surface readback must not write output frames");
 }
