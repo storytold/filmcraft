@@ -220,6 +220,16 @@ pub(crate) fn interleave(planar: &[Vec<f32>]) -> Vec<f32> {
     out
 }
 
+/// Replaces samples a damaged source could leave non-finite, which the Opus and Vorbis encoders
+/// refuse.
+pub(crate) fn finite(planar: &mut [Vec<f32>]) {
+    for v in planar.iter_mut().flatten() {
+        if !v.is_finite() {
+            *v = 0.0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod bounds_tests {
     #[test]
