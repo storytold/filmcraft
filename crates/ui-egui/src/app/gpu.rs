@@ -65,9 +65,7 @@ impl FilmcraftApp {
             self.disable_gpu("compositor panicked");
             return None;
         };
-        let Some((view, size)) = rendered else {
-            return None;
-        };
+        let (view, size) = rendered?;
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();
