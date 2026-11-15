@@ -9,11 +9,10 @@ use std::sync::Arc;
 #[test]
 fn av1_svt_nvenc_and_opus_round_trip() {
     filmcraft_platform::register();
-    if !filmcraft_platform::svt_av1_available() {
-        assert!(std::env::var_os("FILMCRAFT_REQUIRE_NATIVE_CODECS").is_none(), "requested SVT library must be installed");
-        eprintln!("SKIPPED: no SVT-AV1 mainline library");
-        return;
-    }
+    let svt = filmcraft_platform::svt_av1_available();
+    let nvenc = filmcraft_platform::nvenc::av1_available();
+    let opus = filmcraft_export::available(Format::Opus);
+    assert!(std::env::var_os("FILMCRAFT_REQUIRE_NATIVE_CODECS").is_none() || (svt && opus), "requested native codec libraries must be installed");
     let ffmpeg = filmcraft_testkit::require_ffmpeg!();
     let ffprobe = filmcraft_testkit::require_ffprobe!();
     let rate = FrameRate::FPS_24;
@@ -55,8 +54,8 @@ fn av1_svt_nvenc_and_opus_round_trip() {
             (filmcraft_export::BitrateMode::Crf, None, 6),
             (filmcraft_export::BitrateMode::Vbr1Pass, Some(8), 2),
         ] {
-            if mode == filmcraft_export::BitrateMode::Vbr1Pass && !filmcraft_platform::nvenc::av1_available() {
-                eprintln!("SKIPPED: no NVENC AV1 encoder");
+            if (mode == filmcraft_export::BitrateMode::Crf && !svt) || (mode == filmcraft_export::BitrateMode::Vbr1Pass && !nvenc) {
+                eprintln!("SKIPPED: no AV1 backend for {mode:?}");
                 continue;
             }
             for (multiplexer, ext) in [(Multiplexer::Mp4, "mp4"), (Multiplexer::Mkv, "mkv")] {
@@ -66,7 +65,7 @@ fn av1_svt_nvenc_and_opus_round_trip() {
                     format: Format::Av1,
                     multiplexer,
                     path: path.to_string_lossy().into(),
-                    include_audio: true,
+                    include_audio: opus,
                     audio: filmcraft_export::AudioSettings { codec: filmcraft_export::AudioCodec::Opus, channels, ..Default::default() },
                     bitrate_kbps: 8000,
                     keyframe_distance: keyint,
@@ -79,7 +78,7 @@ fn av1_svt_nvenc_and_opus_round_trip() {
                 verify_video(&ffmpeg, &ffprobe, &path, &settings, transfer);
             }
         }
-        if working == filmcraft_color::WorkingSpace::Rec709 {
+        if svt && working == filmcraft_color::WorkingSpace::Rec709 {
             for codec in [filmcraft_export::AudioCodec::Aac, filmcraft_export::AudioCodec::Flac] {
                 let path = filmcraft_testkit::temp_path(&filmcraft_testkit::fixtures_dir("native-av1").join(format!("audio-{codec:?}.mkv")));
                 let settings = ExportSettings {
@@ -96,7 +95,7 @@ fn av1_svt_nvenc_and_opus_round_trip() {
                 assert_eq!(out.stdout.len() / 8, 64000, "Matroska {codec:?} sample count");
             }
         }
-        for channels in [1, 2, 6] {
+        for channels in [1, 2, 6].into_iter().filter(|_| opus) {
             let path = filmcraft_testkit::temp_path(&filmcraft_testkit::fixtures_dir("native-opus").join(format!("{}-{channels}.opus", working.id())));
             let settings = ExportSettings {
                 format: Format::Opus,
@@ -120,7 +119,15 @@ fn verify_video(ffmpeg: &std::path::Path, ffprobe: &std::path::Path, path: &std:
     let mode = settings.bitrate_mode;
     let pixel_format = if mode == filmcraft_export::BitrateMode::Vbr1Pass && transfer == "bt709" { "yuv420p" } else { "yuv420p10le" };
     let out = std::process::Command::new(ffprobe)
-        .args(["-v", "error", "-count_frames", "-show_entries", "stream=codec_name,codec_tag_string,pix_fmt,color_transfer,nb_read_frames", "-of", "json"])
+        .args([
+            "-v",
+            "error",
+            "-count_frames",
+            "-show_entries",
+            "stream=codec_name,codec_tag_string,pix_fmt,color_transfer,nb_read_frames,start_time",
+            "-of",
+            "json",
+        ])
         .arg(path)
         .output()
         .unwrap();
@@ -133,29 +140,22 @@ fn verify_video(ffmpeg: &std::path::Path, ffprobe: &std::path::Path, path: &std:
 
         assert!(info.contains(expected), "{expected}: {info}");
     }
-    assert!(info.contains("opus"), "{info}");
-    if ext == "mkv" {
-        assert_eq!(&std::fs::read(path).unwrap()[..4], &[0x1a, 0x45, 0xdf, 0xa3]);
-        let seek = std::process::Command::new(ffmpeg)
-            .args(["-v", "error", "-ss", "0.5", "-i"])
-            .arg(path)
-            .args(["-map", "0:v:0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-            .output()
-            .unwrap();
-        assert!(seek.status.success(), "{}", String::from_utf8_lossy(&seek.stderr));
-        assert_eq!(seek.stdout.len(), 320 * 180 * 3);
-        let audio = std::process::Command::new(ffmpeg).args(["-v", "error", "-ss", "0.5", "-i"]).arg(path).args(["-vn", "-f", "f32le", "-"]).output().unwrap();
-        assert!(audio.status.success());
-        assert_eq!(audio.stdout.len() / (channels as usize * 4), 40000, "seeking Matroska must retain the remaining audio");
+    if settings.has_audio() {
+        assert!(info.contains("opus"), "{info}");
     }
-    if ext == "mp4" {
-        let timing =
-            std::process::Command::new(ffprobe).args(["-v", "error", "-show_entries", "stream=start_time,duration", "-of", "json"]).arg(path).output().unwrap();
-        let timing: serde_json::Value = serde_json::from_slice(&timing.stdout).unwrap();
-        for stream in timing["streams"].as_array().unwrap() {
-            assert_eq!(stream["start_time"].as_str().unwrap().parse::<f64>().unwrap(), 0.0);
-            assert!((stream["duration"].as_str().unwrap().parse::<f64>().unwrap() - 32.0 / 24.0).abs() < 0.000002);
-        }
+    verify_timing(ffmpeg, ffprobe, path, settings, &out.stdout);
+    if transfer == "smpte2084" {
+        let raw =
+            std::process::Command::new(ffmpeg).args(["-v", "error", "-i"]).arg(path).args(["-map", "0:v:0", "-c", "copy", "-f", "obu", "-"]).output().unwrap();
+        assert!(raw.status.success());
+        let raw_path = filmcraft_testkit::temp_path(&path.with_extension("obu"));
+        std::fs::write(&raw_path, raw.stdout).unwrap();
+        let metadata =
+            std::process::Command::new(ffprobe).args(["-v", "error", "-read_intervals", "%+#1", "-show_frames", "-of", "json"]).arg(raw_path).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&metadata.stdout).contains("Mastering display metadata"),
+            "PQ bitstream must carry mastering metadata independently of the container"
+        );
     }
     let out = std::process::Command::new(ffprobe)
         .args(["-v", "error", "-select_streams", "v:0", "-show_frames", "-show_entries", "frame=key_frame", "-of", "csv=p=0"])
@@ -174,9 +174,48 @@ fn verify_video(ffmpeg: &std::path::Path, ffprobe: &std::path::Path, path: &std:
     if keyint.is_some() {
         assert_eq!(flags.iter().enumerate().filter_map(|(i, k)| k.then_some(i)).collect::<Vec<_>>(), vec![0, 8, 16, 24]);
     }
-    let audio = std::process::Command::new(ffmpeg).args(["-v", "error", "-i"]).arg(path).args(["-vn", "-f", "f32le", "-"]).output().unwrap();
-    assert!(audio.status.success());
-    assert_eq!(audio.stdout.len() / (channels as usize * 4), 64000, "Opus audio duration");
+    if settings.has_audio() {
+        let audio = std::process::Command::new(ffmpeg).args(["-v", "error", "-i"]).arg(path).args(["-vn", "-f", "f32le", "-"]).output().unwrap();
+        assert!(audio.status.success());
+        assert_eq!(audio.stdout.len() / (channels as usize * 4), 64000, "Opus audio duration");
+    }
     let out = std::process::Command::new(ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(path).args(["-f", "null", "-"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn verify_timing(ffmpeg: &std::path::Path, ffprobe: &std::path::Path, path: &std::path::Path, settings: &ExportSettings, stream_info: &[u8]) {
+    let ext = settings.extension();
+    let channels = settings.audio.channels;
+    let streams: serde_json::Value = serde_json::from_slice(stream_info).unwrap();
+    for stream in streams["streams"].as_array().unwrap() {
+        assert_eq!(stream["start_time"].as_str().unwrap().parse::<f64>().unwrap(), 0.0, "both streams must start at the timeline origin");
+    }
+    if ext == "mkv" {
+        assert_eq!(&std::fs::read(path).unwrap()[..4], &[0x1a, 0x45, 0xdf, 0xa3]);
+        let seek = std::process::Command::new(ffmpeg)
+            .args(["-v", "error", "-ss", "0.5", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        assert!(seek.status.success(), "{}", String::from_utf8_lossy(&seek.stderr));
+        assert_eq!(seek.stdout.len(), 320 * 180 * 3);
+        if settings.has_audio() {
+            let audio =
+                std::process::Command::new(ffmpeg).args(["-v", "error", "-ss", "0.5", "-i"]).arg(path).args(["-vn", "-f", "f32le", "-"]).output().unwrap();
+            assert!(audio.status.success());
+            assert_eq!(audio.stdout.len() / (channels as usize * 4), 40000, "seeking Matroska must retain the remaining audio");
+        }
+    }
+    if ext == "mp4" {
+        let trace = std::process::Command::new(ffprobe).args(["-v", "trace", "-show_entries", "format=format_name"]).arg(path).output().unwrap();
+        assert!(!String::from_utf8_lossy(&trace.stderr).contains("type:'ctts'"), "AV1 MP4 must not contain composition offsets");
+        let timing =
+            std::process::Command::new(ffprobe).args(["-v", "error", "-show_entries", "stream=start_time,duration", "-of", "json"]).arg(path).output().unwrap();
+        let timing: serde_json::Value = serde_json::from_slice(&timing.stdout).unwrap();
+        for stream in timing["streams"].as_array().unwrap() {
+            assert_eq!(stream["start_time"].as_str().unwrap().parse::<f64>().unwrap(), 0.0);
+            assert!((stream["duration"].as_str().unwrap().parse::<f64>().unwrap() - 32.0 / 24.0).abs() < 0.000002);
+        }
+    }
 }

@@ -20,6 +20,7 @@ struct Api {
 }
 
 impl Api {
+    #[allow(unsafe_code)] // Resolves the public libopus ABI while retaining its library.
     fn load() -> std::result::Result<Self, String> {
         let library = super::load("FILMCRAFT_OPUS_LIBRARY", "opus.dll")?;
         // SAFETY: signatures from the public libopus multistream API; the library outlives symbols.
@@ -50,9 +51,11 @@ struct Encoder {
 }
 
 // SAFETY: an exclusively owned libopus encoder has no thread affinity; &mut self serializes calls.
+#[allow(unsafe_code)]
 unsafe impl Send for Encoder {}
 
 impl Encoder {
+    #[allow(unsafe_code)] // Creates and configures the native libopus encoder.
     fn new(channels: u32, s: &ExportSettings) -> Result<Self> {
         if !matches!(channels, 1 | 2 | 6) || !(6..=510).contains(&s.audio.bitrate_kbps) {
             return Err(err("needs mono, stereo or 5.1 and 6..510 kbps"));
@@ -99,6 +102,7 @@ impl Encoder {
         Ok(enc)
     }
 
+    #[allow(unsafe_code)] // Encodes validated interleaved buffers through the native ABI.
     fn packets(&mut self) -> Result<Vec<Vec<u8>>> {
         let size = self.channels * 960;
         let n = self.pending.len() / size;
@@ -120,6 +124,7 @@ impl Encoder {
 }
 
 impl Drop for Encoder {
+    #[allow(unsafe_code)] // Destroys the native handle before its library is unloaded.
     fn drop(&mut self) {
         // SAFETY: destroy the exclusively owned handle once, before unloading its library.
         unsafe {

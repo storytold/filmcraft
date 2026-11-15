@@ -5,6 +5,7 @@ use filmcraft_export::Format;
 
 mod opus;
 mod svt;
+#[allow(unsafe_code)] // Generated FFI layouts only; encoder logic has no blanket allowance.
 mod svt_ffi;
 
 pub(super) fn svt_available() -> bool {
@@ -23,6 +24,7 @@ pub fn register() {
     });
 }
 
+#[allow(unsafe_code)] // The single native-library loading boundary.
 fn load(env: &str, name: &str) -> Result<libloading::Library, String> {
     let path = if let Some(path) = std::env::var_os(env) {
         PathBuf::from(path)

@@ -296,7 +296,7 @@ pub struct ExportSettings {
     /// encoders and the rest of the export's parallel work run on a pool of this size; a number
     /// above what the machine has (or above the pool the export already runs in) changes nothing.
     /// The output does not depend on it. Hardware encoders and the decoders' own threads are not
-    /// counted.
+    /// counted. Native SVT-AV1 uses its own worker pool with the fixed `lp=4` parallelism level.
     #[serde(default)]
     pub max_threads: u32,
     /// ProRes flavour: `proxy`, `lt`, `standard`, `hq`, `4444` or `4444xq` (empty = HQ).
@@ -543,7 +543,11 @@ impl ExportSettings {
                 return Err(ExportError::Unsupported("AV1 has no CBR or two-pass mode: choose SVT-AV1 CRF or NVENC VBR CQ".into()));
             }
             let max = if self.bitrate_mode == BitrateMode::Crf { 63.0 } else { 51.0 };
-            if !self.crf.is_finite() || !(0.0..=max).contains(&self.crf) || self.av1_preset > 13 {
+            if !self.crf.is_finite()
+                || !(0.0..=max).contains(&self.crf)
+                || (self.bitrate_mode == BitrateMode::Vbr1Pass && self.crf == 0.0)
+                || self.av1_preset > 13
+            {
                 return Err(ExportError::Unsupported("invalid AV1 quality or SVT preset".into()));
             }
         }

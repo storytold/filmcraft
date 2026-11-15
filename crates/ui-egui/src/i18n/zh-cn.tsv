@@ -3776,3 +3776,6 @@
 
 	Fixed interval	固定间隔
 	Automatic (SCD)	自动（场景切换检测）
+	Opus needs the optional libopus encoder library; none was found.	Opus 需要可选的 libopus 编码库；本机未找到。
+	Not supported in this container	此容器不支持该音频格式
+	Choose an audio-only format	请选择独立音频格式

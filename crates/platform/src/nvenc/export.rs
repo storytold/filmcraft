@@ -144,6 +144,9 @@ impl VideoEncoder for NvencEncoder {
     }
 
     fn media_start(&self) -> Option<i64> {
+        if self.enc.codec() == Codec::Av1 {
+            return None;
+        }
         // with B-frames the first DTS is `delay` frames before the first PTS
         (self.enc.delay() > 0).then_some(i64::from(self.enc.delay()).saturating_mul(self.rate.den))
     }

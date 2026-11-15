@@ -347,8 +347,8 @@ impl Nvenc {
     }
 
     pub fn with_quality(cfg: &Config, signal: &Signal, quality: f32) -> Result<Self, String> {
-        if cfg.profile.codec() != Codec::Av1 || !quality.is_finite() || !(0.0..=51.0).contains(&quality) {
-            return Err("AV1 NVENC CQ must be between 0 and 51".into());
+        if cfg.profile.codec() != Codec::Av1 || !quality.is_finite() || !(quality > 0.0 && quality <= 51.0) {
+            return Err("AV1 NVENC CQ must be greater than 0 and at most 51 (0 means automatic)".into());
         }
         Self::open(cfg, signal, false, Some(quality))
     }
@@ -594,7 +594,10 @@ impl Nvenc {
         let k = self.emitted;
         self.emitted = self.emitted.saturating_add(1);
         let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
-        Ok(Packet { data, key, pts, dts: k.saturating_sub(i64::from(self.delay)) })
+        // AV1 packets are complete temporal units in presentation order. H.26x's reorder
+        // delay would create a forbidden MP4 ctts box for an AV1 track.
+        let dts = if self.codec == Codec::Av1 { pts } else { k.saturating_sub(i64::from(self.delay)) };
+        Ok(Packet { data, key, pts, dts })
     }
 }
 

@@ -83,6 +83,7 @@ fn unavailable_why(format: Format) -> Option<&'static str> {
             "H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead."
         ),
         Format::Av1 => tl!("AV1 needs the SVT-AV1 library or an AV1-capable NVIDIA encoder; neither was found."),
+        Format::Opus => tl!("Opus needs the optional libopus encoder library; none was found."),
         _ => tl!("Not supported by FilmCraft's encoders yet"),
     })
 }
@@ -326,7 +327,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                         let keep = ex.settings.clone();
                         ex.settings = ExportSettings {
                             format: f,
-                            bitrate_mode: if f == Format::Av1 { BitrateMode::Crf } else { BitrateMode::Vbr1Pass },
+                            bitrate_mode: if f == Format::Av1 { filmcraft_engine::export::default_av1_bitrate_mode() } else { BitrateMode::Vbr1Pass },
                             frame_size: keep.frame_size,
                             frame_rate: keep.frame_rate,
                             effects: keep.effects,
@@ -616,12 +617,12 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             let software = s.bitrate_mode == BitrateMode::Crf;
             row(ui, t, tl!("Encoder"), |ui| {
                 let labels = vec![
-                    ("SVT-AV1 (CRF)".into(), filmcraft_engine::export::av1_encoder_available(BitrateMode::Crf)),
                     ("NVIDIA NVENC (VBR CQ)".into(), filmcraft_engine::export::av1_encoder_available(BitrateMode::Vbr1Pass)),
+                    ("SVT-AV1 (CRF)".into(), filmcraft_engine::export::av1_encoder_available(BitrateMode::Crf)),
                 ];
                 if let Some(i) = combo(ui, reg, "export.video.av1Encoder", if software { "SVT-AV1 (CRF)" } else { "NVIDIA NVENC (VBR CQ)" }, &labels, 220.0) {
-                    s.bitrate_mode = if i == 0 { BitrateMode::Crf } else { BitrateMode::Vbr1Pass };
-                    s.crf = s.crf.min(if i == 0 { 63.0 } else { 51.0 });
+                    s.bitrate_mode = if i == 0 { BitrateMode::Vbr1Pass } else { BitrateMode::Crf };
+                    s.crf = if i == 0 { s.crf.clamp(1.0, 51.0) } else { s.crf.min(63.0) };
                 }
             });
             row(ui, t, tl!("Profile"), |ui| ui.label(if software || (seq_hdr && !s.sdr) { "Main 10 (10-bit 4:2:0)" } else { "Main (8-bit 4:2:0)" }));
@@ -632,7 +633,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     reg,
                     "export.video.crf",
                     &mut q,
-                    DragOptions { range: 0.0..=if software { 63.0 } else { 51.0 }, speed: 0.1, suffix: "", decimals: 1 },
+                    DragOptions { range: if software { 0.0..=63.0 } else { 1.0..=51.0 }, speed: 0.1, suffix: "", decimals: 1 },
                 ) {
                     s.crf = q as f32;
                 }
@@ -746,14 +747,24 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         };
         // MP4 takes AAC or FLAC; QuickTime any of the three
         let labels = vec![
-            ("AAC".to_string(), !audio_only),
-            (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer) && !s.format.is_mkv_with(s.multiplexer)),
-            (tl!("FLAC (lossless)").to_string(), true),
-            ("Opus".to_string(), s.format.is_mp4_with(s.multiplexer) || s.format.is_mkv_with(s.multiplexer)),
+            ("AAC".to_string(), audio_only.then_some(tl!("Choose an audio-only format"))),
+            (
+                tl!("Uncompressed (PCM)").to_string(),
+                (s.format.is_mp4_with(s.multiplexer) || s.format.is_mkv_with(s.multiplexer)).then_some(tl!("Not supported in this container")),
+            ),
+            (tl!("FLAC (lossless)").to_string(), None),
+            (
+                "Opus".to_string(),
+                if !filmcraft_engine::export::available(Format::Opus) {
+                    Some(tl!("Opus needs the optional libopus encoder library; none was found."))
+                } else {
+                    (!(s.format.is_mp4_with(s.multiplexer) || s.format.is_mkv_with(s.multiplexer))).then_some(tl!("Not supported in this container"))
+                },
+            ),
         ];
         if fixed {
             ui.label(cur);
-        } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
+        } else if let Some(i) = combo_why(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
             s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac, AudioCodec::Opus][i.min(3)];
         }
     });

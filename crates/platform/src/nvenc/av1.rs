@@ -138,7 +138,7 @@ pub fn av1_config(sequence_params: &[u8], ten_bit: bool) -> Result<Av1Config, St
     let config = Av1Config {
         seq_profile: parsed.profile,
         seq_level_idx_0: parsed.seq_level_idx.first().copied().unwrap_or(0),
-        seq_tier_0: false,
+        seq_tier_0: sequence_tier(payload).map_err(|e| format!("AV1 sequence tier: {e}"))?,
         high_bitdepth,
         twelve_bit: parsed.color.bit_depth == 12,
         monochrome: parsed.color.mono_chrome,
@@ -152,9 +152,62 @@ pub fn av1_config(sequence_params: &[u8], ten_bit: bool) -> Result<Av1Config, St
     Ok(config)
 }
 
+/// AV1 section 5.5.1, through the first operating point's tier. The shared parser validates
+/// the complete sequence header but currently discards this field.
+fn sequence_tier(payload: &[u8]) -> Result<bool, filmcraft_bitstream::BitError> {
+    let mut r = filmcraft_bitstream::BitReader::new(payload);
+    r.skip(4)?; // profile and still_picture
+    if r.read_bit()? {
+        // reduced_still_picture_header has no tier
+        return Ok(false);
+    }
+    if r.read_bit()? {
+        // timing_info_present_flag
+        r.skip(64)?;
+        if r.read_bit()? {
+            // AV1 uvlc() saturates after 32 leading zeroes, unlike H.264 read_ue().
+            let mut leading = 0;
+            while leading < 32 && !r.read_bit()? {
+                leading += 1;
+            }
+            if leading < 32 {
+                r.skip(leading)?;
+            }
+        }
+        if r.read_bit()? {
+            r.skip(47)?; // decoder_model_info
+        }
+    }
+    r.skip(18)?; // initial_display_delay_present, operating_points_cnt_minus_1, operating_point_idc[0]
+    if r.read_bits(5)? > 7 { r.read_bit() } else { Ok(false) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn av1c_preserves_main_and_high_tier() {
+        // A generated 320x180, 8-bit sequence header with no timing model. Insert the tier
+        // flag required at level 4.0, retaining the remainder of the valid header syntax.
+        let original = [0x00, 0x00, 0x00, 0x04, 0x3c, 0xfe, 0xcc, 0x02, 0x19, 0x90, 0x10, 0x10, 0x10, 0x40];
+        for high in [false, true] {
+            let mut w = filmcraft_bitstream::BitWriter::new();
+            w.write_bits(0, 24);
+            w.write_bits(8, 5);
+            w.write_bit(high);
+            for bit in 29..original.len() * 8 {
+                w.write_bit(original[bit / 8] & (0x80 >> (bit % 8)) != 0);
+            }
+            let payload = w.finish();
+            let mut obu = vec![0x0a, payload.len() as u8];
+            obu.extend(payload);
+            let config = av1_config(&obu, false).unwrap();
+            assert_eq!(config.seq_level_idx_0, 8);
+            assert_eq!(config.seq_tier_0, high);
+            assert_eq!(config.config_obus, obu);
+        }
+    }
 
     #[test]
     fn malformed_obu_lengths_and_headers_are_rejected() {

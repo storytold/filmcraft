@@ -1140,10 +1140,15 @@ fn max_threads_reaches_the_export_settings() {
 }
 
 #[test]
-fn av1_crf_defaults_and_opus_reach_export_settings() {
+fn av1_prefers_nvenc_cq_and_preserves_explicit_svt_crf() {
+    filmcraft_export::register_av1_probe(filmcraft_export::BitrateMode::Vbr1Pass, || true);
     let session = demo();
     let settings = |p: Value| crate::export_tools::settings_from_params(&session, &p, "file.exportMedia").unwrap().1;
-    let software = settings(json!({"format":"av1", "path":"a.mp4"}));
+    let implicit = settings(json!({"format":"av1", "path":"a.mkv"}));
+    assert_eq!(implicit.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    let nested = settings(json!({"path":"a.mkv", "settings":{"format":"av1"}}));
+    assert_eq!(nested.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    let software = settings(json!({"format":"av1", "path":"a.mp4", "settings":{"bitrateMode":"crf"}}));
     assert_eq!(software.bitrate_mode, filmcraft_export::BitrateMode::Crf);
     assert_eq!(software.av1_preset, 6);
     assert_eq!(software.extension(), "mkv");

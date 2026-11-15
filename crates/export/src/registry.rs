@@ -191,6 +191,11 @@ pub fn av1_encoder_available(mode: super::BitrateMode) -> bool {
     probes.into_iter().any(|p| p())
 }
 
+/// Prefer NVENC CQ when available; otherwise use the optional SVT-AV1 CRF backend.
+pub fn default_av1_bitrate_mode() -> super::BitrateMode {
+    if av1_encoder_available(super::BitrateMode::Vbr1Pass) { super::BitrateMode::Vbr1Pass } else { super::BitrateMode::Crf }
+}
+
 fn format_probes() -> &'static RwLock<Vec<FormatProbe>> {
     static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
     P.get_or_init(|| RwLock::new(Vec::new()))

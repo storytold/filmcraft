@@ -1833,7 +1833,17 @@ fn av1_crf_accepts_the_svt_range() {
 }
 
 #[test]
+fn av1_nvenc_cq_rejects_automatic_zero() {
+    let s = ExportSettings { format: Format::Av1, bitrate_mode: BitrateMode::Vbr1Pass, crf: 0.0, ..Default::default() };
+    assert!(s.validate().is_err());
+    for cq in [1.0, 31.5, 51.0] {
+        assert!(ExportSettings { crf: cq, ..s.clone() }.validate().is_ok());
+    }
+}
+
+#[test]
 fn av1_defaults_to_mkv_with_an_explicit_mp4_override() {
+    assert_eq!(default_av1_bitrate_mode(), BitrateMode::Crf, "without a registered NVENC probe, use the optional software backend");
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format":"av1","bitrateMode":"crf"})).unwrap();
     assert_eq!(s.extension(), "mkv");
     assert!(s.summary(320, 180, FrameRate::FPS_24, 48000, Tick(TICKS_PER_SECOND)).format.contains("Matroska"));

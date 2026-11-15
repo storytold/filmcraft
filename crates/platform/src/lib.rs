@@ -41,7 +41,6 @@ pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
 #[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
 mod native_codecs;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;

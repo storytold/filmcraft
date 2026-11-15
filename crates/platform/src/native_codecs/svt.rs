@@ -37,6 +37,7 @@ struct Api {
 }
 
 impl Api {
+    #[allow(unsafe_code)] // Versioned native ABI loading and capability probe only.
     fn load() -> std::result::Result<Self, String> {
         let library = super::load("FILMCRAFT_SVT_AV1_LIBRARY", "SvtAv1Enc.dll")?;
         // SAFETY: all signatures come from the public 4.3.0 ABI-0 header. Check the version before
@@ -48,7 +49,7 @@ impl Api {
                 return Err("no SVT version".into());
             }
             let version = CStr::from_ptr(ptr).to_string_lossy();
-            if !version.trim_start_matches('v').starts_with("4.3.0") {
+            if version.trim_start_matches('v').split(['-', '+']).next() != Some("4.3.0") {
                 return Err(format!("need SVT-AV1 4.3.0 mainline + 444/12-bit/SCD, got {version}"));
             }
             macro_rules! sym {
@@ -56,7 +57,7 @@ impl Api {
                     *library.get(concat!($name, "\0").as_bytes()).map_err(|e| e.to_string())?
                 };
             }
-            Ok(Self {
+            let api = Self {
                 init_handle: sym!("svt_av1_enc_init_handle"),
                 set: sym!("svt_av1_enc_set_parameter"),
                 parse: sym!("svt_av1_enc_parse_parameter"),
@@ -69,7 +70,24 @@ impl Api {
                 header: sym!("svt_av1_enc_stream_header"),
                 release_header: sym!("svt_av1_enc_stream_header_release"),
                 _library: library,
-            })
+            };
+            let mut cfg = EbSvtAv1EncConfiguration::default();
+            let mut handle = std::ptr::null_mut();
+            let status = (api.init_handle)(&mut handle, &mut cfg);
+            if status != 0 || handle.is_null() {
+                if !handle.is_null() {
+                    (api.destroy)(handle);
+                }
+                return Err(format!("SVT capability probe init status {status:#x}"));
+            }
+            // scd-min-keyint is an enhanced-branch API parameter, absent from stock 4.3.0.
+            // A version number alone does not establish the required scene-cut capability.
+            let supported = (api.parse)(&mut cfg, c"scd-min-keyint".as_ptr(), c"1".as_ptr()) == 0;
+            (api.destroy)(handle);
+            if !supported {
+                return Err("SVT-AV1 needs the mainline 444/12-bit/SCD enhancement (scd-min-keyint)".into());
+            }
+            Ok(api)
         }
     }
 }
@@ -88,13 +106,13 @@ struct Encoder {
     height: u32,
     rate: FrameRate,
     signal: ColorSignal,
-    first_dts: Option<i64>,
     ended: bool,
     planes: [Vec<u16>; 3],
 }
 
 // SAFETY: one encoder exclusively owns its SVT handle. Calls are serialized through &mut self;
 // SVT owns and synchronizes its worker threads and has no caller-thread affinity.
+#[allow(unsafe_code)]
 unsafe impl Send for Encoder {}
 
 fn check(status: Status) -> Result<()> {
@@ -102,6 +120,7 @@ fn check(status: Status) -> Result<()> {
 }
 
 impl Encoder {
+    #[allow(unsafe_code)] // Owns and configures the native encoder handle through the versioned ABI.
     fn new(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<Self> {
         s.validate()?;
         if w < 64
@@ -126,7 +145,6 @@ impl Encoder {
             height: h,
             rate,
             signal: s.signal,
-            first_dts: None,
             ended: false,
             planes: Default::default(),
         };
@@ -154,7 +172,29 @@ impl Encoder {
             cfg.transfer_characteristics = i32::from(s.signal.transfer);
             cfg.matrix_coefficients = i32::from(s.signal.matrix);
             cfg.color_range = 0;
-            cfg.level_of_parallelism = s.max_threads.min(32);
+            // lp is SVT's parallelism/memory level, not a literal thread count.
+            check((enc.api.parse)(&mut cfg, c"lp".as_ptr(), c"4".as_ptr()))?;
+            if let Some((md, (cll, fall))) = s.signal.static_metadata() {
+                let c = |v: u16| f64::from(v) / 50000.0;
+                let display = std::ffi::CString::new(format!(
+                    "G({},{})B({},{})R({},{})WP({},{})L({},{})",
+                    c(md.primaries[0].0),
+                    c(md.primaries[0].1),
+                    c(md.primaries[1].0),
+                    c(md.primaries[1].1),
+                    c(md.primaries[2].0),
+                    c(md.primaries[2].1),
+                    c(md.white_point.0),
+                    c(md.white_point.1),
+                    md.max_nits(),
+                    f64::from(md.min_luminance) / 10000.0,
+                ))
+                .map_err(err)?;
+                // The library's public parser converts AV1 units and big-endian field storage.
+                check((enc.api.parse)(&mut cfg, c"mastering-display".as_ptr(), display.as_ptr()))?;
+                cfg.content_light_level.max_cll = cll.to_be();
+                cfg.content_light_level.max_fall = fall.to_be();
+            }
             check((enc.api.set)(enc.handle, &mut cfg))?;
             check((enc.api.init)(enc.handle))?;
             enc.initialized = true;
@@ -171,6 +211,7 @@ impl Encoder {
         Ok(enc)
     }
 
+    #[allow(unsafe_code)] // Copies and releases native output packets before returning owned data.
     fn receive(&mut self, blocking: bool) -> Result<Vec<EncodedPacket>> {
         let mut packets = Vec::new();
         loop {
@@ -189,13 +230,15 @@ impl Encoder {
                 let p = &*packet;
                 let eos = p.flags & EOS != 0;
                 if p.n_filled_len > 0 {
-                    self.first_dts.get_or_insert(p.dts);
-                    let offset = p.pts.saturating_sub(p.dts).saturating_mul(self.rate.den);
+                    if p.dts != p.pts {
+                        (self.api.release)(&mut packet);
+                        return Err(err("SVT temporal-unit output must have DTS equal to PTS"));
+                    }
                     packets.push(EncodedPacket {
                         data: std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize).to_vec(),
                         key: p.pic_type == 3,
                         duration: self.rate.den as u32,
-                        composition_offset: i32::try_from(offset).map_err(err)?,
+                        composition_offset: 0,
                     });
                 }
                 (self.api.release)(&mut packet);
@@ -210,6 +253,7 @@ impl Encoder {
 }
 
 impl Drop for Encoder {
+    #[allow(unsafe_code)] // Releases the exclusively owned native handle.
     fn drop(&mut self) {
         // SAFETY: exclusively owned handle; destroy after deinit joins SVT's workers, before
         // unloading the library. A setup failure may own a handle that was never initialized.
@@ -234,8 +278,11 @@ impl VideoEncoder for Encoder {
         self.rate.num as u32
     }
     fn media_start(&self) -> Option<i64> {
-        self.first_dts.filter(|d| *d < 0).map(|d| d.saturating_neg().saturating_mul(self.rate.den))
+        // This pinned SVT ABI emits complete temporal units with DTS == PTS, including
+        // delayed output. Its timeline origin is known before receiving the first packet.
+        Some(0)
     }
+    #[allow(unsafe_code)] // Input planes are copied by the native send_picture call.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         if self.ended || (f.width, f.height) != (self.width, self.height) {
             return Err(err("picture size changed or encoder ended"));
@@ -269,6 +316,7 @@ impl VideoEncoder for Encoder {
         check(unsafe { (self.api.send)(self.handle, &mut header) })?;
         self.receive(false)
     }
+    #[allow(unsafe_code)] // Sends only the native end-of-stream marker.
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
         if self.ended {
             return Ok(Vec::new());

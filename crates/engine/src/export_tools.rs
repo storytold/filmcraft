@@ -206,12 +206,12 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         && let Some(f) = str_p(p, "format")
     {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
-        if settings.format == Format::Av1 {
-            settings.bitrate_mode = BitrateMode::Crf;
-        }
     }
     apply_nested_settings(&mut settings, p, cmd)?;
     apply_flat_overrides(&mut settings, p, cmd)?;
+    if preset.is_none() && settings.format == Format::Av1 && p.get("bitrateMode").is_none() && p.get("settings").and_then(|v| v.get("bitrateMode")).is_none() {
+        settings.bitrate_mode = filmcraft_export::default_av1_bitrate_mode();
+    }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     Ok((preset, settings))
 }
