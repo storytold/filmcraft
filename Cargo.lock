@@ -1138,7 +1138,7 @@ dependencies = [
 [[package]]
 name = "craft-raw"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=edbd4abf2d4125cd8b93e7bdbd89d160e0f2f668#edbd4abf2d4125cd8b93e7bdbd89d160e0f2f668"
+source = "git+https://github.com/storytold/craft-libs?rev=1b851d3a5f6f319a904daba28031665c69c51961#1b851d3a5f6f319a904daba28031665c69c51961"
 dependencies = [
  "craft-tiff",
  "image",
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=edbd4abf2d4125cd8b93e7bdbd89d160e0f2f668#edbd4abf2d4125cd8b93e7bdbd89d160e0f2f668"
+source = "git+https://github.com/storytold/craft-libs?rev=1b851d3a5f6f319a904daba28031665c69c51961#1b851d3a5f6f319a904daba28031665c69c51961"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
