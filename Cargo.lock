@@ -1140,8 +1140,17 @@ name = "craft-raw"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=d16ee7926c8403ded5ea3209bc2ab14b1570281a#d16ee7926c8403ded5ea3209bc2ab14b1570281a"
 dependencies = [
- "craft-tiff",
+ "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=d16ee7926c8403ded5ea3209bc2ab14b1570281a)",
  "rayon",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tiff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=8b9010ae5356b6588eb22c2e1ca4b4ae12647939#8b9010ae5356b6588eb22c2e1ca4b4ae12647939"
+dependencies = [
  "serde",
  "thiserror 2.0.21",
 ]
@@ -2111,6 +2120,7 @@ name = "filmcraft-dng"
 version = "0.20.1"
 dependencies = [
  "craft-raw",
+ "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8b9010ae5356b6588eb22c2e1ca4b4ae12647939)",
  "filmcraft-dng",
  "image",
  "rayon",
