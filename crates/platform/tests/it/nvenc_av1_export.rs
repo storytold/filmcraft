@@ -167,7 +167,7 @@ fn av1_export_with_audio() {
     let s = ExportSettings { include_audio: true, keyframe_distance: Some(24), ..av1(path.clone()) };
     export(&p, seq, &s, &m, &Progress::default()).expect("export");
     let bytes = std::fs::read(&path).unwrap();
-    assert!(!bytes.windows(4).any(|w| w == b"ctts"), "AV1 ISOBMFF must not contain a ctts box");
+    assert!(!has_stbl_ctts(&bytes), "AV1 ISOBMFF must not contain a ctts box in any track stbl");
     let file = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
     assert!(file.track_of_kind(filmcraft_isobmff::TrackKind::Video).is_some());
     let at = file.track_of_kind(filmcraft_isobmff::TrackKind::Audio).expect("an audio track");
@@ -208,4 +208,72 @@ fn what_nvenc_av1_cannot_do_is_an_error_that_says_why() {
         assert!(e.to_string().contains("NVENC"), "{what}: {e}");
         assert_eq!(delta(before), (0, 0, 1), "{what}: counted as declined, no session");
     }
+}
+
+fn iter_mp4_boxes(mut data: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut boxes = Vec::new();
+    while data.len() >= 8 {
+        let size32 = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let box_type = [data[4], data[5], data[6], data[7]];
+        let (box_len, mut header_len) = match size32 {
+            0 => (data.len(), 8),
+            1 => {
+                if data.len() < 16 {
+                    break;
+                }
+                let Ok(len) = usize::try_from(u64::from_be_bytes(data[8..16].try_into().unwrap())) else {
+                    break;
+                };
+                (len, 16)
+            }
+            n => (n, 8),
+        };
+        if box_type == *b"uuid" {
+            header_len += 16;
+        }
+        if box_len < header_len || box_len > data.len() {
+            break;
+        }
+        boxes.push((box_type, &data[header_len..box_len]));
+        data = &data[box_len..];
+    }
+    boxes
+}
+
+fn has_box_path(data: &[u8], path: &[[u8; 4]]) -> bool {
+    let Some((&target, rest)) = path.split_first() else {
+        return true;
+    };
+    iter_mp4_boxes(data).into_iter().any(|(tag, body)| tag == target && has_box_path(body, rest))
+}
+
+fn has_stbl_ctts(mp4: &[u8]) -> bool {
+    has_box_path(mp4, &[*b"moov", *b"trak", *b"mdia", *b"minf", *b"stbl", *b"ctts"])
+}
+
+#[test]
+fn mp4_ctts_check_ignores_media_payload_and_detects_stbl_ctts() {
+    fn mp4_box(tag: [u8; 4], body: &[u8]) -> Vec<u8> {
+        let len = (8 + body.len()) as u32;
+        let mut out = Vec::with_capacity(len as usize);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(body);
+        out
+    }
+
+    let clean_stbl = mp4_box(*b"stbl", &mp4_box(*b"stsd", &[0u8; 8]));
+    let clean_moov = mp4_box(*b"moov", &mp4_box(*b"trak", &mp4_box(*b"mdia", &mp4_box(*b"minf", &clean_stbl))));
+    let mdat_with_ctts_bytes = mp4_box(*b"mdat", b"video-payload-ctts-bytes");
+    let mut clean_mp4 = mp4_box(*b"ftyp", b"isom   isom");
+    clean_mp4.extend_from_slice(&mdat_with_ctts_bytes);
+    clean_mp4.extend_from_slice(&clean_moov);
+    assert!(!has_stbl_ctts(&clean_mp4), "ctts bytes inside mdat payload must not trigger false positive");
+
+    let mut stbl_with_ctts_body = mp4_box(*b"stsd", &[0u8; 8]);
+    stbl_with_ctts_body.extend_from_slice(&mp4_box(*b"ctts", &[0u8; 12]));
+    let dirty_moov = mp4_box(*b"moov", &mp4_box(*b"trak", &mp4_box(*b"mdia", &mp4_box(*b"minf", &mp4_box(*b"stbl", &stbl_with_ctts_body)))));
+    let mut dirty_mp4 = mp4_box(*b"ftyp", b"isom   isom");
+    dirty_mp4.extend_from_slice(&dirty_moov);
+    assert!(has_stbl_ctts(&dirty_mp4), "ctts box inside track stbl must be detected");
 }
