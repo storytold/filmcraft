@@ -1136,6 +1136,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-tga"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d2bb64c4ac41c9242479f5e8277580b847151e5a#d2bb64c4ac41c9242479f5e8277580b847151e5a"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-timeline"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -1162,14 +1170,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "craft-tga"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d2bb64c4ac41c9242479f5e8277580b847151e5a#d2bb64c4ac41c9242479f5e8277580b847151e5a"
-dependencies = [
- "thiserror 2.0.21",
 ]
 
 [[package]]
