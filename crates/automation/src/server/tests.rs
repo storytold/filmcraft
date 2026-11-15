@@ -700,6 +700,7 @@ async fn the_bridge_refuses_commands_naming_files_unless_ingest_is_off() {
             let req: Value = serde_json::from_str(&line).unwrap();
             let result = match req["params"]["command"].as_str().unwrap_or_default() {
                 "project.inspect" => answers.next().unwrap(),
+                "prefs.get" => json!(false),
                 "file.import" => json!({"items": []}),
                 _ => Value::Null,
             };
@@ -767,6 +768,86 @@ async fn the_bridge_refuses_the_apps_export_queue() {
     // A direct export gets past the checks, and fails only on reaching the app.
     let e = m.run("file.exportMedia", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
     assert!(!e.contains("confined"), "{e}");
+}
+
+/// A listing of a folder in the read root puts each link in it to the roots before the target is looked at: one
+/// leading out is left out, one staying inside is listed, a folder alias shows as a folder.
+#[cfg(unix)]
+#[test]
+fn a_confined_listing_leaves_out_links_that_lead_outside() {
+    use filmcraft_engine::Services;
+    let (base, roots) = roots_base("listing");
+    let folder = base.join("in");
+    std::fs::write(folder.join("clip.png"), "x").unwrap();
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let linked = |target: std::path::PathBuf, name: &str| std::os::unix::fs::symlink(target, folder.join(name)).is_ok();
+    if !linked(base.join("outside/secret.png"), "out.png") || !linked(folder.join("sub"), "alias") {
+        assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+        return;
+    }
+    let confined = crate::confined_services::ConfinedServices::new(Arc::new(filmcraft_engine::FsServices), roots);
+    let entries = confined.list_entries(&folder.to_string_lossy()).unwrap().unwrap();
+    let mut names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["alias", "clip.png", "sub"], "the link out is left out");
+    assert!(entries.iter().find(|e| e.name == "alias").unwrap().is_dir, "an alias of a folder shows as a folder");
+    assert_eq!(entries.iter().find(|e| e.name == "clip.png").unwrap().size, Some(1));
+    assert!(confined.list_entries(&base.join("outside").to_string_lossy()).unwrap().is_err());
+}
+
+/// A session with an autosave worker can't be confined: it writes beside the open project, or over it, which goes
+/// round the roots. With no worker, it can.
+#[test]
+fn confining_a_session_that_autosaves_its_open_project_is_refused() {
+    use filmcraft_engine::autosave::AutosaveConfig;
+    let (base, roots) = roots_base("autosave");
+    let mut s = Session::default();
+    s.start_autosave(AutosaveConfig::new(base.join("data"))).unwrap();
+    let e = FilmcraftMcp::headless(s).with_roots(Some(roots.clone())).err();
+    assert!(matches!(e, Some(AutomationError::BadRequest(ref m)) if m.contains("stop the autosave worker")), "{e:?}");
+    FilmcraftMcp::headless(Session::default()).with_roots(Some(roots)).unwrap();
+}
+
+/// The app's Auto Save writes beside the open project, or over it, wherever it lives: a confined bridge goes ahead
+/// only when the app says both settings are off, and asks before every command, since they can be turned on.
+#[tokio::test]
+async fn a_confined_bridge_needs_the_apps_autosave_of_the_project_off() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    for (said, runs) in [(json!(true), false), (Value::Null, false), (json!(false), true)] {
+        // Both Auto Save settings are asked, and both have to be off.
+        let (_base, roots) = roots_base("bridge-autosave");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let answer = said.clone();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let (r, mut w) = sock.into_split();
+            let mut lines = tokio::io::BufReader::new(r).lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                let result = match req["params"]["command"].as_str().unwrap_or_default() {
+                    "prefs.get" => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        answer.clone()
+                    }
+                    _ => Value::Null,
+                };
+                let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+                w.write_all(line.as_bytes()).await.unwrap();
+            }
+        });
+        let m = FilmcraftMcp::bridge(&addr).unwrap().with_roots(Some(roots)).unwrap();
+        let first = m.run("project.selectAll", json!({})).await;
+        assert_eq!(first.is_ok(), runs, "{said}: {first:?}");
+        if !runs {
+            assert!(first.unwrap_err().to_string().contains("Auto Save writes beside the open project"), "{said}");
+        } else {
+            m.run("project.selectAll", json!({})).await.unwrap();
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 4, "two settings asked before each of the two commands");
+        }
+    }
 }
 
 /// Confined bridge commands take turns, so the ingest check and the command it lets through can't

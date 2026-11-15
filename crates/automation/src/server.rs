@@ -249,6 +249,10 @@ impl FilmcraftMcp {
             if g.jobs.iter().any(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).is_none()) {
                 return Err(AutomationError::BadRequest("confine the session before starting jobs".into()));
             }
+            // The worker saves into a folder beside the open project, or the project itself, which no check here sees.
+            if g.persistence.is_some() {
+                return Err(AutomationError::BadRequest("stop the autosave worker before confining the session".into()));
+            }
             // Queued exports keep the paths they were given, and starting one doesn't check them again.
             if !g.export_queue.items.is_empty() {
                 return Err(AutomationError::BadRequest("confine the session before queueing exports".into()));
@@ -350,7 +354,7 @@ impl FilmcraftMcp {
                         roots.check_command(&id, &params)?;
                         // Only now, with the paths inside the roots, may the files themselves be looked at.
                         if on_bridge {
-                            AutomationRoots::check_bridge_media_files(&id, &params)?;
+                            roots.check_bridge_media_files(&id, &params)?;
                         }
                         Ok::<_, String>(params)
                     })
@@ -372,6 +376,19 @@ impl FilmcraftMcp {
             }
             None => params,
         };
+        // The app's Auto Save writes into a folder beside the open project, or over the project, wherever it lives, and
+        // the person at its keyboard can turn it on at any time. Only a clear "off" will do, so both settings are asked
+        // before every command.
+        if self.roots.is_some()
+            && let Backend::Bridge(b) = &*self.backend
+        {
+            for key in ["autoSave.enabled", "autoSave.saveCurrentProject"] {
+                if b.execute("prefs.get", json!({"key": key})).await? != Value::Bool(false) {
+                    let why = format!("the app's Auto Save writes beside the open project, wherever it lives: turn off `{key}` in its settings first");
+                    return Err(AutomationError::BadRequest(why));
+                }
+            }
+        }
         match &*self.backend {
             Backend::Headless(s) => {
                 let s = s.clone();

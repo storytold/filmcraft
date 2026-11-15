@@ -2,7 +2,9 @@
 //! --automation-write-root <dir>`, the flags VectorCraft and EffectCraft ship. While roots are in
 //! force, every command an agent runs may only read files under a read root and only write files
 //! under a write root; a root left out grants no access of its kind, and without roots nothing is
-//! checked.
+//! checked. On the bridge that is the command checks only: the app opens, by its own file access, the
+//! footage a project names, and saves in its own folders. [`crate::FilmcraftMcp::run`] refuses a
+//! bridge command while the app's Auto Save is on.
 //!
 //! The check runs in [`crate::FilmcraftMcp::run`] before a command is dispatched, on both backends:
 //! the headless engine session and the bridge to a live app (where the command would otherwise run
@@ -231,14 +233,46 @@ impl AutomationRoots {
     /// The rest of the bridge's import rule, once [`Self::check_command`] has passed the paths: each must be a
     /// file. A folder named like media (`batch.mp4`) has the right extension, and the app would take all it holds.
     /// This looks at the files, so it comes after the roots have been asked.
-    pub fn check_bridge_media_files(id: &str, params: &Value) -> Result<(), String> {
+    pub fn check_bridge_media_files(&self, id: &str, params: &Value) -> Result<(), String> {
         if !IMPORTS.contains(&id) {
             return Ok(());
         }
-        match import_paths(params).into_iter().find(|p| !std::fs::metadata(p).is_ok_and(|m| m.is_file())) {
-            Some(path) => Err(format!("`{id}` takes only media files on the bridge while file access is confined, and {} is not a file", path.display())),
-            None => Ok(()),
+        for path in import_paths(params) {
+            if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+                return Err(format!("`{id}` takes only media files on the bridge while file access is confined, and {} is not a file", path.display()));
+            }
+            self.check_sequence_frames(id, path)?;
         }
+        Ok(())
+    }
+
+    /// The app imports a numbered still together with the stills numbered like it beside it, whether the command,
+    /// a preference or the browser asks for a sequence, and reads them through its own unchecked file access. A
+    /// link among them that leads out of the read root would be read. Every neighbour that is a link has to
+    /// pass the roots, as it does when the session is headless and each frame is opened through them, and so does
+    /// the folder they are listed from.
+    fn check_sequence_frames(&self, id: &str, seed: &Path) -> Result<(), String> {
+        let Some(numbered) = seed.to_str().and_then(filmcraft_media::sequence::Numbered::parse) else { return Ok(()) };
+        let folder = seed.parent().unwrap_or(Path::new("."));
+        // The app takes the frames from the folder the seed is written in, which is not where a seed that is a
+        // link stands when it leads into the root: every frame there would be outside it.
+        if let Some(text) = folder.to_str() {
+            self.check(text, Access::Read).map_err(|e| format!("{e} (`{id}` also takes the frames of an image sequence numbered like {})", seed.display()))?;
+        }
+        let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the frames beside {}: {e}", seed.display());
+        for (seen, entry) in std::fs::read_dir(folder).map_err(cannot_list)?.enumerate() {
+            if seen >= WRITE_SCAN_LIMIT {
+                return Err(format!("automation path rejected: over {WRITE_SCAN_LIMIT} files beside {} to check as frames", seed.display()));
+            }
+            let entry = entry.map_err(cannot_list)?;
+            let is_frame = entry.file_name().to_str().is_some_and(|name| numbered.number_of(name).is_some());
+            if is_frame && entry.file_type().map_err(cannot_list)?.is_symlink() {
+                let Some(frame) = entry.path().to_str().map(str::to_string) else { continue };
+                self.check(&frame, Access::Read)
+                    .map_err(|e| format!("{e} (`{id}` also takes the frames of an image sequence numbered like {})", seed.display()))?;
+            }
+        }
+        Ok(())
     }
 
     /// Does command `id` name files? On the bridge those are refused while the app's project has
@@ -317,6 +351,10 @@ impl AutomationRoots {
         if id == "prefs.set" {
             absolute_folder_prefs(params)?;
         }
+        // A reset puts the defaults back, and Auto Save's is on.
+        if id == "prefs.reset" && params.get("category").and_then(Value::as_str).is_none_or(|c| c == "autoSave") {
+            return Err("`prefs.reset` with no category, or with `autoSave`, would turn Auto Save back on: it stays off while file access is confined".into());
+        }
         let mut other = vec![];
         other_paths(params, &skip, id == "prefs.set", &mut other).map_err(|e| format!("`{id}`: {e}"))?;
         for p in other {
@@ -361,7 +399,7 @@ fn import_paths(params: &Value) -> Vec<&Path> {
 }
 
 /// Preferences that make the app write somewhere on its own later, which the roots can't see: only `false` is allowed.
-const REFUSED_PREFS: &[&str] = &["autoSave.saveCurrentProject"];
+const REFUSED_PREFS: &[&str] = &["autoSave.saveCurrentProject", "autoSave.enabled"];
 
 /// The preference values a `prefs.set` gives: `key` with `value`, and each of `values`.
 fn prefs_given(params: &Value) -> Vec<(&str, &Value)> {
@@ -1259,15 +1297,55 @@ mod tests {
         let named = |p: &Path| json!({"paths": [s(p.to_path_buf())]});
         assert_eq!(roots.check_command("file.import", &named(&folder)), Ok(()), "inside the root, so the roots pass it");
         assert_eq!(AutomationRoots::check_bridge_command("file.import", &named(&folder)), Ok(()), "the extension is right");
-        let e = AutomationRoots::check_bridge_media_files("file.import", &named(&folder)).unwrap_err();
+        let e = roots.check_bridge_media_files("file.import", &named(&folder)).unwrap_err();
         assert!(e.contains("is not a file"), "{e}");
-        assert_eq!(AutomationRoots::check_bridge_media_files("file.import", &named(&file)), Ok(()));
-        assert!(AutomationRoots::check_bridge_media_files("file.import", &json!({"paths": [s(base.join("in/none.mp4"))]})).is_err());
+        assert_eq!(roots.check_bridge_media_files("file.import", &named(&file)), Ok(()));
+        assert!(roots.check_bridge_media_files("file.import", &json!({"paths": [s(base.join("in/none.mp4"))]})).is_err());
         for params in [json!({"key": "autoSave.saveCurrentProject", "value": true}), json!({"values": {"autoSave.saveCurrentProject": "yes"}})] {
             let e = roots.check_command("prefs.set", &params).unwrap_err();
             assert!(e.contains("stays off while file access is confined"), "{params}: {e}");
         }
         assert_eq!(roots.check_command("prefs.set", &json!({"key": "autoSave.saveCurrentProject", "value": false})), Ok(()));
+        for params in [json!({}), json!({"category": "autoSave"}), json!({"category": 7})] {
+            let e = roots.check_command("prefs.reset", &params).unwrap_err();
+            assert!(e.contains("turn Auto Save back on"), "{params}: {e}");
+        }
+        assert_eq!(roots.check_command("prefs.reset", &json!({"category": "playback"})), Ok(()));
+    }
+
+    /// A numbered still brings its neighbours: a link among them that leads out of the read root is refused on the
+    /// bridge however the sequence is asked for, and a link that stays inside, or a still that isn't numbered, is not.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_among_the_frames_of_an_image_sequence_is_refused_on_the_bridge() {
+        let (base, roots) = folders("frames");
+        let write = |name: &str| std::fs::write(base.join("in").join(name), "x").unwrap();
+        write("frame0001.png");
+        write("frame0002.png");
+        write("other.png");
+        let seed = s(base.join("in/frame0001.png"));
+        assert_eq!(roots.check_bridge_media_files("file.import", &json!({"paths": [seed.clone()]})), Ok(()));
+        let outside = base.join("outside/secret.cube");
+        if !made(&outside, &base.join("in/frame0003.png")) {
+            assert!(std::env::var_os("CI").is_none(), "links can't be made on a CI runner");
+            eprintln!("skipped: links can't be made here");
+            return;
+        }
+        for id in ["file.import", "file.importImageSequence", "mediaBrowser.import"] {
+            let params = if id == "file.importImageSequence" { json!({"path": seed.clone()}) } else { json!({"paths": [seed.clone()]}) };
+            let e = roots.check_bridge_media_files(id, &params).unwrap_err();
+            assert!(e.contains("outside the read root") && e.contains("frames of an image sequence"), "{id}: {e}");
+        }
+        let unnumbered = s(base.join("in/other.png"));
+        assert_eq!(roots.check_bridge_media_files("file.import", &json!({"paths": [unnumbered]})), Ok(()), "a still with no number has no neighbours");
+        // A seed that is a link into the root, standing outside it, brings the outside folder's frames.
+        std::fs::write(base.join("outside/frame0002.png"), "x").unwrap();
+        assert!(made(&base.join("in/frame0001.png"), &base.join("outside/frame0001.png")));
+        let e = roots.check_bridge_media_files("file.import", &json!({"paths": [s(base.join("outside/frame0001.png"))]})).unwrap_err();
+        assert!(e.contains("outside the read root"), "{e}");
+        std::fs::remove_file(base.join("in/frame0003.png")).unwrap();
+        assert!(made(&base.join("in/frame0001.png"), &base.join("in/frame0004.png")));
+        assert_eq!(roots.check_bridge_media_files("file.import", &json!({"paths": [seed]})), Ok(()), "a link that stays inside is fine");
     }
 
     /// A folder preference given as a bare name would be read against the server's working folder.

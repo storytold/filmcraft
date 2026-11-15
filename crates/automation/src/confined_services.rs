@@ -32,6 +32,18 @@ impl ConfinedServices {
     }
 }
 
+/// `entry` as the desktop host lists it: links followed, so that an alias of a folder shows as a folder.
+fn listed(entry: &std::fs::DirEntry) -> DirEntry {
+    let md = std::fs::metadata(entry.path()).ok();
+    let modified = md.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+    DirEntry {
+        name: entry.file_name().to_string_lossy().to_string(),
+        is_dir: md.as_ref().is_some_and(|m| m.is_dir()),
+        size: md.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+        modified: modified.map(|d| d.as_secs()),
+    }
+}
+
 impl Services for ConfinedServices {
     /// Allowed inside the read root.
     fn read_file(&self, path: &str) -> Result<Vec<u8>> {
@@ -100,12 +112,23 @@ impl Services for ConfinedServices {
         self.check(path, Access::Write)
     }
 
-    /// Allowed inside the read root; a refusal is an error, not `None`.
+    /// Allowed inside the read root; a refusal is an error, not `None`. The host's own listing follows every link to
+    /// say whether it is a folder, which would look at a target outside the root, and on Windows contact its host,
+    /// before any check. So a link is put to the roots first and left out when they refuse it, and the rest is
+    /// listed as the host lists it.
     fn list_entries(&self, dir: &str) -> Option<Result<Vec<DirEntry>>> {
         if let Err(e) = self.check(dir, Access::Read) {
             return Some(Err(e));
         }
-        self.inner.list_entries(dir)
+        let read = match std::fs::read_dir(if dir.is_empty() { "." } else { dir }) {
+            Ok(read) => read,
+            Err(e) => return Some(Err(e)),
+        };
+        let allowed = |entry: &std::fs::DirEntry| {
+            let is_link = entry.file_type().is_ok_and(|kind| kind.is_symlink());
+            !is_link || entry.path().to_str().is_some_and(|path| self.roots.check(path, Access::Read).is_ok())
+        };
+        Some(Ok(read.flatten().filter(allowed).map(|entry| listed(&entry)).collect()))
     }
 
     /// Drives and the home folder name places outside the roots.

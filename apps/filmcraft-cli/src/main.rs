@@ -115,7 +115,9 @@ OPTIONS
   --automation-read-root <dir>  `mcp`: only files under this folder may be read (it must exist)
   --automation-write-root <dir> `mcp`: only files under this folder may be written. A root left out
                                 grants no access of its kind; with neither, nothing is confined.
-                                With --bridge they are enforced before each command reaches the app
+                                With --bridge they are enforced before each command reaches the app,
+                                which is not itself confined: it opens footage a project names, and
+                                its Auto Save has to be off
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -318,6 +320,16 @@ fn absolute(path: &str) -> String {
     std::path::absolute(path).ok().and_then(|p| p.into_os_string().into_string().ok()).unwrap_or_else(|| path.to_string())
 }
 
+/// The automation root flag, if any, whose value isn't text (`--flag value` or `--flag=value`). The lossy spelling of
+/// such a name can be another existing folder, and a root is a security boundary: refuse it rather than confine that one.
+fn non_text_root(args: &[std::ffi::OsString]) -> Option<&'static str> {
+    const FLAGS: [&str; 2] = ["--automation-read-root", "--automation-write-root"];
+    args.iter().enumerate().filter(|(_, arg)| arg.to_str().is_none()).find_map(|(i, arg)| {
+        let lossy = arg.to_string_lossy();
+        FLAGS.into_iter().find(|f| lossy.starts_with(&format!("{f}=")) || (i > 0 && args[i - 1].to_str() == Some(*f)))
+    })
+}
+
 #[tokio::main]
 async fn main() {
     cli().await;
@@ -326,9 +338,14 @@ async fn main() {
     }
 }
 
+/// Run the command line: parse the arguments, then dispatch to the subcommand.
 async fn cli() {
     // `std::env::args` panics on an argument that is not Unicode (a Linux file name in Latin-1)
-    let a = Args::parse(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(flag) = non_text_root(&raw) {
+        usage(format!("{flag} must be text: its folder's name isn't valid Unicode, and the lossy spelling would name a different folder"));
+    }
+    let a = Args::parse(raw.iter().map(|a| a.to_string_lossy().into_owned()));
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
     if a.flag("--help") {
@@ -822,6 +839,25 @@ mod format_tests {
         let mut p = json!({});
         super::set_custom_bounds(&mut p, None, None);
         assert!(p.get("range").is_none());
+    }
+
+    /// A root whose name isn't text is refused, in either spelling of the flag: its lossy text could name another folder.
+    #[test]
+    fn a_root_that_is_not_text_is_refused() {
+        use std::ffi::OsString;
+        let text = |s: &str| OsString::from(s);
+        assert_eq!(super::non_text_root(&[text("mcp"), text("--automation-read-root"), text("/work")]), None);
+        assert_eq!(super::non_text_root(&[text("--automation-read-root=/work"), text("--demo")]), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let bad = OsString::from_vec(b"/tmp/root-\xff".to_vec());
+            assert_eq!(super::non_text_root(&[text("--automation-write-root"), bad.clone()]), Some("--automation-write-root"));
+            let mut inline = b"--automation-read-root=/tmp/root-".to_vec();
+            inline.push(0xff);
+            assert_eq!(super::non_text_root(&[OsString::from_vec(inline)]), Some("--automation-read-root"));
+            assert_eq!(super::non_text_root(&[text("--project"), bad]), None, "only the roots are held to text");
+        }
     }
 
     /// `import` used `canonicalize`, which resolves symlinks and on Windows stores `\\?\C:\…`

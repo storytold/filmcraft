@@ -53,7 +53,8 @@ with neither flag, nothing is confined. While confined:
 - Bridge mode enforces the command checks before each command reaches the app, and refuses the
   UI-driving tools (`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_control`), since they could
   drive the app's file dialogs past the roots. The app itself is not confined: footage a project
-  names is opened wherever it is.
+  names is opened wherever it is, so only open projects whose media you would let the agent read. The
+  same holds for what the app does by itself, such as Auto Save, which is why that has to be off.
 - Bridge mode also refuses every `export.queue.*` command, because the app's queue can hold exports
   its user added to anywhere. Use `file.exportMedia` or `export.quick`, which are checked.
   It refuses `file.revert` too, which reads the app's project from wherever it's saved.
@@ -67,8 +68,11 @@ with neither flag, nothing is confined. While confined:
 - Folder preferences (`mediaCache.location`, `mediaCache.databaseLocation`) must be given as an
   absolute folder, or empty for the default one; a bare name would be read against the server's
   working folder.
-- `prefs.set` with `autoSave.saveCurrentProject` on is refused: the app would write its open project to
-  wherever it is saved. Switch it off in the app's settings first.
+- The app's Auto Save writes a folder beside the open project, and with `autoSave.saveCurrentProject` over the
+  project itself, wherever it lives. A bridge command is refused until both `autoSave.enabled` and
+  `autoSave.saveCurrentProject` are off in the app's settings, and `prefs.set` can't turn either on, nor can
+  `prefs.reset` without a category or with `autoSave`, which put the defaults back. A
+  headless session can't be confined while its autosave worker runs (the CLI never starts one).
 - Bridge mode imports media files only: each named path must be a file, not a folder named like one. The app would add a preset file to its library, write a
   document's audio beside it, and take all that a folder holds. `captions.import` still reads
   captions, `file.importAaf` still imports a document inside both roots, and a headless session
