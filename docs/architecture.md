@@ -677,7 +677,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 |---|---|---|
 | `h264` | `craft_video::h264::Encoder` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `craft_audio::aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
 | `prores` | `craft_video::prores` (Proxy / LT / 422 / HQ) | MOV |
-| `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
+| `dnxhr` | `craft-video` `dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `craft_audio::aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
 | `mp3` | `craft_audio::mp3` (Layer III CBR, the audio settings' bitrate snapped to a Layer III one; 16-48 kHz, mono or stereo) | audio only: a plain `.mp3` stream of frames (no ID3 or gapless tag) |
