@@ -73,7 +73,7 @@ fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Re
     let (tx, rx) = channel::<ControlRequest>();
     // An inherited environment variable shares the credential with the owner's bridge process
     // without exposing it in command-line arguments, logs, or a shared discovery file.
-    let Some(token) = token.filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
+    let Some(token) = token.filter(|t| craft_control_protocol::valid_token(t)) else {
         // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
         // the app, which shows it in the status bar.
         log::warn!("control server disabled: {}", DisabledWhy::Token.reason());

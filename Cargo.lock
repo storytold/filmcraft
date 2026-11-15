@@ -1088,7 +1088,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f
 [[package]]
 name = "craft-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=82276297a690d71b116f4e0dbd367e0e914088d6#82276297a690d71b116f4e0dbd367e0e914088d6"
+source = "git+https://github.com/storytold/craft-libs?rev=2e6878d973605c1aba8b9be091d3002474e32e9b#2e6878d973605c1aba8b9be091d3002474e32e9b"
 dependencies = [
  "serde_json",
  "subtle",
