@@ -546,9 +546,11 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         }
         meter.refresh(frame, exact);
         if let Some(shown_k) = display.last {
-            let lag = (frame - shown_k.frame).max(0);
+            let present_t = Tick::from_seconds_f64(anchor.elapsed().as_secs_f64());
+            let present_frame = rate.frame_at(present_t);
+            let lag = (present_frame - shown_k.frame).max(0);
             max_frame_lag = max_frame_lag.max(lag);
-            let lag_ms = ((t - rate.tick_of(shown_k.frame)).seconds() * 1000.0).abs();
+            let lag_ms = ((present_t - rate.tick_of(shown_k.frame)).seconds() * 1000.0).abs();
             video_lag_ms.push(lag_ms);
         }
         next += period;
