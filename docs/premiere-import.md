@@ -48,6 +48,10 @@ extension and opener checks before hashing each current imported path. It return
 or a per-file error; `matchesImport` compares against an existing import-time hash, or is null
 when none was recorded. A later hash cannot prove what bytes existed at import time. The command
 does not backfill provenance, rewrite `provenance.json`, save the project or add an undo step.
+Within one call each stored path is checked once and each file hashed once, however many
+references name it (one row per reference). One call reads at most 1 TiB: an import whose
+distinct files total more is refused before any file is read, and a file that grows while it is
+hashed stops at the limit with a per-file error.
 It runs synchronously only when explicitly requested; it is not a background job or a promise
 that the remaining probe/copy work cannot block the UI.
 

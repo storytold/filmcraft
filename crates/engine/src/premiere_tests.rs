@@ -583,3 +583,40 @@ fn premiere_import_lands_in_the_requested_bin_in_one_undo_step() {
     s.execute("file.import", json!({"paths":[doc],"bin":987_654_321u64,"destination":fixture.0.join("unknown-bin")})).unwrap();
     assert!(s.project.items.keys().all(|id| s.project.root.parent_of(*id) == Some(s.project.root.id)));
 }
+
+#[test]
+fn premiere_hash_media_hashes_each_file_once_within_a_byte_limit() {
+    let fixture = Fixture::new();
+    let expected = hash_file(&fixture.0.join("source.png")).unwrap();
+    let mut s = Session::default();
+    let destination = fixture.0.join("import");
+    s.execute("premiere.import", json!({"path":fixture.0.join("source.prproj"),"destination":destination})).unwrap();
+    // Four references to one file: the same stored path twice, then two other spellings of it
+    // (relative to the snapshot's folder, and through `..`).
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    let import = std::sync::Arc::make_mut(&mut workflow.imports[0]);
+    let reference = import.media[0].clone();
+    for path in [reference.imported_path.clone(), "../source.png".into(), destination.join("..").join("source.png").to_string_lossy().into_owned()] {
+        import.media.push(filmcraft_project::workflow::SourceMedia { imported_path: path, ..reference.clone() });
+    }
+    s.project = std::sync::Arc::new(project);
+    let calls = std::cell::Cell::new(0);
+    let hasher = |path: &std::path::Path, max: u64| {
+        calls.set(calls.get() + 1);
+        crate::premiere::hash_file_within(path, max)
+    };
+    // The limit counts each file once: four references to it fit in its own size.
+    let observed = crate::premiere::hash_media_with(&s, &json!({"import":0}), &hasher, expected.1).unwrap();
+    assert_eq!(calls.get(), 1, "{observed}");
+    let rows = observed["media"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|row| row["sha256"] == expected.0 && row["bytes"] == expected.1), "{observed}");
+    // Over the limit, nothing is read.
+    let refused = crate::premiere::hash_media_with(&s, &json!({"import":0}), &hasher, expected.1 - 1).unwrap_err().to_string();
+    assert!(refused.contains("limit"), "{refused}");
+    assert_eq!(calls.get(), 1, "a refused inspection hashes nothing");
+    // A file that grows past the limit while it is hashed stops there.
+    assert!(crate::premiere::hash_file_within(&fixture.0.join("source.png"), expected.1 - 1).is_err());
+    assert_eq!(crate::premiere::hash_file_within(&fixture.0.join("source.png"), expected.1).unwrap(), expected);
+}
