@@ -906,8 +906,602 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         let occurrences = if count == 1 { "occurrence" } else { "occurrences" };
         warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences}; identifier {identifier})"));
     }
-    let relative_media = relative_media.into_iter().filter_map(|(path, relative)| Some((path, relative?))).collect();
-    Ok(Document { sequences, media, relative_media, bins, items })
+    let relative_media = objects.relative_media.into_iter().filter_map(|(path, relative)| Some((path, relative?))).collect();
+    Ok(Document { sequences, media: objects.media, relative_media, bins, items })
+}
+
+/// The document's top-level objects by `ObjectID` and `ObjectUID`, and the sequence names and
+/// media titles an unresolved source reference may fall back to.
+struct Objects<'a, 'i> {
+    ids: BTreeMap<&'a str, Node<'a, 'i>>,
+    uids: BTreeMap<&'a str, Node<'a, 'i>>,
+    /// Sequence names and ObjectUIDs; `None` for a name several sequences share.
+    names: BTreeMap<&'a str, Option<&'a str>>,
+    /// Media titles and their paths, without the ambiguous titles.
+    media: BTreeMap<String, String>,
+    /// A stored media path's project-relative fallback; `None` when it was saved with several.
+    relative_media: BTreeMap<String, Option<String>>,
+    /// Media titles naming different paths.
+    ambiguous: BTreeSet<String>,
+}
+
+impl<'a, 'i> Objects<'a, 'i> {
+    /// Index the root's objects. Duplicate identifiers, sequences without a name or ObjectUID,
+    /// overlong media titles or paths and too many sequences are errors.
+    fn index(root: Node<'a, 'i>, base_dir: Option<&str>) -> Result<Self> {
+        let mut objects = Objects {
+            ids: BTreeMap::new(),
+            uids: BTreeMap::new(),
+            names: BTreeMap::new(),
+            media: BTreeMap::new(),
+            relative_media: BTreeMap::new(),
+            ambiguous: BTreeSet::new(),
+        };
+        let mut sequence_count = 0usize;
+        for n in root.children().filter(Node::is_element) {
+            for (attr, map) in [("ObjectID", &mut objects.ids), ("ObjectUID", &mut objects.uids)] {
+                if let Some(id) = n.attribute(attr)
+                    && map.insert(id, n).is_some()
+                {
+                    return Err(error(format!("duplicate {attr}: {id}")));
+                }
+            }
+            if n.has_tag_name("Sequence") {
+                sequence_count += 1;
+                let name = child_text(n, "Name").ok_or_else(|| error("sequence without name"))?;
+                let uid = n.attribute("ObjectUID").filter(|uid| !uid.is_empty()).ok_or_else(|| error("sequence without ObjectUID"))?;
+                objects.names.entry(name).and_modify(|entry| *entry = None).or_insert(Some(uid));
+            }
+            if n.has_tag_name("Media") {
+                objects.add_media(n, base_dir)?;
+            }
+        }
+        if sequence_count > MAX_SEQUENCES {
+            return Err(error("too many sequences"));
+        }
+        for title in &objects.ambiguous {
+            objects.media.remove(title);
+        }
+        Ok(objects)
+    }
+
+    /// A `Media` object's title and path, and the project-relative fallback for its path.
+    fn add_media(&mut self, n: Node<'a, 'i>, base_dir: Option<&str>) -> Result<()> {
+        if child_text(n, "Title").is_some_and(|s| s.len() > 4096)
+            || child_text(n, "ActualMediaFilePath").or_else(|| child_text(n, "FilePath")).is_some_and(|s| s.len() > 16384)
+            || child_text(n, "RelativePath").is_some_and(|s| s.len() > 16384)
+        {
+            return Err(error("media title or path is too long"));
+        }
+        if let (Some(path), Some(relative)) = (media_path(n, base_dir), relative_media_path(n, base_dir))
+            && path != relative
+        {
+            // One stored path saved with different relative paths has no single fallback.
+            match self.relative_media.get(&path) {
+                None => {
+                    self.relative_media.insert(path, Some(relative));
+                }
+                Some(Some(known)) if *known != relative => {
+                    self.relative_media.insert(path, None);
+                }
+                Some(_) => {}
+            }
+        }
+        if let (Some(title), Some(path)) = (child_text(n, "Title"), media_path(n, base_dir)) {
+            if self.media.get(title).is_some_and(|p| p != &path) {
+                self.ambiguous.insert(title.to_string());
+            }
+            self.media.insert(title.to_string(), path);
+        }
+        Ok(())
+    }
+}
+
+/// The link group of every linked timeline item, by the item's ObjectID.
+fn link_groups<'a>(root: Node<'a, '_>, work_left: &mut usize) -> Result<BTreeMap<&'a str, &'a str>> {
+    let mut links = BTreeMap::new();
+    for group in root.children().filter(|n| n.has_tag_name("Link")) {
+        spend(work_left, group)?;
+        let Some(id) = group.attribute("ObjectID") else { continue };
+        // This shared identifier is copied into each linked item's provenance.
+        if id.len() > 4096 {
+            return Err(error("link group identifier is too long"));
+        }
+        for pointer in group.descendants().filter(|n| n.has_tag_name("TrackItem")) {
+            let Some(item) = pointer.attribute("ObjectRef") else { continue };
+            if links.insert(item, id).is_some_and(|old| old != id) {
+                return Err(error("timeline item belongs to multiple link groups"));
+            }
+        }
+    }
+    Ok(links)
+}
+
+/// A sequence's frame size and rates, as its track groups state them.
+#[derive(Default)]
+struct SequenceFormat {
+    frame_rect: Option<(u32, u32)>,
+    frame_rate: Option<FrameRate>,
+    sample_rate: Option<u32>,
+}
+
+impl SequenceFormat {
+    /// A video track group's frame rate and `FrameRect`, or an audio track group's sample rate;
+    /// every group of a kind must agree.
+    fn add_group(&mut self, group: Node<'_, '_>, name: &str) -> Result<()> {
+        if group.has_tag_name("VideoTrackGroup")
+            && let Some(rate) = child(group, "TrackGroup").and_then(|group| child(group, "FrameRate"))
+        {
+            let rate = sequence_rate(rate.text().unwrap_or(""))?;
+            if self.frame_rate.is_some_and(|previous| previous != rate) {
+                return Err(error(format!("{name}: conflicting video track group frame rates")));
+            }
+            self.frame_rate = Some(rate);
+        }
+        if group.has_tag_name("VideoTrackGroup")
+            && let Some(rect) = child_text(group, "FrameRect")
+        {
+            let size = frame_rect_size(rect)?;
+            if self.frame_rect.is_some_and(|previous| previous != size) {
+                return Err(error(format!("{name}: conflicting video track group frame sizes")));
+            }
+            self.frame_rect = Some(size);
+        }
+        if group.has_tag_name("AudioTrackGroup")
+            && let Some(rate) = child(group, "TrackGroup").and_then(|g| child(g, "FrameRate"))
+        {
+            let raw = rate.text().unwrap_or("").trim().parse::<i64>().map_err(|_| error("invalid audio ticks per sample"))?;
+            if raw <= 0 || filmcraft_time::TICKS_PER_SECOND % raw != 0 {
+                return Err(error("invalid audio ticks per sample"));
+            }
+            let parsed = u32::try_from(filmcraft_time::TICKS_PER_SECOND / raw).map_err(|_| error("invalid audio sample rate"))?;
+            if !(8000..=384000).contains(&parsed) || self.sample_rate.is_some_and(|old| old != parsed) {
+                return Err(error("unsupported or conflicting audio sample rate"));
+            }
+            self.sample_rate = Some(parsed);
+        }
+        Ok(())
+    }
+}
+
+/// What a timeline item's component chain holds.
+#[derive(Default)]
+struct Components {
+    effects: Vec<String>,
+    motion: BTreeMap<String, String>,
+    motion_keys: BTreeMap<String, Param>,
+    audio: BTreeMap<String, Param>,
+    video_effects: Vec<filmcraft_project::EffectInstance>,
+    graphic: bool,
+    text: Option<String>,
+}
+
+/// Where a timeline item's picture or sound comes from, and its master clip's markers.
+struct ItemSource {
+    media_path: Option<String>,
+    synthetic: Option<SyntheticMedia>,
+    adjustment_layer: Option<String>,
+    nested_sequence: Option<String>,
+    media_markers: Vec<filmcraft_project::Marker>,
+}
+
+/// State shared while reading a document's sequences: the object index and link groups, the work
+/// budget and report, and the item count, skipped clips and unsupported effects found so far.
+struct Reader<'a, 'i, 'r> {
+    objects: &'r Objects<'a, 'i>,
+    links: BTreeMap<&'a str, &'a str>,
+    base_dir: Option<&'r str>,
+    work: &'r mut usize,
+    report: &'r mut Report,
+    /// Master clips whose markers were already read.
+    marker_owners: std::collections::HashSet<roxmltree::NodeId>,
+    item_count: usize,
+    skipped_items: BTreeSet<String>,
+    unsupported_effects: BTreeMap<(String, String), usize>,
+}
+
+impl<'a, 'i> Reader<'a, 'i, '_> {
+    /// A sequence: its frame size and rates, its tracks and its markers.
+    fn sequence(&mut self, n: Node<'a, 'i>) -> Result<Sequence> {
+        spend(self.work, n)?;
+        let name = child_text(n, "Name").unwrap_or("Sequence").to_string();
+        // The sequence frame is the video track group's `FrameRect`; the preview size is only the
+        // fallback (it can differ: a 2560x1440 sequence previewing at 1920x1080).
+        let mut width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
+        let mut height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
+        let mut format = SequenceFormat::default();
+        let mut tracks = Vec::new();
+        let pointers = child(n, "TrackGroups")
+            .into_iter()
+            .flat_map(|groups| groups.children())
+            .filter(|group| group.has_tag_name("TrackGroup"))
+            .filter_map(|group| child(group, "Second"));
+        for pointer in pointers {
+            let Some(group) = referred(Some(pointer), &self.objects.ids, "ObjectRef") else {
+                warning(self.report, format!("{name}: unresolved track group"));
+                continue;
+            };
+            spend(self.work, group)?;
+            let kind = if group.tag_name().name().starts_with("Video") {
+                "video"
+            } else if group.tag_name().name().starts_with("Audio") {
+                "audio"
+            } else {
+                "caption"
+            };
+            format.add_group(group, &name)?;
+            self.track_group(group, kind, &name, &mut tracks)?;
+        }
+        if let Some((w, h)) = format.frame_rect {
+            (width, height) = (w, h);
+        }
+        filmcraft_project::validate_frame_size(width, height).map_err(error)?;
+        let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
+        let markers = markers::read(n, &self.objects.ids, self.work, self.report, &name)?;
+        Ok(Sequence {
+            object_uid,
+            name,
+            width,
+            height,
+            frame_rate: format.frame_rate,
+            sample_rate: format.sample_rate,
+            work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?,
+            markers,
+            tracks,
+        })
+    }
+
+    /// The tracks a track group lists, appended to the sequence's `tracks`.
+    fn track_group(&mut self, group: Node<'a, 'i>, kind: &'static str, name: &str, tracks: &mut Vec<Track>) -> Result<()> {
+        for (fallback, pointer) in group.descendants().filter(|n| n.has_tag_name("Track") && n.attribute("ObjectURef").is_some()).enumerate() {
+            let Some(track) = referred(Some(pointer), &self.objects.uids, "ObjectURef") else {
+                warning(self.report, format!("{name}: unresolved {kind} track"));
+                continue;
+            };
+            spend(self.work, track)?;
+            let track = self.track(track, kind, fallback, name, tracks)?;
+            tracks.push(track);
+        }
+        Ok(())
+    }
+
+    /// A track and its timeline items. `fallback` is its index when it stores none; `tracks` are
+    /// the sequence's tracks read before it.
+    fn track(&mut self, track: Node<'a, 'i>, kind: &'static str, fallback: usize, name: &str, tracks: &[Track]) -> Result<Track> {
+        // The track's own fields live in `ClipTrack/Track`; elements nested deeper (such as a
+        // clip track item's `IsMuted`, which disables only that clip) are not the track's.
+        let base = child(track, "ClipTrack").and_then(|c| child(c, "Track"));
+        let index =
+            base.and_then(|b| child_text(b, "Index")).map(|s| s.parse::<usize>()).transpose().map_err(|_| error("invalid track index"))?.unwrap_or(fallback);
+        if index >= MAX_TRACKS || tracks.len() >= MAX_TRACKS * 3 {
+            return Err(error("too many tracks"));
+        }
+        if tracks.iter().any(|t: &Track| t.kind == kind && t.index == index) {
+            return Err(error("duplicate track index"));
+        }
+        let muted = base.and_then(|b| child_text(b, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1")
+            || (kind == "audio" && audio::fader_muted(track, &self.objects.ids, self.work, self.report, name)?);
+        let locked = base.and_then(|b| child_text(b, "IsLocked")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
+        let track_name = base
+            .and_then(|b| child(b, "Node"))
+            .and_then(|n| child(n, "Properties"))
+            .and_then(|p| child_text(p, "MZ.TrackName"))
+            .filter(|s| !s.trim().is_empty());
+        if track_name.is_some_and(|s| s.len() > 4096) {
+            return Err(error("track name is too long"));
+        }
+        let track_name = track_name.map(str::to_string);
+        let mut items = Vec::new();
+        for pointer in track.descendants().filter(|n| n.has_tag_name("TrackItem") && n.attribute("ObjectRef").is_some()) {
+            let Some(item) = referred(Some(pointer), &self.objects.ids, "ObjectRef") else {
+                warning(self.report, format!("{name}: unresolved timeline item"));
+                continue;
+            };
+            if let Some(item) = self.item(item, kind)? {
+                items.push(item);
+            }
+        }
+        Ok(Track { kind: kind.into(), index, muted, name: track_name, locked, items })
+    }
+
+    /// A timeline item, or `None` for a transition item: transitions are read with the clips
+    /// they join.
+    fn item(&mut self, item: Node<'a, 'i>, kind: &'static str) -> Result<Option<Item>> {
+        spend(self.work, item)?;
+        self.item_count += 1;
+        if self.item_count > 100_000 {
+            return Err(error("too many timeline items"));
+        }
+        // TransitionItems are a separate list, not source clips (also separated
+        // by upstream PR #1694). Their Head/Tail references are handled below.
+        if item.tag_name().name().ends_with("TransitionTrackItem") {
+            return Ok(None);
+        }
+        let start = ticks(value(item, "Start"), Tick::ZERO)?;
+        let end = ticks(value(item, "End"), start)?;
+        let sub = referred(descendant(item, "SubClip"), &self.objects.ids, "ObjectRef");
+        if let Some(sub) = sub {
+            spend(self.work, sub)?;
+        }
+        let label = sub.and_then(|s| child_text(s, "Name")).unwrap_or(item.tag_name().name()).to_string();
+        let clip = referred(sub.and_then(|s| child(s, "Clip")), &self.objects.ids, "ObjectRef");
+        if let Some(clip) = clip {
+            spend(self.work, clip)?;
+        }
+        let mut source_in = signed_ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
+        if source_in < Tick::ZERO {
+            // A slip past the source's first frame stores a negative in point.
+            warning(self.report, format!("{label}: in point precedes the source start; clip starts at the source start"));
+            source_in = Tick::ZERO;
+        }
+        let source_out = match clip.and_then(|s| value(s, "OutPoint")) {
+            Some(raw) => ticks(Some(raw), Tick::ZERO)?,
+            None => Tick(source_in.0.checked_add((end.0 - start.0).max(0)).ok_or_else(|| error("source time overflow"))?),
+        };
+        let speed = clip.and_then(|s| value(s, "PlaybackSpeed")).unwrap_or("1").parse::<f64>().map_err(|_| error("invalid playback speed"))?;
+        let unsupported = if end <= start {
+            Some("timeline item must have positive duration")
+        } else if !speed.is_finite()
+            || !(0.001..=1000.0).contains(&speed)
+            || source_out < source_in
+            || source_out > Tick::MAX
+            || source_in.0 as f64 + (end.0 - start.0) as f64 * speed > Tick::MAX.0 as f64
+        {
+            Some("unsupported playback speed or source range")
+        } else {
+            None
+        };
+        if let Some(reason) = unsupported {
+            warning(self.report, format!("{label}: {reason}; clip skipped"));
+            self.skipped_items.insert(item.attribute("ObjectID").unwrap_or("").to_string());
+        }
+        let mut parts = self.components(item, kind, &label)?;
+        if kind == "caption" {
+            parts.text = self.caption(item, &label)?;
+        }
+        let transitions = self.transitions(item, &label)?;
+        let audio_category = value(item, "ESP.Tag").map(str::to_string);
+        let disabled = child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
+        let source = self.source(sub, clip, kind, &label, &mut parts)?;
+        Ok(Some(Item {
+            object_id: item.attribute("ObjectID").unwrap_or("").into(),
+            link: item.attribute("ObjectID").and_then(|id| self.links.get(id)).map(|id| (*id).to_string()),
+            audio: parts.audio,
+            video_effects: parts.video_effects,
+            graphic: parts.graphic,
+            disabled,
+            motion_keys: parts.motion_keys,
+            media_path: source.media_path,
+            synthetic: source.synthetic,
+            adjustment_layer: source.adjustment_layer,
+            media_markers: source.media_markers,
+            nested_sequence: source.nested_sequence,
+            label,
+            start,
+            end,
+            source_in,
+            source_out,
+            speed,
+            text: parts.text,
+            audio_category,
+            effects: parts.effects,
+            motion: parts.motion,
+            transitions,
+        }))
+    }
+
+    /// The item's component chain: effect names, Motion, Lumetri, intrinsic audio, and the text
+    /// and shape layers that make it a graphic.
+    fn components(&mut self, item: Node<'a, 'i>, kind: &str, label: &str) -> Result<Components> {
+        let mut parts = Components::default();
+        let chain = referred(descendant(item, "ComponentOwner").and_then(|n| child(n, "Components")), &self.objects.ids, "ObjectRef");
+        if let Some(chain) = chain {
+            spend(self.work, chain)?;
+            for ptr in chain.descendants().filter(|n| n.has_tag_name("Component")) {
+                let Some(c) = referred(Some(ptr), &self.objects.ids, "ObjectRef") else { continue };
+                spend(self.work, c)?;
+                self.component(c, kind, label, &mut parts)?;
+            }
+        }
+        Ok(parts)
+    }
+
+    /// One component of an item's chain; an effect FilmCraft does not import is counted for the
+    /// report.
+    fn component(&mut self, c: Node<'a, 'i>, kind: &str, label: &str, parts: &mut Components) -> Result<()> {
+        let effect = value(c, "DisplayName").or_else(|| child_text(c, "FilterMatchName")).unwrap_or("Unknown").to_string();
+        let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
+        let is_text = matches!(match_name, Some("AE.ADBE Text" | "ADBE Text"));
+        let is_shape = matches!(match_name, Some("AE.ADBE Shape" | "ADBE Shape"));
+        parts.graphic |= is_text || is_shape;
+        if is_shape {
+            warning(
+                self.report,
+                format!("{label}: native shape retained as a graphic canvas; opaque path/appearance data is retained in provenance, not rendered"),
+            );
+        }
+        if is_text {
+            self.source_text(c, label, &mut parts.text)?;
+        }
+        if matches!(match_name, Some("AE.ADBE Motion" | "ADBE Motion")) {
+            self.motion_params(c, parts)?;
+        } else if kind == "video" && matches!(match_name, Some("AE.ADBE Lumetri" | "ADBE Lumetri")) {
+            parts.video_effects.push(color::read(c, &self.objects.ids, self.work, self.report)?);
+        } else if kind == "audio" && match_name.is_some_and(|m| m.starts_with("Internal Volume") || m.starts_with("Internal Channel Volume")) {
+            audio::read(c, match_name.unwrap_or_default(), &self.objects.ids, self.work, &mut parts.audio, self.report)?;
+        } else if !is_text && !is_shape {
+            let count = self.unsupported_effects.entry((effect.clone(), match_name.unwrap_or("unknown").to_string())).or_insert(0usize);
+            *count = count.saturating_add(1);
+        }
+        parts.effects.push(effect);
+        Ok(())
+    }
+
+    /// A text layer's static Source Text into `text`, which the item's text layers share.
+    fn source_text(&mut self, c: Node<'a, 'i>, label: &str, text: &mut Option<String>) -> Result<()> {
+        // User-owned XML stores Source Text in parameter 1. InstanceName
+        // is the renameable layer label, not the displayed text.
+        for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
+            let Some(p) = referred(Some(ptr), &self.objects.ids, "ObjectRef") else { continue };
+            spend(self.work, p)?;
+            if child_text(p, "ParameterID") == Some("1")
+                && !child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                && let Some(v) = child(p, "StartKeyframeValue").filter(|v| v.attribute("Encoding") == Some("base64"))
+            {
+                *text = v.text().and_then(caption_text);
+            }
+        }
+        if text.is_none() {
+            warning(self.report, format!("{label}: static Source Text unavailable; layer name not used as visible text"));
+        }
+        Ok(())
+    }
+
+    /// Motion's Position, Scale and Rotation: static values, or keyframes when animated.
+    fn motion_params(&mut self, c: Node<'a, 'i>, parts: &mut Components) -> Result<()> {
+        for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
+            if let Some(p) = referred(Some(ptr), &self.objects.ids, "ObjectRef") {
+                spend(self.work, p)?;
+                if let Some(key) = motion_parameter(p) {
+                    if child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1") {
+                        if parts.motion_keys.insert(key.to_string(), motion::read(p, key, self.report)?).is_some() {
+                            return Err(error("duplicate animated Motion control"));
+                        }
+                    } else if let Some(v) = static_parameter_value(p) {
+                        parts.motion.insert(key.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A caption item's text, from its `BlockVectorItem`.
+    fn caption(&mut self, item: Node<'a, 'i>, label: &str) -> Result<Option<String>> {
+        let block = referred(descendant(item, "BlockVectorItem"), &self.objects.ids, "ObjectRef");
+        if let Some(block) = block {
+            spend(self.work, block)?;
+        }
+        let text = block.and_then(|b| child_text(b, "FormattedTextData")).and_then(caption_text);
+        if text.is_none() {
+            warning(self.report, format!("{label}: caption text could not be decoded"));
+        }
+        Ok(text)
+    }
+
+    /// The item's head and tail transitions; one that ends before it starts is skipped.
+    fn transitions(&mut self, item: Node<'a, 'i>, label: &str) -> Result<Vec<SourceTransition>> {
+        let mut transitions = Vec::new();
+        for key in ["HeadTransition", "TailTransition"] {
+            if let Some(t) = referred(descendant(item, key), &self.objects.ids, "ObjectRef") {
+                spend(self.work, t)?;
+                let name = value(t, "DisplayName").unwrap_or("Transition").to_string();
+                let start = signed_ticks(value(t, "Start"), Tick::ZERO)?;
+                let end = signed_ticks(value(t, "End"), start)?;
+                if end < start {
+                    warning(self.report, format!("{label}: {name} end precedes start; transition skipped"));
+                    continue;
+                }
+                transitions.push(SourceTransition {
+                    object_id: t.attribute("ObjectID").unwrap_or("").to_string(),
+                    start: t.tag_name().name().ends_with("TransitionTrackItem").then_some(start),
+                    end: t.tag_name().name().ends_with("TransitionTrackItem").then_some(end),
+                    head: key == "HeadTransition",
+                    name,
+                    duration: end - start,
+                });
+            }
+        }
+        Ok(transitions)
+    }
+
+    /// The item's source: media, generated media, a nested sequence or an adjustment layer, by
+    /// title for an unresolved reference. Generated graphic media sets `parts.graphic`.
+    fn source(&mut self, sub: Option<Node<'a, 'i>>, clip: Option<Node<'a, 'i>>, kind: &str, label: &str, parts: &mut Components) -> Result<ItemSource> {
+        let target = source_target(clip, &self.objects.ids, &self.objects.uids, self.work)?;
+        let generated = target.filter(|n| n.has_tag_name("Media")).and_then(|n| Some((n, synthetic_code(n)?)));
+        let master = referred(sub.and_then(|s| child(s, "MasterClip")), &self.objects.uids, "ObjectURef");
+        // An adjustment layer's master clip is flagged over generated black video.
+        let adjustment_layer = master
+            .filter(|_| kind == "video")
+            .filter(|m| child_text(*m, "IsAdjustmentLayer").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"))
+            .and_then(|m| m.attribute("ObjectUID"))
+            .map(str::to_string);
+        let mut synthetic = None;
+        match &generated {
+            _ if adjustment_layer.is_some() => {}
+            // A graphic's canvas; its text and shapes are read from the components.
+            Some((_, code)) if code == "GRFV" => parts.graphic = true,
+            // The source of caption clips; their text is read with the caption track.
+            Some((_, code)) if code == "SCPF" => {}
+            Some((media, code)) => {
+                if generator(code).is_none() {
+                    warning(self.report, format!("{label}: generated media {code} is not supported; kept offline placeholder"));
+                }
+                let media = media.attribute("ObjectUID").or_else(|| media.attribute("ObjectID")).unwrap_or("").to_string();
+                synthetic = Some(SyntheticMedia { code: code.clone(), media });
+            }
+            None => {}
+        }
+        let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, self.base_dir));
+        let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
+        if adjustment_layer.is_some() {
+            media_path = None;
+            nested_sequence = None;
+        }
+        if parts.graphic {
+            // Generated graphic media may have an internal numeric pseudo-path.
+            // It is a native canvas, not a missing filesystem asset.
+            media_path = None;
+            nested_sequence = None;
+        }
+        if media_path.is_none()
+            && nested_sequence.is_none()
+            && generated.is_none()
+            && adjustment_layer.is_none()
+            && kind != "caption"
+            && !parts.graphic
+            && parts.text.is_none()
+        {
+            (media_path, nested_sequence) = self.title_fallback(label);
+        }
+        if let Some(path) = &media_path {
+            *self.work = self.work.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
+        }
+        let media_markers = if media_path.is_some() { self.media_markers(master, label)? } else { Vec::new() };
+        Ok(ItemSource { media_path, synthetic, adjustment_layer, nested_sequence, media_markers })
+    }
+
+    /// The media path or nested sequence an unresolved source reference names by its title. A
+    /// title several sources share, or both media and a sequence use, is refused.
+    fn title_fallback(&mut self, label: &str) -> (Option<String>, Option<String>) {
+        let objects = self.objects;
+        let named_sequence = objects.names.get(label).copied().flatten();
+        let named_media = objects.media.get(label);
+        if objects.ambiguous.contains(label) || objects.names.get(label) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
+            warning(self.report, format!("{label}: unresolved source reference; ambiguous title fallback refused; left offline"));
+            (None, None)
+        } else if named_sequence.is_some() || named_media.is_some() {
+            warning(self.report, format!("{label}: unresolved source reference; using title fallback"));
+            (named_media.cloned(), named_sequence.map(str::to_string))
+        } else {
+            (None, None)
+        }
+    }
+
+    /// The markers of the item's master clip, if no earlier item read them.
+    fn media_markers(&mut self, master: Option<Node<'a, 'i>>, label: &str) -> Result<Vec<filmcraft_project::Marker>> {
+        let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
+        // Read once per master clip, onto the first timeline item that uses it:
+        // re-reading for every cut would repeat the work, the warnings and the copy.
+        if let Some(master_clip) = referred(first, &self.objects.ids, "ObjectRef").and_then(|c| child(c, "Clip"))
+            && self.marker_owners.insert(master_clip.id())
+        {
+            spend(self.work, master_clip)?;
+            return markers::read(master_clip, &self.objects.ids, self.work, self.report, label);
+        }
+        Ok(Vec::new())
+    }
 }
 
 fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
@@ -1728,6 +2322,25 @@ mod tests {
         assert_eq!(blank.name, track.name, "a blank stored name keeps the generated name");
         let long = xml.replace("Interviews", &"n".repeat(4097));
         assert!(import(long.as_bytes(), &ImportOptions::default(), None).unwrap_err().to_string().contains("track name"));
+    }
+    #[test]
+    fn track_mute_and_index_come_from_the_track_element_only() {
+        // Hand-written: the track's own `ClipTrack/Track` stores neither IsMuted nor Index; an
+        // element nested deeper in the track (an inlined clip track item) stores both.
+        let xml = fixture().replace(
+            r#"<Track><Index>0</Index><IsMuted>false</IsMuted></Track><ClipItems><TrackItems><TrackItem ObjectRef="20"/></TrackItems>"#,
+            r#"<Track></Track><ClipItems><TrackItems><TrackItem ObjectRef="20"/></TrackItems><ClipTrackItem><Index>5</Index><IsMuted>true</IsMuted></ClipTrackItem>"#,
+        );
+        let (fragment, tree, _) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let track = &tree.sequences[0].tracks[0];
+        assert_eq!((track.index, track.muted), (0, false), "a nested clip's fields are not the track's");
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        assert_eq!(seq.video_tracks.len(), 1);
+        assert!(seq.video_tracks[0].enabled && !seq.video_tracks[0].muted);
+        // The track's own fields still apply.
+        let own = fixture().replace("<Index>0</Index><IsMuted>false", "<Index>2</Index><IsMuted>true");
+        let (_, tree, _) = import(own.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!((tree.sequences[0].tracks[0].index, tree.sequences[0].tracks[0].muted), (2, true));
     }
     // Hand-written marker records in the DVAMarker JSON shape; colours are 0xAABBGGRR.
     fn marker_fixture() -> String {
