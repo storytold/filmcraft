@@ -129,6 +129,18 @@ fn old_provenance_defaults_and_new_audio_controls_round_trip() {
 }
 
 #[test]
+fn provenance_omits_the_internal_title_map_and_reads_older_trees() {
+    let (_, tree, report) = import(fixture().as_bytes(), &ImportOptions::default(), None).unwrap();
+    assert!(report.mentions("title fallback"), "the fixture resolves its media by title: {report:?}");
+    let mut json = serde_json::to_value(&tree).unwrap();
+    assert!(json.get("media").is_none(), "titles resolve references during the read; each item records its path");
+    // Trees saved by earlier imports carried that map; they still read.
+    json["media"] = serde_json::json!({"example.mov": "example.mov"});
+    let old: Document = serde_json::from_value(json).unwrap();
+    assert_eq!(old.sequences[0].tracks[0].items[0].media_path.as_deref(), Some("example.mov"));
+}
+
+#[test]
 fn oversized_link_identifiers_are_rejected_before_per_clip_copying() {
     let xml = fixture().replace("ObjectID=\"link\"", &format!("ObjectID=\"{}\"", "x".repeat(4097)));
     let result = std::panic::catch_unwind(|| import(xml.as_bytes(), &ImportOptions::default(), None));
