@@ -17,6 +17,7 @@ filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-cfb = { workspace = true }
 craft-timeline = { workspace = true }
+craft-aaf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
