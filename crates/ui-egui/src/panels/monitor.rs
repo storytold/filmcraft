@@ -195,7 +195,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
 
 fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
     if which == Which::Program && app.playback.playing && !app.ui.fullscreen_program {
-        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
+        let c = if app.playback.meter.degraded(app.frames.playback_stride()) { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
 }
