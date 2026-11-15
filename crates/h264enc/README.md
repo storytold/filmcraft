@@ -54,7 +54,7 @@ for p in enc.flush() { /* ... */ }
 | Entropy | CABAC (all I and cabac_init_idc 0 context tables, verified against the spec text) and CAVLC (all coeff_token/total_zeros/run_before tables, level escapes) |
 | Loop filter | normative deblocking (bS 0–4 incl. bi-predicted rules, 8x8-transform edges, chroma QP mapping) in the reconstruction loop |
 | Mode decision | SATD + λ·bits for Speed/Balanced; Quality adds RD-lite (SSD + λ·CABAC-estimated bits) between the best intra/inter/skip candidates |
-| Rate control | `Qp`, `Crf` (constant quality with I/P/B offsets), 1-pass ABR with complexity model + VBV (`Cbr`, 1-pass `Vbr`), closed-loop 2-pass VBR; variance adaptive quantisation (`aq_strength`), lookahead scene-cut IDR insertion |
+| Rate control | `Qp`, `Crf` (constant quality with I/P/B offsets), 1-pass ABR with complexity model + VBV (`Cbr`, 1-pass `Vbr`), closed-loop 2-pass VBR (I and P frames planned within 6 QP of their first-pass quantiser, B frames from the I or P frame before them); variance adaptive quantisation (`aq_strength`), lookahead scene-cut IDR insertion |
 | Threading | slice-parallel encoding (MB-row slices, `disable_deblocking_filter_idc = 2` with >1 slice so each slice is also deblocked in parallel), parallel half-sample interpolation and lookahead |
 
 ## Verification
@@ -85,7 +85,8 @@ Results on the synthetic content (moving gradient, grain noise, text-like edges,
 | 1080p, High, Speed, CRF 20, 2 B | mean luma PSNR 43.0 dB (IDR 39.1, P/B 43.2–44.5) |
 | 640x360 CBR 1500 kbit/s | 1518 kbit/s (+1.2%) |
 | 640x360 1-pass VBR 1000 kbit/s | 981 kbit/s (−1.9%) |
-| 640x360 2-pass VBR 800 kbit/s | 840 kbit/s (+5.0%) |
+| 640x360 2-pass VBR 800 kbit/s | 810 kbit/s (+1.3%) |
+| 640x360 2-pass VBR 400 kbit/s, two slow push-ins over a detailed still (`two_pass_target`) | 404 kbit/s (+0.9%) |
 
 Development tool: `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- W H FRAMES
 [profile] [preset] [bframes] [qpN|crfN|cbrN|vbrN] [slices] [synth|testsrc2|mandelbrot]` encodes, decodes with

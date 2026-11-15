@@ -4,4 +4,5 @@ mod ffmpeg_oracle;
 mod high10_oracle;
 mod pinned_decisions;
 mod thread_count;
+mod two_pass_target;
 mod vbr_overshoot;
