@@ -135,6 +135,39 @@ fn select_all_matching_selects_every_use_of_the_source() {
     assert!(s.execute("edit.selectAllMatching", json!({})).is_err());
 }
 
+/// #4603: `with` gives other clips the same change in the same undo step: numbers and points move
+/// by the difference, so clips set apart keep their arrangement, within the parameter's range.
+#[test]
+fn set_param_with_moves_the_other_clips_by_the_same_amount() {
+    use filmcraft_project::ParamValue;
+    let mut s = demo();
+    let (a, b, c) = (v1(&s)[0].id.0, v1(&s)[1].id.0, v1(&s)[2].id.0);
+    let pos = |s: &Session, id: u64| match clip(s, id).effect("motion").and_then(|e| e.param("position")).map(|p| p.value.clone()) {
+        Some(ParamValue::Vec2(v)) => (v.x, v.y),
+        other => panic!("Position is a point: {other:?}"),
+    };
+    let scale = |s: &Session, id: u64| clip(s, id).effect("motion").and_then(|e| e.param("scale")).and_then(|p| p.value.as_f64()).unwrap_or(f64::NAN);
+    s.execute("effects.setParam", json!({"clip": b, "effect": "motion", "param": "position", "value": [100.0, 50.0]})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 10.0})).unwrap();
+    let (pa, pb, pc) = (pos(&s, a), pos(&s, b), pos(&s, c));
+    let undo = s.history.undo.len();
+    s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "position", "value": [pa.0 + 30.0, pa.1 - 20.0], "with": [b, c, a, b]}))
+        .unwrap();
+    assert_eq!(pos(&s, a), (pa.0 + 30.0, pa.1 - 20.0));
+    assert_eq!(pos(&s, b), (pb.0 + 30.0, pb.1 - 20.0), "the second clip moved by as much");
+    assert_eq!(pos(&s, c), (pc.0 + 30.0, pc.1 - 20.0), "the third clip moved by as much");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((pos(&s, a), pos(&s, b), pos(&s, c)), (pa, pb, pc), "one undo puts all three back");
+    // a scalar too, held inside the parameter's range
+    let sa = scale(&s, a);
+    s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "scale", "value": sa - 50.0, "with": [c]})).unwrap();
+    assert_eq!(scale(&s, a), sa - 50.0);
+    assert_eq!(scale(&s, c), 0.0, "10 % less 50 stops at the range's 0 %");
+    // a mask's parameters differ from clip to clip
+    assert!(s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "scale", "value": 50.0, "mask": 0, "with": [b]})).is_err());
+}
+
 #[test]
 fn paste_attributes_with_scaled_keyframes_and_remove_attributes() {
     let mut s = demo();

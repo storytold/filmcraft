@@ -399,6 +399,27 @@ pub(crate) fn clip_p(p: &Value, k: &str) -> Option<ClipId> {
     u64_p(p, k).map(ClipId)
 }
 
+/// The value another clip's parameter takes when one clip's changes from `old` to `new` (#4603):
+/// a number or point moves by the same amount, so several clips keep their arrangement; a point
+/// coordinate either side doesn't know (NaN, "auto") takes the new coordinate itself. Any other
+/// kind of value is copied. `None` when the result would not be a finite value of `other`'s kind.
+fn shifted_param(old: &ParamValue, new: &ParamValue, other: &ParamValue) -> Option<ParamValue> {
+    let shift = |o: f64, n: f64, x: f64| {
+        let moved = x + (n - o);
+        if moved.is_finite() { moved } else { n }
+    };
+    match (old, new, other) {
+        (ParamValue::Float(o), ParamValue::Float(n), ParamValue::Float(x)) => {
+            Some(ParamValue::Float(shift(*o, *n, *x))).filter(|v| matches!(v, ParamValue::Float(f) if f.is_finite()))
+        }
+        (ParamValue::Vec2(o), ParamValue::Vec2(n), ParamValue::Vec2(x)) => {
+            Some(ParamValue::Vec2(filmcraft_geom::Vec2 { x: shift(o.x, n.x, x.x), y: shift(o.y, n.y, x.y) }))
+        }
+        (_, ParamValue::Float(_) | ParamValue::Vec2(_), _) => None,
+        _ => (std::mem::discriminant(new) == std::mem::discriminant(other)).then(|| new.clone()),
+    }
+}
+
 fn resolve_effect_alias(name: &str) -> Option<&'static str> {
     let lower = name.trim().to_ascii_lowercase();
     match lower.as_str() {
@@ -3795,7 +3816,7 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool|key?,"begin":bool?}"##,
+            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"with":[id]? (other clips that change by the same amount in the same undo step: a number or point moves by the difference, other values are copied; clips without the effect are skipped; not with `mask`),"merge":bool|key?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
@@ -3803,6 +3824,13 @@ fn build() -> Vec<CommandSpec> {
                 let val = p.get("value").cloned().ok_or_else(|| bad("effects.setParam", "need `value`"))?;
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
+                // `with`: other clips that take the same change (#4603), each once and never `clip`
+                let mut seen = std::collections::HashSet::from([c]);
+                let with: Vec<ClipId> =
+                    p.get("with").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).map(ClipId).filter(|oc| seen.insert(*oc)).collect();
+                if !with.is_empty() && p.get("mask").is_some_and(|m| !m.is_null()) {
+                    return Err(bad("effects.setParam", "`with` cannot be combined with `mask`"));
+                }
                 // an explicit `time` outside the clip keeps its keyframe there, before the start as after
                 // the end, so a ramp across a cut keeps its slope (#1055); the playhead is pinned to the clip
                 let at = time_p(s, p, "");
@@ -3851,7 +3879,7 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
-                    let (keyframes, v) = {
+                    let (keyframes, v, old) = {
                         let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                         let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
                         // the parameter's hard range, which `effects.list` publishes: a value outside it
@@ -3861,6 +3889,7 @@ fn build() -> Vec<CommandSpec> {
                         {
                             return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
                         }
+                        let old = prm.value_at(mt);
                         let keyframes = if keyframe {
                             // the stopwatch and the value in one step
                             prm.put_keyframe(mt, v.clone());
@@ -3869,7 +3898,7 @@ fn build() -> Vec<CommandSpec> {
                             prm.set_at(mt, v.clone());
                             prm.keyframes.len()
                         };
-                        (keyframes, v)
+                        (keyframes, v, old)
                     };
                     let accepted_value = param_value_to_json(&v);
 
@@ -3885,6 +3914,43 @@ fn build() -> Vec<CommandSpec> {
                             } else {
                                 e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
                             }
+                        }
+                    }
+                    // #4603: the other selected clips change by the same amount, in the same step
+                    for &oc in &with {
+                        let Some((_, oit)) = q.find_item_mut(oc) else { continue };
+                        let omt = oit.effect_time_at(at.unwrap_or_else(|| ph.clamp(oit.start, (oit.end() - Tick(1)).max(oit.start))));
+                        let Some(oe) = (match &eff {
+                            Value::Number(n) => oit.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+                            Value::String(sid) => oit.effects.iter_mut().find(|e| &e.effect == sid),
+                            _ => None,
+                        }) else {
+                            continue;
+                        };
+                        let odef = oe.def().and_then(|d| d.param(&pid)).cloned();
+                        if keyframe && odef.as_ref().is_some_and(|d| !d.animatable) {
+                            continue;
+                        }
+                        if eff == json!("opacity") || eff == json!("motion") {
+                            oe.enabled = true;
+                        }
+                        if !oe.params.contains_key(&pid)
+                            && let Some(d) = &odef
+                        {
+                            oe.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
+                        }
+                        let Some(oprm) = oe.params.get_mut(&pid) else { continue };
+                        let Some(ov) = shifted_param(&old, &v, &oprm.value_at(omt)) else { continue };
+                        let ov = match (odef.as_ref().map(|d| &d.kind), ov) {
+                            (Some(filmcraft_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) if min <= max => {
+                                ParamValue::Float(x.clamp(*min, *max))
+                            }
+                            (_, ov) => ov,
+                        };
+                        if keyframe {
+                            oprm.put_keyframe(omt, ov);
+                        } else {
+                            oprm.set_at(omt, ov);
                         }
                     }
                     Ok((keyframes, accepted_value))

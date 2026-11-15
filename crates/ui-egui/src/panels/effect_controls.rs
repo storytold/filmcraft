@@ -1091,6 +1091,14 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions.into_iter().map(|a| ("effects.setParam".to_string(), a)).collect());
 }
 
+/// The selected video clips other than `shown`, which a Transform change in the Properties panel
+/// moves by the same amount (#4603).
+fn other_selected_video(app: &FilmcraftApp, shown: ClipId) -> Vec<u64> {
+    let Some(seq) = app.session.active_sequence() else { return Vec::new() };
+    let sel = &app.session.state.selection;
+    seq.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.id != shown && sel.contains(&i.id)).map(|i| i.id.0).collect()
+}
+
 /// Properties panel (Premiere 26): a compact inspector for the selected clip.
 pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
@@ -1099,6 +1107,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to see its properties"));
         return;
     };
+    let with = if kind == TrackKind::Video { other_selected_video(app, clip) } else { Vec::new() };
     let ph = app.session.playhead();
     let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Vec<(String, Value)> = Vec::new();
@@ -1184,7 +1193,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             if nx.is_some() || ny.is_some() {
                                 actions.push((
                                     "effects.setParam".into(),
-                                    json!({"clip": clip.0, "effect": "motion", "param": p, "value": [nx.unwrap_or(v.x), ny.unwrap_or(v.y)]}),
+                                    json!({"clip": clip.0, "effect": "motion", "param": p, "value": [nx.unwrap_or(v.x), ny.unwrap_or(v.y)], "with": with}),
                                 ));
                             }
                         }
@@ -1197,7 +1206,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                                 HotNumberOptions::new(speed, range, if p == "scale" { 0 } else { 1 }, unit, &t),
                             );
                             if let Some(nv) = nv {
-                                actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv})));
+                                actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "motion", "param": p, "value": nv, "with": with})));
                             }
                         }
                         _ => {}
@@ -1219,7 +1228,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         HotNumberOptions::new(0.5, (0.0, 100.0), 0, " %", &t),
                     );
                     if let Some(nv) = nv {
-                        actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": nv})));
+                        actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": nv, "with": with})));
                     }
                 }
                 properties_nav(app, bui, r, clip, &it, mt, "opacity", "opacity", &mut actions);
