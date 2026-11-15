@@ -59,11 +59,13 @@ impl FilmcraftApp {
         }
         let t0 = web_time::Instant::now();
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-            (view.clone(), size)
+            g.compositor.try_composite_prepared(&plan.plan, Some(&plan.prepared)).map(|(view, size)| (view.clone(), size))
         }));
-        let Ok((view, size)) = ran else {
+        let Ok(rendered) = ran else {
             self.disable_gpu("compositor panicked");
+            return None;
+        };
+        let Some((view, size)) = rendered else {
             return None;
         };
         let g = self.gpu.as_mut()?;

@@ -963,11 +963,69 @@ fn upload_cache_overflow_holds_evicted_textures_until_finish_submit() {
     let pool_before = c.texture_pool_bytes;
     c.begin_frame();
     // Uploading a new frame evicts one from the prior frame, which must stay pending until submit.
-    c.upload(&make_rgba(255), None);
+    assert!(c.upload(&make_rgba(255), None).is_some());
     assert_eq!(c.texture_pool_bytes, pool_before, "evicted texture must not return to pool mid-frame");
     assert!(!c.pending_recycle.is_empty(), "evicted texture must be staged in pending_recycle");
     c.end_frame();
     c.finish_submit();
     assert!(c.pending_recycle.is_empty());
     assert!(c.texture_pool_bytes > pool_before, "evicted texture must return to pool after submit");
+}
+
+#[test]
+fn failing_gpu_surface_readback_is_not_cached_and_fails_export() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct ToggleSurface {
+        id: usize,
+        fail: AtomicBool,
+    }
+
+    impl filmcraft_frame::GpuSurface for ToggleSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err("simulated readback failure".to_string());
+            }
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([255u8, 0, 0, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let surf = Arc::new(ToggleSurface { id: 0xDEAD_BEEF, fail: AtomicBool::new(true) });
+    let frame = Arc::new(VideoFrame {
+        width: 4,
+        height: 4,
+        data: PixelData::GpuSurface(surf.clone()),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+
+    assert!(c.render_export_prepared(&plan, None).is_none(), "failed readback must abort export frame instead of emitting blank pixels");
+    assert!(c.render_export_rgba8_prepared(&plan, None).is_none(), "failed readback must abort rgba8 export frame");
+    assert!(!c.uploads.contains_key(&(surf.id, 4, 4)), "failed readback must not populate upload cache");
+
+    surf.fail.store(false, Ordering::Relaxed);
+    let (_, _, px) = c.render_export_prepared(&plan, None).expect("subsequent readback must recover and not hit cached blank pixels");
+    assert!(px[0] > 0.9 && px[1] < 0.01 && px[3] > 0.9, "expected red pixel after recovery, got {:?}", &px[..4]);
 }

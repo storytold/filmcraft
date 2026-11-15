@@ -700,7 +700,8 @@ impl GpuCompositor {
     }
 
     /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
-    fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> (usize, u32, u32) {
+    /// Returns `None` when a GPU surface could not be imported or read back to CPU.
+    fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> Option<(usize, u32, u32)> {
         let id = match &f.data {
             PixelData::Rgba8(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
@@ -710,31 +711,34 @@ impl GpuCompositor {
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
+        if let Some(u) = self.uploads.get_mut(&key) {
+            u.last_used = self.clock;
+            if self.frame_depth > 0 {
+                self.frame_uploads.insert(key);
+            }
+            return Some(key);
+        }
+        let up = match &f.data {
+            PixelData::GpuSurface(surf) => self.upload_gpu_surface(f, surf)?,
+            _ => self.upload_cpu_data(f.width, f.height, &f.data, &f.data, prep),
+        };
         if self.frame_depth > 0 {
             self.frame_uploads.insert(key);
         }
-        if let Some(u) = self.uploads.get_mut(&key) {
-            u.last_used = self.clock;
-            return key;
-        }
-        let up = match &f.data {
-            PixelData::GpuSurface(surf) => self.upload_gpu_surface(f, surf),
-            _ => self.upload_cpu_data(f.width, f.height, &f.data, &f.data, prep),
-        };
         self.upload_cache_bytes = self.upload_cache_bytes.saturating_add(up.gpu_bytes);
         if let Some(prev) = self.uploads.insert(key, up) {
             self.recycle_uploaded(prev);
         }
         // Keep recent uploads up to the VRAM budget and entry cap, deferring recycling until submit.
         self.evict_uploads(Some(key));
-        key
+        Some(key)
     }
 
-    fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Uploaded {
+    fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Option<Uploaded> {
         if let Some(importer) = SURFACE_IMPORTER.get()
             && let Some(imported) = importer(&self.device, &self.dummy, surf.as_ref(), f.width, f.height)
         {
-            return Uploaded {
+            return Some(Uploaded {
                 views: imported.views,
                 planes: Vec::new(),
                 owned_textures: imported.textures,
@@ -745,14 +749,13 @@ impl GpuCompositor {
                 chroma: imported.chroma,
                 last_used: self.clock,
                 _pixels: f.data.clone(),
-            };
+            });
         }
         match surf.to_cpu() {
-            Ok(cpu_data) => self.upload_cpu_data(f.width, f.height, &cpu_data, &f.data, None),
+            Ok(cpu_data) => Some(self.upload_cpu_data(f.width, f.height, &cpu_data, &f.data, None)),
             Err(why) => {
                 log::warn!("GPU surface fallback readback failed: {why}");
-                let blank = PixelData::Rgba8(Arc::new(vec![0u8; (f.width as usize).saturating_mul(f.height as usize).saturating_mul(4)]));
-                self.upload_cpu_data(f.width, f.height, &blank, &f.data, None)
+                None
             }
         }
     }
@@ -1060,17 +1063,34 @@ impl GpuCompositor {
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
     /// result is identical; only the upload work on this thread differs).
     pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
+        self.try_composite_prepared(plan, prep).unwrap_or_else(|| {
+            let (w, h) = match plan {
+                FramePlan::Layers { width, height, .. } | FramePlan::Composite { width, height, .. } => ((*width as u32).max(1), (*height as u32).max(1)),
+                FramePlan::Image(img) => ((img.w as u32).max(1), (img.h as u32).max(1)),
+            };
+            let out = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
+            (out, (w, h))
+        })
+    }
+
+    /// Like [`composite_prepared`](Self::composite_prepared), returning `None` if an unimported GPU
+    /// surface fails CPU readback instead of substituting blank pixels.
+    pub fn try_composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(wgpu::TextureView, (u32, u32))> {
         self.render_plan(plan, prep, true, true)
     }
 
-    fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> (wgpu::TextureView, (u32, u32)) {
+    fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> Option<(wgpu::TextureView, (u32, u32))> {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
         self.begin_frame();
         let out = self.record_plan(&mut enc, plan, prep, clear, resolve);
         self.end_frame();
+        let Some(out) = out else {
+            self.finish_submit();
+            return None;
+        };
         self.queue.submit([enc.finish()]);
         self.finish_submit();
-        out
+        Some(out)
     }
 
     fn record_plan(
@@ -1080,7 +1100,7 @@ impl GpuCompositor {
         prep: Option<&PreparedPlan>,
         clear: bool,
         resolve: bool,
-    ) -> (wgpu::TextureView, (u32, u32)) {
+    ) -> Option<(wgpu::TextureView, (u32, u32))> {
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
@@ -1124,16 +1144,13 @@ impl GpuCompositor {
             .collect();
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
-        let keys: Vec<(usize, u32, u32)> = layers
-            .iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let p = prep.and_then(|p| if matches!(plan, FramePlan::Image(_)) { p.image.as_ref() } else { p.layers.get(i).and_then(Option::as_ref) });
-                // (texels converted beforehand belong to the plan's own frame)
-                let p = if cpu_fx.get(i).is_some_and(Option::is_some) { None } else { p };
-                self.upload(&l.frame, p)
-            })
-            .collect();
+        let mut keys = Vec::with_capacity(layers.len());
+        for (i, l) in layers.iter().enumerate() {
+            let p = prep.and_then(|p| if matches!(plan, FramePlan::Image(_)) { p.image.as_ref() } else { p.layers.get(i).and_then(Option::as_ref) });
+            // (texels converted beforehand belong to the plan's own frame)
+            let p = if cpu_fx.get(i).is_some_and(Option::is_some) { None } else { p };
+            keys.push(self.upload(&l.frame, p)?);
+        }
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
@@ -1276,9 +1293,9 @@ impl GpuCompositor {
         if resolve {
             let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
             self.resolve_into(enc, &accum_view, &out_view);
-            (out_view, (w, h))
+            Some((out_view, (w, h)))
         } else {
-            (accum_view, (w, h))
+            Some((accum_view, (w, h)))
         }
     }
 
@@ -1314,7 +1331,7 @@ impl GpuCompositor {
         steps: &[PlanStep],
         prep: Option<&PreparedPlan>,
         resolve: bool,
-    ) -> (wgpu::TextureView, (u32, u32)) {
+    ) -> Option<(wgpu::TextureView, (u32, u32))> {
         let cpu = |c: &mut Self, enc: &mut wgpu::CommandEncoder| {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
             c.record_plan(enc, &FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, resolve)
@@ -1335,13 +1352,18 @@ impl GpuCompositor {
             f.begin_frame();
         }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
-        let (canvas, dims) = if matches!(steps.first(), Some(PlanStep::Layers(_))) {
+        let Some((canvas, dims)) = (if matches!(steps.first(), Some(PlanStep::Layers(_))) {
             let w = (width as u32).max(1);
             let h = (height as u32).max(1);
             let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
-            (accum_view, (w, h))
+            Some((accum_view, (w, h)))
         } else {
             self.record_plan(enc, &empty, None, true, false)
+        }) else {
+            if let Some(f) = self.fx.as_mut() {
+                f.end_frame();
+            }
+            return None;
         };
         let mut cleared = !matches!(steps.first(), Some(PlanStep::Layers(_)));
         let mut children = prep.map(|p| p.children.iter());
@@ -1352,7 +1374,12 @@ impl GpuCompositor {
             match step {
                 PlanStep::Layers(layers) => {
                     let p = children.as_mut().and_then(Iterator::next);
-                    self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, !cleared, false);
+                    if self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, !cleared, false).is_none() {
+                        if let Some(f) = self.fx.as_mut() {
+                            f.end_frame();
+                        }
+                        return None;
+                    }
                     cleared = true;
                 }
                 PlanStep::Transition { inputs, effect, progress, .. } => {
@@ -1361,8 +1388,14 @@ impl GpuCompositor {
                         let p = children.as_mut().and_then(Iterator::next);
                         // Isolate each clip; queued draws keep the parent accumulator and blend order.
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        let (view, _) = self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
+                        let step_out = self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
+                        let Some((view, _)) = step_out else {
+                            if let Some(f) = self.fx.as_mut() {
+                                f.end_frame();
+                            }
+                            return None;
+                        };
                         views[index] = view;
                     }
                     self.transition.record((&self.device, &self.queue), enc, &canvas, [&views[0], &views[1]], dims, effect, *progress);
@@ -1382,7 +1415,7 @@ impl GpuCompositor {
         }
         self.gpu_transitions += transitions;
         self.gpu_adjustments += adjustments;
-        let out = if resolve { self.record_plan(enc, &empty, None, false, true) } else { (canvas, dims) };
+        let out = if resolve { self.record_plan(enc, &empty, None, false, true) } else { Some((canvas, dims)) };
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
         }
@@ -1460,8 +1493,12 @@ impl GpuCompositor {
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
         self.begin_frame();
-        self.record_plan(&mut enc, plan, prep, true, false);
+        let recorded = self.record_plan(&mut enc, plan, prep, true, false).is_some();
         self.end_frame();
+        if !recorded {
+            self.finish_submit();
+            return None;
+        }
         let Some(size) = self.copy_accumulator(&mut enc) else {
             self.finish_submit();
             return None;
@@ -1479,8 +1516,12 @@ impl GpuCompositor {
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-rgba8") });
         self.begin_frame();
-        self.record_plan(&mut enc, plan, prep, true, true);
+        let recorded = self.record_plan(&mut enc, plan, prep, true, true).is_some();
         self.end_frame();
+        if !recorded {
+            self.finish_submit();
+            return None;
+        }
         let Some(size) = self.copy_output(&mut enc) else {
             self.finish_submit();
             return None;
@@ -1534,8 +1575,9 @@ impl GpuCompositor {
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-surface") });
         self.begin_frame();
-        let (accum_view, resolved_dims) = self.record_plan(&mut enc, plan, prep, true, false);
-        let ok = if resolved_dims == (w, h) {
+        let ok = if let Some((accum_view, resolved_dims)) = self.record_plan(&mut enc, plan, prep, true, false)
+            && resolved_dims == (w, h)
+        {
             self.resolve_into(&mut enc, &accum_view, &target_view);
             true
         } else {
@@ -1563,7 +1605,11 @@ impl GpuCompositor {
     /// CPU from the same frame). None when the working image does not fit in a texture.
     pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
         self.begin_frame();
-        let key = self.upload(frame, None);
+        let Some(key) = self.upload(frame, None) else {
+            self.end_frame();
+            self.finish_submit();
+            return None;
+        };
         let Some(src) = self.src_info(frame, key) else {
             self.end_frame();
             self.finish_submit();
