@@ -536,8 +536,11 @@ impl FxStage {
                 _ => dummy,
             };
             let mut bytes = [0u8; 128];
-            for (dst, v) in
-                bytes.chunks_exact_mut(4).zip([s.code, w, h, 0].iter().chain(&s.i1).map(|x| x.to_le_bytes()).chain(s.p.iter().map(|x| x.to_le_bytes())))
+            for (dst, v) in bytes
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip([s.code, w, h, 0].iter().chain(&s.i1).map(|x| x.to_le_bytes()).chain(s.p.iter().map(|x| x.to_le_bytes())))
             {
                 dst.copy_from_slice(&v);
             }

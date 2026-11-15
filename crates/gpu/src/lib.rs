@@ -1014,7 +1014,7 @@ impl GpuCompositor {
 
     fn write_uniform<'a>(device: &wgpu::Device, queue: &wgpu::Queue, pool: &'a mut UniformPool, u: &[f32; UNIFORM_FLOATS]) -> &'a wgpu::Buffer {
         let mut bytes = [0u8; UNIFORM_FLOATS * 4];
-        for (dst, v) in bytes.chunks_exact_mut(4).zip(u) {
+        for (dst, v) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(u) {
             dst.copy_from_slice(&v.to_le_bytes());
         }
         pool.write(device, queue, &bytes)
