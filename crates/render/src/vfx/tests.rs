@@ -8,6 +8,9 @@ use filmcraft_project::{EffectKind, Interpolation, Keyframe, Param, ParamKind, f
 
 use super::*;
 
+/// Serializes the tests that clear or inspect the process-wide stabilizer path cache, so a whole-cache clear in one test cannot remove another test's entry.
+static STABILIZER_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn cx() -> FxCtx<'static> {
     FxCtx {
         t: Tick::ZERO,
@@ -1116,6 +1119,7 @@ fn posterize_time_and_echo_read_other_frames() {
 
 #[test]
 fn warp_stabilizer_removes_camera_jitter() {
+    let _guard = STABILIZER_CACHE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (w, h) = (192, 128);
     let mk = |now: f64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0xC0FFEE, seq: (w as u32, h as u32), pic: shaky };
     let mut e = inst("warp_stabilizer");
@@ -1371,6 +1375,7 @@ mod pipeline {
 
     #[test]
     fn warp_stabilizer_does_not_cache_incomplete_path_after_strict_readback_failure() {
+        let _guard = STABILIZER_CACHE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         use crate::try_render_sequence;
         use filmcraft_frame::{Chroma, GpuSurface, PixelData, VideoFrame};
         use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
