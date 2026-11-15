@@ -39,7 +39,7 @@ fn io(e: std::io::Error) -> ExportError {
 fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
     let coding = match settings.video_format() {
         Format::ProRes => {
-            use filmcraft_prores::Profile;
+            use craft_video::prores::Profile;
             PictureCoding::ProRes {
                 profile: match crate::prores_profile(&settings.prores_profile) {
                     Profile::Proxy => 1,

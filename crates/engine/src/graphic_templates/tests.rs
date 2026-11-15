@@ -705,3 +705,29 @@ fn gradient_stop_keeps_its_alpha() {
     assert!((start[3] - 128.0 / 255.0).abs() < 1e-3, "{start:?}");
     assert_eq!(col("gradient_end").unwrap()[3], 1.0);
 }
+
+/// Remove works on library entries only, and a key that names two of them removes neither.
+#[test]
+fn remove_picks_one_library_file_and_never_a_path_outside_it() {
+    let mut s = demo("gt-remove");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "Headline", "position": [200, 900]})).unwrap());
+    let r =
+        s.execute("graphics.template.export", json!({"clip": c.0, "name": "Dup", "controls": [{"layer": 0, "param": "text", "name": "Headline"}]})).unwrap();
+    let path = std::path::PathBuf::from(r["path"].as_str().unwrap());
+    let twin = path.with_file_name("twin.fcgt");
+    std::fs::copy(&path, &twin).unwrap();
+    // two files claim the id: the id removes neither
+    let e = s.execute("graphics.template.remove", json!({"template": "user:dup"})).unwrap_err().to_string();
+    assert!(e.contains("more than one"), "{e}");
+    assert!(path.exists() && twin.exists());
+    // a path outside the library is not a library template
+    let outside = tmp_dir("gt-remove-outside").join("elsewhere.fcgt");
+    std::fs::copy(&path, &outside).unwrap();
+    assert!(s.execute("graphics.template.remove", json!({"template": outside.to_string_lossy()})).is_err());
+    assert!(outside.exists());
+    // a library file is removed by its own path
+    s.execute("graphics.template.remove", json!({"template": twin.to_string_lossy()})).unwrap();
+    assert!(!twin.exists() && path.exists());
+    s.execute("graphics.template.remove", json!({"template": "user:dup"})).unwrap();
+    assert!(!path.exists());
+}

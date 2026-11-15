@@ -241,3 +241,40 @@ fn a_capped_analysis_extends_the_last_subclip_to_the_clip_end_and_warns() {
     assert!(unanalysed_warning(&[scenes("a", false)]).is_none());
     assert!(unanalysed_warning(&[scenes("a", false), scenes("long.mov", true)]).is_some_and(|w| w.contains("long.mov") && !w.contains(", a")));
 }
+
+/// Results that arrive after another project was installed are dropped: their clip ids may name
+/// unrelated clips there.
+#[test]
+fn results_of_a_replaced_project_are_not_applied() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let seq = s.state.active_sequence.unwrap();
+    let count = |s: &Session| s.active_sequence().unwrap().video_tracks[0].items.len();
+    let half = Tick(clip.duration.0 / 2);
+    let cut = clip.start + half;
+    let pending = |epoch| {
+        let results = Arc::new(std::sync::Mutex::new(Some(vec![ClipScenes {
+            clip: clip.id,
+            name: "c".into(),
+            media_item: clip.item,
+            media_range: TimeRange::new(clip.source_in, clip.duration),
+            unanalysed: false,
+            cuts: vec![(cut, clip.source_in + half)],
+        }])));
+        crate::scene_detect::PendingScene {
+            job: u64::MAX,
+            seq,
+            apply: crate::scene_detect::SceneApply { cuts: true, subclips: false, markers: false },
+            results,
+            epoch,
+        }
+    };
+    let before = count(&s);
+    s.scene_jobs.push(pending(s.document_epoch.wrapping_sub(1)));
+    crate::scene_detect::poll(&mut s);
+    assert_eq!(count(&s), before, "a stale result changed the project");
+    s.scene_jobs.push(pending(s.document_epoch));
+    crate::scene_detect::poll(&mut s);
+    assert_eq!(count(&s), before + 1, "the current project's result applies");
+}
