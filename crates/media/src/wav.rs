@@ -265,20 +265,9 @@ fn ixml_time_reference(x: &[u8]) -> Option<u64> {
 
 /// Encode interleaved f32 samples as a 16-bit PCM WAV file.
 pub fn write_wav16(samples: &[f32], channels: u16, rate: u32) -> Vec<u8> {
-    let data_len = samples.len() * 2;
-    let mut v = Vec::with_capacity(44 + data_len);
-    v.extend_from_slice(b"RIFF");
-    v.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
-    v.extend_from_slice(b"WAVEfmt ");
-    v.extend_from_slice(&16u32.to_le_bytes());
-    v.extend_from_slice(&1u16.to_le_bytes());
-    v.extend_from_slice(&channels.to_le_bytes());
-    v.extend_from_slice(&rate.to_le_bytes());
-    v.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
-    v.extend_from_slice(&(channels * 2).to_le_bytes());
-    v.extend_from_slice(&16u16.to_le_bytes());
-    v.extend_from_slice(b"data");
-    v.extend_from_slice(&(data_len as u32).to_le_bytes());
+    let data_len = samples.len().saturating_mul(2);
+    let mut v = craft_audio::pcm_wav_header(u32::try_from(data_len).unwrap_or(u32::MAX), channels, rate, 16);
+    v.reserve(data_len);
     for s in samples {
         v.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
     }
@@ -288,6 +277,16 @@ pub fn write_wav16(samples: &[f32], channels: u16, rate: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_preserves_pcm_bytes_and_canonical_header() {
+        let wav = write_wav16(&[-1.0, -0.5, 0.0, 0.5, 1.0], 1, 48_000);
+        let expected: &[u8] = &[
+            b'R', b'I', b'F', b'F', 46, 0, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0, 0, 0x00, 0x77, 0x01,
+            0, 2, 0, 16, 0, b'd', b'a', b't', b'a', 10, 0, 0, 0, 1, 0x80, 0, 0xc0, 0, 0, 0, 0x40, 0xff, 0x7f,
+        ];
+        assert_eq!(wav, expected);
+    }
 
     #[test]
     fn roundtrip() {
