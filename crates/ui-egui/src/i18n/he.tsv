@@ -1,0 +1,3225 @@
+# FilmCraft Hebrew GUI catalog, source-pinned 2026-11-12
+# FilmCraft main: 504fe9fc5e76b770d86f153da2b13c2999878702
+# FilmCraft he from hrb9/craft-i18n PR #42 head bf6cb7907db0993c0270e943e32488e7603ef1bf
+# Shared common he: storytold/craft-i18n main 74e77706491d260c868bec6df686f92b90baae38
+# Exact source-key subset with source string + placeholder parity. Not native-speaker reviewed.
+# Context<TAB>English source<TAB>Hebrew translation
+	   Angle	   זווית
+	   Blur	   טשטוש
+	   Corner Radius	   רדיוס פינה
+	   Distance	   מרחק
+	   Opacity	   אטימות
+	   Size	   גודל
+	   Template: {name}	   תבנית: {name}
+	  (none)	  (ללא)
+	 (removed from {list})	 (הוסר מתוך {list})
+	 (unavailable)	 (לא זמין)
+	 ({ch} output channels)	 ({ch} ערוצי פלט)
+	 and 	 ו-
+	 frames	 פריימים
+	 seconds	 שניות
+	 · {time} left	 · נותרו {time}
+	% of all commits	% מכלל הקומיטים
+	(Custom)	(מותאם אישית)
+	(Default)	(ברירת מחדל)
+	(RGB) Gamma	(RGB) גמא
+	(RGB) Input Black Level	(RGB) רמת שחור בקלט
+	(RGB) Input White Level	(RGB) רמת לבן בקלט
+	(RGB) Output Black Level	(RGB) רמת שחור בפלט
+	(RGB) Output White Level	(RGB) רמת לבן בפלט
+	(empty)	(ריק)
+	(gap)	(מרווח)
+	(no audio)	(ללא שמע)
+	(no clip selected)	(לא נבחר קליפ)
+	(no clips)	(אין קליפים)
+	(no sequence)	(אין רצף)
+	(no sequences)	(אין רצפים)
+	+ Cmd	+ Cmd
+	+ Opt	+ Opt
+	0 fastest, 8 smallest	0 המהיר ביותר, 8 הקטן ביותר
+	10 Bit Black Point	נקודת שחור 10 סיביות
+	10 Bit White Point	נקודת לבן 10 סיביות
+	105mm Prime	עדשת פריים 105 מ״מ
+	29.97 fps Drop-Frame	29.97 פריימים/שנייה עם דילוג פריימים (Drop-Frame)
+	29.97 fps Non Drop-Frame	29.97 פריימים/שנייה ללא דילוג פריימים (Non Drop-Frame)
+	32 bit float	32 סיביות נקודה צפה
+	35mm Prime	עדשת פריים 35 מ״מ
+	3D Roll	גלגול תלת-ממדי
+	3D Rotate	סיבוב תלת-ממדי
+	3D Spin	סחרור תלת-ממדי
+	3D Spinback	סחרור חוזר תלת-ממדי
+	4-Color Gradient	מעבר 4 צבעים
+	5.1 Media	מדיה 5.1
+	5.1 Mixdown Type	סוג מיקס 5.1
+	5.1 panner (drag the puck; double-click: front centre)	פאנר 5.1 (גרור את הסמן; לחיצה כפולה: מרכז קדמי)
+	50-300mm Zoom	זום 50-300 מ״מ
+	59.94 fps Drop-Frame	59.94 פריימים/שנייה עם דילוג פריימים (Drop-Frame)
+	59.94 fps Non Drop-Frame	59.94 פריימים/שנייה ללא דילוג פריימים (Non Drop-Frame)
+	A boxed label with a round pointer; move the label and the pointer follows.	תווית ממוסגרת עם מצביע עגול; הזזת התווית מזיזה את המצביע בעקבותיה.
+	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	עורך וידאו לא-ליניארי שנכתב מאפס ב-Rust טהור. חלק ממשפחת ArtCraft.
+	A cut sequence with transitions, effects and music	רצף ערוך עם מעברים, אפקטים ומוזיקה
+	A file dialog is already open	תיבת דו-שיח של קובץ כבר פתוחה
+	A news-style line that crawls in from the right and leaves at the left.	שורת מבזק חדשות הנעה מימין ויוצאת משמאל.
+	A rounded tag that fits its text, with a status dot.	תגית מעוגלת המתאימה לאורך הטקסט שלה, עם נקודת מצב.
+	A title on a rounded card with a soft shadow.	כותרת על כרטיס מעוגל עם צל רך.
+	AAC Audio	שמע AAC
+	AAC Audio 48 kHz 320 kbps	שמע AAC‏ 48 kHz‏ 320 kbps
+	AAF Export Settings	הגדרות ייצוא AAF
+	AAF…	AAF…
+	AIFF	AIFF
+	AIFF 48 kHz 16-bit	AIFF‏ 48 kHz‏ 16 סיביות
+	AIFF, stereo 48 kHz 16-bit PCM	AIFF, סטריאו 48 kHz‏ 16 סיביות PCM
+	APV	APV
+	APV 422-10	APV 422-10
+	APV 422-12	APV 422-12
+	ASC CDL	ASC CDL
+	AV1	AV1
+	About	אודות
+	About FilmCraft	אודות FilmCraft
+	Accent Color	צבע הדגשה
+	Accessible color contrast	ניגודיות צבעים נגישה
+	Action Safe Area	אזור בטוח לפעולה
+	Action and Title Safe Areas	אזורים בטוחים לפעולה ולכותרת
+	Action-Safe Margin	שוליים בטוחים לפעולה
+	Action:	פעולה:
+	Active Monitor	מוניטור פעיל
+	Adaptive ({bpp} bits per pixel)	מסתגל ({bpp} סיביות לפיקסל)
+	Add	הוספה
+	Add Audio Submix Track	הוסף ערוץ תת-מיקס שמע
+	Add Caption at Playhead	הוסף כתובית במיקום סמן הניגון
+	Add Chapter Marker…	הוסף סמן פרק…
+	Add Color Grading to clip	הוספת גריידינג צבע לקליפ
+	Add Edit	הוסף חיתוך עריכה
+	Add Edit to All Tracks	הוסף חיתוך עריכה לכל הערוצים
+	Add Flash Cue Marker…	הוסף סמן אות Flash…
+	Add Frame Hold	הוסף הקפאת פריים
+	Add Guide…	הוסף קו עזר…
+	Add Marker	הוסף סמן
+	Add Marker (M)	הוסף סמן (M)
+	Add New Caption Track…	הוסף ערוץ כתוביות חדש…
+	Add Property…	הוסף מאפיין…
+	Add Range Marker	הוסף סמן טווח
+	Add Range Marker to In and Out	הוסף סמן טווח לנקודות הכניסה והיציאה
+	Add Tracks	הוסף ערוצים
+	Add Tracks…	הוסף ערוצים…
+	Add a timecode row	הוסף שורת קוד זמן
+	Add another shortcut	הוסף קיצור דרך נוסף
+	Add audio submix tracks	הוסף ערוצי תת-מיקס שמע
+	Add audio tracks	הוסף ערוצי שמע
+	Add caption at playhead	הוסף כתובית במיקום סמן הניגון
+	Add captions	הוסף כתוביות
+	Add keyframe	הוסף פריים מפתח
+	Add to Favorites	הוסף למועדפים
+	Add tracks automatically when editing source clips onto the Timeline	הוסף ערוצים אוטומטית בעת עריכת קליפי מקור אל ציר הזמן
+	Add video tracks	הוסף ערוצי וידאו
+	Add/Remove Keyframe	הוסף/הסר פריים מפתח
+	Added to the export queue	נוסף לתור הייצוא
+	Additional Scale	קנה מידה נוסף
+	Additive Dissolve	התפוגגות חיבורית
+	Additive Dissolve (Legacy)	התפוגגות חיבורית (מדור קודם)
+	Adjust	התאמה
+	Adjust Gain by:	התאם הגבר ב:
+	Adjustment Layer…	שכבת התאמה…
+	Advanced	מתקדם
+	After {name}	אחרי {name}
+	Aggressive	אגרסיבי
+	Align	יישור
+	Align Bottom	יישר למטה
+	Align Center Horizontally	יישר למרכז אופקית
+	Align Center Vertically	יישר למרכז אנכית
+	Align Left	יישור לשמאל
+	Align Right	יישור לימין
+	Align Timecode	יישר קוד זמן
+	Align Top	יישר למעלה
+	Align and Transform	יישור ושינוי צורה
+	Align to Grid	יישר לרשת
+	Align to Video Frame	יישר למסגרת הווידאו
+	Align to Video Frame as Group	יישר למסגרת הווידאו כקבוצה
+	Alignment	יישור
+	All	הכול
+	All Cameras	כל המצלמות
+	All Caps	אותיות רישיות בלבד
+	All Empty Tracks	כל הערוצים הריקים
+	All Events	כל האירועים
+	All Panels	כל החלוניות
+	All lines	כל השורות
+	All markers are hidden by the colour filter.	כל הסמנים מוסתרים על ידי מסנן הצבע.
+	All media is online.	כל המדיה מקוונת.
+	Allow Duplicate Media During Project Import	אפשר מדיה כפולה במהלך ייבוא פרויקט
+	Allow Selection tool to choose Roll and Ripple trims without modifier key	אפשר לכלי הבחירה לבחור קיצוצי גלגול (Roll) ואדווה (Ripple) ללא מקש שינוי
+	Allow current tool to change trim type of previously selected edit point	אפשר לכלי הנוכחי לשנות את סוג הקיצוץ של נקודת עריכה שנבחרה קודם
+	Allow duplicate media during project import	אפשר מדיה כפולה במהלך ייבוא פרויקט
+	Alpha Adjust	התאמת אלפא
+	Alpha Blurriness	טשטוש אלפא
+	Alpha Channel	ערוץ אלפא
+	Alpha Glow	זוהר אלפא
+	Always Deinterlace	בטל שזירה תמיד
+	Always import embedded CEA-708 closed captions with wide aspect.	ייבא תמיד כתוביות סמויות מוטמעות מסוג CEA-708 ביחס רחב.
+	Always override audio tags	דרוס תמיד תגי שמע
+	Ambience	אווירה
+	Ambience Intensity	עוצמת אווירה
+	Ambience Light Color	צבע אור אווירה
+	Amount of Noise	כמות רעש
+	Amount to Decolor	כמות הסרת צבע
+	Amount to Tint	כמות גוון
+	Amplifier	מגבר
+	Amplify	הגברה
+	Amplitude	משרעת
+	Amplitude and Compression	משרעת ודחיסה
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	הפעלה קודמת נכשלה עם הגרפיקה שבברירת המחדל. עדכון מנהל ההתקן הגרפי לרוב פותר זאת.
+	Analog	אנלוגי
+	Analog Delay	השהיה אנלוגית
+	Analyze	נתח
+	Analyze all imported media to search for visuals or audio	נתח את כל המדיה המיובאת לחיפוש חזותי או שמע
+	Anamorphic	אנמורפי
+	Anamorphic 2:1 (2.0)	אנמורפי 2:1 (2.0)
+	Anchor	עוגן
+	Anchor Point	נקודת עוגן
+	Anchor point	נקודת עוגן
+	Anchor to In Point	עגן לנקודת כניסה
+	Anchor to Out Point	עגן לנקודת יציאה
+	Animated GIF	GIF מונפש
+	Animated GIF 640×360	GIF מונפש 640×360
+	Animation	הנפשה
+	Anti-aliasing Quality	איכות החלקת קצוות
+	Anti-flicker Filter	מסנן מניעת הבהוב
+	Antialiasing for Best Quality	החלקת קצוות לאיכות מיטבית
+	Appearance Mode	מצב מראה
+	Appearance…	מראה…
+	Apple ProRes	Apple ProRes
+	Apple ProRes 422	Apple ProRes 422
+	Apple ProRes 422 HQ	Apple ProRes 422 HQ
+	Apple ProRes 422 LT	Apple ProRes 422 LT
+	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
+	Apple ProRes 4444	Apple ProRes 4444
+	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
+	Apple ProRes 4444 with Alpha	Apple ProRes 4444 עם אלפא
+	Application shortcuts work whatever panel has focus	קיצורי דרך של היישום פועלים ללא תלות בחלונית הפעילה
+	Apply	החלה
+	Apply Audio Transition	החל מעבר שמע
+	Apply Color Grading Preset	החלת הגדרת גריידינג צבע
+	Apply Default Audio Transition	החל מעבר שמע כברירת מחדל
+	Apply Default Transitions	החל מעברי ברירת מחדל
+	Apply Default Transitions to Selection	החל מעברי ברירת מחדל על הבחירה
+	Apply Default Transitions to Selection (Shift+D)	החל מעברי ברירת מחדל על הבחירה (Shift+D)
+	Apply Default Video Transition	החל מעבר וידאו כברירת מחדל
+	Apply Guide Template	החל תבנית קווי עזר
+	Apply Match	החל התאמה
+	Apply Video Transition	החל מעבר וידאו
+	Apply a cut at each detected cut point	בצע חיתוך בכל נקודת מעבר סצנה שזוהתה
+	Apply to Selected Clips	החל על הקליפים הנבחרים
+	Are you sure you want to discard your changes to '{file}'?	האם אתה בטוח שברצונך לבטל את השינויים בקובץ '{file}'?
+	Arrange	סידור
+	Aspect	יחס גובה-רוחב
+	Assembly	הרכבה
+	Assign an audio type to the selection:	הקצה סוג שמע לבחירה:
+	Assign {key} to {command}	הקצה את {key} אל {command}
+	Asymmetry	אסימטריה
+	At Startup	בעת ההפעלה
+	At Unnumbered Markers	בסמנים לא ממוספרים
+	At playback end, return to beginning when restarting playback	בסיום הניגון, חזור להתחלה בעת הפעלת הניגון מחדש
+	Att	הנחתה
+	Attach Proxies…	צרף קובצי פרוקסי…
+	Attack	זמן תקיפה (Attack)
+	Attempt to force hardware to document sample rate	נסה לאלץ את החומרה לקצב הדגימה של המסמך
+	Audio Attributes	תכונות שמע
+	Audio Bitrate	קצב סיביות שמע
+	Audio Channels…	ערוצי שמע…
+	Audio Clip Mixer	מערבל קליפי שמע
+	Audio Codec	מקודד שמע
+	Audio Duration	משך שמע
+	Audio Effects	אפקטי שמע
+	Audio File Format:	תבנית קובץ שמע:
+	Audio Format	תבנית שמע
+	Audio Gain	הגבר שמע
+	Audio Gain…	הגבר שמע…
+	Audio Hardware	חומרת שמע
+	Audio Hardware…	חומרת שמע…
+	Audio In	כניסת שמע
+	Audio In Point	נקודת כניסת שמע
+	Audio Info	פרטי שמע
+	Audio Meters	מדי שמע
+	Audio Only	שמע בלבד
+	Audio Options	אפשרויות שמע
+	Audio Out	יציאת שמע
+	Audio Out Point	נקודת יציאת שמע
+	Audio Previews:	תצוגות מקדימות של שמע:
+	Audio Samples	דגימות שמע
+	Audio Time Units	יחידות זמן שמע
+	Audio Track Mixer	מערבל ערוצי שמע
+	Audio Track Mixer menu	תפריט מערבל ערוצי שמע
+	Audio Tracks	ערוצי שמע
+	Audio Transition Default Duration	משך ברירת מחדל למעבר שמע
+	Audio Transitions	מעברי שמע
+	Audio Usage	שימוש בשמע
+	Audio Waveform	צורת גל שמע
+	Audio Waveforms	צורות גל שמע
+	Audio analysis:	ניתוח שמע:
+	Audio effects	אפקטי שמע
+	Audio on track {t}	שמע בערוץ {t}
+	Audio only	שמע בלבד
+	Audio {n}:	שמע {n}:
+	Audio:	שמע:
+	Audio…	שמע…
+	Author	מחבר
+	Auto	אוטומטי
+	Auto (system)	אוטומטי (מערכת)
+	Auto Align	יישור אוטומטי
+	Auto Bezier	בזייה אוטומטי
+	Auto Gate	שער רעש אוטומטי
+	Auto Makeup	פיצוי הגבר אוטומטי
+	Auto Reframe	מיסגור מחדש אוטומטי
+	Auto Save	שמירה אוטומטית
+	Auto Save Now	שמור אוטומטית כעת
+	Auto Save also saves the current project(s)	שמירה אוטומטית שומרת גם את הפרויקטים הנוכחיים
+	Auto Save…	שמירה אוטומטית…
+	Auto Tone Map Media (HDR and log into SDR)	מיפוי טונים אוטומטי למדיה (HDR ו-Log ל-SDR)
+	Auto tone map media (HDR and log into SDR)	מיפוי טונים אוטומטי למדיה (HDR ו-Log ל-SDR)
+	Auto-Adjust Multi-Camera Playback Quality	התאם אוטומטית איכות ניגון מרובה-מצלמות
+	Auto-Match	התאמה אוטומטית
+	Auto-Match Loudness	התאמת עוצמת קול אוטומטית
+	Auto-saves go to: {dir}	שמירות אוטומטיות נשמרות ב: {dir}
+	Auto-tag audio types in the timeline	תייג אוטומטית סוגי שמע בציר הזמן
+	Auto-transcribe all imported clips	תמלל אוטומטית את כל הקליפים המיובאים
+	Auto-transcribe only clips in sequences	תמלל אוטומטית רק קליפים ברצפים
+	Automatch Time	זמן התאמה אוטומטית
+	Automate To Sequence	שלב אוטומטית ברצף
+	Automate to Sequence	שלב אוטומטית ברצף
+	Automate to Sequence…	שלב אוטומטית ברצף…
+	Automatic	אוטומטי
+	Automatic Click Remover	מסיר נקישות אוטומטי
+	Automatically Hide Dependent Clips	הסתר אוטומטית קליפים תלויים
+	Automatically Save Every	שמור אוטומטית כל
+	Automatically delete cache files older than	מחק אוטומטית קובצי מטמון הישנים מ-
+	Automatically delete oldest cache files when cache exceeds	מחק אוטומטית את קובצי המטמון הישנים ביותר כאשר המטמון חורג מ-
+	Automatically refresh growing files	רענן אוטומטית קבצים מתפתחים
+	Automatically resume playback for growing files in Source Monitor	חדש ניגון אוטומטית עבור קבצים מתפתחים במוניטור המקור
+	Automatically save projects	שמור פרויקטים אוטומטית
+	Automatically transcribe clips	תמלל קליפים אוטומטית
+	Automation Keyframe Optimization	מיטוב פריימי מפתח של אוטומציה
+	Average Data Rate	קצב נתונים ממוצע
+	Avid DNxHR	Avid DNxHR
+	Avid DNxHR HQ	Avid DNxHR HQ
+	Avid DNxHR LB	Avid DNxHR LB
+	Avid DNxHR SQ	Avid DNxHR SQ
+	Avid Log Exchange	Avid Log Exchange
+	Avid Log Exchange…	Avid Log Exchange…
+	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	OP-Atom בסגנון Avid: קובץ תמונה DNxHR HQ בנוסף לקובץ PCM של 24 סיביות 48 kHz לכל ערוץ (_A1, _A2…)
+	BMP	BMP
+	BMP Sequence	רצף BMP
+	Background Corner Radius	רדיוס פינות רקע
+	Background Opacity	אטימות רקע
+	Background Size	גודל רקע
+	Background fill	מילוי רקע
+	Balanced Voice	קול מאוזן
+	Band 1	תחום 1
+	Band 2	תחום 2
+	Band 3	תחום 3
+	Band 4	תחום 4
+	Band 5	תחום 5
+	Band Pass	מעביר פס (Band Pass)
+	Band Slide	החלקת רצועות
+	Band Stop	חוסם פס (Band Stop)
+	Band {n}	תחום {n}
+	Bandpass	מעביר פס
+	Bar Color	צבע פס
+	Barn Doors	דלתות אסם
+	Bars and Tone	פסי בדיקה וצליל ייחוס
+	Bars and Tone…	פסי בדיקה וצליל ייחוס…
+	Basic 3D	תלת-ממד בסיסי
+	Basic Correction	תיקון בסיסי
+	Bass	בס
+	Before First Track	לפני הערוץ הראשון
+	Begin Text Editing for a Graphic Layer	התחל עריכת טקסט עבור שכבה גרפית
+	Begins With	מתחיל ב-
+	Behind	מאחור
+	Bessel	בסל (Bessel)
+	Bevel Alpha	שיפוע קצה אלפא
+	Bevel join	חיבור קטום
+	Bezier	בזייה
+	Bin	סל
+	Bin From Selection	סל מהבחירה
+	Bin: {name}	סל: {name}
+	Binary assets added	נכסים בינאריים שנוספו
+	Binary assets removed	נכסים בינאריים שהוסרו
+	Binauralizer - Ambisonics	דו-אוזני (Binauralizer) - אמביסוניקס
+	Bins	סלים
+	Bitrate Encoding	קידוד קצב סיביות
+	Bits per Sample:	סיביות לדגימה:
+	Black Input Level	רמת שחור בקלט
+	Black Video…	וידאו שחור…
+	Black and white with crushed blacks and strong contrast	שחור-לבן עם שחורים אטומים וניגודיות חזקה
+	Bleach Bypass	דילוג הלבנה (Bleach Bypass)
+	Bleach-bypass style: desaturated with hard contrast	סגנון דילוג הלבנה: רוויה מופחתת עם ניגודיות חדה
+	Blend	מיזוג
+	Blend With Original	מזג עם המקור
+	Block Dissolve	התפוגגות בלוקים
+	Block Height	גובה בלוק
+	Block Motion	תנועת בלוקים
+	Block Size	גודל בלוק
+	Block Width	רוחב בלוק
+	Blue Blurriness	טשטוש כחול
+	Blue Curve	עקומת כחול
+	Blue Offset	היסט כחול
+	Blue Power	חזקת כחול
+	Blue Slope	שיפוע כחול
+	Blue-Blue	כחול-כחול
+	Blue-Const	כחול-קבוע
+	Blue-Green	כחול-ירוק
+	Blue-Red	כחול-אדום
+	Blur & Sharpen	טשטוש וחידוד
+	Blur Amount	כמות טשטוש
+	Blur Dimensions	ממדי טשטוש
+	Blur Dissolve	התפוגגות טשטוש
+	Blur In	טשטוש בכניסה
+	Blur Layer	שכבת טשטוש
+	Blur Length	אורך טשטוש
+	Blur Out	טשטוש ביציאה
+	Blurriness	מידת טשטוש
+	Bokeh Blur	טשטוש בוקה
+	Boost	הגברה
+	Boost Vibrance	הגבר חיות צבע
+	Border Color	צבע גבול
+	Border Width	רוחב גבול
+	Borders	גבולות
+	Bottom	למטה
+	Bottom Center	למטה במרכז
+	Bounce	קפיצה
+	Box	תיבה
+	Box Color	צבע תיבה
+	Box Opacity	אטימות תיבה
+	Branching	הסתעפות
+	Breakout to Mono	פיצול לערוצי מונו
+	Breakout to mono	פיצול לערוצי מונו
+	Bright	בהיר
+	Bright Air	אוויר בהיר
+	Bright Studio	אולפן בהיר
+	Brightens inside a feathered circular mask	מבהיר בתוך מסכה מעגלית מרוככת
+	Brightness & Contrast	בהירות וניגודיות
+	Bring Forward	הבאה קדימה
+	British Stack	מגבר בריטי (British Stack)
+	Broadcast	שידור
+	Browse files…	עיון בקבצים…
+	Browse…	עיון…
+	Brush Hardness	קשיחות מברשת
+	Brush Opacity	אטימות מברשת
+	Brush Position	מיקום מברשת
+	Brush Spacing (secs)	ריווח מברשת (שניות)
+	Bubbles	בועות
+	Bulge Smoother	החלקת בליטה
+	Bump Height	גובה בליטה
+	Burn Alpha	צריבת אלפא
+	Burn Captions Into Video	צרוב כתוביות לתוך הווידאו
+	Burn Chroma	צריבת כרומה
+	Burn Color	צריבת צבע
+	Butt cap	קצה ישר
+	Butterworth	באטרוורת' (Butterworth)
+	Button Editor	עורך לחצנים
+	Bypass	עקיפה (Bypass)
+	CBR	CBR
+	CEA-608	CEA-608
+	CEA-708	CEA-708
+	CRF (constant quality)	CRF (איכות קבועה)
+	Cache analysis results for re-use	שמור תוצאות ניתוח במטמון לשימוש חוזר
+	Callout – Pointer	הערת הסבר – מצביע
+	Callout – Tag	הערת הסבר – תגית
+	Callouts	הערות הסבר
+	Camera 1	מצלמה 1
+	Camera Angle	זווית מצלמה
+	Camera Angle Metadata	מטא-נתונים של זווית מצלמה
+	Camera Blur	טשטוש מצלמה
+	Camera Names	שמות מצלמות
+	Camera Shake	רעידת מצלמה
+	Camera {n} — {name}	מצלמה {n} — {name}
+	Cameras shown in the Multi-Camera view (uncheck to hide).	מצלמות המוצגות בתצוגה מרובת-מצלמות (בטל סימון להסתרה).
+	Cancel	ביטול
+	Cancel Dynamic Trim	בטל קיצוץ דינמי
+	Cancel Queued Export	בטל ייצוא בתור
+	Cancelled	בוטל
+	Cannot open {dir}: {e}	לא ניתן לפתוח את {dir}: {e}
+	Capitalisation	אותיות רישיות
+	Caption Tracks	ערוצי כתוביות
+	Caption track options	אפשרויות ערוץ כתוביות
+	Captions	כתוביות
+	Captions and Graphics	כתוביות וגרפיקה
+	Captions…	כתוביות…
+	Capture	לכידה
+	Capture Format:	תבנית לכידה:
+	Captured View:	תצוגה שנלכדה:
+	Captured and Generated:	נלכדו ונוצרו:
+	Caribbean	קריבי
+	Cathedral	קתדרלה
+	Cell Pattern	תבנית תאים
+	Center	מרכז
+	Center Align Text	יישר טקסט למרכז
+	Center Channel Pan	צידוד ערוץ מרכזי
+	Center Gradient	מרכז מעבר צבע
+	Center Horizontally	מרכז אופקית
+	Center Input	קלט מרכז
+	Center Left	במרכז משמאל
+	Center Out	מהמרכז החוצה
+	Center Point (Latitude)	נקודת מרכז (קו רוחב)
+	Center Point (Longitude)	נקודת מרכז (קו אורך)
+	Center Right	במרכז מימין
+	Center Split	פיצול מהמרכז
+	Center Vertically	מרכז אנכית
+	Center align text	יישר טקסט למרכז
+	Center of Sphere	מרכז הכדור
+	Centred credits that roll up from below the frame and leave at the top.	כתוביות קרדיטים ממורכזות הנגללות מלמטה ויוצאות בחלק העליון.
+	Cents	סנטים (Cents)
+	Cerulean	תכלת שמיים
+	Ch. {n}	ערוץ {n}
+	Change Mask	שנה מסכה
+	Change to Color	שנה לצבע
+	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	שינויים מועתקים ברקע רגע לאחר כל עריכה. אם FilmCraft נסגרת באופן בלתי צפוי, הם יוצעו לשחזור בהפעלה הבאה.
+	Channel Blur	טשטוש ערוצים
+	Channel Format:	תבנית ערוצים:
+	Channel Mix	מיקס ערוצים
+	Channel Volume	עוצמת שמע של ערוץ
+	Channel {n}	ערוץ {n}
+	Chaos	כאוס
+	Chebyshev	צ'בישב (Chebyshev)
+	Checker Wipe	מחיקת משבצות
+	Chinese	סינית
+	Choke	צמצום קצה (Choke)
+	Chorus	קורוס (Chorus)
+	Chorus/Flanger	קורוס/פלנג'ר
+	Chroma	כרומה
+	Chroma Leak	דליפת כרומה
+	Chromatic Aberration (Blue)	עיוות כרומטי (כחול)
+	Chromatic Aberration (Green)	עיוות כרומטי (ירוק)
+	Chromatic Aberration (Red)	עיוות כרומטי (אדום)
+	Cinematic	קולנועי
+	Cineon Converter	ממיר Cineon
+	Circle	עיגול
+	Clamp Signal	הגבלת אות
+	Clean Combo	מגבר קומבו נקי
+	Clean Up Noisy Dialogue	ניקוי דיאלוג רועש
+	Clear	ניקוי
+	Clear (Delete)	נקה (מחק)
+	Clear All	ניקוי הכול
+	Clear All Events	נקה את כל האירועים
+	Clear Audio Type	נקה סוג שמע
+	Clear Edit Point Selection	נקה בחירת נקודת עריכה
+	Clear Finished	נקה משימות שהסתיימו
+	Clear Finished Exports	נקה ייצואים שהסתיימו
+	Clear In	נקה נקודת כניסה
+	Clear In and Out	נקה נקודות כניסה ויציאה
+	Clear Markers	נקה סמנים
+	Clear Muddiness	נקה עמימות צליל
+	Clear Out	נקה נקודת יציאה
+	Clear Poster Frame	נקה פריים מייצג
+	Clear Recent Directories	נקה תיקיות אחרונות
+	Clear Selected Marker	נקה סמן נבחר
+	Clear Transition	נקה מעבר
+	Cleared {n} shortcut(s) of {command}	נוקו {n} קיצורי דרך של {command}
+	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	לחץ על תא קיצור הדרך של פקודה והקש על מקשים להקצאה; + מוסיף קיצור דרך נוסף.
+	Click a key on the keyboard to see its shortcuts	לחץ על מקש במקלדת כדי לראות את קיצורי הדרך שלו
+	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	לחץ במוניטור התוכנית להצבת נקודות מסכה (גרור ליצירת עקומות); לחץ על הנקודה הראשונה או הקש Enter לסגירה
+	Click to select all clips to the left in all tracks. Shift-click for a single track.	לחץ לבחירת כל הקליפים משמאל בכל הערוצים. Shift+לחיצה לערוץ בודד.
+	Click to select all clips to the right in all tracks. Shift-click for a single track.	לחץ לבחירת כל הקליפים מימין בכל הערוצים. Shift+לחיצה לערוץ בודד.
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	לחץ לבחירה, או לחץ בשטח ריק וגרור לבחירת תיבה. השתמש ב-Shift,‏ Alt ו-Ctrl לאפשרויות נוספות.
+	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	לחץ לבחירה, או לחץ בשטח ריק וגרור לבחירת תיבה. השתמש ב-Shift,‏ Opt ו-Cmd לאפשרויות נוספות.
+	Click to split a clip. Shift-click to split all tracks.	לחץ לפיצול קליפ. Shift+לחיצה לפיצול כל הערוצים.
+	Click to zoom in; Alt-click to zoom out.	לחץ להתקרבות; Alt+לחיצה להתרחקות.
+	Click to zoom in; Opt-click to zoom out.	לחץ להתקרבות; Opt+לחיצה להתרחקות.
+	Client	לקוח
+	Clip	קליפ
+	Clip Channel Format:	תבנית ערוצי קליפ:
+	Clip Fx Editor	עורך אפקטים של קליפ
+	Clip ID (fingerprint)	מזהה קליפ (טביעת אצבע)
+	Clip Keyframes	פריימי מפתח של קליפ
+	Clip Level	רמת קליפ
+	Clip Marker	סמן קליפ
+	Clip Name	שם קליפ
+	Clip Name:	שם קליפ:
+	Clip Names	שמות קליפים
+	Clip Names and Markers	שמות קליפים וסמנים
+	Clip Overlap:	חפיפת קליפים:
+	Clip Size	גודל קליפ
+	Clip Speed / Duration	מהירות / משך קליפ
+	Clip Volume	עוצמת שמע של קליפ
+	Clip {n}	קליפ {n}
+	Clip: {name}	קליפ: {name}
+	Clipping	קטימה (Clipping)
+	Clips	קליפים
+	Clock Wipe	מחיקת מחוג שעון
+	Clock Wipe (Legacy)	מחיקת מחוג שעון (מדור קודם)
+	Clockwise	עם כיוון השעון
+	Close	סגירה
+	Close All Other Projects	סגור את כל הפרויקטים האחרים
+	Close All Projects	סגור את כל הפרויקטים
+	Close Bin	סגור סל
+	Close Gap	סגור מרווח
+	Close Other Timeline Panels	סגור חלוניות ציר זמן אחרות
+	Close Project	סגור פרויקט
+	Close Sequence	סגור רצף
+	Closed Captions	כתוביות סמויות
+	Codec:	מקודד:
+	Codec: {codec}	מקודד: {codec}
+	Cold Mono	מונו קר
+	Collect Files and Copy to New Location	אסוף קבצים והעתק למיקום חדש
+	Color	צבע
+	Color & Alpha	צבע ואלפא
+	Color 1	צבע 1
+	Color 2	צבע 2
+	Color 3	צבע 3
+	Color 4	צבע 4
+	Color Channel	ערוץ צבע
+	Color Correction	תיקון צבע
+	Color Distortion	עיוות צבע
+	Color Emboss	הבלטת צבע
+	Color Grading	גריידינג צבע
+	Color Grading Preset Thumbnails	תמונות ממוזערות של הגדרות גריידינג צבע
+	Color Grading Presets	הגדרות גריידינג צבע
+	Color Grading Section	אזור גריידינג צבע
+	Color Key	מפתח צבע (Color Key)
+	Color Management · {n} item	ניהול צבע · פריט {n}
+	Color Management · {n} items	ניהול צבע · {n} פריטים
+	Color Management…	ניהול צבע…
+	Color Match	התאמת צבע
+	Color Matte Color	צבע משטח צבע
+	Color Matte…	משטח צבע…
+	Color Pass	מעבר צבע סלקטיבי
+	Color Replace	החלפת צבע
+	Color Theme	ערכת צבעים
+	Color To Leave	צבע להשארה
+	Color Tolerance	סבילות צבע
+	Color Wheels & Match	גלגלי צבעים והתאמה
+	Color/Black	צבע/שחור
+	Color/Gray	צבע/אפור
+	Color:	צבע:
+	Colour Space	מרחב צבע
+	Column order	סדר עמודות
+	Columns	עמודות
+	Commands:	פקודות:
+	Comment	הערה
+	Comments:	הערות:
+	Commits	קומיטים
+	Company	חברה
+	Comparison	השוואה
+	Comparison View	תצוגת השוואה
+	Complexity	מורכבות
+	Composite In Back	שלב מאחור
+	Composite In Front	שלב מלפנים
+	Composite Using	שלב באמצעות
+	Composite Video	וידאו משולב
+	Composite in Linear Color	שלב בצבע ליניארי
+	Composite on Original	שלב על המקור
+	Composite on the GPU when available	בצע שילוב ב-GPU כשזמין
+	Compound Blur	טשטוש מורכב
+	Compression Before Clipping	דחיסה לפני קטימה
+	Compression Level	רמת דחיסה
+	Compressor	מדחס (Compressor)
+	Configure…	הגדר…
+	Conflict: {key} is assigned to {commands} ({ctx})	התנגשות: {key} מוקצה אל {commands} ({ctx})
+	Consolidate Duplicates	אחד כפילויות
+	Consolidate and Transcode	אחד והמר קידוד
+	Constant Gain	הגבר קבוע
+	Constant Power	עוצמה קבועה
+	Containers	מכלים (Containers)
+	Contains	מכיל
+	Contains:	מכיל:
+	Continuous	רציף
+	Continuous Bezier	בזייה רציף
+	Contributors	תורמים
+	Conversion Type	סוג המרה
+	Convert to Master Clip	המר לקליפ ראשי
+	Convolution Reverb	הדהוד קונבולוציה
+	Cool Blue	כחול קריר
+	Cool, desaturated and punchy	קריר, מופחת רוויה וחד
+	Copy	העתקה
+	Copy Paste Includes Sequence Markers	העתקה והדבקה כוללות סמני רצף
+	Copy and Create Proxies	העתק וצור קובצי פרוקסי
+	Copyright	זכויות יוצרים
+	Core Width	רוחב ליבה
+	Corner Pin	הצמדת פינות
+	Corner Radius	רדיוס פינה
+	Couldn't open your web browser	לא ניתן היה לפתוח את דפדפן האינטרנט שלך
+	Count	ספירה
+	Countdown Sound Cues	צלילי ספירה לאחור
+	Counter-clockwise	נגד כיוון השעון
+	Crash Recovery	שחזור מקריסה
+	Crawl Left	זחילה שמאלה
+	Crawl Right	זחילה ימינה
+	Create 4-point polygon mask	צור מסכת מצולע של 4 נקודות
+	Create Captions from Transcript…	צור כתוביות מתמלול…
+	Create Folder For Imported Projects	צור תיקייה עבור פרויקטים מיובאים
+	Create Multi-Camera Source Sequence	צור רצף מקור מרובה-מצלמות
+	Create Multi-Camera Source Sequence…	צור רצף מקור מרובה-מצלמות…
+	Create Proxies	צור קובצי פרוקסי
+	Create Proxies…	צור קובצי פרוקסי…
+	Create Search Bin	צור סל חיפוש
+	Create Sidecar File	צור קובץ נלווה (Sidecar)
+	Create a bin of subclips from each detected cut point	צור סל של תת-קליפים מכל נקודת מעבר סצנה שזוהתה
+	Create a caption track or import a caption file.	צור ערוץ כתוביות או ייבא קובץ כתוביות.
+	Create a clip marker at each detected cut point	צור סמן קליפ בכל נקודת מעבר סצנה שזוהתה
+	Create captions	צור כתוביות
+	Create ellipse mask	צור מסכת אליפסה
+	Create folder for imported projects	צור תיקייה עבור פרויקטים מיובאים
+	Create new caption track	צור ערוץ כתוביות חדש
+	Create new graphic	צור גרפיקה חדשה
+	Creating {n} proxy file(s)…	יוצר {n} קובצי פרוקסי…
+	Creative	יצירתי
+	Creator	יוצר
+	Credits	קרדיטים
+	Crop	חיתוך
+	Crop Less <-> Smooth More	חתוך פחות <-> החלק יותר
+	Cross Displacement	התקה צולבת
+	Cross Dissolve	התפוגגות צולבת
+	Cross Dissolve (Legacy)	התפוגגות צולבת (מדור קודם)
+	Cross Processed	פיתוח צולב (Cross Processed)
+	Cross Zoom	זום צולב
+	Cross Zoom (Legacy)	זום צולב (מדור קודם)
+	Crossfade	עמעום צולב (Crossfade)
+	Crossovers	תדרי חיתוך (Crossovers)
+	Crystals	גבישים
+	Cube Spin	סיבוב קובייה
+	Curl Radius	רדיוס סלסול
+	Current duration {seconds} s	משך נוכחי {seconds} שנ'
+	Currently: {loc} — {files} file(s), {size}	כעת: {loc} — {files} קבצים, {size}
+	Cursor	סמן
+	Custom	מותאם אישית
+	Custom ({n} points)	מותאם אישית ({n} נקודות)
+	Custom ({ratio})	מותאם אישית ({ratio})
+	Custom Color	צבע מותאם אישית
+	Custom Setup	הגדרה מותאמת אישית
+	Cut	גזירה
+	Cut to Camera 1	חתוך למצלמה 1
+	Cut to Camera 2	חתוך למצלמה 2
+	Cut to Camera 3	חתוך למצלמה 3
+	Cut to Camera 4	חתוך למצלמה 4
+	Cut to Camera 5	חתוך למצלמה 5
+	Cut to Camera 6	חתוך למצלמה 6
+	Cut to Camera 7	חתוך למצלמה 7
+	Cut to Camera 8	חתוך למצלמה 8
+	Cut to Camera 9	חתוך למצלמה 9
+	Cutoff	תדר קיטעון (Cutoff)
+	Cyan-teal shadows and warm highlights with a little more contrast	צללים בגוון ציאן-טורקיז ואזורים בהירים חמים עם מעט יותר ניגודיות
+	Cycle (in Revolutions)	מחזור (בסיבובים שלמים)
+	Cycle Evolution	התפתחות מחזורית
+	D1/DV NTSC (0.9091)	D1/DV NTSC (0.9091)
+	D1/DV PAL (1.0940)	D1/DV PAL (1.0940)
+	DPX	DPX
+	DPX Sequence	רצף DPX
+	DVCPRO HD (1.5)	DVCPRO HD (1.5)
+	Damping	שיכוך
+	Damping HF	שיכוך תדרים גבוהים
+	Damping LF	שיכוך תדרים נמוכים
+	Dark	כהה
+	Darkens outside a feathered oval mask	מכהה מחוץ למסכה אליפטית מרוככת
+	Darker Color	צבע כהה יותר
+	Darkest	הכהה ביותר
+	Date Modified	תאריך שינוי
+	Day for night: darker, cooler and less saturated	יום כלילה: כהה יותר, קריר יותר ופחות רווי
+	DeEss	הפחתת שורקות (DeEss)
+	DeEsser	מפחית שורקות (DeEsser)
+	DeHum	הפחתת זמזום חשמלי (DeHum)
+	DeHummer	מפחית זמזום חשמלי (DeHummer)
+	DeNoise	הפחתת רעש (DeNoise)
+	DeReverb	הפחתת הדהוד (DeReverb)
+	Decay	דעיכה
+	Decay Time (RT60)	זמן דעיכה (RT60)
+	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	פריימים מפוענחים השמורים עבור המוניטורים והתמונות הממוזערות: {used} מתוך {budget}.
+	Decoders	מפענחים
+	Decrease Audio Tracks Height	הקטן גובה ערוצי שמע
+	Decrease Clip Volume	הנמך עוצמת שמע של קליפ
+	Decrease Clip Volume Many	הנמך עוצמת שמע של קליפ משמעותית
+	Decrease Font Size by Five Units	הקטן גודל גופן בחמש יחידות
+	Decrease Font Size by One Unit	הקטן גודל גופן ביחידה אחת
+	Decrease Leading by Five Units	הקטן מרווח שורות בחמש יחידות
+	Decrease Leading by One Unit	הקטן מרווח שורות ביחידה אחת
+	Decrease Video Tracks Height	הקטן גובה ערוצי וידאו
+	Default	ברירת מחדל
+	Default Audio Tracks	ערוצי שמע כברירת מחדל
+	Default Emoji font	גופן אימוג'י כברירת מחדל
+	Default Input	קלט ברירת מחדל
+	Default Media Scaling	שינוי קנה מידה למדיה כברירת מחדל
+	Default Output	פלט ברירת מחדל
+	Default clip size:	גודל קליפ כברירת מחדל:
+	Default closed caption font	גופן כתוביות סמויות כברירת מחדל
+	Default language	שפת ברירת מחדל
+	Default location	מיקום ברירת מחדל
+	Default paragraph direction	כיוון פסקה כברירת מחדל
+	Default subtitle and text font	גופן כתוביות וטקסט כברירת מחדל
+	Delay	השהיה
+	Delay 1	השהיה 1
+	Delay 2	השהיה 2
+	Delay 3	השהיה 3
+	Delay 4	השהיה 4
+	Delay and Echo	השהיה והד
+	Delete	מחיקה
+	Delete Arrangement	מחק סידור
+	Delete Audio Tracks	מחק ערוצי שמע
+	Delete Caption Track	מחק ערוץ כתוביות
+	Delete Caption Tracks	מחק ערוצי כתוביות
+	Delete Captions	מחק כתוביות
+	Delete Empty Caption Tracks	מחק ערוצי כתוביות ריקים
+	Delete Graphic Layer	מחק שכבה גרפית
+	Delete Guide Template	מחק תבנית קווי עזר
+	Delete Media Cache Files	מחק קובצי מטמון מדיה
+	Delete Preset	מחק הגדרה קבועה מראש
+	Delete Render Files	מחק קובצי רינדור
+	Delete Render Files In to Out	מחק קובצי רינדור מנקודת הכניסה עד היציאה
+	Delete Search Bin	מחק סל חיפוש
+	Delete Tracks	מחק ערוצים
+	Delete Tracks…	מחק ערוצים…
+	Delete Transcript	מחק תמלול
+	Delete Video Tracks	מחק ערוצי וידאו
+	Delete files older than	מחק קבצים הישנים מ-
+	Delete oldest files when the cache exceeds	מחק את הקבצים הישנים ביותר כאשר המטמון חורג מ-
+	Delete selected captions	מחק כתוביות נבחרות
+	Delete this preset	מחק הגדרה קבועה מראש זו
+	Deleted preset “{active}”	נמחקה ההגדרה הקבועה מראש “{active}”
+	Deleted {n} file(s), {size}.	נמחקו {n} קבצים, {size}.
+	Demo Footage	חומר גלם להדגמה
+	Demo Project	פרויקט הדגמה
+	Demo footage	חומר גלם להדגמה
+	Demo project	פרויקט הדגמה
+	Denoise	הפחתת רעש
+	Descending	בסדר יורד
+	Description:	תיאור:
+	Deselect All Project Items	בטל בחירת כל פריטי הפרויקט
+	Destination Path	נתיב יעד
+	Destinations	יעדים
+	Detach Proxies	נתק קובצי פרוקסי
+	Detail Amplitude	משרעת פרטים
+	Detail Level	רמת פירוט
+	Detailed Analysis	ניתוח מפורט
+	Details: {path}	פרטים: {path}
+	Device Class	מחלקת התקן
+	Dialogue	דיאלוג
+	Diamond	מעוין
+	Dimmed	מעומעם
+	Dip to Black	טבילה לשחור
+	Dip to Black (Legacy)	טבילה לשחור (מדור קודם)
+	Dip to Color	טבילה לצבע
+	Dip to White	טבילה ללבן
+	Dip to White (Legacy)	טבילה ללבן (מדור קודם)
+	DirectX 12 only	DirectX 12 בלבד
+	Directional	כיווני
+	Directional Blur	טשטוש כיווני
+	Directional Blur (Legacy)	טשטוש כיווני (מדור קודם)
+	Disable video output when in the background	השבת פלט וידאו כאשר היישום ברקע
+	Disabled clips	קליפים מושבתים
+	Discard Unsaved Changes	בטל שינויים שלא נשמרו
+	Discard take	בטל טייק
+	Disk space: original {original} · resulting {result} ({n} files)	מקום בדיסק: מקורי {original} · סופי {result} ({n} קבצים)
+	Disk space: —	מקום בדיסק: —
+	Disperse	פיזור
+	Displacement	התקה
+	Display Color Management	ניהול צבע בתצוגה
+	Display Color Settings	הגדרות צבע תצוגה
+	Display Format:	תבנית תצוגה:
+	Display Mode	מצב תצוגה
+	Display name	שם תצוגה
+	Display out of sync indicators for unlinked clips	הצג מחווני יציאה מסנכרון עבור קליפים לא מקושרים
+	Dissolve	התפוגגות
+	Dissolve Blocks	התפוגגות בלוקים
+	Distance to Image	מרחק לתמונה
+	Distortion Complexity	מורכבות עיוות
+	Distortion Rate	קצב עיוות
+	Distortion Type	סוג עיוות
+	Distribute Horizontally	פזר אופקית
+	Distribute Space Horizontally	פזר מרווחים אופקית
+	Distribute Space Vertically	פזר מרווחים אנכית
+	Distribute Vertically	פזר אנכית
+	Do not delete cache files automatically	אל תמחק קובצי מטמון אוטומטית
+	Docking Action	פעולת עיגון
+	Does Not Contain	אינו מכיל
+	Don't Save	לא לשמור
+	Don't label speakers	אל תתייג דוברים
+	Dot Color	צבע נקודה
+	Double-click a sequence in the Project panel to open it here.	לחץ לחיצה כפולה על רצף בחלונית הפרויקט כדי לפתוח אותו כאן.
+	Download Speech Model	הורד מודל דיבור
+	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	פענוח טיוטה ברזולוציית ניגון מופחתת (H.264: מהיר יותר, חלק מהפריימים מסוננים פחות)
+	Drag a clip to slide it between its neighbours.	גרור קליפ כדי להחליק אותו בין הקליפים השכנים.
+	Drag a clip to slip its source in/out without moving it.	גרור קליפ כדי להזיז את נקודות הכניסה/יציאה של המקור מבלי להזיז את הקליפ.
+	Drag an edge to change the clip's speed so it fills the new duration.	גרור קצה כדי לשנות את מהירות הקליפ כך שימלא את המשך החדש.
+	Drag an edit point to ripple trim; later clips move to keep the gap closed.	גרור נקודת עריכה לקיצוץ אדווה; הקליפים הבאים זזים כדי לשמור על המרווח סגור.
+	Drag an edit point to roll it: the out of one clip and the in of the next move together.	גרור נקודת עריכה לגלגול: נקודת היציאה של קליפ אחד ונקודת הכניסה של הבא זזות יחד.
+	Drag inward to round the corners	גרור פנימה לעיגול הפינות
+	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	גרור את הקצה של קליפ מוזיקה כדי לערוך אותו מחדש למשך החדש בפעמות מוזיקליות תואמות.
+	Drag to scroll the timeline.	גרור לגלילת ציר הזמן.
+	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	גרירה: הזזה · Alt+לחיצה: חלק/פינה · Cmd+לחיצה: מחיקה
+	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	גרירה: הזזה · Alt+לחיצה: חלק/פינה · Ctrl+לחיצה: מחיקה
+	Drive	דרייב (Drive)
+	Drop media here to create sequence.	שחרר מדיה כאן ליצירת רצף.
+	Dry	יבש (Dry)
+	Dry Out	פלט יבש
+	Dry Up a Roomy Voice	ייבוש קול מהדהד בחדר
+	Duck Deep Under Dialogue	הנמכה עמוקה מתחת לדיאלוג
+	Duck Under Dialogue	הנמכה מתחת לדיאלוג
+	Duck Under Voice and Effects	הנמכה מתחת לקול ואפקטים
+	Duck against:	הנמך ביחס אל:
+	Ducking	הנמכה אוטומטית (Ducking)
+	Duration:	משך:
+	Dutch	הולנדית
+	Dynamic Audio Waveforms	צורות גל שמע דינמיות
+	Dynamic Link	קישור דינמי
+	Dynamic Trim Stop	עצירת קיצוץ דינמי
+	Dynamics Processing	עיבוד דינמיקה
+	EDL…	EDL…
+	EQ	אקולייזר (EQ)
+	Early Reflections	החזרים מוקדמים
+	Earthquake	רעידת אדמה
+	Ease In	האטה בכניסה (Ease In)
+	Ease In and Out	האטה בכניסה וביציאה
+	Ease Out	האצה ביציאה (Ease Out)
+	Easing	החלקת קצב (Easing)
+	Echo	הד
+	Echo Glow	זוהר הד
+	Echo Operator	אופרטור הד
+	Echo Time (seconds)	זמן הד (שניות)
+	Echoes	הדים
+	Edge Color	צבע קצה
+	Edge Feather	ריכוך קצה
+	Edge Glow	זוהר קצה
+	Edge Sharpness	חדות קצה
+	Edge Softness	רכות קצה
+	Edge Thin	הדקנת קצה
+	Edge Threshold	סף קצה
+	Edge Type	סוג קצה
+	Edit	עריכה
+	Edit Cameras	ערוך מצלמות
+	Edit Cameras…	ערוך מצלמות…
+	Edit Caption Text	ערוך טקסט כתובית
+	Edit Columns	ערוך עמודות
+	Edit Columns…	ערוך עמודות…
+	Edit Narration	ערוך קריינות
+	Edit Offline File	ערוך קובץ לא מקוון
+	Edit Offline…	ערוך קובץ לא מקוון…
+	Edit Project Notes	ערוך הערות פרויקט
+	Edit Subclip	ערוך תת-קליפ
+	Edit Subclip…	ערוך תת-קליפ…
+	Edit Workspaces	ערוך סביבות עבודה
+	Edit Workspaces…	ערוך סביבות עבודה…
+	Editable properties:	מאפיינים הניתנים לעריכה:
+	Editing	עריכה
+	Editing Mode:	מצב עריכה:
+	Edit…	עריכה…
+	Effect Controls	פקדי אפקטים
+	Effect presets	הגדרות אפקטים קבועות מראש
+	Effects	אפקטים
+	Elliptical	אליפטי
+	Emboss	תבליט
+	Empty tracks	ערוצים ריקים
+	Enable External Video Output	הפעלת פלט וידאו חיצוני
+	Enable HSL Secondary	הפעל HSL משני
+	Enable ProRes hardware accelerated encoding, if available	הפעל קידוד ProRes מואץ חומרה, אם זמין
+	Enable Remix	הפעל רמיקס
+	Enable clip and XMP metadata linking	הפעל קישור מטא-נתונים של קליפ ו-XMP
+	Enable developer mode	הפעל מצב מפתח
+	Enable hardware accelerated decoding (requires restart)	הפעל פענוח מואץ חומרה (דורש הפעלה מחדש)
+	Enable language auto-detection	הפעל זיהוי שפה אוטומטי
+	Enable proxies	הפעל קובצי פרוקסי
+	Enable track for recording	הפעל ערוץ להקלטה
+	Encapsulate	כימוס (Encapsulate)
+	Encoder	מקודד
+	Encoding {n}%	מקודד {n}%
+	End Color	צבע סיום
+	End Credits	קרדיטים בסיום
+	End Credits – Roll	קרדיטים בסיום – גלילה
+	End Off Screen	סיום מחוץ למסך
+	End Point	נקודת סיום
+	End of Ramp	סוף מעבר הדרגתי
+	End:	סיום:
+	Ends With	מסתיים ב-
+	Enhance Speech	שפר דיבור
+	Entire Source	כל המקור
+	Enumerate Cameras	מספר מצלמות
+	Errors Only	שגיאות בלבד
+	Essential Graphics	גרפיקה חיונית
+	Essential Sound	שמע חיוני
+	EssentialSound	שמע חיוני
+	Estimated file size: {size}	גודל קובץ משוער: {size}
+	Events	אירועים
+	Evolution	התפתחות
+	Evolution Options	אפשרויות התפתחות
+	Exact name matches only	התאמות שם מדויקות בלבד
+	Exciter Amount	כמות מעורר תדרים (Exciter)
+	Exciter Mode	מצב מעורר תדרים (Exciter)
+	Exclude Unused Clips	הוצא קליפים שאינם בשימוש
+	Existing XMP files written by other applications are left unchanged.	קובצי XMP קיימים שנכתבו על ידי יישומים אחרים נשארים ללא שינוי.
+	Exit Trim Mode	צא ממצב קיצוץ
+	Expand All Tracks	הרחב את כל הערוצים
+	Expander	מרחיב טווח דינמי (Expander)
+	Exponential Fade	עמעום מעריכי
+	Export	ייצוא
+	Export As Motion Graphics Template	ייצא כתבנית גרפיקה בתנועה
+	Export As Motion Graphics Template…	ייצא כתבנית גרפיקה בתנועה…
+	Export Audio	ייצא שמע
+	Export Frame	ייצא פריים
+	Export Frame (Shift+E)	ייצא פריים (Shift+E)
+	Export Frame: use Export mode (M6)	ייצא פריים: השתמש במצב ייצוא (M6)
+	Export Markers as CSV…	ייצא סמנים כ-CSV…
+	Export Preset…	ייצא הגדרה קבועה מראש…
+	Export formats	תבניות ייצוא
+	Export presets	הגדרות ייצוא קבועות מראש
+	Export the labels to a preset file…	ייצא את התוויות לקובץ הגדרה קבועה מראש…
+	Export: no file chosen (agents: export.presets.export {path, names})	ייצוא: לא נבחר קובץ (סוכנים: export.presets.export {path, names})
+	Export: no file chosen (agents: shortcuts.export {path})	ייצוא: לא נבחר קובץ (סוכנים: shortcuts.export {path})
+	Exported graphics template to {path}	תבנית הגרפיקה יוצאה אל {path}
+	Exported {path}	הייצוא הושלם: {path}
+	Exporting	מייצא
+	Exporting {path}	מייצא את {path}
+	Extend Next Edit To Playhead	הארך את העריכה הבאה עד סמן הניגון
+	Extend Previous Edit To Playhead	הארך את העריכה הקודמת עד סמן הניגון
+	Extend Selected Edit to Playhead	הארך את העריכה הנבחרת עד סמן הניגון
+	Extend Selection Down	הרחב בחירה למטה
+	Extend Selection Left	הרחב בחירה שמאלה
+	Extend Selection Right	הרחב בחירה ימינה
+	Extend Selection Up	הרחב בחירה למעלה
+	Extended Dynamic Range Monitoring	ניטור טווח דינמי מורחב
+	Extract (')	חלץ (')
+	Extract Audio	חלץ שמע
+	Extract selected text	חלץ טקסט נבחר
+	Eyedropper (pick a color from the Program monitor)	טפטפת (בחר צבע ממוניטור התוכנית)
+	Eyedropper: no picture to sample	טפטפת: אין תמונה לדגימה
+	FCPXML…	FCPXML…
+	FFT Filter	מסנן FFT
+	FLAC	FLAC
+	FLAC (lossless)	FLAC (ללא איבוד איכות)
+	FLAC 48 kHz 24-bit	FLAC‏ 48 kHz‏ 24 סיביות
+	FLAC stores whole-number samples only	FLAC שומר דגימות במספרים שלמים בלבד
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, סטריאו 48 kHz‏ 24 סיביות, ללא איבוד איכות
+	Face Detection (protect skin tones)	זיהוי פנים (הגנה על גווני עור)
+	Fade	עמעום
+	Fade In	עמעום בכניסה (Fade In)
+	Fade Out	עמעום ביציאה (Fade Out)
+	Faded Matte	מט דהוי
+	Faded Print	הדפס דהוי
+	Fades	עמעומים
+	Failed: {e}	נכשל: {e}
+	Falloff	דעיכה הדרגתית (Falloff)
+	Far Away	ממרחק רב
+	Faster Motion	תנועה מהירה יותר
+	Faux Bold	הדגשה מדומה
+	Faux Italic	הטיה מדומה
+	Favorites only	מועדפים בלבד
+	Feedback	משוב (Feedback)
+	Feedback 1	משוב 1
+	Feedback 2	משוב 2
+	Feedback 3	משוב 3
+	Feedback 4	משוב 4
+	Feet + Frames 16mm	רגל + פריימים 16 מ״מ
+	Feet + Frames 35mm	רגל + פריימים 35 מ״מ
+	Female	נקבה
+	Fewer · More	פחות · יותר
+	Field Options	אפשרויות שדות
+	Field Options…	אפשרויות שדות…
+	Field Order	סדר שדות
+	Fields:	שדות:
+	File	קובץ
+	File Extension	סיומת קובץ
+	File Name & Location	שם קובץ ומיקום
+	File Name:	שם קובץ:
+	File Path	נתיב קובץ
+	File Types Displayed	סוגי קבצים מוצגים
+	File…	קובץ…
+	Fill	מילוי
+	Fill Background	מלא רקע
+	Fill Color	צבע מילוי
+	Fill Left with Right	מלא שמאל בימין
+	Fill Point	נקודת מילוי
+	Fill Right with Left	מלא ימין בשמאל
+	Fill Selector	בורר מילוי
+	Fill Type	סוג מילוי
+	Fill frame	מלא מסגרת
+	Fill the slots above first	מלא תחילה את המקומות שלמעלה
+	Film Dissolve	התפוגגות קולנועית
+	Film Dissolve (Legacy)	התפוגגות קולנועית (מדור קודם)
+	Film Emulation	הדמיית סרט צילום
+	Film Roll	גלגול סרט צילום
+	FilmCraft Graphics Template	תבנית גרפיקה של FilmCraft
+	FilmCraft Help…	עזרה של FilmCraft…
+	FilmCraft Project	פרויקט FilmCraft
+	FilmCraft always composites in linear light	FilmCraft תמיד משלבת באור ליניארי
+	FilmCraft hit an error	FilmCraft נתקלה בשגיאה
+	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft משאירה את שאר זיכרון ה-RAM פנוי עבור יישומים אחרים.
+	FilmCraft on GitHub	FilmCraft ב-GitHub
+	FilmCraft on getartcraft.com	FilmCraft באתר getartcraft.com
+	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft נסגרה באופן בלתי צפוי בעוד שב-“{name}” היו שינויים שלא נשמרו.
+	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft נסגרה בעוד שב-“{name}” היו שינויים שלא נשמרו.
+	Filter Frequency	תדר מסנן
+	Filter Resonance	תהודת מסנן
+	Filter and EQ	סינון ואקולייזר
+	Final Cut Pro XML…	Final Cut Pro XML…
+	Final Delay	השהיה סופית
+	Find	חיפוש
+	Find Edges	איתור קצוות
+	Find Next	חיפוש הבא
+	Find in:	חפש ב:
+	Find:	חיפוש:
+	First commit	הקומיט הראשון
+	Fit	התאמה
+	Fit to frame	התאם למסגרת
+	Flanger	פלנג'ר (Flanger)
+	Flare	הבהק
+	Flare Brightness	בהירות הבהק
+	Flare Center	מרכז הבהק
+	Flare Color	צבע הבהק
+	Flash Cue Marker	סמן אות Flash
+	Flicker	הבהוב
+	Flicker Removal	הסרת הבהוב
+	Flickers	הבהובים
+	Flip Motion	תנועת היפוך
+	Flip Over	היפוך מעבר
+	Float	צף
+	Focus	מיקוד
+	Focus Blur	טשטוש מיקוד
+	Focus Point	נקודת מיקוד
+	Focus Shape	צורת מיקוד
+	Focus Size	גודל מיקוד
+	Fold Motion	תנועת קיפול
+	Foldback	החזרה (Foldback)
+	Font	גופן
+	Font Size	גודל גופן
+	Font Style	סגנון גופן
+	Font family	משפחת גופנים
+	Fonts used in the project:	גופנים בשימוש בפרויקט:
+	For color management parameters, go to the Settings tab in the Color Grading panel.	לשינוי פרמטרים של ניהול צבע, עברו לכרטיסייה הגדרות בחלונית גריידינג צבע.
+	Forest	יער
+	Format	עיצוב
+	Format and size	תבנית וגודל
+	Four Scopes (RGB, 8 bit)	ארבעה מחוונים (RGB,‏ 8 סיביות)
+	Four Scopes (YUV, float, no clamp)	ארבעה מחוונים (YUV, נקודה צפה, ללא הגבלה)
+	Fractal Influence	השפעה פרקטלית
+	Fractal Type	סוג פרקטל
+	Frame Blending	מיזוג פריימים
+	Frame Color	צבע מסגרת
+	Frame Count	מספר פריימים
+	Frame Hold Options	אפשרויות הקפאת פריים
+	Frame Hold Options…	אפשרויות הקפאת פריים…
+	Frame Layout	פריסת מסגרת
+	Frame Rate	קצב פריימים
+	Frame Rate:	קצב פריימים:
+	Frame Sampling	דגימת פריימים
+	Frame Size	גודל מסגרת
+	Frame Size / Rate	גודל מסגרת / קצב
+	Frame Size:	גודל מסגרת:
+	Frame Width	רוחב מסגרת
+	Frame cache for monitors and thumbnails	מטמון פריימים עבור מוניטורים ותמונות ממוזערות
+	Frames	פריימים
+	Frames per Still:	פריימים לתמונה בודדת:
+	Framing	מיסגור
+	Free draw bezier	ציור בזייה חופשי
+	Freeform	צורה חופשית
+	Freeform View	תצוגת צורה חופשית
+	Freeform View Options	אפשרויות תצוגת צורה חופשית
+	Freeform View Options…	אפשרויות תצוגת צורה חופשית…
+	From Bin	מהסל
+	From East	ממזרח
+	From North	מצפון
+	From Source Monitor	ממוניטור המקור
+	From Source Monitor, Match Frame	ממוניטור המקור, התאמת פריים
+	From South	מדרום
+	From West	ממערב
+	From file…	מקובץ…
+	From the Left	משמאל
+	From the Right	מימין
+	Front + LFE	קדמי + LFE
+	Front + Rear	קדמי + אחורי
+	Front + Rear + LFE	קדמי + אחורי + LFE
+	Front Only	קדמי בלבד
+	Full screen	מסך מלא
+	Fuzz	דיסטורשן (Fuzz)
+	GB	GB
+	GPU Rendering	רינדור GPU
+	GPU acceleration is unavailable; preview renders on the CPU	האצת GPU אינה זמינה; התצוגה המקדימה מרונדרת ב-CPU
+	Gain	הגבר (Gain)
+	Gamut Warning Color	צבע אזהרת טווח צבעים
+	Gang to Program	סנכרן עם מוניטור התוכנית
+	Gap	מרווח
+	Gap Color	צבע מרווח
+	Gaps	מרווחים
+	Gaussian Blur (Legacy)	טשטוש גאוסי (מדור קודם)
+	Gaussian Blur from 0 to 60 over the last second	טשטוש גאוסי מ-0 עד 60 במהלך השנייה האחרונה
+	Gaussian Blur from 60 to 0 over the first second	טשטוש גאוסי מ-60 עד 0 במהלך השנייה הראשונה
+	General	כללי
+	Generate Audio Waveform	צור צורת גל שמע
+	Generate Ducking Keyframes	צור פריימי מפתח של הנמכה אוטומטית
+	Generate Keyframes	צור פריימי מפתח
+	Generate Timecode	צור קוד זמן
+	Generate waveforms and conform audio using multithreading	צור צורות גל והתאם שמע באמצעות ריבוי תהליכונים
+	Generate waveforms automatically during import	צור צורות גל אוטומטית במהלך הייבוא
+	Generating waveform…	יוצר צורת גל…
+	Get Media File Properties for	קבל מאפייני קובץ מדיה עבור
+	Get Project Notes	קבל הערות פרויקט
+	Ghosts	דמויות רפאים
+	Glint	נצנוץ
+	Glitch	תקלה דיגיטלית (Glitch)
+	Glow	זוהר
+	Glow Color	צבע זוהר
+	Glow Only	זוהר בלבד
+	Glow Radius	רדיוס זוהר
+	Glow Saturation	רוויית זוהר
+	Glow Width	רוחב זוהר
+	Go Back	חזור אחורה
+	Go Forward	התקדם קדימה
+	Go to Gap	עבור למרווח
+	Go to In	עבור לנקודת כניסה
+	Go to In (Shift+I)	עבור לנקודת כניסה (Shift+I)
+	Go to In Point	עבור לנקודת כניסה
+	Go to Next Caption Segment	עבור למקטע הכתוביות הבא
+	Go to Next Edit Point	עבור לנקודת העריכה הבאה
+	Go to Next Edit Point on Any Track	עבור לנקודת העריכה הבאה בערוץ כלשהו
+	Go to Next Marker	עבור לסמן הבא
+	Go to Out	עבור לנקודת יציאה
+	Go to Out (Shift+O)	עבור לנקודת יציאה (Shift+O)
+	Go to Out Point	עבור לנקודת יציאה
+	Go to Previous Caption Segment	עבור למקטע הכתוביות הקודם
+	Go to Previous Edit Point	עבור לנקודת העריכה הקודמת
+	Go to Previous Edit Point on Any Track	עבור לנקודת העריכה הקודמת בערוץ כלשהו
+	Go to Previous Marker	עבור לסמן הקודם
+	Go to Selected Clip End	עבור לסוף הקליפ הנבחר
+	Go to Selected Clip Start	עבור להתחלת הקליפ הנבחר
+	Go to Sequence End	עבור לסוף הרצף
+	Go to Sequence Start	עבור להתחלת הרצף
+	Go to Split	עבור לפיצול
+	Go to next keyframe	עבור לפריים המפתח הבא
+	Go to previous keyframe	עבור לפריים המפתח הקודם
+	Golden Dusk	דמדומים מוזהבים
+	Golden Hour	שעת הזהב
+	Grab bag	אוסף כלים
+	Gradient Angle	זווית מעבר צבע
+	Gradient End	סיום מעבר צבע
+	Gradient Layer	שכבת מעבר צבע
+	Gradient Placement	מיקום מעבר צבע
+	Gradient Scatter	פיזור מעבר צבע
+	Gradient Shape	צורת מעבר צבע
+	Gradient Start	התחלת מעבר צבע
+	Gradient Wipe	מחיקת מעבר צבע
+	Gradient Wipe (Legacy)	מחיקת מעבר צבע (מדור קודם)
+	Grain Size	גודל גרעיניות
+	Graphic Equalizer (10 Bands)	אקולייזר גרפי (10 תחומים)
+	Graphic Equalizer (20 Bands)	אקולייזר גרפי (20 תחומים)
+	Graphic Equalizer (30 Bands)	אקולייזר גרפי (30 תחומים)
+	Graphics and Titles	גרפיקה וכותרות
+	Graphics problem: switched to software compositing	בעיית גרפיקה: הועבר לשילוב בתוכנה
+	Graphics text search arrives with M10.1–M10.2	חיפוש טקסט בגרפיקה יגיע בגרסאות M10.1–M10.2
+	Graphics…	גרפיקה…
+	Green Blurriness	טשטוש ירוק
+	Green Curve	עקומת ירוק
+	Green Offset	היסט ירוק
+	Green Power	חזקת ירוק
+	Green Slope	שיפוע ירוק
+	Green-Blue	ירוק-כחול
+	Green-Const	ירוק-קבוע
+	Green-Green	ירוק-ירוק
+	Green-Red	ירוק-אדום
+	Grid spacing:	מרווח רשת:
+	Group	קיבוץ
+	Grow	הגדלה
+	Growing Files	קבצים מתפתחים
+	Grunge	גראנג'
+	Grunge & Distort	גראנג' ועיוות
+	Guide Templates	תבניות קווי עזר
+	GuitarSuite	חבילת גיטרה (GuitarSuite)
+	H.264	H.264
+	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	H.264 1920×1080 לאתרי שיתוף וידאו, VBR מעבר 1, 16 Mbps
+	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080,‏ VBR מעבר 1, יעד 20 Mbps,‏ AAC 320 kbps
+	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080,‏ VBR‏ 2 מעברים, 18 Mbps
+	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	H.264 3840×2160 לאתרי שיתוף וידאו, VBR מעבר 1, 45 Mbps
+	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160,‏ VBR מעבר 1, יעד 60 Mbps,‏ AAC 320 kbps
+	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160,‏ VBR‏ 2 מעברים, 50 Mbps
+	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 לאורך עבור וידאו קצר לרשתות חברתיות, מותאם למילוי, 12 Mbps
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 בגודל המסגרת ובקצב הפריימים של הרצף; 0.05 סיביות לפיקסל
+	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 בגודל המסגרת ובקצב הפריימים של הרצף; 0.1 סיביות לפיקסל
+	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 בגודל המסגרת ובקצב הפריימים של הרצף; קצב הסיביות מותאם לגודל המסגרת (0.2 סיביות לפיקסל)
+	H.265 (HEVC)	H.265 (HEVC)
+	HD Anamorphic 1080 (1.333)	HD אנמורפי 1080 (1.333)
+	HDR	HDR
+	HDR Graphics White (Nits)	לבן גרפי HDR (ניטים)
+	HDR Range	טווח HDR
+	HDR Specular	בוהק HDR
+	HDR White	לבן HDR
+	History	היסטוריה
+	HLS Vectorscope + Histogram	וקטורסקופ HLS + היסטוגרמה
+	HSL Secondary	HSL משני
+	Half Saturation	חצי רוויה
+	Handle Frames:	פריימי שוליים (Handles):
+	Hard Clip	קטימה חדה
+	Hard Limiter	מגביל קשיח (Hard Limiter)
+	Hard Mono	מונו חד
+	Hard Sun	שמש קופחת
+	Hardware (AV1 has no software encoder)	חומרה (ל-AV1 אין מקודד תוכנה)
+	Hardware (H.265 has no software encoder)	חומרה (ל-H.265 אין מקודד תוכנה)
+	Hardware decoding	פענוח חומרה
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	פענוח חומרה: מצב אוטומטי משתמש במפענח הווידאו של המערכת (VideoToolbox ב-macOS,‏ Media Foundation ב-Windows,‏ VA-API או NVDEC עבור H.264 ו-HEVC ב-Linux) עבור הזרמים הנתמכים, ובמפענח הפנימי של FilmCraft לכל השאר או אם החומרה נכשלת. מדיה שכבר פתוחה שומרת על המפענח שלה עד לפתיחתה מחדש.
+	Head	ראש
+	Head Size	גודל ראש
+	Head and Tail	ראש וזנב
+	Heading	כיוון
+	Heart	לב
+	Height:	גובה:
+	Help	עזרה
+	Hide All Caption Tracks	הסתר את כל ערוצי הכתוביות
+	Hide Back Face	הסתר פאה אחורית
+	Hide FilmCraft	הסתר את FilmCraft
+	High Cutoff	תדר קיטעון גבוה
+	High Frequency Cut	חיתוך תדרים גבוהים
+	High Frequency Damping	שיכוך תדרים גבוהים
+	High Quality 1080p HD	איכות גבוהה 1080p HD
+	High Quality 2160p 4K	איכות גבוהה 2160p 4K
+	High Quality Playback	ניגון באיכות גבוהה
+	High Shelf	מדף גבוהים (High Shelf)
+	High Shelf Gain	הגבר מדף גבוהים
+	High Tone	צליל גבוה
+	High contrast with held highlights and deep shadows	ניגודיות גבוהה עם שמירה על אזורים בהירים וצללים עמוקים
+	Highlight	הבהרה
+	Highlight Blue Balance	איזון כחול באזורים בהירים
+	Highlight Brightness	בהירות אזורים בהירים
+	Highlight Color	צבע הבהרה
+	Highlight Green Balance	איזון ירוק באזורים בהירים
+	Highlight Red Balance	איזון אדום באזורים בהירים
+	Highlight Rolloff	דעיכת אזורים בהירים
+	Highlight Threshold	סף אזורים בהירים
+	Highlight Tint	גוון אזורים בהירים
+	Highlights Lightness	בהירות אור באזורים בהירים
+	Highpass	מעביר גבוהים (Highpass)
+	Hindi	הינדי
+	Hindi digits	ספרות הינדיות
+	Hold	החזקה
+	Hold Filters	מסנני הקפאה
+	Hold On	הקפא על
+	Home	בית
+	Horizontal	אופקי
+	Horizontal 16:9	אופקי 16:9
+	Horizontal Alignment	יישור אופקי
+	Horizontal Blocks	בלוקים אופקיים
+	Horizontal Decentering	הסטת מרכז אופקית
+	Horizontal Displacement	התקה אופקית
+	Horizontal Flip	היפוך אופקי
+	Horizontal Margin	שוליים אופקיים
+	Horizontal and Vertical	אופקי ואנכי
+	Hover Scrub	גרירת תצוגה בריחוף
+	Hue Center	מרכז גוון
+	Hue Range	טווח גוון
+	Hue Saturation Curves	עקומות גוון ורוויה
+	Hue Tolerance	סבילות גוון
+	Hue vs Hue	גוון מול גוון
+	Hue vs Luma	גוון מול בהירות (Luma)
+	Hue vs Sat	גוון מול רוויה
+	I/O Buffer Size	גודל מאגר קלט/פלט
+	Icon View	תצוגת סמלים
+	Ignore Alpha	התעלם מאלפא
+	Ignore Audio	התעלם משמע
+	Ignore Hours	התעלם משעות
+	Ignore Options	אפשרויות התעלמות
+	Ignore Video	התעלם מווידאו
+	Image Control	בקרת תמונה
+	Image Overlay	שכבת-על של תמונה
+	Image Sequence	רצף תמונות
+	Immersive Video	וידאו סוחף (Immersive)
+	Import	ייבוא
+	Import From	ייבא מתוך
+	Import Image Sequence…	ייבא רצף תמונות…
+	Import Presets…	ייבא הגדרות קבועות מראש…
+	Import a preset file…	ייבא קובץ הגדרה קבועה מראש…
+	Import as Image Sequence	ייבא כרצף תמונות
+	Import captions file…	ייבא קובץ כתוביות…
+	Import from Media Browser	ייבא מדפדפן המדיה
+	Import numbered stills as image sequences	ייבא תמונות ממוספרות כרצפי תמונות
+	Import: no file chosen (agents: export.presets.import {path})	ייבוא: לא נבחר קובץ (סוכנים: export.presets.import {path})
+	Import: no file chosen (agents: shortcuts.import {path})	ייבוא: לא נבחר קובץ (סוכנים: shortcuts.import {path})
+	Imported “{name}”	יובא “{name}”
+	Import…	ייבוא…
+	Impulse	מתקף (Impulse)
+	In	כניסה
+	In Point	נקודת כניסה
+	In Points	נקודות כניסה
+	In a Room	בחדר
+	In the Media Cache	במטמון המדיה
+	In the project	בפרויקט
+	In/Out Duration	משך כניסה/יציאה
+	In: {name}	כניסה: {name}
+	Include Alpha Channel	כלול ערוץ אלפא
+	Include Handles:	כלול שוליים (Handles):
+	Include Preview Files	כלול קובצי תצוגה מקדימה
+	Include Proxies	כלול קובצי פרוקסי
+	Include captions on import	כלול כתוביות בעת הייבוא
+	Incoming	נכנס
+	Increase Audio Tracks Height	הגדל גובה ערוצי שמע
+	Increase Clip Volume	הגבר עוצמת שמע של קליפ
+	Increase Clip Volume Many	הגבר עוצמת שמע של קליפ משמעותית
+	Increase Font Size by Five Units	הגדל גודל גופן בחמש יחידות
+	Increase Font Size by One Unit	הגדל גודל גופן ביחידה אחת
+	Increase Leading by Five Units	הגדל מרווח שורות בחמש יחידות
+	Increase Leading by One Unit	הגדל מרווח שורות ביחידה אחת
+	Increase Video Tracks Height	הגדל גובה ערוצי וידאו
+	Indeterminate Media Timebase	בסיס זמן למדיה שאינו קבוע
+	Info	מידע
+	Ingest	קליטת מדיה (Ingest)
+	Ingest Settings	הגדרות קליטת מדיה
+	Ingest Settings…	הגדרות קליטת מדיה…
+	Initial Delay	השהיה התחלתית
+	Inner	פנימי
+	Inner Radius	רדיוס פנימי
+	Input Boost	הגבר קלט
+	Input LUT	טבלת LUT לקלט
+	Insert	הוספה
+	Insert (,)	הכנס (,)
+	Insert Edit	עריכת הכנסה
+	Insert Frame Hold Segment	הכנס מקטע הקפאת פריים
+	Insert and overwrite sequences as nests or individual clips	הכנס ודרוס רצפים כרצפים מקוננים או כקליפים בודדים
+	Inset	שקוע
+	Inside Color	צבע פנימי
+	Install Motion Graphics Template (.fcgt)	התקן תבנית גרפיקה בתנועה (‎.fcgt)
+	Install Motion Graphics Template…	התקן תבנית גרפיקה בתנועה…
+	Install…	התקן…
+	Inter	Inter
+	Interior Room Tone	צליל רקע של חדר פנימי
+	Internal Black Point	נקודת שחור פנימית
+	Internal White Point	נקודת לבן פנימית
+	Interpret Footage	פרשנות חומר גלם
+	Interpret Footage…	פרשנות חומר גלם…
+	Intro Duration	משך פתיח
+	Inverse Falloff	דעיכה הפוכה
+	Invert Alpha	הפוך אלפא
+	Invert Blur	הפוך טשטוש
+	Invert Fill	הפוך מילוי
+	Invert Gradient	הפוך מעבר צבע
+	Invert Left	הפוך צד שמאל
+	Invert Right	הפוך צד ימין
+	Inverted	הפוך
+	Iris	צמצם (Iris)
+	Iris Box	צמצם תיבה
+	Iris Cross	צמצם צלב
+	Iris Diamond	צמצם יהלום
+	Iris Radius	רדיוס צמצם
+	Iris Rotation	סיבוב צמצם
+	Iris Round	צמצם עגול
+	Iris Shape	צורת צמצם
+	Italian	איטלקית
+	JPEG	JPEG
+	JPEG Sequence	רצף JPEG
+	Japanese	יפנית
+	JetBrains Mono	JetBrains Mono
+	Join Through Edits	אחד חיתוכים רציפים
+	Join the ArtCraft Discord (discord.gg/artcraft)	הצטרפו ל-Discord של ArtCraft‏ (discord.gg/artcraft)
+	Justify	יישור לשני הצדדים
+	Kaleidoscope	קליידוסקופ
+	Keep a recovery copy of unsaved changes	שמור עותק שחזור של שינויים שלא נשמרו
+	Key	מפתח
+	Key Color	צבע מפתח
+	Key Frame Distance	מרחק בין פריימי מפתח
+	Key:	מקש:
+	Keyboard: US	מקלדת: ארה״ב
+	Keyboard: US (macOS)	מקלדת: ארה״ב (macOS)
+	Keying	חיתוך צבע (Keying)
+	Korean	קוריאנית
+	Libraries	ספריות
+	LUT	LUT
+	Label Color Presets	הגדרות קבועות מראש לצבעי תוויות
+	Label Colors	צבעי תוויות
+	Label Defaults	ברירות מחדל לתוויות
+	Label speakers	תייג דוברים
+	Labels	תוויות
+	Labels…	תוויות…
+	Language	שפה
+	Large Hall	אולם גדול
+	Large Trim Offset	היסט קיצוץ גדול
+	Large Volume Adjustment	התאמת עוצמת שמע גדולה
+	Large blocks resolving to the picture over the first second	בלוקים גדולים המתבהרים לתמונה במהלך השנייה הראשונה
+	Large centred title, accent rule and subtitle.	כותרת גדולה ממורכזת, קו הדגשה וכותרת משנה.
+	Larger	גדול יותר
+	Last auto-save {a}	שמירה אוטומטית אחרונה {a}
+	Last auto-save {a} · last recovery copy {j}	שמירה אוטומטית אחרונה {a} · עותק שחזור אחרון {j}
+	Last commit	הקומיט האחרון
+	Last recovery copy {j}	עותק שחזור אחרון {j}
+	Latch	נעילה (Latch)
+	Lavender	לבנדר
+	Layer Name	שם שכבה
+	Learning	למידה
+	Leave Color	השאר צבע
+	Left	שמאל
+	Left - Left	שמאל - שמאל
+	Left - Right	שמאל - ימין
+	Left Align Text	יישר טקסט לשמאל
+	Left align text	יישר טקסט לשמאל
+	Left channel to device output	ערוץ שמאל לפלט ההתקן
+	Left to right	משמאל לימין
+	Legacy	מדור קודם
+	Legal Range Squeeze	דחיסה לטווח תקני (Legal Range)
+	Lens Blur	טשטוש עדשה
+	Lens Distortion	עיוות עדשה
+	Lens Type	סוג עדשה
+	Level 1	רמה 1
+	Level 2	רמה 2
+	Level 3	רמה 3
+	Level 4	רמה 4
+	Lift	הרמה (Lift)
+	Lift (;)	הרמה (;)
+	Lift Shadows	הרם צללים
+	Lift selected text	הרם טקסט נבחר
+	Lifted blacks, softer contrast, muted colour	שחורים מורמים, ניגודיות רכה יותר, צבע מעומעם
+	Ligatures	ליגטורות
+	Light	בהיר
+	Light 1	אור 1
+	Light 2	אור 2
+	Light 3	אור 3
+	Light 4	אור 4
+	Light 5	אור 5
+	Light Angle	זווית אור
+	Light Color	צבע אור
+	Light Leak	דליפת אור
+	Light Leaks	דליפות אור
+	Light Sweep	אלומת אור חולפת
+	Lightning	ברק
+	Lights & Blurs	אורות וטשטושים
+	Lights & Glows	אורות וזוהרים
+	Limiter	מגביל (Limiter)
+	Limiter Release	שחרור מגביל
+	Limiter Threshold	סף מגביל
+	Line Thickness	עובי קו
+	Line delta	הפרש שורות
+	Linear	לינארי
+	Linear Dodge (Add)	הבהרה ליניארית (חיבור)
+	Linear Ramp	מעבר הדרגתי ליניארי
+	Linear Wipe	מחיקה ליניארית
+	Linear Wipe (Legacy)	מחיקה ליניארית (מדור קודם)
+	Linear keyframe thinning	דילול ליניארי של פריימי מפתח
+	Linear to Log	ליניארי ל-Log
+	Lines +/−	שורות +/−
+	Lines added	שורות שנוספו
+	Lines deleted	שורות שנמחקו
+	Link	קישור
+	Link Channels	קשר ערוצים
+	Link Media	קשר מדיה
+	Link Media…	קשר מדיה…
+	Link to Media	קשר למדיה
+	Linked Selection	בחירה מקושרת
+	Linked {n} clip(s)	קושר/ו {n} קליפים
+	Liquid Distortion	עיוות נוזלי
+	List	רשימה
+	List Color Grading Presets	הצגת הגדרות גריידינג צבע
+	Loaded “{name}”	נטען “{name}”
+	Local Drives	כוננים מקומיים
+	Local Projects	פרויקטים מקומיים
+	Locate…	אתר…
+	Location	מיקום
+	Log Note	הערת רישום
+	Log Note:	הערת רישום:
+	Log to Linear	Log לליניארי
+	Log to Log	Log ל-Log
+	Logo Cutout	חיתוך לוגו
+	Long Shadow	צל ארוך
+	Look	מראה (Look)
+	Look LUT	טבלת LUT למראה
+	Look-Ahead Time	זמן צפייה קדימה
+	Loop	לולאה
+	Loop marked range	נגן בלולאה את הטווח המסומן
+	Looping GIF, 640×360 at 15 fps	GIF בלולאה, 640×360 ב-15 פריימים/שנייה
+	Loudness	עוצמת קול נתפסת (Loudness)
+	Loudness Maximizer	ממקסם עוצמת קול
+	Loudness Meter	מד עוצמת קול
+	Loudness Normalization	נרמול עוצמת קול
+	Louver	תריס
+	Low Frequency Cut	חיתוך תדרים נמוכים
+	Low Pass	מעביר נמוכים (Low Pass)
+	Low Shelf	מדף נמוכים (Low Shelf)
+	Low Shelf Gain	הגבר מדף נמוכים
+	Low Tone	צליל נמוך
+	Lower First	שדה תחתון תחילה
+	Lower Left	למטה משמאל
+	Lower Right	למטה מימין
+	Lower Third – Rule	שליש תחתון – קו
+	Lower Third – Slab	שליש תחתון – רצועה
+	Lower Thirds	שלישים תחתונים
+	Lowpass	מעביר נמוכים (Lowpass)
+	Luma	בהירות (Luma)
+	Luma Curve	עקומת בהירות (Luma)
+	Luma Fade	עמעום בהירות
+	Luma Key	מפתח בהירות (Luma Key)
+	Luma Max	בהירות מרבית
+	Luma Min	בהירות מזערית
+	Luma Min / Max	בהירות מזערית / מרבית
+	Luma Source	מקור בהירות
+	Luma and Chroma	בהירות וכרומה
+	Luma vs Sat	בהירות מול רוויה
+	Luminance Threshold	סף בהירות
+	MB	MB
+	Metadata	מטא־נתונים
+	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT או Apache-2.0. גופנים: Inter,‏ Noto Serif ו-JetBrains Mono‏ (SIL OFL 1.1).
+	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	שמע MPEG-4‏ (‎.m4a), סטריאו 48 kHz AAC-LC ב-320 kbps
+	MXF OP-Atom	MXF OP-Atom
+	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
+	MXF OP1a	MXF OP1a
+	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
+	MXF OP1a H.264	MXF OP1a H.264
+	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
+	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a,‏ DNxHR HQ (8 סיביות 4:2:2), 24 סיביות 48 kHz PCM, קוד זמן התחלתי
+	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a,‏ H.264 High long GOP (0.3 סיביות לפיקסל), 24 סיביות 48 kHz PCM
+	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a,‏ ProRes 422 HQ,‏ 24 סיביות 48 kHz PCM, קוד זמן התחלתי
+	MXF export writes integer PCM only	ייצוא MXF כותב PCM במספרים שלמים בלבד
+	Magnify	הגדלה
+	Magnify (Legacy)	הגדלה (מדור קודם)
+	Main	ראשי (Main)
+	Main (8-bit)	Main (8 סיביות)
+	Main (8-bit; Main 10 for HDR sequences)	Main (8 סיביות; Main 10 עבור רצפי HDR)
+	Main 10 (10-bit, HDR)	Main 10 (10 סיביות, HDR)
+	Maintain pitch while shuttling	שמור על גובה הצליל בעת הרצה מהירה
+	Major Radius	רדיוס ראשי
+	Make Offline	הפוך ללא מקוון
+	Make Offline…	הפוך ללא מקוון…
+	Make Subclip	צור תת-קליפ
+	Make Subclip…	צור תת-קליפ…
+	Make Subsequence	צור תת-רצף
+	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	הפוך {n} קליפים נבחרים ללא מקוונים. הקליפים יציגו שקופית 'לא מקוון' עד שתקשר אותם מחדש.
+	Makeup	פיצוי הגבר (Makeup)
+	Male	זכר
+	Manage Guides	נהל קווי עזר
+	Manage Guides…	נהל קווי עזר…
+	Manage Saved View Presets	נהל הגדרות תצוגה שמורות
+	Mango	מנגו
+	Map Black To	מפה שחור אל
+	Map White To	מפה לבן אל
+	Maps full-range levels into 16–235 (video range) with a luma curve	ממפה רמות טווח מלא אל 16–235 (טווח וידאו) באמצעות עקומת בהירות
+	Mark Clip	סמן קליפ
+	Mark In	סמן נקודת כניסה
+	Mark In (Hover Scrub)	סמן נקודת כניסה (גרירה בריחוף)
+	Mark In (I)	סמן נקודת כניסה (I)
+	Mark Out	סמן נקודת יציאה
+	Mark Out (Hover Scrub)	סמן נקודת יציאה (גרירה בריחוף)
+	Mark Out (O)	סמן נקודת יציאה (O)
+	Mark Selection	סמן בחירה
+	Mark Split	סמן פיצול
+	Marker	סמן
+	Markers	סמנים
+	Mask Only	מסכה בלבד
+	Master Amplitude	משרעת ראשית
+	Master Gain	הגבר ראשי
+	Master volume: use the Audio Track Mixer	עוצמת שמע ראשית: השתמש במערבל ערוצי השמע
+	Master · {name}	ראשי · {name}
+	Mastering	מאסטרינג
+	Match Frame	התאם פריים
+	Match Playhead	התאם לסמן הניגון
+	Match Source	התאם למקור
+	Match Source ({seq_sr} Hz)	התאם למקור ({seq_sr} Hz)
+	Match Source – Adaptive High Bitrate	התאם למקור – קצב סיביות גבוה מסתגל
+	Match Source – Adaptive Low Bitrate	התאם למקור – קצב סיביות נמוך מסתגל
+	Match Source – Adaptive Medium Bitrate	התאם למקור – קצב סיביות בינוני מסתגל
+	Match file properties:	התאם מאפייני קובץ:
+	Match frame sets in point	התאמת פריים מגדירה נקודת כניסה
+	Match {n} of {total}	התאמה {n} מתוך {total}
+	Match:	התאם:
+	Matches	התאמות
+	Matches each of the {n} clips on its own.	מתאים כל אחד מ-{n} הקליפים בפני עצמו.
+	Matte Alpha	אלפא של משטח חיתוך
+	Matte Cleanup	ניקוי משטח חיתוך
+	Matte Generation	יצירת משטח חיתוך
+	Matte Luma	בהירות של משטח חיתוך
+	Maximize Frame	הגדל מסגרת למקסימום
+	Maximize or Restore Active Frame	הגדל למקסימום או שחזר מסגרת פעילה
+	Maximize or Restore Frame Under Cursor	הגדל למקסימום או שחזר מסגרת מתחת לסמן
+	Maximum	מקסימום
+	Maximum Amplitude	משרעת מרבית
+	Maximum Bit Depth	עומק סיביות מרבי
+	Maximum Bitrate	קצב סיביות מרבי
+	Maximum Block Size	גודל בלוק מרבי
+	Maximum Blur	טשטוש מרבי
+	Maximum Project Versions	מספר גרסאות פרויקט מרבי
+	Maximum Reduction	הפחתה מרבית
+	Maximum Render Quality	איכות רינדור מרבית
+	Maximum Scale	קנה מידה מרבי
+	Media	מדיה
+	Media Analysis	ניתוח מדיה
+	Media Analysis & Transcription	ניתוח מדיה ותמלול
+	Media Analysis & Transcription…	ניתוח מדיה ותמלול…
+	Media Browser	דפדפן מדיה
+	Media Browser Settings	הגדרות דפדפן מדיה
+	Media Cache	מטמון מדיה
+	Media Cache Database	מסד נתונים של מטמון מדיה
+	Media Cache Files	קובצי מטמון מדיה
+	Media Cache Management	ניהול מטמון מדיה
+	Media Cache…	מטמון מדיה…
+	Media Duration	משך מדיה
+	Media End	סוף מדיה
+	Media File	קובץ מדיה
+	Media Name:	שם מדיה:
+	Media Source Channels	ערוצי מקור מדיה
+	Media Start	התחלת מדיה
+	Media Start:	התחלת מדיה:
+	Media Time	זמן מדיה
+	Media Timecode	קוד זמן של מדיה
+	Media Type	סוג מדיה
+	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	ניתוח מדיה ותמלולים יישמרו בתיקיית מטמון המדיה. לא יידרש ניתוח מחדש אם המדיה תיובא לפרויקט אחר במחשב זה.
+	Media colour space (from file metadata): {detected}	מרחב צבע של מדיה (ממטא-נתוני הקובץ): {detected}
+	Media files are deleted	קובצי מדיה נמחקים
+	Media files remain on disk	קובצי מדיה נשארים בדיסק
+	Media missing	מדיה חסרה
+	MediaBrowser	דפדפן מדיה
+	MediaCache	מטמון מדיה
+	Media…	מדיה…
+	Medium	בינוני
+	Medium Room	חדר בינוני
+	Memory	זיכרון
+	Memory…	זיכרון…
+	Merge Captions	מזג כתוביות
+	Merge Clips	מזג קליפים
+	Merge Clips…	מזג קליפים…
+	Merge selected captions	מזג כתוביות נבחרות
+	Merged PRs	בקשות משיכה שמוזגו
+	Merged clip created	נוצר קליפ ממוזג
+	Metadata & Timecode Burn-in	צריבת מטא-נתונים וקוד זמן
+	Metadata Display	תצוגת מטא-נתונים
+	Metadata Display…	תצוגת מטא-נתונים…
+	Meter Input(s) Only	מדוד עוצמת קלט בלבד
+	Metrics Kerning	צימוד אותיות מטרי
+	Mid	אמצע
+	Mid Point	נקודת אמצע
+	Midtone Blue Balance	איזון כחול בגווני ביניים
+	Midtone Green Balance	איזון ירוק בגווני ביניים
+	Midtone Red Balance	איזון אדום בגווני ביניים
+	Midtones Lightness	בהירות אור בגווני ביניים
+	Milliseconds	אלפיות שנייה
+	Minimize All Tracks	מזער את כל הערוצים
+	Minimum	מינימום
+	Minimum time	זמן מזערי
+	Minimum time interval thinning	דילול לפי מרווח זמן מזערי
+	Minor Radius	רדיוס משני
+	Mirror Alternate	שיקוף לסירוגין
+	Missing font replacement	החלפת גופן חסר
+	Miter join	חיבור חד
+	Miter limit	מגבלת חוד
+	Mix	מיקס
+	Mixdown video	מיזוג וידאו
+	Mixed Crystals	גבישים מעורבים
+	Mixer	מערבל
+	Model	מודל
+	Models	מודלים
+	Modern High Gain	הגבר גבוה מודרני
+	Modifier held / selected	מקש שינוי מוחזק / נבחר
+	Modifiers	מקשי שינוי
+	Modify Clip: Audio Channels	שנה קליפ: ערוצי שמע
+	Modify Clip: Timecode	שנה קליפ: קוד זמן
+	Modulation	אפנון (Modulation)
+	Modulation Rate	קצב אפנון
+	Mono Media	מדיה במונו
+	Monochrome toned cyan-blue	חד-גוני בגוון ציאן-כחול
+	Monochrome toned warm brown	חד-גוני בגוון חום חם
+	Monoscopic	מונוסקופי
+	Monospace only	רוחב אחיד בלבד
+	More colour in the less saturated areas	יותר צבע באזורים הפחות רוויים
+	More presets…	עוד הגדרות קבועות מראש…
+	More transport controls	פקדי ניגון נוספים
+	Morph Cut	חיתוך מורף (Morph Cut)
+	Mosaic (Legacy)	פסיפס (מדור קודם)
+	Mosaic In	פסיפס בכניסה
+	Motion Blur	טשטוש תנועה
+	Motion Camera	תנועת מצלמה
+	Motion Graphics Template…	תבנית גרפיקה בתנועה…
+	Motion Preset	הגדרת תנועה קבועה מראש
+	Motion Tween	הנפשת תנועה
+	Move All Audio Targets Down	הזז את כל יעדי השמע למטה
+	Move All Audio Targets Up	הזז את כל יעדי השמע למעלה
+	Move All Video Targets Down	הזז את כל יעדי הווידאו למטה
+	Move All Video Targets Up	הזז את כל יעדי הווידאו למעלה
+	Move Selection Down	הזז בחירה למטה
+	Move Selection End	הזז בחירה לסוף
+	Move Selection Home	הזז בחירה להתחלה
+	Move Selection Left	הזז בחירה שמאלה
+	Move Selection Page Down	הזז בחירה עמוד למטה
+	Move Selection Page Up	הזז בחירה עמוד למעלה
+	Move Selection Right	הזז בחירה ימינה
+	Move Selection Up	הזז בחירה למעלה
+	Move clips to the lowest track possible	העבר קליפים לערוץ הנמוך ביותר האפשרי
+	Move source clips to Processed Clips bin	העבר קליפי מקור לסל קליפים שעובדו
+	Movie	סרט
+	Movie (audio and video)	סרט (שמע ווידאו)
+	Movies, audio and stills from disk	סרטים, שמע ותמונות מהדיסק
+	Multi-Camera	מרובה-מצלמות
+	Multi-Camera Audio Follows Video	שמע מרובה-מצלמות עוקב אחר הווידאו
+	Multi-Camera Layout	פריסה מרובת-מצלמות
+	Multi-Camera Record	הקלטה מרובת-מצלמות
+	Multi-Camera Record On/Off (0)	הקלטה מרובת-מצלמות פעיל/כבוי (0)
+	Multi-Camera Record On/Off Toggle	החלפת מצב הקלטה מרובת-מצלמות פעיל/כבוי
+	Multi-Camera Record off	הקלטה מרובת-מצלמות כבויה
+	Multi-Camera Record on	הקלטה מרובת-מצלמות פעילה
+	Multi-Camera Selection Top Down	בחירה מרובת-מצלמות מלמעלה למטה
+	Multi-Camera View	תצוגה מרובת-מצלמות
+	Multi-camera source sequence with {n} camera(s)	רצף מקור מרובה-מצלמות עם {n} מצלמות
+	Multiband Compressor	מדחס מרובה-תחומים
+	Multicam	מרובה-מצלמות
+	Multichannel Mono Media	מדיה מרובת-ערוצי מונו
+	Multiple Clips Selected	נבחרו קליפים מרובים
+	Multiplexer	ממרבב (Multiplexer)
+	Multitap Delay	השהיה מרובת-נקישות (Multitap Delay)
+	Music	מוזיקה
+	Mute	השתקה
+	Mute Send	השתק שליחה
+	Mute input during timeline recording	השתק קלט במהלך הקלטה בציר הזמן
+	My Shortcuts	קיצורי הדרך שלי
+	My Templates	התבניות שלי
+	Name	שם
+	Name (A–Z)	שם (א–ת)
+	Name Color	צבע שם
+	Name Overlay	שכבת-על של שם
+	Name Size	גודל שם
+	Name and role on a coloured slab that widens with the name.	שם ותפקיד על רצועה צבעונית המתרחבת לפי אורך השם.
+	Name over a thin rule that always matches the name's width.	שם מעל קו דק המתאים תמיד לרוחב השם.
+	Name:	שם:
+	Narrow	צר
+	Navigate to End of Segment	נווט לסוף המקטע
+	Navigate to Next Line	נווט לשורה הבאה
+	Navigate to Next Word	נווט למילה הבאה
+	Navigate to Previous Line	נווט לשורה הקודמת
+	Navigate to Previous Word	נווט למילה הקודמת
+	Navigate to Start of Segment	נווט להתחלת המקטע
+	Navigation	ניווט
+	Neon Color	צבע ניאון
+	Neon Wipe	מחיקת ניאון
+	Nested Sequence Name	שם רצף מקונן
+	Nest…	קנן…
+	Network	רשת
+	Neutral Mono	מונו ניטרלי
+	New	חדש
+	New Bin	סל חדש
+	New Bin From Selection	סל חדש מהבחירה
+	New Color Matte	משטח צבע חדש
+	New Ellipse	אליפסה חדשה
+	New Item	פריט חדש
+	New Media Browser Panel	חלונית דפדפן מדיה חדשה
+	New Offline File	קובץ לא מקוון חדש
+	New Project Panel	חלונית פרויקט חדשה
+	New Project Shortcut	קיצור דרך לפרויקט חדש
+	New Project…	פרויקט חדש…
+	New Rectangle	מלבן חדש
+	New Search Bin	סל חיפוש חדש
+	New Sequence	רצף חדש
+	New Sequence From Clip	רצף חדש מקליפ
+	New Submix	תת-מיקס חדש
+	New Text	טקסט חדש
+	New Text Layer	שכבת טקסט חדשה
+	New {format} track	ערוץ {format} חדש
+	Next	הבא
+	Next Multi-Camera Page	העמוד הבא בתצוגה מרובת-מצלמות
+	Next in Sequence	הבא ברצף
+	Next in Track	הבא בערוץ
+	Next to original media files	לצד קובצי המדיה המקוריים
+	Next to the media	לצד המדיה
+	Next to the original media, in a Proxies folder	לצד המדיה המקורית, בתיקיית Proxies
+	Night	לילה
+	Night Exterior	חוץ לילה
+	No	לא
+	No Fields (Progressive Scan)	ללא שדות (סריקה פרוגרסיבית)
+	No Motion	ללא תנועה
+	No Scroll	ללא גלילה
+	No background jobs.	אין משימות ברקע.
+	No candidates yet — Search a folder or Locate the file.	אין התאמות עדיין — חפש בתיקייה או אתר את הקובץ.
+	No captions on this track. Press + to add one at the playhead.	אין כתוביות בערוץ זה. לחץ על + להוספת כתובית במיקום סמן הניגון.
+	No contributor data was built into this copy.	לא נכללו נתוני תורמים בעותק זה.
+	No effects	ללא אפקטים
+	No events.	אין אירועים.
+	No export preset named `{name}`	אין הגדרת ייצוא קבועה מראש בשם `{name}`
+	No markers. Press M to add one.	אין סמנים. הקש M להוספת סמן.
+	No matching captions.	אין כתוביות תואמות.
+	No model credits were built into this copy.	לא נכללו קרדיטים של מודלים בעותק זה.
+	No multi-camera clip at the playhead	אין קליפ מרובה-מצלמות במיקום סמן הניגון
+	No plugins are installed. Changes will take effect the next time you start FilmCraft.	לא מותקנים תוספים. השינויים ייכנסו לתוקף בפעם הבאה שתפעיל את FilmCraft.
+	No saved guide templates.	אין תבניות קווי עזר שמורות.
+	No templates match.	אין תבניות תואמות.
+	Noise & Grain	רעש וגרעיניות
+	Noise (Legacy)	רעש (מדור קודם)
+	Noise Level	רמת רעש
+	Noise Reduction/Restoration	הפחתת רעש/שחזור
+	Noise Type	סוג רעש
+	Non-Additive Dissolve	התפוגגות לא-חיבורית
+	None	ללא
+	Normal	רגיל
+	Normalize All Peaks to:	נרמל את כל השיאים אל:
+	Normalize Max Peak to:	נרמל שיא מרבי אל:
+	Normalize Mix Track	נרמל ערוץ מיקס
+	Normalize Mix Track to:	נרמל ערוץ מיקס אל:
+	Normalize Mix Track…	נרמל ערוץ מיקס…
+	Not Now	לא עכשיו
+	Not matched yet	טרם הותאם
+	Not supported by FilmCraft's encoders yet	עדיין לא נתמך על ידי המקודדים של FilmCraft
+	Not supported in FilmCraft yet	עדיין לא נתמך ב-FilmCraft
+	Notch 1	חריץ (Notch) 1
+	Notch 2	חריץ (Notch) 2
+	Notch 3	חריץ (Notch) 3
+	Notch 4	חריץ (Notch) 4
+	Notch 5	חריץ (Notch) 5
+	Notch 6	חריץ (Notch) 6
+	Notch Filter	מסנן חריץ (Notch Filter)
+	Notch Width	רוחב חריץ
+	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	הערות לפרויקט זה: משימות, הנחיות, מספרי פריימים… נשמרות עם הפרויקט.
+	Nothing found with that name.	לא נמצא דבר בשם זה.
+	Nothing is assigned to this key	דבר אינו מוקצה למקש זה
+	Nudge Clip Selection Down	הזז בחירת קליפים למטה
+	Nudge Clip Selection Left Five Frames	הזז בחירת קליפים שמאלה בחמישה פריימים
+	Nudge Clip Selection Left One Frame	הזז בחירת קליפים שמאלה בפריים אחד
+	Nudge Clip Selection Right Five Frames	הזז בחירת קליפים ימינה בחמישה פריימים
+	Nudge Clip Selection Right One Frame	הזז בחירת קליפים ימינה בפריים אחד
+	Nudge Clip Selection Up	הזז בחירת קליפים למעלה
+	Nudge Selected Object down by five	הזז אובייקט נבחר למטה בחמש יחידות
+	Nudge Selected Object down by one	הזז אובייקט נבחר למטה ביחידה אחת
+	Nudge Selected Object to left by five	הזז אובייקט נבחר שמאלה בחמש יחידות
+	Nudge Selected Object to left by one	הזז אובייקט נבחר שמאלה ביחידה אחת
+	Nudge Selected Object to right by five	הזז אובייקט נבחר ימינה בחמש יחידות
+	Nudge Selected Object to right by one	הזז אובייקט נבחר ימינה ביחידה אחת
+	Nudge Selected Object up by five	הזז אובייקט נבחר למעלה בחמש יחידות
+	Nudge Selected Object up by one	הזז אובייקט נבחר למעלה ביחידה אחת
+	Nudge Volume +1dB	הזז עוצמת שמע ב-‎+1dB
+	Nudge Volume +3dB	הזז עוצמת שמע ב-‎+3dB
+	Nudge Volume -1dB	הזז עוצמת שמע ב-‎-1dB
+	Nudge Volume -3dB	הזז עוצמת שמע ב-‎-3dB
+	Number Of Echoes	מספר הדים
+	Number of Audio Clips:	מספר קליפי שמע:
+	Number of Channels:	מספר ערוצים:
+	Number of Harmonics	מספר הרמוניות
+	Numbered BMP stills (24-bit)	תמונות BMP ממוספרות (24 סיביות)
+	Numbered DPX stills (10-bit RGB)	תמונות DPX ממוספרות (10 סיביות RGB)
+	Numbered JPEG stills (quality 90)	תמונות JPEG ממוספרות (איכות 90)
+	Numbered OpenEXR stills (half float, linear, uncompressed)	תמונות OpenEXR ממוספרות (חצי נקודה צפה, ליניארי, ללא דחיסה)
+	Numbered PNG stills at the sequence's frame size	תמונות PNG ממוספרות בגודל המסגרת של הרצף
+	Numbered TIFF stills (RGB, 8-bit)	תמונות TIFF ממוספרות (RGB,‏ 8 סיביות)
+	Numbered Targa stills (24-bit, uncompressed)	תמונות Targa ממוספרות (24 סיביות, ללא דחיסה)
+	OK	אישור
+	OMF Export Settings	הגדרות ייצוא OMF
+	OMF Title:	כותרת OMF:
+	OMF…	OMF…
+	Obsolete	מיושן
+	Off	כבוי
+	Offline All	נתק הכול
+	Offline File…	קובץ לא מקוון…
+	Offset (Turbulence)	היסט (מערבולת)
+	Offset Audio by:	הסט שמע ב:
+	Offset From	היסט מתוך
+	Offset To	היסט אל
+	Omni	כל-כיווני (Omni)
+	On	מופעל
+	On Original Image	על התמונה המקורית
+	On Transparent	על שקוף
+	Opacity 0 → 100 % over the first second	אטימות 0 → 100% במהלך השנייה הראשונה
+	Opacity 100 → 0 % over the last second	אטימות 100 → 0% במהלך השנייה האחרונה
+	Open	פתיחה
+	Open Air	אוויר פתוח
+	Open Bin	פתח סל
+	Open Demo Project	פתח פרויקט הדגמה
+	Open In Source Monitor	פתח במוניטור המקור
+	Open Ingest Settings	פתח הגדרות קליטת מדיה
+	Open Most Recent	פתח את האחרון ביותר
+	Open Project…	פתח פרויקט…
+	Open Search	פתח חיפוש
+	Open a sequence to export	פתח רצף לייצוא
+	Open a sequence to see its transcript	פתח רצף כדי לראות את התמלול שלו
+	Open a sequence to work with captions	פתח רצף כדי לעבוד עם כתוביות
+	Open in New Tab	פתח בכרטיסייה חדשה
+	Open in New Window	פתח בחלון חדש
+	Open in Place	פתח במקום
+	Open in Source Monitor	פתח במוניטור המקור
+	Open in Timeline	פתח בציר הזמן
+	Open in new window	פתח בחלון חדש
+	Open in place	פתח במקום
+	Open new tab	פתח כרטיסייה חדשה
+	Open this address in your browser yourself:	פתח כתובת זו בדפדפן שלך:
+	OpenEXR	OpenEXR
+	OpenEXR Sequence	רצף OpenEXR
+	OpenTimelineIO…	OpenTimelineIO…
+	Opened {url}	נפתח {url}
+	Opens in your web browser: {url}	נפתח בדפדפן האינטרנט שלך: {url}
+	Opens up the shadows	פותח ומבהיר את הצללים
+	Open…	פתיחה…
+	Optical Flow	זרימה אופטית (Optical Flow)
+	Options	אפשרויות
+	Order	סדר
+	Ordering:	סידור:
+	Orientation	כיוון
+	Out	יציאה
+	Out Point	נקודת יציאה
+	Out Points	נקודות יציאה
+	Out: {name}	יציאה: {name}
+	Outer	חיצוני
+	Outgoing	יוצא
+	Output Gain	הגבר פלט
+	Output Mapping	מיפוי פלט
+	Outro Duration	משך סגיר
+	Outside Color	צבע חיצוני
+	Overflow	גלישה
+	Override media colour space:	דרוס מרחב צבע של מדיה:
+	Overshoot	חריגה (Overshoot)
+	Overwrite	דריסה
+	Overwrite (.)	דריסה (.)
+	Overwrite Edit	עריכת דריסה
+	Overwrite with Current View	דרוס עם התצוגה הנוכחית
+	PNG	PNG
+	PNG Sequence	רצף PNG
+	PNG or JPEG file	קובץ PNG או JPEG
+	Page Peel	קילוף עמוד
+	Page Scroll	גלילת עמוד
+	Page Turn	הפיכת עמוד
+	Page {page} of {pages}	עמוד {page} מתוך {pages}
+	Paint Bucket	דלי צבע
+	Paint On Black	ציור על שחור
+	Paint On Original Image	ציור על התמונה המקורית
+	Paint On Transparent	ציור על שקוף
+	Paint On White	ציור על לבן
+	Paint Style	סגנון ציור
+	Paint Surface	משטח ציור
+	Pan	צידוד (Pan)
+	Pan (Y Axis)	צידוד (ציר Y)
+	Pan / balance (drag; double-click: centre)	צידוד / איזון (גרור; לחיצה כפולה: מרכז)
+	Panel Wipe	מחיקת לוח
+	Panel shortcuts override application shortcuts while that panel has focus	קיצורי דרך של חלונית דורסים את קיצורי הדרך של היישום כאשר החלונית פעילה
+	Panner	פאנר (Panner)
+	Panner - Ambisonics	פאנר - אמביסוניקס
+	Parade	מצעד ערוצים (Parade)
+	Parade (RGB)	מצעד ערוצים (RGB)
+	Parade ({kind})	מצעד ערוצים ({kind})
+	Parade Type	סוג מצעד ערוצים
+	Paragraph Text	טקסט פסקה
+	Parametric Equalizer	אקולייזר פרמטרי
+	Passband Ripple	אדווה בפס המעבר
+	Paste	הדבקה
+	Paste Attributes	הדבק תכונות
+	Paste Attributes…	הדבק תכונות…
+	Paste Insert	הדבק בהכנסה
+	Path Points	נקודות נתיב
+	Path: {path}	נתיב: {path}
+	Pause Media Encoder queue during playback	השהה תור קידוד מדיה במהלך הניגון
+	Paused Resolution	רזולוציה בעת השהיה
+	Peak Amplitude: {peak}	משרעת שיא: {peak}
+	Peak Frequency	תדר שיא
+	Peak Gain	הגבר שיא
+	Pedestal	רמת בסיס (Pedestal)
+	Per line	לכל שורה
+	Percent Blur	אחוז טשטוש
+	Phase Difference	הפרש מופע
+	Phaser	פייזר (Phaser)
+	Phone Call	שיחת טלפון
+	Phosphor	זרחן
+	Phosphor Color	צבע זרחן
+	Photocopy Color	צבע צילום מסמכים
+	PiP 35% Upper Right	תמונה בתוך תמונה 35% למעלה מימין
+	Picture-in-picture: 35 % scale in the upper right	תמונה בתוך תמונה: 35% קנה מידה בפינה הימנית העליונה
+	Pillow	כרית
+	Pin All	הצמד הכול
+	Pin Horizontal	הצמד אופקית
+	Pin To	הצמד אל
+	Pin Vertical	הצמד אנכית
+	Pinned Edges	קצוות מוצמדים
+	Pinning	הצמדה
+	Pitch Shifter	משנה גובה צליל (Pitch Shifter)
+	Pixel Aspect Ratio:	יחס גובה-רוחב של פיקסל:
+	Place files dropped onto the Timeline directly on the Timeline	מקם קבצים שנגררו לציר הזמן ישירות על ציר הזמן
+	Placement	מיקום
+	Placement:	מיקום:
+	Plate	לוח הדהוד (Plate)
+	Plateau Wipe	מחיקת מישור
+	Plateaus	מישורים
+	Plates	לוחות
+	Play Around	נגן סביב
+	Play Around Edit (Space loops, Shift+K once)	נגן סביב נקודת העריכה (רווח בלולאה, Shift+K פעם אחת)
+	Play In to Out	נגן מנקודת הכניסה עד היציאה
+	Play In to Out with Preroll/Postroll	נגן מנקודת הכניסה עד היציאה עם הרצה מוקדמת/מאוחרת
+	Play Source	נגן מקור
+	Play after rendering previews	נגן לאחר רינדור תצוגות מקדימות
+	Play audio while scrubbing in Source and Program Monitors	נגן שמע בעת גרירת סמן הניגון במוניטור המקור והתוכנית
+	Play from Playhead to Out Point	נגן מסמן הניגון עד נקודת היציאה
+	Play-Stop Toggle (Space)	החלפת ניגון-עצירה (רווח)
+	Play/Stop	נגן/עצור
+	Playback	ניגון
+	Playback Resolution	רזולוציית ניגון
+	Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.	הניגון מתחיל בהרצה מוקדמת לפני סמן הניגון (או נקודת הכניסה); כאשר מסומנות נקודות כניסה/יציאה, ההקלטה נכנסת ויוצאת שם.
+	Playback…	ניגון…
+	Playhead	סמן ניגון
+	Playhead position determines trim monitor loop playback	מיקום סמן הניגון קובע את הניגון בלולאה במוניטור הקיצוץ
+	Playhead:	סמן ניגון:
+	Plugins	תוספים
+	Plugins…	תוספים…
+	Podcast Voice	קול פודקאסט
+	Point 1	נקודה 1
+	Point 1 Color	צבע נקודה 1
+	Point 1 Latitude	קו רוחב נקודה 1
+	Point 1 Longitude	קו אורך נקודה 1
+	Point 2	נקודה 2
+	Point 2 Color	צבע נקודה 2
+	Point 2 Latitude	קו רוחב נקודה 2
+	Point 2 Longitude	קו אורך נקודה 2
+	Point 3	נקודה 3
+	Point 3 Color	צבע נקודה 3
+	Point 3 Latitude	קו רוחב נקודה 3
+	Point 3 Longitude	קו אורך נקודה 3
+	Point 4	נקודה 4
+	Point 5	נקודה 5
+	Point 6	נקודה 6
+	Point 7	נקודה 7
+	Point 8	נקודה 8
+	Point Text	טקסט נקודתי
+	Pointer Color	צבע מצביע
+	Points	נקודות
+	Policy	מדיניות
+	Polygon Sides	צלעות מצולע
+	Pop Motion	תנועת קפיצה
+	Position	מיקום
+	Position & Rotation	מיקום וסיבוב
+	Position Amount	כמות מיקום
+	Position, Scale & Rotation	מיקום, קנה מידה וסיבוב
+	Position, Scale, Rotation	מיקום, קנה מידה, סיבוב
+	Position:	מיקום:
+	Position: bottom	מיקום: למטה
+	Position: middle	מיקום: אמצע
+	Position: top	מיקום: למעלה
+	Post-Fader	אחרי הפיידר (Post-Fader)
+	Post-roll	הרצה מאוחרת (Post-roll)
+	Post-roll:	הרצה מאוחרת:
+	Posterize Time	קיצוב זמן (Posterize Time)
+	Postroll	הרצה מאוחרת
+	Pre-Delay	השהיה מוקדמת (Pre-Delay)
+	Pre-Fader	לפני הפיידר (Pre-Fader)
+	Pre-roll:	הרצה מוקדמת:
+	Preroll	הרצה מוקדמת
+	Presence Lift	הדגשת נוכחות
+	Preserve Scale	שמור על קנה מידה
+	Preset name	שם הגדרה קבועה מראש
+	Presets	הגדרות קבועות מראש
+	Preview	תצוגה מקדימה
+	Preview Area	אזור תצוגה מקדימה
+	Preview File Format:	תבנית קובץ תצוגה מקדימה:
+	Previous	הקודם
+	Previous Multi-Camera Page	העמוד הקודם בתצוגה מרובת-מצלמות
+	Previous in Sequence	הקודם ברצף
+	Previous in Track	הקודם בערוץ
+	ProcAmp	מגבר עיבוד (ProcAmp)
+	Processing Options	אפשרויות עיבוד
+	Program	תוכנית
+	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	שמאל בתוכנית → פלט התקן {l}, ימין → פלט התקן {r}{dev}. יציאות מעבר לערוצי ההתקן חוזרות לערוצים 1 ו-2.
+	Progress	התקדמות
+	Project	פרויקט
+	Project Auto Save:	שמירה אוטומטית של פרויקט:
+	Project Manager	מנהל פרויקט
+	Project Manager: writing {path}	מנהל פרויקט: כותב את {path}
+	Project Manager…	מנהל פרויקט…
+	Project Metadata	מטא-נתוני פרויקט
+	Project Notes	הערות פרויקט
+	Project Settings	הגדרות פרויקט
+	Project View Preset {n}	הגדרה קבועה מראש לתצוגת פרויקט {n}
+	Project: {name}	פרויקט: {name}
+	ProjectPanel	חלונית פרויקט
+	Projecting cap	קצה בולט
+	Projection:	היטל:
+	Projects	פרויקטים
+	Project…	פרויקט…
+	Properties	מאפיינים
+	Protect Highlights	הגן על אזורים בהירים
+	Proxies are made in the background and attached when done. Export always uses full-resolution media.	קובצי פרוקסי נוצרים ברקע ומצורפים בסיום. הייצוא תמיד משתמש במדיה ברזולוציה מלאה.
+	Proxy	פרוקסי
+	Pull Motion	תנועת משיכה
+	Pulls highlights and whites down	מושך למטה אזורים בהירים ולבנים
+	Push	דחיפה
+	Push (Legacy)	דחיפה (מדור קודם)
+	Q	Q
+	Quality (CRF)	איכות (CRF)
+	Queue ({n})	תור ({n})
+	Quick Export	ייצוא מהיר
+	Quick Export: open a sequence first	ייצוא מהיר: פתח רצף תחילה
+	Quick Export: {path}	ייצוא מהיר: {path}
+	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
+	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime,‏ APV 422-10 (10 סיביות 4:2:2), 24 סיביות 48 kHz PCM
+	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime,‏ APV 422-12 (12 סיביות 4:2:2), 24 סיביות 48 kHz PCM
+	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime,‏ DNxHR HQ (8 סיביות 4:2:2), 24 סיביות 48 kHz PCM
+	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime,‏ DNxHR LB (8 סיביות 4:2:2), 24 סיביות 48 kHz PCM
+	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime,‏ DNxHR SQ (8 סיביות 4:2:2), 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime,‏ ProRes 422 HQ,‏ 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime,‏ ProRes 422 LT,‏ 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime,‏ ProRes 422 Proxy,‏ 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime,‏ ProRes 422,‏ 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime,‏ ProRes 4444 (4:4:4) עם ערוץ אלפא, 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime,‏ ProRes 4444 (4:4:4), 24 סיביות 48 kHz PCM
+	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime,‏ ProRes 4444 XQ (4:4:4), 24 סיביות 48 kHz PCM
+	Quit FilmCraft	צא מ-FilmCraft
+	RAM reserved for other applications	זיכרון RAM השמור עבור יישומים אחרים
+	RGB Curves	עקומות RGB
+	RGB Split	פיצול RGB
+	RGB-White	RGB-לבן
+	RGBA Channels	ערוצי RGBA
+	Radial Ramp	מעבר הדרגתי מעגלי
+	Radial Wipe	מחיקה מעגלית
+	Radial Wipe (Legacy)	מחיקה מעגלית (מדור קודם)
+	Radio Announcer	קריין רדיו
+	Radio Voice	קול רדיו
+	Ramp	מעבר הדרגתי (Ramp)
+	Ramp Shape	צורת מעבר הדרגתי
+	Random Seed	גרעין אקראיות
+	Rate Stretch Tool	כלי מתיחת קצב
+	Ray	קרן
+	Ray Color	צבע קרניים
+	Ray Length	אורך קרניים
+	Rays Only	קרניים בלבד
+	Razor Tool	כלי סכין חיתוך
+	Read	קריאה
+	Read Video Scopes	קריאת מדדי וידאו
+	Real name	שם אמיתי
+	Rec. 2100	Rec. 2100
+	Rec. 601	Rec. 601
+	Rec. 709	Rec. 709
+	Recent	אחרונים
+	Recent Directories	תיקיות אחרונות
+	Recognize when different speakers are talking	זהה מתי דוברים שונים מדברים
+	Reconnect Full Resolution Media…	חבר מחדש מדיה ברזולוציה מלאה…
+	Record	הקלטה
+	Record (voice-over on the record-enabled track)	הקלט (קריינות בערוץ המופעל להקלטה)
+	Recorded {n} multi-camera cut(s)	הוקלטו {n} חיתוכים מרובי-מצלמות
+	Recording voice-over…	מקליט קריינות…
+	Recover	שחזור
+	Recover Unsaved Changes	שחזר שינויים שלא נשמרו
+	Recover Unsaved Changes…	שחזר שינויים שלא נשמרו…
+	Recover unsaved changes from {when}?	האם לשחזר שינויים שלא נשמרו מתוך {when}?
+	Recovery copy: {dir}	עותק שחזור: {dir}
+	Rectangle	מלבן
+	Red Blurriness	טשטוש אדום
+	Red Curve	עקומת אדום
+	Red Offset	היסט אדום
+	Red Power	חזקת אדום
+	Red Slope	שיפוע אדום
+	Red-Blue	אדום-כחול
+	Red-Const	אדום-קבוע
+	Red-Green	אדום-ירוק
+	Red-Red	אדום-אדום
+	Redo	ביצוע מחדש
+	Reduce Axis	צמצם ציר
+	Reduce By	הפחת ב-
+	Reduce Interlace Flicker	הפחת הבהוב שזירה
+	Reduce Reverb	הפחת הדהוד
+	Reduce Rumble	הפחת נהמה בתדרים נמוכים (Rumble)
+	Reference	ייחוס
+	Reference  {tc}	ייחוס  {tc}
+	Reference Monitor	מוניטור ייחוס
+	Reference track:	ערוץ ייחוס:
+	Reference: next frame	ייחוס: פריים הבא
+	Reference: previous frame	ייחוס: פריים קודם
+	Reflection Angle	זווית השתקפות
+	Reflection Center	מרכז השתקפות
+	Refraction	שבירה
+	Reframe Offset	היסט מיסגור מחדש
+	Reframe Zoom	זום מיסגור מחדש
+	Refresh	רענון
+	Refresh Changed Media	רענן מדיה שהשתנתה
+	Refresh Project	רענן פרויקט
+	Refresh Sort Order	רענן סדר מיון
+	Refresh growing Files Every	רענן קבצים מתפתחים כל
+	Rel	שחרור
+	Relaxed	מרווח
+	Release	שחרור (Release)
+	Release Time	זמן שחרור
+	Relink others automatically	קשר מחדש אחרים אוטומטית
+	Remaining	נותר
+	Remix	רמיקס
+	Remix Properties	מאפייני רמיקס
+	Remix Properties…	מאפייני רמיקס…
+	Remix Tool	כלי רמיקס
+	Remixed to {seconds} s	בוצע רמיקס למשך {seconds} שנ'
+	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	רמיקס של מוזיקה למשך יעד אינו זמין עדיין. קצץ את הקליפ והוסף עמעום צולב במקום זאת.
+	Remove	הסרה
+	Remove Attributes	הסר תכונות
+	Remove Attributes…	הסר תכונות…
+	Remove Audio from AV Clip	הסר שמע מקליפ AV
+	Remove Effect	הסר אפקט
+	Remove Filler Words	הסר מילות מילוי
+	Remove Fringe	הסר שולי צבע
+	Remove Media Cache Files	הסר קובצי מטמון מדיה
+	Remove Pauses	הסר הפסקות
+	Remove Row	הסר שורה
+	Remove Send	הסר שליחה
+	Remove Unused	הסר פריטים שאינם בשימוש
+	Remove filler words	הסר מילות מילוי
+	Remove from Favorites	הסר מהמועדפים
+	Remove keyframe	הסר פריים מפתח
+	Rename	שינוי שם
+	Rename…	שינוי שם…
+	Render Audio	רנדר שמע
+	Render Edit in Audition files to:	רנדר קובצי 'ערוך ב-Audition' אל:
+	Render Effects In to Out	רנדר אפקטים מנקודת הכניסה עד היציאה
+	Render In to Out	רנדר מנקודת הכניסה עד היציאה
+	Render Selection	רנדר בחירה
+	Render at Maximum Depth	רנדר בעומק מרבי
+	Render audio clip effects	רנדר אפקטים של קליפי שמע
+	Render audio when rendering video	רנדר שמע בעת רינדור וידאו
+	Rendered preview	תצוגה מקדימה מרונדרת
+	Renderer:	מנוע רינדור:
+	Rendering:	רינדור:
+	Repair	תיקון
+	Repeat Edge Pixels	חזור על פיקסלי קצה
+	Replace	החלפה
+	Replace Color	החלף צבע
+	Replace Fonts in Projects	החלף גופנים בפרויקטים
+	Replace Fonts in Projects…	החלף גופנים בפרויקטים…
+	Replace With Clip	החלף בקליפ
+	Replace With Clip From Source Monitor	החלף בקליפ ממוניטור המקור
+	Replace:	החלפה:
+	Replaced {n} font uses	הוחלפו {n} מופעי גופן
+	Replicate	שכפול תבנית
+	Report an issue	דווח על בעיה
+	Reset	איפוס
+	Reset All Parameters	אפס את כל הפרמטרים
+	Reset Duration	אפס משך
+	Reset Effect	אפס אפקט
+	Reset Parameter	אפס פרמטר
+	Reset to Grid	אפס לרשת
+	Reset to Saved Layout	אפס לפריסה השמורה
+	Reset…	איפוס…
+	Resize floating panel	שנה גודל חלונית צפה
+	Responsive Design - Position	עיצוב רספונסיבי - מיקום
+	Responsive Design - Time	עיצוב רספונסיבי - זמן
+	Restore Arrangement	שחזר סידור
+	Restore Captions from Source Clip	שחזר כתוביות מקליפ המקור
+	Restore Frame	שחזר מסגרת
+	Restore Original	שחזר מקור
+	Restore View Preset	שחזר הגדרת תצוגה קבועה מראש
+	Restore Workspace	שחזר סביבת עבודה
+	Restore open sequences when opening projects	שחזר רצפים פתוחים בעת פתיחת פרויקטים
+	Restrict Trims To Subclip Boundaries	הגבל קיצוצים לגבולות תת-הקליפ
+	Result	תוצאה
+	Resulting Project	פרויקט סופי
+	Retro	רטרו
+	Reveal Log Files…	חשוף קובצי יומן…
+	Reveal Nested Sequence	חשוף רצף מקונן
+	Reveal Original Image	חשוף תמונה מקורית
+	Reveal Project in Finder…	הצג פרויקט ב-Finder…
+	Reveal Sequence in Project	חשוף רצף בפרויקט
+	Reveal in Project	חשוף בפרויקט
+	Reverb	הדהוד (Reverb)
+	Reverb Amount	כמות הדהוד
+	Reverse Field Dominance	הפוך דומיננטיות שדות
+	Reverse Match Frame	התאמת פריים הפוכה
+	Reverse Speed	הפוך מהירות
+	Reverse the order	היפוך הסדר
+	Revert Remix	בטל רמיקס
+	Revert to the preset's colors and names	חזור לצבעים ולשמות של ההגדרה הקבועה מראש
+	Review	סקירה
+	Right	ימין
+	Right - Left	ימין - שמאל
+	Right - Right	ימין - ימין
+	Right Align Text	יישר טקסט לימין
+	Right align text	יישר טקסט לימין
+	Right channel to device output	ערוץ ימין לפלט ההתקן
+	Right to left	מימין לשמאל
+	Ripple Delete	מחיקת אדווה (Ripple Delete)
+	Ripple Delete Head Frame	מחיקת אדווה של פריים התחלתי
+	Ripple Edit Tool	כלי עריכת אדווה
+	Ripple Edit, Shifting Trailing Clips	עריכת אדווה, הזזת הקליפים העוקבים
+	Ripple Sequence Markers	הזז סמני רצף בעריכת אדווה
+	Ripple Trim In	קיצוץ אדווה בכניסה
+	Ripple Trim Next Edit to Playhead	קיצוץ אדווה של העריכה הבאה עד סמן הניגון
+	Ripple Trim Out	קיצוץ אדווה ביציאה
+	Ripple Trim Previous Edit to Playhead	קיצוץ אדווה של העריכה הקודמת עד סמן הניגון
+	Ripple trim adds edits to keep both sides of trim in sync	קיצוץ אדווה מוסיף חיתוכים כדי לשמור על שני צידי הקיצוץ בסנכרון
+	Role	תפקיד
+	Roll	גלגול (Roll)
+	Roll (Z Axis)	גלגול (ציר Z)
+	Roll Edit	עריכת גלגול
+	Rolling Edit Tool	כלי עריכת גלגול
+	Room Size	גודל חדר
+	Rose	ורד
+	Rotation	סיבוב
+	Rotation Amount	כמות סיבוב
+	Roughen	חספוס
+	Roughen Color	צבע חספוס
+	Roughen Edges	חספוס קצוות
+	Round cap	קצה עגול
+	Round join	חיבור עגול
+	Rounded Crop	חיתוך מעוגל
+	Rule Color	צבע קו
+	Russian	רוסית
+	Rusty	חלוד
+	Rusty Color	צבע חלודה
+	SFX	אפקטים קוליים (SFX)
+	SMPTE HD bars with 1 kHz reference tone	פסי בדיקה SMPTE HD עם צליל ייחוס של 1 kHz
+	Safe Margins	שוליים בטוחים
+	Safe graphics mode: {mode}	מצב גרפיקה בטוח: {mode}
+	Same as Project	זהה לפרויקט
+	Sample Rate	קצב דגימה
+	Sample Rate:	קצב דגימה:
+	Sat vs Sat	רוויה מול רוויה
+	Saturation Min	רוויה מזערית
+	Saturation at 50 %	רוויה ב-50%
+	Save	שמירה
+	Save .cfa and .pek media cache files next to original media files when possible	שמור קובצי מטמון מדיה מסוג ‎.cfa ו-‎.pek לצד קובצי המדיה המקוריים כשניתן
+	Save All	שמור הכול
+	Save Arrangement	שמור סידור
+	Save Arrangement…	שמור סידור…
+	Save As New View Preset	שמור כהגדרת תצוגה חדשה קבועה מראש
+	Save As…	שמירה בשם…
+	Save Changes to this Workspace	שמור שינויים בסביבת עבודה זו
+	Save Current View Preset	שמור הגדרת תצוגה נוכחית קבועה מראש
+	Save Guides as Template	שמור קווי עזר כתבנית
+	Save Guides as Template…	שמור קווי עזר כתבנית…
+	Save Preset	שמור הגדרה קבועה מראש
+	Save Project	שמור פרויקט
+	Save as New Workspace…	שמור כסביבת עבודה חדשה…
+	Save as Template	שמירה כתבנית
+	Save changes to “{project_name}” before closing?	האם לשמור את השינויים ב-“{project_name}” לפני הסגירה?
+	Save current settings as:	שמור הגדרות נוכחיות בשם:
+	Save preset as:	שמור הגדרה קבועה מראש בשם:
+	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	נשמר כתבנית גרפיקה של FilmCraft‏ (‎.fcgt) בתיקיית התבניות שלך.
+	Saved preset “{name}”	נשמרה הגדרה קבועה מראש “{name}”
+	Saved template {path}	נשמרה תבנית {path}
+	Saves the view, columns, sort, thumbnail and font size.	שומר את התצוגה, העמודות, המיון, התמונות הממוזערות וגודל הגופן.
+	Saves this session's log and shows it in your file manager.	שומר את יומן ההפעלה הנוכחית ומציג אותו במנהל הקבצים שלך.
+	Scale	קנה מידה
+	Scale (Degrees)	קנה מידה (מעלות)
+	Scale Amount	כמות קנה מידה
+	Scale Attribute Times	שנה קנה מידה של זמני תכונות
+	Scale From	קנה מידה מתוך
+	Scale Height	גובה קנה מידה
+	Scale Match	התאמת קנה מידה
+	Scale To	קנה מידה אל
+	Scale To Fill	שנה קנה מידה למילוי
+	Scale To Fit	שנה קנה מידה להתאמה
+	Scale Width	רוחב קנה מידה
+	Scale motion effects proportionally when changing frame size	שנה קנה מידה של אפקטי תנועה באופן פרופורציונלי בעת שינוי גודל המסגרת
+	Scale to Frame Size	התאם קנה מידה לגודל המסגרת
+	Scale to frame size	התאם קנה מידה לגודל המסגרת
+	Scan Lines	קווי סריקה
+	Scene	סצנה
+	Scene Edit Detection	זיהוי מעברי סצנה
+	Scene Edit Detection: analysing in the background (see Progress)	זיהוי מעברי סצנה: מנתח ברקע (ראה התקדמות)
+	Scene Edit Detection…	זיהוי מעברי סצנה…
+	Scene:	סצנה:
+	Scientific Filter	מסנן מדעי
+	Scratch disk location for Captured Audio	מיקום כונן טיוטה עבור שמע שנלכד
+	Search	חיפוש
+	Search Bin	סל חיפוש
+	Search commands or keys	חפש פקודות או מקשים
+	Search effects	חפש אפקטים
+	Search fields	חפש שדות
+	Search in:	חפש ב:
+	Search presets	חפש הגדרות קבועות מראש
+	Search templates	חפש תבניות
+	Search:	חיפוש:
+	Seconds	שניות
+	Segments:	מקטעים:
+	Select	בחירה
+	Select All	בחירת הכול
+	Select All Matching	בחר את כל התואמים
+	Select All Project Items	בחר את כל פריטי הפרויקט
+	Select Camera 1	בחר מצלמה 1
+	Select Camera 2	בחר מצלמה 2
+	Select Camera 3	בחר מצלמה 3
+	Select Camera 4	בחר מצלמה 4
+	Select Camera 5	בחר מצלמה 5
+	Select Camera 6	בחר מצלמה 6
+	Select Camera 7	בחר מצלמה 7
+	Select Camera 8	בחר מצלמה 8
+	Select Camera 9	בחר מצלמה 9
+	Select Clip at Playhead	בחר קליפ במיקום סמן הניגון
+	Select Find Box	בחר תיבת חיפוש
+	Select Label Group	בחר קבוצת תווית
+	Select Next Clip	בחר קליפ הבא
+	Select Next Graphic	בחר גרפיקה הבאה
+	Select Next Layer	בחר שכבה הבאה
+	Select Next Panel	בחר חלונית הבאה
+	Select Previous Clip	בחר קליפ קודם
+	Select Previous Graphic	בחר גרפיקה קודמת
+	Select Previous Layer	בחר שכבה קודמת
+	Select Previous Panel	בחר חלונית קודמת
+	Select a clip to grade	בחר קליפ לדירוג צבע
+	Select a clip to see its properties	בחר קליפ כדי לראות את המאפיינים שלו
+	Select a clip to view its metadata.	בחר קליפ כדי להציג את המטא-נתונים שלו.
+	Select a graphic clip, or use the Type tool (T) on the Program monitor	בחר קליפ גרפי, או השתמש בכלי הטקסט (T) במוניטור התוכנית
+	Select a layer to edit its properties.	בחר שכבה כדי לערוך את המאפיינים שלה.
+	Select an item to preview it	בחר פריט לתצוגה מקדימה
+	Select audio clips to edit them here	בחר קליפי שמע כדי לערוך אותם כאן
+	Select audio clips, then click a preset to apply it.	בחר קליפי שמע, ולאחר מכן לחץ על הגדרה קבועה מראש להחלתה.
+	Select items to clear	בחר פריטים לניקוי
+	Select to Next Line	בחר עד השורה הבאה
+	Select to Next Word	בחר עד המילה הבאה
+	Select to Previous Line	בחר עד השורה הקודמת
+	Select to Previous Word	בחר עד המילה הקודמת
+	Select to Segment End	בחר עד סוף המקטע
+	Select to Segment Start	בחר עד התחלת המקטע
+	Selected: {command}	נבחר: {command}
+	Selection Follows Playhead	הבחירה עוקבת אחר סמן הניגון
+	Selection Order	סדר בחירה
+	Selection as FilmCraft Project…	הבחירה כפרויקט FilmCraft…
+	Selection…	בחירה…
+	Semi-tones	חצאי טונים
+	Send Backward	העברה אחורה
+	Send exports here with Send to Queue, then start the queue.	שלח ייצואים לכאן באמצעות 'שלח לתור', ולאחר מכן הפעל את התור.
+	Send to Queue	שלח לתור
+	Send {n} Level	רמת שליחה {n}
+	Sensitivity:	רגישות:
+	Separate Audio	הפרד שמע
+	Separate Files	קבצים נפרדים
+	Sepia Tone	גוון ספיה
+	Sequence	רצף
+	Sequence Color Management	ניהול צבע של רצף
+	Sequence From Clip	רצף מקליפ
+	Sequence Name	שם רצף
+	Sequence Name:	שם רצף:
+	Sequence Settings	הגדרות רצף
+	Sequence Settings…	הגדרות רצף…
+	Sequence Time	זמן רצף
+	Sequence Timecode	קוד זמן של רצף
+	Sequence name	שם רצף
+	Sequence, {w}x{h}, {fps} fps, {rate} Hz	רצף, {w}x{h},‏ {fps} פריימים/שנייה, {rate} Hz
+	Sequences	רצפים
+	Sequence…	רצף…
+	Sequentially	ברצף
+	Set	קביעה
+	Set Comparison Reference	הגדר ייחוס להשוואה
+	Set Creative Look	הגדר מראה יצירתי
+	Set Gain to:	הגדר הגבר אל:
+	Set Input LUT	הגדר טבלת LUT לקלט
+	Set Poster Frame	הגדר פריים מייצג
+	Set Project Panel View	הגדר תצוגת חלונית פרויקט
+	Set Timecode:	הגדר קוד זמן:
+	Set Transition Duration	הגדר משך מעבר
+	Set focus on the Timeline when performing Insert/Overwrite edits	העבר מיקוד לציר הזמן בעת ביצוע עריכות הכנסה/דריסה
+	Set the reference to the playhead	הגדר את הייחוס למיקום סמן הניגון
+	Set to frame size	הגדר לגודל המסגרת
+	Setting	הגדרה
+	Settings	הגדרות
+	Shadow	צל
+	Shadow Angle	זווית צל
+	Shadow Blue Balance	איזון כחול בצללים
+	Shadow Blur	טשטוש צל
+	Shadow Color	צבע צל
+	Shadow Distance	מרחק צל
+	Shadow Green Balance	איזון ירוק בצללים
+	Shadow Only	צל בלבד
+	Shadow Opacity	אטימות צל
+	Shadow Red Balance	איזון אדום בצללים
+	Shadow Size	גודל צל
+	Shadow Tint	גוון צללים
+	Shadows Lightness	בהירות אור בצללים
+	Shake	רעידה
+	Shape Dissolve	התפוגגות צורה
+	Shape Flow	זרימת צורה
+	Shape Size	גודל צורה
+	Shapes	צורות
+	Shard Size	גודל רסיס
+	Sharp Colors	צבעים חדים
+	Sharpen Amount	כמות חידוד
+	Shift Center To	הסט מרכז אל
+	Shift clips that overlap trim point during ripple trimming	הזז קליפים החופפים לנקודת הקיצוץ במהלך קיצוץ אדווה
+	Shot	שוט
+	Shot/Take:	שוט/טייק:
+	Show	הצגה
+	Show "Project:" and "Bin:" in Project panel tab	הצג "פרויקט:" ו-"סל:" בכרטיסיית חלונית הפרויקט
+	Show Active Caption Tracks Only	הצג ערוצי כתוביות פעילים בלבד
+	Show All Caption Tracks	הצג את כל ערוצי הכתוביות
+	Show All Marker Colors	הצג את כל צבעי הסמנים
+	Show Audio Waveform	הצג צורת גל שמע
+	Show Clip Mismatch Warning dialog	הצג תיבת דו-שיח של אזהרת אי-התאמת קליפ
+	Show Dot	הצג נקודה
+	Show Event Indicator	הצג מחוון אירועים
+	Show Focus Area	הצג אזור מיקוד
+	Show Home	הצג מסך בית
+	Show Keyframes	הצג פריימי מפתח
+	Show Mask Tracker Preview	הצג תצוגה מקדימה של עוקב המסכה
+	Show Multi-Camera Preview Monitor	הצג מוניטור תצוגה מקדימה מרובה-מצלמות
+	Show Next Screen	הצג מסך הבא
+	Show Only Noise	הצג רעש בלבד
+	Show Open Dialog	הצג תיבת דו-שיח לפתיחה
+	Show Previous Screen	הצג מסך קודם
+	Show Program Transcript	הצג תמלול תוכנית
+	Show Project Load Error Dialog	הצג תיבת דו-שיח של שגיאת טעינת פרויקט
+	Show Rich Tool Tips	הצג תיאורי כלים עשירים
+	Show Role	הצג תפקיד
+	Show Through Edits	הצג חיתוכים רציפים
+	Show Transport Controls	הצג פקדי ניגון
+	Show Video Thumbnails	הצג תמונות ממוזערות של וידאו
+	Show Workspace Reset Warning dialog on double click	הצג תיבת דו-שיח של אזהרת איפוס סביבת עבודה בלחיצה כפולה
+	Show clip names	הצג שמות קליפים
+	Show durations	הצג משכים
+	Show finished jobs	הצג משימות שהסתיימו
+	Show graphs	הצג גרפים
+	Show in the Preset menu	הצג בתפריט ההגדרות הקבועות מראש
+	Show or hide {color} markers	הצג או הסתר סמנים בצבע {color}
+	Show system compatibility issues at startup	הצג בעיות תאימות מערכת בעת ההפעלה
+	Show the presets folder	הצג את תיקיית ההגדרות הקבועות מראש
+	Show {n}	הצג {n}
+	Show/Hide Effects and Sends	הצג/הסתר אפקטים ושליחות
+	Show/Hide Tracks	הצג/הסתר ערוצים
+	Show/Hide Tracks…	הצג/הסתר ערוצים…
+	Shows a report on this computer.	מציג דוח על מחשב זה.
+	Shows the version, community links and credits in a FilmCraft window.	מציג את הגרסה, קישורי הקהילה והקרדיטים בחלון של FilmCraft.
+	Shrink	כיווץ
+	Shutter Angle	זווית תריס
+	Shuttle Left	הרצה שמאלה
+	Shuttle Right	הרצה ימינה
+	Shuttle Slow Left	הרצה איטית שמאלה
+	Shuttle Slow Right	הרצה איטית ימינה
+	Shuttle Stop	עצירת הרצה
+	Signal Scale	קנה מידה של אות
+	Silver Retention	שימור כסף (Silver Retention)
+	Similarity	דמיון
+	Simple Notch Filter	מסנן חריץ פשוט
+	Simple Parametric EQ	אקולייזר פרמטרי פשוט
+	Simple Text	טקסט פשוט
+	Simplify Sequence	פשט רצף
+	Simplify Sequence…	פשט רצף…
+	Single-band Compressor	מדחס תחום-בודד
+	Sinusoidal	סינוסואידי
+	Six procedural 1080p clips with sound	שישה קליפים פרוצדורליים באיכות 1080p עם צליל
+	Size	גודל
+	Size / Opacity	גודל / אטימות
+	Skew Axis	ציר הטיה
+	Slab Color	צבע רצועה
+	Slats	שלבים
+	Slide	החלקה (Slide)
+	Slide (Legacy)	החלקה (מדור קודם)
+	Slide Clip Selection Left Five Frames	החלק בחירת קליפים שמאלה בחמישה פריימים
+	Slide Clip Selection Left One Frame	החלק בחירת קליפים שמאלה בפריים אחד
+	Slide Clip Selection Right Five Frames	החלק בחירת קליפים ימינה בחמישה פריימים
+	Slide Clip Selection Right One Frame	החלק בחירת קליפים ימינה בפריים אחד
+	Slide Tool	כלי החלקה (Slide)
+	Slip Clip Selection Left Five Frames	הזז תוכן קליפים נבחרים שמאלה בחמישה פריימים
+	Slip Clip Selection Left One Frame	הזז תוכן קליפים נבחרים שמאלה בפריים אחד
+	Slip Clip Selection Right Five Frames	הזז תוכן קליפים נבחרים ימינה בחמישה פריימים
+	Slip Clip Selection Right One Frame	הזז תוכן קליפים נבחרים ימינה בפריים אחד
+	Slip Tool	כלי הזזת תוכן (Slip)
+	Slope	שיפוע
+	Slow	איטי
+	Slower Motion	תנועה איטית יותר
+	Small Caps	אותיות רישיות קטנות
+	Small Room	חדר קטן
+	Smaller	קטן יותר
+	Smart Limit	הגבלה חכמה
+	Smart Tools	כלים חכמים
+	Smooth	חלק
+	Smooth Motion	תנועה חלקה
+	Smooth Scroll	גלילה חלקה
+	Snap in Program Monitor	הצמדה במוניטור התוכנית
+	Snap in Timeline	הצמדה בציר הזמן
+	Snap in Timeline (S)	הצמדה בציר הזמן (S)
+	Snap playhead in Timeline when Snap is enabled	הצמד את סמן הניגון בציר הזמן כאשר ההצמדה מופעלת
+	Snap to grid	הצמד לרשת
+	Social Vertical 1080×1920	אנכי לרשתות חברתיות 1080×1920
+	Soft Clamp	הגבלה רכה
+	Soft Clip	קטימה רכה
+	Soft Edges (Best Quality)	קצוות רכים (איכות מיטבית)
+	Soft Vignette	החשכת פינות רכה
+	Soft Wipe	מחיקה רכה
+	Soften Harshness	רכך צורמנות
+	Solid	מלא
+	Solid Colors	צבעים מלאים
+	Solo	סולו
+	Solo safe	מוגן מסולו
+	Something went wrong while drawing the window. Your project is still open; save it to be safe.	משהו השתבש בעת ציור החלון. הפרויקט שלך עדיין פתוח; שמור אותו ליתר ביטחון.
+	Sort	מיון
+	Sort Icons	מיין סמלים
+	Sort Order	סדר מיון
+	Source	מקור
+	Source In/Out	כניסה/יציאה של מקור
+	Source Play/Stop	נגן/עצור מקור
+	Source Point	נקודת מקור
+	Source Settings	הגדרות מקור
+	Source Settings…	הגדרות מקור…
+	Source Text	טקסט מקור
+	Source Timecode	קוד זמן של מקור
+	Source channels the selected audio clips play:	ערוצי מקור שקליפי השמע הנבחרים מנגנים:
+	Source · {name}	מקור · {name}
+	Source:	מקור:
+	Spacer	מרווחן
+	Speaker	דובר
+	Speaker Angle	זווית רמקול
+	Speaker Labeling	תיוג דוברים
+	Special	מיוחד
+	Special Effects	אפקטים מיוחדים
+	Speech model	מודל דיבור
+	Speech-to-text turns the dialogue into editable text.	דיבור-לטקסט הופך את הדיאלוג לטקסט ניתן לעריכה.
+	Speed	מהירות
+	Speed {n}%	מהירות {n}%
+	Speed/Duration…	מהירות/משך…
+	Speed:	מהירות:
+	Spiky	קוצני
+	Spill	זליגת צבע (Spill)
+	Spill Suppression	דיכוי זליגת צבע
+	Spin	סחרור
+	Spin Direction	כיוון סחרור
+	Spin Motion	תנועת סחרור
+	Split	פיצול
+	Split (Legacy)	פיצול (מדור קודם)
+	Split Caption	פצל כתובית
+	Split caption at playhead	פצל כתובית במיקום סמן הניגון
+	Spotlight	זרקור
+	Spread	התפשטות
+	Spring Motion	תנועת קפיץ
+	Square	ריבוע
+	Square (Width Only)	ריבוע (רוחב בלבד)
+	Square 1:1	ריבוע 1:1
+	Square Pixels (1.0)	פיקסלים מרובעים (1.0)
+	Stabilization	ייצוב
+	Stabilize Only	ייצוב בלבד
+	Stabilize, Crop	ייצוב, חיתוך
+	Stabilize, Crop, Auto-scale	ייצוב, חיתוך, שינוי קנה מידה אוטומטי
+	Stabilize, Synthesize Edges	ייצוב, השלמת קצוות
+	Stack	ערימה
+	Stack Clips	הערם קליפים
+	Stages	דרגות
+	Standard	סטנדרטי
+	Star	כוכב
+	Star Wipe	מחיקת כוכב
+	Start Angle	זווית התחלה
+	Start Color	צבע התחלה
+	Start Export Queue	הפעל תור ייצוא
+	Start Off Screen	התחלה מחוץ למסך
+	Start Point	נקודת התחלה
+	Start Queue	הפעל תור
+	Start Voice-over Recording	התחל הקלטת קריינות
+	Start at 0	התחל ב-0
+	Start at 1	התחל ב-1
+	Start of Ramp	התחלת מעבר הדרגתי
+	Start with an Empty Project	התחל עם פרויקט ריק
+	Start:	התחלה:
+	Starting Intensity	עוצמה התחלתית
+	Static Plates	לוחות סטטיים
+	Steel Blue	כחול פלדה
+	Step Back 1 Frame	צעד פריים 1 אחורה
+	Step Back 1 Frame (Left)	צעד פריים 1 אחורה (שמאלה)
+	Step Back Five Frames	צעד חמישה פריימים אחורה
+	Step Back One Frame	צעד פריים אחד אחורה
+	Step Forward 1 Frame	צעד פריים 1 קדימה
+	Step Forward 1 Frame (Right)	צעד פריים 1 קדימה (ימינה)
+	Step Forward Five Frames	צעד חמישה פריימים קדימה
+	Step Forward One Frame	צעד פריים אחד קדימה
+	Step forward/back many	צעד מספר פריימים קדימה/אחורה
+	Stereo	סטריאו
+	Stereo Expand	הרחבת סטריאו
+	Stereo Expander	מרחיב סטריאו
+	Stereo Imagery	תמונת סטריאו
+	Stereo Media	מדיה בסטריאו
+	Stereo Phasing	מופע סטריאו
+	Stereo Width	רוחב סטריאו
+	Stereoscopic - Over/Under	סטריאוסקופי - מעל/מתחת
+	Stereoscopic - Side by Side	סטריאוסקופי - זה לצד זה
+	Still	תמונה בודדת
+	Still Image Default Duration	משך ברירת מחדל לתמונה בודדת
+	Stone Church	כנסיית אבן
+	Stop	עצירה
+	Stop Export Queue	עצור תור ייצוא
+	Stop Multi-Camera Recording	עצור הקלטה מרובת-מצלמות
+	Stop Source	עצור מקור
+	Stop Voice-over Recording	עצור הקלטת קריינות
+	Stop tracking	עצור מעקב
+	Stopband Attenuation	הנחתה בפס החסימה
+	Straight Color	צבע ישיר
+	Stretch Gradient to Fit	מתח מעבר צבע להתאמה
+	Stretch Map to Fit	מתח מפה להתאמה
+	Stretch To Fill	מתח למילוי
+	Stretch Width or Height	מתח רוחב או גובה
+	Stretch Wipe	מחיקת מתיחה
+	Stretch to Fit Frame	מתח להתאמה למסגרת
+	Strikethrough	קו חוצה
+	Stripe	פס
+	Stripes	פסים
+	Strobe Color	צבע הבזק (Strobe)
+	Strobe Duration (secs)	משך הבזק (שניות)
+	Strobe Light	אור מבזיק (Strobe)
+	Strobe Period (secs)	מחזור הבזק (שניות)
+	Stroke 2	קו מתאר 2
+	Stroke 2 Color	צבע קו מתאר 2
+	Stroke 2 Type	סוג קו מתאר 2
+	Stroke 2 Width	רוחב קו מתאר 2
+	Stroke Angle	זווית משיכה
+	Stroke Density	צפיפות משיכה
+	Stroke Length (secs)	אורך משיכה (שניות)
+	Stroke Only	קו מתאר בלבד
+	Stroke Randomness	אקראיות משיכה
+	Stroke Type	סוג קו מתאר
+	Stroke Width	רוחב קו מתאר
+	Stroke line cap	קצה קו מתאר
+	Stroke line join	חיבור קו מתאר
+	Studio Reverb	הדהוד אולפן
+	Style	סגנון
+	SubRip Subtitle (.srt)	כתוביות SubRip‏ (‎.srt)
+	Subclip End	סוף תת-קליפ
+	Subclip Start	התחלת תת-קליפ
+	Subclip: {name}	תת-קליפ: {name}
+	Subspace Warp	עיוות תת-מרחב
+	Subtitle	כותרת משנה
+	Sum multichannel outputs to mono in Source Monitor	סכם יציאות מרובות-ערוצים למונו במוניטור המקור
+	Super Narrow	צר במיוחד
+	Surface Gloss	ברק משטח
+	Surface Material	חומר משטח
+	Surround Reverb	הדהוד היקפי (Surround)
+	Swap	החלף
+	Swap Channels	החלף ערוצים
+	Switch Audio	החלף שמע
+	Swivel	סיבוב אופקי (Swivel)
+	Sync Voice-over Capture	סנכרן לכידת קריינות
+	Synchronize Clips	סנכרן קליפים
+	Synchronize Point	נקודת סנכרון
+	Synchronized {n} clip group(s)	סונכרנו {n} קבוצות קליפים
+	Synchronize…	סנכרן…
+	Synthetic	סינתטי
+	System Compatibility Report	דוח תאימות מערכת
+	System Compatibility Report…	דוח תאימות מערכת…
+	System Default	ברירת מחדל של המערכת
+	System Language	שפת המערכת
+	TIFF	TIFF
+	TIFF Sequence	רצף TIFF
+	Timecode	קוד זמן
+	TV Power	כיבוי/הדלקת טלוויזיה
+	Table	טבלה
+	Tag Color	צבע תגית
+	Tan	חום-צהבהב (Tan)
+	Tape	סרט הקלטה
+	Tape Name	שם קלטת
+	Tape Name:	שם קלטת:
+	Tape/Tube	סרט/מנורה
+	Targa	Targa
+	Targa Sequence	רצף Targa
+	Target Aspect	יחס גובה-רוחב יעד
+	Target Bitrate	קצב סיביות יעד
+	Target Color	צבע יעד
+	Target Duration:	משך יעד:
+	Target Field of View	שדה ראייה יעד
+	Target Loudness	עוצמת קול יעד
+	Teal	טורקיז כהה (Teal)
+	Teal & Orange	טורקיז וכתום
+	Teal Shadows, Warm Skin	צללים בטורקיז, עור חם
+	Technical	טכני
+	Telephone	טלפון
+	Teletext	טלטקסט
+	Template Name:	שם תבנית:
+	Template Properties	מאפייני תבנית
+	Temporal Interpolation	אינטרפולציית זמן
+	Text	טקסט
+	Text (graphics and captions)	טקסט (גרפיקה וכתוביות)
+	Text Animator	מנפיש טקסט
+	Text Box Height	גובה תיבת טקסט
+	Text Box Width	רוחב תיבת טקסט
+	Text Color	צבע טקסט
+	Text Layer Type	סוג שכבת טקסט
+	Text Properties	מאפייני טקסט
+	Text Styling	עיצוב טקסט
+	Text to Speech	טקסט לדיבור
+	TextPanel	חלונית טקסט
+	The default graphics are used from the next start.	הגרפיקה שבברירת המחדל תשמש החל מההפעלה הבאה.
+	The language changed but could not be saved: {e}	השפה שונתה אך לא ניתן היה לשמור אותה: {e}
+	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	מטמון המדיה מחזיק תצוגות מקדימות מרונדרות של פרויקטים שלא נשמרו וקבצים אחרים ש-FilmCraft יכולה ליצור מחדש. מחיקתם תמיד בטוחה; FilmCraft בונה אותם מחדש לפי הצורך.
+	The project had not been saved yet.	הפרויקט טרם נשמר.
+	The selected clips have different audio types. Assign one type to edit them together.	לקליפים הנבחרים יש סוגי שמע שונים. הקצה סוג אחד כדי לערוך אותם יחד.
+	The sequence has no caption track.	לרצף אין ערוץ כתוביות.
+	Thickness	עובי
+	This build has no speech-to-text; import a transcript with transcript.set.	בגרסה זו אין דיבור-לטקסט; ייבא תמלול באמצעות transcript.set.
+	Thr	סף
+	Thumbnail Size Next	גודל תמונה ממוזערת הבא
+	Thumbnail Size Previous	גודל תמונה ממוזערת קודם
+	Thumbnail View	תצוגת תמונות ממוזערות
+	Thumbnail controls for all pointing devices	פקדי תמונות ממוזערות עבור כל התקני ההצבעה
+	Thumbnails show effects applied	תמונות ממוזערות מציגות אפקטים שהוחלו
+	Ticker – Crawl	מבזק – זחילה
+	Tile Gradient	רצף מעבר צבע באריחים
+	Tilt (X Axis)	נטייה (ציר X)
+	Time Interpolation	אינטרפולציית זמן
+	Time Remapping	מיפוי זמן מחדש
+	Time and Pitch	זמן וגובה צליל
+	Timebase:	בסיס זמן:
+	Timecode Conversion	המרת קוד זמן
+	Timecode Overlay	שכבת-על של קוד זמן
+	Timecode:	קוד זמן:
+	Timecode…	קוד זמן…
+	Timeline	ציר זמן
+	Timeline Display Settings	הגדרות תצוגה של ציר הזמן
+	Timeline Mouse Scrolling	גלילת עכבר בציר הזמן
+	Timeline Playback Auto-Scrolling	גלילה אוטומטית בניגון ציר הזמן
+	Timeline: (no sequences)	ציר זמן: (אין רצפים)
+	Timeline…	ציר זמן…
+	Title	כותרת
+	Title Color	צבע כותרת
+	Title Safe Area	אזור בטוח לכותרת
+	Title Size	גודל כותרת
+	Title – Boxed	כותרת – ממוסגרת
+	Title – Centered	כותרת – ממורכזת
+	Titles	כותרות
+	To {name}	אל {name}
+	Toggle All Audio Targets	החלף מצב כל יעדי השמע
+	Toggle All Source Audio	החלף מצב כל שמע המקור
+	Toggle All Source Video	החלף מצב כל וידאו המקור
+	Toggle All Video Targets	החלף מצב כל יעדי הווידאו
+	Toggle Audio During Scrubbing	הפעל/כבה שמע בעת גרירת סמן הניגון
+	Toggle Color Grading Section	הצגה או הסתרה של אזור גריידינג צבע
+	Toggle Full Screen	החלף מצב מסך מלא
+	Toggle Mute for All Targeted Audio Tracks	החלף מצב השתקה עבור כל ערוצי השמע המיועדים
+	Toggle Proxies	הפעל/כבה קובצי פרוקסי
+	Toggle Solo for All Targeted Audio Tracks	החלף מצב סולו עבור כל ערוצי השמע המיועדים
+	Toggle Source/Program Monitor Focus	החלף מיקוד בין מוניטור המקור למוניטור התוכנית
+	Toggle Target Audio 1	החלף מצב יעד שמע 1
+	Toggle Target Audio 2	החלף מצב יעד שמע 2
+	Toggle Target Audio 3	החלף מצב יעד שמע 3
+	Toggle Target Audio 4	החלף מצב יעד שמע 4
+	Toggle Target Audio 5	החלף מצב יעד שמע 5
+	Toggle Target Audio 6	החלף מצב יעד שמע 6
+	Toggle Target Audio 7	החלף מצב יעד שמע 7
+	Toggle Target Audio 8	החלף מצב יעד שמע 8
+	Toggle Target Video 1	החלף מצב יעד וידאו 1
+	Toggle Target Video 2	החלף מצב יעד וידאו 2
+	Toggle Target Video 3	החלף מצב יעד וידאו 3
+	Toggle Target Video 4	החלף מצב יעד וידאו 4
+	Toggle Target Video 5	החלף מצב יעד וידאו 5
+	Toggle Target Video 6	החלף מצב יעד וידאו 6
+	Toggle Target Video 7	החלף מצב יעד וידאו 7
+	Toggle Target Video 8	החלף מצב יעד וידאו 8
+	Toggle Track Output for All Targeted Video Tracks	החלף מצב פלט ערוץ עבור כל ערוצי הווידאו המיועדים
+	Toggle Trim Type	החלף סוג קיצוץ
+	Toggle View	החלף תצוגה
+	Toggle animation	הפעל/כבה הנפשה
+	Tone	צליל (Tone)
+	Tools	כלים
+	Top	למעלה
+	Top Center	למעלה במרכז
+	Total Duration	משך כולל
+	Touch	מגע (Touch)
+	Track Fx Editor	עורך אפקטים של ערוץ
+	Track Keyframes	פריימי מפתח של ערוץ
+	Track Matte Key	מפתח מסכת ערוץ
+	Track Select Backward Tool	כלי בחירת ערוץ אחורה
+	Track Select Forward Tool	כלי בחירת ערוץ קדימה
+	Track Selected Mask	עקוב אחר המסכה הנבחרת
+	Track selected mask backward	עקוב אחר המסכה הנבחרת אחורה
+	Track selected mask backward 1 frame	עקוב אחר המסכה הנבחרת פריים 1 אחורה
+	Track selected mask forward	עקוב אחר המסכה הנבחרת קדימה
+	Track selected mask forward 1 frame	עקוב אחר המסכה הנבחרת פריים 1 קדימה
+	Track type	סוג ערוץ
+	Tracking	מעקב
+	Tracking method: {method}	שיטת מעקב: {method}
+	Tracks	ערוצים
+	Transcode	המרת קידוד (Transcode)
+	Transcribe	תמלל
+	Transcribe Sequence	תמלל רצף
+	Transcribe Sequence…	תמלל רצף…
+	Transcribe sequence	תמלל רצף
+	Transcribe…	תמלל…
+	Transcript	תמלול
+	Transcription	תמלול
+	Transcription preferences	העדפות תמלול
+	Transform	המרה
+	Transformers	שנאים (Transformers)
+	Transience	חדות מעבר (Transience)
+	Transition Completion	השלמת מעבר
+	Transition Softness	רכות מעבר
+	Transitions	מעברים
+	Transmit Multi-Camera View	שדר תצוגה מרובת-מצלמות
+	Transparency	שקיפות
+	Transparent Video…	וידאו שקוף…
+	Trash	אשפה
+	Travel Motion	תנועת מסע
+	Treble	טרבל (גבוהים)
+	Triangle	משולש
+	Trim	קיצוץ
+	Trim Backward	קצץ אחורה
+	Trim Backward Many	קצץ אחורה משמעותית
+	Trim Edit	עריכת קיצוץ
+	Trim Forward	קצץ קדימה
+	Trim Forward Many	קצץ קדימה משמעותית
+	Trim In	קצץ כניסה
+	Trim Next Edit to Playhead	קצץ את העריכה הבאה עד סמן הניגון
+	Trim Out	קצץ יציאה
+	Trim Previous Edit to Playhead	קצץ את העריכה הקודמת עד סמן הניגון
+	Trim audio files	קצץ קובצי שמע
+	Trimming	קיצוץ
+	Trim…	קיצוץ…
+	True Peak Limit	גבול שיא אמיתי (True Peak)
+	Tube	מנורה (Tube)
+	Tube-modeled Compressor	מדחס בהדמיית מנורות
+	Tubular	צינורי
+	Turbulent Displace	התקה מערבולתית
+	Turbulent Sharp	מערבולתי חד
+	Turbulent Smooth	מערבולתי חלק
+	Turbulent Smoother	מערבולתי חלק יותר
+	Turn on animation and add keyframe	הפעל הנפשה והוסף פריים מפתח
+	Tweed	מגבר טוויד (Tweed)
+	Twirl (Legacy)	סחרור (מדור קודם)
+	Twirl Center	מרכז סחרור
+	Twirl Radius	רדיוס סחרור
+	Twist Smoother	החלקת פיתול
+	Type	סוג
+	Type a shortcut… (Esc cancels)	הקלד קיצור דרך… (Esc לביטול)
+	Type:	סוג:
+	UI Scale	קנה מידה של הממשק
+	UI:	ממשק:
+	Ultra Key	אולטרה קי (Ultra Key)
+	Uncompressed (PCM)	ללא דחיסה (PCM)
+	Underline	קו תחתון
+	Undo	ביטול פעולה
+	Undock Panel	נתק חלונית מעיגון
+	Ungroup	פירוק קבוצה
+	Uniform Scale	קנה מידה אחיד
+	Uniform Spacing	ריווח אחיד
+	Universal Counting Leader…	ספירה לאחור אוניברסלית…
+	Unlink	ביטול קישור
+	Unreadable	לא קריא
+	Unrendered: render to play back in real time	לא מרונדר: רנדר לניגון בזמן אמת
+	Unrendered: should play back in real time	לא מרונדר: אמור להתנגן בזמן אמת
+	Unstack	בטל הערמה
+	Unstack Clips	בטל הערמת קליפים
+	Untagged	ללא תיוג
+	Untitled Workspace	סביבת עבודה ללא שם
+	Up One Level	רמה אחת למעלה
+	Up one level	רמה אחת למעלה
+	Update Metadata	עדכן מטא-נתונים
+	Update Metadata…	עדכן מטא-נתונים…
+	Update it at least every	עדכן אותו לפחות כל
+	Update timeline dynamically during ripple edits.	עדכן את ציר הזמן באופן דינמי במהלך עריכות אדווה.
+	Upgrade Caption to Graphic	שדרג כתובית לגרפיקה
+	Upgrade to Source Graphic	שדרג לגרפיקת מקור
+	Upper First	שדה עליון תחילה
+	Upper Frequency	תדר עליון
+	Upper Left	למעלה משמאל
+	Upper Right	למעלה מימין
+	Use Color Noise	השתמש ברעש צבעוני
+	Use Default Graphics	השתמש בגרפיקת ברירת המחדל
+	Use Effect Shutter Angle	השתמש בזווית התריס של האפקט
+	Use End Color	השתמש בצבע הסיום
+	Use File	השתמש בקובץ
+	Use Glow Color	השתמש בצבע הזוהר
+	Use Maximum Render Quality	השתמש באיכות רינדור מרבית
+	Use Media Source	השתמש במקור המדיה
+	Use Tint Color	השתמש בצבע הגוון
+	Use file metadata	השתמש במטא-נתוני הקובץ
+	Use the file's timecode	השתמש בקוד הזמן של הקובץ
+	User Order	סדר משתמש
+	Username	שם משתמש
+	Utility	כלי עזר
+	VBR, 1 pass	VBR, מעבר 1
+	VBR, 2 pass	VBR,‏ 2 מעברים
+	VHS Damage	נזק קלטת VHS
+	VR Blur	טשטוש VR
+	VR Chroma Leaks	דליפות כרומה VR
+	VR Chromatic Aberrations	עיוותים כרומטיים VR
+	VR Color Gradients	מעברי צבע VR
+	VR De-Noise	הפחתת רעש VR
+	VR Digital Glitch	תקלה דיגיטלית VR
+	VR Fractal Noise	רעש פרקטלי VR
+	VR Glow	זוהר VR
+	VR Gradient Wipe	מחיקת מעבר צבע VR
+	VR Iris Wipe	מחיקת צמצם VR
+	VR Light Leaks	דליפות אור VR
+	VR Light Rays	קרני אור VR
+	VR Mobius Zoom	זום מביוס VR
+	VR Plane to Sphere	מישור לכדור VR
+	VR Projection	היטל VR
+	VR Properties	מאפייני VR
+	VR Random Blocks	בלוקים אקראיים VR
+	VR Rotate Sphere	סיבוב כדור VR
+	VR Sharpen	חידוד VR
+	VR Spherical Blur	טשטוש כדורי VR
+	Validate Content Credentials on import	אמת אישורי תוכן (Content Credentials) בעת הייבוא
+	Value	ערך
+	Variations:	וריאציות:
+	Vectorscope (YUV)	וקטורסקופ (YUV)
+	Vectorscope + Waveform YC	וקטורסקופ + צורת גל YC
+	Vectorscope HLS	וקטורסקופ HLS
+	Vectorscope Targets	יעדי וקטורסקופ
+	Vectorscope YUV	וקטורסקופ YUV
+	Velocity	מהירות
+	Venetian Blinds	תריסים ונציאניים
+	Version	גרסה
+	Vertical	אנכי
+	Vertical 4:5	אנכי 4:5
+	Vertical 9:16	אנכי 9:16
+	Vertical Alignment	יישור אנכי
+	Vertical Blocks	בלוקים אנכיים
+	Vertical Decentering	הסטת מרכז אנכית
+	Vertical Displacement	התקה אנכית
+	Vertical Flip	היפוך אנכי
+	Vertical Margin	שוליים אנכיים
+	Vertical Text	טקסט אנכי
+	Very Narrow	צר מאוד
+	Video 1	וידאו 1
+	Video 2	וידאו 2
+	Video 3	וידאו 3
+	Video 4	וידאו 4
+	Video 5	וידאו 5
+	Video 6	וידאו 6
+	Video 7	וידאו 7
+	Video 8	וידאו 8
+	Video Attributes	תכונות וידאו
+	Video Codec	מקודד וידאו
+	Video Duration	משך וידאו
+	Video Effects	אפקטי וידאו
+	Video Frame	מסגרת וידאו
+	Video In	כניסת וידאו
+	Video In Point	נקודת כניסת וידאו
+	Video Info	פרטי וידאו
+	Video Limiter	מגביל וידאו
+	Video Only	וידאו בלבד
+	Video Options	אפשרויות וידאו
+	Video Out	יציאת וידאו
+	Video Out Point	נקודת יציאת וידאו
+	Video Previews	תצוגות מקדימות של וידאו
+	Video Previews:	תצוגות מקדימות של וידאו:
+	Video Rendering and Playback	רינדור וניגון וידאו
+	Video Scopes	מדדי וידאו
+	Video Thumbnails	תמונות ממוזערות של וידאו
+	Video Tracks	ערוצי וידאו
+	Video Transition Default Duration	משך ברירת מחדל למעבר וידאו
+	Video Transitions	מעברי וידאו
+	Video Usage	שימוש בווידאו
+	Video Usage: {vu}  Audio Usage: {au}	שימוש בווידאו: {vu}  שימוש בשמע: {au}
+	Video and Audio	וידאו ושמע
+	Video and Audio Waveform Split	פיצול וידאו וצורת גל שמע
+	Video and Waveform	וידאו וצורת גל
+	Video effects	אפקטי וידאו
+	Video {n}:	וידאו {n}:
+	Video:	וידאו:
+	View	תצוגה
+	Vignette	החשכת פינות (Vignette)
+	Vimeo 1080p Full HD	Vimeo 1080p Full HD
+	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
+	Vocal Booth	תא הקלטת שירה
+	Vocal Enhancer	משפר שירה וקול
+	Voice	קול
+	Voice in a Hall	קול באולם
+	Voice-Over Record Settings	הגדרות הקלטת קריינות
+	Voice-Over Record Settings…	הגדרות הקלטת קריינות…
+	Voice-over Record	הקלטת קריינות
+	Voice-over record (right-click: Voice-Over Record Settings…)	הקלטת קריינות (לחיצה ימנית: הגדרות הקלטת קריינות…)
+	Voice-over recorded: {p}	קריינות הוקלטה: {p}
+	Voice-over recording stopped (nothing recorded)	הקלטת הקריינות הופסקה (לא הוקלט דבר)
+	Voice-over take discarded	טייק הקריינות בוטל
+	Voiceover	קריינות
+	Volume	עוצמת שמע
+	Volume (drag; double-click: 0 dB)	עוצמת שמע (גרור; לחיצה כפולה: 0 dB)
+	Volumetric Rays	קרניים נפחיות
+	WAV, stereo 48 kHz 16-bit PCM	WAV, סטריאו 48 kHz‏ 16 סיביות PCM
+	WAV, stereo 48 kHz 24-bit PCM	WAV, סטריאו 48 kHz‏ 24 סיביות PCM
+	Warm Film	סרט צילום חם
+	Warm Negative	תשליל חם
+	Warm Room	חדר חם
+	Warm Tint	גוון חם
+	Warm Voice	קול חם
+	Warm highlights, brown shadows	אזורים בהירים חמים, צללים חומים
+	Warm print stock with gentle roll-off	סרט הדפסה חם עם דעיכה עדינה
+	Warm, soft late-afternoon light	אור אחר צהריים מאוחר חם ורך
+	Warnings and Errors	אזהרות ושגיאות
+	Warp Stabilizer	מייצב עיוות (Warp Stabilizer)
+	Wave	גל
+	Wave Height	גובה גל
+	Wave Speed	מהירות גל
+	Wave Warp	עיוות גל
+	Wave Width	רוחב גל
+	Waveform	צורת גל
+	Waveform (Luma)	צורת גל (בהירות)
+	Waveform (RGB)	צורת גל (RGB)
+	Waveform ({kind})	צורת גל ({kind})
+	Waveform Audio	שמע צורת גל (WAV)
+	Waveform Audio 48 kHz 16-bit	שמע צורת גל 48 kHz‏ 16 סיביות
+	Waveform Audio 48 kHz 24-bit	שמע צורת גל 48 kHz‏ 24 סיביות
+	Waveform Type	סוג צורת גל
+	Wavelength	אורך גל
+	Web & Social	אינטרנט ורשתות חברתיות
+	WebVTT (.vtt)	WebVTT (.vtt)
+	Wet Out	פלט רטוב (Wet)
+	When Opening a Project	בעת פתיחת פרויקט
+	Whip	הצלפה (Whip)
+	Whip (Legacy)	הצלפה (מדור קודם)
+	Whisper base (balanced)	Whisper base (מאוזן)
+	Whisper small (most accurate)	Whisper small (המדויק ביותר)
+	Whisper tiny (fastest)	Whisper tiny (המהיר ביותר)
+	White Input Level	רמת לבן בקלט
+	White/Black	לבן/שחור
+	Wide Outdoor	מרחב פתוח רחב
+	Wide gamut color (composite in BT.2020)	צבע בטווח רחב (שילוב ב-BT.2020)
+	Widener	מרחיב במה (Widener)
+	Width:	רוחב:
+	Wiggle	נענוע
+	Window	חלון
+	Wipe	מחיקה (Wipe)
+	Wipe Angle	זווית מחיקה
+	Without keyframes	ללא פריימי מפתח
+	Wonder Glow	זוהר פלאי
+	Work Area	אזור עבודה
+	Working Color Space	מרחב צבע לעבודה
+	Working Color Space:	מרחב צבע לעבודה:
+	Wrap Back	עטיפה לאחור
+	Write	כתיבה
+	Write Automation	כתיבת אוטומציה
+	Write XMP ID to files on import	כתוב מזהה XMP לקבצים בעת הייבוא
+	Write clip markers to XMP	כתוב סמני קליפ ל-XMP
+	Write keyframes	כתוב פריימי מפתח
+	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	האם לכתוב את המטא-נתונים של הקליפים הנבחרים ({n}) לקובצי XMP לצד המדיה שלהם?
+	Write-on	ציור קו מתמשך (Write-on)
+	X Rotation	סיבוב X
+	Y Rotation	סיבוב Y
+	YC	YC
+	YC no Chroma	YC ללא כרומה
+	YUV	YUV
+	Yellow-green highlights and blue-lifted shadows from crossed channel curves	אזורים בהירים בצהוב-ירוק וצללים כחולים מורמים מעקומות ערוצים מוצלבות
+	Yes	כן
+	YouTube 1080p Full HD	YouTube 1080p Full HD
+	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
+	Z Position	מיקום Z
+	Z Rotation	סיבוב Z
+	ZIP (1 scan line)	ZIP (שורת סריקה 1)
+	ZIP (16 scan lines)	ZIP (16 שורות סריקה)
+	Zoom	זום
+	Zoom Amount	כמות זום
+	Zoom Blur	טשטוש זום
+	Zoom In	הגדלת התצוגה
+	Zoom Out	הקטנת התצוגה
+	Zoom Program Monitor to 100%	מרחק תצוגה במוניטור התוכנית ל-100%
+	Zoom Program Monitor to Fit	התאם מרחק תצוגה במוניטור התוכנית
+	Zoom Source Monitor to 100%	מרחק תצוגה במוניטור המקור ל-100%
+	Zoom Source Monitor to Fit	התאם מרחק תצוגה במוניטור המקור
+	Zoom Strength	עוצמת זום
+	Zoom to Sequence	התאם מרחק תצוגה לרצף
+	days	ימים
+	first marker	סמן ראשון
+	frames	פריימים
+	horizontal	אופקי
+	in	בתוך
+	lowest (V1…)	הנמוך ביותר (V1…)
+	milliseconds	אלפיות שנייה
+	minute(s)	דקות
+	no Chinese font is installed on this system; the interface stays in English	לא מותקן גופן סיני במערכת זו; הממשק נשאר באנגלית
+	no GPU adapter: the CPU compositor is used	אין מתאם GPU: נעשה שימוש במשלב ה-CPU
+	no Japanese font is installed on this system; the interface stays in English	לא מותקן גופן יפני במערכת זו; הממשק נשאר באנגלית
+	no Korean font is installed on this system; the interface stays in English	לא מותקן גופן קוריאני במערכת זו; הממשק נשאר באנגלית
+	not available in this session	לא זמין בהפעלה זו
+	out	החוצה
+	second(s)	שניות
+	seconds	שניות
+	software rendering	רינדור בתוכנה
+	tracks	ערוצים
+	vertical	אנכי
+	with:	עם:
+	{active} (modified)	{active} (שונה)
+	{category} · My Template	{category} · התבנית שלי
+	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} ערוצים
+	{first} - Merged	{first} - ממוזג
+	{first} Multicam	{first} מרובה-מצלמות
+	{fps} fps · {n} frames queued	{fps} פריימים/שנייה · {n} פריימים בתור
+	{f} (missing)	{f} (חסר)
+	{key} can't be used as a shortcut	לא ניתן להשתמש ב-{key} כקיצור דרך
+	{mode} · no clip	{mode} · אין קליפ
+	{mode} · no sequence	{mode} · אין רצף
+	{name} (Modified)	{name} (שונה)
+	{name} (Simplified)	{name} (מפושט)
+	{name} (copy)	{name} (עותק)
+	{name} (user)	{name} (משתמש)
+	{name} - Edited	{name} - ערוך
+	{name} Selection.fcproj	{name} Selection.fcproj
+	{n} Color	צבע {n}
+	{n} Font	גופן {n}
+	{n} Position	מיקום {n}
+	{n} Size	גודל {n}
+	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} קליפים אינם מוצאים את המדיה שלהם. אתר אותם, חפש בתיקייה, או השאר אותם לא מקוונים.
+	{n} clip(s) selected.	{n} קליפים נבחרו.
+	{n} clip(s) selected; the clip on the reference track stays put.	{n} קליפים נבחרו; הקליפ בערוץ הייחוס נשאר במקומו.
+	{n} clip(s): {names}	{n} קליפים: {names}
+	{n} editable properties	{n} מאפיינים הניתנים לעריכה
+	{n} items	{n} פריטים
+	{n} s ago	לפני {n} שניות
+	{n} sessions have unsaved changes:	ב-{n} הפעלות יש שינויים שלא נשמרו:
+	{n}. (empty)	{n}. (ריק)
+	{panel} Panel	חלונית {panel}
+	{panel} — coming in a later milestone	{panel} — יגיע באבן דרך עתידית
+	{rate} fps Drop-Frame Timecode	קוד זמן {rate} פריימים/שנייה עם דילוג פריימים (Drop-Frame)
+	{rate} fps Non Drop-Frame Timecode	קוד זמן {rate} פריימים/שנייה ללא דילוג פריימים (Non Drop-Frame)
+	{rate} fps Timecode	קוד זמן {rate} פריימים/שנייה
+	{rate} frames/second	{rate} פריימים/שנייה
+	{sel} of {total} items selected	{sel} מתוך {total} פריטים נבחרו
+	{tc}  Chapter	{tc}  פרק
+	{total} items	{total} פריטים
+	✓ Enable	✓ הפעל
+	✔ matches	✔ תואם
+	✔ same file	✔ אותו קובץ
+	✖ different file	✖ קובץ שונה

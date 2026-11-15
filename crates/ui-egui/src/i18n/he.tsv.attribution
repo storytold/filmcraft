@@ -1,0 +1,8 @@
+asset:        he.tsv
+title:        Hebrew FilmCraft UI catalog
+author:       hrb9, craft-i18n contributors, VelvetOS integration
+source:       https://github.com/storytold/craft-i18n/pull/42
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-11-12
+notes:        AI-assisted source-key matched translations; maintainer/native speaker review pending.

@@ -70,9 +70,16 @@ fn system_fonts() -> &'static [(String, Arc<FontData>)] {
         let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
         let by_weight = |f: &&Arc<Face>| f.info.weight.abs_diff(400);
         let mut chosen: Vec<&Arc<Face>> = Vec::new();
-        let mut out = Vec::new();
+        let mut out: Vec<(String, Arc<FontData>)> = Vec::new();
         for s in missing {
-            if chosen.iter().any(|f| f.covers_text(s.sample)) {
+            // A single installed face (e.g. Segoe UI) may cover BOTH Arabic and Hebrew.
+            // Keep a named alias for the second script, or Hebrew availability checks
+            // incorrectly reject a perfectly readable shared font.
+            if let Some(idx) = chosen.iter().position(|f| f.covers_text(s.sample)) {
+                let face = chosen[idx];
+                let alias = Arc::clone(&out[idx].1);
+                out.push((format!("system-{}", s.code.to_lowercase()), alias));
+                chosen.push(face);
                 continue;
             }
             let covers = |f: &&Arc<Face>| f.covers_text(s.sample);
@@ -115,6 +122,11 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
             }
         }
     }
+}
+
+/// Do not offer a Hebrew interface with unreadable glyphs.
+pub(crate) fn hebrew_font_available() -> bool {
+    craft_fonts().any(|f| f.scripts.contains(&"Hebr")) || system_fonts().iter().any(|(name, _)| name == "system-hebr")
 }
 
 /// Whether `name` is an installed right-to-left face added by [`install`].

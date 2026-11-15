@@ -45,6 +45,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
+    uic!("app.language.hebrew", "עברית", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
@@ -258,6 +259,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.polish"
             | "app.language.swedish"
             | "app.language.turkish"
+            | "app.language.hebrew"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -266,6 +268,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         // Chinese needs the Chinese fallback theme::install adds (craft-fonts or a system face)
         if id == "app.language.chinese" && !crate::i18n::chinese_font_available() {
             return Err("no Chinese font is installed on this system (for example Noto Sans CJK SC or Microsoft YaHei); the interface stays in English".into());
+        }
+        if id == "app.language.hebrew" && !crate::rtl::hebrew_font_available() {
+            return Err("no Hebrew font is installed on this system (for example Noto Sans Hebrew); the interface stays in English".into());
         }
         // Korean needs an installed Hangul font (none is bundled; see cjk.rs)
         if id == "app.language.korean" && !crate::i18n::korean_font_available() {
@@ -288,6 +293,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.polish" => crate::i18n::Language::Pl,
             "app.language.swedish" => crate::i18n::Language::Sv,
             "app.language.turkish" => crate::i18n::Language::Tr,
+            "app.language.hebrew" => crate::i18n::Language::He,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -954,6 +960,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.hebrew" => it.checked = Some(app.ui.language == crate::i18n::Language::He),
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {
@@ -1229,6 +1236,11 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     v
 }
 
+/// Hebrew uses right-to-left ordering for the native in-window menu titles.
+fn top_level_menu_layout(language: crate::i18n::Language) -> egui::Layout {
+    if language == crate::i18n::Language::He { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) }
+}
+
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
@@ -1238,21 +1250,24 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
     // The bar's titles and their menus share one size and colour, as in a native menu bar.
+    let bar_layout = top_level_menu_layout(app.ui.language);
     egui::MenuBar::new().style(crate::theme::menu_style).config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
-        let mut titles = Vec::with_capacity(MENUS.len());
-        for top in MENUS {
-            let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            let r = ui.menu_button(app.ui.language.tr(top), |ui| {
-                ui.set_min_width(260.0);
-                if mine.is_empty() {
-                    ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
-                }
-                menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
-            });
-            app.auto.add(&format!("menu.{top}"), r.response.rect, top);
-            titles.push(r.response);
-        }
-        switch_on_hover(ui.ctx(), &titles);
+        ui.with_layout(bar_layout, |ui| {
+            let mut titles = Vec::with_capacity(MENUS.len());
+            for top in MENUS {
+                let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
+                let r = ui.menu_button(app.ui.language.tr(top), |ui| {
+                    ui.set_min_width(260.0);
+                    if mine.is_empty() {
+                        ui.add_enabled(false, egui::Button::new(tl!("(empty)")));
+                    }
+                    menu_level(ui, &mine, 1, &mut clicked, &mut app.auto, &labels);
+                });
+                app.auto.add(&format!("menu.{top}"), r.response.rect, top);
+                titles.push(r.response);
+            }
+            switch_on_hover(ui.ctx(), &titles);
+        });
     });
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
@@ -1419,6 +1434,12 @@ pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: Opt
 #[cfg(test)]
 mod parse_shortcut_tests {
     use super::{chord_held, label_menu_swatch, parse_shortcut};
+
+    #[test]
+    fn hebrew_menu_bar_layout_is_rtl_but_english_is_unchanged() {
+        assert!(super::top_level_menu_layout(crate::i18n::Language::He).prefer_right_to_left());
+        assert!(!super::top_level_menu_layout(crate::i18n::Language::En).prefer_right_to_left());
+    }
 
     #[test]
     fn edit_label_menu_swatch_uses_current_custom_palette() {
