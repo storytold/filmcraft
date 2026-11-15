@@ -29,8 +29,10 @@ fingerprint in both the media item and immutable provenance (at most 2 MiB read 
 host), but defer full-file SHA-256. A matching fingerprint is not proof that every byte is unchanged.
 Their provenance
 `sha256` is null, even when the media is online; `bytes` records its size when available.
-The source project is still hashed and snapshotted immediately. Copied media is hashed and verified
-synchronously. The project stores the original source paths, available import-time hashes, source
+The source project is still hashed and snapshotted immediately. Copied media is read once,
+synchronously: it is hashed as it is written, so the copy holds exactly the bytes its digest names,
+and then takes that name. A source whose size or modification time changes during its copy cancels
+the import. The project stores the original source paths, available import-time hashes, source
 tree and warnings independently of timeline edits. Undo does not delete the saved source snapshot.
 
 For an explicit, potentially expensive inspection of current media, use:
