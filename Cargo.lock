@@ -1081,6 +1081,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-cfb"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93#7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93"
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -2022,6 +2027,9 @@ dependencies = [
 [[package]]
 name = "filmcraft-cfb"
 version = "0.20.1"
+dependencies = [
+ "craft-cfb",
+]
 
 [[package]]
 name = "filmcraft-cli"
