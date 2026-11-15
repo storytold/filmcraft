@@ -10,6 +10,7 @@ use filmcraft_time::Tick;
 use roxmltree::Node;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// FilmCraft's Lumetri parameter for a Lumetri `ParameterID`, when it maps one.
 fn mapped(id: &str) -> Option<&'static str> {
     Some(match id {
         "3" => "basic_on",
@@ -39,6 +40,7 @@ fn mapped(id: &str) -> Option<&'static str> {
     })
 }
 
+/// A stored Lumetri value as `kind`; a scalar outside its range is clamped, with a warning.
 fn convert(raw: &str, kind: &ParamKind, report: &mut Report) -> Result<ParamValue> {
     match kind {
         ParamKind::Bool => match raw.trim() {
@@ -60,6 +62,9 @@ fn convert(raw: &str, kind: &ParamKind, report: &mut Report) -> Result<ParamValu
     }
 }
 
+/// A Lumetri component as FilmCraft's Lumetri effect: its mapped scalar controls and their
+/// keyframes, by stable `ParameterID`. Curves, wheels, LUTs and HSL data are reported, not
+/// imported.
 pub(super) fn read<'a, 'i>(component: Node<'a, 'i>, ids: &BTreeMap<&str, Node<'a, 'i>>, work: &mut usize, report: &mut Report) -> Result<EffectInstance> {
     let def = find_effect("lumetri").ok_or_else(|| error("Lumetri effect unavailable"))?;
     let mut effect = def.instance();
