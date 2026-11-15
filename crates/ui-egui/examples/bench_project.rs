@@ -204,7 +204,7 @@ impl PreviewDisplay {
         if let Some((comp, dev, _, _)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, server.display_window()))
                 && self.last != Some(k)
             {
                 let _ = comp.composite_prepared(&plan.plan, Some(&plan.prepared));
@@ -216,7 +216,7 @@ impl PreviewDisplay {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, server.display_window()));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {
@@ -399,7 +399,8 @@ fn main() {
         let key = FrameKey { target, frame, size, revision, draft: false };
         server.schedule_playback(key, rate, scale, &project, 1.0, false);
         let exact = display.refresh(&server, key);
-        meter.refresh(frame, exact);
+        meter.refresh_planned(frame, exact, server.is_planned(frame));
+        meter.picture(frame, display.last.map(|k| k.frame));
         next += period;
         let after = Instant::now();
         if next > after {
@@ -409,6 +410,7 @@ fn main() {
         }
     }
     meter.finish();
+    let stride_final = server.playback_stride();
     let wall_s = anchor.elapsed().as_secs_f64().max(0.001);
     server.stop_prefetch();
     std::thread::sleep(Duration::from_millis(100));
@@ -421,6 +423,7 @@ fn main() {
 
     let shown = meter.shown;
     let dropped = meter.dropped;
+    let completed = after.stats.jobs.saturating_sub(before.stats.jobs).saturating_sub(after.stats.cancelled.saturating_sub(before.stats.cancelled));
     let total = (shown + dropped).max(1) as f64;
     let play = json!({
         "effective_fps": shown as f64 / wall_s,
@@ -428,6 +431,13 @@ fn main() {
         "wall_s": wall_s,
         "shown": shown,
         "dropped": dropped,
+        "skipped": meter.skipped,
+        "distinct": meter.distinct,
+        "distinct_fps": meter.distinct as f64 / wall_s,
+        "mean_lag_ms": meter.mean_lag_frames() / rate.as_f64().max(1.0) * 1000.0,
+        "stride": stride_final,
+        "completed_jobs": completed,
+        "completed_jobs_shown_pct": 100.0 * meter.distinct.min(completed) as f64 / completed.max(1) as f64,
         "drop_pct": 100.0 * dropped as f64 / total,
         "on_time_pct": 100.0 * shown as f64 / total,
         "ttff_ms": ttff_ms,

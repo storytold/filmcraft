@@ -156,7 +156,7 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, server.display_window()))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
@@ -170,7 +170,7 @@ impl Display {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, server.display_window()));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {

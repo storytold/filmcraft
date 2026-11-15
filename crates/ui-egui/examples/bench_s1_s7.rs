@@ -300,7 +300,7 @@ impl PreviewDisplay {
         if let Some((comp, dev, _, _)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, server.display_window()))
                 && self.last != Some(k)
             {
                 let _ = comp.composite_prepared(&plan.plan, Some(&plan.prepared));
@@ -311,7 +311,7 @@ impl PreviewDisplay {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, server.display_window()));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {
@@ -544,7 +544,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         if ttff_ms.is_none() && display.last.is_some() {
             ttff_ms = Some(ms(t_ttff.elapsed()));
         }
-        meter.refresh(frame, exact);
+        meter.refresh_planned(frame, exact, server.is_planned(frame));
+        meter.picture(frame, display.last.map(|k| k.frame));
         if let Some(shown_k) = display.last {
             let present_t = Tick::from_seconds_f64(anchor.elapsed().as_secs_f64());
             let present_frame = rate.frame_at(present_t);
@@ -624,6 +625,10 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         "effective_fps": effective_fps,
         "shown": shown,
         "dropped": dropped,
+        "skipped": meter.skipped,
+        "distinct": meter.distinct,
+        "distinct_fps": meter.distinct as f64 / wall_s,
+        "mean_lag_ms": meter.mean_lag_frames() / rate.as_f64().max(1.0) * 1000.0,
         "drop_pct": 100.0 * dropped as f64 / total,
         "ttff_ms": ttff_ms,
         "preroll_ms": preroll_ms,

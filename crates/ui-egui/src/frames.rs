@@ -8,7 +8,7 @@
 //! render (see `filmcraft_engine::previews`).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -163,6 +163,12 @@ struct Shared {
     /// frames: compositing, CPU effects. Frames cannot be ready sooner than this after they are
     /// started, and the workers can finish at most `workers / cost` of them per second.
     render_cost: Mutex<f64>,
+    /// Wall times (s) of the latest playback jobs, whole job: what [`strided_plan`] sizes its lead
+    /// and stride from (`render_cost` leaves out the decode and the wait for a decoder).
+    latency: Mutex<VecDeque<f32>>,
+    /// Stride in force while playing (1: every frame) and the frames a monitor looks back with.
+    stride: AtomicI64,
+    window: AtomicI64,
     workers: usize,
     /// Always-on counters for `perf.stats`.
     stats: Mutex<FrameStats>,
@@ -570,6 +576,114 @@ pub fn playback_plan(render_cost: f64, fps: f64, workers: usize) -> (i64, i64) {
     (frames_per_job.ceil() as i64, load.ceil() as i64)
 }
 
+/// Frames behind the frame due that a playing monitor may fall back to (`FrameServer::recent`,
+/// `FrameServer::nearest_plan`) while every frame is rendered. [`FrameServer::display_window`] is
+/// larger while playback is strided: a frame rendered for the grid slot can land up to a stride
+/// plus the grace after its due time and must still be the picture shown, or it is wasted work.
+pub const DISPLAY_WINDOW: i64 = 6;
+/// Playback leaves "render every frame" only when the workers are this far over real time, measured
+/// on the whole job (see [`strided_plan`]). The 1/4-scale publi preview sits at ~1.15 and plays
+/// ~45 fps in exact mode; striding it would cap it at 30.
+pub const STRIDE_ENTER_LOAD: f64 = 1.5;
+/// Once strided, playback returns to every frame only below this load (hysteresis against flapping).
+pub const STRIDE_EXIT_LOAD: f64 = 1.1;
+/// The widest stride (2 updates per second at 60 fps); a bound for hostile or garbage timings.
+pub const MAX_STRIDE: i64 = 30;
+const MAX_LEAD: i64 = 240;
+const LATENCY_SAMPLES: usize = 32;
+const MIN_LATENCY_SAMPLES: usize = 8;
+
+/// Wall time (s) of whole playback jobs (source decode, effects, plan): mean, median, 90th percentile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JobLatency {
+    pub mean: f64,
+    pub p50: f64,
+    pub p90: f64,
+}
+
+/// [`JobLatency`] of recent job times (s); `None` while there are too few finite samples to trust.
+pub fn latency_stats(samples: &[f32]) -> Option<JobLatency> {
+    if samples.len() < MIN_LATENCY_SAMPLES {
+        return None;
+    }
+    let mut v: Vec<f64> = samples.iter().map(|s| f64::from(*s)).filter(|s| s.is_finite() && *s >= 0.0).collect();
+    if v.len() < MIN_LATENCY_SAMPLES {
+        return None;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let at = |p: f64| v.get(((v.len() - 1) as f64 * p).round() as usize).copied().unwrap_or(0.0);
+    Some(JobLatency { mean: v.iter().sum::<f64>() / v.len() as f64, p50: at(0.5), p90: at(0.9) })
+}
+
+/// What the strided playback asks for ([`strided_plan`]); all distances are in frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StridePlan {
+    /// Spacing of the rendered frames: those with `frame % stride == 0` (an absolute grid, so the
+    /// same frame is asked for on every refresh and its job is never replaced by a neighbour's).
+    pub stride: i64,
+    /// The nearest frame ahead of the playhead worth starting: a job takes the median latency.
+    pub lead_min: i64,
+    /// How far ahead a job started now is expected to be done (90th percentile latency).
+    pub lead: i64,
+    /// How long after its due time a frame still improves the picture (it replaces an older one
+    /// until the next grid frame is due).
+    pub grace: i64,
+    /// Grid frames kept queued or running at once: about one per worker, so none waits in the queue.
+    pub depth: i64,
+}
+
+/// The strided regime for a CPU-bound preview, or `None` to keep rendering every frame
+/// ([`playback_plan`]). Unlike `playback_plan` it is sized from the whole job (decode included, the
+/// time between starting a frame and having it) at `fps`, and only engages when the workers are
+/// [`STRIDE_ENTER_LOAD`] over real time, so any pipeline that keeps up, or nearly does, is untouched.
+/// `current` is the stride in force (1 = none): it is kept while it still covers the load without
+/// being more than a third too wide, so the picture rate does not flap between two strides.
+pub fn strided_plan(lat: Option<JobLatency>, fps: f64, workers: usize, current: i64) -> Option<StridePlan> {
+    let lat = lat?;
+    if !(fps.is_finite() && fps > 0.0 && lat.mean.is_finite() && lat.mean > 0.0 && lat.p50.is_finite() && lat.p90.is_finite()) {
+        return None;
+    }
+    let w = workers.max(1);
+    let load = lat.mean * fps * 1.15 / w as f64;
+    let floor = if current > 1 { STRIDE_EXIT_LOAD } else { STRIDE_ENTER_LOAD };
+    if load < floor {
+        return None;
+    }
+    let wanted = (load.ceil() as i64).clamp(2, MAX_STRIDE);
+    let stride = if (2..=MAX_STRIDE).contains(&current) && load <= current as f64 && load > 0.7 * current as f64 { current } else { wanted };
+    let frames = |s: f64| (s.max(0.0) * fps).ceil() as i64;
+    let lead_min = frames(lat.p50).clamp(1, MAX_LEAD);
+    let lead = frames(lat.p90).saturating_add(2).clamp(lead_min, MAX_LEAD);
+    Some(StridePlan { stride, lead_min, lead, grace: stride.max(DISPLAY_WINDOW), depth: i64::try_from(w).unwrap_or(i64::MAX).saturating_add(1) })
+}
+
+/// The first multiple of `stride` (at least 1) at or after `frame`.
+fn grid_ceil(frame: i64, stride: i64) -> i64 {
+    let s = stride.max(1);
+    frame.saturating_add((s - frame.rem_euclid(s)) % s)
+}
+
+/// Whether `frame` is one the playback renders at `stride` (every frame at 1).
+pub fn is_planned(frame: i64, stride: i64) -> bool {
+    stride <= 1 || frame.rem_euclid(stride) == 0
+}
+
+/// Whether a queued job for `frame`, with the playhead at `cur`, can still improve the picture: it
+/// is not so near that even `grace` frames late it would be over, and not past what is asked for.
+fn queued_job_useful(frame: i64, cur: i64, plan: &StridePlan) -> bool {
+    let ahead = frame.saturating_sub(cur);
+    let span = plan.lead.saturating_add(plan.depth.saturating_mul(plan.stride)).saturating_add(plan.grace);
+    ahead >= plan.lead_min.saturating_sub(plan.grace) && ahead < span
+}
+
+/// Whether a running job for `frame` is still worth finishing: not more than `grace` frames past
+/// its due time, and no ready frame at or before the playhead is already newer (`newest_ready`), in
+/// which case the monitor would not show it. (A cancelled plan job still runs to its end: its CPU
+/// effects do not poll the flag, so this only avoids caching and showing what nobody uses.)
+fn running_job_useful(frame: i64, cur: i64, newest_ready: Option<i64>, plan: &StridePlan) -> bool {
+    frame.saturating_sub(cur) >= -plan.grace && newest_ready.is_none_or(|n| frame > n)
+}
+
 impl FrameServer {
     /// Settings ▸ Memory ▸ frame cache budget (bytes); evicts down to it right away.
     pub fn set_cache_budget(&self, bytes: usize) {
@@ -599,6 +713,9 @@ impl FrameServer {
             profiling: AtomicBool::new(false),
             records: Mutex::new(Vec::new()),
             render_cost: Mutex::new(0.0),
+            latency: Mutex::new(VecDeque::new()),
+            stride: AtomicI64::new(1),
+            window: AtomicI64::new(DISPLAY_WINDOW),
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
@@ -791,6 +908,19 @@ impl FrameServer {
         let dir = if speed < 0.0 { -1 } else { 1 };
         let step = speed.abs().max(1.0) as i64;
         let fps = rate.as_f64() * speed.abs().max(1.0) / step as f64;
+        // A CPU-bound preview (the effects take far longer than the frame interval on every worker)
+        // asks only for what can reach the screen, see `strided_plan`. Anything lighter, or any
+        // other speed, direction, preroll or target, takes the exact path below, unchanged.
+        if !preroll && dir > 0 && step == 1 && matches!(key.target, Target::Sequence(_) | Target::SequencePlan(..) | Target::SequenceLive(_)) {
+            let plan = strided_plan(self.latency(), fps, self.shared.workers, self.playback_stride());
+            self.set_stride(plan.as_ref());
+            if let Some(plan) = plan {
+                self.schedule_strided(key, rate, scale, project, &plan);
+                return;
+            }
+        } else {
+            self.set_stride(None);
+        }
         let (lead, stride) = if preroll { (1, 1) } else { playback_plan(self.render_cost(), fps, self.shared.workers) };
         if lead <= 1 {
             // the frame due now; once the clock runs, the frames before it are late
@@ -854,6 +984,65 @@ impl FrameServer {
         (0..PREROLL_FRAMES).map(|i| key.frame + i * step).filter(|f| *f >= 0 && *f <= last).all(|f| self.is_ready(&FrameKey { frame: f, ..key }))
     }
 
+    /// Stride in force while playing (1: every frame), see [`strided_plan`].
+    pub fn playback_stride(&self) -> i64 {
+        self.shared.stride.load(Ordering::Relaxed).max(1)
+    }
+
+    /// Whether `frame` is one the playback in force renders (the others are left out on purpose).
+    pub fn is_planned(&self, frame: i64) -> bool {
+        is_planned(frame, self.playback_stride())
+    }
+
+    /// Frames a playing monitor looks back for the newest ready frame: [`DISPLAY_WINDOW`], wider
+    /// while playback is strided. The monitors and the bench displays use this one value.
+    pub fn display_window(&self) -> i64 {
+        self.shared.window.load(Ordering::Relaxed).max(DISPLAY_WINDOW)
+    }
+
+    fn set_stride(&self, plan: Option<&StridePlan>) {
+        self.shared.stride.store(plan.map_or(1, |p| p.stride), Ordering::Relaxed);
+        self.shared.window.store(plan.map_or(DISPLAY_WINDOW, |p| p.stride.saturating_mul(2).saturating_add(p.grace)), Ordering::Relaxed);
+    }
+
+    fn latency(&self) -> Option<JobLatency> {
+        let samples: Vec<f32> = self.shared.latency.lock().unwrap_or_else(PoisonError::into_inner).iter().copied().collect();
+        latency_stats(&samples)
+    }
+
+    /// The CPU-bound regime of [`Self::schedule_playback`]: ask only for the grid frames a job
+    /// started now can finish by (or shortly after) their due time, about one per worker, and keep
+    /// only the jobs that can still improve the picture. The same grid frames are asked for on
+    /// every refresh, so the queue never fills with neighbours of a frame it already has, and the
+    /// workers take them in due order.
+    fn schedule_strided(&self, key: FrameKey, rate: filmcraft_time::FrameRate, scale: f32, project: &Arc<Project>, plan: &StridePlan) {
+        let cur = key.frame;
+        let plan_bytes = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).bytes_of(&key);
+        let depth = plan.depth.min(fitting_prefetch_depth(prefetch_depth(1.0), plan_bytes)).max(1);
+        let first = grid_ceil(cur.saturating_add(plan.lead_min), plan.stride);
+        for i in 0..depth {
+            let f = first.saturating_add(i.saturating_mul(plan.stride));
+            self.request_job(FrameRequest {
+                key: FrameKey { frame: f, ..key },
+                time: rate.tick_of(f),
+                scale,
+                project,
+                priority: u32::try_from(i.saturating_add(1)).unwrap_or(u32::MAX),
+                prefetch: true,
+                catch_up: Some(rate.tick_of(f) - rate.tick_of(cur)),
+            });
+        }
+        let (target, rev) = (key.target, key.revision);
+        let newest = self.recent(key, 1, plan.grace.saturating_add(plan.stride), 0).map(|k| k.frame);
+        self.retain_jobs(
+            |k| k.target != target || (k.revision == rev && queued_job_useful(k.frame, cur, plan)),
+            |k| {
+                k.target != target
+                    || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && running_job_useful(k.frame, cur, newest, plan))
+            },
+        );
+    }
+
     /// The current per-frame render cost estimate (s), see [`playback_plan`].
     pub fn render_cost(&self) -> f64 {
         *self.shared.render_cost.lock().unwrap_or_else(PoisonError::into_inner)
@@ -879,6 +1068,7 @@ impl FrameServer {
     /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
+        self.set_stride(None);
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
         for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if *prefetch {
@@ -975,6 +1165,15 @@ impl Drop for FrameServer {
 pub struct PlaybackMeter {
     pub shown: u64,
     pub dropped: u64,
+    /// Frames the playback left out on purpose (strided playback, [`strided_plan`]): not `dropped`.
+    pub skipped: u64,
+    /// Distinct pictures that reached the screen ([`Self::picture`]): what the viewer sees change.
+    pub distinct: u64,
+    lag_frames: u64,
+    lag_samples: u64,
+    last_picture: Option<i64>,
+    /// Whether the frame in `current` is one the playback renders (see `skipped`).
+    current_planned: bool,
     /// Frame due at the last refresh, and whether its exact picture has been shown.
     current: Option<(i64, bool)>,
     /// Frames advanced per displayed frame (speed), and direction.
@@ -988,6 +1187,12 @@ impl PlaybackMeter {
 
     /// Record one display refresh: `frame` is due now and `exact` says whether it is on screen.
     pub fn refresh(&mut self, frame: i64, exact: bool) {
+        self.refresh_planned(frame, exact, true);
+    }
+
+    /// [`Self::refresh`] for a playback that renders only some frames (`planned`: this frame is one
+    /// of them): a frame left out on purpose that was not shown is `skipped`, not `dropped`.
+    pub fn refresh_planned(&mut self, frame: i64, exact: bool, planned: bool) {
         let step = if self.step == 0 { 1 } else { self.step };
         match self.current {
             Some((f, seen)) if f == frame => self.current = Some((f, seen || exact)),
@@ -1000,16 +1205,22 @@ impl PlaybackMeter {
                     self.dropped += (moved - 1) as u64;
                 }
                 self.current = Some((frame, exact));
+                self.current_planned = planned;
             }
-            None => self.current = Some((frame, exact)),
+            None => {
+                self.current = Some((frame, exact));
+                self.current_planned = planned;
+            }
         }
     }
 
     fn close(&mut self, seen: bool) {
         if seen {
             self.shown += 1;
-        } else {
+        } else if self.current_planned {
             self.dropped += 1;
+        } else {
+            self.skipped += 1;
         }
     }
 
@@ -1017,6 +1228,7 @@ impl PlaybackMeter {
     /// was hidden, so nothing could be shown).
     pub fn resync(&mut self, frame: i64, exact: bool) {
         self.current = Some((frame, exact));
+        self.current_planned = true;
     }
 
     /// Playback stopped: account for the frame on screen.
@@ -1024,6 +1236,24 @@ impl PlaybackMeter {
         if let Some((_, seen)) = self.current.take() {
             self.close(seen);
         }
+    }
+
+    /// Record the picture on screen at one refresh: `due` is the frame due now and `on_screen` the
+    /// frame shown (`None`: nothing yet). Feeds `distinct` and [`Self::mean_lag_frames`].
+    pub fn picture(&mut self, due: i64, on_screen: Option<i64>) {
+        let Some(shown) = on_screen else { return };
+        self.lag_samples = self.lag_samples.saturating_add(1);
+        self.lag_frames = self.lag_frames.saturating_add(u64::try_from(due.saturating_sub(shown)).unwrap_or(0));
+        if self.last_picture != Some(shown) {
+            self.distinct += 1;
+            self.last_picture = Some(shown);
+        }
+    }
+
+    /// Mean distance (frames) between the frame due and the picture on screen over the refreshes
+    /// that had a picture: how far the video trails the clock (0 when every frame is shown).
+    pub fn mean_lag_frames(&self) -> f64 {
+        self.lag_frames as f64 / self.lag_samples.max(1) as f64
     }
 
     /// Shown and dropped so far, counting the frame currently due as shown when it is.
@@ -1149,6 +1379,16 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         if !cancelled || cost > *c {
             *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
         }
+        let wall = started.elapsed().as_secs_f32();
+        let mut l = sh.latency.lock().unwrap_or_else(PoisonError::into_inner);
+        let mean = if l.is_empty() { 0.0 } else { l.iter().sum::<f32>() / l.len() as f32 };
+        // a cancelled job only tells that the whole job takes at least this long
+        if !cancelled || wall > mean {
+            if l.len() >= LATENCY_SAMPLES {
+                l.pop_front();
+            }
+            l.push_back(wall);
+        }
     }
     {
         let job_wall = started.elapsed();
@@ -1273,7 +1513,11 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameKey, PlanCache, PlaybackMeter, Target, background_work, fitting_prefetch_depth, plan_evictions, playback_plan, recent_keys};
+    use super::{
+        DISPLAY_WINDOW, FrameKey, JobLatency, MAX_STRIDE, PlanCache, PlaybackMeter, STRIDE_ENTER_LOAD, STRIDE_EXIT_LOAD, Target, background_work,
+        fitting_prefetch_depth, grid_ceil, is_planned, latency_stats, plan_evictions, playback_plan, queued_job_useful, recent_keys, running_job_useful,
+        strided_plan,
+    };
     use filmcraft_project::ItemId;
 
     #[test]
@@ -1389,6 +1633,137 @@ mod tests {
         // 0.5 s of effects per frame at 24 fps on 6 workers: 12 frames pass while one renders,
         // so start 12 ahead, and every 3rd frame is what 6 workers can finish
         assert_eq!(playback_plan(0.5, 24.0, 6), (12, 3));
+    }
+
+    fn lat_of(mean: f64) -> Option<JobLatency> {
+        Some(JobLatency { mean, p50: mean * 0.875, p90: mean * 1.75 })
+    }
+
+    #[test]
+    fn strided_plan_leaves_light_and_borderline_pipelines_alone() {
+        // S1-S5-like: tens of ms per job on 6 workers at 60 fps
+        assert_eq!(strided_plan(lat_of(0.020), 60.0, 6, 1), None);
+        // the publi at 1/4 scale: ~0.1 s per job, load 1.15, ~45 fps in exact mode today
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(None, 60.0, 6, 1), None);
+        // hostile timings and rates are refused, never divided by or cast
+        assert_eq!(strided_plan(lat_of(0.5), 0.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.5), f64::NAN, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(f64::NAN), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.0), 60.0, 0, 1), None);
+        assert!(strided_plan(lat_of(1e9), 60.0, 0, 1).is_some_and(|p| p.stride == MAX_STRIDE && p.lead <= 240));
+    }
+
+    /// A pipeline that keeps up (load under the entry threshold) decides exactly as before the
+    /// strided regime existed: no stride, every frame planned, the display window of 6, and the
+    /// lead/skip choice is still `playback_plan`'s alone.
+    #[test]
+    fn a_pipeline_that_keeps_up_decides_as_before() {
+        assert_eq!(DISPLAY_WINDOW, 6);
+        const { assert!(STRIDE_ENTER_LOAD >= 1.5 && STRIDE_EXIT_LOAD <= 1.1, "the thresholds the 0.25-scale playback relies on") };
+        let mut checked = 0;
+        for workers in [1usize, 2, 4, 6, 8, 16] {
+            for fps in [12.0, 24.0, 25.0, 30.0, 60.0, 120.0] {
+                for ms in (1..=400).map(|i| f64::from(i) * 0.001) {
+                    let load = ms * fps * 1.15 / workers as f64;
+                    if load >= STRIDE_ENTER_LOAD {
+                        continue;
+                    }
+                    checked += 1;
+                    // not striding: never starts one, whatever the percentiles
+                    assert_eq!(strided_plan(lat_of(ms), fps, workers, 1), None, "{ms} s {fps} fps {workers} workers");
+                    // ... and every frame is one the playback renders
+                    assert!((0..64).all(|f| is_planned(f, 1)));
+                    // the lead and skip stay `playback_plan`'s (unchanged): a light one is every frame
+                    if load <= 1.0 {
+                        assert_eq!(playback_plan(ms, fps, workers), (1, 1));
+                    }
+                    if load < STRIDE_EXIT_LOAD {
+                        // ... and a stride left over from a heavier moment is dropped
+                        for cur in 2..=MAX_STRIDE {
+                            assert_eq!(strided_plan(lat_of(ms), fps, workers, cur), None, "{ms} s {fps} fps {workers} workers stride {cur}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000);
+    }
+
+    #[test]
+    fn strided_plan_sizes_stride_and_lead_from_the_whole_job() {
+        // publi at full scale: ~0.5 s per job on 6 workers at 60 fps -> load 5.75
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.lead_min, p.lead, p.grace, p.depth), (6, 27, 55, 6, 7));
+        // half scale: ~0.25 s -> load 2.875
+        let p = strided_plan(lat_of(0.25), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.grace), (3, 6));
+        assert!(p.lead_min <= p.lead);
+    }
+
+    #[test]
+    fn strided_plan_has_hysteresis_in_both_directions() {
+        // load 1.15: not enough to start striding, enough to keep it
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 3).map(|p| p.stride), Some(2));
+        // load 2.99: a stride of 4 in force stays, a fresh start takes 3
+        assert_eq!(strided_plan(lat_of(0.26), 60.0, 6, 4).map(|p| p.stride), Some(4));
+        assert_eq!(strided_plan(lat_of(0.26), 60.0, 6, 1).map(|p| p.stride), Some(3));
+        // a stride that no longer covers the load widens at once
+        assert_eq!(strided_plan(lat_of(0.5), 60.0, 6, 2).map(|p| p.stride), Some(6));
+    }
+
+    #[test]
+    fn the_grid_is_absolute_and_never_overflows() {
+        assert_eq!([grid_ceil(10, 6), grid_ceil(12, 6), grid_ceil(0, 6), grid_ceil(-3, 6), grid_ceil(7, 1), grid_ceil(7, 0)], [12, 12, 0, 0, 7, 7]);
+        assert!(grid_ceil(i64::MAX, 6) >= i64::MAX - 6);
+        assert!(is_planned(12, 6) && !is_planned(13, 6) && is_planned(13, 1) && is_planned(13, 0) && is_planned(-6, 6));
+    }
+
+    #[test]
+    fn strided_jobs_are_kept_only_while_they_can_improve_the_picture() {
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap(); // stride 6, lead_min 27, lead 55, grace 6, depth 7
+        // queued: a job nearer than lead_min - grace cannot be done even grace frames late
+        assert!(!queued_job_useful(100 + 20, 100, &p));
+        assert!(queued_job_useful(100 + 21, 100, &p));
+        assert!(queued_job_useful(100 + 100, 100, &p));
+        assert!(!queued_job_useful(100 + 103, 100, &p));
+        // running: up to grace frames late; never once a newer frame at or before the clock is ready
+        assert!(running_job_useful(95, 100, None, &p));
+        assert!(!running_job_useful(93, 100, None, &p));
+        assert!(!running_job_useful(98, 100, Some(99), &p));
+        assert!(running_job_useful(130, 100, Some(99), &p));
+    }
+
+    #[test]
+    fn latency_stats_needs_enough_finite_samples() {
+        assert_eq!(latency_stats(&[0.1; 7]), None);
+        assert_eq!(latency_stats(&[f32::NAN; 8]), None);
+        let ten: Vec<f32> = (1..=10).map(|i| i as f32).collect();
+        assert_eq!(latency_stats(&ten), Some(JobLatency { mean: 5.5, p50: 6.0, p90: 9.0 }));
+    }
+
+    #[test]
+    fn meter_separates_frames_left_out_on_purpose_from_lost_ones() {
+        let mut m = PlaybackMeter::default();
+        m.start(1.0);
+        // stride 2: the odd frames are not planned; frame 2 is planned and never reached the screen
+        for (f, exact, planned) in [(0, true, true), (1, false, false), (2, false, true), (3, false, false), (4, true, true)] {
+            m.refresh_planned(f, exact, planned);
+        }
+        m.finish();
+        assert_eq!((m.shown, m.dropped, m.skipped), (2, 1, 2));
+    }
+
+    #[test]
+    fn meter_counts_distinct_pictures_and_their_lag() {
+        let mut m = PlaybackMeter::default();
+        m.start(1.0);
+        for (due, pic) in [(0, Some(0)), (1, Some(0)), (2, Some(0)), (3, Some(3)), (4, Some(3)), (5, None)] {
+            m.picture(due, pic);
+        }
+        assert_eq!(m.distinct, 2);
+        assert!((m.mean_lag_frames() - 0.8).abs() < 1e-9, "lags 0,1,2,0,1 -> {}", m.mean_lag_frames());
     }
 
     #[test]
