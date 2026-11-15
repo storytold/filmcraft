@@ -89,23 +89,19 @@ fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_proje
     (Arc::new(p), seq, m)
 }
 
-fn png(dir: &str, name: &str) -> Vec<u8> {
+fn png(base: &std::path::Path, dir: &str, name: &str) -> Vec<u8> {
     // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
     let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
-    std::fs::read(std::env::temp_dir().join(format!("fc-gpu-export-{dir}{index:03}.png"))).unwrap()
+    std::fs::read(base.join(format!("{dir}{index:03}.png"))).unwrap()
 }
 
-fn export_png(dir: &str, gpu: GpuRendering, size: (u32, u32)) {
-    export_project_png(dir, gpu, size, false);
+fn export_png(base: &std::path::Path, dir: &str, gpu: GpuRendering, size: (u32, u32)) {
+    export_project_png(base, dir, gpu, size, false);
 }
 
-fn export_project_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32), adjusted: bool) {
+fn export_project_png(base: &std::path::Path, dir: &str, gpu: GpuRendering, (w, h): (u32, u32), adjusted: bool) {
     let (p, seq, m) = project_with(w, h, adjusted);
-    let mut s = ExportSettings {
-        format: Format::PngSequence,
-        path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let mut s = ExportSettings { format: Format::PngSequence, path: base.join(dir).to_string_lossy().into_owned(), ..Default::default() };
     s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
@@ -137,18 +133,26 @@ fn gpu_export_matches_cpu_and_counts() {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
     };
+    // A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
+    let mut b = tempfile::Builder::new();
+    b.prefix("fc-gpu-export-");
+    // owner-only, so another local user cannot swap an output for a symlink
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    let tmp = b.tempdir().unwrap();
+    let base = tmp.path();
     // Clean registry first: Auto with no factory must be byte-equal to Off.
-    export_png("off-cpu", GpuRendering::Off, (320, 180));
-    export_png("off-auto", GpuRendering::Auto, (320, 180));
-    assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
+    export_png(base, "off-cpu", GpuRendering::Off, (320, 180));
+    export_png(base, "off-auto", GpuRendering::Auto, (320, 180));
+    assert_eq!(png(base, "off-cpu", "img000.png"), png(base, "off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
     register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
-        export_png("cpu", GpuRendering::Off, size);
-        export_png("gpu", GpuRendering::Auto, size);
+        export_png(base, "cpu", GpuRendering::Off, size);
+        export_png(base, "gpu", GpuRendering::Auto, size);
         for f in ["000", "001"] {
-            assert_parity(&png("cpu", &format!("img{f}.png")), &png("gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
+            assert_parity(&png(base, "cpu", &format!("img{f}.png")), &png(base, "gpu", &format!("img{f}.png")), &format!("{:?} frame {f}", size));
         }
         let _ = i;
     }
@@ -159,12 +163,12 @@ fn gpu_export_matches_cpu_and_counts() {
     // CPU renderer, and matches the CPU export.
     let composited = filmcraft_gpu::export_renderer::timing::get().frames;
     let GpuRenderStats { fallbacks, .. } = filmcraft_export::gpu_render_stats();
-    export_project_png("adj-cpu", GpuRendering::Off, (320, 180), true);
-    export_project_png("adj-gpu", GpuRendering::Auto, (320, 180), true);
+    export_project_png(base, "adj-cpu", GpuRendering::Off, (320, 180), true);
+    export_project_png(base, "adj-gpu", GpuRendering::Auto, (320, 180), true);
     for f in ["000", "001"] {
-        assert_parity(&png("adj-cpu", &format!("img{f}.png")), &png("adj-gpu", &format!("img{f}.png")), &format!("adjustment layer frame {f}"));
+        assert_parity(&png(base, "adj-cpu", &format!("img{f}.png")), &png(base, "adj-gpu", &format!("img{f}.png")), &format!("adjustment layer frame {f}"));
     }
-    assert_ne!(png("adj-cpu", "img000.png"), png("off-cpu", "img000.png"), "the adjustment layer changes the picture");
+    assert_ne!(png(base, "adj-cpu", "img000.png"), png(base, "off-cpu", "img000.png"), "the adjustment layer changes the picture");
     let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
     assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
     assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");

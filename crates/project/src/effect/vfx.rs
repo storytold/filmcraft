@@ -800,6 +800,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
             VIDEO,
             vec![
                 ch("source", "Source", &["Sequence Timecode", "Media Timecode", "Clip Name", "File Name", "Frame Count", "Sequence Name"], 0),
+                ch("time_format", "Time Format", &["Timecode", "Feet + Frames 35mm", "Feet + Frames 16mm", "Frames"], 0),
                 pt("position", "Position", f64::NAN, f64::NAN),
                 ch("alignment", "Alignment", &["Bottom Center", "Bottom Left", "Bottom Right", "Top Center", "Top Left", "Top Right", "Custom"], 0),
                 fs("size", "Size", 6.0, (1.0, 100.0), (1.0, 30.0), "%", 1),
@@ -1190,7 +1191,7 @@ mod tests {
                 "Unsharp Mask",
             ],
         ),
-        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
+        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Color Grading", "Tint", "Video Limiter", "Vignette"]),
         ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
         ("Generate", &["4-Color Gradient", "Gradient"]),
         ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),

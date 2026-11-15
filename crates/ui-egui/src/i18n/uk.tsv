@@ -187,8 +187,8 @@
 	Link Media…	Прив’язати медіа…
 	Linked Selection	Пов’язане виділення
 	Lock Guides	Заблокувати напрямні
-	Lumetri Color	Колір Lumetri
-	Lumetri Scopes	Відеоскопи Lumetri
+	Color Grading	Кольорокорекція
+	Video Scopes	Відеоскопи
 	Magnification	Масштаб
 	Make Offline…	Зробити автономним…
 	Make Subclip…	Створити підкліп…
@@ -441,3 +441,16 @@
 	Next	Наступний
 	Options	Параметри
 	Enter a valid HH:MM:SS:FF timecode	Введіть коректний таймкод ГГ:ХХ:СС:КК (HH:MM:SS:FF)
+	Ultra Key	Хромакей
+	Warp Stabilizer	Стабілізатор деформації
+	Morph Cut	Морф-перехід
+	Enable External Video Output	Увімкнути зовнішній відеовихід
+	Color Grading Presets	Пресети кольорокорекції
+	Add Color Grading to clip	Додати кольорокорекцію до кліпу
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Параметри керування кольором розташовано на вкладці «Налаштування» панелі «Кольорокорекція».
+	List Color Grading Presets	Список пресетів кольорокорекції
+	Apply Color Grading Preset	Застосувати пресет кольорокорекції
+	Color Grading Preset Thumbnails	Мініатюри пресетів кольорокорекції
+	Toggle Color Grading Section	Перемкнути розділ кольорокорекції
+	Color Grading Section	Розділ кольорокорекції
+	Read Video Scopes	Зчитати дані відеоскопів

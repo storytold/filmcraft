@@ -99,15 +99,15 @@ fn op1a_reads_back_with_our_demuxer_and_decoders() {
         assert_eq!(r.frames, 24);
         assert!(r.extra_files.is_empty());
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
+        let mx = craft_media::mxf::open(&bytes).unwrap();
         assert!(mx.warnings.is_empty(), "{codec:?}: {:?}", mx.warnings);
         assert_eq!(mx.operational_pattern.name(), "OP1a");
         assert_eq!(mx.material_package_name.as_deref(), Some("MXF Test"));
         assert_eq!(mx.timecode.unwrap().format(), "01:00:00:00");
-        let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+        let v = &mx.tracks[mx.track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
         assert_eq!(v.samples.len(), 24, "{codec:?}");
         assert_eq!(v.duration, Some(24));
-        let a = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap()];
+        let a = &mx.tracks[mx.track_of_kind(craft_media::mxf::TrackKind::Sound).unwrap()];
         assert_eq!(a.stored_sample_frames(), 48_000, "{codec:?}");
         assert_eq!(a.sound.as_ref().unwrap().bits, 24);
         if codec == MxfVideoCodec::H264 {
@@ -145,9 +145,9 @@ fn op1a_h264_high10_and_intra() {
         let s = ExportSettings { h264_profile: H264Profile::High10, h264_intra_only: intra, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
+        let mx = craft_media::mxf::open(&bytes).unwrap();
         assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
-        let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+        let v = &mx.tracks[mx.track_of_kind(craft_media::mxf::TrackKind::Picture).unwrap()];
         assert_eq!(v.samples.len(), 24);
         assert_eq!(v.samples.iter().all(|s| s.key), intra);
         let pic = v.picture.as_ref().unwrap();
@@ -181,17 +181,20 @@ fn op_atom_writes_one_file_per_essence() {
     assert_eq!(r.extra_files, opatom_audio_paths(&path, 2));
     assert!(r.extra_files[0].ends_with("atom_A1.mxf") && r.extra_files[1].ends_with("atom_A2.mxf"));
     let v = std::fs::read(&path).unwrap();
-    let mv = filmcraft_mxf::open(&v).unwrap();
+    let mv = craft_media::mxf::open(&v).unwrap();
     assert_eq!(mv.operational_pattern.name(), "OP-Atom");
     assert_eq!(mv.tracks.len(), 1);
-    assert_eq!(mv.tracks[0].wrapping, filmcraft_mxf::Wrapping::Clip);
+    assert_eq!(mv.tracks[0].wrapping, craft_media::mxf::Wrapping::Clip);
     assert_eq!(mv.tracks[0].samples.len(), 24);
+    // the identification names FilmCraft, as the app's own writer did
+    assert_eq!((mv.product_name.as_deref(), mv.company_name.as_deref()), (Some("FilmCraft"), Some("FilmCraft")));
     for (k, a) in r.extra_files.iter().enumerate() {
         let b = std::fs::read(a).unwrap();
-        let ma = filmcraft_mxf::open(&b).unwrap();
+        let ma = craft_media::mxf::open(&b).unwrap();
+        assert_eq!((ma.product_name.as_deref(), ma.company_name.as_deref()), (Some("FilmCraft"), Some("FilmCraft")));
         assert_eq!(ma.operational_pattern.name(), "OP-Atom");
         let t = &ma.tracks[0];
-        assert_eq!(t.kind, filmcraft_mxf::TrackKind::Sound);
+        assert_eq!(t.kind, craft_media::mxf::TrackKind::Sound);
         assert_eq!(t.track_id, 3 + k as u32);
         assert_eq!(t.sound.as_ref().unwrap().channels, 1);
         assert_eq!(t.stored_sample_frames(), 48_000);
@@ -263,8 +266,8 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
         // PCM exact: ffmpeg's samples are what our demuxer reads back
         let pcm = ffmpeg_raw(&ffmpeg, &path, "0:a:0", &["-f", "s32le", "-acodec", "pcm_s32le"]);
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
-        let at = mx.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
+        let mx = craft_media::mxf::open(&bytes).unwrap();
+        let at = mx.track_of_kind(craft_media::mxf::TrackKind::Sound).unwrap();
         let ours = mx.read_pcm(&bytes, at, 0, 48_000).unwrap();
         assert_eq!(pcm.len(), 48_000 * 2 * 4, "{codec:?}");
         for (i, c) in pcm.as_chunks::<4>().0.iter().enumerate() {
