@@ -615,7 +615,7 @@ impl FrameServer {
 
     /// The default number of frame workers for this machine.
     pub fn default_workers() -> usize {
-        std::thread::available_parallelism().map(|n| n.get().clamp(2, 8)).unwrap_or(4)
+        std::thread::available_parallelism().map(|n| n.get().clamp(2, 6)).unwrap_or(3)
     }
 
     pub fn set_context(&self, ctx: &egui::Context) {
