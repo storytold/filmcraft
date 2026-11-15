@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 
 const MAX_MARKERS: usize = 10_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// The longest URL a marker edit accepts (`marker.edit`, the Marker panel's URL field).
+const MAX_URL_BYTES: usize = 8192;
 
 /// The markers of `owner` (a `Sequence`, or the `Clip` element of a master clip's clip), sorted
 /// by start. Ids are left at zero for the caller to allocate.
@@ -32,12 +34,13 @@ pub(super) fn read<'a, 'i>(
             warning(report, format!("{context}: more than {MAX_MARKERS} markers; the rest were skipped"));
             break;
         }
-        let Some((marker, url)) = child_text(marker, "DVAMarker").filter(|r| r.len() <= MAX_RECORD_BYTES).and_then(record) else {
+        let Some((marker, url_dropped)) = child_text(marker, "DVAMarker").filter(|r| r.len() <= MAX_RECORD_BYTES).and_then(record) else {
             warning(report, format!("{context}: a marker could not be read; marker skipped"));
             continue;
         };
-        if url {
-            warning(report, format!("{context}: marker {} URL retained in the original snapshot, not imported", marker.name));
+        if url_dropped {
+            let name = &marker.name;
+            warning(report, format!("{context}: marker {name} URL is over {MAX_URL_BYTES} bytes or has control characters; left in the original snapshot"));
         }
         out.push(marker);
     }
@@ -52,7 +55,9 @@ fn color(value: u64) -> Label {
     Label::ALL.iter().copied().min_by_key(distance).unwrap_or(Label::Green)
 }
 
-/// The marker and whether it stores a URL, which FilmCraft markers do not carry.
+/// The marker, and whether its stored URL (`mLocation`) was dropped for exceeding what a marker
+/// edit accepts. A kept URL is text, as an OTIO import keeps it: opening it must still pass
+/// `filmcraft_project::marker_web_url`.
 fn record(json: &str) -> Option<(Marker, bool)> {
     let root: Value = serde_json::from_str(json).ok()?;
     let m = root.get("DVAMarker")?;
@@ -78,7 +83,8 @@ fn record(json: &str) -> Option<(Marker, bool)> {
         .filter_map(|c| c.get("mValue").and_then(Value::as_str))
         .filter_map(|v| serde_json::from_str::<Value>(v).ok())
         .find_map(|v| v.get("color").and_then(Value::as_u64));
-    let url = m.get("mLocation").and_then(Value::as_str).is_some_and(|u| !u.trim().is_empty());
+    let location = m.get("mLocation").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let keep = location.len() <= MAX_URL_BYTES && !location.chars().any(char::is_control);
     let marker = Marker {
         id: MarkerId(0),
         start: Tick(start),
@@ -87,6 +93,9 @@ fn record(json: &str) -> Option<(Marker, bool)> {
         comment: text("mComment"),
         kind,
         color: cue.map(color).unwrap_or(Label::Green),
+        url: if keep { location.to_string() } else { String::new() },
+        author: String::new(),
+        custom_color: None,
     };
-    Some((marker, url))
+    Some((marker, !keep))
 }

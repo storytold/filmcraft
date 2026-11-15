@@ -2719,7 +2719,9 @@ mod tests {
         assert_eq!(seq.markers[1].color, Label::Rose, "red cue-point colour");
         assert_eq!(seq.markers[0].color, Label::Green, "Premiere's default marker colour");
         assert!(seq.markers.iter().all(|m| seq.markers.iter().filter(|o| o.id == m.id).count() == 1));
-        assert!(report.mentions("web") && report.mentions("URL"), "{report:?}");
+        let urls: Vec<_> = seq.markers.iter().map(|m| m.url.as_str()).collect();
+        assert_eq!(urls, ["", "", "https://example.com"], "a web link's URL is imported");
+        assert!(!report.mentions("URL"), "{report:?}");
         assert!(report.mentions("marker could not be read"), "{report:?}");
         let clip = &seq.video_tracks[0].items[0];
         let ItemKind::Media(media) = &fragment.project.item(clip.item).unwrap().kind else { panic!() };
@@ -2730,13 +2732,14 @@ mod tests {
     }
     #[test]
     fn master_clip_markers_are_read_once_however_often_the_media_is_cut() {
-        // A second cut of the same media; its master clip holds a web-link marker, whose URL
-        // warning would repeat for every cut if the markers were read per timeline item.
+        // A second cut of the same media; its master clip also holds a web-link marker and an
+        // unreadable record, whose warning would repeat for every cut if the markers were read
+        // per timeline item.
         let xml = marker_fixture()
             .replace(r#"<TrackItem ObjectRef="20"/>"#, r#"<TrackItem ObjectRef="20"/><TrackItem ObjectRef="20b"/>"#)
             .replace(
                 r#"<Second ObjectRef="m-media"/></Marker>"#,
-                r#"<Second ObjectRef="m-media"/></Marker><Marker Index="1"><Second ObjectRef="m-web"/></Marker>"#,
+                r#"<Second ObjectRef="m-media"/></Marker><Marker Index="1"><Second ObjectRef="m-web"/></Marker><Marker Index="2"><Second ObjectRef="m-bad"/></Marker>"#,
             )
             .replace(
                 "</PremiereData>",
@@ -2749,10 +2752,34 @@ mod tests {
         let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
         let items = &tree.sequences[0].tracks[0].items;
         assert_eq!(items.iter().map(|i| i.media_markers.len()).collect::<Vec<_>>(), [2, 0]);
-        assert_eq!(report.entries.iter().filter(|e| e.message.contains("camera.mov: marker web")).count(), 1, "{report:?}");
+        assert_eq!(report.entries.iter().filter(|e| e.message.contains("camera.mov: a marker could not be read")).count(), 1, "{report:?}");
         let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
         let ItemKind::Media(media) = &fragment.project.item(seq.video_tracks[0].items[1].item).unwrap().kind else { panic!() };
         assert_eq!(media.markers.len(), 2, "every cut shows the media's markers");
+        assert!(media.markers.iter().any(|m| m.url == "https://example.com"));
+    }
+    #[test]
+    fn marker_urls_are_kept_as_bounded_text_and_opened_only_through_the_web_url_check() {
+        // `url` is JSON text inside the XML-escaped DVAMarker record.
+        let with_url = |url: &str| {
+            let json = serde_json::to_string(url).unwrap().replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
+            let xml = marker_fixture().replace("&quot;https://example.com&quot;", &json);
+            let (fragment, _, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+            let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+            let web = seq.markers.iter().find(|m| m.name == "web").unwrap();
+            (web.url.clone(), report.entries.iter().any(|e| e.message.contains("marker web") && e.message.contains("URL")))
+        };
+        assert_eq!(with_url("  https://example.com/review?q=1  "), ("https://example.com/review?q=1".into(), false), "trimmed");
+        // Imported text stays editable but never becomes permission to open another handler.
+        let (kept, warned) = with_url("javascript:alert(1)");
+        assert_eq!((kept.as_str(), warned), ("javascript:alert(1)", false));
+        assert!(filmcraft_project::marker_web_url(&kept).is_none());
+        // What a marker edit could never store is not imported, and the report says so.
+        for dropped in [format!("https://example.com/{}", "a".repeat(8192)), "https://exa\nmple.com".into(), "https://example.com/\u{7}".into()] {
+            assert_eq!(with_url(&dropped), (String::new(), true), "{dropped:?}");
+        }
+        let at_limit = format!("https://example.com/{}", "a".repeat(8192 - "https://example.com/".len()));
+        assert_eq!(with_url(&at_limit), (at_limit.clone(), false));
     }
     #[test]
     fn more_markers_than_the_limit_are_truncated_with_a_warning() {
