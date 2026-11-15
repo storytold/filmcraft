@@ -142,7 +142,7 @@ fn the_gpu_plan_places_an_anamorphic_clip_like_the_cpu() {
     for scale in [1.0, 0.5] {
         let opts = RenderOptions { scale, ..Default::default() };
         let want = render_sequence(&p, seq, Tick::ZERO, opts, &map);
-        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map));
+        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, plan::DeviceCaps::ALL, &map));
         assert_eq!((got.w, got.h), (want.w, want.h));
         assert_row(&row(&got), &row(&want));
     }
@@ -246,7 +246,7 @@ fn hostile_pixel_aspect_ratios_render_square_without_panicking() {
         // a sequence's ratio (a damaged project): square, so a 4:3-pixel clip fills it
         let r = std::panic::catch_unwind(|| {
             let (p, seq, _, map) = project((144, 108), (4, 3), (192, 108), bad, true);
-            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), &map));
+            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), plan::DeviceCaps::ALL, &map));
             (row(&render(&p, seq, &map)), row(&plan))
         });
         let (cpu, gpu) = r.unwrap_or_default();

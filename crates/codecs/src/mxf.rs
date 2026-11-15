@@ -1,4 +1,4 @@
-//! MXF media source (`filmcraft-mxf` demux, GOP-aware video via [`crate::gop`]).
+//! MXF media source (`craft_media::mxf` demux, GOP-aware video via [`crate::gop`]).
 //!
 //! - Video: H.264 / AVC-Intra (Annex B byte stream, our decoder), MPEG-2 (D-10 / IMX, XDCAM HD /
 //!   HD422; our decoder), VC-3 (DNxHD/DNxHR) and ProRes through the decoder factories. Other
@@ -12,27 +12,18 @@
 
 use std::sync::Arc;
 
+use craft_media::mxf::{Codec, MxfFile, Timecode, TrackKind};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_isobmff::{FourCc, SampleEntry};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource, VideoStreamInfo};
-use filmcraft_mxf::{Codec, MxfFile, Timecode, TrackKind};
 use filmcraft_time::{FrameRate, Tick};
 
 use crate::gop::{GopCache, VideoSamples};
 use crate::video::VideoDecoder;
 use crate::{CodecError, make_video_decoder};
 
-impl filmcraft_mxf::ByteSource for crate::Src {
-    fn len(&self) -> u64 {
-        self.0.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.0.read_at(offset, buf)
-    }
-}
-
 pub fn sniff(head: &[u8]) -> bool {
-    filmcraft_mxf::sniff(head)
+    craft_media::mxf::sniff(head)
 }
 
 pub struct MxfSource {
@@ -65,9 +56,9 @@ pub struct MxfSource {
 ///
 /// `heads` is consumed one access unit at a time, so a long stream need not hold every head at once.
 pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>) -> Option<Vec<i64>> {
+    use craft_video::h264::decode::params::{Pps, Sps};
+    use craft_video::h264::decode::slice::{NalHeader, SliceHeader};
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
-    use filmcraft_h264::params::{Pps, Sps};
-    use filmcraft_h264::slice::{NalHeader, SliceHeader};
     let mut spss: Vec<Option<Sps>> = vec![None; 32];
     let mut ppss: Vec<Option<Pps>> = vec![None; 256];
     let (mut prev_msb, mut prev_lsb) = (0i64, 0i64);
@@ -92,8 +83,11 @@ pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>
                 1 | 5 => {
                     let mut sps_of = None;
                     let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
-                        let pps = ppss.get(id as usize).and_then(Option::as_ref).ok_or(filmcraft_h264::Error::MissingParameterSet("PPS".into()))?;
-                        let sps = spss.get(pps.sps_id as usize).and_then(Option::as_ref).ok_or(filmcraft_h264::Error::MissingParameterSet("SPS".into()))?;
+                        let pps = ppss.get(id as usize).and_then(Option::as_ref).ok_or(craft_video::h264::decode::Error::MissingParameterSet("PPS".into()))?;
+                        let sps = spss
+                            .get(pps.sps_id as usize)
+                            .and_then(Option::as_ref)
+                            .ok_or(craft_video::h264::decode::Error::MissingParameterSet("SPS".into()))?;
                         sps_of = Some(sps);
                         Ok((pps, sps))
                     })
@@ -193,6 +187,30 @@ fn start_frames(tc: &Timecode, rate: FrameRate) -> i64 {
     ((n + d / 2) / d) as i64
 }
 
+/// [`avc_presentation_order`] over the first `cap` bytes of every picture, read lazily one at a
+/// time. A failed read is an error; `Ok(None)` means only that a slice header was unreadable.
+fn avc_order_from_samples(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample], cap: usize) -> crate::Result<Option<Vec<i64>>> {
+    let mut failed = None;
+    let heads = samples.iter().map_while(|s| match filmcraft_media::reader::read_range(r, s.offset, (s.size as usize).min(cap)) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            failed = Some(CodecError::Container(format!("MXF: reading the picture at offset {}: {e}", s.offset)));
+            None
+        }
+    });
+    let order = avc_presentation_order(heads);
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(order),
+    }
+}
+
+/// Bytes read from the front of every picture to find its slice header when the index has no
+/// temporal offsets (`avc_presentation_order`), and the longer read for pictures where that is
+/// not enough.
+const AVC_ORDER_HEAD: usize = 2 << 10;
+const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -201,8 +219,8 @@ impl MxfSource {
     /// Open from a random-access reader: only the KLV headers, metadata and index are read now.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_mxf::open(&bytes).map_err(|e| match e {
-            filmcraft_mxf::Error::Unsupported(s) => CodecError::Unsupported(format!("MXF: {s}")),
+        let file = craft_media::mxf::open(&bytes).map_err(|e| match e {
+            craft_media::mxf::Error::Unsupported(s) => CodecError::Unsupported(format!("MXF: {s}")),
             other => CodecError::Container(other.to_string()),
         })?;
         for w in &file.warnings {
@@ -213,7 +231,7 @@ impl MxfSource {
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.kind == TrackKind::Sound && !t.chunks.is_empty() && t.sound_format != filmcraft_mxf::SoundFormat::Other)
+            .filter(|(_, t)| t.kind == TrackKind::Sound && !t.chunks.is_empty() && t.sound_format != craft_media::mxf::SoundFormat::Other)
             .map(|(i, _)| i)
             .collect();
         if vtrack.is_none() && atracks.is_empty() {
@@ -231,9 +249,15 @@ impl MxfSource {
             vpts = t.samples.iter().map(|s| s.pts).collect();
             vorder = t.display_order.clone();
             if t.needs_reorder && matches!(t.codec, Codec::Avc { .. }) {
-                let heads =
-                    t.samples.iter().map(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(16 << 10)).unwrap_or_default());
-                match avc_presentation_order(heads) {
+                // Only the slice headers are needed. The first picture of a stream has its
+                // parameter sets and SEI in front of the slice, so read a short head of every
+                // picture first and the long one only if some slice header does not fit.
+                let order = match avc_order_from_samples(&*bytes.0, &t.samples, AVC_ORDER_HEAD)? {
+                    Some(o) => Some(o),
+                    None if t.samples.iter().all(|s| s.size as usize <= AVC_ORDER_HEAD) => None,
+                    None => avc_order_from_samples(&*bytes.0, &t.samples, AVC_ORDER_HEAD_MAX)?,
+                };
+                match order {
                     Some(pts) => {
                         vorder = vec![0; pts.len()];
                         for (s, &d) in pts.iter().enumerate() {
@@ -252,7 +276,7 @@ impl MxfSource {
             let mpeg = (t.codec == Codec::Mpeg2)
                 .then(|| file.read_sample(&bytes, vi, 0).ok())
                 .flatten()
-                .and_then(|s| Some((filmcraft_mpeg2v::probe(&s)?, filmcraft_mpeg2v::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
+                .and_then(|s| Some((craft_video::mpeg2::probe(&s)?, craft_video::mpeg2::scan_access_unit(&s), crate::video::mpeg2_sequence_header(&s)?)));
             let (w, h) = match &mpeg {
                 Some((info, _, _)) => (info.width, info.height),
                 None => (p.frame_width(), p.frame_height()),
@@ -293,9 +317,9 @@ impl MxfSource {
                     let pce = pce.as_ref()?;
                     let _ = ph;
                     (!pce.progressive_frame).then_some(if pce.picture_structure == 2 || (pce.picture_structure == 3 && !pce.top_field_first) {
-                        filmcraft_mpeg2v::FieldOrder::BottomFirst
+                        craft_video::mpeg2::FieldOrder::BottomFirst
                     } else {
-                        filmcraft_mpeg2v::FieldOrder::TopFirst
+                        craft_video::mpeg2::FieldOrder::TopFirst
                     })
                 });
                 pixel_format = crate::video::mpeg2_pixel_format(info, fo);
@@ -498,17 +522,7 @@ impl MediaSource for MxfSource {
             out.channels = src;
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -545,5 +559,48 @@ mod tests {
         let f = start_frames(&df, FrameRate::FPS_23_976);
         let secs = f as f64 * 1001.0 / 24000.0;
         assert!((secs - 107_892.0 * 1001.0 / 30000.0).abs() < 0.05, "{secs}");
+    }
+
+    struct Failing;
+    impl filmcraft_media::ByteReader for Failing {
+        fn len(&self) -> u64 {
+            1 << 20
+        }
+        fn read_at(&self, _: u64, _: &mut [u8]) -> std::io::Result<()> {
+            Err(std::io::Error::other("disk gone"))
+        }
+    }
+
+    #[test]
+    fn failed_picture_head_read_is_an_error() {
+        let samples = [craft_media::mxf::Sample { offset: 0, size: 100, pts: 0, key: true, b_picture: false }];
+        let e = avc_order_from_samples(&Failing, &samples, AVC_ORDER_HEAD).unwrap_err();
+        assert!(matches!(e, CodecError::Container(ref m) if m.contains("disk gone")), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    /// Resampled audio must not depend on where a read starts (#4673): 24-bit PCM at 48 kHz read
+    /// at 47 kHz, from an OP-Atom file written here.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let samples: Vec<i32> =
+            filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 4).into_iter().map(|v| (v * 8_000_000.0) as i32).collect();
+        let opts = craft_media::mxf::OpAtomPcm {
+            sample_rate: 48_000,
+            bits: 24,
+            channels: 1,
+            edit_rate: None,
+            ids: craft_media::mxf::PackageIds::from_seed("cuts", "cuts"),
+            timecode: None,
+        };
+        let bytes = craft_media::mxf::write_opatom_pcm(&opts, &samples).unwrap();
+        let src = MxfSource::open("cuts.mxf", bytes.into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("MXF 24-bit 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            src.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 }

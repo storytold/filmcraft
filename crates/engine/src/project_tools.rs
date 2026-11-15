@@ -45,7 +45,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 fn query(
@@ -57,7 +57,7 @@ fn query(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 const FIND_PARAMS: &str = r#"{"scope":"project|timeline"?,"column":str?,"operator":"contains|matches|beginsWith|endsWith|doesNotContain"?,"text":str?,"rows":[{"column":str,"operator":str,"text":str}]?,"matchAll":bool=true,"caseSensitive":bool=false,"in":"all|clips|markers"?}"#;
@@ -669,7 +669,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         templates_dir(s).map(|d| d.join(format!("{}.fcproj", sanitize(t))).to_string_lossy().to_string()).unwrap_or_else(|| t.to_string())
     };
-    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(&path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
@@ -1129,6 +1129,11 @@ fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
             paths.push(path.to_string());
         }
     }
+    // the files as media access resolves them: a stored path it refuses is not handed to the system
+    let paths = paths
+        .iter()
+        .map(|path| s.media.follow(path).map_err(|why| bad("edit.editOriginal", format!("{path} is not opened: {why}"))))
+        .collect::<Result<Vec<String>>>()?;
     if paths.is_empty() {
         return Err(EngineError::Other("select a clip with a media file".into()));
     }
@@ -1212,7 +1217,15 @@ fn update_metadata(s: &mut Session, p: &Value) -> Result<Value> {
     for id in targets(s, p) {
         let Some(it) = s.project.item(id) else { continue };
         let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m)) else { continue };
-        let side = sidecar_path(path);
+        // the media file as media access resolves it: a refused stored path gets no sidecar written beside it
+        let file = match s.media.follow(path) {
+            Ok(file) => file,
+            Err(why) => {
+                skipped.push(json!({"item": id.0, "path": path, "reason": format!("{path} is not opened: {why}")}));
+                continue;
+            }
+        };
+        let side = sidecar_path(&file);
         if let Ok(old) = s.services.read_file(&side)
             && !String::from_utf8_lossy(&old).contains("xmp:CreatorTool=\"FilmCraft\"")
         {

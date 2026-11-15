@@ -8,7 +8,7 @@
 //! (low phasiness). Duration is unchanged. At ratio 1 the output is the input delayed by the
 //! frame size.
 
-use super::stft::{Spectral, StftChannel, fft_size};
+use super::stft::{Pairing, Plan, Spectral, StftChannel, fft_size, stream};
 use crate::{AudioEffect, ParamSpec, ParamValues, Unit, block_len, param_plumbing};
 use std::f32::consts::PI;
 
@@ -83,12 +83,12 @@ impl PitchShifter {
     }
 }
 
-/// Process one analysed frame (spectrum in `spec.re/im`) into the shifted spectrum.
-fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f32, expect: f32) {
+/// Shift one analysed half spectrum (bins 0..=n/2) in place.
+fn shift_frame(spec_re: &mut [f32], spec_im: &mut [f32], st: &mut PvState, sc: &mut Scratch, ratio: f32, expect: f32) {
     let bins = sc.mag.len();
     let mut max_mag = 0.0f32;
     for k in 0..bins {
-        let (re, im) = (spec.re[k], spec.im[k]);
+        let (re, im) = (spec_re[k], spec_im[k]);
         sc.mag[k] = (re * re + im * im).sqrt();
         max_mag = max_mag.max(sc.mag[k]);
         sc.out_re[k] = 0.0;
@@ -127,7 +127,7 @@ fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f
             bins
         };
         // Instantaneous frequency of the peak (bins).
-        let phase = spec.im[p].atan2(spec.re[p]);
+        let phase = spec_im[p].atan2(spec_re[p]);
         let last_phase = st.last_im[p].atan2(st.last_re[p]);
         let d = wrap(phase - last_phase - p as f32 * expect);
         let f = p as f32 + d / expect;
@@ -135,6 +135,9 @@ fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f
         let delta = target - p as isize;
         let prev_rot = if (0..bins as isize).contains(&target) { st.rot[target as usize] } else { 0.0 };
         let rot = wrap(prev_rot + (ratio - 1.0) * f * expect);
+        // A NaN or inf input sample leaves a non-finite previous spectrum; `rot` is accumulated
+        // across frames, so it must not keep the NaN.
+        let rot = if rot.is_finite() { rot } else { 0.0 };
         // mag·e^{i(φ+rot)} = X·e^{i·rot}: one sin_cos per region instead of one per bin.
         let (s, c) = rot.sin_cos();
         for k in start..end {
@@ -143,19 +146,17 @@ fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f
                 continue;
             }
             let t = t as usize;
-            let (re, im) = (spec.re[k], spec.im[k]);
+            let (re, im) = (spec_re[k], spec_im[k]);
             sc.out_re[t] += re * c - im * s;
             sc.out_im[t] += re * s + im * c;
             st.new_rot[t] = rot;
         }
         start = end;
     }
-    for k in 0..bins {
-        st.last_re[k] = spec.re[k];
-        st.last_im[k] = spec.im[k];
-        spec.re[k] = sc.out_re[k];
-        spec.im[k] = sc.out_im[k];
-    }
+    st.last_re.copy_from_slice(spec_re);
+    st.last_im.copy_from_slice(spec_im);
+    spec_re.copy_from_slice(&sc.out_re);
+    spec_im.copy_from_slice(&sc.out_im);
     std::mem::swap(&mut st.rot, &mut st.new_rot);
 }
 
@@ -175,35 +176,26 @@ impl AudioEffect for PitchShifter {
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
-        let nch = channels.len().min(self.stft.len());
         let (n, hop) = (self.n, self.hop);
         // Hann² summed over 8× overlap = 3/8 · 8 = 3.
         let scale = 1.0 / (n as f32 * 3.0 / 8.0 * OVERLAP as f32);
         let expect = 2.0 * PI * hop as f32 / n as f32;
         // Sample-major so every channel hits its frame boundary on the same sample and the ratio
         // glides identically for all channels (once per frame).
-        for i in 0..len {
-            let mut frame_done = false;
-            for ch in 0..nch {
-                let st = &mut self.state[ch];
-                let spec = &mut self.spec;
-                let sc = &mut self.scratch;
-                let ratio = self.ratio;
-                let mut frame = |input: &[f32], out: &mut [f32]| {
-                    spec.analyse(input);
-                    shift_frame(spec, st, sc, ratio, expect);
-                    spec.synthesise_add(out, scale);
-                    frame_done = true;
-                };
-                channels[ch][i] = self.stft[ch].tick(channels[ch][i], hop, &mut frame);
-            }
-            if frame_done {
-                self.ratio += (self.target_ratio - self.ratio) * 0.5;
-                if (self.ratio - self.target_ratio).abs() < 1e-5 {
-                    self.ratio = self.target_ratio;
+        let (state, sc, target_ratio) = (&mut self.state, &mut self.scratch, self.target_ratio);
+        let mut ratio = self.ratio;
+        let mut frame_ratio = ratio;
+        stream(&mut self.stft, &mut self.spec, channels, len, Plan { hop, scale, pairing: Pairing::SynthesisOnly }, &mut |ch, first, re, im| {
+            if first {
+                frame_ratio = ratio;
+                ratio += (target_ratio - ratio) * 0.5;
+                if (ratio - target_ratio).abs() < 1e-5 {
+                    ratio = target_ratio;
                 }
             }
-        }
+            shift_frame(re, im, &mut state[ch], sc, frame_ratio, expect);
+        });
+        self.ratio = ratio;
     }
 }
 
@@ -222,7 +214,8 @@ mod tests {
         let mut l = sine(f_in, 0.5, SR as f64, n, 0.0);
         let mut r = l.clone();
         p.process(&mut [&mut l, &mut r]);
-        assert_eq!(l, r);
+        // Both channels share one complex FFT, so they agree to rounding, not bit for bit.
+        assert!(l.iter().zip(&r).all(|(a, b)| (a - b).abs() < 1e-5));
         (l, p.latency())
     }
 
@@ -304,7 +297,7 @@ mod tests {
             ratio += (target - ratio) * 0.5;
             spec.analyse(&x[f * hop..f * hop + n]);
             let (mut re, mut im) = (spec.re.clone(), spec.im.clone());
-            shift_frame(&mut spec, &mut st, &mut sc, ratio, expect);
+            shift_frame(&mut spec.re[..bins], &mut spec.im[..bins], &mut st, &mut sc, ratio, expect);
             shift_frame_reference(&mut re, &mut im, &mut last_phase, &mut rot, ratio, expect);
             assert!(st.rot.iter().zip(&rot).all(|(a, b)| a.to_bits() == b.to_bits()), "frame {f}: rotations differ");
             let peak = (0..bins).map(|k| re[k].hypot(im[k])).fold(0.0f32, f32::max);
