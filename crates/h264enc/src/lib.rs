@@ -295,6 +295,8 @@ struct Input<P> {
 
 struct Pool {
     /// Built for every thread count, also 1: rayon calls outside `install` run on the global pool (all cores).
+    /// `None` in the browser (wasm32), which has no threads to build a pool from: the work runs on the
+    /// calling thread there.
     #[cfg(feature = "threads")]
     pool: Option<rayon::ThreadPool>,
 }
@@ -568,12 +570,16 @@ impl<P: Pixel> Core<P> {
         let slices = if cfg.slices > 0 { cfg.slices.min(mbh) } else { threads.min(mbh.div_ceil(4)).max(1) };
         #[cfg(feature = "threads")]
         let pool = Pool {
-            pool: Some(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()
-                    .map_err(|e| Error::InvalidConfig(format!("cannot build the {threads}-thread pool: {e}")))?,
-            ),
+            pool: if cfg!(target_arch = "wasm32") {
+                None
+            } else {
+                Some(
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(threads)
+                        .build()
+                        .map_err(|e| Error::InvalidConfig(format!("cannot build the {threads}-thread pool: {e}")))?,
+                )
+            },
         };
         #[cfg(not(feature = "threads"))]
         let pool = Pool {};
