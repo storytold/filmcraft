@@ -224,19 +224,20 @@ impl VideoFrame {
     /// one sample, keeping its size where the frame allows), so chroma is cut where luma is. An empty
     /// region, or one covering the whole frame, leaves the frame as it is.
     pub fn cropped(&self, region: Region) -> VideoFrame {
-        if let Some(cpu) = self.materialize_cpu() {
-            return cpu.cropped(region);
-        }
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = match &self.data {
             PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) | PixelData::GpuSurface(_) => (0, 0),
+            PixelData::GpuSurface(s) => s.chroma().shifts(),
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
         let (x, y) = (region.x.min(w) & !mx, region.y.min(h) & !my);
         let r = Region { x, y, w: region.w, h: region.h }.clip(w, h);
         if r.w == 0 || r.h == 0 || (r.w == w && r.h == h) {
             return self.clone();
+        }
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.cropped(region);
         }
         let chroma_rect = |cw: usize, ch: usize| {
             (r.x >> sx, r.y >> sy, r.w.div_ceil(1 << sx).min(cw - (r.x >> sx).min(cw)), r.h.div_ceil(1 << sy).min(ch - (r.y >> sy).min(ch)))

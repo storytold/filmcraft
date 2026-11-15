@@ -551,3 +551,61 @@ fn a_yuv8_picture_with_short_planes_converts_without_panicking() {
     assert!(row(3)[16..].iter().all(|v| *v == 0.0), "the rest of that row is transparent: {:?}", row(3));
     assert!((4..8).all(|y| row(y).iter().all(|v| *v == 0.0)), "rows without luma are transparent");
 }
+
+#[test]
+fn noop_crop_on_gpu_surface_skips_cpu_readback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct CountingGpuSurface {
+        readbacks: Arc<AtomicUsize>,
+    }
+
+    impl crate::GpuSurface for CountingGpuSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            77
+        }
+        fn gpu_bytes(&self) -> u64 {
+            24
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C420
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            self.readbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(PixelData::Yuv8 {
+                planes: [Arc::new(vec![128; 16]), Arc::new(vec![128; 4]), Arc::new(vec![128; 4])],
+                chroma: Chroma::C420,
+                alpha: None,
+            })
+        }
+    }
+
+    let readbacks = Arc::new(AtomicUsize::new(0));
+    let frame = VideoFrame {
+        width: 4,
+        height: 4,
+        data: PixelData::GpuSurface(Arc::new(CountingGpuSurface { readbacks: Arc::clone(&readbacks) })),
+        color: ColorInfo::REC709,
+        par: (1, 1),
+        pts: Tick::ZERO,
+    };
+
+    let empty = frame.cropped(Region { x: 0, y: 0, w: 0, h: 0 });
+    assert!(matches!(empty.data, PixelData::GpuSurface(_)));
+    let whole = frame.cropped(Region { x: 0, y: 0, w: 4, h: 4 });
+    assert!(matches!(whole.data, PixelData::GpuSurface(_)));
+    let aligned_whole = frame.cropped(Region { x: 1, y: 0, w: 4, h: 4 });
+    assert!(matches!(aligned_whole.data, PixelData::GpuSurface(_)));
+    assert_eq!(readbacks.load(Ordering::SeqCst), 0, "no-op crops must not read back GpuSurface to CPU");
+
+    let sub = frame.cropped(Region { x: 2, y: 0, w: 2, h: 4 });
+    assert_eq!((sub.width, sub.height), (2, 4));
+    assert_eq!(readbacks.load(Ordering::SeqCst), 1, "actual sub-crop materializes once");
+}
