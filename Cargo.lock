@@ -1091,6 +1091,16 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 
 [[package]]
+name = "craft-fcproj-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=81057428d1e251d90415eb15f620d5cb3b866fa1#81057428d1e251d90415eb15f620d5cb3b866fa1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -2202,6 +2212,7 @@ name = "filmcraft-format"
 version = "0.20.1"
 dependencies = [
  "chrono",
+ "craft-fcproj-format",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",

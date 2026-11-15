@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-fcproj-format = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-media = { workspace = true }
 log = { workspace = true }
