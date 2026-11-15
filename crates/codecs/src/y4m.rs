@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn colour_space_names() {
-        let l = |c: Option<Chroma>, bits, alpha| Some(craft_y4m::Layout { chroma: c, bits, alpha });
+        let l = |c: Option<craft_y4m::Chroma>, bits, alpha| Some(craft_y4m::Layout { chroma: c, bits, alpha });
         assert_eq!(craft_y4m::Layout::parse("420jpeg"), l(Some(craft_y4m::Chroma::C420), 8, false));
         assert_eq!(craft_y4m::Layout::parse("420p10"), l(Some(craft_y4m::Chroma::C420), 10, false));
         assert_eq!(craft_y4m::Layout::parse("422p12"), l(Some(craft_y4m::Chroma::C422), 12, false));
