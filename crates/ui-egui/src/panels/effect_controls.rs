@@ -277,7 +277,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             for idx in order {
                 let e = &it.effects[idx];
                 let Some(def) = e.def() else { continue };
-                // a sound's copy of its picture's Time Remapping follows the picture's and is edited there
+                // a sound has no Time Remapping of its own: its picture's ramp leaves it at 100 %
                 if *kind == TrackKind::Audio && def.kind == filmcraft_project::EffectKind::Video {
                     continue;
                 }

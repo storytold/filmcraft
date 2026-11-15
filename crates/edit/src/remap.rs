@@ -10,17 +10,19 @@
 //! Either way a new speed keeps the media the clip showed and changes its length, as Speed/Duration
 //! does without ripple: a slower clip grows up to the next clip on its track and is cut there.
 //!
-//! **Sound.** With Remap Audio on (the default), the clip's linked sound from the same source
-//! follows: a keyframed curve is copied onto it (its keyframes sit at media times, which the
-//! picture and the sound of one source share, so the two stay in sync), a static speed becomes its
-//! speed, and it is retimed the same way. It plays varispeed, its pitch rising and falling with the
-//! speed. Turned off, the sound plays at normal speed, as Premiere's picture-only Time Remapping.
-//! The sound's copy of the curve is not edited on its own: it follows the picture.
+//! **Sound.** The clip's linked sound from the same source follows the picture's length, never its
+//! curve. A static speed is the clip's speed, so the sound is retimed with the picture: the same
+//! media played at the same speed, its pitch kept only when Maintain Audio Pitch is on
+//! (Speed/Duration…, off until the user sets it). A keyframed ramp leaves the sound at 100 %: it
+//! stays linked and plays its own media at its own rate, in step at the clip's head and drifting out
+//! of step where the ramp speeds the picture up or slows it down, so a faster ramp cuts the sound's
+//! tail and a slower one leaves silence after its media ends. That is Premiere's Time Remapping, and
+//! it keeps the sound audible where muting it would lose it.
 //!
 //! [`follow_time_remapping`] applies these rules after an edit, whichever command made it (the
 //! parameter itself, its keyframes and their interpolation, Paste/Remove Attributes, presets).
 
-use filmcraft_project::{ClipId, EffectInstance, ItemId, Param, ParamValue, Sequence, Track, TrackItem, time_remap};
+use filmcraft_project::{ClipId, ItemId, Param, ParamValue, Sequence, Track, TrackItem, time_remap};
 use filmcraft_time::Tick;
 
 /// Bring every clip's Time Remapping and timing in step after an edit. `before` is the sequence as
@@ -29,18 +31,19 @@ use filmcraft_time::Tick;
 /// clip may become, and the grid a new length snaps to when it is only rounding away from it.
 pub fn follow_time_remapping(before: Option<&Sequence>, seq: &mut Sequence, frame: Tick) {
     // pictures whose Time Remapping the edit changed, for their linked sound: (link, source, the
-    // picture). Only the edit's own change counts: the static speed showing a new clip speed
-    // (Speed/Duration of the picture alone) leaves the sound be.
-    let mut changed: Vec<(u64, ItemId, TrackItem)> = Vec::new();
+    // picture, the picture's length before the edit). Only the edit's own change counts: the static
+    // speed showing a new clip speed (Speed/Duration of the picture alone) leaves the sound be.
+    let mut changed: Vec<(u64, ItemId, TrackItem, Tick)> = Vec::new();
     for tr in seq.video_tracks.iter_mut() {
-        follow_track(before, tr, frame, |it, edited| {
+        follow_track(before, tr, frame, |it, old, edited| {
             if let (Some(link), true) = (it.link, edited) {
-                changed.push((link, it.item, it.clone()));
+                // a picture the edit added has no earlier length: its sound has nothing to follow
+                changed.push((link, it.item, it.clone(), old.map_or(it.duration, |o| o.duration)));
             }
         });
     }
     for tr in seq.audio_tracks.iter_mut() {
-        follow_track(before, tr, frame, |_, _| {});
+        follow_track(before, tr, frame, |_, _, _| {});
         if tr.locked {
             continue;
         }
@@ -48,9 +51,8 @@ pub fn follow_time_remapping(before: Option<&Sequence>, seq: &mut Sequence, fram
         for i in 0..tr.items.len() {
             let next_start = tr.items.get(i + 1).map_or(Tick::MAX, |n| n.start);
             let Some(it) = tr.items.get_mut(i) else { continue };
-            let Some((_, _, picture)) = changed.iter().find(|(link, item, _)| it.link == Some(*link) && it.item == *item) else { continue };
-            let old = before.and_then(|b| b.find_item(it.id)).map(|(_, o)| o);
-            if sync_sound(it, old, picture, next_start, frame) {
+            let Some((_, _, picture, was)) = changed.iter().find(|(link, item, _, _)| it.link == Some(*link) && it.item == *item) else { continue };
+            if sync_sound(it, picture, *was, next_start, frame) {
                 moved.push(it.id);
             }
         }
@@ -60,9 +62,9 @@ pub fn follow_time_remapping(before: Option<&Sequence>, seq: &mut Sequence, fram
     }
 }
 
-/// [`follow`] every clip of a track; `seen` gets each clip (after) and whether the edit changed
-/// its Time Remapping.
-fn follow_track(before: Option<&Sequence>, tr: &mut Track, frame: Tick, mut seen: impl FnMut(&TrackItem, bool)) {
+/// [`follow`] every clip of a track; `seen` gets each clip (after), the same clip before the edit
+/// (None when it is new) and whether the edit changed its Time Remapping.
+fn follow_track(before: Option<&Sequence>, tr: &mut Track, frame: Tick, mut seen: impl FnMut(&TrackItem, Option<&TrackItem>, bool)) {
     let mut moved: Vec<ClipId> = Vec::new();
     for i in 0..tr.items.len() {
         let next_start = tr.items.get(i + 1).map_or(Tick::MAX, |n| n.start);
@@ -72,46 +74,41 @@ fn follow_track(before: Option<&Sequence>, tr: &mut Track, frame: Tick, mut seen
         if follow(it, old, next_start, frame) {
             moved.push(it.id);
         }
-        seen(it, edited);
+        seen(it, old, edited);
     }
     for id in moved {
         crate::fades_follow_edges(tr, id);
     }
 }
 
-/// A linked sound follows its picture's new Time Remapping (see the module docs). True when its
-/// length changed.
-fn sync_sound(it: &mut TrackItem, old: Option<&TrackItem>, picture: &TrackItem, next_start: Tick, frame: Tick) -> bool {
-    let curve = picture.effect("time_remap").filter(|_| picture.is_remapped());
-    match curve {
-        Some(e) if picture.remaps_audio() => {
-            let e: EffectInstance = e.clone();
-            match it.effect_mut("time_remap") {
-                Some(own) => *own = e,
-                None => it.effects.push(e),
-            }
-        }
-        _ => {
-            let had_curve = it.effect("time_remap").is_some();
-            it.effects.retain(|e| e.effect != "time_remap");
-            if picture.remaps_audio() {
-                it.speed = picture.speed.abs();
-            } else if had_curve {
-                // Remap Audio turned off: the sound plays at normal speed again
-                it.speed = 1.0;
-            } else {
-                return false;
-            }
-        }
+/// A linked sound follows its picture's new Time Remapping (see the module docs). `was` is the
+/// picture's length before the edit. True when the sound's length changed.
+fn sync_sound(it: &mut TrackItem, picture: &TrackItem, was: Tick, next_start: Tick, frame: Tick) -> bool {
+    // a held picture shows its one frame whatever its speed says: its sound has nothing to follow
+    if picture.frame_hold.is_some() {
+        return false;
     }
-    let moved = retime(it, old, next_start, frame);
-    if it.is_remapped() && it.duration > Tick::ZERO {
-        let avg = (it.source_out() - it.source_in).0 as f64 / it.duration.0 as f64;
-        if avg.is_finite() && avg > 0.0 {
-            it.speed = avg;
-        }
+    // the curve stays on the picture: a sound plays at one speed, and the keyframes sit on the
+    // source's media, which the sound only shares at 100 %
+    it.effects.retain(|e| e.effect != "time_remap");
+    it.speed = if picture.is_remapped() { 1.0 } else { picture.speed.abs() };
+    // the sound ends where the picture's edit moved its end: a ramp cuts its tail (or runs it into
+    // silence) while it plays at 100 %, and a static speed scales it with the picture
+    let delta = picture.duration.0.saturating_sub(was.0);
+    grow(it, delta, next_start, frame)
+}
+
+/// Add `delta` to the clip's length, kept inside the track's room before the next clip, at least one
+/// frame, and inside the time bounds. True when the length changed.
+fn grow(it: &mut TrackItem, delta: i64, next_start: Tick, frame: Tick) -> bool {
+    let least = frame.max(Tick(1));
+    let room = Tick(next_start.0.saturating_sub(it.start.0)).max(least);
+    let dur = Tick(it.duration.0.saturating_add(delta)).max(least).min(room);
+    if dur == it.duration {
+        return false;
     }
-    moved
+    it.duration = dur;
+    true
 }
 
 /// One clip; true when its length changed.
@@ -198,20 +195,27 @@ mod tests {
     const S: i64 = filmcraft_time::TICKS_PER_SECOND;
 
     fn item(id: u64, start: i64, dur: i64, src: i64) -> TrackItem {
+        let mut effects = filmcraft_project::effect::intrinsic_video();
+        // Real placed media resolves auto-position NaNs before attributes are compared for a join.
+        for effect in &mut effects {
+            filmcraft_project::resolve_auto_points(effect, (1920, 1080), (1920, 1080));
+        }
         TrackItem {
             id: ClipId(id),
             item: ItemId(1),
             name: "c".into(),
             label: Label::Iris,
+            custom_label_color: None,
             start: Tick(start),
             duration: Tick(dur),
             source_in: Tick(src),
             speed: 1.0,
             reverse: false,
+            maintain_pitch: false,
             enabled: true,
             link: None,
             group: None,
-            effects: filmcraft_project::effect::intrinsic_video(),
+            effects,
             markers: vec![],
             gain_db: 0.0,
             frame_hold: None,
@@ -405,27 +409,57 @@ mod tests {
         &q.audio_tracks[0].items[0]
     }
 
+    /// The media a clip plays over its length: 1.0 plays its source at its own rate.
+    fn rate(a: &TrackItem) -> f64 {
+        (a.source_out() - a.source_in).0 as f64 / a.duration.0 as f64
+    }
+
     #[test]
-    fn the_linked_sound_follows_the_ramp() {
+    fn a_ramp_leaves_the_linked_sound_at_full_speed() {
         let before = pair();
         let mut after = before.clone();
         ramp(&mut after.video_tracks[0].items[0]);
         let q = followed(&before, after);
         let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
-        assert!(a.is_remapped());
-        assert_eq!((a.start, a.duration, a.source_in), (v.start, v.duration, v.source_in));
-        for i in 0..50 {
-            let t = Tick(i * v.duration.0 / 50);
-            assert_eq!(a.source_time_at(t), v.source_time_at(t), "{t:?}");
-        }
-        // and back to a constant speed with the stopwatch
-        let before = q.clone();
-        let mut after = q;
-        speed(&mut after.video_tracks[0].items[0]).toggle_animation(Tick(5 * S));
-        let q = followed(&before, after);
-        let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
+        // the picture ramps shorter; the sound takes no curve and plays at 100 %
+        assert!(v.is_remapped() && v.duration < Tick(10 * S), "{:?}", v.duration);
         assert!(!a.is_remapped() && a.effect("time_remap").is_none());
-        assert_eq!((a.speed, a.duration), (v.speed, v.duration));
+        assert_eq!(a.speed, 1.0);
+        assert!((rate(a) - 1.0).abs() < 1e-9, "the sound plays at {}", rate(a));
+        // still linked to the picture, enabled and unmuted
+        assert!(a.link.is_some() && a.link == v.link);
+        assert!(a.enabled && !a.essential.as_ref().is_some_and(|e| e.mute) && a.gain_db == 0.0);
+        // its length follows the picture's, and its media plays from the clip's head
+        assert_eq!((a.start, a.duration), (v.start, v.duration));
+        for i in 0..=20 {
+            let t = a.start + Tick(i * a.duration.0 / 20);
+            assert_eq!(a.source_time_at(t), a.source_in + (t - a.start), "{t:?}");
+        }
+        // the faster the ramp plays the picture, the further it runs ahead of the sound
+        let late = a.start + Tick(a.duration.0 * 9 / 10);
+        assert!(v.source_time_at(late) > a.source_time_at(late) + Tick(S / 2));
+        // so the sound plays only the media its length covers: the ramp cuts its tail
+        assert_eq!(a.source_out(), a.source_in + a.duration);
+        assert!(a.source_out() < v.source_out());
+        assert!(q.check().is_ok(), "{}", q.check().unwrap_err());
+    }
+
+    #[test]
+    fn a_ramp_taken_off_puts_the_sound_back_in_step() {
+        let before = pair();
+        let mut after = before.clone();
+        ramp(&mut after.video_tracks[0].items[0]);
+        let ramped = followed(&before, after);
+        let mut after = ramped.clone();
+        speed(&mut after.video_tracks[0].items[0]).toggle_animation(Tick(5 * S));
+        let q = followed(&ramped, after);
+        let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
+        // a constant speed again: the pair plays the same media at the same speed
+        assert!(!a.is_remapped() && a.effect("time_remap").is_none());
+        assert!((a.speed - v.speed).abs() < 1e-9, "{} vs {}", a.speed, v.speed);
+        assert_eq!((a.start, a.duration, a.source_in), (v.start, v.duration, v.source_in));
+        assert_eq!(a.source_out(), v.source_out());
+        assert!(q.check().is_ok(), "{}", q.check().unwrap_err());
     }
 
     #[test]
@@ -434,30 +468,111 @@ mod tests {
         let mut after = before.clone();
         speed(&mut after.video_tracks[0].items[0]).value = ParamValue::Float(50.0);
         let q = followed(&before, after);
-        assert_eq!((sound(&q).speed, sound(&q).duration), (0.5, Tick(20 * S)));
+        let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
+        // the same media played for twice as long, in step with the picture
+        assert_eq!((a.speed, a.duration), (0.5, Tick(20 * S)));
+        assert_eq!((a.start, a.source_in, a.source_out()), (v.start, v.source_in, v.source_out()));
+        assert!((rate(a) - 0.5).abs() < 1e-9, "the sound plays at {}", rate(a));
+        // pitch preservation is off until it is asked for, and a retime keeps the pair's setting
+        assert!(!a.maintain_pitch);
+        let mut after = q.clone();
+        after.video_tracks[0].items[0].maintain_pitch = true;
+        after.audio_tracks[0].items[0].maintain_pitch = true;
+        speed(&mut after.video_tracks[0].items[0]).value = ParamValue::Float(200.0);
+        let q = followed(&q, after);
+        assert!(sound(&q).maintain_pitch, "Maintain Audio Pitch goes with the pair");
+        assert!((sound(&q).speed - 2.0).abs() < 1e-9);
     }
 
     #[test]
-    fn remap_audio_off_leaves_the_sound_at_normal_speed() {
-        let mut before = pair();
-        before.video_tracks[0].items[0].effect_mut("time_remap").unwrap().params.insert("audio".into(), Param::new(ParamValue::Bool(false)));
-        let mut after = before.clone();
-        ramp(&mut after.video_tracks[0].items[0]);
-        let q = followed(&before, after);
-        assert!(q.video_tracks[0].items[0].is_remapped());
-        assert_eq!(sound(&q), sound(&before));
-        // turned off after the fact: the sound drops the curve and plays at 100 % again
+    fn a_ramp_that_starts_or_ends_at_no_speed_keeps_the_sound_whole() {
+        for keys in [[(0, 0.0), (2 * S, 400.0)], [(0, 400.0), (2 * S, 0.0)], [(0, 0.0), (2 * S, 0.0)]] {
+            let before = pair();
+            let mut after = before.clone();
+            let p = speed(&mut after.video_tracks[0].items[0]);
+            for (t, v) in keys {
+                p.put_keyframe(Tick(t), ParamValue::Float(v));
+            }
+            p.keyframes[0].interp = Interpolation::Linear;
+            let q = followed(&before, after);
+            let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
+            // the slowest speed is 1 %, so the picture and its sound stay representable and whole
+            assert!(v.duration > Tick::ZERO, "{keys:?}");
+            assert!(a.duration > Tick::ZERO, "{keys:?}: {:?}", a.duration);
+            assert!(a.start.0.checked_add(a.duration.0).is_some(), "{keys:?}");
+            assert_eq!(a.speed, 1.0);
+            assert!((rate(a) - 1.0).abs() < 1e-9, "{keys:?}: {}", rate(a));
+            assert!(q.check().is_ok(), "{keys:?}: {}", q.check().unwrap_err());
+        }
+    }
+
+    #[test]
+    fn a_single_keyframe_is_a_constant_speed_for_the_sound() {
         let before = pair();
         let mut after = before.clone();
-        ramp(&mut after.video_tracks[0].items[0]);
-        let ramped = followed(&before, after);
-        assert!(sound(&ramped).is_remapped());
-        let mut after = ramped.clone();
-        after.video_tracks[0].items[0].effect_mut("time_remap").unwrap().params.insert("audio".into(), Param::new(ParamValue::Bool(false)));
-        let q = followed(&ramped, after);
+        speed(&mut after.video_tracks[0].items[0]).put_keyframe(Tick(S), ParamValue::Float(400.0));
+        let q = followed(&before, after);
+        let (v, a) = (&q.video_tracks[0].items[0], sound(&q));
+        // one keyframe is one speed everywhere: the picture gets shorter, the sound plays under it
+        assert!(v.is_remapped() && v.duration < Tick(3 * S), "{:?}", v.duration);
+        assert_eq!((a.speed, a.start, a.duration), (1.0, v.start, v.duration));
+        assert!((rate(a) - 1.0).abs() < 1e-9);
+        assert!(q.check().is_ok(), "{}", q.check().unwrap_err());
+    }
+
+    #[test]
+    fn hostile_speeds_keep_the_sounds_length_representable() {
+        for value in [time_remap::MIN_SPEED_PERCENT, time_remap::MAX_SPEED_PERCENT, -1.0, f64::NAN, f64::INFINITY] {
+            let before = pair();
+            let mut after = before.clone();
+            let p = speed(&mut after.video_tracks[0].items[0]);
+            p.put_keyframe(Tick::ZERO, ParamValue::Float(value));
+            p.put_keyframe(Tick(S), ParamValue::Float(100.0));
+            let q = followed(&before, after);
+            let a = sound(&q);
+            assert!(a.duration > Tick::ZERO, "{value}: {:?}", a.duration);
+            assert!(a.start.0.checked_add(a.duration.0).is_some(), "{value}");
+            assert_eq!(a.speed, 1.0, "{value}");
+            assert!((rate(a) - 1.0).abs() < 1e-9, "{value}: {}", rate(a));
+            assert!(q.check().is_ok(), "{value}: {}", q.check().unwrap_err());
+        }
+    }
+
+    #[test]
+    fn a_slower_ramp_stops_the_sound_at_the_next_sound() {
+        let mut before = pair();
+        before.audio_tracks[0].items.push(item(3, 12 * S, 5 * S, 0));
+        let mut after = before.clone();
+        speed(&mut after.video_tracks[0].items[0]).put_keyframe(Tick::ZERO, ParamValue::Float(50.0));
+        let q = followed(&before, after);
+        assert!(q.video_tracks[0].items[0].duration > Tick(12 * S));
+        assert_eq!(sound(&q).duration, Tick(12 * S), "the room up to the next sound");
+        assert!(q.check().is_ok(), "{}", q.check().unwrap_err());
+    }
+
+    /// A project file can hold speed keyframes on a sound of its own (no picture to copy them
+    /// from): it is played along them like any other clip, and nothing else is retimed.
+    #[test]
+    fn a_sound_with_its_own_curve_is_retimed_alone() {
+        let mut before = seq_with(vec![item(1, 0, 10 * S, 0)]);
+        before.audio_tracks[0].items = vec![{
+            let mut a = item(2, 0, 10 * S, 0);
+            a.effects = filmcraft_project::effect::intrinsic_audio();
+            a.effects.push(filmcraft_project::effect::find_effect("time_remap").unwrap().instance());
+            a
+        }];
+        let mut after = before.clone();
+        let p = after.audio_tracks[0].items[0].effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.put_keyframe(Tick::ZERO, ParamValue::Float(100.0));
+        p.put_keyframe(Tick(2 * S), ParamValue::Float(200.0));
+        let q = followed(&before, after);
         let a = sound(&q);
-        assert!(a.effect("time_remap").is_none());
-        assert_eq!((a.speed, a.duration, a.source_in), (1.0, Tick(10 * S), Tick::ZERO));
+        assert!(a.is_remapped());
+        // 100 % up to 2 s of media, then 200 %: 2·ln2 + 8/2 of timeline for the ten seconds
+        let want = S as f64 * (2.0 * 2f64.ln() + 4.0);
+        assert!((a.duration.0 as f64 - want).abs() / want < 1e-6, "{:?} vs {want}", a.duration);
+        assert_eq!(q.video_tracks[0].items[0], before.video_tracks[0].items[0], "the picture is its own");
+        assert!(q.check().is_ok(), "{}", q.check().unwrap_err());
     }
 
     #[test]

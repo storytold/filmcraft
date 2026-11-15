@@ -1003,8 +1003,9 @@ fn a_stretched_clip_aligns_on_the_channels_it_plays() {
     assert!(stretched(&both, &ltc, 60_000, 4_800, 1024)[1].iter().any(|s| s.abs() > 0.5));
 }
 
-/// Time Remapping on a sound (the copy its picture's curve leaves on it): every sample plays the
-/// source where the speed curve puts it, so it speeds up and slows down, pitch and all.
+/// Time Remapping keyframes on a sound clip itself (a project file can hold them; a picture's ramp
+/// leaves its sound at 100 % and never copies them onto it): every sample plays the source where the
+/// curve puts it, so the sound speeds up and slows down, pitch and all.
 #[test]
 fn a_time_remapped_clip_plays_along_its_speed_curve() {
     let (mut p, outer, map, tone) = nested_tone(48_000);

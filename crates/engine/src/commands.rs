@@ -2468,8 +2468,9 @@ fn build() -> Vec<CommandSpec> {
                         // a Time Remapped clip's dialog shows its average speed (to two decimals): OK
                         // without changing it (to pick a Time Interpolation) leaves the ramp alone
                         let remapped: Vec<_> = unlocked.iter().filter_map(|c| q.find_item(*c).map(|(_, it)| it)).filter(|it| it.is_remapped()).collect();
-                        // Picture-only remapping deliberately leaves linked sound at its own speed.
-                        // Changing interpolation must not force that sound to the picture's average.
+                        // A ramp leaves its linked sound at 100 %, so an edit that leaves the
+                        // picture's timing alone must leave the sound alone too (not force it to
+                        // the picture's average speed).
                         let unchanged = !remapped.is_empty()
                             && remapped.iter().all(|it| {
                                 (p.get("speed").is_none() || (it.speed.abs() - speed).abs() < 5e-5) && (p.get("reverse").is_none() || it.reverse == reverse)

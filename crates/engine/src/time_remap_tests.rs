@@ -1,6 +1,7 @@
 //! Time Remapping (#510, #1491, #1709): the clip's Speed in Effect Controls changes how the picture
 //! plays, static or keyframed, through the same commands the panels, the control channel and MCP
-//! use. Its linked sound follows unless Remap Audio is off.
+//! use. Its linked sound is retimed with a static speed and left at 100 % under a keyframed ramp,
+//! as Premiere's Time Remapping does.
 
 use filmcraft_project::{ClipId, TrackItem};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
@@ -24,6 +25,27 @@ fn one_clip(s: &mut Session) -> (ClipId, ClipId) {
 
 fn clip(s: &Session, c: ClipId) -> TrackItem {
     s.active_sequence().unwrap().find_item(c).unwrap().1.clone()
+}
+
+/// The sequence's mix from its start, `frames` samples long: what the timeline sounds like.
+fn mix(s: &Session, frames: usize) -> filmcraft_frame::AudioBuffer {
+    mix_at(s, 0, frames)
+}
+
+/// The sequence's mix of `frames` samples starting at timeline sample `start`.
+fn mix_at(s: &Session, start: i64, frames: usize) -> filmcraft_frame::AudioBuffer {
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    filmcraft_render::audio::mix_sequence(&s.project, s.active_sequence().unwrap(), start, frames, &provider)
+}
+
+/// The loudest sample in a mix.
+fn peak(b: &filmcraft_frame::AudioBuffer) -> f32 {
+    b.channels.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// The media a clip plays over its length: 1.0 plays its source at its own rate.
+fn rate(it: &TrackItem) -> f64 {
+    (it.source_out() - it.source_in).0 as f64 / it.duration.0 as f64
 }
 
 fn set_speed(s: &mut Session, c: ClipId, value: f64, at: Option<i64>) -> serde_json::Value {
@@ -91,14 +113,11 @@ fn keyframes_ramp_the_speed() {
     let step = |t: i64| (it.source_time_at(Tick(t + S / 10)) - it.source_time_at(Tick(t))).0 as f64 / (S / 10) as f64;
     assert!((step(S / 4) - 1.0).abs() < 1e-3);
     assert!(step(it.duration.0 - S / 5) > 3.9);
-    // the sound follows the ramp sample for sample
+    // the sound stays at 100 % and only follows the picture's length (see
+    // `a_keyframed_ramp_leaves_the_linked_sound_at_normal_speed`)
     let snd = clip(&s, a);
-    assert!(snd.is_remapped());
-    assert_eq!((snd.start, snd.duration), (it.start, it.duration));
-    for i in 0..40 {
-        let t = Tick(i * it.duration.0 / 40);
-        assert_eq!(snd.source_time_at(t), it.source_time_at(t));
-    }
+    assert!(!snd.is_remapped());
+    assert_eq!((snd.speed, snd.start, snd.duration), (1.0, it.start, it.duration));
     // Speed/Duration can't set a constant speed over the keyframes
     s.execute("timeline.select", json!({"clips": [v.0]})).unwrap();
     assert!(s.execute("clip.speedDuration", json!({"speed": 50})).is_err());
@@ -116,27 +135,147 @@ fn keyframes_ramp_the_speed() {
     assert_eq!(clip(&s, a), sound);
 }
 
+/// A keyframed ramp leaves the linked sound at 100 %: still linked and audible, playing its own
+/// media at its own rate while the picture drifts ahead of it.
 #[test]
-fn remap_audio_off_keeps_the_sound_at_normal_speed() {
+fn a_keyframed_ramp_leaves_the_linked_sound_at_normal_speed() {
     let mut s = Session::default();
     let (v, a) = one_clip(&mut s);
-    let sound = clip(&s, a);
-    s.execute("effects.setParam", json!({"clip": v.0, "effect": "time_remap", "param": "audio", "value": false})).unwrap();
-    set_speed(&mut s, v, 100.0, Some(0));
-    set_speed(&mut s, v, 400.0, Some(S));
-    assert!(clip(&s, v).is_remapped());
-    assert_eq!(clip(&s, a), sound);
-    // on again: the sound picks up the ramp
-    s.execute("effects.setParam", json!({"clip": v.0, "effect": "time_remap", "param": "audio", "value": true})).unwrap();
+    let (picture, sound) = (clip(&s, v), clip(&s, a));
+    let untouched = mix(&s, 48_000);
+    // 100 % up to one second into the clip, rising to 400 % at two seconds
+    set_speed(&mut s, v, 100.0, Some(S));
+    set_speed(&mut s, v, 400.0, Some(2 * S));
     let (it, snd) = (clip(&s, v), clip(&s, a));
-    assert!(snd.is_remapped());
-    assert_eq!(snd.duration, it.duration);
-    // a razor cut through both keeps them in step
-    s.execute("sequence.addEdit", json!({"time": it.duration.0 / 2})).unwrap();
+    assert!(it.is_remapped() && it.duration < picture.duration);
+    // no curve on the sound: it plays its source at its own rate
+    assert!(!snd.is_remapped() && snd.effect("time_remap").is_none());
+    assert_eq!(snd.speed, 1.0);
+    assert!((rate(&snd) - 1.0).abs() < 1e-9, "the sound plays at {}", rate(&snd));
+    // still linked to its picture, enabled, unmuted and at its own level
+    assert!(snd.link.is_some() && snd.link == it.link);
+    assert!(snd.enabled && !snd.essential.as_ref().is_some_and(|e| e.mute) && snd.gain_db == 0.0);
+    // its length follows the picture's and its media still starts where it did, so the ramp cuts
+    // its tail rather than stretching it
+    assert_eq!((snd.start, snd.duration, snd.source_in), (it.start, it.duration, sound.source_in));
+    assert_eq!(snd.source_out(), snd.source_in + snd.duration);
+    assert!(snd.source_out() < it.source_out(), "the picture plays media past the sound's out point");
+    // the samples are the source at 100 %: the same sound the ramp never touched, and not silence
+    let after = mix(&s, 48_000);
+    for (x, y) in untouched.channels.iter().zip(&after.channels) {
+        let d = x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0.0f32, f32::max);
+        assert!(d < 1e-6, "the ramp retimed the sound: off by {d}");
+        assert!(y.iter().fold(0.0f32, |m, v| m.max(v.abs())) > 1e-3, "the linked sound went silent");
+    }
+    // a razor through the pair keeps the sound on the time the picture is on
+    s.execute("sequence.addEdit", json!({"time": snd.duration.0 / 2})).unwrap();
     let q = s.active_sequence().unwrap();
     for (pv, pa) in q.video_tracks[0].items.iter().zip(&q.audio_tracks[0].items) {
-        assert_eq!((pv.start, pv.duration, pv.source_in), (pa.start, pa.duration, pa.source_in));
+        assert_eq!((pv.start, pv.duration), (pa.start, pa.duration));
     }
+}
+
+/// A constant speed change retimes the linked sound with the picture, playing the same media; its
+/// pitch follows only with Maintain Audio Pitch, which is off until the user sets it.
+#[test]
+fn a_constant_speed_change_retimes_the_linked_sound() {
+    let mut s = Session::default();
+    let (v, a) = one_clip(&mut s);
+    let (picture, sound) = (clip(&s, v), clip(&s, a));
+    // a static 200 % in Effect Controls is a constant speed: the pair shrinks together
+    set_speed(&mut s, v, 200.0, None);
+    let (it, snd) = (clip(&s, v), clip(&s, a));
+    assert_eq!(it.speed, 2.0);
+    assert!((it.duration.0 as f64 - picture.duration.0 as f64 / 2.0).abs() <= 1.0, "{:?}", it.duration);
+    assert_eq!((snd.speed, snd.start, snd.duration), (2.0, it.start, it.duration));
+    assert_eq!((snd.source_in, snd.source_out()), (sound.source_in, sound.source_out()), "the same media");
+    assert!((rate(&snd) - 2.0).abs() < 1e-9, "the sound plays at {}", rate(&snd));
+    assert!(snd.link == it.link && snd.link.is_some());
+    assert!(!snd.maintain_pitch, "pitch preservation is off until it is set");
+    // Speed/Duration… ▸ Maintain Audio Pitch sets it for the pair
+    s.execute("clip.speedDuration", json!({"clips": [v.0], "speed": 200, "maintainPitch": true})).unwrap();
+    assert!(clip(&s, v).maintain_pitch && clip(&s, a).maintain_pitch, "the pair keeps its pitch");
+    // a later speed change retimes the sound and keeps the setting
+    set_speed(&mut s, v, 50.0, None);
+    let snd = clip(&s, a);
+    assert!((snd.speed - 0.5).abs() < 1e-9 && snd.maintain_pitch, "{} {snd:?}", snd.speed);
+    assert_eq!((snd.duration, snd.source_out()), (clip(&s, v).duration, sound.source_out()));
+    // ... and off again
+    s.execute("clip.speedDuration", json!({"clips": [v.0], "speed": 50, "maintainPitch": false})).unwrap();
+    assert!(!clip(&s, v).maintain_pitch && !clip(&s, a).maintain_pitch);
+    s.active_sequence().unwrap().check().unwrap();
+}
+
+/// A slow ramp makes the clip longer than its sound's media: the sound plays on at 100 % and then
+/// the rest of the clip is silence. Nothing loops, repeats or holds the last sample.
+#[test]
+fn a_slow_ramp_leaves_silence_after_the_sounds_media() {
+    let mut s = Session::default();
+    let (v, a) = one_clip(&mut s);
+    let (picture, sound) = (clip(&s, v), clip(&s, a));
+    let sr = i64::from(s.active_sequence().unwrap().settings.sample_rate);
+    let media = crate::media_duration(&s.project, &s.media, sound.item).expect("the demo media has a length");
+    assert!(media > sound.source_out(), "the clip is inside its media: {media:?}");
+    let untouched = mix(&s, 2 * sr as usize);
+    assert!(peak(&untouched) > 1e-3, "the demo has audio on A1");
+    // 100 % down to 10 %: the picture, and its sound at 100 %, outlast the media
+    set_speed(&mut s, v, 100.0, Some(0));
+    set_speed(&mut s, v, 10.0, Some(2 * S));
+    let (it, snd) = (clip(&s, v), clip(&s, a));
+    assert!(it.duration.0 > picture.duration.0 * 2, "a slow ramp lengthens the clip: {:?}", it.duration);
+    assert_eq!((snd.speed, snd.start, snd.duration, snd.source_in), (1.0, it.start, it.duration, sound.source_in));
+    // the media the sound has left from its in point, and where that runs out
+    let left = media - snd.source_in;
+    assert!(snd.duration > left, "the clip ({:?}) outlasts the sound's media ({left:?})", snd.duration);
+    let at = |t: Tick| (t.0 as f64 * sr as f64 / TICKS_PER_SECOND as f64) as i64;
+    let media_end = at(snd.start + left);
+    assert!(media_end + sr / 2 < at(snd.end()), "a margin of silence inside the clip");
+    // up to the media's end it is the source at 100 %: the samples the ramp never touched
+    let head = mix(&s, 2 * sr as usize);
+    for (x, y) in untouched.channels.iter().zip(&head.channels) {
+        let d = x.iter().zip(y).map(|(p, q)| (p - q).abs()).fold(0.0f32, f32::max);
+        assert!(d < 1e-6, "the slow ramp retimed the sound: off by {d}");
+    }
+    // past it, the rest of the clip is silence: no loop, no repeat, no held sample
+    let tail = mix_at(&s, media_end + sr / 4, sr as usize / 2);
+    assert!(peak(&tail) < 1e-6, "the rest of the clip repeats or holds audio: peak {}", peak(&tail));
+}
+
+/// A ramp that ends at no speed (clamped to the slowest there is) still leaves a whole, playing
+/// sound: no zero-length clip, no overflow, nothing muted.
+#[test]
+fn a_ramp_through_no_speed_keeps_the_sound_whole() {
+    let mut s = Session::default();
+    let (v, a) = one_clip(&mut s);
+    for keys in [(0.0, 400.0), (400.0, 0.0), (0.0, 0.0)] {
+        set_speed(&mut s, v, keys.0, Some(S));
+        set_speed(&mut s, v, keys.1, Some(2 * S));
+        let (it, snd) = (clip(&s, v), clip(&s, a));
+        assert!(it.duration > Tick::ZERO, "{keys:?}");
+        assert!(snd.duration > Tick::ZERO, "{keys:?}: {:?}", snd.duration);
+        assert!(snd.start.0.checked_add(snd.duration.0).is_some(), "{keys:?}");
+        assert_eq!((snd.speed, rate(&snd)), (1.0, 1.0), "{keys:?}");
+        assert!(snd.enabled && !snd.essential.as_ref().is_some_and(|e| e.mute));
+        s.active_sequence().unwrap().check().unwrap();
+        s.undo();
+        s.undo();
+    }
+}
+
+#[test]
+fn a_ramp_through_no_speed_is_undone_in_one_step_per_keyframe() {
+    let mut s = Session::default();
+    let (v, a) = one_clip(&mut s);
+    let (picture, sound) = (clip(&s, v), clip(&s, a));
+    set_speed(&mut s, v, 0.0, Some(S));
+    set_speed(&mut s, v, 400.0, Some(2 * S));
+    let ramped = (clip(&s, v), clip(&s, a));
+    s.undo();
+    s.undo();
+    assert_eq!((clip(&s, v), clip(&s, a)), (picture, sound), "the sound comes back with its picture");
+    s.execute("edit.redo", json!({})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!((clip(&s, v), clip(&s, a)), ramped);
 }
 
 #[test]
@@ -199,7 +338,7 @@ fn a_razor_cut_keeps_every_frame_of_a_ramp() {
 fn hostile_speeds_stay_in_range() {
     let mut s = Session::default();
     let (v, _) = one_clip(&mut s);
-    for value in [0.0, -250.0, 1e300, -1e300, 5e-324] {
+    for value in [0.0, -250.0, 10_000.0, -10_000.0, 5e-324] {
         set_speed(&mut s, v, value, None);
         let it = clip(&s, v);
         assert!(it.speed >= 0.01 && it.speed <= 100.0, "{value}: {}", it.speed);
@@ -240,4 +379,43 @@ fn dragging_the_speed_edits_one_keyframe() {
         s.execute("effects.setParam", json!({"clip": v.0, "effect": idx, "param": "speed", "value": value, "merge": true, "begin": i == 0})).unwrap();
     }
     assert_eq!(clip(&s, v).effect("time_remap").unwrap().param("speed").unwrap().keyframes.len(), 3);
+}
+
+/// Current command validation rejects values outside the published parameter range before mutation.
+#[test]
+fn out_of_range_speed_edits_leave_the_project_unchanged() {
+    let mut s = Session::default();
+    let (v, _) = one_clip(&mut s);
+    for value in [1e300, -1e300, 10_001.0, -10_001.0] {
+        for keyframe in [false, true] {
+            let before = s.project.clone();
+            assert!(
+                s.execute("effects.setParam", json!({"clip": v.0, "effect": "time_remap", "param": "speed", "value": value, "keyframe": keyframe, "time": S}))
+                    .is_err()
+            );
+            assert_eq!(s.project, before);
+        }
+    }
+}
+
+#[test]
+fn interpolation_only_edits_keep_picture_only_ramps_and_linked_sound_timing() {
+    let mut s = Session::default();
+    let (v, a) = one_clip(&mut s);
+    set_speed(&mut s, v, 100.0, Some(0));
+    set_speed(&mut s, v, 400.0, Some(S));
+    s.execute("timeline.select", json!({"clips": [v.0]})).unwrap();
+    let (picture, sound) = (clip(&s, v), clip(&s, a));
+    assert!(!sound.is_remapped());
+    for params in [json!({"interpolation": "frameBlending"}), json!({"speed": (picture.speed * 10_000.0).round() / 100.0, "interpolation": "opticalFlow"})] {
+        s.execute("clip.speedDuration", params).unwrap();
+        let (after_v, after_a) = (clip(&s, v), clip(&s, a));
+        assert_eq!(
+            (after_v.start, after_v.duration, after_v.source_in, after_v.speed, after_v.effect("time_remap")),
+            (picture.start, picture.duration, picture.source_in, picture.speed, picture.effect("time_remap"))
+        );
+        assert_eq!((after_a.start, after_a.duration, after_a.source_in, after_a.speed), (sound.start, sound.duration, sound.source_in, sound.speed));
+        s.undo();
+    }
+    assert!(s.execute("clip.speedDuration", json!({"speed": 50})).is_err());
 }

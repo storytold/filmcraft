@@ -296,7 +296,7 @@ fn build_effects() -> Vec<EffectDef> {
             name: "Time Remapping",
             kind: EffectKind::Video,
             category: &[],
-            params: vec![fs("speed", "Speed", 100.0, (-10000.0, 10000.0), (0.0, 200.0), "%", 2), b("audio", "Remap Audio", true)],
+            params: vec![fs("speed", "Speed", 100.0, (-10000.0, 10000.0), (0.0, 200.0), "%", 2)],
             intrinsic: true,
             accelerated: true,
             float32: true,

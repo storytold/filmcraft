@@ -233,11 +233,6 @@ impl TrackItem {
     pub fn is_remapped(&self) -> bool {
         self.effect("time_remap").is_some_and(|e| e.enabled && e.param("speed").is_some_and(Param::is_animated))
     }
-    /// Whether the clip's Time Remapping also changes the speed of its linked sound (Remap Audio,
-    /// on unless turned off).
-    pub fn remaps_audio(&self) -> bool {
-        self.effect("time_remap").and_then(|e| e.param("audio")).and_then(|p| p.value.as_bool()).unwrap_or(true)
-    }
     /// The media time reached by playing `d` of this clip's timeline (backwards when negative) from
     /// media time `m`, at the clip's speed or along its Time Remapping curve.
     pub fn media_after(&self, m: Tick, d: Tick) -> Tick {
