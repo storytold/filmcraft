@@ -48,7 +48,8 @@ fn hash_of(v: impl Hash) -> u64 {
 
 /// The active sequence's frame `frame` for the scopes: the monitor picture (¼ resolution, from
 /// the frame workers at priority `prio`) or, for Rec. 2100 scopes of an HDR sequence, a small
-/// working-space render. While a new frame renders the last one stays.
+/// working-space render. While a new frame renders, the newest one ready for a recent revision
+/// stands in, else the last one stays.
 pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, frame: i64, st: &ScopesState, prio: u32) -> Option<ScopeFrame> {
     let seq_id = app.session.state.active_sequence?;
     let q = app.session.active_sequence()?;
@@ -65,13 +66,33 @@ pub fn frame_signal(app: &mut FilmcraftApp, ctx: &egui::Context, slot: &str, fra
     {
         return Some(ScopeFrame { signal: s.clone(), key, pq: *p, space });
     }
-    let fresh = if pq {
-        filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true)
+    let (fresh, key) = if pq {
+        (filmcraft_engine::scopes::scope_signal(&app.session, rate.tick_of(frame), 0.125, true), key)
     } else {
         let fkey = FrameKey { target: Target::Sequence(seq_id), frame, size: 250, revision: rev, draft: false };
         let project = app.session.project.clone();
         app.frames.request(fkey, rate.tick_of(frame), 0.25, &project, prio);
-        app.frames.get(&fkey).map(|img| Signal::from_rgba8(img.w, img.h, &img.px))
+        // A dragged value (a colour wheel, a slider) makes a revision per pass, so the frame
+        // asked for is never ready yet: measure the newest one rendered for a recent revision
+        // instead of the picture from before the drag (#4567). The Program monitor's picture
+        // of this frame counts too: its jobs come first, so while each render takes longer than
+        // a pass the scopes' own ones wait for the mouse to rest.
+        let own = app.frames.recent(fkey, 1, 0, crate::frames::PLAYING_REVISION_LAG);
+        let shown = app.program_shown.filter(|k| k.target == fkey.target && k.frame == frame && !k.draft && k.revision <= rev);
+        // on a tie, the scopes' own render
+        let ready = [shown, own].into_iter().flatten().max_by_key(|k| k.revision);
+        match ready {
+            Some(k) => {
+                let key = hash_of((seq_id.0, frame, k.revision, pq));
+                if let Some((ck, s, p)) = &cached
+                    && *ck == key
+                {
+                    return Some(ScopeFrame { signal: s.clone(), key, pq: *p, space });
+                }
+                (app.frames.get(&k).map(|img| Signal::from_rgba8(img.w, img.h, &img.px)), key)
+            }
+            None => (None, key),
+        }
     };
     match fresh {
         Some(s) => {

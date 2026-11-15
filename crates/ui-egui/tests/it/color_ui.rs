@@ -657,3 +657,85 @@ fn lumetri_index(d: &mut Driver, clip: u64) -> usize {
     let it = items.into_iter().find(|i| i["clip"] == clip).unwrap();
     it["effects"].as_array().unwrap().iter().position(|e| e["effect"] == "lumetri").unwrap()
 }
+
+/// The Program frame the Video Scopes panel last measured, and its mean RGB.
+fn scope_mean(d: &mut Driver) -> Option<[f32; 3]> {
+    let ctx = d.harness.ctx.clone();
+    let id = egui::Id::unique(("scope-signal", "program"));
+    let cached: Option<(u64, std::sync::Arc<filmcraft_scopes::Signal>, bool)> = ctx.data(|m| m.get_temp(id));
+    let (_, s, _) = cached?;
+    let n = s.rgb.len().max(1) as f32;
+    let sum = s.rgb.iter().fold([0.0f32; 3], |a, p| [a[0] + p[0], a[1] + p[1], a[2] + p[2]]);
+    Some([sum[0] / n, sum[1] / n, sum[2] / n])
+}
+
+/// How long to wait for the frame workers (their own threads; slow when the suite runs in parallel).
+const FRAME_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Step the UI until `done` or [`FRAME_WAIT`].
+fn settle(d: &mut Driver, mut done: impl FnMut(&mut Driver) -> bool) -> bool {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < FRAME_WAIT {
+        d.frames(1);
+        if done(d) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+fn moved(a: [f32; 3], b: [f32; 3]) -> bool {
+    (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs() > 0.01
+}
+
+/// #4567: dragging a colour wheel makes a revision per UI pass, so the scopes' frame for the
+/// current revision is never ready while the mouse moves. The scopes now measure the newest frame
+/// rendered for a recent revision (as the Program monitor shows it) instead of freezing on the
+/// picture from before the drag until the mouse is released.
+#[test]
+fn scopes_follow_a_dragged_color_wheel() {
+    use egui::{Event, Modifiers, PointerButton, vec2};
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.ok("ui.panel.show", json!({"panel": "LumetriScopes"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(2);
+    d.click("lumetri.section.Color Wheels & Match");
+    d.frames(3);
+    // the scopes measure the ungraded frame at this revision
+    let rev = d.app().session.revision;
+    assert!(settle(&mut d, |d| d.app().session.revision == rev && scope_mean(d).is_some()), "no scope signal");
+    let before = scope_mean(&mut d).unwrap();
+    let r = d.element("lumetri.wheel.wheel_midtones").expect("midtones wheel");
+    let c = egui::pos2(r[0] + r[2] / 2.0 + 6.0, r[1] + r[3] / 2.0);
+    let reach = r[2] / 2.0 - 16.0;
+    d.harness.event(Event::PointerMoved(c));
+    d.frames(1);
+    d.harness.event(Event::PointerButton { pos: c, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    d.frames(1);
+    // keep adjusting (a new value, so a new revision, on every pass) without letting go
+    let mut followed = false;
+    let t0 = std::time::Instant::now();
+    for i in 0usize.. {
+        if t0.elapsed() > FRAME_WAIT {
+            break;
+        }
+        let p = c + if i % 2 == 0 { vec2(0.0, reach) } else { vec2(-reach, reach * 0.5) };
+        d.harness.event(Event::PointerMoved(p));
+        d.frames(1);
+        if scope_mean(&mut d).is_some_and(|m| moved(m, before)) {
+            followed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(d.app().session.revision > rev + 2, "the drag did not edit the wheel");
+    assert!(followed, "the scopes kept the pre-drag frame for the whole drag");
+    d.harness.event(Event::PointerButton { pos: c, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    d.frames(2);
+    let e = lumetri(&mut d, clip);
+    assert!(e["params"]["wheel_midtones"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "{e}");
+}

@@ -5,7 +5,8 @@
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
 //! many nits (see `filmcraft_color::grade`). Automation ids for those and HSL Secondary ▸ Refine:
 //! `lumetri.param.<id>` (`hdr_white`, `hdr_specular`, `curves_hdr_range`, `hsl_denoise`,
-//! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
+//! `hsl_blur`); Color Wheels: `lumetri.wheel.<param>` (`wheel_shadows`, `wheel_midtones`,
+//! `wheel_highlights`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
 //! Comparison View, whose reference frame Apply Match then uses).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -180,7 +181,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ] {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(label).color(t.text_dim));
-                        color_wheel(ui, &e, mt, id, lid, w, &t, &mut actions, clip, idx);
+                        let r = color_wheel(ui, &e, mt, id, lid, w, &t, &mut actions, clip, idx);
+                        auto_rows.push((format!("lumetri.wheel.{id}"), r, label));
                     });
                 }
             });
@@ -655,9 +657,21 @@ fn without_point(pts: &[[f32; 2]], i: usize, hue: bool) -> Option<Vec<[f32; 2]>>
     Some(rest)
 }
 
-/// Colour wheel: hue ring, draggable puck (offset), lightness slider on the left.
+/// Colour wheel: hue ring, draggable puck (offset), lightness slider on the left. Returns the
+/// wheel's rect (automation id `lumetri.wheel.<param>`).
 #[allow(clippy::too_many_arguments)]
-fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &str, size: f32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) {
+fn color_wheel(
+    ui: &mut egui::Ui,
+    e: &EffectInstance,
+    mt: Tick,
+    id: &str,
+    lid: &str,
+    size: f32,
+    t: &Tokens,
+    actions: &mut Actions,
+    clip: ClipId,
+    idx: usize,
+) -> Rect {
     let v = e.param(id).map(|p| p.vec2_at(mt)).unwrap_or_default();
     let (area, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     let c = area.center() + vec2(6.0, 0.0);
@@ -709,6 +723,7 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
         actions.push(json!({"clip": clip.0, "effect": idx, "param": lid, "value": nv}));
     }
     let _ = StrokeKind::Inside;
+    area
 }
 
 /// Color Match: reference frame (sequence timecode), Face Detection (skin-tone protection),
