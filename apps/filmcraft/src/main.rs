@@ -575,6 +575,52 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
             filmcraft_gpu::SurfaceRender::Unavailable => GpuFrame::Unavailable,
         }
     }
+
+    fn try_render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> filmcraft_export::Result<Option<filmcraft_render::Image>> {
+        self.0.try_render(project, seq, t, opts, sources).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+    ) -> filmcraft_export::Result<Option<filmcraft_render::Image>> {
+        self.0.try_render_planned(plan, prep).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned_rgba8(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+    ) -> filmcraft_export::Result<Option<(u32, u32, Vec<u8>)>> {
+        self.0.try_render_planned_rgba8(plan, prep).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn filmcraft_export::GpuEncodeInput,
+    ) -> filmcraft_export::Result<filmcraft_export::GpuFrame> {
+        use filmcraft_export::GpuFrame;
+        match self
+            .0
+            .try_render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height())
+            .map_err(filmcraft_export::ExportError::Encode)?
+        {
+            filmcraft_gpu::SurfaceRender::Rendered => Ok(GpuFrame::Rendered),
+            filmcraft_gpu::SurfaceRender::NoImport => Ok(GpuFrame::NoImport),
+            filmcraft_gpu::SurfaceRender::Unconfirmed => Ok(GpuFrame::Unconfirmed),
+            filmcraft_gpu::SurfaceRender::Unavailable => Ok(GpuFrame::Unavailable),
+        }
+    }
 }
 
 fn register_gpu_frame_renderer() {

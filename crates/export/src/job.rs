@@ -122,12 +122,12 @@ fn render_batch(
     prepare: Option<&PrepareAhead>,
     gpu_pool: Option<&dyn GpuEncodePool>,
     f0: i64,
-) -> Option<Vec<Frame>> {
+) -> Result<Option<Vec<Frame>>> {
     let pending = AtomicBool::new(false);
     let frames: Vec<Frame> = (range.0..range.1)
         .into_par_iter()
         .map(|fi| {
-            let frame = pipe.frame_or_gpu(fi, sources, gpu_pool);
+            let frame = pipe.frame_or_gpu(fi, sources, gpu_pool)?;
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
@@ -135,10 +135,10 @@ fn render_batch(
                 let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
                 prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba, hdr: pipe.hdr_out.then_some(hdr.as_slice()), index });
             }
-            frame
+            Ok(frame)
         })
-        .collect();
-    (!pending.load(Ordering::Relaxed)).then_some(frames)
+        .collect::<Result<Vec<Frame>>>()?;
+    Ok((!pending.load(Ordering::Relaxed)).then_some(frames))
 }
 
 /// What encoding a batch came to.
@@ -600,7 +600,7 @@ impl Exporter {
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, (f, end), sources, prepare.as_ref(), gpu_pool.as_deref(), f0)) {
+                match timed(Stage::Render, || render_batch(pipe, (f, end), sources, prepare.as_ref(), gpu_pool.as_deref(), f0))? {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -625,7 +625,7 @@ impl Exporter {
         };
         let pipe = self.pipe.clone();
         let next_gpu_pool = gpu_pool.clone();
-        let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
+        let mut slot: Option<std::thread::Result<Result<Option<Vec<Frame>>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
@@ -648,9 +648,10 @@ impl Exporter {
                 progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
                 self.next = end;
                 match slot {
-                    Some(Ok(Some(frames))) => self.ahead = Some(Ahead { first: a, frames }),
+                    Some(Ok(Ok(Some(frames)))) => self.ahead = Some(Ahead { first: a, frames }),
                     // a source was not ready: the next step renders this batch again
-                    Some(Ok(None)) | None => {}
+                    Some(Ok(Ok(None))) | None => {}
+                    Some(Ok(Err(e))) => return Err(e),
                     Some(Err(_)) => return Err(ExportError::Encode("internal error while rendering a frame (the panic was logged by the panic hook)".into())),
                 }
                 Ok(Step::Progress)

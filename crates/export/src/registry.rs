@@ -196,6 +196,39 @@ pub trait FrameRenderer: Send {
     fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> GpuFrame {
         GpuFrame::Unavailable
     }
+
+    /// Like [`Self::render`], returning `Err` on unrecoverable source readback failure instead of
+    /// falling back to CPU compositing.
+    fn try_render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Result<Option<filmcraft_render::Image>> {
+        Ok(self.render(project, seq, t, opts, sources))
+    }
+
+    /// Like [`Self::render_planned`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<filmcraft_render::Image>> {
+        Ok(self.render_planned(plan, prep))
+    }
+
+    /// Like [`Self::render_planned_rgba8`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<(u32, u32, Vec<u8>)>> {
+        Ok(self.render_planned_rgba8(plan, prep))
+    }
+
+    /// Like [`Self::render_planned_gpu`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn GpuEncodeInput,
+    ) -> Result<GpuFrame> {
+        Ok(self.render_planned_gpu(plan, prep, target))
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

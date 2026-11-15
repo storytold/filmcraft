@@ -300,9 +300,16 @@ impl Pipeline {
             && !self.has_overlays()
     }
 
+    fn execute_cpu_checked(&self, plan: &filmcraft_render::plan::FramePlan, t: Tick) -> Result<RenderedFrame> {
+        note_gpu_fallback();
+        let img = filmcraft_render::plan::try_execute_cpu(plan).map_err(ExportError::Encode)?;
+        let (rgba, hdr) = self.finish_image(img, t);
+        Ok(RenderedFrame::Cpu(rgba, hdr))
+    }
+
     /// Output frame `f` for an export batch, using `gpu_pool` for zero-copy GPU rendering when
     /// eligible (`can_gpu_rgba8() && !video_limiter.enabled`).
-    pub(crate) fn frame_or_gpu(&self, f: i64, sources: &dyn SourceProvider, gpu_pool: Option<&dyn crate::GpuEncodePool>) -> RenderedFrame {
+    pub(crate) fn frame_or_gpu(&self, f: i64, sources: &dyn SourceProvider, gpu_pool: Option<&dyn crate::GpuEncodePool>) -> Result<RenderedFrame> {
         let t = self.rate.tick_of(f);
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
         // draw, any internal error) falls back to the CPU reference renderer below. A frame the
@@ -320,13 +327,10 @@ impl Pipeline {
                 // the planner handed back a ready CPU image: no GPU renderer composited this frame
                 note_gpu_fallback();
                 let (rgba, hdr) = self.finish_image(img, t);
-                return RenderedFrame::Cpu(rgba, hdr);
+                return Ok(RenderedFrame::Cpu(rgba, hdr));
             }
             let Some(prep) = pool.prepare(&plan) else {
-                note_gpu_fallback();
-                let img = filmcraft_render::plan::execute_cpu(&plan);
-                let (rgba, hdr) = self.finish_image(img, t);
-                return RenderedFrame::Cpu(rgba, hdr);
+                return self.execute_cpu_checked(&plan, t);
             };
             if self.can_gpu_rgba8() {
                 // the encoder's surfaces cannot be imported into this device (see NoImport): the
@@ -340,16 +344,17 @@ impl Pipeline {
                     && let Some(target) = gpu_pool.acquire(self.w, self.h)
                 {
                     let asked = web_time::Instant::now();
-                    let outcome = pool
-                        .with(|r| {
-                            crate::note_lock_wait(asked.elapsed());
-                            r.render_planned_gpu(&plan, Some(prep.as_ref()), target.as_ref())
-                        })
-                        .unwrap_or(GpuFrame::Unavailable);
+                    let outcome = match pool.with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.try_render_planned_gpu(&plan, Some(prep.as_ref()), target.as_ref())
+                    }) {
+                        Some(res) => res?,
+                        None => GpuFrame::Unavailable,
+                    };
                     match outcome {
                         GpuFrame::Rendered => {
                             note_gpu_frame();
-                            return RenderedFrame::Gpu(target);
+                            return Ok(RenderedFrame::Gpu(target));
                         }
                         // the renderer's device cannot import the encoder's surfaces at all (another
                         // adapter, no external memory): every frame would pay a failed import here
@@ -367,12 +372,13 @@ impl Pipeline {
                 }
                 if !pool.is_failed() {
                     let asked = web_time::Instant::now();
-                    let gpu = pool
-                        .with(|r| {
-                            crate::note_lock_wait(asked.elapsed());
-                            r.render_planned_rgba8(&plan, Some(prep.as_ref()))
-                        })
-                        .flatten();
+                    let gpu = match pool.with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.try_render_planned_rgba8(&plan, Some(prep.as_ref()))
+                    }) {
+                        Some(res) => res?,
+                        None => None,
+                    };
                     if let Some((gw, gh, mut rgba)) = gpu
                         && (gw, gh) == (self.w, self.h)
                     {
@@ -380,42 +386,38 @@ impl Pipeline {
                         if self.effects.video_limiter.enabled {
                             limit_rgba8(&mut rgba, self.effects.video_limiter.min_percent, self.effects.video_limiter.max_percent);
                         }
-                        return RenderedFrame::Cpu(rgba, Vec::new());
+                        return Ok(RenderedFrame::Cpu(rgba, Vec::new()));
                     }
                 }
-                note_gpu_fallback();
-                let img = filmcraft_render::plan::execute_cpu(&plan);
-                let (rgba, hdr) = self.finish_image(img, t);
-                return RenderedFrame::Cpu(rgba, hdr);
+                return self.execute_cpu_checked(&plan, t);
             }
             let asked = web_time::Instant::now();
-            let gpu = pool
-                .with(|r| {
-                    crate::note_lock_wait(asked.elapsed());
-                    r.render_planned(&plan, Some(prep.as_ref()))
-                })
-                .flatten();
-            let img = match gpu {
+            let gpu = match pool.with(|r| {
+                crate::note_lock_wait(asked.elapsed());
+                r.try_render_planned(&plan, Some(prep.as_ref()))
+            }) {
+                Some(res) => res?,
+                None => None,
+            };
+            return match gpu {
                 Some(img) => {
                     note_gpu_frame();
-                    img
+                    let (rgba, hdr) = self.finish_image(img, t);
+                    Ok(RenderedFrame::Cpu(rgba, hdr))
                 }
-                None => {
-                    note_gpu_fallback();
-                    filmcraft_render::plan::execute_cpu(&plan)
-                }
+                None => self.execute_cpu_checked(&plan, t),
             };
-            let (rgba, hdr) = self.finish_image(img, t);
-            return RenderedFrame::Cpu(rgba, hdr);
         }
         let gpu = match pool {
             Some(pool) => {
                 let asked = web_time::Instant::now();
-                pool.with(|r| {
+                match pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
-                })
-                .flatten()
+                    r.try_render(&self.project, self.seq, t, self.opts, sources)
+                }) {
+                    Some(res) => res?,
+                    None => None,
+                }
             }
             None => None,
         };
@@ -432,15 +434,15 @@ impl Pipeline {
             }
         };
         let (rgba, hdr) = self.finish_image(img, t);
-        RenderedFrame::Cpu(rgba, hdr)
+        Ok(RenderedFrame::Cpu(rgba, hdr))
     }
 
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
-    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
-        match self.frame_or_gpu(f, sources, None) {
-            RenderedFrame::Cpu(rgba, hdr) => (rgba, hdr),
-            RenderedFrame::Gpu(_) => (Vec::new(), Vec::new()),
+    pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> Result<(Vec<u8>, Vec<f32>)> {
+        match self.frame_or_gpu(f, sources, None)? {
+            RenderedFrame::Cpu(rgba, hdr) => Ok((rgba, hdr)),
+            RenderedFrame::Gpu(_) => Ok((Vec::new(), Vec::new())),
         }
     }
 

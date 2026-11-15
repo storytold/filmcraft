@@ -138,18 +138,25 @@ impl VideoFrame {
         self
     }
 
+    /// Materialize a GPU-resident frame into CPU planar `PixelData`, or `Ok(None)` if already on CPU.
+    /// Returns `Err` when GPU-to-CPU readback fails.
+    pub fn try_materialize_cpu(&self) -> Result<Option<VideoFrame>, String> {
+        let PixelData::GpuSurface(surf) = &self.data else { return Ok(None) };
+        let data = surf.to_cpu()?;
+        Ok(Some(VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts }))
+    }
+
     /// Materialize a GPU-resident frame into CPU planar `PixelData`, or `None` if already on CPU.
     pub fn materialize_cpu(&self) -> Option<VideoFrame> {
-        let PixelData::GpuSurface(surf) = &self.data else { return None };
-        let data = match surf.to_cpu() {
-            Ok(d) => d,
+        match self.try_materialize_cpu() {
+            Ok(frame) => frame,
             Err(why) => {
                 log::warn!("GPU surface CPU readback failed: {why}");
                 let (w, h) = (self.width as usize, self.height as usize);
-                PixelData::RgbaF32(Arc::new(vec![0.0; w.saturating_mul(h).saturating_mul(4)]))
+                let data = PixelData::RgbaF32(Arc::new(vec![0.0; w.saturating_mul(h).saturating_mul(4)]));
+                Some(VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts })
             }
-        };
-        Some(VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts })
+        }
     }
 
     pub fn format_label(&self) -> String {

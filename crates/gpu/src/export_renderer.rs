@@ -164,38 +164,58 @@ impl ExportRenderer {
 
     /// Render a pre-planned and pre-prepared frame as linear premultiplied RGBA f32.
     pub fn render_plan(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<Image> {
+        self.try_render_plan(plan, prep).ok().flatten()
+    }
+
+    /// Like [`Self::render_plan`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render_plan(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Result<Option<Image>, String> {
         match plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
-            FramePlan::Image(img) => Some(img.clone()),
+            FramePlan::Image(img) => Ok(Some(img.clone())),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
-                let (w, h, px) = self.compositor.render_export_prepared(plan, prep)?;
+                let (w, h, px) = match self.compositor.try_render_export_prepared(plan, prep) {
+                    Ok(v) => v,
+                    Err(crate::ExportRenderError::Unavailable) => return Ok(None),
+                    Err(crate::ExportRenderError::SourceReadback(why)) => return Err(why),
+                };
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 timing::add_frame();
-                Some(Image { w: w as usize, h: h as usize, px })
+                Ok(Some(Image { w: w as usize, h: h as usize, px }))
             }
         }
     }
 
     /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
     pub fn render_plan_rgba8(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        self.try_render_plan_rgba8(plan, prep).ok().flatten()
+    }
+
+    /// Like [`Self::render_plan_rgba8`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render_plan_rgba8(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
         match plan {
-            FramePlan::Image(img) => Some((img.w as u32, img.h as u32, img.over_black_rgba8())),
+            FramePlan::Image(img) => Ok(Some((img.w as u32, img.h as u32, img.over_black_rgba8()))),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
-                let out = self.compositor.render_export_rgba8_prepared(plan, prep)?;
+                let out = match self.compositor.try_render_export_rgba8_prepared(plan, prep) {
+                    Ok(v) => v,
+                    Err(crate::ExportRenderError::Unavailable) => return Ok(None),
+                    Err(crate::ExportRenderError::SourceReadback(why)) => return Err(why),
+                };
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 timing::add_frame();
-                Some(out)
+                Ok(Some(out))
             }
         }
     }
@@ -212,20 +232,34 @@ impl ExportRenderer {
         w: u32,
         h: u32,
     ) -> SurfaceRender {
+        self.try_render_plan_surface(plan, prep, target, target_id, w, h).unwrap_or(SurfaceRender::Unavailable)
+    }
+
+    /// Like [`Self::render_plan_surface`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback.
+    pub fn try_render_plan_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&crate::PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> Result<SurfaceRender, String> {
         if matches!(plan, FramePlan::Image(_)) || device_failed() {
-            return SurfaceRender::Unavailable;
+            return Ok(SurfaceRender::Unavailable);
         }
-        let outcome = self.compositor.render_export_surface_prepared(plan, prep, target, target_id, (w, h));
+        let outcome = self.compositor.try_render_export_surface_prepared(plan, prep, target, target_id, (w, h))?;
         match outcome {
             // a device that died right after a confirmed render: the surface is fine, but the frame
             // has to be rendered again by the CPU path
-            SurfaceRender::Rendered if device_failed() => SurfaceRender::Unavailable,
+            SurfaceRender::Rendered if device_failed() => Ok(SurfaceRender::Unavailable),
             SurfaceRender::Rendered => {
                 timing::add_frame();
-                SurfaceRender::Rendered
+                Ok(SurfaceRender::Rendered)
             }
             // an unconfirmed submission is never "unavailable": its surface must not be reused
-            other => other,
+            other => Ok(other),
         }
     }
 
@@ -235,10 +269,22 @@ impl ExportRenderer {
         self.render_plan(plan, prep)
     }
 
+    /// Type-erased wrapper around [`Self::try_render_plan`] for `FrameRenderer` implementations.
+    pub fn try_render_planned(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<Image>, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan(plan, prep)
+    }
+
     /// Type-erased wrapper around [`Self::render_plan_rgba8`] for `FrameRenderer` implementations.
     pub fn render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
         let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
         self.render_plan_rgba8(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::try_render_plan_rgba8`] for `FrameRenderer` implementations.
+    pub fn try_render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan_rgba8(plan, prep)
     }
 
     /// Type-erased wrapper around [`Self::render_plan_surface`] for `FrameRenderer` implementations.
@@ -255,18 +301,38 @@ impl ExportRenderer {
         self.render_plan_surface(plan, prep, target, target_id, w, h)
     }
 
+    /// Type-erased wrapper around [`Self::try_render_plan_surface`] for `FrameRenderer` implementations.
+    pub fn try_render_planned_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> Result<crate::SurfaceRender, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan_surface(plan, prep, target, target_id, w, h)
+    }
+
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+        self.try_render(project, seq, t, opts, sources).ok().flatten()
+    }
+
+    /// Like [`Self::render`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
         let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
         match &plan {
-            FramePlan::Image(img) => Some(img.clone()),
+            FramePlan::Image(img) => Ok(Some(img.clone())),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 let prep = crate::prepare_for(&plan, self.compositor.supports_r16_unorm());
-                self.render_plan(&plan, Some(&prep))
+                self.try_render_plan(&plan, Some(&prep))
             }
         }
     }

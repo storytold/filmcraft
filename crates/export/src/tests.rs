@@ -530,7 +530,7 @@ fn gpu_hook_scenarios() {
     let pipe = crate::pipeline::Pipeline::new(Arc::clone(&p), seq, &settings, false).unwrap();
     let pool = CountingPool::default();
     for f in 0..4 {
-        let _ = pipe.frame_or_gpu(f, &m, Some(&pool));
+        let _ = pipe.frame_or_gpu(f, &m, Some(&pool)).unwrap();
     }
     assert_eq!(pool.acquired(), 1, "a permanent import failure is asked for a surface once, not once per frame");
     assert!(gpu_render_stats().fallbacks >= 4, "the readback path rendered every frame: {:?}", gpu_render_stats());

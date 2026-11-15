@@ -339,6 +339,26 @@ pub fn register_export_target_importer(importer: ExportTargetImporter) {
     let _ = EXPORT_TARGET_IMPORTER.set(importer);
 }
 
+/// Failure mode when compositing a [`FramePlan`] for export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportRenderError {
+    /// GPU compositing cannot render this frame; CPU compositing may take over.
+    Unavailable,
+    /// A source [`filmcraft_frame::GpuSurface`] failed both zero-copy import and CPU readback.
+    SourceReadback(String),
+}
+
+impl std::fmt::Display for ExportRenderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str("GPU compositor unavailable for this frame"),
+            Self::SourceReadback(why) => write!(f, "GPU surface readback failed: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for ExportRenderError {}
+
 /// What became of one zero-copy render into an encoder-owned surface
 /// ([`ExportRenderer::render_plan_surface`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -720,8 +740,11 @@ impl GpuCompositor {
     }
 
     /// Upload (or reuse) the textures of a frame, using `prep` when it was converted beforehand.
-    /// Returns `None` when a GPU surface could not be imported or read back to CPU.
     fn upload(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> Option<(usize, u32, u32)> {
+        self.upload_checked(f, prep).ok()
+    }
+
+    fn upload_checked(&mut self, f: &VideoFrame, prep: Option<&Prepared>) -> Result<(usize, u32, u32), ExportRenderError> {
         let id = match &f.data {
             PixelData::Rgba8(d) => Arc::as_ptr(d) as *const u8 as usize,
             PixelData::RgbaF32(d) => Arc::as_ptr(d) as *const u8 as usize,
@@ -736,7 +759,7 @@ impl GpuCompositor {
             if self.frame_depth > 0 {
                 self.frame_uploads.insert(key);
             }
-            return Some(key);
+            return Ok(key);
         }
         let up = match &f.data {
             PixelData::GpuSurface(surf) => self.upload_gpu_surface(f, surf)?,
@@ -751,15 +774,15 @@ impl GpuCompositor {
         }
         // Keep recent uploads up to the VRAM budget and entry cap, deferring recycling until submit.
         self.evict_uploads(Some(key));
-        Some(key)
+        Ok(key)
     }
 
-    fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Option<Uploaded> {
+    fn upload_gpu_surface(&mut self, f: &VideoFrame, surf: &Arc<dyn filmcraft_frame::GpuSurface>) -> Result<Uploaded, ExportRenderError> {
         self.has_gpu_surface = true;
         if let Some(importer) = SURFACE_IMPORTER.get()
             && let Some(imported) = importer(&self.device, &self.dummy, surf.as_ref(), f.width, f.height)
         {
-            return Some(Uploaded {
+            return Ok(Uploaded {
                 views: imported.views,
                 planes: Vec::new(),
                 owned_textures: imported.textures,
@@ -773,10 +796,10 @@ impl GpuCompositor {
             });
         }
         match surf.to_cpu() {
-            Ok(cpu_data) => Some(self.upload_cpu_data(f.width, f.height, &cpu_data, &f.data, None)),
+            Ok(cpu_data) => Ok(self.upload_cpu_data(f.width, f.height, &cpu_data, &f.data, None)),
             Err(why) => {
                 log::warn!("GPU surface fallback readback failed: {why}");
-                None
+                Err(ExportRenderError::SourceReadback(why))
             }
         }
     }
@@ -1103,9 +1126,9 @@ impl GpuCompositor {
     fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> Option<(wgpu::TextureView, (u32, u32))> {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
         self.begin_frame();
-        let out = self.record_plan(&mut enc, plan, prep, clear, resolve);
+        let out = self.record_plan_checked(&mut enc, plan, prep, clear, resolve);
         self.end_frame();
-        let Some(out) = out else {
+        let Ok(out) = out else {
             self.finish_submit();
             return None;
         };
@@ -1114,14 +1137,32 @@ impl GpuCompositor {
         Some(out)
     }
 
-    fn record_plan(
+    fn resolve_cpu_fx_layers(&self, layers: &[PlanLayer]) -> Result<Vec<Option<PlanLayer>>, ExportRenderError> {
+        let max_side = self.device.limits().max_texture_dimension_2d;
+        let mut cpu_fx = Vec::with_capacity(layers.len());
+        for l in layers {
+            let Some(lfx) = l.fx.as_ref() else {
+                cpu_fx.push(None);
+                continue;
+            };
+            if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
+                cpu_fx.push(None);
+                continue;
+            }
+            let img = filmcraft_render::plan::try_effect_image_with(&l.frame, lfx, l.input.as_deref()).map_err(ExportRenderError::SourceReadback)?;
+            cpu_fx.push(Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend)));
+        }
+        Ok(cpu_fx)
+    }
+
+    fn record_plan_checked(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
         plan: &FramePlan,
         prep: Option<&PreparedPlan>,
         clear: bool,
         resolve: bool,
-    ) -> Option<(wgpu::TextureView, (u32, u32))> {
+    ) -> Result<(wgpu::TextureView, (u32, u32)), ExportRenderError> {
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
@@ -1140,7 +1181,7 @@ impl GpuCompositor {
                     [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
-            FramePlan::Composite { width, height, steps } => return self.composite_steps(enc, *width, *height, steps, prep, resolve),
+            FramePlan::Composite { width, height, steps } => return self.composite_steps_checked(enc, *width, *height, steps, prep, resolve),
         };
         let (w, h) = (w.max(1), h.max(1));
         let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
@@ -1151,18 +1192,7 @@ impl GpuCompositor {
         };
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
-        let max_side = self.device.limits().max_texture_dimension_2d;
-        let cpu_fx: Vec<Option<PlanLayer>> = layers
-            .iter()
-            .map(|l| {
-                let lfx = l.fx.as_ref()?;
-                if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
-                    return None;
-                }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
-                Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
-            })
-            .collect();
+        let cpu_fx = self.resolve_cpu_fx_layers(layers)?;
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
         let mut keys = Vec::with_capacity(layers.len());
@@ -1170,7 +1200,7 @@ impl GpuCompositor {
             let p = prep.and_then(|p| if matches!(plan, FramePlan::Image(_)) { p.image.as_ref() } else { p.layers.get(i).and_then(Option::as_ref) });
             // (texels converted beforehand belong to the plan's own frame)
             let p = if cpu_fx.get(i).is_some_and(Option::is_some) { None } else { p };
-            keys.push(self.upload(&l.frame, p)?);
+            keys.push(self.upload_checked(&l.frame, p)?);
         }
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
@@ -1314,9 +1344,9 @@ impl GpuCompositor {
         if resolve {
             let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
             self.resolve_into(enc, &accum_view, &out_view);
-            Some((out_view, (w, h)))
+            Ok((out_view, (w, h)))
         } else {
-            Some((accum_view, (w, h)))
+            Ok((accum_view, (w, h)))
         }
     }
 
@@ -1344,7 +1374,7 @@ impl GpuCompositor {
         pass.draw(0..3, 0..1);
     }
 
-    fn composite_steps(
+    fn composite_steps_checked(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
         width: usize,
@@ -1352,10 +1382,11 @@ impl GpuCompositor {
         steps: &[PlanStep],
         prep: Option<&PreparedPlan>,
         resolve: bool,
-    ) -> Option<(wgpu::TextureView, (u32, u32))> {
-        let cpu = |c: &mut Self, enc: &mut wgpu::CommandEncoder| {
+    ) -> Result<(wgpu::TextureView, (u32, u32)), ExportRenderError> {
+        let cpu = |c: &mut Self, enc: &mut wgpu::CommandEncoder| -> Result<_, ExportRenderError> {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            c.record_plan(enc, &FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None, true, resolve)
+            let img = filmcraft_render::plan::try_execute_cpu(&plan).map_err(ExportRenderError::SourceReadback)?;
+            c.record_plan_checked(enc, &FramePlan::Image(img), None, true, resolve)
         };
         if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if !transition::supports(&effect.effect))) {
             self.cpu_transitions += 1;
@@ -1373,18 +1404,22 @@ impl GpuCompositor {
             f.begin_frame();
         }
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
-        let Some((canvas, dims)) = (if matches!(steps.first(), Some(PlanStep::Layers(_))) {
+        let init = if matches!(steps.first(), Some(PlanStep::Layers(_))) {
             let w = (width as u32).max(1);
             let h = (height as u32).max(1);
             let accum_view = Self::target(&self.device, &mut self.accum, w, h, ACCUM_FORMAT, wgpu::TextureUsages::COPY_SRC);
-            Some((accum_view, (w, h)))
+            Ok((accum_view, (w, h)))
         } else {
-            self.record_plan(enc, &empty, None, true, false)
-        }) else {
-            if let Some(f) = self.fx.as_mut() {
-                f.end_frame();
+            self.record_plan_checked(enc, &empty, None, true, false)
+        };
+        let (canvas, dims) = match init {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(f) = self.fx.as_mut() {
+                    f.end_frame();
+                }
+                return Err(e);
             }
-            return None;
         };
         let mut cleared = !matches!(steps.first(), Some(PlanStep::Layers(_)));
         let mut children = prep.map(|p| p.children.iter());
@@ -1395,11 +1430,11 @@ impl GpuCompositor {
             match step {
                 PlanStep::Layers(layers) => {
                     let p = children.as_mut().and_then(Iterator::next);
-                    if self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, !cleared, false).is_none() {
+                    if let Err(e) = self.record_plan_checked(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, !cleared, false) {
                         if let Some(f) = self.fx.as_mut() {
                             f.end_frame();
                         }
-                        return None;
+                        return Err(e);
                     }
                     cleared = true;
                 }
@@ -1409,15 +1444,17 @@ impl GpuCompositor {
                         let p = children.as_mut().and_then(Iterator::next);
                         // Isolate each clip; queued draws keep the parent accumulator and blend order.
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        let step_out = self.record_plan(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
+                        let step_out = self.record_plan_checked(enc, &FramePlan::Layers { width, height, layers: layers.clone() }, p, true, false);
                         std::mem::swap(&mut self.accum, &mut self.transition_inputs[index]);
-                        let Some((view, _)) = step_out else {
-                            if let Some(f) = self.fx.as_mut() {
-                                f.end_frame();
+                        match step_out {
+                            Ok((view, _)) => views[index] = view,
+                            Err(e) => {
+                                if let Some(f) = self.fx.as_mut() {
+                                    f.end_frame();
+                                }
+                                return Err(e);
                             }
-                            return None;
-                        };
-                        views[index] = view;
+                        }
                     }
                     self.transition.record((&self.device, &self.queue), enc, &canvas, [&views[0], &views[1]], dims, effect, *progress);
                     transitions += 1;
@@ -1436,7 +1473,7 @@ impl GpuCompositor {
         }
         self.gpu_transitions += transitions;
         self.gpu_adjustments += adjustments;
-        let out = if resolve { self.record_plan(enc, &empty, None, false, true) } else { Some((canvas, dims)) };
+        let out = if resolve { self.record_plan_checked(enc, &empty, None, false, true) } else { Ok((canvas, dims)) };
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
         }
@@ -1511,46 +1548,58 @@ impl GpuCompositor {
     /// (`plan_frame` composites only the transitions and adjustment layers the device draws);
     /// None on a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
+        self.try_render_export_prepared(plan, prep).ok()
+    }
+
+    /// Like [`render_export_prepared`](Self::render_export_prepared), distinguishing source
+    /// [`GpuSurface`](filmcraft_frame::GpuSurface) readback failure from GPU unavailability.
+    pub fn try_render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Result<(u32, u32, Vec<f32>), ExportRenderError> {
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
         self.begin_frame();
-        let recorded = self.record_plan(&mut enc, plan, prep, true, false).is_some();
+        let recorded = self.record_plan_checked(&mut enc, plan, prep, true, false);
         self.end_frame();
-        if !recorded {
+        if let Err(e) = recorded {
             self.finish_submit();
-            return None;
+            return Err(e);
         }
         let Some(size) = self.copy_accumulator(&mut enc) else {
             self.finish_submit();
-            return None;
+            return Err(ExportRenderError::Unavailable);
         };
         self.queue.submit([enc.finish()]);
         self.finish_submit();
         export_renderer::timing::add_submit(t.elapsed());
-        self.map_accumulator(size)
+        self.map_accumulator(size).ok_or(ExportRenderError::Unavailable)
     }
 
     /// Export rendering fast path for SDR opaque outputs: resolve `plan` over black on the GPU
     /// into `OUTPUT_FORMAT` (`Rgba8Unorm`) and read back sRGB-encoded RGBA8 bytes directly,
     /// avoiding `Rgba16Float` readback and CPU half-float/sRGB conversion.
     pub fn render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        self.try_render_export_rgba8_prepared(plan, prep).ok()
+    }
+
+    /// Like [`render_export_rgba8_prepared`](Self::render_export_rgba8_prepared), distinguishing
+    /// source [`GpuSurface`](filmcraft_frame::GpuSurface) readback failure from GPU unavailability.
+    pub fn try_render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Result<(u32, u32, Vec<u8>), ExportRenderError> {
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-rgba8") });
         self.begin_frame();
-        let recorded = self.record_plan(&mut enc, plan, prep, true, true).is_some();
+        let recorded = self.record_plan_checked(&mut enc, plan, prep, true, true);
         self.end_frame();
-        if !recorded {
+        if let Err(e) = recorded {
             self.finish_submit();
-            return None;
+            return Err(e);
         }
         let Some(size) = self.copy_output(&mut enc) else {
             self.finish_submit();
-            return None;
+            return Err(ExportRenderError::Unavailable);
         };
         self.queue.submit([enc.finish()]);
         self.finish_submit();
         export_renderer::timing::add_submit(t.elapsed());
-        self.map_output(size)
+        self.map_output(size).ok_or(ExportRenderError::Unavailable)
     }
 
     fn import_export_target(&mut self, target: &dyn std::any::Any, target_id: u64, (w, h): (u32, u32)) -> Option<wgpu::TextureView> {
@@ -1579,35 +1628,56 @@ impl GpuCompositor {
         target_id: u64,
         dims: (u32, u32),
     ) -> SurfaceRender {
+        self.try_render_export_surface_prepared(plan, prep, target, target_id, dims).unwrap_or(SurfaceRender::Unavailable)
+    }
+
+    /// Like [`render_export_surface_prepared`](Self::render_export_surface_prepared), returning
+    /// `Err` if a source [`GpuSurface`](filmcraft_frame::GpuSurface) failed CPU readback.
+    pub fn try_render_export_surface_prepared(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        dims: (u32, u32),
+    ) -> Result<SurfaceRender, String> {
         let (w, h) = dims;
         if w == 0 || h == 0 {
-            return SurfaceRender::Unavailable;
+            return Ok(SurfaceRender::Unavailable);
         }
         let plan_size = match plan {
             FramePlan::Layers { width, height, .. } | FramePlan::Composite { width, height, .. } => (*width as u32, *height as u32),
             FramePlan::Image(img) => (img.w as u32, img.h as u32),
         };
         if plan_size != (w, h) {
-            return SurfaceRender::Unavailable;
+            return Ok(SurfaceRender::Unavailable);
         }
         let Some(target_view) = self.import_export_target(target, target_id, (w, h)) else {
-            return SurfaceRender::NoImport;
+            return Ok(SurfaceRender::NoImport);
         };
         let t = std::time::Instant::now();
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-surface") });
         self.begin_frame();
-        let ok = if let Some((accum_view, resolved_dims)) = self.record_plan(&mut enc, plan, prep, true, false)
-            && resolved_dims == (w, h)
-        {
-            self.resolve_into(&mut enc, &accum_view, &target_view);
-            true
-        } else {
-            false
+        let rec = self.record_plan_checked(&mut enc, plan, prep, true, false);
+        let ok = match rec {
+            Ok((accum_view, resolved_dims)) if resolved_dims == (w, h) => {
+                self.resolve_into(&mut enc, &accum_view, &target_view);
+                Ok(true)
+            }
+            Ok(_) | Err(ExportRenderError::Unavailable) => Ok(false),
+            Err(ExportRenderError::SourceReadback(why)) => Err(why),
         };
         self.end_frame();
-        if !ok {
-            self.finish_submit();
-            return SurfaceRender::Unavailable;
+        match ok {
+            Ok(true) => {}
+            Ok(false) => {
+                self.finish_submit();
+                return Ok(SurfaceRender::Unavailable);
+            }
+            Err(why) => {
+                self.finish_submit();
+                return Err(why);
+            }
         }
         let sub = self.queue.submit([enc.finish()]);
         self.finish_submit();
@@ -1618,7 +1688,7 @@ impl GpuCompositor {
             Ok(wgpu::PollStatus::WaitSucceeded | wgpu::PollStatus::QueueEmpty)
         );
         export_renderer::timing::add_map_wait(wait_t.elapsed());
-        if finished { SurfaceRender::Rendered } else { SurfaceRender::Unconfirmed }
+        Ok(if finished { SurfaceRender::Rendered } else { SurfaceRender::Unconfirmed })
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`

@@ -755,6 +755,11 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
     effect_image_with(frame, fx, None)
 }
 
+/// [`effect_image`] returning `Err` if a GPU-resident source fails CPU readback.
+pub fn try_effect_image(frame: &VideoFrame, fx: &LayerFx) -> Result<crate::Image, String> {
+    try_effect_image_with(frame, fx, None)
+}
+
 /// [`effect_image`] of a colour-managed layer ([`PlanLayer::input`]).
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
     let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
@@ -764,21 +769,40 @@ pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcr
     img
 }
 
+/// [`effect_image_with`] returning `Err` if a GPU-resident source fails CPU readback.
+pub fn try_effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> Result<crate::Image, String> {
+    let mut img = turned(try_linear_image(frame, fx.decimation.max(1) as usize, input)?, fx.turns);
+    for op in &fx.ops {
+        op.apply(&mut img);
+    }
+    Ok(img)
+}
+
 /// Execute a plan on the CPU (reference for the GPU compositor).
 pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
+    execute_cpu_inner(plan, false).unwrap_or_else(|_| crate::Image::new(1, 1))
+}
+
+/// [`execute_cpu`] returning `Err` if any GPU-resident layer fails CPU readback instead of
+/// substituting transparent pixels.
+pub fn try_execute_cpu(plan: &FramePlan) -> Result<crate::Image, String> {
+    execute_cpu_inner(plan, true)
+}
+
+fn execute_cpu_inner(plan: &FramePlan, strict_readback: bool) -> Result<crate::Image, String> {
     match plan {
-        FramePlan::Image(img) => img.clone(),
+        FramePlan::Image(img) => Ok(img.clone()),
         FramePlan::Composite { width, height, steps } => {
             let mut canvas = crate::Image::new(*width, *height);
             for step in steps {
                 match step {
-                    PlanStep::Layers(layers) => execute_layers(&mut canvas, layers),
+                    PlanStep::Layers(layers) => execute_layers_inner(&mut canvas, layers, strict_readback)?,
                     PlanStep::Transition { inputs, effect, progress, scale } => {
-                        let [a, b] = inputs.each_ref().map(|layers| {
-                            let mut input = crate::Image::new(*width, *height);
-                            execute_layers(&mut input, layers);
-                            input
-                        });
+                        let [la, lb] = inputs;
+                        let mut a = crate::Image::new(*width, *height);
+                        execute_layers_inner(&mut a, la, strict_readback)?;
+                        let mut b = crate::Image::new(*width, *height);
+                        execute_layers_inner(&mut b, lb, strict_readback)?;
                         let mixed = crate::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
                         crate::blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
                     }
@@ -789,12 +813,12 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                     }
                 }
             }
-            canvas
+            Ok(canvas)
         }
         FramePlan::Layers { width, height, layers } => {
             let mut canvas = crate::Image::new(*width, *height);
-            execute_layers(&mut canvas, layers);
-            canvas
+            execute_layers_inner(&mut canvas, layers, strict_readback)?;
+            Ok(canvas)
         }
     }
 }
@@ -808,6 +832,13 @@ fn linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::In
         img.map_rgb(|c, _, _| t.apply(c));
     }
     img
+}
+
+fn try_linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::InputTransform>) -> Result<crate::Image, String> {
+    if let Some(cpu) = frame.try_materialize_cpu()? {
+        return Ok(linear_image(&cpu, n, input));
+    }
+    Ok(linear_image(frame, n, input))
 }
 
 /// `img` turned clockwise by `q` quarter turns, as [`VideoFrame::rotated`] turns a frame.
@@ -830,12 +861,14 @@ fn turned(img: crate::Image, q: u8) -> crate::Image {
     crate::Image { w: ow, h: oh, px }
 }
 
-fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
+fn execute_layers_inner(canvas: &mut crate::Image, layers: &[PlanLayer], strict_readback: bool) -> Result<(), String> {
     let (width, height) = (canvas.w, canvas.h);
     for l in layers {
-        let src = match &l.fx {
-            Some(fx) => effect_image_with(&l.frame, fx, l.input.as_deref()),
-            None => linear_image(&l.frame, 1, l.input.as_deref()),
+        let src = match (&l.fx, strict_readback) {
+            (Some(fx), true) => try_effect_image_with(&l.frame, fx, l.input.as_deref())?,
+            (Some(fx), false) => effect_image_with(&l.frame, fx, l.input.as_deref()),
+            (None, true) => try_linear_image(&l.frame, 1, l.input.as_deref())?,
+            (None, false) => linear_image(&l.frame, 1, l.input.as_deref()),
         };
         let placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
             crate::Image::filled(width, height, src.get(0, 0))
@@ -844,6 +877,7 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
         };
         crate::blend::composite(canvas, &placed, l.opacity, l.blend);
     }
+    Ok(())
 }
 
 #[cfg(test)]

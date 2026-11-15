@@ -1008,12 +1008,27 @@ fn failing_gpu_surface_readback_is_not_cached_and_fails_export() {
     });
     let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
 
+    assert!(
+        matches!(c.try_render_export_prepared(&plan, None), Err(ExportRenderError::SourceReadback(ref why)) if why.contains("simulated readback failure")),
+        "failed readback must report ExportRenderError::SourceReadback"
+    );
+    assert!(
+        matches!(c.try_render_export_rgba8_prepared(&plan, None), Err(ExportRenderError::SourceReadback(ref why)) if why.contains("simulated readback failure")),
+        "failed readback must report ExportRenderError::SourceReadback for rgba8"
+    );
     assert!(c.render_export_prepared(&plan, None).is_none(), "failed readback must abort export frame instead of emitting blank pixels");
     assert!(c.render_export_rgba8_prepared(&plan, None).is_none(), "failed readback must abort rgba8 export frame");
     assert!(!c.uploads.contains_key(&(surf.id, 4, 4)), "failed readback must not populate upload cache");
 
+    let empty_zero_plan = FramePlan::Layers { width: 4, height: 4, layers: Vec::new() };
+    assert_eq!(
+        c.try_render_export_surface_prepared(&empty_zero_plan, None, &(), 0, (0, 0)),
+        Ok(SurfaceRender::Unavailable),
+        "zero-sized target is unavailable GPU render, not a readback error"
+    );
+
     surf.fail.store(false, Ordering::Relaxed);
-    let (_, _, px) = c.render_export_prepared(&plan, None).expect("subsequent readback must recover and not hit cached blank pixels");
+    let (_, _, px) = c.try_render_export_prepared(&plan, None).expect("subsequent readback must recover and not hit cached blank pixels");
     assert!(px[0] > 0.9 && px[1] < 0.01 && px[3] > 0.9, "expected red pixel after recovery, got {:?}", &px[..4]);
 }
 
