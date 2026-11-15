@@ -356,19 +356,62 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
     )
 }
 
+const HASH_COMMAND: &str = "premiere.hashMedia";
+
+/// The import a `premiere.hashMedia` selector names, with its index: a zero-based index into the
+/// project's imports, or the import's destination directory (as `premiere.import` returned it) or
+/// the snapshot inside it. A destination stays with its import when other imports are undone or
+/// added; an index does not.
+fn select_import<'a>(imports: &'a [std::sync::Arc<PremiereImport>], selector: Option<&Value>) -> Result<(usize, &'a PremiereImport)> {
+    let index = match selector {
+        Some(Value::String(path)) if !path.is_empty() => import_at(imports, Path::new(path))?,
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| bad(HASH_COMMAND, "import must be a nonnegative integer index or an import's destination path"))?,
+        None => return Err(bad(HASH_COMMAND, "need import (an index or an import's destination path)")),
+    };
+    let record = imports.get(index).ok_or_else(|| bad(HASH_COMMAND, "unknown import index"))?;
+    Ok((index, record))
+}
+
+/// The index of the one import whose destination directory or snapshot is `path`, as stored or,
+/// for an existing path spelled another way, after canonicalization.
+fn import_at(imports: &[std::sync::Arc<PremiereImport>], path: &Path) -> Result<usize> {
+    let matching = |path: &Path| -> Vec<usize> {
+        let names = |record: &PremiereImport| {
+            let snapshot = Path::new(&record.snapshot_path);
+            snapshot == path || snapshot.parent() == Some(path)
+        };
+        imports.iter().enumerate().filter(|(_, record)| names(record)).map(|(index, _)| index).collect()
+    };
+    let mut found = matching(path);
+    if found.is_empty()
+        && let Ok(canonical) = path.canonicalize()
+    {
+        found = matching(Path::new(&stored_path(&canonical)));
+    }
+    match found.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(bad(HASH_COMMAND, "no import has that destination")),
+        _ => Err(bad(HASH_COMMAND, "several imports have that destination; pass its index instead")),
+    }
+}
+
+/// The destination directory of an import: the folder holding its source snapshot.
+fn destination_of(record: &PremiereImport) -> Option<String> {
+    Path::new(&record.snapshot_path).parent().map(|folder| folder.to_string_lossy().into_owned())
+}
+
 /// Explicit, synchronous inspection of current files. Never backfills immutable provenance:
 /// linked media without an import-time hash cannot be certified unchanged since import.
 fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
-    const COMMAND: &str = "premiere.hashMedia";
+    const COMMAND: &str = HASH_COMMAND;
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "media hashing requires a native filesystem host"));
     }
-    let index = p
-        .get("import")
-        .and_then(Value::as_u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| bad(COMMAND, "import must be a nonnegative integer index"))?;
-    let record = s.project.workflow.as_ref().and_then(|w| w.imports.get(index)).ok_or_else(|| bad(COMMAND, "unknown import index"))?;
+    let imports = s.project.workflow.as_ref().map(|w| w.imports.as_slice()).unwrap_or_default();
+    let (index, record) = select_import(imports, p.get("import"))?;
     if record.media.len() > 100_000 {
         return Err(bad(COMMAND, "import exceeds media inspection limit"));
     }
@@ -388,7 +431,7 @@ fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
         }
         media.push(row);
     }
-    Ok(json!({"import":index,"sourceSha256":record.source_sha256,"observation":"current files","media":media}))
+    Ok(json!({"import":index,"destination":destination_of(record),"sourceSha256":record.source_sha256,"observation":"current files","media":media}))
 }
 
 pub fn commands() -> Vec<CommandSpec> {
@@ -404,11 +447,11 @@ pub fn commands() -> Vec<CommandSpec> {
             journal: true,
         },
         CommandSpec {
-            id: "premiere.hashMedia",
+            id: HASH_COMMAND,
             label: "Hash Imported Premiere Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"import":int (zero-based provenance import index; reads current media in full)}"#,
+            params: r#"{"import":int|path (zero-based provenance import index, or the destination premiere.import returned, which keeps naming that import when others are undone or added; reads current media in full)}"#,
             enabled: always,
             run: hash_media,
             journal: false,

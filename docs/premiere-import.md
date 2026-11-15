@@ -35,10 +35,14 @@ tree and warnings independently of timeline edits. Undo does not delete the save
 For an explicit, potentially expensive inspection of current media, use:
 
 ```sh
-filmcraft-cli --project /path/to/episode.fcproj exec premiere.hashMedia '{"import":0}'
+filmcraft-cli --project /path/to/episode.fcproj exec premiere.hashMedia '{"import":"/path/to/episode-media"}'
 ```
 
-`import` is the zero-based provenance record index. This read-only command repeats document-path,
+`import` is the import's `destination` as `premiere.import` returned it (or the `source.prproj`
+snapshot inside it), or the zero-based provenance record index. An index can name another import
+after an undo and a new import; a destination keeps naming its own, and a destination shared by
+several records is refused as ambiguous. The result repeats the `import` index and its
+`destination`. This read-only command repeats document-path,
 extension and opener checks before hashing each current imported path. It returns SHA-256/size
 or a per-file error; `matchesImport` compares against an existing import-time hash, or is null
 when none was recorded. A later hash cannot prove what bytes existed at import time. The command
