@@ -424,6 +424,46 @@ fn premiere_copy_reads_media_in_one_pass() {
 }
 
 #[test]
+fn premiere_import_opens_each_source_file_once() {
+    /// The native host, recording each media file it opens.
+    #[derive(Default)]
+    struct Opens(std::sync::Mutex<Vec<String>>);
+    impl crate::Services for Opens {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_file(path)
+        }
+        fn write_file(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+            crate::FsServices.write_file(path, bytes)
+        }
+        fn file_size(&self, path: &str) -> std::io::Result<u64> {
+            crate::FsServices.file_size(path)
+        }
+        fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+            crate::FsServices.read_range(path, offset, len)
+        }
+        fn reader(&self, path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+            self.0.lock().unwrap().push(path.to_string());
+            crate::FsServices.reader(path)
+        }
+    }
+    let fixture = Fixture::new();
+    for mode in ["link", "copy"] {
+        let mut s = Session::default();
+        let opens = std::sync::Arc::new(Opens::default());
+        s.services = opens.clone();
+        let result = s.execute("premiere.import", json!({"path":fixture.0.join("source.prproj"),"destination":fixture.0.join(mode),"mediaMode":mode})).unwrap();
+        assert_eq!(result["offlineMedia"], json!([]), "{result}");
+        let opened = opens.0.lock().unwrap().clone();
+        // Link mode keeps the probe's source for its item; copy mode opens its copy instead.
+        assert_eq!(opened.iter().filter(|path| path.ends_with("source.png")).count(), 1, "{mode}: {opened:?}");
+        assert_eq!(opened.len(), if mode == "link" { 1 } else { 2 }, "{mode}: {opened:?}");
+        let item = s.project.items.values().find(|i| i.as_media().is_some()).unwrap();
+        let source = s.media.cached(item.id).expect("the item's source is in the pool");
+        assert_eq!(source.info().video.as_ref().map(|v| (v.width, v.height)), Some((16, 16)));
+    }
+}
+
+#[test]
 fn premiere_plain_xml_larger_than_64_mib_reaches_parser_and_snapshot() {
     let fixture = Fixture::new();
     let source = fixture.0.join("source.prproj");
