@@ -398,16 +398,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- track headers
     draw_headers(app, ui, seq, &rows, rect, vclip, aclip, &t);
-    // divider between video and audio
+    // divider between video and audio. In the header column it also takes the few points above it,
+    // where V1's header ends, so a drag starting just above the line still moves it (#4571).
     let div = Rect::from_min_max(pos2(rect.min.x, split_y), pos2(content.max.x, split_y + DIVIDER_H));
     painter.rect_filled(div, 0.0, t.app_bg);
-    let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::drag());
-    if div_resp.hovered() || div_resp.dragged() {
-        ctx.set_cursor_icon(CursorIcon::ResizeVertical);
-    }
-    if div_resp.dragged() {
-        let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H).max(1.0);
-        app.ui.timeline.split = f.clamp(0.1, 0.9);
+    app.auto.add("timeline.divider", div, "Drag to divide the video and audio tracks");
+    let grab = Rect::from_min_max(pos2(rect.min.x, split_y - 3.0), pos2(rect.min.x + header_w, split_y)).intersect(video_area);
+    for (name, area) in [("tl-divider", div), ("tl-divider-grab", grab)] {
+        if area.height() <= 0.0 {
+            continue;
+        }
+        let div_resp = ui.interact(area, egui::Id::unique(name), Sense::drag());
+        if div_resp.hovered() || div_resp.dragged() {
+            ctx.set_cursor_icon(CursorIcon::ResizeVertical);
+        }
+        if div_resp.dragged() {
+            let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H).max(1.0);
+            app.ui.timeline.split = f.clamp(0.1, 0.9);
+        }
     }
     // master track
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));

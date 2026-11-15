@@ -166,13 +166,15 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
         // resize track height by dragging the header's bottom edge, or the outer edge of the top video
-        // track or the last audio track, which also reaches into the empty space past it
+        // track or the last audio track, which also reaches into the empty space past it. V1's bottom
+        // edge is the divider above the audio tracks, so dragging there moves the divider (#4571).
         let header_column = Rect::from_min_max(pos2(hrect.min.x, clip_rect.min.y), pos2(hrect.max.x, clip_rect.max.y));
         let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
         let bottom = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0));
+        let bottom = (r.kind == TrackKind::Audio || r.index > 0).then(|| ("resize", bottom.intersect(if last_audio { header_column } else { visible })));
         let top = (r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len())
             .then(|| ("resizeTop", Rect::from_min_max(pos2(hrect.min.x, hrect.min.y - 2.0), pos2(hrect.max.x, hrect.min.y + 3.0)).intersect(header_column)));
-        for (name, edge) in std::iter::once(("resize", bottom.intersect(if last_audio { header_column } else { visible }))).chain(top) {
+        for (name, edge) in bottom.into_iter().chain(top) {
             if edge.height() <= 0.0 {
                 continue;
             }
