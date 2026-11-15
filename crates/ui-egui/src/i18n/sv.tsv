@@ -3751,3 +3751,35 @@
 	Toggle Color Grading Section	Växla färggraderingsavsnitt
 	Color Grading Section	Färggraderingsavsnitt
 	Read Video Scopes	Läs av videoskop
+	Zoom Anchor Point	Ankarpunkt för zoom
+	Cursor Position	Markörens position
+	Playhead Position	Spelmarkörens position
+	Step Playhead (Frames)	Stega spelmarkören (bildrutor)
+	Disabled	Inaktiverad
+	Alt + Scroll	Alt + rullhjul
+	Shift + Scroll	Skift + rullhjul
+	Ctrl + Scroll	Ctrl + rullhjul
+	Move Playhead on Timeline Click	Flytta spelmarkören vid klick i tidslinjen
+	Ruler Only	Endast i linjalen
+	Empty Space Only	Endast i tomt utrymme
+	Anywhere on Timeline	Var som helst i tidslinjen
+	Drag Playhead Line Across Tracks	Dra spelmarkörens linje över spåren
+	Anywhere, Including Over Clips	Var som helst, även över klipp
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Delad tidslinjal: dra i den övre halvan för att ange in/ut
+	Program Monitor Mouse Wheel	Mushjul i programmonitorn
+	Source Monitor Mouse Wheel	Mushjul i källmonitorn
+	Effect Controls Mouse Wheel	Mushjul i effektkontroller
+	Scroll	Rullhjul
+	Over the Preview	Över förhandsgranskningen
+	Over the Time Ruler	Över tidslinjalen
+	Timeline Mouse Wheel Behavior	Mushjulets beteende i tidslinjen
+	Step Frames	Stega bildrutor
+	Step Keyframes	Stega nyckelbildrutor
+	Off (Ruler Head Only)	Av (endast huvudet i linjalen)
+	Pan Timeline by Dragging With Middle Mouse Button	Panorera tidslinjen genom att dra med musens mittknapp
+	Navigation…	Navigering…
+	Navigation Style	Navigeringsstil
+	Alternative	Alternativ
+	Timeline Mouse Wheel	Mushjul i tidslinjen
+	Timeline Clicks and Drags	Klick och dragningar i tidslinjen
+	More Settings…	Fler inställningar…

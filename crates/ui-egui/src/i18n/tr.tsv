@@ -3643,3 +3643,35 @@
 	Toggle Color Grading Section	Renk Derecelendirme Bölümünü Aç/Kapat
 	Color Grading Section	Renk Derecelendirme Bölümü
 	Read Video Scopes	Video Ölçümlerini Oku
+	Zoom Anchor Point	Yakınlaştırma Çapa Noktası
+	Cursor Position	İmleç Konumu
+	Playhead Position	Oynatma Kafası Konumu
+	Step Playhead (Frames)	Oynatma Kafasını Adımla (Kareler)
+	Disabled	Devre Dışı
+	Alt + Scroll	Alt + Tekerlek
+	Shift + Scroll	Shift + Tekerlek
+	Ctrl + Scroll	Ctrl + Tekerlek
+	Move Playhead on Timeline Click	Zaman Çizgisine Tıklayınca Oynatma Kafasını Taşı
+	Ruler Only	Yalnızca Cetvelde
+	Empty Space Only	Yalnızca Boş Alanda
+	Anywhere on Timeline	Zaman Çizgisinde Herhangi Bir Yerde
+	Drag Playhead Line Across Tracks	Oynatma Kafası Çizgisini İzlerin Üzerinde Sürükleme
+	Anywhere, Including Over Clips	Her Yerde, Kliplerin Üzerinde de
+	Split Time Ruler: Drag Upper Half to Set In/Out Range	Bölünmüş Zaman Cetveli: Üst Yarıda Sürüklemek Giriş/Çıkış Aralığını Ayarlar
+	Program Monitor Mouse Wheel	Program Monitöründe Fare Tekerleği
+	Source Monitor Mouse Wheel	Kaynak Monitöründe Fare Tekerleği
+	Effect Controls Mouse Wheel	Efekt Kontrollerinde Fare Tekerleği
+	Scroll	Tekerlek
+	Over the Preview	Önizlemenin Üzerinde
+	Over the Time Ruler	Zaman Cetvelinin Üzerinde
+	Timeline Mouse Wheel Behavior	Zaman Çizgisinde Fare Tekerleği Davranışı
+	Step Frames	Kare Kare İlerle
+	Step Keyframes	Anahtar Kareler Arasında İlerle
+	Off (Ruler Head Only)	Kapalı (Yalnızca Cetveldeki Başlıktan)
+	Pan Timeline by Dragging With Middle Mouse Button	Orta Fare Düğmesiyle Sürükleyerek Zaman Çizgisini Kaydır
+	Navigation…	Gezinme…
+	Navigation Style	Gezinme Stili
+	Alternative	Alternatif
+	Timeline Mouse Wheel	Zaman Çizgisinde Fare Tekerleği
+	Timeline Clicks and Drags	Zaman Çizgisinde Tıklama ve Sürükleme
+	More Settings…	Diğer Ayarlar…
