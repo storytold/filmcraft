@@ -186,6 +186,10 @@ impl VideoEncoder for AmfEncoder {
         u32::try_from(self.rate.num).unwrap_or(u32::MAX)
     }
 
+    fn hardware(&self) -> Option<&'static str> {
+        Some("AMD AMF")
+    }
+
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         if f.width != self.w || f.height != self.h {
             return Err(ExportError::Encode(format!("AMD AMF: picture size {}x{} does not match encoder {}x{}", f.width, f.height, self.w, self.h)));
