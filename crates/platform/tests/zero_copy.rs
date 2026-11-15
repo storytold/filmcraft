@@ -51,7 +51,7 @@ fn decode_all(d: &mut dyn VideoDecoder, samples: &[(Vec<u8>, i64)]) -> Vec<Decod
     out
 }
 
-fn init_compositor(backends: wgpu::Backends, with_interop: bool) -> Option<(GpuCompositor, wgpu::AdapterInfo)> {
+fn init_compositor(backends: wgpu::Backends, with_interop: bool) -> Option<(GpuCompositor, wgpu::AdapterInfo, wgpu::Features)> {
     let inst = wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() });
     let adapter = pollster::block_on(
         inst.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
@@ -61,7 +61,8 @@ fn init_compositor(backends: wgpu::Backends, with_interop: bool) -> Option<(GpuC
     let required_features = if with_interop { requested_features(&adapter) } else { adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM };
     let (device, queue) =
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("zero-copy-test"), required_features, ..Default::default() })).ok()?;
-    Some((GpuCompositor::new(&device, &queue), info))
+    let features = device.features();
+    Some((GpuCompositor::new(&device, &queue), info, features))
 }
 
 fn max_rgba_diff(a: &[u8], b: &[u8]) -> u8 {
@@ -98,7 +99,7 @@ fn zero_copy_vulkan_matches_cpu_with_zero_transfers_and_dx12_fallback() {
     filmcraft_platform::register();
     assert!(filmcraft_platform::media_foundation::zero_copy(), "register() should enable zero-copy on Windows");
 
-    let Some((mut vk, vk_info)) = init_compositor(wgpu::Backends::VULKAN, true) else {
+    let Some((mut vk, vk_info, vk_features)) = init_compositor(wgpu::Backends::VULKAN, true) else {
         eprintln!("SKIPPED: no Vulkan adapter available");
         return;
     };
@@ -156,6 +157,12 @@ fn zero_copy_vulkan_matches_cpu_with_zero_transfers_and_dx12_fallback() {
         };
         let mut sw = filmcraft_codecs::software_video_decoder(&s.entry).unwrap();
 
+        let expect_zero_copy = vk_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
+            && (name != "hevc_main10.mp4" || vk_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM));
+        if !expect_zero_copy {
+            eprintln!("NOTE: {name} on {:?} lacks required zero-copy features ({vk_features:?}); verifying fallback parity", vk_info.backend);
+        }
+
         let s0 = transfers::snapshot();
         let hw_frames = decode_all(hw.as_mut(), &s.samples);
         assert!(hw.name().starts_with("Media Foundation"), "{name}: stayed in hardware ({})", hw.name());
@@ -173,8 +180,10 @@ fn zero_copy_vulkan_matches_cpu_with_zero_transfers_and_dx12_fallback() {
             let s1 = transfers::snapshot();
             vk.composite(&plan);
             let t = transfers::snapshot() - s1;
-            assert_eq!(t.compositor_upload_bytes, 0, "{name} frame {idx} on {:?}: zero-copy upload must copy 0 bytes", vk_info.backend);
-            assert_eq!(t.decode_readback_bytes, 0, "{name} frame {idx}: zero-copy must not trigger lazy readback");
+            if expect_zero_copy {
+                assert_eq!(t.compositor_upload_bytes, 0, "{name} frame {idx} on {:?}: zero-copy upload must copy 0 bytes", vk_info.backend);
+                assert_eq!(t.decode_readback_bytes, 0, "{name} frame {idx}: zero-copy must not trigger lazy readback");
+            }
             let (_, _, got) = vk.read_output().unwrap();
 
             // Reference: composite the CPU software frame through the same compositor.
@@ -189,7 +198,7 @@ fn zero_copy_vulkan_matches_cpu_with_zero_transfers_and_dx12_fallback() {
             let diff = max_rgba_diff(&got, &want);
             assert_eq!(diff, 0, "{name} frame {idx}: Vulkan zero-copy RGBA diff={diff}");
 
-            if let Some((ref mut dx, _)) = dx12 {
+            if let Some((ref mut dx, _, _)) = dx12 {
                 dx.composite(&plan);
                 let (_, _, got_dx) = dx.read_output().unwrap();
                 let dx_diff = max_rgba_diff(&got_dx, &want);
