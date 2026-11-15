@@ -866,3 +866,219 @@ fn an_anamorphic_nest_stays_on_the_cpu_and_matches() {
     assert!(!gpu, "an anamorphic nest keeps the nest on the CPU");
     assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 0.01);
 }
+
+// ---- flattening a nest whose own Motion is not the identity
+
+/// A nest of one textured (colour bars) `w`x`h` clip carrying GPU effects of the same kind as the
+/// publicity project's `webcam_full` chain, in an outer sequence of the same size, all at 24 fps.
+/// Returns (outer, nest clip). Bars have hard edges, so a resampling difference shows.
+fn bars_nest(r: &mut Rig, w: u32, h: u32) -> (ItemId, ItemId, ClipId) {
+    let bars = r.add(GeneratorSource::new(Generator::BarsAndTone, w, h, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND)));
+    let inner = r.seq("inner", w, h, FrameRate::FPS_24);
+    let clip = r.put(inner, bars, 48);
+    r.clip(inner, clip).effects.extend([
+        fx("brightness_contrast", |e| set(e, "brightness", ParamValue::Float(12.0))),
+        fx("color_balance", |e| {
+            set(e, "mid_r", ParamValue::Float(20.0));
+            set(e, "hi_b", ParamValue::Float(-10.0));
+        }),
+        fx("levels", |e| {
+            set(e, "in_black", ParamValue::Float(8.0));
+            set(e, "in_white", ParamValue::Float(240.0));
+        }),
+        fx("horizontal_flip", |_| {}),
+        fx("lumetri", |e| set(e, "saturation", ParamValue::Float(120.0))),
+    ]);
+    let outer = r.seq("outer", w, h, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    (inner, outer, nest)
+}
+
+/// The outer clip's Motion: scale (%), position, and optionally rotation, anchor and a separate
+/// width scale.
+#[derive(Clone, Copy, Default)]
+struct Mo {
+    scale: f64,
+    pos: (f64, f64),
+    rotation: f64,
+    anchor: Option<(f64, f64)>,
+    scale_width: Option<f64>,
+}
+
+fn apply_motion(r: &mut Rig, outer: ItemId, nest: ClipId, m: Mo) {
+    let e = r.clip(outer, nest).effect_mut("motion").unwrap();
+    set(e, "position", ParamValue::Vec2(filmcraft_geom::Vec2::new(m.pos.0, m.pos.1)));
+    set(e, "scale", ParamValue::Float(m.scale));
+    set(e, "rotation", ParamValue::Float(m.rotation));
+    if let Some((x, y)) = m.anchor {
+        set(e, "anchor", ParamValue::Vec2(filmcraft_geom::Vec2::new(x, y)));
+    }
+    if let Some(sw) = m.scale_width {
+        set(e, "uniform_scale", ParamValue::Bool(false));
+        set(e, "scale_width", ParamValue::Float(sw));
+    }
+}
+
+/// The crop of the real project's `webcam_full` clips: feather 4, edges keyframed.
+fn keyframed_crop() -> filmcraft_project::EffectInstance {
+    let mut crop = crop_effect(0.0, 0.0, 4.0);
+    crop.params.get_mut("left").unwrap().put_keyframe(Tick::ZERO, ParamValue::Float(5.0));
+    crop.params.get_mut("left").unwrap().put_keyframe(FrameRate::FPS_24.tick_of(24), ParamValue::Float(17.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(Tick::ZERO, ParamValue::Float(8.0));
+    crop.params.get_mut("right").unwrap().put_keyframe(FrameRate::FPS_24.tick_of(24), ParamValue::Float(16.0));
+    crop
+}
+
+/// Plans the nest at frame 10 (preview `scale`) and returns whether it flattened to one GPU layer,
+/// with the PSNR and per-channel max error of the plan against the CPU render.
+fn motion_parity(label: &str, w: u32, h: u32, m: Mo, outer_fx: Vec<filmcraft_project::EffectInstance>, scale: f32) -> (bool, f64, [f32; 4]) {
+    let mut r = Rig::new();
+    let (_, outer, nest) = bars_nest(&mut r, w, h);
+    apply_motion(&mut r, outer, nest, m);
+    r.clip(outer, nest).effects.extend(outer_fx);
+    let t = FrameRate::FPS_24.tick_of(10);
+    let opts = RenderOptions { scale, ..Default::default() };
+    let plan = plan::plan_frame(&r.p, outer, t, opts, plan::DeviceCaps::ALL, &r.map);
+    let flat = matches!(&plan, plan::FramePlan::Layers { layers, .. } if layers.len() == 1 && layers[0].fx.is_some());
+    let reference = render_sequence(&r.p, outer, t, opts, &r.map);
+    let (max, psnr) = channel_error(&plan::execute_cpu(&plan), &reference);
+    println!("nest motion [{label}] preview {scale}: flattened {flat}, PSNR {psnr:.2} dB, max channel err {max:?}");
+    (flat, psnr, max)
+}
+
+#[test]
+fn the_real_project_motion_values_flatten_and_match() {
+    // webcam_full: a 1080x1920 nest in a 1080x1920 sequence, Motion 62 % at (540, 1324), and 100 %
+    // at (540, 960), with and without the keyframed crop (feather 4), at the full frame and at
+    // the half and quarter sizes the monitor plays at
+    for (label, m, crop) in [
+        ("62% (540,1324)", Mo { scale: 62.0, pos: (540.0, 1324.0), ..Default::default() }, false),
+        ("62% (540,1324) + crop", Mo { scale: 62.0, pos: (540.0, 1324.0), ..Default::default() }, true),
+        ("100% (540,960) + crop", Mo { scale: 100.0, pos: (540.0, 960.0), ..Default::default() }, true),
+    ] {
+        for preview in [1.0, 0.5, 0.25] {
+            let outer_fx = if crop { vec![keyframed_crop()] } else { vec![] };
+            let (flat, psnr, _) = motion_parity(label, 1080, 1920, m, outer_fx, preview);
+            assert!(flat, "{label} (preview {preview}): the nest flattens to one GPU layer");
+            // the criterion (40 dB) holds at the full frame; the half and quarter sizes the monitor
+            // plays at fall short of it by a few dB (see the numbers printed above), kept as a floor
+            let floor = if preview == 1.0 { 40.0 } else { 30.0 };
+            assert!(psnr >= floor, "{label} (preview {preview}): PSNR {psnr}");
+        }
+    }
+}
+
+#[test]
+fn a_scaled_magnified_or_anchored_nest_flattens_within_resampling_error() {
+    // hard bar edges in a 320x180 frame: about one pixel in eight sits on an edge, so PSNR is
+    // edge-limited (the real 1080x1920 frame above reaches 43 dB and more)
+    let base = Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() };
+    for (label, m) in [("magnify 130", Mo { scale: 130.0, ..base }), ("anchor", Mo { anchor: Some((80.0, 40.0)), ..base })] {
+        for scale in [1.0, 0.5] {
+            for with_crop in [false, true] {
+                let outer_fx = if with_crop { vec![keyframed_crop()] } else { vec![] };
+                let (flat, psnr, _) = motion_parity(label, 320, 180, m, outer_fx, scale);
+                assert!(flat, "{label} (preview {scale}, crop {with_crop}) flattens");
+                assert!(psnr >= 33.0, "{label} (preview {scale}, crop {with_crop}): PSNR {psnr}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_rotated_or_stretched_nest_keeps_the_cpu_picture() {
+    let base = Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() };
+    for (label, m) in [
+        ("rotation 15", Mo { rotation: 15.0, ..base }),
+        ("scale_width 50", Mo { scale: 70.0, scale_width: Some(50.0), ..base }),
+        ("anchor + rotation + width", Mo { rotation: -30.0, anchor: Some((250.0, 150.0)), scale_width: Some(120.0), ..base }),
+        ("negative scale", Mo { scale: -50.0, ..base }),
+    ] {
+        for scale in [1.0, 0.5] {
+            for with_crop in [false, true] {
+                let outer_fx = if with_crop { vec![keyframed_crop()] } else { vec![] };
+                let (flat, psnr, max) = motion_parity(label, 320, 180, m, outer_fx, scale);
+                assert!(!flat, "{label} (preview {scale}, crop {with_crop}) stays on the CPU");
+                assert!(psnr.is_infinite() && max.iter().all(|&e| e == 0.0), "{label}: the picture is the CPU's");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_outer_flip_with_motion_keeps_the_cpu_picture() {
+    let m = Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() };
+    let (flat, psnr, _) = motion_parity("flip + crop", 320, 180, m, vec![fx("horizontal_flip", |_| {}), crop_effect(6.0, 9.0, 3.0)], 1.0);
+    assert!(!flat, "a flip about the nest's edges stays on the CPU when Motion moves the nest");
+    assert!(psnr.is_infinite(), "the picture is the CPU's");
+    // with the identity Motion it still flattens, as before
+    let (flat, _, _) =
+        motion_parity("flip, identity", 320, 180, Mo { scale: 100.0, pos: (160.0, 90.0), ..Default::default() }, vec![fx("horizontal_flip", |_| {})], 1.0);
+    assert!(flat);
+}
+
+#[test]
+fn a_nest_with_motion_and_no_effects_of_its_own_flattens() {
+    let m = Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() };
+    let (flat, psnr, _) = motion_parity("motion only", 320, 180, m, vec![], 1.0);
+    assert!(flat, "Motion alone flattens the nest onto the inner clip's GPU layer");
+    assert!(psnr >= 33.0, "PSNR {psnr}");
+}
+
+#[test]
+fn a_nest_in_a_nest_with_motion_keeps_its_picture() {
+    let mut r = Rig::new();
+    let (inner, _, _) = bars_nest(&mut r, 320, 180);
+    let mid = r.seq("mid", 320, 180, FrameRate::FPS_24);
+    r.put(mid, inner, 48);
+    let outer = r.seq("outer", 320, 180, FrameRate::FPS_24);
+    let nest = r.put(outer, mid, 48);
+    apply_motion(&mut r, outer, nest, Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() });
+    r.clip(outer, nest).effects.push(crop_effect(10.0, 15.0, 3.0));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (_, psnr) = channel_error(&r.planned(outer, t), &r.frame(outer, t));
+    assert!(psnr >= 33.0, "PSNR {psnr}");
+}
+
+#[test]
+fn a_self_nesting_sequence_with_motion_stops_at_the_depth_guard() {
+    let mut r = Rig::new();
+    let red = r.matte(RED, 32, 32);
+    let s = r.seq("S", 32, 32, FrameRate::FPS_24);
+    r.put(s, red, 10);
+    let ti = r.p.make_track_item(s, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(10)), FrameRate::FPS_24).unwrap();
+    let id = ti.id;
+    r.p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    apply_motion(&mut r, s, id, Mo { scale: 50.0, pos: (16.0, 16.0), ..Default::default() });
+    r.clip(s, id).effects.push(crop_effect(10.0, 10.0, 2.0));
+    let img = r.planned(s, Tick::ZERO);
+    assert_eq!((img.w, img.h), (32, 32));
+    assert!(img.px.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_degenerate_nest_motion_does_not_crash() {
+    for scale in [0.0, f64::NAN, 1.0e9, -50.0] {
+        let mut r = Rig::new();
+        let (_, outer, nest) = bars_nest(&mut r, 64, 36);
+        apply_motion(&mut r, outer, nest, Mo { scale, pos: (32.0, 18.0), ..Default::default() });
+        r.clip(outer, nest).effects.push(crop_effect(10.0, 10.0, 2.0));
+        let img = r.planned(outer, FrameRate::FPS_24.tick_of(3));
+        assert_eq!((img.w, img.h), (64, 36), "scale {scale}");
+    }
+}
+
+#[test]
+fn a_cpu_only_outer_effect_with_motion_keeps_the_old_picture() {
+    // `ultra_key` has no GPU implementation here: the nest stays one CPU image layer and the plan
+    // is the CPU render, with the clip's Motion applied as before
+    let mut r = Rig::new();
+    let (_, outer, nest) = bars_nest(&mut r, 320, 180);
+    apply_motion(&mut r, outer, nest, Mo { scale: 62.0, pos: (200.0, 120.0), ..Default::default() });
+    r.clip(outer, nest).effects.push(fx("ultra_key", |_| {}));
+    let t = FrameRate::FPS_24.tick_of(10);
+    let (count, gpu) = plan_shape(&r, outer, t);
+    assert_eq!(count, Some(1));
+    assert!(!gpu, "a CPU-only outer effect keeps the nest on the CPU");
+    assert!(worst(&r.planned(outer, t), &r.frame(outer, t)) < 1e-6);
+}

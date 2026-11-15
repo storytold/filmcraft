@@ -547,8 +547,9 @@ fn nest_single_gpu_layer(project: &Project, nested: &Sequence, ft: Tick, opts: R
 }
 
 /// The preconditions shared by the plain-nest and flattened-nest branches of [`push_item`]: a nest
-/// without multi-camera, opacity masks, motion, a non-Normal blend or partial opacity, whose own
-/// layers plan in the same colour pipeline as the sequence it is in.
+/// without multi-camera, opacity masks, a non-Normal blend or partial opacity, whose own layers
+/// plan in the same colour pipeline as the sequence it is in. The nest's Motion is the callers'
+/// to check: the plain branch needs the identity, the flattened branch carries it on its layer.
 #[allow(clippy::too_many_arguments)]
 fn nest_common(
     project: &Project,
@@ -556,7 +557,6 @@ fn nest_common(
     item: &TrackItem,
     nested: &Sequence,
     ft: Tick,
-    mt: Tick,
     opts: RenderOptions,
     caps: DeviceCaps,
     bl: Blend,
@@ -567,7 +567,6 @@ fn nest_common(
         && !item.has_opacity_masks()
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
-        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
 }
 
@@ -623,7 +622,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && !(opts.effects && item.has_standard_effects())
-        && nest_common(project, seq, item, nested, ft, mt, opts, caps, bl, op, extra_opacity)
+        && nest_common(project, seq, item, nested, ft, opts, caps, bl, op, extra_opacity)
+        && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
     {
         push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out);
         if out.exhausted {
@@ -643,20 +643,31 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
     // A plain nest whose standard effects all run on the GPU, flattened when it holds a single
     // media clip placed at identity in the nest's own frame: the outer chain (crop, edge feather…)
     // runs on that layer in the nest's pixel space — the space the CPU renders the nest before
-    // applying its effects. A CPU-only inner effect (`ultra_key` before its GPU port), a visible
-    // caption track or a partial-opacity inner clip fails the gates and keeps the nest on its
-    // current CPU path below, with no regression.
+    // applying its effects — and the clip's own Motion then places the layer, as the CPU does
+    // (`item_layer_ex`: effects, then the Motion transform). Only a move with a uniform positive
+    // scale flattens (no rotation, stretch or flip), and not with an outer flip, mirror, offset or
+    // transform. A CPU-only inner effect (`ultra_key` before its GPU port), a visible caption track
+    // or a partial-opacity inner clip fails the gates and keeps the nest on its current CPU path
+    // below, with no regression.
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && let Some(outer) = nest_gpu_chain(item, opts)
-        && !outer.is_empty()
-        && nest_common(project, seq, item, nested, ft, mt, opts, caps, bl, op, extra_opacity)
+        && let Some(motion) = nest_motion(project, seq, item, mt)
+        && (!outer.is_empty() || !near_identity(&motion))
+        && (near_identity(&motion) || (is_plain_scale(&motion) && !outer.iter().any(|e| POSITIONAL_FX.contains(&e.effect.as_str()))))
+        && nest_common(project, seq, item, nested, ft, opts, caps, bl, op, extra_opacity)
         && !nested.caption_tracks.iter().any(|tr| tr.enabled && tr.caption_at(ft).is_some())
         && nest_single_gpu_layer(project, nested, ft, opts)
     {
-        let (w, h) = output_size(nested, opts.scale);
+        // The CPU renders the nest at the size Motion will draw it (`want`), then applies the outer
+        // effects to that image: the inner clip is decoded and decimated for that size, not for the
+        // full frame, so the flattened layer asks for the same.
+        let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
+        let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
+        let inner_opts = RenderOptions { scale: want, ..opts };
+        let (w, h) = output_size(nested, want);
         let mut inner = PlanStack::default();
-        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, &mut inner);
+        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, opts: inner_opts, ..sc }, &mut inner);
         // The single-layer gate should have left exactly one GPU effect layer; anything else (a
         // frame-blended or colour-managed inner clip, an offline source, a CPU-only op evaluated
         // just now) falls back to the per-item CPU path the nest used before flattening.
@@ -694,6 +705,20 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
             return;
         };
         Arc::make_mut(fx).ops.extend(ops);
+        // layer px → nest px → sequence px (Motion) → output px. The CPU draws the nest into a
+        // canvas rounded to whole pixels (`nw`), with the content at exactly `want`, and then maps
+        // that canvas back to the nest with the ratio `nw / width` alone. The layer here is the
+        // decimated frame, so go through the CPU's canvas px (`want / px_scale` of them per layer
+        // px) to place the picture where the CPU does, not up to a fraction of a pixel off.
+        let canvas_px = w as f64 / nested.settings.width.max(1) as f64;
+        if canvas_px <= 0.0 || px_scale <= 0.0 {
+            push_cpu_item_layer(project, seq, item, t, opts, sources, extra_opacity, bl, out);
+            return;
+        }
+        layer.matrix = Affine::scale(opts.scale as f64, opts.scale as f64)
+            .then_apply(&motion)
+            .then_apply(&Affine::scale(1.0 / canvas_px, 1.0 / canvas_px))
+            .then_apply(&Affine::scale(want as f64 / px_scale as f64, want as f64 / px_scale as f64));
         out.push(layer.clone());
         return;
     }
@@ -812,6 +837,27 @@ pub fn quarter_turns(q: u8, w: f64, h: f64) -> Affine {
         3 => Affine { a: 0.0, b: -1.0, c: 1.0, d: 0.0, e: 0.0, f: w },
         _ => Affine::IDENTITY,
     }
+}
+
+/// Standard effects whose result depends on where the picture's edges are (they flip, mirror or
+/// shift it about the frame). The CPU runs them on the nest's canvas rounded to whole pixels, the
+/// flattened layer on the decimated frame, so with Motion that moves or scales the nest they can
+/// land a fraction of a pixel apart: such a nest keeps the CPU path.
+const POSITIONAL_FX: &[&str] = &["horizontal_flip", "vertical_flip", "mirror", "offset", "transform"];
+
+/// Whether `m` is a uniform positive scale and a move (no rotation, skew, flip or stretch). Only
+/// these placements flatten: the CPU resamples a rotated or stretched nest differently enough from
+/// the compositor's single resample that its picture would no longer match.
+fn is_plain_scale(m: &Affine) -> bool {
+    m.b == 0.0 && m.c == 0.0 && m.a > 0.0 && m.d > 0.0 && (m.a - m.d).abs() <= 1e-9 * m.a.max(m.d)
+}
+
+/// The Motion matrix of a nested-sequence clip as the CPU applies it (the nest's size and pixel
+/// aspect), or None when it has no size or the matrix is not finite (a damaged project).
+fn nest_motion(project: &Project, seq: &Sequence, item: &TrackItem, mt: Tick) -> Option<Affine> {
+    let size = crate::source_size(project, item.item)?;
+    let m = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
+    [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite()).then_some(m)
 }
 
 fn near_identity(m: &Affine) -> bool {
