@@ -1165,6 +1165,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-tga"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b6b33b6096a247514f5cbd1741633913e7261e91#b6b33b6096a247514f5cbd1741633913e7261e91"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-update"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -2299,6 +2307,7 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.20.1"
 dependencies = [
+ "craft-tga",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",

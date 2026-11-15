@@ -11,6 +11,7 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
+craft-tga = { git = "https://github.com/storytold/craft-libs", rev = "b6b33b6096a247514f5cbd1741633913e7261e91" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
