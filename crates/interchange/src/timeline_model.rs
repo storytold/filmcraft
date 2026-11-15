@@ -584,16 +584,6 @@ fn from_project(project: &shared::Project) -> Result<film::Project, serde_json::
         }
         out.items.insert(out_item.id, out_item);
     }
-    for item in project.items.values() {
-        if let Some(meta) = legacy_or_ext(&item.ext) {
-            if let Some(colors) = meta.get("custom_colors").and_then(|v| serde_json::from_value(v.clone()).ok()) {
-                out.custom_colors = colors;
-            }
-            if let Some(names) = meta.get("custom_color_names").and_then(|v| serde_json::from_value(v.clone()).ok()) {
-                out.custom_color_names = names;
-            }
-        }
-    }
     out.next_id = out.next_id.max(builder.p.next_id);
     Ok(out)
 }
@@ -714,6 +704,36 @@ fn convert_error(e: craft_timeline::Error) -> crate::Error {
         craft_timeline::Error::Other(message) => crate::Error::Other(message),
     }
 }
+fn merge_otio_palette(project: &mut film::Project, meta: Option<&serde_json::Value>, report: &mut crate::Report) {
+    use serde_json::Value;
+    if let Some(colors) = meta.and_then(|m| m.get("custom_colors")).and_then(Value::as_array) {
+        let mut overflow = false;
+        for color in colors.iter().filter_map(Value::as_str).filter_map(filmcraft_project::HexColor::parse) {
+            if project.custom_colors.contains(&color) {
+                continue;
+            }
+            if project.custom_colors.len() >= 64 {
+                overflow = true;
+                break;
+            }
+            project.custom_colors.push(color);
+        }
+        if overflow {
+            report.warn("OTIO saved palettes exceed the 64-color project limit; additional colors were not imported.");
+        }
+    }
+    if let Some(names) = meta.and_then(|m| m.get("custom_color_names")).and_then(Value::as_object) {
+        for (key, value) in names {
+            if let (Some(color), Some(name)) = (filmcraft_project::HexColor::parse(key), value.as_str())
+                && project.custom_colors.contains(&color)
+                && name.len() <= 128
+                && !name.chars().any(char::is_control)
+            {
+                project.custom_color_names.entry(color).or_insert_with(|| name.to_owned());
+            }
+        }
+    }
+}
 pub(crate) fn import_otio(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
     let mut value: serde_json::Value = serde_json::from_str(text).map_err(|e| crate::Error::parse(crate::Format::Otio, e.to_string()))?;
     preserve_legacy_metadata(&mut value);
@@ -726,7 +746,10 @@ pub(crate) fn import_otio(text: &str, opts: &crate::ImportOptions, report: &mut 
     let result = craft_timeline::otio::import_with_report_limit(&normalized, &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
     merge_report(report, shared_report);
     let imported = result.map_err(convert_error)?;
-    let project = from_project(&imported.project).map_err(|e| crate::Error::Other(e.to_string()))?;
+    let mut project = from_project(&imported.project).map_err(|e| crate::Error::Other(e.to_string()))?;
+    for id in &imported.sequences {
+        merge_otio_palette(&mut project, imported.project.items.get(id).and_then(|item| legacy_or_ext(&item.ext)).as_ref(), report);
+    }
     Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
 }
 pub(crate) fn export_otio(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
