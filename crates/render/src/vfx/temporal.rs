@@ -241,16 +241,108 @@ pub fn clear_stabilizer_cache() {
     }
 }
 
-/// Frames decoded, prepared and tracked together; the analysis holds this many (plus one carried
-/// over from the block before) at a time, whatever the clip's length.
-pub(super) const ANALYSIS_BLOCK: usize = 64;
+/// Frames read, prepared and tracked together. The analysis holds two blocks (the one being
+/// tracked and the next one being read) and one frame carried over, whatever the clip's length.
+pub(super) const ANALYSIS_BLOCK: usize = 16;
 
-/// The step between each pair of consecutive frames of `n`, and the size of the frames. `decode`
-/// makes frame `k` (`None` when it can't be read: its steps are the identity), `size` is a frame's
-/// (width, height), `step` the motion from one frame to the next given the size of the first frame
-/// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
-/// they take part in are known; only the last frame of a block stays for the next one. `None` when
-/// cancelled or when no frame could be read.
+/// How far the analysis of a clip has got: frames `0..next` are read and the steps between them
+/// known (`steps.len() == next - 1`). Kept when the analysis is cancelled, so the next request
+/// goes on from there.
+#[derive(Default)]
+pub(super) struct Progress {
+    steps: Vec<Affine>,
+    dims: Option<(usize, usize)>,
+    next: usize,
+}
+
+impl Progress {
+    /// Work out the steps of the rest of the `n` frames, then return true; false when cancelled
+    /// first (what was done is kept). `decode` makes frame `k` (`None` when it can't be read: its
+    /// steps are the identity), `size` is a frame's (width, height), `step` the motion from one
+    /// frame to the next given the size of the first frame that could be read.
+    ///
+    /// Frames are read one at a time, in order: they come from one decoder per source, and asked
+    /// for many at once it decodes each from its keyframe again (a 4K HEVC clip decoded every
+    /// sample twenty times over, #291). The steps of a block are tracked in parallel while the
+    /// next block is read, and its frames are dropped once they're known; only its last frame
+    /// stays for the next block.
+    pub(super) fn advance<T: Send + Sync>(
+        &mut self,
+        n: usize,
+        block: usize,
+        decode: impl Fn(usize) -> Option<T> + Sync,
+        size: impl Fn(&T) -> (usize, usize) + Sync,
+        step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
+        cancelled: impl Fn() -> bool + Sync,
+    ) -> bool {
+        let block = block.max(1);
+        let read = |from: usize, to: usize| -> Option<Vec<Option<T>>> {
+            let mut frames = Vec::with_capacity(to.saturating_sub(from));
+            for k in from..to {
+                if cancelled() {
+                    return None;
+                }
+                frames.push(decode(k));
+            }
+            Some(frames)
+        };
+        // the frame before `next`: its step to `next` isn't known yet
+        let mut carried: Option<Option<T>> = None;
+        if self.next > 0 && self.next < n {
+            if cancelled() {
+                return false;
+            }
+            carried = Some(decode(self.next - 1));
+        }
+        let mut ahead: Option<Vec<Option<T>>> = None;
+        while self.next < n {
+            let end = self.next.saturating_add(block).min(n);
+            let fresh = match ahead.take() {
+                Some(f) => f,
+                None => match read(self.next, end) {
+                    Some(f) => f,
+                    None => return false,
+                },
+            };
+            let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
+            frames.extend(carried.take());
+            frames.extend(fresh);
+            if self.dims.is_none() {
+                self.dims = frames.iter().flatten().next().map(&size);
+            }
+            let dims = self.dims;
+            let (pairs, next_block) = rayon::join(
+                || {
+                    (0..frames.len().saturating_sub(1))
+                        .into_par_iter()
+                        .map(|i| match (frames.get(i), frames.get(i + 1), dims) {
+                            (Some(Some(a)), Some(Some(b)), Some(d)) if size(a).0 == size(b).0 => step(a, b, d),
+                            _ => Affine::IDENTITY,
+                        })
+                        .collect::<Vec<Affine>>()
+                },
+                || if end < n { read(end, end.saturating_add(block).min(n)) } else { Some(Vec::new()) },
+            );
+            self.steps.extend(pairs);
+            carried = frames.pop();
+            self.next = end;
+            match next_block {
+                Some(f) if end < n => ahead = Some(f),
+                Some(_) => {}
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// The steps and the frame size of a finished analysis; `None` when no frame could be read.
+    pub(super) fn finished(self) -> Option<(Vec<Affine>, (usize, usize))> {
+        Some((self.steps, self.dims?))
+    }
+}
+
+/// [`Progress::advance`] over a whole clip: the steps and the frame size, `None` when cancelled
+/// or when no frame could be read.
 pub(super) fn chunked_steps<T: Send + Sync>(
     n: usize,
     block: usize,
@@ -259,38 +351,11 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
     cancelled: impl Fn() -> bool + Sync,
 ) -> Option<(Vec<Affine>, (usize, usize))> {
-    let block = block.max(1);
-    let mut steps = Vec::with_capacity(n.saturating_sub(1));
-    let mut dims = None;
-    let mut carried: Option<Option<T>> = None;
-    let mut next = 0;
-    while next < n {
-        if cancelled() {
-            return None;
-        }
-        let end = (next + block).min(n);
-        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { None } else { decode(k) }).collect();
-        if cancelled() {
-            return None;
-        }
-        let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
-        frames.extend(carried.take());
-        frames.extend(fresh);
-        if dims.is_none() {
-            dims = frames.iter().flatten().next().map(&size);
-        }
-        let pairs: Vec<Affine> = (0..frames.len().saturating_sub(1))
-            .into_par_iter()
-            .map(|i| match (&frames[i], &frames[i + 1], dims) {
-                (Some(a), Some(b), Some(d)) if size(a).0 == size(b).0 => step(a, b, d),
-                _ => Affine::IDENTITY,
-            })
-            .collect();
-        steps.extend(pairs);
-        carried = frames.pop();
-        next = end;
+    let mut p = Progress::default();
+    if !p.advance(n, block, decode, size, step, cancelled) {
+        return None;
     }
-    Some((steps, dims?))
+    p.finished()
 }
 
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
@@ -304,20 +369,24 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let src_w = env.source_size().0.max(1) as f32;
     let target_w = if detailed { 960.0 } else { 480.0 };
     let scale = (target_w / src_w).min(1.0);
-    // A few frames at a time: holding the pyramid of every frame of a long clip (a 10-minute clip
-    // at 30 fps is 18,000 of them) took tens of gigabytes and ended the process (#1381).
-    let (steps, (w, h)) = chunked_steps(
-        n,
-        ANALYSIS_BLOCK,
-        |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
-        |p: &Prepared| (p.base().w, p.base().h),
-        |a: &Prepared, b: &Prepared, (w, h)| {
-            let m = 8.0;
-            let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
-            track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
-        },
-        filmcraft_media::cancel::cancelled,
-    )?;
+    // Without the request's playback hints: a draft or catching-up decode would leave frames out
+    // or degrade them in a path that is kept for every later frame.
+    let (steps, (w, h)) = filmcraft_media::cancel::with_draft(false, || {
+        filmcraft_media::cancel::with_catch_up(None, || {
+            chunked_steps(
+                n,
+                ANALYSIS_BLOCK,
+                |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
+                |p: &Prepared| (p.base().w, p.base().h),
+                |a: &Prepared, b: &Prepared, (w, h)| {
+                    let m = 8.0;
+                    let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
+                    track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
+                },
+                filmcraft_media::cancel::cancelled,
+            )
+        })
+    })?;
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     if let Ok(mut c) = path_cache().lock() {
         if c.len() > 64 {

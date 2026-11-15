@@ -1248,7 +1248,8 @@ mod stabilizer_analysis {
     fn only_a_block_of_frames_is_alive_at_once() {
         let (r, most) = run(2_000, ANALYSIS_BLOCK, &[], 100_000);
         assert_eq!(r.unwrap().0.len(), 1_999);
-        assert!(most <= ANALYSIS_BLOCK + 1, "{most} frames alive at once for a block of {ANALYSIS_BLOCK}");
+        // the block being tracked, the one being read meanwhile and the frame carried over
+        assert!(most <= 2 * ANALYSIS_BLOCK + 1, "{most} frames alive at once for a block of {ANALYSIS_BLOCK}");
         // reading every frame first, as the analysis did, would have held all of them
         let (_, all) = run(300, 300, &[], 100_000);
         assert!(all > 250, "{all}");
@@ -1259,6 +1260,57 @@ mod stabilizer_analysis {
         let calls = AtomicUsize::new(0);
         let r = chunked_steps(1_000, 10, Some, |_: &usize| (1, 1), |_: &usize, _: &usize, _| Affine::IDENTITY, || calls.fetch_add(1, Ordering::SeqCst) >= 12);
         assert!(r.is_none());
+    }
+
+    /// The frames of a clip come from one decoder. Asked for a block of them at once, in any
+    /// order, it went back to the keyframe again and again: a 4-second 4K HEVC clip decoded 4,756
+    /// samples for its 244 frames and took 136 s. They are asked for one at a time, in order.
+    #[test]
+    fn frames_are_read_one_at_a_time_in_order() {
+        let order = std::sync::Mutex::new(Vec::new());
+        let (busy, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let r = chunked_steps(
+            300,
+            ANALYSIS_BLOCK,
+            |k| {
+                most.fetch_max(busy.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_micros(200));
+                order.lock().unwrap().push(k);
+                busy.fetch_sub(1, Ordering::SeqCst);
+                Some(k)
+            },
+            |_: &usize| (1, 1),
+            |a: &usize, b: &usize, _| Affine::translate((a * 1000 + b) as f64, 0.0),
+            || false,
+        );
+        let steps = r.unwrap().0;
+        assert_eq!(*order.lock().unwrap(), (0..300).collect::<Vec<_>>(), "frames read in order");
+        assert_eq!(most.load(Ordering::SeqCst), 1, "one frame read at a time");
+        assert!(steps.iter().enumerate().all(|(i, s)| s.e == (i * 1000 + i + 1) as f64), "each step joins its two frames");
+    }
+
+    /// A cancelled analysis keeps what it did: the next request goes on from there instead of
+    /// starting the clip again (scrubbing cancels frame requests all the time, so it never ended).
+    #[test]
+    fn a_cancelled_analysis_goes_on_where_it_stopped() {
+        use super::super::temporal::Progress;
+        let reads = AtomicUsize::new(0);
+        let decode = |k: usize| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Some(k)
+        };
+        let step = |a: &usize, b: &usize, _| Affine::translate((a * 1000 + b) as f64, 0.0);
+        let mut p = Progress::default();
+        assert!(!p.advance(500, 16, decode, |_: &usize| (1, 1), step, || reads.load(Ordering::SeqCst) >= 200), "cancelled");
+        let read_before = reads.load(Ordering::SeqCst);
+        assert!((150..=232).contains(&read_before), "{read_before}");
+        assert!(p.advance(500, 16, decode, |_: &usize| (1, 1), step, || false), "finished");
+        // only the block being read when it stopped and the frame before it are read again
+        assert!(reads.load(Ordering::SeqCst) <= 500 + 16 + 1, "{} reads for 500 frames", reads.load(Ordering::SeqCst));
+        let (steps, size) = p.finished().unwrap();
+        assert_eq!(size, (1, 1));
+        assert_eq!(steps.len(), 499);
+        assert!(steps.iter().enumerate().all(|(i, s)| s.e == (i * 1000 + i + 1) as f64), "the same steps as without the stop");
     }
 }
 
