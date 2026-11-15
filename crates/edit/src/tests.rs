@@ -590,6 +590,34 @@ fn ripple_trim_shifts_following() {
 }
 
 #[test]
+fn a_trim_to_the_media_end_of_a_speed_changed_clip_stops_on_a_frame() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    // 25 source frames over 43 timeline frames; 35 media frames remain past the Out point, which
+    // is 60.2 timeline frames at this speed
+    let a = fx.put(v1, 0, 43, 940);
+    let b = fx.put(v1, 50, 10, 0);
+    fx.seq.find_item_mut(a).unwrap().1.speed = 25.0 / 43.0;
+    let mut n = fx.next;
+    let d = trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, f(100), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(60));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!((it.start, it.duration), (f(0), f(103)));
+    assert!(it.source_out() <= f(1000));
+    assert_eq!(fx.seq.find_item(b).unwrap().1.start, f(110));
+
+    // the In point: 35 media frames before source In
+    let c = fx.put(v1, 200, 43, 35);
+    fx.seq.find_item_mut(c).unwrap().1.speed = 25.0 / 43.0;
+    let d = trim(&mut fx.seq, c, Edge::In, TrimMode::Ripple, -f(100), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(60));
+    let it = fx.seq.find_item(c).unwrap().1;
+    assert_eq!((it.start, it.duration), (f(200), f(103)));
+    assert!(it.source_in >= Tick::ZERO);
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn ripple_trim_group_takes_a_split_edit_along() {
     // V1: a [0,10) then b [10,20). b's linked sound leads it by 4 on sync-locked A1: [6,20).
     let mut fx = Fx::new();

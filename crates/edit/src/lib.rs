@@ -742,7 +742,20 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 (true, None) => Tick::MAX,
                 (false, _) => head(ctx, it),
             };
-            let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
+            let max_ext = if handle == Tick::MAX {
+                Tick::MAX
+            } else {
+                // stop at the first frame boundary the media reaches, so the In edge stays on a frame
+                // when the clip's speed is not 100% (#4704)
+                let ext = Tick((handle.0 as f64 / speed).floor() as i64);
+                let rate = seq.settings.frame_rate;
+                let limit = Tick(it.start.0.saturating_sub(ext.0));
+                let mut first = rate.snap(limit);
+                if first < limit {
+                    first = rate.tick_of(rate.frame_at(limit).saturating_add(1));
+                }
+                if ext > Tick::ZERO { Tick(it.start.0.saturating_sub(first.0)).max(Tick::ZERO) } else { ext }
+            };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
             // a frame hold needs no source head, but a Regular trim still stops at the previous clip
@@ -756,12 +769,19 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
         Edge::Out => {
             let lo = -(it.duration - ctx.min_duration);
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
-            if it.reverse && it.frame_hold.is_none() {
+            let remain = if it.reverse && it.frame_hold.is_none() {
                 // a reversed clip's Out edge consumes media before source_in
-                hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
-            } else if let Some(m) = media {
-                let remain = Tick(((m - it.source_out()).0 as f64 / speed).floor() as i64);
-                hi = hi.min(remain);
+                Some(head(ctx, it))
+            } else {
+                media.map(|m| m - it.source_out())
+            };
+            if let Some(remain) = remain.filter(|r| *r != Tick::MAX) {
+                // stop at the last frame boundary the media reaches, so the Out edge stays on a frame
+                // when the clip's speed is not 100% (#4704)
+                let ext = Tick((remain.0 as f64 / speed).floor() as i64);
+                let end = it.end();
+                let last = seq.settings.frame_rate.snap(Tick(end.0.saturating_add(ext.0)));
+                hi = hi.min(if ext > Tick::ZERO { Tick(last.0.saturating_sub(end.0)).max(Tick::ZERO) } else { ext });
             }
             d = d.clamp(lo, hi.max(lo));
         }
