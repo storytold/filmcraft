@@ -70,7 +70,6 @@ mod items;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
     pub sequences: Vec<Sequence>,
-    pub media: BTreeMap<String, String>,
     /// Resolved media path → its project-relative `RelativePath`, resolved against the project
     /// folder: the fallback for a stored absolute path that is missing on this computer.
     #[serde(default)]
@@ -909,7 +908,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         warning(report, format!("effect {effect} retained in provenance, not rendered ({count} {occurrences}; identifier {identifier})"));
     }
     let relative_media = objects.relative_media.into_iter().filter_map(|(path, relative)| Some((path, relative?))).collect();
-    Ok(Document { sequences, media: objects.media, relative_media, bins, items })
+    Ok(Document { sequences, relative_media, bins, items })
 }
 
 /// The document's top-level objects by `ObjectID` and `ObjectUID`, and the sequence names and
@@ -2891,7 +2890,7 @@ mod tests {
             let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions { base_dir: Some("/project".into()), ..Default::default() }, None).unwrap();
             let item = &tree.sequences[0].tracks[0].items[0];
             assert_eq!(item.media_path, None, "a code is not a file path");
-            assert!(tree.media.is_empty() && tree.relative_media.is_empty());
+            assert!(tree.relative_media.is_empty());
             let clip = &fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0];
             let ItemKind::Media(media) = &fragment.project.item(clip.item).unwrap().kind else { panic!("{report:?}") };
             assert_eq!(media.media, filmcraft_project::MediaRef::Generator(expected.clone()));
