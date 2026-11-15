@@ -31,28 +31,7 @@ const KNOWN_VERSION: u32 = 0x0107_0100;
 /// Most opcodes in one list (each may touch the whole picture).
 pub const MAX_OPCODES: usize = 256;
 
-const OPTIONAL: u32 = 1;
-const PREVIEW_SKIPPABLE: u32 = 2;
-
-/// One opcode of a list.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Opcode {
-    pub id: u32,
-    /// The DNG version that defined it, as four bytes in a big-endian u32 (1.3.0.0 = 0x01030000).
-    pub version: u32,
-    pub flags: u32,
-    pub params: Vec<u8>,
-}
-
-impl Opcode {
-    pub fn optional(&self) -> bool {
-        self.flags & OPTIONAL != 0
-    }
-
-    pub fn preview_skippable(&self) -> bool {
-        self.flags & PREVIEW_SKIPPABLE != 0
-    }
-}
+pub use craft_raw::opcode_raw::Opcode;
 
 /// The opcode lists of a raw IFD.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -64,23 +43,7 @@ pub struct Lists {
 
 /// Parse an opcode list (big-endian).
 pub fn parse(b: &[u8]) -> Result<Vec<Opcode>> {
-    let bad = || Error::Malformed("opcode list");
-    let mut r = Reader::new(b);
-    let count = r.u32().map_err(|_| bad())? as usize;
-    // every opcode takes at least 16 bytes
-    if count > b.len() / 16 || count > MAX_OPCODES {
-        return Err(bad());
-    }
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
-        let id = r.u32().map_err(|_| bad())?;
-        let version = r.u32().map_err(|_| bad())?;
-        let flags = r.u32().map_err(|_| bad())?;
-        let len = r.u32().map_err(|_| bad())? as usize;
-        let params = r.bytes(len).map_err(|_| bad())?.to_vec();
-        out.push(Opcode { id, version, flags, params });
-    }
-    Ok(out)
+    craft_raw::opcode_raw::parse(b, MAX_OPCODES).map_err(|_| Error::Malformed("opcode list"))
 }
 
 /// Big-endian parameter reader.
@@ -641,15 +604,11 @@ fn warp(id: u32, r: &mut Reader, img: &mut Image) -> Result<()> {
 #[cfg(any(test, feature = "writer"))]
 /// Encode an opcode list (big-endian), for tests: (id, flags, parameters).
 pub fn encode(list: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
-    let mut out = (list.len() as u32).to_be_bytes().to_vec();
-    for (id, flags, params) in list {
-        let version: u32 = if *id == 14 { 0x0106_0000 } else { 0x0103_0000 };
-        for v in [*id, version, *flags, params.len() as u32] {
-            out.extend(v.to_be_bytes());
-        }
-        out.extend(params);
-    }
-    out
+    let records: Vec<Opcode> = list
+        .iter()
+        .map(|(id, flags, params)| Opcode { id: *id, version: if *id == 14 { 0x0106_0000 } else { 0x0103_0000 }, flags: *flags, params: params.clone() })
+        .collect();
+    craft_raw::opcode_raw::encode(&records)
 }
 
 #[cfg(test)]
