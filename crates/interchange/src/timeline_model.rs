@@ -666,6 +666,31 @@ fn preserve_legacy_metadata(value: &mut serde_json::Value) {
         _ => {}
     }
 }
+fn restore_legacy_output(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(meta) = map.get_mut("metadata").and_then(|v| v.get_mut("filmcraft")).and_then(serde_json::Value::as_object_mut) {
+                if let Some(settings) = meta.remove("filmcraft_settings") {
+                    meta.insert("settings".into(), settings);
+                }
+                if let Some(info) = meta.remove("filmcraft_info") {
+                    meta.insert("info".into(), info);
+                }
+            }
+            for (key, child) in map.iter_mut() {
+                if key != "metadata" {
+                    restore_legacy_output(child);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                restore_legacy_output(child);
+            }
+        }
+        _ => {}
+    }
+}
 fn legacy_or_ext(ext: &shared::Ext) -> Option<serde_json::Value> {
     let outer: serde_json::Value = serde_json::from_str(ext.as_deref()?).ok()?;
     Some(outer.get("filmcraft_legacy_metadata").cloned().unwrap_or(outer))
@@ -719,7 +744,10 @@ pub(crate) fn export_otio(project: &film::Project, seq: film::ItemId, opts: &cra
     let result =
         craft_timeline::otio::export_with_report_limit(&project, shared::ItemId(seq.0), &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
     merge_report(report, shared_report);
-    result.map_err(convert_error)
+    let text = result.map_err(convert_error)?;
+    let mut value: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::Error::Other(e.to_string()))?;
+    restore_legacy_output(&mut value);
+    serde_json::to_string_pretty(&value).map_err(|e| crate::Error::Other(e.to_string()))
 }
 
 pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
@@ -799,5 +827,14 @@ mod tests {
         let old_clip = &old.project.sequence(old.sequences[0]).unwrap().video_tracks[0].items[0];
         let new_clip = &new.project.sequence(new.sequences[0]).unwrap().video_tracks[0].items[0];
         assert_eq!((new_clip.start, new_clip.duration, new_clip.source_in), (old_clip.start, old_clip.duration, old_clip.source_in));
+    }
+    #[test]
+    fn exported_metadata_keeps_legacy_settings_and_media_info() {
+        let mut value = serde_json::json!({"metadata":{"filmcraft":{"settings":{"width":1},"filmcraft_settings":{"width":2,"preset":"legacy"},"info":{"name":"shared"},"filmcraft_info":{"name":"original","container":"mov"}}}});
+        restore_legacy_output(&mut value);
+        let meta = &value["metadata"]["filmcraft"];
+        assert_eq!(meta["settings"]["preset"], "legacy");
+        assert_eq!(meta["info"]["container"], "mov");
+        assert!(meta.get("filmcraft_settings").is_none() && meta.get("filmcraft_info").is_none());
     }
 }
