@@ -59,9 +59,11 @@ parameter index because its name is localised; mute automation is reported and i
 track names (`MZ.TrackName`; unnamed tracks keep generated names) and locks (`IsLocked`),
 the sequence frame size from the video track group's `FrameRect` (the preview frame size is only
 the fallback; Motion positions are converted against that frame),
-sequence markers and master-clip markers on their media (type, colour, duration, name and comment
-from each `DVAMarker` record; FilmCraft markers have no URL field, so a web link's URL is reported
-and left in the original snapshot; unreadable records are skipped with a warning; past 10,000 on one
+sequence markers and master-clip markers on their media (type, colour, duration, name, comment and
+web-link URL from each `DVAMarker` record; a URL is kept as text, as a marker edit stores it, and
+opens only if it passes the HTTP/HTTPS check every marker URL does; one longer than 8,192 bytes or
+with control characters is reported and left in the original snapshot; unreadable records are
+skipped with a warning; past 10,000 on one
 sequence or master clip the rest are skipped with a warning; a master clip's markers are read once,
 however many timeline clips cut its media),
 disabled clips (`ClipTrackItem/IsMuted`), generated media (black video, colour matte, bars and tone,
