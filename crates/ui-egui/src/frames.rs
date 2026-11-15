@@ -381,8 +381,8 @@ struct PlanCache {
 }
 
 impl PlanCache {
-    const MAX: usize = 64;
-    const BUDGET: usize = 512 << 20;
+    const MAX: usize = 128;
+    const BUDGET: usize = 3 << 29;
 
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
@@ -1268,23 +1268,26 @@ mod tests {
         assert_eq!(fitting_prefetch_depth(14, 12 << 20), 14);
         // Nothing cached yet: no reduction.
         assert_eq!(fitting_prefetch_depth(14, 0), 14);
-        // A 10-layer 1080p plan (~41 MB) fills the cache with twelve of the fourteen: the run is
-        // left as it is, since only its tail was being evicted anyway.
+        // A 10-layer 1080p plan (~41 MB) leaves the cache holding far more than the fourteen asked.
         assert_eq!(fitting_prefetch_depth(14, 42_508_800), 14);
-        // A 4K four-layer plan (~62 MB) fills the cache with eight: asking for fourteen made the
-        // run evict the plans it had just rendered.
+        // A 4K four-layer plan or a transition frame with every layer visible (~62-75 MB) still fits
+        // the whole playback window: the cache keeps it, so playback must not cut its lookahead.
+        // (At the 512 MiB budget this used to hold eight to ten of the fourteen frames, which were
+        // then evicted and rendered again before the playhead reached them.)
         let four_k = 62_208_000;
-        let depth = fitting_prefetch_depth(14, four_k);
-        assert_eq!(depth, i64::try_from(PlanCache::BUDGET / four_k).unwrap());
+        assert!(14 * four_k <= PlanCache::BUDGET, "the 4K playback window fits the budget");
+        assert_eq!(fitting_prefetch_depth(14, four_k), 14);
+        assert_eq!(fitting_prefetch_depth(14, 74_649_600), 14);
+        // However large a plan gets, playback still runs a few frames ahead and never asks for more
+        // plans than the cache can hold.
+        let huge = PlanCache::BUDGET / 4;
+        let depth = fitting_prefetch_depth(14, huge);
         assert!((super::MIN_PREFETCH..14).contains(&depth), "{depth}");
-        assert!(depth as usize * four_k <= PlanCache::BUDGET, "the prefetched plans fit");
-        // A transition frame with every layer visible (~75 MB) keeps fewer.
-        assert!(fitting_prefetch_depth(14, 74_649_600) < depth);
-        // However large a plan gets, playback still runs a few frames ahead.
+        assert!(depth as usize * huge <= PlanCache::BUDGET, "the prefetched plans fit");
         assert_eq!(fitting_prefetch_depth(14, PlanCache::BUDGET), super::MIN_PREFETCH);
         // Fast playback asks for more frames and is bounded the same way.
         assert_eq!(fitting_prefetch_depth(24, 4 << 20), 24);
-        assert!(fitting_prefetch_depth(24, 62_208_000) < 24);
+        assert!(fitting_prefetch_depth(24, PlanCache::BUDGET / 4) < 24);
     }
 
     #[test]
