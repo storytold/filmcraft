@@ -378,6 +378,7 @@ fn main() {
         }
     }
 
+    let ram0 = process_ram_mb();
     let mut meter = PlaybackMeter::default();
     meter.start(1.0);
     display.present_ms.clear();
@@ -385,7 +386,6 @@ fn main() {
     let before = StatsSnap::take(&server);
     let cpu0 = process_cpu_time().unwrap_or_default();
     let gop0 = filmcraft_codecs::gop_stats();
-    let ram0 = process_ram_mb();
     let anchor = Instant::now();
     let mut next = anchor;
     let mut present_samples = Vec::new();
