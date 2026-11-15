@@ -507,20 +507,22 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     // Scale with real document structure, not repeated references. Every visit still spends
     // subtree nodes and bytes, so a small document cannot request unbounded repeated decoding.
     let mut work_left = doc.descendants().len().saturating_mul(64).max(5_000_000);
-    let mut links = BTreeMap::new();
-    for group in root.children().filter(|n| n.has_tag_name("Link")) {
-        spend(&mut work_left, group)?;
-        let Some(id) = group.attribute("ObjectID") else { continue };
-        // This shared identifier is copied into each linked item's provenance.
-        if id.len() > 4096 {
-            return Err(error("link group identifier is too long"));
-        }
-        for pointer in group.descendants().filter(|n| n.has_tag_name("TrackItem")) {
-            let Some(item) = pointer.attribute("ObjectRef") else { continue };
-            if links.insert(item, id).is_some_and(|old| old != id) {
-                return Err(error("timeline item belongs to multiple link groups"));
-            }
-        }
+    let links = link_groups(root, &mut work_left)?;
+    let mut reader = Reader {
+        objects: &objects,
+        links,
+        base_dir,
+        work: &mut work_left,
+        report,
+        marker_owners: std::collections::HashSet::new(),
+        item_count: 0,
+        skipped_items: BTreeSet::new(),
+        unsupported_effects: BTreeMap::new(),
+        decoded: DecodedText::default(),
+    };
+    let mut sequences = Vec::new();
+    for n in root.children().filter(|n| n.has_tag_name("Sequence")) {
+        sequences.push(reader.sequence(n)?);
     }
     let mut sequences = Vec::new();
     let mut marker_owners = std::collections::HashSet::new();
@@ -1098,6 +1100,19 @@ struct Reader<'a, 'i, 'r> {
     item_count: usize,
     skipped_items: BTreeSet<String>,
     unsupported_effects: BTreeMap<(String, String), usize>,
+    decoded: DecodedText,
+}
+
+/// Text payloads (caption blocks, static Source Text) decoded once per element: any number of
+/// timeline items can reference one, and each decode reads its whole payload.
+#[derive(Default)]
+struct DecodedText(std::collections::HashMap<roxmltree::NodeId, Option<String>>);
+
+impl DecodedText {
+    /// [`caption_text`] of `encoded`, the text of `element`, decoded on the element's first use.
+    fn get(&mut self, element: Node<'_, '_>, encoded: Option<&str>) -> Option<String> {
+        self.0.entry(element.id()).or_insert_with(|| encoded.and_then(caption_text)).clone()
+    }
 }
 
 impl<'a, 'i> Reader<'a, 'i, '_> {
@@ -1348,7 +1363,7 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
                 && !child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 && let Some(v) = child(p, "StartKeyframeValue").filter(|v| v.attribute("Encoding") == Some("base64"))
             {
-                *text = v.text().and_then(caption_text);
+                *text = self.decoded.get(v, v.text());
             }
         }
         if text.is_none() {
@@ -1382,7 +1397,8 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         if let Some(block) = block {
             spend(self.work, block)?;
         }
-        let text = block.and_then(|b| child_text(b, "FormattedTextData")).and_then(caption_text);
+        let data = block.and_then(|b| child(b, "FormattedTextData"));
+        let text = data.and_then(|data| self.decoded.get(data, Some(crate::xml::text(data))));
         if text.is_none() {
             warning(self.report, format!("{label}: caption text could not be decoded"));
         }
@@ -2428,6 +2444,25 @@ mod tests {
             Err(error) => assert!(error.to_string().contains("import work limit"), "{error}"),
             Ok(_) => panic!("repeated caption payload bypassed the import work limit"),
         }
+    }
+    #[test]
+    fn a_shared_text_payload_is_decoded_once() {
+        let doc = roxmltree::Document::parse("<FormattedTextData/>").unwrap();
+        let element = doc.root_element();
+        let mut bytes = b"synthetic-envelope".to_vec();
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend(b"Test\0");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mut decoded = DecodedText::default();
+        assert_eq!(decoded.get(element, Some(&encoded)).as_deref(), Some("Test"));
+        // Later references to the same element reuse that result instead of reading it again.
+        assert_eq!(decoded.get(element, Some("not decoded again")).as_deref(), Some("Test"));
+        assert_eq!(decoded.get(element, None).as_deref(), Some("Test"));
+        // Many caption items sharing one large block all show its text.
+        let (fragment, _, _) = import(repeated_caption_block(40).as_bytes(), &ImportOptions::default(), None).unwrap();
+        let captions = &fragment.project.sequence(fragment.sequences[0]).unwrap().caption_tracks[0].captions;
+        assert_eq!(captions.len(), 40);
+        assert!(captions.iter().all(|caption| caption.text == "Test"));
     }
     #[test]
     fn missing_caption_block_references_remain_optional() {
