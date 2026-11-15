@@ -1,6 +1,8 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available; remaining gaps restated) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-15 · **Change:** minor (Premiere import: web-link marker URLs available; bins and markers available; remaining gaps restated; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -55,10 +57,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** bounded native gzip/plain XML import with linked or copied media, nested sequences,
   exact ticks, per-sequence frame rates and immutable source snapshots. Unreadable media stays
-  offline with diagnostics. Bins and their media, sequence and master-clip markers import.
+  offline with diagnostics. Bins and their media, sequence and master-clip markers (with web-link
+  URLs) import.
   Parser and engine regressions use hand-written fixtures; a 66-project truth corpus and real
   Premiere projects (not committed) were also imported without changing their source hashes.
-- **Missing:** smart/search bins, web-link marker URLs, full effect/font/transition fidelity,
+- **Missing:** smart/search bins, full effect/font/transition fidelity,
   reverse/time-remapped clips, settings-only projects and `.prproj` export. These imports do not
   establish rendering parity with Premiere or the beta gate's broad reliability requirement.
 - **Next:** extend the sanitized corpus and supported object graph; keep unsupported details in
@@ -365,3 +368,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-17 | minor | G2: bounded native Premiere import with source provenance; document remaining fidelity/bin/export gaps. Readiness scores and effort totals not re-measured. |
 | 2026-11-08 | minor | G2: bins and markers now import; remaining gaps are smart bins, marker URLs, effect fidelity, reverse/time-remapped clips and export. Readiness scores and effort totals not re-measured. |
+| 2026-11-15 | minor | G2: Premiere web-link marker URLs now import; removed from the missing list. Readiness scores and effort totals not re-measured. |
