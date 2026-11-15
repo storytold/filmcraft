@@ -12,9 +12,9 @@ workspace = true
 [dependencies]
 filmcraft-color = { workspace = true }
 # Font tables, glyph outlines and metrics (MIT OR Apache-2.0). Rasterisation is our own.
-skrifa = { version = "0.44", default-features = false, features = ["std"] }
+skrifa = { version = "0.47", default-features = false, features = ["std"] }
 # OpenType shaping (HarfBuzz port on read-fonts, MIT); shares font parsing with skrifa.
-harfrust = { version = "0.12", default-features = false, features = ["std"] }
+harfrust = { version = "0.13", default-features = false, features = ["std"] }
 # Unicode Bidirectional Algorithm (MIT OR Apache-2.0).
 unicode-bidi = "0.3.18"
 # UAX #14 line breaking (Apache-2.0).
