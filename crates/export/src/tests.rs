@@ -534,6 +534,33 @@ fn gpu_hook_scenarios() {
     }
     assert_eq!(pool.acquired(), 1, "a permanent import failure is asked for a surface once, not once per frame");
     assert!(gpu_render_stats().fallbacks >= 4, "the readback path rendered every frame: {:?}", gpu_render_stats());
+
+    // 8. A preparer that panics is caught inside the pool boundary: the pool retires and the
+    //    rest of the export completes on the CPU (byte-equal to Off).
+    crate::reset_frame_renderers_for_tests();
+    PANICS.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| Some(Box::new(PanickingPreparerRenderer) as Box<dyn FrameRenderer>));
+    let (p, seq, m) = project();
+    let mk_prep = |path: &String, gpu: crate::GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        s.gpu_rendering = gpu;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
+    mk_prep(&tmp("prep-panic-off.png"), crate::GpuRendering::Off);
+    mk_prep(&tmp("prep-panic-auto.png"), crate::GpuRendering::Auto);
+    for f in ["000", "005", "011"] {
+        assert_eq!(
+            std::fs::read(tmp(&format!("prep-panic-off{f}.png"))).unwrap(),
+            std::fs::read(tmp(&format!("prep-panic-auto{f}.png"))).unwrap(),
+            "frame {f}: a panicking GPU preparer falls back to the CPU"
+        );
+    }
+    assert!(
+        PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4,
+        "preparer reused after a panic: {}",
+        PANICS.load(std::sync::atomic::Ordering::SeqCst)
+    );
     crate::reset_frame_renderers_for_tests();
 }
 
@@ -612,6 +639,32 @@ impl GpuEncodePool for CountingPool {
 }
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct PanickingPreparerRenderer;
+
+impl FrameRenderer for PanickingPreparerRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        Some(std::sync::Arc::new(|_plan: &filmcraft_render::plan::FramePlan| -> Box<dyn std::any::Any + Send + Sync> {
+            PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("GPU preparer failure (test)");
+        }))
+    }
+}
 
 struct PanickingRenderer;
 

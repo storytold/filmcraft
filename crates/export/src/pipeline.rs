@@ -95,6 +95,25 @@ impl RendererPool {
         self.failed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn prepare(&self, plan: &filmcraft_render::plan::FramePlan) -> Option<Box<dyn std::any::Any + Send + Sync>> {
+        let preparer = self.preparer.as_ref()?;
+        if self.is_failed() {
+            return None;
+        }
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (preparer)(plan)));
+        match res {
+            Ok(prep) => Some(prep),
+            Err(_) => {
+                self.failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut free = self.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                free.clear();
+                drop(free);
+                self.available.notify_all();
+                None
+            }
+        }
+    }
+
     /// Run `f` with a free renderer. Frame batches must respect `Pipeline::render_batch_limit`:
     /// a renderer can run nested Rayon work, which may steal another frame on the same thread.
     /// Admitting more frame tasks than renderers could then deadlock this condition variable
@@ -294,7 +313,7 @@ impl Pipeline {
         let pool =
             self.renderer.as_ref().filter(|pool| !pool.is_failed() && !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
         if let Some(pool) = pool
-            && let Some(preparer) = &pool.preparer
+            && pool.preparer.is_some()
         {
             let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
             if let filmcraft_render::plan::FramePlan::Image(img) = plan {
@@ -303,7 +322,12 @@ impl Pipeline {
                 let (rgba, hdr) = self.finish_image(img, t);
                 return RenderedFrame::Cpu(rgba, hdr);
             }
-            let prep = (preparer)(&plan);
+            let Some(prep) = pool.prepare(&plan) else {
+                note_gpu_fallback();
+                let img = filmcraft_render::plan::execute_cpu(&plan);
+                let (rgba, hdr) = self.finish_image(img, t);
+                return RenderedFrame::Cpu(rgba, hdr);
+            };
             if self.can_gpu_rgba8() {
                 // the encoder's surfaces cannot be imported into this device (see NoImport): the
                 // frames take the readback fallback, and each one says so in the counters
