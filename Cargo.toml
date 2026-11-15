@@ -56,7 +56,7 @@ rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
 # Shared OMF Bento container; its object model stays in FilmCraft.
-craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "ac037cd9413e32fd16e0103628485f7eb011abfa" }
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "86a206d6cd33f6acac9cf3bf9e9bca948becdbf1" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both

@@ -1061,11 +1061,11 @@ dependencies = [
 [[package]]
 name = "craft-aaf"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
- "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa)",
- "craft-cfb 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa)",
- "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa)",
+ "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1)",
+ "craft-cfb 0.1.0 (git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1)",
+ "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1)",
  "thiserror 2.0.21",
 ]
 
@@ -1084,10 +1084,10 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
- "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa)",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa)",
+ "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1)",
  "log",
  "thiserror 2.0.21",
 ]
@@ -1110,7 +1110,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f
 [[package]]
 name = "craft-cfb"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 
 [[package]]
 name = "craft-docpath"
@@ -1165,7 +1165,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1190,7 +1190,7 @@ dependencies = [
 [[package]]
 name = "craft-timeline"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
  "craft-time",
 ]
@@ -1285,7 +1285,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ac037cd9413e32fd16e0103628485f7eb011abfa#ac037cd9413e32fd16e0103628485f7eb011abfa"
+source = "git+https://github.com/storytold/craft-libs?rev=86a206d6cd33f6acac9cf3bf9e9bca948becdbf1#86a206d6cd33f6acac9cf3bf9e9bca948becdbf1"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
