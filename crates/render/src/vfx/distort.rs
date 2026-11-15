@@ -295,12 +295,16 @@ fn motion_blurred(img: &mut Image, n: usize, f: impl Fn(&mut Image, f64) + Sync)
         return;
     }
     let src = img.clone();
+    // each sample runs in this job's cancel context (see `Context::with`)
+    let ctx = filmcraft_media::cancel::Context::current();
     let parts: Vec<Image> = (0..n)
         .into_par_iter()
         .map(|i| {
-            let mut c = src.clone();
-            f(&mut c, i as f64 / (n - 1) as f64 - 0.5);
-            c
+            ctx.with(|| {
+                let mut c = src.clone();
+                f(&mut c, i as f64 / (n - 1) as f64 - 0.5);
+                c
+            })
         })
         .collect();
     let inv = 1.0 / n as f32;

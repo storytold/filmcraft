@@ -285,6 +285,8 @@ pub(super) fn try_chunked_steps<T: Send + Sync, E: Send>(
     let mut dims = None;
     let mut carried: Option<Option<T>> = None;
     let mut next = 0;
+    // the decodes run on the pool in this job's cancel context (see `Context::with`)
+    let ctx = filmcraft_media::cancel::Context::current();
     while next < n {
         if cancelled() {
             return Ok(None);
@@ -294,17 +296,19 @@ pub(super) fn try_chunked_steps<T: Send + Sync, E: Send>(
         let fresh_res: Vec<Result<Option<T>, E>> = (next..end)
             .into_par_iter()
             .map(|k| {
-                if cancelled() || failed.load(std::sync::atomic::Ordering::Relaxed) {
-                    Ok(None)
-                } else {
-                    match decode(k) {
-                        Ok(frame) => Ok(frame),
-                        Err(err) => {
-                            failed.store(true, std::sync::atomic::Ordering::Relaxed);
-                            Err(err)
+                ctx.with(|| {
+                    if cancelled() || failed.load(std::sync::atomic::Ordering::Relaxed) {
+                        Ok(None)
+                    } else {
+                        match decode(k) {
+                            Ok(frame) => Ok(frame),
+                            Err(err) => {
+                                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                                Err(err)
+                            }
                         }
                     }
-                }
+                })
             })
             .collect();
         if cancelled() {

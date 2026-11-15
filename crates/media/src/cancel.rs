@@ -120,6 +120,18 @@ impl Context {
         self.cancel.as_ref().is_some_and(|f| f.load(Ordering::Relaxed))
     }
 
+    /// [`run`](Self::run) on a clone: for a closure that runs many times on rayon's pool.
+    ///
+    /// A pool thread that is blocked in `join` / `par_iter` for one job steals tasks of any other
+    /// job, and keeps the thread-local hints of the job it was blocked in. A task that can reach
+    /// [`cancelled`] (an effect's passes, a source decode) must therefore run inside its own job's
+    /// context, or it would read another job's flag: a cancelled job's flag would stop an
+    /// unrelated job half-way and leave its picture incomplete. Capture the context on the job's
+    /// thread, outside the parallel call, and wrap the closure with this.
+    pub fn with<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.clone().run(f)
+    }
+
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
     /// not keep another job's hints after a panic).
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {

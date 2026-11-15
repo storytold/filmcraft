@@ -136,14 +136,18 @@ fn variable_blur(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) 
         return;
     }
     let levels = [0.0f32, 0.125, 0.25, 0.5, 1.0];
+    // each level runs in this job's cancel context (see `Context::with`): the blur polls the flag
+    let ctx = filmcraft_media::cancel::Context::current();
     let stack: Vec<Image> = levels
         .par_iter()
         .map(|&k| {
-            let mut c = img.clone();
-            if k > 0.0 {
-                gaussian(&mut c, max_sigma * k, max_sigma * k, true);
-            }
-            c
+            ctx.with(|| {
+                let mut c = img.clone();
+                if k > 0.0 {
+                    gaussian(&mut c, max_sigma * k, max_sigma * k, true);
+                }
+                c
+            })
         })
         .collect();
     let w = img.w;

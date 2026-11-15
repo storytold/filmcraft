@@ -65,7 +65,8 @@ pub fn echo_glow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let inten = fv(e, "intensity", cx) / 100.0;
     let decay = 1.0 - fv(e, "decay", cx) / 100.0;
     let col = lin(cv(e, "color", cx));
-    let layers: Vec<(Image, f32)> = (0..n).into_par_iter().map(|i| (blurred(&hi, r * spread.powi(i as i32)), decay.powi(i as i32))).collect();
+    let ctx = filmcraft_media::cancel::Context::current();
+    let layers: Vec<(Image, f32)> = (0..n).into_par_iter().map(|i| ctx.with(|| (blurred(&hi, r * spread.powi(i as i32)), decay.powi(i as i32)))).collect();
     let mut acc = Image::new(img.w, img.h);
     for (l, wgt) in &layers {
         acc.px.par_iter_mut().zip(l.px.par_iter()).for_each(|(a, b)| *a += b * wgt);
@@ -154,11 +155,14 @@ pub fn glint(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let inten = fv(e, "intensity", cx) / 100.0 * 3.0;
     let col = lin(cv(e, "color", cx));
     let colorize = fv(e, "colorize", cx) / 100.0;
+    let ctx = filmcraft_media::cancel::Context::current();
     let parts: Vec<Image> = (0..rays)
         .into_par_iter()
         .map(|i| {
-            let a = rot + std::f32::consts::TAU * i as f32 / rays as f32;
-            streak(&hi, (a.cos(), a.sin()), len * 0.35, reach * 0.35)
+            ctx.with(|| {
+                let a = rot + std::f32::consts::TAU * i as f32 / rays as f32;
+                streak(&hi, (a.cos(), a.sin()), len * 0.35, reach * 0.35)
+            })
         })
         .collect();
     let mut acc = Image::new(img.w, img.h);
@@ -287,7 +291,8 @@ pub fn wonder_glow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     }
     let r = fv(e, "radius", cx) * cx.px_scale * 0.5;
     let inten = fv(e, "intensity", cx) / 100.0;
-    let parts: Vec<(Image, f32)> = [(0.25f32, 0.45f32), (1.0, 0.35), (3.0, 0.2)].par_iter().map(|&(k, wgt)| (blurred(&hi, r * k), wgt)).collect();
+    let ctx = filmcraft_media::cancel::Context::current();
+    let parts: Vec<(Image, f32)> = [(0.25f32, 0.45f32), (1.0, 0.35), (3.0, 0.2)].par_iter().map(|&(k, wgt)| ctx.with(|| (blurred(&hi, r * k), wgt))).collect();
     let mut acc = Image::new(img.w, img.h);
     for (p, wgt) in &parts {
         acc.px.par_iter_mut().zip(p.px.par_iter()).for_each(|(a, b)| *a += b * wgt);

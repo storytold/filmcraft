@@ -183,3 +183,64 @@ fn the_keyers_blur_and_per_pixel_map_stop_once_cancelled() {
     with_cancel(&flag, || stopped.map_rgb(|_, _, _| [1.0, 1.0, 1.0]));
     assert_eq!(stopped.px, green().px);
 }
+
+/// A busy-wait of about `us` microseconds that the optimiser cannot remove.
+fn spin(us: u64) {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < std::time::Duration::from_micros(us) {
+        std::hint::black_box(0);
+    }
+}
+
+/// Two jobs share rayon's pool, the way two frame workers do. A pool thread blocked inside job A's
+/// parallel call steals job B's tasks while it waits, and keeps A's thread-local cancel flag
+/// meanwhile: B's effect passes must read B's own flag (`Context::with`), or a cancelled A would
+/// stop B half-way and the incomplete picture would be cached.
+#[test]
+fn a_cancelled_job_never_stops_another_jobs_effect_on_the_shared_pool() {
+    use rayon::prelude::*;
+    if rayon::current_num_threads() < 2 {
+        return;
+    }
+    let src = {
+        let mut img = Image::new(96, 96);
+        for (i, p) in img.px.chunks_exact_mut(4).enumerate() {
+            let v = ((i * 37) % 255) as f32 / 255.0;
+            p.copy_from_slice(&[v, 1.0 - v, (i % 7) as f32 / 7.0, 1.0]);
+        }
+        img
+    };
+    let mut focus = find_effect("focus_blur").unwrap().instance();
+    for (k, v) in [("amount", 40.0), ("size", 5.0), ("feather", 10.0)] {
+        if let Some(p) = focus.params.get_mut(k) {
+            p.value = filmcraft_project::ParamValue::Float(v);
+        }
+    }
+    let run_b = |flag: &Arc<AtomicBool>| {
+        let mut img = src.clone();
+        with_cancel(flag, || effects::apply(&mut img, &focus, &ctx()));
+        img
+    };
+    let reference = run_b(&Arc::new(AtomicBool::new(false)));
+    assert_ne!(reference.px, src.px, "control: the effect changes the picture");
+
+    for round in 0..200 {
+        let a_flag = Arc::new(AtomicBool::new(true));
+        let b_flag = Arc::new(AtomicBool::new(false));
+        let got = std::thread::scope(|s| {
+            // job A: many tasks, each blocked in a nested parallel call inside A's context
+            s.spawn(|| {
+                with_cancel(&a_flag, || {
+                    let ctx = filmcraft_media::cancel::Context::current();
+                    (0..64).into_par_iter().for_each(|_| {
+                        ctx.with(|| {
+                            (0..4).into_par_iter().for_each(|_| spin(150));
+                        })
+                    });
+                })
+            });
+            s.spawn(|| run_b(&b_flag)).join().unwrap()
+        });
+        assert_eq!(got.px, reference.px, "round {round}: job B's picture was stopped by job A's flag");
+    }
+}
