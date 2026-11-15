@@ -42,8 +42,10 @@ The web app's `apps/filmcraft-web/web/favicon.png` (128 px) comes from the same 
 
 ## How the icon reaches each OS
 
-- **macOS:** the window icon set at startup (`ViewportBuilder::with_icon`) is the Dock and app-switcher
-  icon when the app runs unbundled. A future `.app` bundle points `CFBundleIconFile` at `filmcraft.icns`.
+- **macOS:** `FilmCraft.app` (`packaging/macos/package.sh`) points `CFBundleIconFile` at
+  `filmcraft.icns`, and the app sets no runtime icon when it runs from a bundle, so a custom icon set
+  in Finder's Get Info stays in the Dock while it runs (#4790). Run unbundled (a development build),
+  the window icon set at startup (`ViewportBuilder::with_icon`) is the Dock and app-switcher icon.
 - **Windows:** `build.rs` embeds `filmcraft.ico` as the exe's resource icon (Explorer, Start menu,
   pinned taskbar), and the runtime icon covers the window, taskbar and Alt-Tab.
 - **Linux:** the runtime icon plus `with_app_id("ai.storyteller.filmcraft")`, which Wayland matches to
