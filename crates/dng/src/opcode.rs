@@ -229,7 +229,7 @@ fn area_op(params: craft_raw::opcode_params::Params<'_>, img: &mut Image) -> Res
             });
         }
         P::GainMap { area, points_v, points_h, spacing, origin, map_planes, gains } => {
-            return gain_map(&Area::from_shared(area), points_v, points_h, spacing, origin, map_planes, gains, img);
+            return gain_map(&Area::from_shared(area), GainMap { points_v, points_h, spacing, origin, map_planes, gains }, img);
         }
         P::DeltaPerRow { area, deltas } => adjust(&Area::from_shared(area), &deltas, true, true, img),
         P::DeltaPerColumn { area, deltas } => adjust(&Area::from_shared(area), &deltas, false, true, img),
@@ -246,16 +246,16 @@ fn adjust(a: &Area, vals: &[f32], per_row: bool, delta: bool, img: &mut Image) {
         *v = if delta { *v + k * scale } else { *v * k };
     });
 }
-fn gain_map(
-    a: &Area,
+struct GainMap {
     points_v: usize,
     points_h: usize,
     spacing: [f64; 2],
     origin: [f64; 2],
     map_planes: usize,
     gains: Vec<f32>,
-    img: &mut Image,
-) -> Result<()> {
+}
+fn gain_map(a: &Area, map: GainMap, img: &mut Image) -> Result<()> {
+    let GainMap { points_v, points_h, spacing, origin, map_planes, gains } = map;
     let [spacing_v, spacing_h] = spacing;
     let [origin_v, origin_h] = origin;
     let (w, h) = (img.width.max(1) as f64, img.height.max(1) as f64);
