@@ -1061,9 +1061,10 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=f751827790237ed116980c3f981f2e2b72d788a1#f751827790237ed116980c3f981f2e2b72d788a1"
 dependencies = [
  "craft-media",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f751827790237ed116980c3f981f2e2b72d788a1)",
  "log",
  "rayon",
  "symphonia 0.6.1",
@@ -1076,7 +1077,7 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "craft-timeline",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9)",
  "thiserror 2.0.21",
 ]
 
@@ -1129,7 +1130,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=f751827790237ed116980c3f981f2e2b72d788a1#f751827790237ed116980c3f981f2e2b72d788a1"
 dependencies = [
  "chrono",
  "thiserror 2.0.21",
@@ -1194,7 +1195,7 @@ dependencies = [
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=f751827790237ed116980c3f981f2e2b72d788a1#f751827790237ed116980c3f981f2e2b72d788a1"
 dependencies = [
  "craft-media",
  "rayon",
@@ -1227,6 +1228,16 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=f751827790237ed116980c3f981f2e2b72d788a1#f751827790237ed116980c3f981f2e2b72d788a1"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
  "thiserror 2.0.21",
 ]
 
