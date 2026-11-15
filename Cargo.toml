@@ -22,6 +22,7 @@ filmcraft-cfb = { path = "crates/cfb" }
 filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-dng = { path = "crates/dng" }
 filmcraft-h264enc = { path = "crates/h264enc" }
+filmcraft-hevcenc = { path = "crates/hevcenc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
@@ -106,6 +107,9 @@ debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
 [profile.dev.package.filmcraft-h264enc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-hevcenc]
 opt-level = 3
 
 [profile.dev.package.filmcraft-dnx]
