@@ -231,7 +231,7 @@ pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool, compression: ExrComp
     let mut px = vec![0_u16; wn * names.len()];
     let mut raw = Vec::with_capacity(line * lines);
     // the deflate hash tables, shared by the frame's chunks instead of zeroed for each one
-    let mut tables = crate::deflate::Tables::default();
+    let mut tables = craft_exr::zlib::Tables::default();
     for (k, block) in rgba[..n].chunks(row * lines).enumerate() {
         raw.clear();
         for src in block.chunks_exact(row) {
@@ -255,7 +255,7 @@ pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool, compression: ExrComp
         let packed = match compression {
             ExrCompression::None => None,
             ExrCompression::Rle => Some(rle(&predict(&raw))),
-            ExrCompression::Zips | ExrCompression::Zip => Some(crate::deflate::zlib(&predict(&raw), &mut tables)),
+            ExrCompression::Zips | ExrCompression::Zip => Some(craft_exr::zlib::zlib(&predict(&raw), &mut tables)),
         };
         // a chunk that does not shrink is stored as it is (readers compare the sizes)
         let data = packed.as_deref().filter(|p| p.len() < raw.len()).unwrap_or(&raw);
@@ -508,7 +508,12 @@ mod tests {
                     } else if c == ExrCompression::Rle {
                         unpredict(&unrle(data))
                     } else {
-                        unpredict(&crate::deflate::tests::inflate(data).unwrap())
+                        {
+                            use std::io::Read as _;
+                            let mut decoded = Vec::new();
+                            flate2::read::ZlibDecoder::new(data).read_to_end(&mut decoded).unwrap();
+                            unpredict(&decoded)
+                        }
                     };
                     assert_eq!(got, want, "{c:?} chunk {k}");
                 }
