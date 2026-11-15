@@ -85,17 +85,21 @@ fn yuv_code_range_gpu_matches_cpu() {
 #[test]
 fn yuv16_r16unorm_matches_cpu_and_alpha() {
     let instance = crate::adapter::native_instance();
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
-        eprintln!("no GPU adapter; skipping");
+    let required = std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_some();
+    let Some(adapter) = crate::blend_tests::checked_gpu_result(
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())),
+        required,
+    ) else {
         return;
     };
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
     if !adapter.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         eprintln!("adapter lacks TEXTURE_FORMAT_16BIT_NORM; skipping");
         return;
     }
     let desc = wgpu::DeviceDescriptor { required_features: crate::requested_features(&adapter), ..Default::default() };
-    let Ok((dev, q)) = pollster::block_on(adapter.request_device(&desc)) else {
-        eprintln!("no GPU device; skipping");
+    let Some((dev, q)) = crate::blend_tests::checked_gpu_result(pollster::block_on(adapter.request_device(&desc)), required) else {
         return;
     };
     let mut c = GpuCompositor::new(&dev, &q);

@@ -24,7 +24,7 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
 
 // Test-only policy: local machines may lack an adapter, but the CI software-GPU leg must
 // fail on both adapter lookup and device creation failures, even after printing an adapter.
-fn checked_gpu_result<T, E: std::fmt::Debug>(result: Result<T, E>, required: bool) -> Option<T> {
+pub(crate) fn checked_gpu_result<T, E: std::fmt::Debug>(result: Result<T, E>, required: bool) -> Option<T> {
     match result {
         Ok(value) => Some(value),
         Err(error) => {
