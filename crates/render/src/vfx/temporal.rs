@@ -241,6 +241,15 @@ pub fn clear_stabilizer_cache() {
     }
 }
 
+pub(super) fn stabilizer_cache_key(clip_key: u64, method: TrackMethod, detailed: bool) -> u64 {
+    clip_key ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1)
+}
+
+#[cfg(test)]
+pub(super) fn stabilizer_cached_path(key: u64) -> Option<Arc<StabilizerPath>> {
+    path_cache().lock().ok().and_then(|c| c.get(&key).cloned())
+}
+
 /// Frames decoded, prepared and tracked together; the analysis holds this many (plus one carried
 /// over from the block before) at a time, whatever the clip's length.
 pub(super) const ANALYSIS_BLOCK: usize = 64;
@@ -251,6 +260,7 @@ pub(super) const ANALYSIS_BLOCK: usize = 64;
 /// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
 /// they take part in are known; only the last frame of a block stays for the next one. `None` when
 /// cancelled or when no frame could be read.
+#[cfg(test)]
 pub(super) fn chunked_steps<T: Send + Sync>(
     n: usize,
     block: usize,
@@ -259,6 +269,17 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
     cancelled: impl Fn() -> bool + Sync,
 ) -> Option<(Vec<Affine>, (usize, usize))> {
+    try_chunked_steps(n, block, |k| Ok::<_, ()>(decode(k)), size, step, cancelled).ok().flatten()
+}
+
+pub(super) fn try_chunked_steps<T: Send + Sync, E: Send>(
+    n: usize,
+    block: usize,
+    decode: impl Fn(usize) -> Result<Option<T>, E> + Sync,
+    size: impl Fn(&T) -> (usize, usize) + Sync,
+    step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
+    cancelled: impl Fn() -> bool + Sync,
+) -> Result<Option<(Vec<Affine>, (usize, usize))>, E> {
     let block = block.max(1);
     let mut steps = Vec::with_capacity(n.saturating_sub(1));
     let mut dims = None;
@@ -266,12 +287,32 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     let mut next = 0;
     while next < n {
         if cancelled() {
-            return None;
+            return Ok(None);
         }
         let end = (next + block).min(n);
-        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { None } else { decode(k) }).collect();
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let fresh_res: Vec<Result<Option<T>, E>> = (next..end)
+            .into_par_iter()
+            .map(|k| {
+                if cancelled() || failed.load(std::sync::atomic::Ordering::Relaxed) {
+                    Ok(None)
+                } else {
+                    match decode(k) {
+                        Ok(frame) => Ok(frame),
+                        Err(err) => {
+                            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                            Err(err)
+                        }
+                    }
+                }
+            })
+            .collect();
         if cancelled() {
-            return None;
+            return Ok(None);
+        }
+        let mut fresh = Vec::with_capacity(fresh_res.len());
+        for res in fresh_res {
+            fresh.push(res?);
         }
         let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
         frames.extend(carried.take());
@@ -290,12 +331,12 @@ pub(super) fn chunked_steps<T: Send + Sync>(
         carried = frames.pop();
         next = end;
     }
-    Some((steps, dims?))
+    Ok(dims.map(|d| (steps, d)))
 }
 
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
-    let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
+    let key = stabilizer_cache_key(env.clip_key(), method, detailed);
     if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
         return Some(p);
     }
@@ -306,10 +347,10 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let scale = (target_w / src_w).min(1.0);
     // A few frames at a time: holding the pyramid of every frame of a long clip (a 10-minute clip
     // at 30 fps is 18,000 of them) took tens of gigabytes and ended the process (#1381).
-    let (steps, (w, h)) = chunked_steps(
+    let (steps, (w, h)) = try_chunked_steps(
         n,
         ANALYSIS_BLOCK,
-        |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
+        |k| env.try_source_frame(k as f64 / fps - now, scale).map(|opt| opt.map(|f| Prepared::new(gray_of(&f)))),
         |p: &Prepared| (p.base().w, p.base().h),
         |a: &Prepared, b: &Prepared, (w, h)| {
             let m = 8.0;
@@ -317,7 +358,9 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
             track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
         },
         filmcraft_media::cancel::cancelled,
-    )?;
+    )
+    .ok()
+    .flatten()?;
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     if let Ok(mut c) = path_cache().lock() {
         if c.len() > 64 {

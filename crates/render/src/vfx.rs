@@ -45,6 +45,11 @@ pub trait FxEnv: Sync {
     fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image>;
     /// The clip's raw picture `dt` seconds from now at `scale` × its source size (analysis).
     fn source_frame(&self, dt: f64, scale: f32) -> Option<Image>;
+    /// Like [`FxEnv::source_frame`], distinguishing a strict readback error (`Err`) from a missing
+    /// frame (`Ok(None)`).
+    fn try_source_frame(&self, dt: f64, scale: f32) -> Result<Option<Image>, String> {
+        Ok(self.source_frame(dt, scale))
+    }
     /// Video track `index` (0 = V1) rendered alone at this time, output-sized.
     fn track(&self, index: usize) -> Option<Image>;
     /// Maps working-layer pixels to output pixels (Motion included).
@@ -152,18 +157,21 @@ impl FxEnv for ItemEnv<'_> {
         Some(img)
     }
     fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        self.try_source_frame(dt, scale).ok().flatten()
+    }
+    fn try_source_frame(&self, dt: f64, scale: f32) -> Result<Option<Image>, String> {
         let t2 = self.t + Tick::from_seconds_f64(dt);
         let scale = scale.clamp(1.0 / 64.0, 1.0);
         if self.readback_error.is_some() {
             match crate::try_base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale) {
-                Ok(b) => b,
+                Ok(b) => Ok(b),
                 Err(e) => {
-                    self.note_readback_error(e);
-                    None
+                    self.note_readback_error(e.clone());
+                    Err(e)
                 }
             }
         } else {
-            crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale)
+            Ok(crate::base_layer(self.project, self.seq, self.item, t2, self.opts, self.sources, scale))
         }
     }
     fn track(&self, index: usize) -> Option<Image> {

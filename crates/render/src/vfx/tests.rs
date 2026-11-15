@@ -1368,6 +1368,141 @@ mod pipeline {
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
     }
+
+    #[test]
+    fn warp_stabilizer_does_not_cache_incomplete_path_after_strict_readback_failure() {
+        use crate::try_render_sequence;
+        use filmcraft_frame::{Chroma, GpuSurface, PixelData, VideoFrame};
+        use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct FailingGpuSurface;
+        impl GpuSurface for FailingGpuSurface {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn id(&self) -> usize {
+                0xBAD_57AB
+            }
+            fn gpu_bytes(&self) -> u64 {
+                128 * 96 * 4
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn chroma(&self) -> Chroma {
+                Chroma::C444
+            }
+            fn to_cpu(&self) -> Result<PixelData, String> {
+                Err("synthetic stabilizer readback failure".to_string())
+            }
+        }
+
+        struct FlakyStabilizerSource {
+            info: MediaInfo,
+            w: usize,
+            h: usize,
+            fps: FrameRate,
+            fail_frame: i64,
+            should_fail: AtomicBool,
+            reads: AtomicUsize,
+        }
+        impl MediaSource for FlakyStabilizerSource {
+            fn info(&self) -> &MediaInfo {
+                &self.info
+            }
+            fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                let frame_idx = self.fps.frame_at(req.time);
+                if frame_idx == self.fail_frame && self.should_fail.load(Ordering::SeqCst) {
+                    return Ok(Arc::new(VideoFrame {
+                        width: self.w as u32,
+                        height: self.h as u32,
+                        data: PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+                        color: filmcraft_color::ColorInfo::REC709,
+                        par: (1, 1),
+                        pts: req.time,
+                    }));
+                }
+                let t = frame_idx as f64 / self.fps.as_f64();
+                let mut px = vec![0u8; self.w * self.h * 4];
+                for y in 0..self.h {
+                    for x in 0..self.w {
+                        let c = shaky(x as f64, y as f64, t);
+                        let s = filmcraft_color::linear_to_srgb(c[0].clamp(0.0, 1.0));
+                        let u = (s * 255.0).round().clamp(0.0, 255.0) as u8;
+                        let i = (y * self.w + x) * 4;
+                        px[i..i + 4].copy_from_slice(&[u, u, u, 255]);
+                    }
+                }
+                Ok(Arc::new(VideoFrame::rgba8(self.w as u32, self.h as u32, px)))
+            }
+            fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+                Err(MediaError::NoStream("audio"))
+            }
+        }
+
+        let (w, h) = (128, 96);
+        let r = FrameRate::FPS_24;
+        let g = GeneratorSource::new(Generator::BlackVideo, w as u32, h as u32, r, r.tick_of(13));
+        let info = g.info().clone();
+        let mut p = Project::new("stab-readback-cache");
+        let item_id = p.add_item(
+            "flaky-stab",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq_id = p.new_sequence("s", SequenceSettings { width: w as u32, height: h as u32, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let start = Tick(9_600_000_000);
+        let mut ti = p.make_track_item(item_id, TrackKind::Video, start, TimeRange::new(Tick::ZERO, r.tick_of(8)), r).unwrap();
+        ti.scale_to_frame = true;
+        let mut ws = inst("warp_stabilizer");
+        set(&mut ws, "method", ParamValue::Choice(0));
+        set(&mut ws, "detailed", ParamValue::Bool(false));
+        ti.effects.insert(0, ws);
+        let clip_key = {
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for v in [ti.item.0, ti.start.0 as u64, ti.duration.0 as u64, ti.source_in.0 as u64, ti.speed.to_bits(), ti.reverse as u64] {
+                hash = (hash ^ v).wrapping_mul(0x0100_0000_01b3);
+            }
+            super::super::temporal::stabilizer_cache_key(hash, filmcraft_project::TrackMethod::Position, false)
+        };
+        p.sequence_mut(seq_id).unwrap().video_tracks[0].items.push(ti);
+
+        let src = Arc::new(FlakyStabilizerSource { info, w, h, fps: r, fail_frame: 1, should_fail: AtomicBool::new(true), reads: AtomicUsize::new(0) });
+        let mut map = SourceMap::default();
+        map.0.insert(item_id, src.clone() as SharedSource);
+
+        let err = try_render_sequence(&p, seq_id, start, RenderOptions::default(), &map).err();
+        assert!(err.as_deref().is_some_and(|m| m.contains("synthetic stabilizer readback failure")), "expected readback failure, got {err:?}");
+        assert!(super::super::temporal::stabilizer_cached_path(clip_key).is_none(), "failed strict analysis must not cache an incomplete stabilizer path");
+
+        // Retry after readback recovers: analysis must run again and succeed.
+        src.should_fail.store(false, Ordering::SeqCst);
+        src.reads.store(0, Ordering::SeqCst);
+        let ok = try_render_sequence(&p, seq_id, start, RenderOptions::default(), &map);
+        assert!(ok.is_ok(), "retry after readback recovery should succeed: {ok:?}");
+        assert!(src.reads.load(Ordering::SeqCst) >= 8, "retry must re-run analysis rather than reusing an incomplete cached path");
+        let cached = super::super::temporal::stabilizer_cached_path(clip_key);
+        let cached = cached.as_deref();
+        assert!(cached.is_some(), "completed analysis should be cached after recovery");
+        assert!(
+            cached.is_some_and(|path| path.steps[0] != Affine::IDENTITY || path.steps[1] != Affine::IDENTITY),
+            "retried analysis should compute real motion steps for the recovered frame"
+        );
+    }
 }
 
 #[test]
