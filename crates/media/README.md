@@ -12,3 +12,17 @@ components. A prefix may contain other UTF-8 characters, including accented lett
 when generating sibling-frame paths. Sibling recognition compares the prefix's UTF-8 bytes exactly.
 Stems without ASCII digits or with a final frame-number run longer than 18 characters are not numbered
 image-sequence filenames.
+
+## Media capabilities
+
+The capabilities module defines serializable CPU/GPU inventory and H.264/HEVC/AV1
+implementation records. Available means an implementation candidate; exact configuration
+and session checks are still required. Formats list a confirmed V1 subset.
+
+Unknown limits and HDR/control sets use None. A known empty set uses Some(empty).
+Read untrusted snapshots with decode_snapshot: it enforces the 8 MiB input limit and
+validates schema, counts, identifiers, formats and adapter associations. Do not call
+serde_json::from_slice directly on unbounded input. Write transport data with
+encode_snapshot, which validates the model and bounds output.
+
+This module performs no OS discovery, hardware probing or media encoding/decoding.

@@ -12,6 +12,7 @@
 pub mod animated;
 pub mod cache;
 pub mod cancel;
+pub mod capabilities;
 pub mod digits;
 pub mod dpx;
 pub mod generators;
