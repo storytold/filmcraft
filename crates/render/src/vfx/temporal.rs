@@ -9,7 +9,9 @@
 //! similarity model (no per-region warping).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
 use filmcraft_project::{EffectInstance, TrackMethod};
 use rayon::prelude::*;
@@ -228,19 +230,6 @@ pub struct StabilizerPath {
     pub fps: f64,
 }
 
-type PathCache = Mutex<HashMap<u64, Arc<StabilizerPath>>>;
-fn path_cache() -> &'static PathCache {
-    static C: OnceLock<PathCache> = OnceLock::new();
-    C.get_or_init(Default::default)
-}
-
-/// Forget every cached stabilizer analysis (e.g. after the media changed).
-pub fn clear_stabilizer_cache() {
-    if let Ok(mut c) = path_cache().lock() {
-        c.clear();
-    }
-}
-
 /// Frames read, prepared and tracked together. The analysis holds two blocks (the one being
 /// tracked and the next one being read) and one frame carried over, whatever the clip's length.
 pub(super) const ANALYSIS_BLOCK: usize = 16;
@@ -276,15 +265,16 @@ impl Progress {
         cancelled: impl Fn() -> bool + Sync,
     ) -> bool {
         let block = block.max(1);
-        let read = |from: usize, to: usize| -> Option<Vec<Option<T>>> {
+        // frames `from..to`, fewer when cancelled meanwhile (then false)
+        let read = |from: usize, to: usize| -> (Vec<Option<T>>, bool) {
             let mut frames = Vec::with_capacity(to.saturating_sub(from));
             for k in from..to {
                 if cancelled() {
-                    return None;
+                    return (frames, false);
                 }
                 frames.push(decode(k));
             }
-            Some(frames)
+            (frames, true)
         };
         // the frame before `next`: its step to `next` isn't known yet
         let mut carried: Option<Option<T>> = None;
@@ -294,16 +284,18 @@ impl Progress {
             }
             carried = Some(decode(self.next - 1));
         }
-        let mut ahead: Option<Vec<Option<T>>> = None;
+        let mut ahead: Option<(Vec<Option<T>>, bool)> = None;
         while self.next < n {
-            let end = self.next.saturating_add(block).min(n);
-            let fresh = match ahead.take() {
+            let (fresh, whole) = match ahead.take() {
                 Some(f) => f,
-                None => match read(self.next, end) {
-                    Some(f) => f,
-                    None => return false,
-                },
+                None => read(self.next, self.next.saturating_add(block).min(n)),
             };
+            if fresh.is_empty() {
+                return false;
+            }
+            // A request cancelled part way through a block still moves the analysis on by the
+            // frames it read: scrubbing cancels requests long before a block is read.
+            let end = self.next.saturating_add(fresh.len()).min(n);
             let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
             frames.extend(carried.take());
             frames.extend(fresh);
@@ -321,16 +313,15 @@ impl Progress {
                         })
                         .collect::<Vec<Affine>>()
                 },
-                || if end < n { read(end, end.saturating_add(block).min(n)) } else { Some(Vec::new()) },
+                || if whole && end < n { Some(read(end, end.saturating_add(block).min(n))) } else { None },
             );
             self.steps.extend(pairs);
             carried = frames.pop();
             self.next = end;
-            match next_block {
-                Some(f) if end < n => ahead = Some(f),
-                Some(_) => {}
-                None => return false,
+            if !whole {
+                return false;
             }
+            ahead = next_block;
         }
         true
     }
@@ -343,6 +334,7 @@ impl Progress {
 
 /// [`Progress::advance`] over a whole clip: the steps and the frame size, `None` when cancelled
 /// or when no frame could be read.
+#[cfg(test)]
 pub(super) fn chunked_steps<T: Send + Sync>(
     n: usize,
     block: usize,
@@ -358,22 +350,193 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     p.finished()
 }
 
-/// Analyse (or fetch the cached analysis of) the clip `env` describes.
+/// What is known of the analysis of one clip (per method and detail).
+enum Analysis {
+    Partial(Progress),
+    Done(Arc<StabilizerPath>),
+}
+
+/// Every clip's analysis, and which one is running. One runs at a time: clips of the same file
+/// share its decoder, and two analyses reading different parts of it at once would each send it
+/// back to a keyframe for every frame.
+#[derive(Default)]
+struct Analyses {
+    clips: HashMap<u64, Analysis>,
+    running: Option<u64>,
+    /// Bumped by [`clear_stabilizer_cache`]: an analysis that started before isn't kept.
+    generation: u64,
+}
+
+fn analyses() -> &'static (Mutex<Analyses>, Condvar) {
+    static A: OnceLock<(Mutex<Analyses>, Condvar)> = OnceLock::new();
+    A.get_or_init(Default::default)
+}
+
+fn lock_analyses() -> MutexGuard<'static, Analyses> {
+    analyses().0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Most clip analyses (finished or not) kept in memory; each is a few hundred bytes a second.
+const KEPT_ANALYSES: usize = 64;
+
+/// How often a request waiting for an analysis checks whether it was cancelled.
+const WAIT_POLL: Duration = Duration::from_millis(10);
+
+/// Threads that run the analyses. A request that waits for an analysis may be a rayon worker of
+/// the pool that renders frames (an export renders a batch on all of them). Had the analysis run
+/// on that pool, a worker waiting for it could hold part of its parallel work on its stack (a
+/// worker waiting inside a join runs other jobs, such as another frame that asks for the same
+/// analysis) and it would never finish (#2276). On its own pool, its work only runs beside other
+/// work of the analysis, which never waits for an analysis.
+#[cfg(not(target_arch = "wasm32"))]
+fn analysis_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1);
+        rayon::ThreadPoolBuilder::new().num_threads(n).thread_name(|i| format!("stabilize-{i}")).build().ok()
+    })
+    .as_ref()
+}
+
+/// Forget every cached stabilizer analysis (e.g. after the media changed).
+pub fn clear_stabilizer_cache() {
+    let mut a = lock_analyses();
+    a.clips.clear();
+    a.generation = a.generation.wrapping_add(1);
+}
+
+/// Analyse (or fetch the cached analysis of) the clip `env` describes. Frames that ask for the
+/// same clip at once share one analysis. A request that is cancelled while it waits returns
+/// `None`; the analysis it was running stops, keeps what it did, and the next request for the
+/// clip goes on from there.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
     let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
-    if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
-        return Some(p);
+    let mut a = lock_analyses();
+    if let Some(Analysis::Done(p)) = a.clips.get(&key) {
+        return Some(p.clone());
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    let pool = analysis_pool();
+    #[cfg(target_arch = "wasm32")]
+    let pool: Option<&rayon::ThreadPool> = None;
+    // A nested sequence's clips are rendered for the frames of an analysis: one of them asking
+    // for its own analysis must not wait for the one that is reading it. Without the pool (the
+    // web build, or no threads) nothing is shared either.
+    let Some(pool) = pool.filter(|p| p.current_thread_index().is_none()) else {
+        let progress = match a.clips.remove(&key) {
+            Some(Analysis::Partial(p)) => p,
+            _ => Progress::default(),
+        };
+        drop(a);
+        let (progress, complete) = analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled);
+        return keep(lock_analyses(), key, None, progress, env.frame_rate().max(1.0), complete);
+    };
+    loop {
+        match a.clips.get(&key) {
+            Some(Analysis::Done(p)) => return Some(p.clone()),
+            _ if a.running.is_none() => break,
+            _ => {}
+        }
+        if filmcraft_media::cancel::cancelled() {
+            return None;
+        }
+        a = analyses().1.wait_timeout(a, WAIT_POLL).map_or_else(|e| e.into_inner().0, |(g, _)| g);
+    }
+    let progress = match a.clips.remove(&key) {
+        Some(Analysis::Partial(p)) => p,
+        _ => Progress::default(),
+    };
+    a.running = Some(key);
+    let generation = a.generation;
+    drop(a);
+    let mut turn = Turn { ended: false };
+    let (progress, complete) = analyse_on(pool, env, now, method, detailed, progress);
+    let mut a = lock_analyses();
+    // the waiting requests see the analysis' result when they get the lock back
+    a.running = None;
+    turn.ended = true;
+    analyses().1.notify_all();
+    keep(a, key, Some(generation), progress, env.frame_rate().max(1.0), complete)
+}
+
+/// The running analysis' turn. Ended by its request once its result is kept; ended here when that
+/// request unwinds instead, or every later request would wait for it forever.
+struct Turn {
+    ended: bool,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        if !self.ended {
+            lock_analyses().running = None;
+            analyses().1.notify_all();
+        }
+    }
+}
+
+/// Record how far the analysis of `key` got (not when the cache was cleared since `generation`)
+/// and return its path when it is finished.
+fn keep(mut a: MutexGuard<'_, Analyses>, key: u64, generation: Option<u64>, progress: Progress, fps: f64, complete: bool) -> Option<Arc<StabilizerPath>> {
+    if generation.is_some_and(|g| g != a.generation) {
+        return None;
+    }
+    if a.clips.len() >= KEPT_ANALYSES {
+        a.clips.clear();
+    }
+    if !complete {
+        a.clips.insert(key, Analysis::Partial(progress));
+        return None;
+    }
+    // no frame could be read: nothing is kept, the next request tries again
+    let (steps, (w, h)) = progress.finished()?;
+    let path = Arc::new(StabilizerPath { w, h, steps, fps });
+    a.clips.insert(key, Analysis::Done(path.clone()));
+    Some(path)
+}
+
+/// Run [`analyse`] on the analysis pool, stopping it when this request is cancelled. The request
+/// waits on a thread of its own, which takes no other rayon work meanwhile (see [`analysis_pool`]).
+fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool, progress: Progress) -> (Progress, bool) {
+    let stop = AtomicBool::new(false);
+    let slot = Mutex::new(Some(progress));
+    let run = || {
+        let progress = slot.lock().unwrap_or_else(PoisonError::into_inner).take()?;
+        let stopped = || stop.load(Ordering::Relaxed);
+        // a panic in the analysis loses it, not the frame that asked: the frame is not stabilised
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.install(|| analyse(env, now, method, detailed, progress, &stopped)))).ok()
+    };
+    let done = std::thread::scope(|scope| {
+        let Ok(handle) = std::thread::Builder::new().name("stabilize-wait".into()).spawn_scoped(scope, run) else { return None };
+        while !handle.is_finished() {
+            if filmcraft_media::cancel::cancelled() {
+                stop.store(true, Ordering::Relaxed);
+            }
+            std::thread::sleep(WAIT_POLL);
+        }
+        handle.join().ok().flatten()
+    });
+    match done {
+        Some(r) => r,
+        // no thread could be made: analyse here (or nothing, after a panic)
+        None => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            Some(progress) => analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled),
+            None => (Progress::default(), false),
+        },
+    }
+}
+
+/// Go on with the analysis of the clip `env` describes from `progress`; true when finished.
+/// Runs without the request's playback hints: a draft or catching-up decode would leave frames
+/// out or degrade them in a path that is kept for every later frame.
+fn analyse(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool, mut progress: Progress, stopped: &(dyn Fn() -> bool + Sync)) -> (Progress, bool) {
     let fps = env.frame_rate().max(1.0);
     let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
     let src_w = env.source_size().0.max(1) as f32;
     let target_w = if detailed { 960.0 } else { 480.0 };
     let scale = (target_w / src_w).min(1.0);
-    // Without the request's playback hints: a draft or catching-up decode would leave frames out
-    // or degrade them in a path that is kept for every later frame.
-    let (steps, (w, h)) = filmcraft_media::cancel::with_draft(false, || {
+    let complete = filmcraft_media::cancel::with_draft(false, || {
         filmcraft_media::cancel::with_catch_up(None, || {
-            chunked_steps(
+            progress.advance(
                 n,
                 ANALYSIS_BLOCK,
                 |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
@@ -383,18 +546,11 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
                     let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
                     track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
                 },
-                filmcraft_media::cancel::cancelled,
+                stopped,
             )
         })
-    })?;
-    let path = Arc::new(StabilizerPath { w, h, steps, fps });
-    if let Ok(mut c) = path_cache().lock() {
-        if c.len() > 64 {
-            c.clear();
-        }
-        c.insert(key, path.clone());
-    }
-    Some(path)
+    });
+    (progress, complete)
 }
 
 /// Similarity parameters (tx, ty, angle, log-scale) of an affine.
