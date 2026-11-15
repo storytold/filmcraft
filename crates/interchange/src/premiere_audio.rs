@@ -9,6 +9,7 @@ use filmcraft_time::Tick;
 use roxmltree::Node;
 use std::collections::BTreeMap;
 
+/// A normalised level in dB: 0.17782794 is 0 dB and zero is silence; outside 0..=1 is an error.
 fn level(raw: &str) -> Result<ParamValue> {
     let n: f64 = raw.trim().parse().map_err(|_| error("invalid intrinsic audio level"))?;
     if !n.is_finite() || !(0.0..=1.0).contains(&n) {
@@ -77,6 +78,7 @@ pub(super) fn read<'a, 'i>(
     Ok(())
 }
 
+/// Whether a stored flag is `true` or `1`.
 fn is_true(v: &str) -> bool {
     v == "1" || v.eq_ignore_ascii_case("true")
 }

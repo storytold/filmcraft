@@ -26,6 +26,7 @@ use crate::common::{Builder, MediaSpec, empty_sequence, set_param, settings_for}
 use crate::xml::{child, child_text};
 use crate::{Error, ImportOptions, Imported, Report, Result};
 
+/// The largest plain or gzip-expanded project XML accepted (512 MiB).
 pub const MAX_DOCUMENT_BYTES: usize = 512 * 1024 * 1024;
 const MAX_COMPRESSED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NODES: u32 = 16_000_000;
@@ -67,8 +68,10 @@ mod markers;
 #[path = "premiere_items.rs"]
 mod items;
 
+/// What [`read`] found in a project; an import keeps it as its provenance source tree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
+    /// Every top-level sequence, in document order.
     pub sequences: Vec<Sequence>,
     /// Resolved media path → its project-relative `RelativePath`, resolved against the project
     /// folder: the fallback for a stored absolute path that is missing on this computer.
@@ -84,86 +87,126 @@ pub struct Document {
 /// A project panel bin; `parent` indexes [`Document::bins`] (none: the root bin).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceBin {
+    /// The bin's name (`Bin` when it has none).
     pub name: String,
+    /// The bin holding it, indexing [`Document::bins`]; none for the root bin.
     pub parent: Option<usize>,
 }
 /// A project panel item: a master clip's source and, for a subclip, its range of that media.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectEntry {
+    /// The master clip's name, else the panel item's.
     pub name: String,
     /// Its bin, indexing [`Document::bins`] (none: the root bin).
     #[serde(default)]
     pub bin: Option<usize>,
+    /// The resolved path of its media file.
     pub media_path: Option<String>,
+    /// Generated media, in place of a media file.
     #[serde(default)]
     pub synthetic: Option<SyntheticMedia>,
     /// A sequence's ObjectUID.
     #[serde(default)]
     pub nested_sequence: Option<String>,
-    /// An adjustment layer's `MasterClip` ObjectUID, and its clip's out point.
+    /// An adjustment layer's `MasterClip` ObjectUID.
     #[serde(default)]
     pub adjustment_layer: Option<String>,
+    /// An adjustment layer's clip out point: how long its project item lasts.
     #[serde(default)]
     pub duration: Option<Tick>,
     /// Whether the master clip's media source is video (otherwise audio).
     pub video: bool,
+    /// A subclip's range of its media.
     #[serde(default)]
     pub subclip: Option<SubclipRange>,
 }
 /// A subclip's media ticks; `hard` is Restrict Trims To Subclip Boundaries (`BoundariesAreHard`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubclipRange {
+    /// The first media tick (`StartBoundary`).
     pub start: Tick,
+    /// The media tick it ends before (`EndBoundary`).
     pub end: Tick,
+    /// Restrict Trims To Subclip Boundaries.
     pub hard: bool,
 }
+/// A sequence: its frame, rates, work area, markers and tracks.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sequence {
+    /// Its ObjectUID, by which nested clips of it refer to it.
     pub object_uid: String,
+    /// Its name (`Name`).
     pub name: String,
+    /// Frame width: the video track group's `FrameRect`, else the preview width, else 1920.
     pub width: u32,
+    /// Frame height: the video track group's `FrameRect`, else the preview height, else 1080.
     pub height: u32,
+    /// The video track group's frame rate; none when no group states one.
     #[serde(default)]
     pub frame_rate: Option<FrameRate>,
+    /// The audio track group's sample rate; none when no group states one.
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    /// The work area's out point (`MZ.WorkOutPoint`); zero when unset.
     pub work_out: Tick,
+    /// Sequence markers, by start; ids are allocated on import.
     #[serde(default)]
     pub markers: Vec<filmcraft_project::Marker>,
+    /// Video, audio and caption tracks, in track group order.
     pub tracks: Vec<Track>,
 }
+/// A video, audio or caption track and its clips.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Track {
+    /// `video`, `audio` or `caption`.
     pub kind: String,
+    /// Its place among the sequence's tracks of its kind (`ClipTrack/Track/Index`).
     pub index: usize,
+    /// Muted (`IsMuted`) or, for an audio track, muted on its mixer fader.
     pub muted: bool,
     /// The stored track name; absent for tracks keeping Premiere's default name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Locked (`IsLocked`).
     #[serde(default)]
     pub locked: bool,
+    /// Its clips, in document order.
     pub items: Vec<Item>,
 }
+/// A timeline clip or caption: its source, timing, controls and transitions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
+    /// Its ObjectID.
     pub object_id: String,
+    /// The ObjectID of its link group; clips of one group are linked on import.
     #[serde(default)]
     pub link: Option<String>,
+    /// Intrinsic audio controls, by `effect.param` (`volume.level`, `channel_volume.left`...).
     #[serde(default)]
     pub audio: BTreeMap<String, Param>,
+    /// Imported picture effects (Lumetri).
     #[serde(default)]
     pub video_effects: Vec<filmcraft_project::EffectInstance>,
+    /// A graphic (text or shape layers, or a generated graphic canvas) rather than media.
     #[serde(default)]
     pub graphic: bool,
     /// Clip > Enable turned off (`ClipTrackItem/IsMuted`).
     #[serde(default)]
     pub disabled: bool,
+    /// Its name: the subclip's `Name`, else the item's element name.
     pub label: String,
+    /// Timeline start, in ticks.
     pub start: Tick,
+    /// Timeline end, in ticks (exclusive).
     pub end: Tick,
+    /// Media in point, in ticks; a clip slipped before the media's start starts at zero.
     pub source_in: Tick,
+    /// Media out point, in ticks; the in point plus the timeline duration when not stored.
     pub source_out: Tick,
+    /// Playback speed (`PlaybackSpeed`; 1 when not stored).
     pub speed: f64,
+    /// The resolved path of its media file; none for generated media, adjustment layers, nests,
+    /// graphics and unresolved sources.
     pub media_path: Option<String>,
     /// Media Premiere generates itself (black video, colour matte...), in place of a file path.
     #[serde(default)]
@@ -174,13 +217,20 @@ pub struct Item {
     /// Markers of the source media's master clip, on the first timeline item that uses it.
     #[serde(default)]
     pub media_markers: Vec<filmcraft_project::Marker>,
+    /// The ObjectUID of the sequence it plays, for a nested sequence.
     pub nested_sequence: Option<String>,
+    /// Static text: a caption's, or a text layer's Source Text.
     pub text: Option<String>,
+    /// Its stored `ESP.Tag` text, kept for provenance.
     pub audio_category: Option<String>,
+    /// The display name (else match name) of every component on the clip, in chain order.
     pub effects: Vec<String>,
+    /// Static Motion values by control: `Position` (`x:y`, normalised), `Scale`, `Rotation`.
     pub motion: BTreeMap<String, String>,
+    /// Animated Motion controls, with their source-time keyframes.
     #[serde(default)]
     pub motion_keys: BTreeMap<String, Param>,
+    /// Its head and tail transitions.
     pub transitions: Vec<SourceTransition>,
 }
 
@@ -188,19 +238,28 @@ pub struct Item {
 /// as 1112293707), and the `Media` object it belongs to. Titles are UI-language text.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyntheticMedia {
+    /// The four-character code (`BLAK`, `COLR`, `BARS`, `TRNV`, `LEAD`...).
     pub code: String,
+    /// The `Media` object's ObjectUID, else its ObjectID: one project item per object.
     pub media: String,
 }
+/// A transition at a clip's head or tail.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceTransition {
+    /// Its ObjectID, which the clips on both sides of a cut share; empty in older trees.
     #[serde(default)]
     pub object_id: String,
+    /// A transition track item's timeline start; none for a legacy clip-edge fade.
     #[serde(default)]
     pub start: Option<Tick>,
+    /// A transition track item's timeline end; none for a legacy clip-edge fade.
     #[serde(default)]
     pub end: Option<Tick>,
+    /// At the clip's head (otherwise its tail).
     pub head: bool,
+    /// Its `DisplayName`, which picks the FilmCraft transition.
     pub name: String,
+    /// End minus start: a legacy fade's length.
     pub duration: Tick,
 }
 
@@ -208,6 +267,7 @@ pub struct SourceTransition {
 pub fn warning(report: &mut Report, message: impl Into<String>) {
     limited_report(report, crate::Level::Warning, message.into());
 }
+/// Add a diagnostic at `level`; past 1,024 entries, one notice stands for the rest.
 fn limited_report(report: &mut Report, level: crate::Level, message: String) {
     if report.entries.len() < 1024 {
         report.push(level, message);
@@ -215,6 +275,8 @@ fn limited_report(report: &mut Report, level: crate::Level, message: String) {
         report.warn("further import diagnostics omitted; inspect the original snapshot");
     }
 }
+/// Charge a visit of `node` to the work budget: its node count plus one unit per 64 bytes. Running
+/// out is an error, so repeated references cannot multiply the work without bound.
 fn spend(work_left: &mut usize, node: Node<'_, '_>) -> Result<()> {
     *work_left = work_left
         .checked_sub(node.descendants().len().saturating_add(node.range().len() / 64))
@@ -222,15 +284,19 @@ fn spend(work_left: &mut usize, node: Node<'_, '_>) -> Result<()> {
     Ok(())
 }
 
+/// A Premiere parse error.
 fn error(message: impl Into<String>) -> Error {
     Error::Parse { format: "Premiere", message: message.into() }
 }
+/// The first element named `name` at any depth below `n`, in document order.
 fn descendant<'a, 'i>(n: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
     n.descendants().find(|c| c.is_element() && c.tag_name().name() == name)
 }
+/// The trimmed text of [`descendant`].
 fn value<'a>(n: Node<'a, '_>, name: &str) -> Option<&'a str> {
     descendant(n, name).and_then(|n| n.text()).map(str::trim)
 }
+/// A stored tick count, `fallback` when absent; refused outside `Tick::MIN..=Tick::MAX`.
 fn signed_ticks(s: Option<&str>, fallback: Tick) -> Result<Tick> {
     let n: i64 = match s {
         Some(s) => s.parse().map_err(|_| error(format!("invalid integer tick {s}")))?,
@@ -241,6 +307,7 @@ fn signed_ticks(s: Option<&str>, fallback: Tick) -> Result<Tick> {
     }
     Ok(Tick(n))
 }
+/// [`signed_ticks`], refusing a negative time.
 fn ticks(s: Option<&str>, fallback: Tick) -> Result<Tick> {
     let tick = signed_ticks(s, fallback)?;
     if tick < Tick::ZERO {
@@ -257,16 +324,19 @@ fn frame_rect_size(rect: &str) -> Result<(u32, u32)> {
     let h = u32::try_from(bottom.checked_sub(top).ok_or_else(|| error("invalid frame rectangle"))?).map_err(|_| error("invalid frame rectangle"))?;
     Ok((w, h))
 }
+/// A stored frame dimension; `default` when absent or zero.
 fn dimension(s: Option<&str>, default: u32) -> Result<u32> {
     match s {
         None | Some("0") => Ok(default),
         Some(s) => s.parse().map_err(|_| error("invalid frame dimension")),
     }
 }
+/// The object in `map` that `n`'s `attr` (`ObjectRef` or `ObjectURef`) names.
 fn referred<'a, 'i>(n: Option<Node<'a, 'i>>, map: &BTreeMap<&str, Node<'a, 'i>>, attr: &str) -> Option<Node<'a, 'i>> {
     map.get(n?.attribute(attr)?).copied()
 }
 
+/// The object `n` points to by `ObjectRef`, else by `ObjectURef`.
 fn reference<'a, 'i>(n: Option<Node<'a, 'i>>, ids: &BTreeMap<&str, Node<'a, 'i>>, uids: &BTreeMap<&str, Node<'a, 'i>>) -> Option<Node<'a, 'i>> {
     referred(n, ids, "ObjectRef").or_else(|| referred(n, uids, "ObjectURef"))
 }
@@ -331,6 +401,8 @@ fn generator(code: &str) -> Option<filmcraft_media::Generator> {
     }
 }
 
+/// A `Media` object's `RelativePath` resolved against the project folder; none without a folder or
+/// a `RelativePath`, or when that path names a drive.
 fn relative_media_path(n: Node<'_, '_>, base_dir: Option<&str>) -> Option<String> {
     let base = base_dir.filter(|b| !b.is_empty())?;
     // Premiere sometimes writes a path on another drive as `..\..\C:\...`: joining that to the
@@ -357,6 +429,7 @@ fn motion_parameter(n: Node<'_, '_>) -> Option<&'static str> {
     }
 }
 
+/// A parameter's static value: `CurrentValue`, else the value in its `StartKeyframe` record.
 fn static_parameter_value<'a>(n: Node<'a, '_>) -> Option<&'a str> {
     child_text(n, "CurrentValue").or_else(|| child_text(n, "StartKeyframe")?.split(',').nth(1).map(str::trim))
 }
@@ -403,6 +476,7 @@ fn caption_text(encoded: &str) -> Option<String> {
     found
 }
 
+/// The byte limit for gzip or plain input, and the error that names it.
 fn input_limit(header: &[u8]) -> (usize, &'static str) {
     if header.starts_with(&[0x1f, 0x8b]) {
         (MAX_COMPRESSED_BYTES, "compressed project exceeds 64 MiB input limit")
@@ -1519,7 +1593,10 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
     }
 }
 
+/// Refuse cyclic nesting, and nesting more than 64 sequences deep.
 fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
+    /// How many sequences deep the nesting below `name` goes, memoised in `depths`; `active` is the
+    /// path being walked.
     fn depth(name: &str, graph: &BTreeMap<&str, &Sequence>, active: &mut BTreeSet<String>, depths: &mut BTreeMap<String, usize>) -> Result<usize> {
         if let Some(&n) = depths.get(name) {
             return Ok(n);

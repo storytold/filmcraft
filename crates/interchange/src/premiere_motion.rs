@@ -8,6 +8,7 @@ use filmcraft_project::{Interpolation, Keyframe, Param, ParamValue};
 use filmcraft_time::Tick;
 use roxmltree::Node;
 
+/// A finite Motion number within ±1,000,000.
 fn number(raw: &str) -> Result<f64> {
     let n: f64 = raw.trim().parse().map_err(|_| error("invalid animated Motion number"))?;
     if !n.is_finite() || n.abs() > 1_000_000.0 {
@@ -16,6 +17,7 @@ fn number(raw: &str) -> Result<f64> {
     Ok(n)
 }
 
+/// A value of Motion control `key`: Position as `x:y`, Scale (0 to 10,000) or Rotation.
 fn value(raw: &str, key: &str) -> Result<ParamValue> {
     match key {
         "Position" => {
@@ -34,6 +36,8 @@ fn value(raw: &str, key: &str) -> Result<ParamValue> {
     }
 }
 
+/// An animated Motion control `key` (Position, Scale or Rotation): its base value and source-time
+/// keyframes, linear or hold.
 pub(super) fn read(p: Node<'_, '_>, key: &str, report: &mut Report) -> Result<Param> {
     let raw = static_parameter_value(p).ok_or_else(|| error("animated Motion missing base value"))?;
     let mut param = Param::new(value(raw, key)?);
