@@ -27,11 +27,11 @@ pub mod tiff;
 #[cfg(any(test, feature = "writer"))]
 pub mod writer;
 
-use color::{Calibration, M3, V3};
+use color::Calibration;
 use demosaic::Pattern;
 pub use options::{DemosaicQuality, Highlights, OutputSpace, ProcessOptions, WhiteBalance};
 use process::Params;
-use raw::{PHOTOMETRIC_CFA, RawImage};
+use raw::RawImage;
 use tiff::{Entry, Ifd, Tiff, tags};
 
 /// DNG decoding errors.
@@ -146,74 +146,21 @@ impl<'a> Dng<'a> {
         self.ifds.get(self.raw).unwrap_or(self.ifd0())
     }
 
-    /// A raw-image tag: from the raw IFD, else IFD 0.
-    fn raw_tag(&self, tag: u16) -> Option<&Entry> {
-        self.raw_ifd().get(tag).or_else(|| self.ifd0().get(tag))
-    }
-
     /// A camera-wide tag: from IFD 0, else the raw IFD.
     fn main_tag(&self, tag: u16) -> Option<&Entry> {
         self.ifd0().get(tag).or_else(|| self.raw_ifd().get(tag))
     }
 
-    /// A numeric tag's values; a value outside the file (or a zero denominator) is an error, so a
-    /// damaged file does not silently lose its white balance.
-    fn floats(&self, e: Option<&Entry>) -> Result<Option<Vec<f64>>> {
-        e.map(|e| self.tiff.floats(e)).transpose()
-    }
-
-    /// A 3 × 3 matrix tag (`None` when absent or not 3 × 3, e.g. for other colour counts).
-    fn matrix(&self, tag: u16) -> Result<Option<M3>> {
-        let Some(v) = self.floats(self.main_tag(tag))? else { return Ok(None) };
-        let Ok(v) = <[f64; 9]>::try_from(v.as_slice()) else { return Ok(None) };
-        Ok(Some([[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]]))
-    }
-
-    fn vec3(&self, tag: u16) -> Result<Option<V3>> {
-        Ok(self.floats(self.main_tag(tag))?.and_then(|v| <[f64; 3]>::try_from(v.as_slice()).ok()))
+    fn metadata(&self) -> craft_raw::dng_metadata::Metadata<'_, '_> {
+        craft_raw::dng_metadata::Metadata { tiff: self.tiff.inner(), main: self.ifd0(), raw: self.raw_ifd() }
     }
 
     fn text(&self, tag: u16) -> Option<String> {
         self.main_tag(tag).and_then(|e| self.tiff.ascii(e).ok()).filter(|s| !s.is_empty())
     }
 
-    /// The CFA pattern in camera planes (`None` for LinearRaw).
     fn cfa(&self) -> Result<Option<Pattern>> {
-        let l = raw::layout(&self.tiff, self.raw_ifd())?;
-        if l.photometric != PHOTOMETRIC_CFA {
-            return Ok(None);
-        }
-        let dims = self.raw_tag(tags::CFA_REPEAT_PATTERN_DIM).map(|e| self.tiff.uints(e)).transpose()?.unwrap_or_else(|| vec![2, 2]);
-        let (rows, cols) = match dims[..] {
-            [r, c, ..] => (r as usize, c as usize),
-            _ => return Err(Error::Malformed("CFARepeatPatternDim")),
-        };
-        if !(1..=8).contains(&rows) || !(1..=8).contains(&cols) {
-            return Err(Error::Unsupported(format!("{rows} × {cols} CFA pattern")));
-        }
-        let pattern = self.tiff.uints(self.raw_tag(tags::CFA_PATTERN).ok_or(Error::Malformed("no CFAPattern"))?)?;
-        if pattern.len() < rows * cols {
-            return Err(Error::Malformed("CFAPattern shorter than its repeat"));
-        }
-        let planes = match self.raw_tag(tags::CFA_PLANE_COLOR) {
-            Some(e) => self.tiff.uints(e)?,
-            None => vec![0, 1, 2],
-        };
-        let mut sorted = planes.clone();
-        sorted.sort_unstable();
-        if sorted != [0, 1, 2] {
-            return Err(Error::Unsupported("CFA colours other than red, green and blue".into()));
-        }
-        if let Some(e) = self.raw_tag(tags::CFA_LAYOUT)
-            && self.tiff.uint(e)? != 1
-        {
-            return Err(Error::Unsupported("a non-rectangular CFA layout".into()));
-        }
-        let colors = pattern[..rows * cols]
-            .iter()
-            .map(|&v| planes.iter().position(|&p| p == v).map(|i| i as u8).ok_or(Error::Malformed("CFAPattern colour not in CFAPlaneColor")))
-            .collect::<Result<Vec<u8>>>()?;
-        Ok(Some(Pattern { rows, cols, colors }))
+        Ok(self.metadata().cfa().map_err(raw::error)?.map(|p| Pattern { rows: p.rows, cols: p.cols, colors: p.colors }))
     }
 
     /// The processing tags of the raw image.
@@ -221,55 +168,19 @@ impl<'a> Dng<'a> {
         self.params_with(true)
     }
 
-    /// [`Dng::params`], reading the opcode lists only when `opcodes` is set.
     fn params_with(&self, opcodes: bool) -> Result<Params> {
-        let uint_pair = |tag| -> Result<Option<(usize, usize)>> {
-            match self.raw_tag(tag) {
-                Some(e) => match self.tiff.uints(e)?[..] {
-                    [a, b, ..] => Ok(Some((a as usize, b as usize))),
-                    _ => Err(Error::Malformed("short field")),
-                },
-                None => Ok(None),
-            }
-        };
-        let active_area = match self.raw_tag(tags::ACTIVE_AREA) {
-            Some(e) => match self.tiff.uints(e)?[..] {
-                [t, l, b, r, ..] => Some([t, l, b, r].map(|v| usize::try_from(v).unwrap_or(usize::MAX))),
-                _ => return Err(Error::Malformed("ActiveArea")),
-            },
-            None => None,
-        };
-        let linearization = match self.raw_tag(tags::LINEARIZATION_TABLE) {
-            Some(e) => {
-                let v = self.tiff.uints(e)?;
-                if v.len() > 65_536 {
-                    return Err(Error::Malformed("LinearizationTable longer than 65536"));
-                }
-                Some(v.into_iter().map(|x| x.min(65_535) as u16).collect())
-            }
-            None => None,
-        };
-        let pair = |tag| -> Result<Option<(f64, f64)>> {
-            match self.raw_tag(tag) {
-                Some(e) => match self.tiff.floats(e)?[..] {
-                    [a, b, ..] => Ok(Some((a, b))),
-                    _ => Err(Error::Malformed("short field")),
-                },
-                None => Ok(None),
-            }
-        };
-        let list = |tag| -> Result<Vec<f64>> { self.raw_tag(tag).map(|e| self.tiff.floats(e)).transpose().map(Option::unwrap_or_default) };
+        let p = self.metadata().params().map_err(raw::error)?;
         Ok(Params {
-            active_area,
-            linearization,
-            black_repeat: uint_pair(tags::BLACK_LEVEL_REPEAT_DIM)?.unwrap_or((1, 1)),
-            black: list(tags::BLACK_LEVEL)?,
-            black_delta_h: list(tags::BLACK_LEVEL_DELTA_H)?,
-            black_delta_v: list(tags::BLACK_LEVEL_DELTA_V)?,
-            white: list(tags::WHITE_LEVEL)?,
-            crop_origin: pair(tags::DEFAULT_CROP_ORIGIN)?,
-            crop_size: pair(tags::DEFAULT_CROP_SIZE)?,
-            cfa: self.cfa()?,
+            active_area: p.active_area,
+            linearization: p.linearization,
+            black_repeat: p.black_repeat,
+            black: p.black,
+            black_delta_h: p.black_delta_h,
+            black_delta_v: p.black_delta_v,
+            white: p.white,
+            crop_origin: p.crop_origin,
+            crop_size: p.crop_size,
+            cfa: p.cfa.map(|p| Pattern { rows: p.rows, cols: p.cols, colors: p.colors }),
             opcodes: opcode::Lists {
                 list1: if opcodes { self.opcode_list(tags::OPCODE_LIST_1)? } else { Vec::new() },
                 list2: if opcodes { self.opcode_list(tags::OPCODE_LIST_2)? } else { Vec::new() },
@@ -287,20 +198,16 @@ impl<'a> Dng<'a> {
 
     /// The colour tags.
     pub fn calibration(&self) -> Result<Calibration> {
-        let illum = |tag| self.main_tag(tag).map(|e| self.tiff.uint(e)).transpose();
-        let white_xy = self.floats(self.main_tag(tags::AS_SHOT_WHITE_XY))?.and_then(|v| match v[..] {
-            [x, y] => Some((x, y)),
-            _ => None,
-        });
+        let c = self.metadata().calibration().map_err(raw::error)?;
         Ok(Calibration {
-            color_matrix: [self.matrix(tags::COLOR_MATRIX_1)?, self.matrix(tags::COLOR_MATRIX_2)?],
-            camera_calibration: [self.matrix(tags::CAMERA_CALIBRATION_1)?, self.matrix(tags::CAMERA_CALIBRATION_2)?],
-            forward_matrix: [self.matrix(tags::FORWARD_MATRIX_1)?, self.matrix(tags::FORWARD_MATRIX_2)?],
-            illuminant: [illum(tags::CALIBRATION_ILLUMINANT_1)?, illum(tags::CALIBRATION_ILLUMINANT_2)?],
-            analog_balance: self.vec3(tags::ANALOG_BALANCE)?,
-            as_shot_neutral: self.vec3(tags::AS_SHOT_NEUTRAL)?,
-            as_shot_white_xy: white_xy,
-            baseline_exposure: self.floats(self.main_tag(tags::BASELINE_EXPOSURE))?.and_then(|v| v.first().copied()).unwrap_or(0.0),
+            color_matrix: c.color_matrix,
+            camera_calibration: c.camera_calibration,
+            forward_matrix: c.forward_matrix,
+            illuminant: c.illuminant,
+            analog_balance: c.analog_balance,
+            as_shot_neutral: c.as_shot_neutral,
+            as_shot_white_xy: c.as_shot_white_xy,
+            baseline_exposure: c.baseline_exposure,
         })
     }
 

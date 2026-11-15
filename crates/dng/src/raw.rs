@@ -4,7 +4,7 @@ use crate::tiff::{Ifd, Tiff};
 use crate::{Error, Result};
 pub use craft_raw::dng_lines::{MAX_SAMPLES, PHOTOMETRIC_CFA, PHOTOMETRIC_LINEAR_RAW, RawImage, RawLayout};
 
-fn error(e: craft_raw::dng_lines::Error) -> Error {
+pub(crate) fn error(e: craft_raw::dng_lines::Error) -> Error {
     match e {
         craft_raw::dng_lines::Error::NotTiff => Error::NotDng,
         craft_raw::dng_lines::Error::Truncated => Error::Truncated,
