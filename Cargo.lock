@@ -1138,7 +1138,7 @@ dependencies = [
 [[package]]
 name = "craft-raw"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2a6d7f719e729d021cdcf04e55626bb2ae282e08#2a6d7f719e729d021cdcf04e55626bb2ae282e08"
+source = "git+https://github.com/storytold/craft-libs?rev=1f5aac5e3bbce20c1e182bf35dc66cc33d616574#1f5aac5e3bbce20c1e182bf35dc66cc33d616574"
 dependencies = [
  "craft-tiff",
  "image",
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2a6d7f719e729d021cdcf04e55626bb2ae282e08#2a6d7f719e729d021cdcf04e55626bb2ae282e08"
+source = "git+https://github.com/storytold/craft-libs?rev=1f5aac5e3bbce20c1e182bf35dc66cc33d616574#1f5aac5e3bbce20c1e182bf35dc66cc33d616574"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1248,6 +1248,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-y4m"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=25c7a8959cf70cf8c3f076d05baadb0990710569#25c7a8959cf70cf8c3f076d05baadb0990710569"
+dependencies = [
  "thiserror 2.0.21",
 ]
 
@@ -2081,6 +2089,7 @@ dependencies = [
  "craft-jpeg",
  "craft-media",
  "craft-video",
+ "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dnx",
