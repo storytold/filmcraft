@@ -219,7 +219,7 @@ fn ffprobe_reports_high10() {
     let run = encode(cfg(w, h, Preset::Speed, 2, RateControl::Qp(28), 1), &frames);
     verify("probe", &run, w, h, n);
     let info = probe(&out_dir("high10").join("probe.h264"), "stream=profile,pix_fmt,bits_per_raw_sample");
-    assert!(info.contains("profile=High 10\n"), "{info}");
+    assert!(info.lines().any(|line| line == "profile=High 10"), "{info}");
     assert!(info.contains("pix_fmt=yuv420p10le"), "{info}");
 }
 
