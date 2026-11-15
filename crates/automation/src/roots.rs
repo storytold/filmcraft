@@ -253,6 +253,11 @@ impl AutomationRoots {
     /// the folder they are listed from.
     fn check_sequence_frames(&self, id: &str, seed: &Path) -> Result<(), String> {
         let Some(numbered) = seed.to_str().and_then(filmcraft_media::sequence::Numbered::parse) else { return Ok(()) };
+        // The importer splits the seed's text at a backslash as well as a slash, so where a backslash is part of a file
+        // name it lists another folder than the one the seed is in, and builds frame paths this scan never sees.
+        if cfg!(not(windows)) && seed.to_str().is_some_and(|text| text.contains('\\')) {
+            return Err(format!("`{id}` takes no numbered still with a backslash in its path while file access is confined, and not {}", seed.display()));
+        }
         let folder = seed.parent().unwrap_or(Path::new("."));
         // The app takes the frames from the folder the seed is written in, which is not where a seed that is a
         // link stands when it leads into the root: every frame there would be outside it.
@@ -1336,6 +1341,11 @@ mod tests {
             let e = roots.check_bridge_media_files(id, &params).unwrap_err();
             assert!(e.contains("outside the read root") && e.contains("frames of an image sequence"), "{id}: {e}");
         }
+        // A backslash in the name makes the importer read the frames from another folder than the one the still is in.
+        write("take\\frame0001.png");
+        let backslash = s(base.join("in/take\\frame0001.png"));
+        let e = roots.check_bridge_media_files("file.import", &json!({"paths": [backslash]})).unwrap_err();
+        assert!(e.contains("backslash"), "{e}");
         let unnumbered = s(base.join("in/other.png"));
         assert_eq!(roots.check_bridge_media_files("file.import", &json!({"paths": [unnumbered]})), Ok(()), "a still with no number has no neighbours");
         // A seed that is a link into the root, standing outside it, brings the outside folder's frames.
