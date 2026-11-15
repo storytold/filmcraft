@@ -307,11 +307,10 @@ impl SourceAcc {
         r
     }
 
-    fn totals(&self) -> (Duration, Duration) {
-        let mut intervals = self.intervals.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    fn union_ns(mut intervals: Vec<(u64, u64)>) -> u64 {
         intervals.sort_unstable_by_key(|&(s, _)| s);
         let mut iter = intervals.into_iter();
-        let wall_ns = if let Some((mut cur_s, mut cur_e)) = iter.next() {
+        if let Some((mut cur_s, mut cur_e)) = iter.next() {
             let mut sum = 0u64;
             for (s, e) in iter {
                 if s <= cur_e {
@@ -325,7 +324,12 @@ impl SourceAcc {
             sum.saturating_add(cur_e.saturating_sub(cur_s))
         } else {
             0
-        };
+        }
+    }
+
+    fn totals(&self) -> (Duration, Duration) {
+        let intervals = self.intervals.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let wall_ns = Self::union_ns(intervals);
         (Duration::from_nanos(wall_ns), Duration::from_nanos(self.cpu_ns.load(Ordering::Relaxed)))
     }
 }
@@ -1547,40 +1551,45 @@ mod tests {
     }
 
     #[test]
-    fn source_acc_unions_overlapping_parallel_intervals() {
+    fn source_acc_unions_fixed_intervals() {
+        assert_eq!(super::SourceAcc::union_ns(Vec::new()), 0);
+        assert_eq!(super::SourceAcc::union_ns(vec![(10, 30), (50, 80)]), 50);
+        // Overlapping, out-of-order, nested, and touching intervals merge deterministically.
+        assert_eq!(super::SourceAcc::union_ns(vec![(100, 200), (50, 120), (110, 150), (200, 220), (300, 350)]), 220);
+    }
+
+    #[test]
+    fn source_acc_records_concurrent_intervals() {
         use std::sync::{Arc, Barrier};
         use std::time::{Duration, Instant};
 
         let acc = super::SourceAcc::new(false);
         let barrier = Arc::new(Barrier::new(2));
         let t0 = Instant::now();
-        let sum_individual = std::thread::scope(|s| {
+        std::thread::scope(|s| {
             let b1 = Arc::clone(&barrier);
             let a1 = &acc;
             let h1 = s.spawn(move || {
                 a1.timed(|| {
                     b1.wait();
-                    let w0 = Instant::now();
-                    std::thread::sleep(Duration::from_millis(70));
-                    w0.elapsed()
-                })
+                    std::thread::sleep(Duration::from_millis(10));
+                });
             });
             let b2 = Arc::clone(&barrier);
             let a2 = &acc;
             let h2 = s.spawn(move || {
                 a2.timed(|| {
                     b2.wait();
-                    let w0 = Instant::now();
-                    std::thread::sleep(Duration::from_millis(70));
-                    w0.elapsed()
-                })
+                    std::thread::sleep(Duration::from_millis(10));
+                });
             });
-            h1.join().unwrap() + h2.join().unwrap()
+            h1.join().unwrap();
+            h2.join().unwrap();
         });
         let scope_elapsed = t0.elapsed();
         let (wall, _) = acc.totals();
+        assert!(wall > Duration::ZERO);
         assert!(wall <= scope_elapsed + Duration::from_millis(2), "parallel source wall {wall:?} must not exceed outer wall {scope_elapsed:?}");
-        assert!(wall + Duration::from_millis(30) < sum_individual, "parallel source wall {wall:?} must reflect union, not sum {sum_individual:?}");
     }
 
     #[test]
