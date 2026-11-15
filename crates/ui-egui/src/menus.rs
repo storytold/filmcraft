@@ -685,6 +685,12 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
     }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops on the frame
+    // the step chose, as in Premiere Pro (#4655). Left running, the playback clock would carry the
+    // playhead on from its anchor on the next pass and overwrite the step.
+    if r.is_ok() && parks_playhead(id) && app.playback.playing {
+        app.stop();
+    }
     let filled_clipboard = match id {
         "edit.copy" | "edit.cut" => r.is_ok(),
         // over a range with no clips on the targeted tracks they leave the clipboard (and the OS one) as it was
@@ -696,6 +702,22 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Commands that move the playhead a frame or to an edit point: playback stops where they land,
+/// as Premiere Pro's Step and Go to Edit Point keys do (#4655).
+fn parks_playhead(id: &str) -> bool {
+    matches!(
+        id,
+        "playhead.stepBack"
+            | "playhead.stepForward"
+            | "playhead.stepBack5"
+            | "playhead.stepForward5"
+            | "playhead.prevEdit"
+            | "playhead.nextEdit"
+            | "playhead.prevEditAnyTrack"
+            | "playhead.nextEditAnyTrack"
+    )
 }
 
 /// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
