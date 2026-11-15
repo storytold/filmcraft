@@ -6,7 +6,10 @@ pub fn sniff(name: &str, bytes: &[u8]) -> bool {
 }
 
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
-    let image = craft_tga::decode(bytes, &craft_tga::Limits::default()).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
+    let image = craft_tga::decode(bytes, &craft_tga::Limits::default()).map_err(|e| match e {
+        craft_tga::Error::Unsupported(kind) => MediaError::Unsupported(format!("{name}: Targa image type {kind}")),
+        other => MediaError::Decode(format!("{name}: {other}")),
+    })?;
     Ok(Raster { width: image.width, height: image.height, rgba: image.rgba, has_alpha: image.has_alpha })
 }
 
@@ -23,6 +26,11 @@ mod tests {
         b.extend_from_slice(&h.to_le_bytes());
         b.extend_from_slice(&[depth, descriptor]);
         b
+    }
+
+    #[test]
+    fn unsupported_image_type_preserves_media_error() {
+        assert!(matches!(decode("kind.tga", &header(3 + 1, 1, 1, 24, 0)), Err(MediaError::Unsupported(message)) if message == "kind.tga: Targa image type 4"));
     }
 
     #[test]

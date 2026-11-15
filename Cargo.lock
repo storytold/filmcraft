@@ -1167,7 +1167,7 @@ dependencies = [
 [[package]]
 name = "craft-tga"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b6b33b6096a247514f5cbd1741633913e7261e91#b6b33b6096a247514f5cbd1741633913e7261e91"
+source = "git+https://github.com/storytold/craft-libs?rev=e555cc0afe12d14a3fed4e369e78d45cf084109a#e555cc0afe12d14a3fed4e369e78d45cf084109a"
 dependencies = [
  "thiserror 2.0.21",
 ]
