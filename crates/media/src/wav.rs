@@ -1,50 +1,33 @@
-//! Minimal WAV (RIFF/RF64 PCM 8/16/24/32-bit int, 32/64-bit float) source, with the Broadcast Wave
-//! start time: `bext` TimeReference (EBU Tech 3285), else iXML `BWF_TIME_REFERENCE_LOW/HIGH`. The
-//! full `riff` crate (all BWF metadata, AIFF) will replace this.
+//! Range-backed WAV source. RIFF parsing and PCM conversion use `craft_audio::wav_range`;
+//! FilmCraft maps its metadata and resamples the requested audio into the project timeline.
 
 use std::sync::Arc;
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::Tick;
 
-use crate::reader::{MemReader, SharedReader, read_range};
+use crate::reader::{MemReader, SharedReader};
 use crate::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result};
 
-pub fn sniff(b: &[u8]) -> bool {
-    b.len() >= 12 && (&b[0..4] == b"RIFF" || &b[0..4] == b"RF64") && &b[8..12] == b"WAVE"
+pub use craft_audio::wav_range::{sniff, write_wav16};
+
+const BLOCK_FRAMES: usize = 4096;
+const MAX_SPAN_BYTES: u64 = craft_audio::wav_range::MAX_RANGE_BYTES;
+
+struct Reader(SharedReader);
+impl craft_media::ByteSource for Reader {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.0.read_at(offset, buf)
+    }
 }
 
-/// Chunks walked looking for `fmt `/`data`/`bext`/`iXML` (real files have a handful).
-const MAX_CHUNKS: usize = 1 << 16;
-/// Bytes of an iXML chunk searched for the time reference.
-const IXML_MAX: u64 = 1 << 20;
-/// Output frames converted per read of the data chunk.
-const BLOCK_FRAMES: usize = 4096;
-/// Largest single read of the data chunk; a wider span (an extreme resampling ratio) reads the
-/// two frames each output frame needs instead.
-const MAX_SPAN_BYTES: u64 = 4 << 20;
-
-/// A WAV file read in place: opening it reads its chunk headers (not its samples), and
-/// [`MediaSource::audio`] reads only the sample range it is asked for, so a 90-minute recording
-/// costs its header rather than its size (#279).
+/// A WAV file read in place, with sample ranges decoded on demand.
 pub struct WavSource {
     info: MediaInfo,
-    reader: SharedReader,
-    data_off: u64,
-    /// Whole frames only.
-    frames: u64,
-    channels: usize,
-    bits: u16,
-    float: bool,
-    rate: u32,
-    time_reference: Option<u64>,
-}
-
-fn le16(b: &[u8], o: usize) -> u16 {
-    b.get(o..o.saturating_add(2)).and_then(|s| s.try_into().ok()).map_or(0, u16::from_le_bytes)
-}
-fn le32(b: &[u8], o: usize) -> u32 {
-    b.get(o..o.saturating_add(4)).and_then(|s| s.try_into().ok()).map_or(0, u32::from_le_bytes)
+    wav: craft_audio::wav_range::WavRange<Reader>,
 }
 
 impl WavSource {
@@ -55,136 +38,44 @@ impl WavSource {
 
     /// Open a WAV file through a random-access reader.
     pub fn open(name: &str, reader: SharedReader) -> Result<Self> {
-        let io = |e: std::io::Error| MediaError::Io(format!("{name}: {e}"));
         let len = reader.len();
-        let mut pos: u64 = 12;
-        let mut fmt = None;
-        let mut data = None;
-        let mut bext_tr = None;
-        let mut ixml_tr = None;
-        let mut ds64_data = None;
-        for _ in 0..MAX_CHUNKS {
-            let Some(body) = pos.checked_add(8).filter(|&b| b <= len) else { break };
-            let mut hdr = [0u8; 8];
-            reader.read_at(pos, &mut hdr).map_err(io)?;
-            let id = &hdr[0..4];
-            let mut clen = u64::from(le32(&hdr, 4));
-            let rest = len - body;
-            if id == b"data" {
-                // RF64 sentinel: the real size is ds64.dataSize (EBU 3306 §3.4), else the rest of the file
-                if clen == 0xFFFF_FFFF {
-                    clen = ds64_data.unwrap_or(rest);
-                }
-                clen = clen.min(rest);
-            }
-            if clen > rest {
-                break;
-            }
-            match id {
-                b"fmt " if clen >= 16 => {
-                    let b = read_range(&*reader, body, clen.min(40) as usize).map_err(io)?;
-                    let mut tag = le16(&b, 0);
-                    let ch = le16(&b, 2);
-                    let rate = le32(&b, 4);
-                    let bits = le16(&b, 14);
-                    if tag == 0xFFFE && clen >= 40 {
-                        tag = le16(&b, 24);
-                    }
-                    fmt = Some((tag, ch, rate, bits));
-                }
-                // ds64: riffSize u64, dataSize u64, sampleCount u64, ...
-                b"ds64" if clen >= 16 => {
-                    let b = read_range(&*reader, body + 8, 8).map_err(io)?;
-                    ds64_data = Some(u64::from(le32(&b, 0)) | u64::from(le32(&b, 4)) << 32);
-                }
-                b"data" => data = Some((body, clen)),
-                // bext: Description 256, Originator 32, OriginatorReference 32, OriginationDate 10,
-                // OriginationTime 8, then TimeReference (low u32, high u32)
-                b"bext" if clen >= 346 => {
-                    let b = read_range(&*reader, body + 338, 8).map_err(io)?;
-                    bext_tr = Some(u64::from(le32(&b, 0)) | u64::from(le32(&b, 4)) << 32);
-                }
-                b"iXML" => {
-                    let b = read_range(&*reader, body, clen.min(IXML_MAX) as usize).map_err(io)?;
-                    ixml_tr = ixml_time_reference(&b);
-                }
-                _ => {}
-            }
-            pos = body + clen + (clen & 1);
-        }
-        let (tag, ch, rate, bits) = fmt.ok_or_else(|| MediaError::Decode(format!("{name}: missing fmt chunk")))?;
-        let (off, dlen) = data.ok_or_else(|| MediaError::Decode(format!("{name}: missing data chunk")))?;
-        let float = tag == 3;
-        if !(tag == 1 || float)
-            || ch == 0
-            || rate == 0
-            || u32::from(ch) > crate::MAX_AUDIO_CHANNELS
-            || rate > crate::MAX_AUDIO_SAMPLE_RATE
-            || !matches!(bits, 8 | 16 | 24 | 32 | 64)
-        {
-            return Err(MediaError::Unsupported(format!("{name}: WAV format tag {tag}, {bits} bits")));
-        }
-        let frame_bytes = u64::from(ch) * u64::from(bits / 8);
-        let frames = dlen / frame_bytes;
-        let time_reference = bext_tr.or(ixml_tr);
+        let wav =
+            craft_audio::wav_range::WavRange::open(Reader(reader), crate::MAX_AUDIO_CHANNELS, crate::MAX_AUDIO_SAMPLE_RATE).map_err(|e| wav_error(name, e))?;
         let mut info = MediaInfo {
             name: name.into(),
             kind: MediaKind::AudioOnly,
-            duration: Tick::from_units(i64::try_from(frames).unwrap_or(i64::MAX), rate as i64),
+            duration: Tick::from_units(i64::try_from(wav.frames).unwrap_or(i64::MAX), i64::from(wav.rate)),
             video: None,
             audio_streams: vec![AudioStreamInfo {
-                sample_rate: rate,
-                channels: ch as u32,
-                codec: if float { "PCM float".into() } else { "PCM".into() },
-                bits_per_sample: Some(bits as u32),
+                sample_rate: wav.rate,
+                channels: u32::from(wav.channels),
+                codec: if wav.float { "PCM float".into() } else { "PCM".into() },
+                bits_per_sample: Some(u32::from(wav.bits)),
             }],
-            container: if time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
+            container: if wav.time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
             start_timecode: None,
             file_size: Some(len),
         };
-        // start timecode: frames at the media's frame rate (the default rate for audio-only media)
-        if let Some(tr) = time_reference.filter(|_| rate > 0) {
+        if let Some(tr) = wav.time_reference {
             let r = info.frame_rate();
             let n = tr as i128 * r.num as i128;
-            let d = rate as i128 * r.den as i128;
+            let d = wav.rate as i128 * r.den as i128;
             info.start_timecode = (n + d / 2).checked_div(d).and_then(|t| i64::try_from(t).ok());
         }
-        Ok(Self { info, reader, data_off: off, frames, channels: ch as usize, bits, float, rate, time_reference })
+        Ok(Self { info, wav })
     }
 
     /// Broadcast Wave start time: samples since midnight.
     pub fn time_reference(&self) -> Option<u64> {
-        self.time_reference
+        self.wav.time_reference
     }
+}
 
-    fn frame_bytes(&self) -> usize {
-        self.channels * (self.bits as usize / 8)
-    }
-
-    /// Read whole frames `first..=last` of the data chunk.
-    fn read_frames(&self, first: u64, last: u64) -> Result<Vec<u8>> {
-        let fb = self.frame_bytes() as u64;
-        let n = last.saturating_sub(first).saturating_add(1).saturating_mul(fb);
-        let off = self.data_off.saturating_add(first.saturating_mul(fb));
-        let mut buf = vec![0u8; usize::try_from(n).map_err(|_| MediaError::Decode(format!("{}: audio read too large", self.info.name)))?];
-        self.reader.read_at(off, &mut buf).map_err(|e| MediaError::Io(format!("{}: {e}", self.info.name)))?;
-        Ok(buf)
-    }
-
-    /// Sample `ch` of frame `frame` of `block`, a run of whole frames.
-    fn sample(&self, block: &[u8], frame: usize, ch: usize) -> f32 {
-        let bps = self.bits as usize / 8;
-        let o = (frame * self.channels + ch) * bps;
-        let Some(b) = block.get(o..o.saturating_add(bps)) else { return 0.0 };
-        match (self.bits, self.float, b) {
-            (8, _, &[a]) => (a as f32 - 128.0) / 128.0,
-            (16, _, &[a, b]) => i16::from_le_bytes([a, b]) as f32 / 32768.0,
-            (24, _, &[a, b, c]) => ((i32::from_le_bytes([0, a, b, c]) >> 8) as f32) / 8_388_608.0,
-            (32, false, &[a, b, c, d]) => i32::from_le_bytes([a, b, c, d]) as f32 / 2_147_483_648.0,
-            (32, true, &[a, b, c, d]) => f32::from_le_bytes([a, b, c, d]),
-            (64, true, b) => f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32,
-            _ => 0.0,
-        }
+fn wav_error(name: &str, error: craft_audio::AudioError) -> MediaError {
+    match error {
+        craft_audio::AudioError::Io(e) => MediaError::Io(format!("{name}: {e}")),
+        craft_audio::AudioError::Unsupported(e) => MediaError::Unsupported(format!("{name}: {e}")),
+        e => MediaError::Decode(format!("{name}: {e}")),
     }
 }
 
@@ -196,14 +87,14 @@ impl MediaSource for WavSource {
         Err(MediaError::NoStream("video"))
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
-        let total = self.frames;
-        crate::validate_audio_buffer_shape(self.channels, frames)?;
-        let mut out = AudioBuffer::silence(sample_rate, self.channels, frames);
+        let total = self.wav.frames;
+        crate::validate_audio_buffer_shape(usize::from(self.wav.channels), frames)?;
+        let mut out = AudioBuffer::silence(sample_rate, usize::from(self.wav.channels), frames);
         if total == 0 || sample_rate == 0 {
             return Ok(out);
         }
         // Linear-interpolating resample when rates differ (the audio crate provides sinc resampling).
-        let ratio = self.rate as f64 / sample_rate as f64;
+        let ratio = self.wav.rate as f64 / sample_rate as f64;
         let src_of = |i: usize| start.saturating_add(i as i64) as f64 * ratio;
         let mut i = 0;
         while i < frames {
@@ -218,8 +109,8 @@ impl MediaSource for WavSource {
                 break;
             }
             let last = (hi.floor() as u64).saturating_add(1).min(total - 1);
-            let span = last.saturating_sub(first).saturating_add(1).saturating_mul(self.frame_bytes() as u64);
-            let block = if span <= MAX_SPAN_BYTES { Some(self.read_frames(first, last)?) } else { None };
+            let span = last.saturating_sub(first).saturating_add(1).saturating_mul(self.wav.frame_bytes() as u64);
+            let block = if span <= MAX_SPAN_BYTES { Some(self.wav.read_frames(first, last).map_err(|e| wav_error(&self.info.name, e))?) } else { None };
             for slot in i..end {
                 let src = src_of(slot);
                 if src < 0.0 {
@@ -233,12 +124,12 @@ impl MediaSource for WavSource {
                 let fr = (src - i0 as f64) as f32;
                 let (buf, base) = match &block {
                     Some(b) => (std::borrow::Cow::Borrowed(b.as_slice()), first),
-                    None => (std::borrow::Cow::Owned(self.read_frames(i0, i1)?), i0),
+                    None => (std::borrow::Cow::Owned(self.wav.read_frames(i0, i1).map_err(|e| wav_error(&self.info.name, e))?), i0),
                 };
                 let (k0, k1) = ((i0 - base) as usize, (i1 - base) as usize);
-                for c in 0..self.channels {
-                    let a = self.sample(&buf, k0, c);
-                    let b = self.sample(&buf, k1, c);
+                for c in 0..usize::from(self.wav.channels) {
+                    let a = self.wav.sample(&buf, k0, c);
+                    let b = self.wav.sample(&buf, k1, c);
                     if let Some(s) = out.channels.get_mut(c).and_then(|ch| ch.get_mut(slot)) {
                         *s = a + (b - a) * fr;
                     }
@@ -248,30 +139,6 @@ impl MediaSource for WavSource {
         }
         Ok(out)
     }
-}
-
-/// TimeReference from an iXML chunk (`<BWF_TIME_REFERENCE_LOW>` / `<BWF_TIME_REFERENCE_HIGH>`).
-fn ixml_time_reference(x: &[u8]) -> Option<u64> {
-    let text = String::from_utf8_lossy(x);
-    let field = |tag: &str| -> Option<u64> {
-        let open = format!("<{tag}>");
-        let a = text.find(&open)? + open.len();
-        let b = a + text[a..].find('<')?;
-        text[a..b].trim().parse().ok()
-    };
-    let low = field("BWF_TIME_REFERENCE_LOW")?;
-    Some(low | field("BWF_TIME_REFERENCE_HIGH").unwrap_or(0) << 32)
-}
-
-/// Encode interleaved f32 samples as a 16-bit PCM WAV file.
-pub fn write_wav16(samples: &[f32], channels: u16, rate: u32) -> Vec<u8> {
-    let data_len = samples.len().saturating_mul(2);
-    let mut v = craft_audio::pcm_wav_header(u32::try_from(data_len).unwrap_or(u32::MAX), channels, rate, 16);
-    v.reserve(data_len);
-    for s in samples {
-        v.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
-    }
-    v
 }
 
 #[cfg(test)]
@@ -300,6 +167,21 @@ mod tests {
         assert_eq!(src.info().duration, Tick::from_units(100, 48000));
         assert_eq!(src.time_reference(), None);
         assert_eq!(src.info().start_timecode, None);
+    }
+
+    #[test]
+    fn shared_reader_seeks_and_resamples_with_silence_outside_file() {
+        let bytes = write_wav16(&[0.0, 0.5, 1.0], 1, 48_000);
+        let src = WavSource::parse("seek.wav", bytes.into()).unwrap();
+        let audio = src.audio(-1, 8, 96_000).unwrap();
+        let samples = &audio.channels[0];
+        assert_eq!(samples[0], 0.0);
+        assert_eq!(samples[1], 0.0);
+        assert!((samples[2] - 0.25).abs() < 0.0001);
+        assert!((samples[3] - 0.5).abs() < 0.0001);
+        assert!((samples[4] - 0.75).abs() < 0.0001);
+        assert!((samples[5] - 1.0).abs() < 0.0001);
+        assert_eq!(samples[7], 0.0);
     }
 
     /// Insert a chunk before `data`.
