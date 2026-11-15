@@ -147,6 +147,28 @@ fn gpu_matches_cpu_plan() {
     assert_eq!(c.uploaded_bytes, before);
 }
 
+/// A plan with more layers than the upload cache keeps between frames draws every layer: the
+/// first layers' uploads were evicted while the last were uploaded, so V1 of a 25-track stack
+/// drew nothing (#4803).
+#[test]
+fn every_layer_of_a_deep_stack_is_drawn() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    const LAYERS: usize = 40;
+    // one opaque white pixel per layer, each at its own output column
+    let layers =
+        (0..LAYERS).map(|i| PlanLayer::new(Arc::new(VideoFrame::rgba8(1, 1, vec![255; 4])), Affine::translate(i as f64, 0.0), 1.0, Blend::Normal)).collect();
+    let plan = FramePlan::Layers { width: LAYERS, height: 1, layers };
+    c.composite(&plan);
+    let (w, h, px) = c.read_output().expect("readback");
+    assert_eq!((w, h), (LAYERS as u32, 1));
+    let blank: Vec<usize> = px.as_chunks::<4>().0.iter().enumerate().filter(|(_, p)| p[0] < 250).map(|(i, _)| i).collect();
+    assert!(blank.is_empty(), "layers drawn as nothing: {blank:?}");
+}
+
 #[test]
 fn half_float_conversion() {
     for v in [0.0f32, 1.0, 0.5, 0.123, 65504.0, -2.0, 1e-5] {
