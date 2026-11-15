@@ -1093,7 +1093,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b4255
 [[package]]
 name = "craft-dpx"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2aa7f7f8d211786650d6cc3a4d3f6be165ddb30a#2aa7f7f8d211786650d6cc3a4d3f6be165ddb30a"
+source = "git+https://github.com/storytold/craft-libs?rev=f1f43b7f3e8d3613eaa8410cef126de1ebf890f4#f1f43b7f3e8d3613eaa8410cef126de1ebf890f4"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1101,7 +1101,7 @@ dependencies = [
 [[package]]
 name = "craft-exr"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=4c17e51335192345d8e508287c26f17fead930ac#4c17e51335192345d8e508287c26f17fead930ac"
+source = "git+https://github.com/storytold/craft-libs?rev=f1f43b7f3e8d3613eaa8410cef126de1ebf890f4#f1f43b7f3e8d3613eaa8410cef126de1ebf890f4"
 dependencies = [
  "serde_json",
 ]
@@ -1154,7 +1154,7 @@ dependencies = [
 [[package]]
 name = "craft-tga"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2aa7f7f8d211786650d6cc3a4d3f6be165ddb30a#2aa7f7f8d211786650d6cc3a4d3f6be165ddb30a"
+source = "git+https://github.com/storytold/craft-libs?rev=f1f43b7f3e8d3613eaa8410cef126de1ebf890f4#f1f43b7f3e8d3613eaa8410cef126de1ebf890f4"
 dependencies = [
  "thiserror 2.0.21",
 ]
