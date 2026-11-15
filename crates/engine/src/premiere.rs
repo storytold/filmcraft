@@ -276,6 +276,16 @@ impl Drop for OwnedDirectory {
     }
 }
 
+/// The import report's entries, in order, as `{level, message, count}` with the lower-case level
+/// names `events.list` entries use (`info`, `warning`); `report` lists the messages alone.
+fn report_entries(report: &filmcraft_interchange::Report) -> Vec<Value> {
+    let level = |level| match level {
+        filmcraft_interchange::Level::Info => "info",
+        filmcraft_interchange::Level::Warning => "warning",
+    };
+    report.entries.iter().map(|e| json!({"level":level(e.level),"message":e.message,"count":e.count})).collect()
+}
+
 /// The whole-file reads `premiere.import` makes, replaceable in tests.
 pub(super) struct FileIo<'a> {
     /// SHA-256 and size of a whole file: the project file, and a copy this import already made.
@@ -352,7 +362,13 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     };
     let parent = destination.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).canonicalize().map_err(io)?;
     let destination = parent.join(destination.file_name().ok_or_else(|| bad(COMMAND, "destination must name a new directory"))?);
-    std::fs::create_dir(&destination).map_err(io)?;
+    std::fs::create_dir(&destination).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            bad(COMMAND, format!("destination {} already exists; choose a new directory", stored_path(&destination)))
+        } else {
+            io(e)
+        }
+    })?;
     let mut owned = OwnedDirectory { path: destination.clone(), committed: false };
     let snapshot = destination.join("source.prproj");
     write_new(&snapshot, &bytes)?;
@@ -441,6 +457,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
         return Err(bad(COMMAND, "project changed during import; try again"));
     }
     let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
+    let entries = report_entries(&report);
     let record = PremiereImport {
         source_path: stored_path(&source),
         source_sha256: source_hash.clone(),
@@ -488,7 +505,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
         })
         .collect();
     Ok(
-        json!({"format":"Premiere", "sequences":sequences, "destination":stored_path(&destination), "sourceSha256":source_hash, "mediaMode":mode, "offlineMedia":offline, "report":warnings}),
+        json!({"format":"Premiere", "sequences":sequences, "destination":stored_path(&destination), "sourceSha256":source_hash, "mediaMode":mode, "offlineMedia":offline, "report":warnings, "reportEntries":entries}),
     )
 }
 
