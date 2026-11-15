@@ -209,7 +209,13 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     }
     apply_nested_settings(&mut settings, p, cmd)?;
     apply_flat_overrides(&mut settings, p, cmd)?;
-    if preset.is_none() && settings.format == Format::Av1 && p.get("bitrateMode").is_none() && p.get("settings").and_then(|v| v.get("bitrateMode")).is_none() {
+    // A flat crf already selects CRF in apply_flat_overrides; only fill an implicit mode.
+    if preset.is_none()
+        && settings.format == Format::Av1
+        && f64_p(p, "crf").is_none()
+        && p.get("bitrateMode").is_none()
+        && p.get("settings").and_then(|v| v.get("bitrateMode")).is_none()
+    {
         settings.bitrate_mode = filmcraft_export::default_av1_bitrate_mode();
     }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
