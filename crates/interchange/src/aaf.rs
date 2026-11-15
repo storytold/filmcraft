@@ -33,8 +33,10 @@
 //! caller to write) and markers.
 
 #[cfg(test)]
+#[allow(dead_code)] // The structural tests use only part of the AAF schema constants.
 mod ids;
 #[cfg(test)]
+#[allow(dead_code)] // Retained as an independent fixture reader and writer for structural tests.
 pub(crate) mod store;
 
 use filmcraft_project::{ItemId, Project};
