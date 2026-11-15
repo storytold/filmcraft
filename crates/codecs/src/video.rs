@@ -167,15 +167,12 @@ pub fn sar_par(sar: (u16, u16)) -> (u32, u32) {
 
 /// NAL length-prefix size of an `avcC` record (byte 4: lengthSizeMinusOne).
 pub fn avcc_length_size(avcc: &[u8]) -> usize {
-    avcc.get(4).map_or(4, |b| (b & 3) as usize + 1)
+    filmcraft_isobmff::avcc_length_size(avcc)
 }
 
 /// NAL length-prefix size and highest TemporalId of an `hvcC` record.
 pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
-    // hvcC byte 21: constantFrameRate(2) numTemporalLayers(3) temporalIdNested(1) lengthSizeMinusOne(2)
-    let length_size = hvcc.get(21).map_or(4, |b| (b & 3) as usize + 1);
-    let highest_tid = hvcc.get(21).map(|b| (b >> 3) & 7).filter(|&n| n > 0).map(|n| n - 1);
-    (length_size, highest_tid)
+    filmcraft_isobmff::hvcc_length_size_and_tid(hvcc)
 }
 
 /// A factory returns `None` when it does not handle the entry.
@@ -1333,5 +1330,20 @@ mod prores_resource_tests {
         // 1,120,000,000 bytes is beyond the old ceiling and must fail before allocation.
         let too_large = header(14_000, 10_000);
         assert!(matches!(decode_prores_frame(&too_large), Err(craft_video::prores::Error::Invalid("frame dimensions exceed the decoder memory limit"))));
+    }
+}
+
+#[cfg(test)]
+mod config_fields_compat_tests {
+    use super::{avcc_length_size, hvcc_length_size_and_tid};
+
+    #[test]
+    fn truncated_decoder_configuration_keeps_the_existing_defaults() {
+        assert_eq!(avcc_length_size(&[]), 4);
+        assert_eq!(avcc_length_size(&[0, 0, 0, 0, 1]), 2);
+        assert_eq!(hvcc_length_size_and_tid(&[]), (4, None));
+        let mut hvcc = [0; 22];
+        hvcc[21] = (3 << 3) | 2;
+        assert_eq!(hvcc_length_size_and_tid(&hvcc), (3, Some(2)));
     }
 }
