@@ -32,7 +32,7 @@ use demosaic::Pattern;
 pub use options::{DemosaicQuality, Highlights, OutputSpace, ProcessOptions, WhiteBalance};
 use process::Params;
 use raw::RawImage;
-use tiff::{Entry, Ifd, Tiff, tags};
+use tiff::{Ifd, Tiff, tags};
 
 /// DNG decoding errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,29 +57,7 @@ pub fn sniff(b: &[u8]) -> bool {
     t.read_ifd(first, 0).is_ok_and(|(ifd, _)| ifd.get(tags::DNG_VERSION).is_some())
 }
 
-/// SMPTE ST 12-1 time code of a CinemaDNG frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Timecode {
-    pub hours: u8,
-    pub minutes: u8,
-    pub seconds: u8,
-    pub frames: u8,
-    pub drop_frame: bool,
-}
-
-impl Timecode {
-    /// The first time code of a CinemaDNG TimeCodes tag (SMPTE ST 331 / 12-1 packing: BCD frames,
-    /// seconds, minutes, hours in bytes 0–3, the drop-frame flag in bit 6 of byte 0).
-    pub fn from_bytes(b: &[u8]) -> Option<Timecode> {
-        let bcd = |v: u8, tens_mask: u8| {
-            let (u, t) = (v & 0x0F, (v >> 4) & tens_mask);
-            (u <= 9).then_some(t * 10 + u)
-        };
-        let [f, s, m, h, ..] = *b else { return None };
-        let tc = Timecode { frames: bcd(f, 0x3)?, seconds: bcd(s, 0x7)?, minutes: bcd(m, 0x7)?, hours: bcd(h, 0x3)?, drop_frame: f & 0x40 != 0 };
-        (tc.seconds < 60 && tc.minutes < 60 && tc.hours < 24).then_some(tc)
-    }
-}
+pub use craft_raw::dng_metadata::Timecode;
 
 /// What a DNG holds, without decoding the pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -146,17 +124,8 @@ impl<'a> Dng<'a> {
         self.ifds.get(self.raw).unwrap_or(self.ifd0())
     }
 
-    /// A camera-wide tag: from IFD 0, else the raw IFD.
-    fn main_tag(&self, tag: u16) -> Option<&Entry> {
-        self.ifd0().get(tag).or_else(|| self.raw_ifd().get(tag))
-    }
-
     fn metadata(&self) -> craft_raw::dng_metadata::Metadata<'_, '_> {
         craft_raw::dng_metadata::Metadata { tiff: self.tiff.inner(), main: self.ifd0(), raw: self.raw_ifd() }
-    }
-
-    fn text(&self, tag: u16) -> Option<String> {
-        self.main_tag(tag).and_then(|e| self.tiff.ascii(e).ok()).filter(|s| !s.is_empty())
     }
 
     fn cfa(&self) -> Result<Option<Pattern>> {
@@ -217,25 +186,7 @@ impl<'a> Dng<'a> {
         let p = self.params_with(false)?;
         let (_, _, aw, ah) = process::active_rect(&p, l.width, l.height)?;
         let (_, _, width, height) = process::crop_rect(&p, aw, ah);
-        let dng_version = self
-            .main_tag(tags::DNG_VERSION)
-            .and_then(|e| self.tiff.uints(e).ok())
-            .and_then(|v| v.get(..4).map(|v| [0, 1, 2, 3].map(|i| v[i] as u8)))
-            .unwrap_or_default();
-        let frame_rate = self.main_tag(tags::FRAME_RATE).and_then(|e| {
-            let b = self.tiff.value_bytes(e).ok()?;
-            if !matches!(e.ty, tiff::Type::SRational | tiff::Type::Rational) {
-                return None;
-            }
-            let n = i64::from(self.tiff.u32_of(b.get(0..4)?.try_into().ok()?) as i32);
-            let d = i64::from(self.tiff.u32_of(b.get(4..8)?.try_into().ok()?) as i32);
-            (n > 0 && d > 0 && n <= 1000 * d && n * 1000 >= d).then_some((n, d))
-        });
-        let timecode = self.main_tag(tags::TIME_CODES).and_then(|e| self.tiff.value_bytes(e).ok()).and_then(Timecode::from_bytes);
-        let camera = self.text(tags::UNIQUE_CAMERA_MODEL).or_else(|| {
-            let mm = [self.text(tags::MAKE), self.text(tags::MODEL)].into_iter().flatten().collect::<Vec<_>>().join(" ");
-            (!mm.is_empty()).then_some(mm)
-        });
+        let capture = self.metadata().capture_info();
         Ok(Info {
             width,
             height,
@@ -249,11 +200,11 @@ impl<'a> Dng<'a> {
                 34892 => "lossy JPEG",
                 _ => "uncompressed",
             },
-            dng_version,
-            frame_rate,
-            timecode,
-            camera,
-            reel: self.text(tags::REEL_NAME),
+            dng_version: capture.dng_version,
+            frame_rate: capture.frame_rate,
+            timecode: capture.timecode,
+            camera: capture.camera,
+            reel: capture.reel,
         })
     }
 
