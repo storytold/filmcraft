@@ -1061,49 +1061,9 @@ fn is_mpeg2_entry(fourcc: &[u8; 4], raw: &[u8]) -> bool {
     match fourcc {
         b"mp2v" | b"mpg2" | b"m2v1" | b"mpg1" | b"m1v " | b"m1v1" | b"mx3n" | b"mx4n" | b"mx5n" | b"mx3p" | b"mx4p" | b"mx5p" | b"xdhd" | b"xdh2" => true,
         [b'x', b'd', b'v' | b'5', _] | [b'h', b'd', b'v', _] => true,
-        b"mp4v" => esds_object_type(raw).is_some_and(|t| (0x60..=0x65).contains(&t) || t == 0x6A),
+        b"mp4v" => filmcraft_isobmff::esds_object_type(raw).is_some_and(|t| (0x60..=0x65).contains(&t) || t == 0x6A),
         _ => false,
     }
-}
-
-/// objectTypeIndication of the DecoderConfigDescriptor inside an `esds` box in `raw`.
-fn esds_object_type(raw: &[u8]) -> Option<u8> {
-    let at = raw.windows(4).position(|w| w == b"esds")? + 8;
-    let mut p = at;
-    let size = |p: &mut usize| -> Option<usize> {
-        let mut n = 0usize;
-        for _ in 0..4 {
-            let b = *raw.get(*p)?;
-            *p += 1;
-            n = (n << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        Some(n)
-    };
-    if *raw.get(p)? != 0x03 {
-        return None;
-    }
-    p += 1;
-    size(&mut p)?;
-    let flags = *raw.get(p + 2)?;
-    p += 3;
-    if flags & 0x80 != 0 {
-        p += 2;
-    }
-    if flags & 0x40 != 0 {
-        p += 1 + *raw.get(p)? as usize;
-    }
-    if flags & 0x20 != 0 {
-        p += 2;
-    }
-    if *raw.get(p)? != 0x04 {
-        return None;
-    }
-    p += 1;
-    size(&mut p)?;
-    raw.get(p).copied()
 }
 
 /// Uncompressed QuickTime / MP4 video (`raw ` 24-bit RGB, `2vuy`, `v210`, #2340).
