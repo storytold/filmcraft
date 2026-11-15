@@ -340,10 +340,12 @@ pub(super) fn import_with_hasher(s: &mut Session, p: &Value, hash: &dyn Fn(&Path
             s.media.insert_file(item.id, path, source);
         }
     }
+    // Only this import's items: offline media already in the project is not part of its result.
     let offline: Vec<_> = s
         .project
         .items
         .values()
+        .filter(|i| !before.contains(&i.id))
         .filter_map(|i| match &i.kind {
             ItemKind::Media(m) if m.offline => Some(i.name.clone()),
             _ => None,
