@@ -22,6 +22,7 @@ mod job;
 mod mp3_out;
 mod mxf_out;
 mod ogg_out;
+mod opus_enc;
 mod pace;
 mod pcm;
 mod pipeline;

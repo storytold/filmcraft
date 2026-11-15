@@ -26,7 +26,6 @@ filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-oggmux = { workspace = true }
-filmcraft-opusenc = { workspace = true }
 filmcraft-vorbis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

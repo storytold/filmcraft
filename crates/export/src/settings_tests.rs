@@ -995,11 +995,14 @@ fn opus_audio_is_an_ogg_opus_file() {
     let st = &ogg.streams[0];
     assert_eq!((st.codec, st.saw_eos), (craft_media::ogg::Codec::Opus, true));
     let head = craft_audio::opus::OpusHead::parse(&st.headers[0]).unwrap();
-    assert_eq!((head.channels, head.pre_skip, head.input_sample_rate), (2, filmcraft_opusenc::PRE_SKIP, 48_000));
+    assert_eq!((head.channels, head.pre_skip, head.input_sample_rate), (2, 120, 48_000));
     let tags = String::from_utf8_lossy(&st.headers[1]);
     assert!(tags.starts_with("OpusTags") && tags.contains("TITLE=Opus test") && tags.contains("ARTIST=FilmCraft") && tags.contains("FilmCraft "), "{tags}");
     assert_eq!(st.packets.len(), (72_000 + 120usize).div_ceil(960));
-    assert!(st.packets.iter().all(|p| p.size == 400));
+    // craft-audio's encoder codes digital silence (the end of this range) as
+    // the three-byte silence frame of RFC 6716 §4.3; every other packet is 400 bytes
+    assert_eq!(st.packets.first().map(|p| p.size), Some(400));
+    assert!(st.packets.iter().all(|p| p.size == 400 || p.size == 3), "{:?}", st.packets.iter().map(|p| p.size).collect::<Vec<_>>());
     assert_eq!(st.last_granule, Some(120 + 72_000));
     let timing = craft_media::ogg::OpusTiming::of(st, 120);
     assert_eq!(timing.total, 72_000);
@@ -1030,7 +1033,7 @@ fn opus_audio_is_an_ogg_opus_file() {
         assert_eq!(j["format"]["format_name"].as_str(), Some("ogg"));
         // Vorbis comments are stream tags, under their own (upper-case) names
         assert_eq!((a["tags"]["TITLE"].as_str(), a["tags"]["ARTIST"].as_str()), (Some("Opus test"), Some("FilmCraft")));
-        assert_eq!(a["initial_padding"].as_u64(), Some(u64::from(filmcraft_opusenc::PRE_SKIP)));
+        assert_eq!(a["initial_padding"].as_u64(), Some(120));
     }
 }
 
@@ -1252,7 +1255,7 @@ fn opus_in_mp4_times_every_input_length_exactly() {
     let settings = ExportSettings { format: Format::H264, audio: AudioSettings { codec: AudioCodec::Opus, ..Default::default() }, ..Default::default() };
     for n in [0usize, 1, 959, 960, 961, 1_080, 48_000] {
         let mut enc = OpusAudio::new(2, &settings).unwrap();
-        assert_eq!((enc.priming(), enc.frame_size()), (u32::from(filmcraft_opusenc::PRE_SKIP), 960));
+        assert_eq!((enc.priming(), enc.frame_size()), (120, 960));
         let mut durations: Vec<u32> = Vec::new();
         if n > 0 {
             let x = vec![0.25f32; n];

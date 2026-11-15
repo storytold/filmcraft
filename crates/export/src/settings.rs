@@ -617,9 +617,8 @@ impl ExportSettings {
     }
 
     /// The Opus bit rate in bit/s: [`AudioSettings::bitrate_kbps`] limited to 6–510 kbps and
-    /// rounded to whole bytes per 20 ms packet, as the encoder writes it. The export's 6 kbps
-    /// floor is a product choice; the encoder itself goes down to
-    /// [`filmcraft_opusenc::MIN_BITRATE`] (1.2 kbps, three-byte packets).
+    /// rounded to whole bytes per 20 ms packet, as the encoder writes it. 6 kbps per channel is
+    /// also craft-audio's encoder floor.
     pub fn opus_bitrate(&self) -> u32 {
         let bps = self.audio.bitrate_kbps.clamp(6, 510) * 1000;
         (bps + 200) / 400 * 400

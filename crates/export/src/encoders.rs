@@ -2,6 +2,7 @@ use super::convert::{
     Matrix, Planes444, covers, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
 };
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
+use super::opus_enc::{FRAME_SIZE, OpusStream};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
 use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
@@ -115,61 +116,59 @@ impl AudioEncoder for FlacAudio {
     }
 }
 
-/// Opus (our CELT encoder) in MP4 / QuickTime: one 20 ms packet per access unit; the pre-skip is
+/// Opus (craft-audio's encoder, CELT) in MP4 / QuickTime: one 20 ms packet per access unit; the pre-skip is
 /// the edit list's start, and the last unit is shortened to where the input ends.
 pub(crate) struct OpusAudio {
-    enc: filmcraft_opusenc::Encoder,
+    enc: OpusStream,
 }
 
 impl OpusAudio {
     pub(crate) fn new(channels: u32, s: &ExportSettings) -> Result<Self> {
         let ch = usize::try_from(channels).unwrap_or(usize::MAX);
-        let enc = filmcraft_opusenc::Encoder::new(filmcraft_opusenc::EncoderConfig::new(ch, s.opus_bitrate()))
-            .map_err(|e| ExportError::Unsupported(format!("Opus: {e}")))?;
-        Ok(OpusAudio { enc })
+        Ok(OpusAudio { enc: OpusStream::new(ch, s.opus_bitrate())? })
     }
 }
 
-/// The `Opus` sample entry with its `dOps` box (mapping family 0).
-pub(crate) fn opus_sample_entry(head: &filmcraft_opusenc::OpusHead) -> SampleEntry {
+/// The `Opus` sample entry with its `dOps` box (mapping family 0, 48 kHz, no output gain).
+pub(crate) fn opus_sample_entry(channels: usize, pre_skip: u16) -> SampleEntry {
     let cfg = filmcraft_isobmff::OpusConfig {
-        output_channels: head.channels as u8,
-        pre_skip: head.pre_skip,
-        input_sample_rate: head.input_sample_rate,
-        output_gain: head.output_gain,
+        output_channels: channels as u8,
+        pre_skip,
+        input_sample_rate: 48_000,
+        output_gain: 0,
         channel_mapping_family: 0,
         channel_mapping: Vec::new(),
     };
-    SampleEntry::audio(filmcraft_isobmff::FourCc(*b"Opus"), filmcraft_isobmff::CodecConfig::Opus(cfg), head.channels as u32, 48_000.0, 16)
+    SampleEntry::audio(filmcraft_isobmff::FourCc(*b"Opus"), filmcraft_isobmff::CodecConfig::Opus(cfg), channels as u32, 48_000.0, 16)
 }
 
 impl AudioEncoder for OpusAudio {
     fn sample_entry(&self) -> SampleEntry {
-        opus_sample_entry(&self.enc.head())
+        opus_sample_entry(self.enc.channels(), self.enc.pre_skip())
     }
     fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
         let mut planar = planar.to_vec();
         crate::audio_out::finite(&mut planar);
         let refs: Vec<&[f32]> = planar.iter().map(Vec::as_slice).collect();
-        self.enc.encode(&refs).map_err(|e| ExportError::Encode(format!("Opus: {e}")))
+        self.enc.encode(&refs)
     }
     fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
         Ok(self.flush_timed()?.into_iter().map(|(au, _)| au).collect())
     }
     fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
-        let last = self.enc.finish().map_err(|e| ExportError::Encode(format!("Opus: {e}")))?;
+        let last = self.enc.finish()?;
         // every packet holds 960 samples; the final one is presented only up to the input's end
-        let frame = filmcraft_opusenc::FRAME_SIZE as u64;
-        let total = self.enc.samples_in() + u64::from(filmcraft_opusenc::PRE_SKIP);
+        let frame = FRAME_SIZE as u64;
+        let total = self.enc.samples_in() + u64::from(self.enc.pre_skip());
         let tail = (total - (self.enc.packets().saturating_sub(1)) * frame).clamp(1, frame) as u32;
         let n = last.len();
         Ok(last.into_iter().enumerate().map(|(i, au)| (au, if i + 1 == n { tail } else { frame as u32 })).collect())
     }
     fn priming(&self) -> u32 {
-        u32::from(filmcraft_opusenc::PRE_SKIP)
+        u32::from(self.enc.pre_skip())
     }
     fn frame_size(&self) -> u32 {
-        filmcraft_opusenc::FRAME_SIZE as u32
+        FRAME_SIZE as u32
     }
 }
 

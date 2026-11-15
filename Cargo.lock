@@ -1061,9 +1061,10 @@ dependencies = [
 [[package]]
 name = "craft-audio"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=811b386e898860deddb1781d6b36bc8bccdab66f#811b386e898860deddb1781d6b36bc8bccdab66f"
 dependencies = [
  "craft-media",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=811b386e898860deddb1781d6b36bc8bccdab66f)",
  "log",
  "rayon",
  "symphonia 0.6.1",
@@ -1076,7 +1077,7 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "craft-timeline",
- "craft-xml",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9)",
  "thiserror 2.0.21",
 ]
 
@@ -1129,7 +1130,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=811b386e898860deddb1781d6b36bc8bccdab66f#811b386e898860deddb1781d6b36bc8bccdab66f"
 dependencies = [
  "chrono",
  "thiserror 2.0.21",
@@ -1194,7 +1195,7 @@ dependencies = [
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+source = "git+https://github.com/storytold/craft-libs?rev=811b386e898860deddb1781d6b36bc8bccdab66f#811b386e898860deddb1781d6b36bc8bccdab66f"
 dependencies = [
  "craft-media",
  "rayon",
@@ -1227,6 +1228,16 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=811b386e898860deddb1781d6b36bc8bccdab66f#811b386e898860deddb1781d6b36bc8bccdab66f"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -2175,7 +2186,6 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-oggmux",
- "filmcraft-opusenc",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-testkit",
@@ -2319,13 +2329,6 @@ name = "filmcraft-oggmux"
 version = "0.20.1"
 dependencies = [
  "craft-media",
-]
-
-[[package]]
-name = "filmcraft-opusenc"
-version = "0.20.1"
-dependencies = [
- "craft-audio",
 ]
 
 [[package]]
@@ -6723,7 +6726,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
