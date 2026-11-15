@@ -69,35 +69,4 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-mod imp {
-    use std::ffi::c_void;
-
-    pub struct Device;
-
-    impl Device {
-        pub fn new() -> Result<Self, String> {
-            if Self::has_hardware_device() { Ok(Device) } else { Err("no AMD GPU adapter found on Linux".into()) }
-        }
-
-        pub fn as_raw(&self) -> *mut c_void {
-            std::ptr::null_mut()
-        }
-
-        pub fn has_hardware_device() -> bool {
-            if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
-                for entry in entries.flatten() {
-                    let vendor_path = entry.path().join("device/vendor");
-                    if let Ok(vendor) = std::fs::read_to_string(vendor_path) {
-                        if vendor.trim().eq_ignore_ascii_case("0x1002") {
-                            return true;
-                        }
-                    }
-                }
-            }
-            false
-        }
-    }
-}
-
 pub use imp::Device;

@@ -84,16 +84,13 @@ impl Session {
             return Err(format!("AMF CreateContext failed ({res})"));
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            // SAFETY: calling AMFContext::InitDX11 with NULL pointer; AMF internally selects an AMD adapter,
-            // verifies GPU support, and initializes the Direct3D 11 device.
-            let res = unsafe { ((*(*context).vtbl).init_dx11)(context, std::ptr::null_mut(), AMF_DX11_1) };
-            if res != AMF_OK {
-                // SAFETY: releasing context on initialization failure.
-                unsafe { ((*(*context).vtbl).release)(context) };
-                return Err(format!("AMF InitDX11 failed ({res})"));
-            }
+        // SAFETY: calling AMFContext::InitDX11 with NULL pointer; AMF internally selects an AMD adapter,
+        // verifies GPU support, and initializes the Direct3D 11 device.
+        let res = unsafe { ((*(*context).vtbl).init_dx11)(context, std::ptr::null_mut(), AMF_DX11_1) };
+        if res != AMF_OK {
+            // SAFETY: releasing context on initialization failure.
+            unsafe { ((*(*context).vtbl).release)(context) };
+            return Err(format!("AMF InitDX11 failed ({res})"));
         }
 
         let codec = cfg.profile.codec();
