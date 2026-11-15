@@ -804,12 +804,21 @@ impl GopCache {
 
     /// Store decoder output (in presentation order) and advance `out_max`. Returns the stored
     /// frame nearest at or before `want_pts`, which the caller keeps even when the cache evicts it.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>, want_pts: i64) -> Option<Taken> {
+    ///
+    /// Frames with `pts < floor` are not cached unless they are the wanted one: they can only be
+    /// the leading pictures of a run that began at an open-GOP random-access picture, predicted from
+    /// the GOP before it, which the run never decoded. Their pixels are wrong, and a later seek to
+    /// one would be served from the cache. (A closed-GOP run has none: an IDR picture's successors
+    /// are all shown after it.)
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>, want_pts: i64, floor: i64) -> Option<Taken> {
         count_frames(&out);
         let mut nearest: Option<Taken> = None;
         for d in out {
             st.out_max = st.out_max.max(d.pts);
             let pts = d.pts;
+            if pts < floor && pts != want_pts {
+                continue;
+            }
             let t = self.store(st, pts, d.frame, d.draft);
             if pts <= want_pts && nearest.as_ref().is_none_or(|n| pts > n.pts) {
                 nearest = Some(t);
@@ -945,6 +954,8 @@ impl GopCache {
             st.start = key;
             st.out_max = i64::MIN;
         }
+        // the run's first sample: nothing shown before it is a trustworthy picture (`store_output`)
+        let floor = if st.start < n { s.pts(st.start) } else { i64::MIN };
         let limit = (i.max(st.next) + 64).min(n);
         let late = late_before.unwrap_or(i64::MIN).min(want_pts);
         let Some(decoder) = st.decoder.as_mut() else {
@@ -978,14 +989,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            keep(&mut mine, self.store_output(st, out, want_pts));
+            keep(&mut mine, self.store_output(st, out, want_pts, floor));
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            keep(&mut mine, self.store_output(st, out, want_pts));
+            keep(&mut mine, self.store_output(st, out, want_pts, floor));
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks); a closer
