@@ -164,6 +164,15 @@ impl StreamInfo {
         }
     }
 
+    /// Whether `sample` decodes alone ([`crate::VideoDecoder::is_independent`]): an H.264 IDR access
+    /// unit. HEVC's IRAP pictures are left out (a CRA's RASL pictures need the pictures before it).
+    pub fn is_independent(&self, sample: &[u8]) -> bool {
+        match self {
+            Self::Nal(i) => i.codec == NalCodec::H264 && i.is_irap(sample),
+            Self::Frame(_) => false,
+        }
+    }
+
     /// An HEVC CRA restarts nothing by itself (its RASL pictures need the previous restart point).
     pub fn keeps_previous_restart(&self, sample: &[u8]) -> bool {
         match self {

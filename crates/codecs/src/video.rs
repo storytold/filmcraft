@@ -34,6 +34,13 @@ pub trait VideoDecoder: Send {
     fn is_random_access(&self, _sample: &[u8]) -> Option<bool> {
         None
     }
+    /// Whether `sample` is one picture that decodes with no other sample: an IDR access unit (H.264
+    /// 7.4.1.2.4: it starts a coded video sequence and references nothing before it). A decoder that
+    /// is reset and fed only such a sample, then flushed, outputs exactly that picture, so the GOP
+    /// cache can seek to it without decoding the samples after it. False when unknown.
+    fn is_independent(&self, _sample: &[u8]) -> bool {
+        false
+    }
     /// Whether `sample` can be left out without changing any other picture: a non-reference
     /// picture. Decoding forward to a frame while catching up skips such samples when their
     /// frames are late ([`filmcraft_media::cancel::catch_up`]). False when unknown.
@@ -355,6 +362,11 @@ impl VideoDecoder for H264Decoder {
     fn set_draft(&mut self, on: bool) {
         self.draft = on;
         self.dec.set_draft(on);
+    }
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        // Only IDR access units. A non-IDR intra picture may still need the decoder's history to
+        // output correctly (recovery point handling), so it keeps the decode-forward path.
+        self.length_size != 0 && nal_headers(sample, self.length_size).any(|(h, _)| h & 0x1f == 5)
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         if self.length_size == 0 {

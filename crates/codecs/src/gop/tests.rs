@@ -78,6 +78,10 @@ impl VideoDecoder for Dec {
     fn is_disposable(&self, sample: &[u8]) -> bool {
         sample[0] % 2 == 1
     }
+    // IdrSamples mark their pictures in the second byte
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        sample.get(1) == Some(&1)
+    }
 }
 
 impl VideoSamples for Samples {
@@ -114,6 +118,30 @@ fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
     Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
 }
 
+/// Every picture is an IDR picture: its samples carry the independence mark (see `Dec::is_independent`).
+struct IdrSamples(Samples);
+
+impl VideoSamples for IdrSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        Ok(vec![i as u8, 1])
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        self.0.make_decoder()
+    }
+}
+
 fn index_of(f: &VideoFrame) -> usize {
     match &f.data {
         filmcraft_frame::PixelData::Rgba8(d) => d[0] as usize | (d[1] as usize) << 8,
@@ -133,6 +161,152 @@ fn frames_held_by_a_threaded_decoder_do_not_restart_it() {
     }
     assert_eq!(s.resets.load(Ordering::Relaxed), 1, "only the first request seeks");
     assert!(s.decodes.load(Ordering::Relaxed) <= 60 + 24 + 1);
+}
+
+#[test]
+fn an_idr_seek_decodes_only_its_own_sample_whatever_the_order() {
+    // one long GOP and 24 pictures in flight: a window decode would feed up to 24 samples past each seek
+    let s = IdrSamples(samples(300, 250, 24, false));
+    let c = GopCache::new(None);
+    let order = [200usize, 3, 150, 0, 299, 42, 7];
+    for &i in &order {
+        assert_eq!(index_of(&c.frame(&s, i as i64 * 1000).expect("frame")), i);
+    }
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), order.len(), "one sample decoded per seek");
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), order.len(), "each seek starts a reset decoder");
+}
+
+#[test]
+fn samples_that_are_not_idr_keep_the_decode_forward_window() {
+    // no sample carries the independence mark: the seek decodes from the sync sample as before
+    let s = samples(300, 250, 24, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 200_000).expect("frame")), 200);
+    assert!(s.decodes.load(Ordering::Relaxed) > 200, "decoded from the sync sample, not the sample alone");
+}
+
+/// Marks every tenth sample as an IDR sample, though the container's only sync sample is the first.
+struct MixedSamples(Samples);
+
+impl VideoSamples for MixedSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        Ok(vec![i as u8, i.is_multiple_of(10) as u8])
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        self.0.make_decoder()
+    }
+}
+
+#[test]
+fn a_running_decoder_keeps_decoding_forward_through_an_idr_sample() {
+    let s = MixedSamples(samples(300, 250, 2, false));
+    let c = GopCache::new(None);
+    for i in 0..60usize {
+        assert_eq!(index_of(&c.frame(&s, i as i64 * 1000).expect("frame")), i);
+    }
+    // sample 0 (an IDR with no cursor yet) decodes alone; sample 1 starts the run that goes on
+    // through the IDR samples 10, 20, ... without another reset
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), 2, "one isolated decode and one run");
+}
+
+/// Drops what the decoder outputs when drained: an isolated decode then yields no picture.
+struct Mute(Box<dyn VideoDecoder>);
+
+impl VideoDecoder for Mute {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        self.0.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        let _ = self.0.flush();
+        Vec::new()
+    }
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn name(&self) -> &str {
+        "mute"
+    }
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        self.0.is_independent(sample)
+    }
+}
+
+struct MuteSamples(IdrSamples);
+
+impl VideoSamples for MuteSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(Mute(self.0.make_decoder()?)))
+    }
+}
+
+#[test]
+fn an_isolated_decode_without_a_picture_falls_back_to_decoding_forward() {
+    // a decoder that holds each picture 2 samples: draining the lone sample yields nothing here
+    let s = MuteSamples(IdrSamples(samples(100, 100, 2, false)));
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 40_000).expect("frame")), 40);
+    assert!(s.0.0.decodes.load(Ordering::Relaxed) > 1, "the window path decoded the following samples");
+}
+
+#[test]
+fn concurrent_idr_seeks_decode_one_sample_each_with_a_bounded_spare_pool() {
+    let s = Arc::new(IdrSamples(samples(64, 64, 24, false)));
+    let c = Arc::new(GopCache::new(None));
+    let start = Arc::new(std::sync::Barrier::new(4));
+    std::thread::scope(|scope| {
+        for t in 0..4usize {
+            let (s, c, start) = (s.clone(), c.clone(), start.clone());
+            scope.spawn(move || {
+                start.wait();
+                for k in 0..16usize {
+                    let i = (k * 7 + t * 16) % 64;
+                    assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                }
+            });
+        }
+    });
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), 64);
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), 64);
+    let spare = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).spare.len();
+    assert!(spare <= 16, "{spare} spare decoders");
+}
+
+#[test]
+fn a_cancelled_idr_seek_decodes_nothing_and_a_later_one_succeeds() {
+    let s = IdrSamples(samples(64, 64, 4, false));
+    let c = GopCache::new(None);
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 30_000));
+    assert!(matches!(r, Err(CodecError::Cancelled)), "cancelled before decoding");
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), 0);
+    assert_eq!(index_of(&c.frame(&s, 30_000).expect("frame")), 30);
 }
 
 /// A decoder that, like a slice-threaded one, splits each picture's work over rayon.

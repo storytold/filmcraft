@@ -379,6 +379,10 @@ impl VideoDecoder for MfDecoder {
         self.info.is_random_access(sample)
     }
 
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        self.info.is_independent(sample)
+    }
+
     fn is_disposable(&self, sample: &[u8]) -> bool {
         self.info.is_disposable(sample)
     }

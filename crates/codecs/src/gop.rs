@@ -206,6 +206,13 @@ struct AbandonedCursor {
     at: Instant,
 }
 
+/// The outcome of [`GopCache::independent_frame`].
+enum Independent<'a> {
+    Done(Taken),
+    /// No picture came out of the isolated decode: the lock, for the decode-forward path.
+    Fallback(std::sync::MutexGuard<'a, State>),
+}
+
 fn cursor_can_continue(next: usize, start: usize, out_max: i64, i: usize, want_pts: i64, key: usize, n: usize) -> bool {
     let running = next != usize::MAX && next <= n && start <= key;
     let near = next <= key && key - next <= CONTINUE_THROUGH;
@@ -1151,6 +1158,18 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
+        // A seek to an IDR sample decodes that sample alone (`independent_frame`): no window of
+        // samples after it is fed to the decoder. A running cursor that can still reach `i` keeps
+        // decoding forward as before, and a failed or empty isolated decode falls back to it.
+        if !cursor_can_continue(st.next, st.start, st.out_max, i, want_pts, i, n) {
+            let sample = s.read(i)?;
+            if st.decoder.as_deref().is_some_and(|d| d.is_independent(&sample)) {
+                match self.independent_frame(st, s, want_pts, &sample, draft)? {
+                    Independent::Done(t) => return Ok(t),
+                    Independent::Fallback(back) => st = back,
+                }
+            }
+        }
         // with the lock held: see `isolated`
         let st = &mut *st;
         isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
@@ -1283,6 +1302,66 @@ impl GopCache {
             *next = usize::MAX;
         }
         Ok(out)
+    }
+
+    /// One independent sample (see [`VideoDecoder::is_independent`]) decoded alone with the lock
+    /// released: the decoder is reset, fed the sample and drained, so its only output is the
+    /// sample's own picture. Such a decode depends on no other sample, so workers can run these in
+    /// parallel, each on a decoder of its own (the spare pool, as `intra_frame`). When the decoder
+    /// fails or outputs no picture for the sample, the lock is handed back for the decode-forward path.
+    fn independent_frame<'a>(
+        &'a self,
+        st: std::sync::MutexGuard<'a, State>,
+        s: &dyn VideoSamples,
+        want_pts: i64,
+        sample: &[u8],
+        draft: bool,
+    ) -> crate::Result<Independent<'a>> {
+        let mut st = st;
+        let spare = st.spare.pop();
+        drop(st);
+        let mut dec = match spare {
+            Some(d) => d,
+            None => match s.make_decoder() {
+                Ok(d) => d,
+                Err(_) => return Ok(Independent::Fallback(self.shared.state.lock().unwrap_or_else(PoisonError::into_inner))),
+            },
+        };
+        dec.reset();
+        dec.set_draft(draft);
+        DECODED.fetch_add(1, Ordering::Relaxed);
+        let res = timed(|| dec.decode(sample, want_pts)).map(|mut out| {
+            out.extend(timed(|| dec.flush()));
+            out
+        });
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let out = match res {
+            Ok(out) => out,
+            Err(CodecError::Cancelled) => return Err(CodecError::Cancelled),
+            Err(e) => {
+                // the decoder may be in an odd state: drop it, decode the old way
+                log::debug!("isolated decode of an independent sample failed ({e}); decoding forward instead");
+                return Ok(Independent::Fallback(st));
+            }
+        };
+        count_frames(&out);
+        if st.spare.len() < 16 {
+            st.spare.push(dec);
+        }
+        // what this decode produced, kept apart from the cache: a concurrent request can move the pin
+        // and have the cache evict this frame before it is read back
+        let mut mine: Option<Taken> = None;
+        for d in out {
+            let hit = d.pts == want_pts;
+            let t = self.store(&mut st, d.pts, d.frame, d.draft);
+            if hit {
+                mine = Some(t);
+            }
+        }
+        match mine {
+            Some(t) => Ok(Independent::Done(t)),
+            None => Ok(Independent::Fallback(st)),
+        }
     }
 
     /// Intra-only streams: decode the one sample outside the lock, so several frame workers
