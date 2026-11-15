@@ -29,7 +29,9 @@ pub mod aaf;
 pub mod ale;
 pub mod edl;
 pub mod essence;
-pub mod fcp7;
+#[cfg(test)]
+#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+mod fcp7;
 #[cfg(test)]
 #[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
 mod fcpxml;
@@ -42,6 +44,7 @@ mod common;
 mod comp;
 mod timeline_model;
 pub mod wav;
+#[cfg(test)]
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
@@ -327,7 +330,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
     let mut report = Report::default();
     let imported = match format {
         Format::Edl => edl::import(&text, opts, &mut report)?,
-        Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
+        Format::Fcp7Xml => timeline_model::import_fcp7(&text, opts, &mut report)?,
         Format::Fcpxml => timeline_model::import_fcpxml(&text, opts, &mut report)?,
         Format::Otio => timeline_model::import_otio(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
@@ -481,7 +484,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
     let mut report = Report::default();
     let text = match format {
         Format::Edl => edl::export(project, sequence, opts, &mut report)?,
-        Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
+        Format::Fcp7Xml => timeline_model::export_fcp7(project, sequence, opts, &mut report)?,
         Format::Fcpxml => timeline_model::export_fcpxml(project, sequence, opts, &mut report)?,
         Format::Otio => timeline_model::export_otio(project, sequence, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
