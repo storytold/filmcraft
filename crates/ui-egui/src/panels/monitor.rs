@@ -470,6 +470,7 @@ fn controls_row(
         None => {}
     }
     app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
+    marker_flags(app, ui, which, time, tc_rect);
     ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, dur_tc, Tokens::timecode(), t.text_dim);
     // At compact widths, timecodes and view settings need separate rows.
     let settings_y = row1.min.y + if stacked_controls { 26.0 } else { 0.0 };
@@ -573,6 +574,44 @@ fn controls_row(
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, settings_y + 28.0 + source_drag_h), vec2(rect.width() - 28.0, 22.0));
     let zoom_bar = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 2.0), vec2(bar.width(), 13.0));
     (bar, zoom_bar)
+}
+
+/// A marker's colour as the Timeline ruler and the monitors draw it.
+fn marker_color(app: &FilmcraftApp, m: &filmcraft_project::Marker) -> Color32 {
+    let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// A flag beside the monitor's timecode for each marker the playhead is exactly on: its start or
+/// either end of a range marker (#4324). Premiere Pro flashes one as the playhead reaches a marker,
+/// so an editor cutting to music sees the hit without looking down at the Timeline ruler. Coincident
+/// markers all show, each in its own colour; nothing is drawn as soon as the playhead moves off.
+fn marker_flags(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, time: Tick, after: Rect) {
+    let markers = match which {
+        Which::Program => app.session.active_sequence().map(|q| q.markers.clone()),
+        Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
+    };
+    let Some(markers) = markers else { return };
+    let prefix = if which == Which::Source { "source" } else { "program" };
+    let mut x = after.max.x + 6.0;
+    let on = |m: &filmcraft_project::Marker| m.start == time || (m.duration > Tick::ZERO && m.start + m.duration == time);
+    // bounded: a project can hold any number of markers on one frame
+    for m in markers.iter().filter(|m| on(m)).take(8) {
+        let rect = Rect::from_min_size(pos2(x, after.center().y - 8.0), vec2(14.0, 16.0));
+        if rect.max.x > ui.clip_rect().max.x {
+            break;
+        }
+        let c = marker_color(app, m);
+        // a soft halo, so the flag stands out for the frames the playhead sits on it
+        let p = ui.painter();
+        p.rect_filled(rect.expand(1.0), 3.0, c.gamma_multiply(0.3));
+        crate::widgets::marker_glyph(p, rect, 3.0, crate::widgets::MarkerPart::Whole, c);
+        let id = format!("{prefix}.markerFlag.{}", m.id.0);
+        let resp = ui.interact(rect, egui::Id::unique((prefix, "marker-flag", m.id.0)), Sense::hover());
+        app.auto.add(&id, rect, &m.name);
+        let _ = resp.on_hover_text(m.name.clone());
+        x = rect.max.x + 4.0;
+    }
 }
 
 /// How many of a paused monitor's latest requests are remembered ([`asked_before`]): about a
@@ -1333,8 +1372,7 @@ fn paint_ruler_markers(
     shows: &impl Fn(Tick) -> bool,
 ) {
     for m in markers {
-        let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
-        let c = Color32::from_rgb(c[0], c[1], c[2]);
+        let c = marker_color(app, m);
         let glyph = |time| Rect::from_min_size(pos2(xof(time) - 3.5, bar.min.y), vec2(7.0, 10.0));
         if m.duration > Tick::ZERO {
             let end = m.start + m.duration;
