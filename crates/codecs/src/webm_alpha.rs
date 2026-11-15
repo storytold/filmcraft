@@ -217,6 +217,12 @@ pub(crate) fn set_alpha(frame: &mut VideoFrame, a: &VideoFrame) {
     if codes.len() != n {
         return;
     }
+    if matches!(frame.data, PixelData::GpuSurface(_)) {
+        let Some(cpu) = frame.materialize_cpu() else {
+            return;
+        };
+        *frame = cpu;
+    }
     let rescale = |v: u16, to: u32| -> u32 {
         let (from_max, to_max) = ((1u32 << abits) - 1, (1u32 << to.clamp(1, 16)) - 1);
         (v as u32 * to_max + from_max / 2) / from_max
@@ -287,5 +293,58 @@ mod tests {
         set_alpha(&mut f, &yuv8(2, 2, vec![0; 3]));
         let PixelData::Yuv8 { alpha, .. } = &f.data else { panic!() };
         assert!(alpha.is_none());
+    }
+
+    #[derive(Debug)]
+    struct MockGpuYuv8 {
+        w: u32,
+        h: u32,
+        luma: u8,
+    }
+
+    impl filmcraft_frame::GpuSurface for MockGpuYuv8 {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            42
+        }
+        fn gpu_bytes(&self) -> u64 {
+            (self.w * self.h * 3 / 2) as u64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C420
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            let n = (self.w * self.h) as usize;
+            let c = n / 4;
+            Ok(PixelData::Yuv8 {
+                planes: [Arc::new(vec![self.luma; n]), Arc::new(vec![128; c]), Arc::new(vec![128; c])],
+                chroma: Chroma::C420,
+                alpha: None,
+            })
+        }
+    }
+
+    #[test]
+    fn gpu_surface_color_frame_receives_alpha_via_cpu_readback() {
+        let a = yuv8(2, 2, vec![0, 128, 255, 64]);
+        let mut f = VideoFrame {
+            width: 2,
+            height: 2,
+            data: PixelData::GpuSurface(Arc::new(MockGpuYuv8 { w: 2, h: 2, luma: 42 })),
+            color: Default::default(),
+            par: (1, 1),
+            pts: filmcraft_time::Tick::ZERO,
+        };
+        set_alpha(&mut f, &a);
+        let PixelData::Yuv8 { planes, alpha, .. } = &f.data else {
+            panic!("expected GpuSurface to materialize to Yuv8 with alpha, got {:?}", f.data);
+        };
+        assert_eq!(planes[0].as_slice(), &[42; 4]);
+        assert_eq!(alpha.as_deref(), Some(&vec![0, 128, 255, 64]));
     }
 }
