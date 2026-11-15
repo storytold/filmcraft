@@ -1088,7 +1088,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f
 [[package]]
 name = "craft-control-protocol"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2e6878d973605c1aba8b9be091d3002474e32e9b#2e6878d973605c1aba8b9be091d3002474e32e9b"
+source = "git+https://github.com/storytold/craft-libs?rev=edfd24c0048e9afbad35661b5bfdc6e89f65bed2#edfd24c0048e9afbad35661b5bfdc6e89f65bed2"
 dependencies = [
  "serde_json",
  "subtle",
@@ -2011,6 +2011,7 @@ name = "filmcraft-automation"
 version = "0.20.1"
 dependencies = [
  "base64",
+ "craft-control-protocol",
  "filmcraft-engine",
  "filmcraft-time",
  "image",
