@@ -249,7 +249,7 @@ stream is cut into blocks (there are tests for this).
      see `crates/media/README.md`;
    - encoders: an `export::VideoEncoder` / audio encoder plus a `Format` in `crates/export`.
 5. Write the README: features, API, test matrix, accuracy and speed numbers, limitations. Use
-   `crates/h264/README.md` as the model.
+   the H.264 README in craft-libs (`crates/video/src/h264/decode/README.md`) as the model.
 
 ### A panel or widget
 

@@ -189,7 +189,11 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
 fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near: Option<ItemId>) -> Result<(ItemId, String)> {
     let beside = near.filter(|_| p.get("dir").is_none()).and_then(|i| match &s.project.items.get(&i)?.kind {
         ItemKind::Media(m) => match &m.media {
-            MediaRef::File { path } => std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned()),
+            // the stored path as media access resolves it: a path it refuses (a network share, a URL) picks no folder
+            MediaRef::File { path } => {
+                let file = s.media.follow(path).ok()?;
+                std::path::Path::new(&file).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned())
+            }
             MediaRef::Generator(_) => None,
         },
         _ => None,
@@ -410,7 +414,7 @@ fn finish(prog: &filmcraft_export::Progress, res: &JobResult, r: std::result::Re
     let r = match r {
         Ok(status) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
-            Ok(filmcraft_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(filmcraft_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, ..Default::default() })
         }
         Err(e) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = e.clone();

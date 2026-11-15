@@ -76,11 +76,11 @@ use registry::{audio_factories, video_factories};
 #[cfg(test)]
 use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
-pub(crate) use stats::note_lock_wait;
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
+    note_hw_encode_declined_by, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
 };
+pub(crate) use stats::{note_lock_wait, take_hw_encode_decline};
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
 #[derive(Debug, thiserror::Error)]
@@ -142,7 +142,7 @@ impl Progress {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub path: String,
     pub frames: u64,
@@ -152,6 +152,14 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// The video encoder that ran: the hardware encoder's name ("NVENC", "VideoToolbox"), or
+    /// "software" for FilmCraft's own. `None` for exports without one (audio, image sequences, GIF).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// What the user should know about how the export ran: hardware encoding asked for, but the
+    /// software encoder ran instead (and why, when the hardware encoder said).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[cfg(test)]

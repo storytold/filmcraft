@@ -85,7 +85,27 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     {
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
         let clean = !app.session.is_dirty();
-        match app.updates_rt.updater.show_if(ctx, clean) {
+        let prior_commands = ctx.output(|output| output.commands.len());
+        let action = app.updates_rt.updater.show_if(ctx, clean);
+        if app.hooks.open_url.is_some() {
+            // The shared updater emits egui URL commands for its release-notes link. The desktop
+            // host handles links itself, so forward only commands emitted by this prompt.
+            let urls = ctx.output_mut(|output| {
+                let tail = output.commands.split_off(prior_commands.min(output.commands.len()));
+                let mut urls = Vec::new();
+                for command in tail {
+                    match command {
+                        egui::OutputCommand::OpenUrl(url) => urls.push(url.url),
+                        other => output.commands.push(other),
+                    }
+                }
+                urls
+            });
+            for url in urls {
+                crate::links::open(app, ctx, &url);
+            }
+        }
+        match action {
             Action::OpenUrl(url) => crate::links::open(app, ctx, &url),
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::None => {}
@@ -153,6 +173,51 @@ pub(crate) fn exiting(app: &mut FilmcraftApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_notes_link_reaches_the_desktop_host() {
+        use std::{cell::RefCell, rc::Rc};
+        let opened = Rc::new(RefCell::new(Vec::<String>::new()));
+        let record = opened.clone();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.hooks.open_url = Some(Box::new(move |url| {
+            record.borrow_mut().push(url.to_owned());
+            Ok(())
+        }));
+        let url = "https://github.com/storytold/filmcraft/releases/tag/v99.0.0";
+        app.updates_rt.updater.offer(craft_update::Release {
+            tag: "v99.0.0".into(),
+            version: craft_update::parse_version("99.0.0"),
+            html_url: url.into(),
+            ..Default::default()
+        });
+        let ctx = egui::Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.0);
+        let frame = |app: &mut FilmcraftApp, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), events, ..Default::default() },
+                |ui| show(app, ui.ctx()),
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut app, vec![]);
+        let output = frame(&mut app, vec![]);
+        fn position(shape: &egui::Shape) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(position),
+                egui::Shape::Text(t) if t.galley.text() == "What's new" => Some(t.pos + t.galley.rect.center().to_vec2()),
+                _ => None,
+            }
+        }
+        let at = output.shapes.iter().find_map(|shape| position(&shape.shape)).expect("update notes link");
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            frame(&mut app, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }]);
+        }
+        assert_eq!(&*opened.borrow(), &[url.to_string()]);
+    }
 
     #[test]
     fn default_runtime_is_idle() {

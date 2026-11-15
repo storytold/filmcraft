@@ -36,6 +36,9 @@ pub enum NormalizeError {
     /// The script exceeds the 1 MiB input limit.
     #[error("the script exceeds the 1 MiB normalization limit")]
     TooLong,
+    /// The script, with its respellings and dictionary pronunciations, expands past the phoneme budget.
+    #[error("the script expands to more than 16 MiB of phonemes")]
+    TooManyPhonemes,
 }
 
 /// Maximum accepted input size (1 MiB).
