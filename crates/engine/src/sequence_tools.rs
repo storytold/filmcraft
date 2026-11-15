@@ -21,6 +21,7 @@
 //! | `markers.showAllMarkerColors` / `markers.filterColors` | Markers ▸ Show All Marker Colors / Markers panel colour filter | |
 //! | `markers.addChapter` | Markers ▸ Add Chapter Marker… | |
 //! | `markers.rippleSequenceMarkers` | Markers ▸ Ripple Sequence Markers | |
+//! | `markers.lock` | Markers ▸ Lock Markers | |
 //! | `markers.copyPasteIncludesSequenceMarkers` | Markers ▸ Copy Paste Includes Sequence Markers | |
 //!
 //! Split points: Mark Split sets a video-only or audio-only In/Out (on the sequence, or with
@@ -264,6 +265,18 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                 spec("markers.rippleSequenceMarkers", "Ripple Sequence Markers", &["Markers"], None, r#"{"on":bool?}"#, always, |s, p| {
                     s.state.ripple_sequence_markers = bool_p(p, "on").unwrap_or(!s.state.ripple_sequence_markers);
                     Ok(json!({"rippleSequenceMarkers": s.state.ripple_sequence_markers}))
+                }),
+                spec("markers.lock", "Lock Markers", &["Markers"], None, r#"{"on":bool?}"#, has_seq, |s, p| {
+                    let locked = s.active_sequence().is_some_and(|q| q.markers_locked);
+                    let on = bool_p(p, "on").unwrap_or(!locked);
+                    // asking for the state it already has changes nothing, so it adds no undo step
+                    if on != locked {
+                        s.edit_sequence(if on { "Lock Markers" } else { "Unlock Markers" }, |q, _, _| {
+                            q.markers_locked = on;
+                            Ok(())
+                        })?;
+                    }
+                    Ok(json!({"lockMarkers": on}))
                 }),
                 spec(
                     "markers.copyPasteIncludesSequenceMarkers",
@@ -766,7 +779,7 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
             && st.ripple_sequence_markers
             && let Some((a, b)) = span
         {
-            ripple_markers(&mut seq.markers, a, b - a);
+            ripple_markers(seq, a, b - a);
         }
         p.next_id = next;
         st.selection = new.clone();
@@ -1099,11 +1112,13 @@ pub(crate) fn split_source_ranges(s: &Session, item: ItemId, full: TimeRange) ->
 // ---------- markers ----------
 
 /// Move sequence markers for a ripple edit at `from` by `shift`: later markers move; with a
-/// negative shift, markers in the removed span `[from + shift, from)` are deleted.
-pub fn ripple_markers(markers: &mut Vec<Marker>, from: Tick, shift: Tick) {
-    if shift == Tick::ZERO {
+/// negative shift, markers in the removed span `[from + shift, from)` are deleted. Locked markers
+/// (Markers ▸ Lock Markers) stay as they are.
+pub fn ripple_markers(q: &mut Sequence, from: Tick, shift: Tick) {
+    if shift == Tick::ZERO || q.markers_locked {
         return;
     }
+    let markers = &mut q.markers;
     if shift < Tick::ZERO {
         markers.retain(|m| !(m.start >= from + shift && m.start < from));
     }

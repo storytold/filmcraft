@@ -115,6 +115,7 @@ pub(crate) fn run(s: &mut Session, p: &Value, delete: bool) -> Result<Value> {
         }
     };
     s.edit(if delete { "Delete Markers" } else { "Edit Markers" }, |project, _| {
+        let locked = project.sequence(owner).is_some_and(|q| q.markers_locked);
         let markers = list(project, owner)?;
         let present: BTreeSet<_> = markers.iter().map(|m| m.id).collect();
         if !ids.is_subset(&present) {
@@ -124,6 +125,9 @@ pub(crate) fn run(s: &mut Session, p: &Value, delete: bool) -> Result<Value> {
             return Err(bad(id, "marker is outside the source view"));
         }
         for m in markers.iter().filter(|m| ids.contains(&m.id)) {
+            if !delete && locked && time.is_some_and(|t| t != m.start) {
+                return Err(bad(id, "the markers are locked: turn off Markers ▸ Lock Markers to move them"));
+            }
             if !delete && (time.is_some() || duration.is_some()) {
                 let start = time.unwrap_or(m.start);
                 let dur = duration.unwrap_or(m.duration);
