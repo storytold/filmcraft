@@ -3131,7 +3131,16 @@ fn build() -> Vec<CommandSpec> {
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
                 let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
                 let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
-                let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
+                let dur = match p.get("durationFrames").filter(|v| !v.is_null()) {
+                    None => Tick::ZERO,
+                    Some(value) => {
+                        let frames = value
+                            .as_i64()
+                            .filter(|f| (0..=10_000_000).contains(f))
+                            .ok_or_else(|| bad("markers.add", "durationFrames must be a whole number from 0 to 10000000"))?;
+                        s.sequence_rate().tick_of(frames)
+                    }
+                };
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker {

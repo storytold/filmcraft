@@ -713,6 +713,27 @@ fn edit_marker_sets_every_field_in_one_undo_step_and_rejects_hostile_values() {
 }
 
 #[test]
+fn add_marker_rejects_bad_duration_frames() {
+    let mut s = demo();
+    let before = s.project.to_json();
+    for p in [json!({"durationFrames": -1}), json!({"durationFrames": 5.5}), json!({"durationFrames": 10_000_001}), json!({"durationFrames": "10"})] {
+        let err = s.execute("markers.add", p.clone()).unwrap_err().to_string();
+        assert!(err.contains("durationFrames must be a whole number from 0 to 10000000"), "{p} was refused for the wrong reason: {err}");
+        assert_eq!(s.project.to_json(), before, "{p} must leave the project unchanged");
+    }
+    let id = s.execute("markers.add", json!({"frame": 10, "durationFrames": 10})).unwrap()["marker"].as_u64().unwrap();
+    let m = s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+    assert_eq!(m.duration, s.sequence_rate().tick_of(10));
+    // absent and null stay "no duration"
+    let id = s.execute("markers.add", json!({"frame": 20})).unwrap()["marker"].as_u64().unwrap();
+    let m = s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+    assert_eq!(m.duration, Tick::ZERO);
+    let id = s.execute("markers.add", json!({"frame": 30, "durationFrames": null})).unwrap()["marker"].as_u64().unwrap();
+    let m = s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+    assert_eq!(m.duration, Tick::ZERO);
+}
+
+#[test]
 fn edit_marker_holds_source_markers_to_the_same_rules() {
     // #2470 review: a Source marker's edit went around the `kind` and duration checks
     let (mut s, bars) = fresh();
