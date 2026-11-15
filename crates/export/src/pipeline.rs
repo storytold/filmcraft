@@ -430,7 +430,7 @@ impl Pipeline {
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
-                filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+                filmcraft_render::try_render_sequence(&self.project, self.seq, t, self.opts, sources).map_err(ExportError::Encode)?
             }
         };
         let (rgba, hdr) = self.finish_image(img, t);

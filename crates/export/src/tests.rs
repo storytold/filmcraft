@@ -870,3 +870,99 @@ mod apv_chroma {
         }
     }
 }
+
+#[test]
+fn cpu_fallback_propagates_gpu_surface_readback_error() {
+    #[derive(Debug)]
+    struct FailingSurface;
+    impl filmcraft_frame::GpuSurface for FailingSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            0xBAD_CE01
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64 * 64 * 4
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> filmcraft_frame::Chroma {
+            filmcraft_frame::Chroma::C444
+        }
+        fn to_cpu(&self) -> std::result::Result<filmcraft_frame::PixelData, String> {
+            Err("synthetic cpu-fallback readback failure".to_string())
+        }
+    }
+    struct FailingSource {
+        info: filmcraft_media::MediaInfo,
+    }
+    impl filmcraft_media::MediaSource for FailingSource {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Ok(Arc::new(filmcraft_frame::VideoFrame {
+                width: 64,
+                height: 64,
+                data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingSurface)),
+                color: filmcraft_color::ColorInfo::REC709,
+                par: (1, 1),
+                pts: req.time,
+            }))
+        }
+        fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(filmcraft_media::MediaError::NoStream("audio"))
+        }
+    }
+
+    let g = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 64, 64, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let mut p = Project::new("cpu-fallback-fail");
+    let item = p.add_item(
+        "failing-gpu-source",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 64, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 0, None);
+    let r = FrameRate::FPS_24;
+    let clip = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(1)), r).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+
+    // CPU-only effect on an adjustment layer clears the GPU pool via `is_cpu_frame` and routes
+    // the frame through `pipeline.rs` CPU sequence rendering.
+    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 64, height: 64, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+    let mut over = p.make_track_item(adj, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(1)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
+    p.sequence_mut(seq).unwrap().video_tracks[1].items.push(over);
+
+    let mut sources = SourceMap::default();
+    sources.0.insert(item, Arc::new(FailingSource { info }));
+    let out = tmp("cpu-fallback-fail.png");
+    let _ = std::fs::remove_file(tmp("cpu-fallback-fail000.png"));
+    let s = ExportSettings {
+        format: Format::PngSequence,
+        path: out,
+        range: Some(TimeRange::new(Tick::ZERO, r.tick_of(1))),
+        gpu_rendering: crate::GpuRendering::Auto,
+        ..Default::default()
+    };
+    let res = export(&Arc::new(p), seq, &s, &sources, &Progress::default());
+    assert!(
+        matches!(res, Err(crate::ExportError::Encode(ref msg)) if msg.contains("synthetic cpu-fallback readback failure")),
+        "expected ExportError::Encode propagating GPU readback failure, got {res:?}"
+    );
+    assert!(!std::path::Path::new(&tmp("cpu-fallback-fail000.png")).exists(), "failed CPU-fallback readback must not write output frames");
+}

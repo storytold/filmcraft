@@ -389,4 +389,33 @@ fn gpu_export_matches_cpu_and_counts() {
         "opacity-masked export must fail when GPU surface readback fails: {masked_res:?}"
     );
     assert!(!masked_dir.join("img000.png").exists(), "failed masked GPU surface readback must not write output frames");
+
+    // Same failing GPU source under a CPU-only adjustment effect: clears the GPU pool via
+    // `is_cpu_frame` and must propagate the readback error through `try_render_sequence`.
+    let mut cpu_fx_proj = (*fail_proj).clone();
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let adj = cpu_fx_proj.add_item(
+        "adj",
+        Label::Iris,
+        ItemKind::AdjustmentLayer { width: 64, height: 64, rate: r, duration: filmcraft_time::Tick(TICKS_PER_SECOND) },
+        None,
+    );
+    let mut over =
+        cpu_fx_proj.make_track_item(adj, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(1)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
+    let v2 = filmcraft_project::TrackId(cpu_fx_proj.alloc_id());
+    let seq_mut = cpu_fx_proj.sequence_mut(fail_seq).unwrap();
+    seq_mut.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "V2".into()));
+    seq_mut.video_tracks[1].items.push(over);
+    let cpu_fx_dir = base.join("fail-cpu-fx-readback");
+    std::fs::create_dir_all(&cpu_fx_dir).unwrap();
+    let mut s_cpu_fx = ExportSettings { format: Format::PngSequence, path: cpu_fx_dir.join("img.png").to_string_lossy().into_owned(), ..Default::default() };
+    s_cpu_fx.range = s_fail.range;
+    s_cpu_fx.gpu_rendering = GpuRendering::Auto;
+    let cpu_fx_res = export(&Arc::new(cpu_fx_proj), fail_seq, &s_cpu_fx, &fail_sources, &Progress::default());
+    assert!(
+        matches!(cpu_fx_res, Err(filmcraft_export::ExportError::Encode(ref msg)) if msg.contains("synthetic source gpu surface readback failure")),
+        "CPU-only effect export must fail when GPU surface readback fails: {cpu_fx_res:?}"
+    );
+    assert!(!cpu_fx_dir.join("img000.png").exists(), "failed CPU-fallback readback must not write output frames");
 }
