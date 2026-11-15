@@ -15,7 +15,6 @@ filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-dng = { workspace = true }
 craft-dpx = { workspace = true }
-craft-tga = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
