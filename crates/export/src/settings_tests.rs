@@ -34,41 +34,58 @@ impl Drop for Scratch {
     }
 }
 
+/// Add generator `g` to `p` as a media item and register its source in `m`.
+fn add_generator(p: &mut Project, m: &mut SourceMap, g: GeneratorSource) -> ItemId {
+    let info = g.info().clone();
+    let id = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    m.0.insert(id, Arc::new(g) as Arc<dyn MediaSource>);
+    id
+}
+
 /// A `w`×`h` 24 fps sequence: a colour matte (1 s) and optionally a 440 Hz tone at `tone_db`.
 fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>, ItemId, SourceMap) {
     let mut p = Project::new("m");
     let r = FrameRate::FPS_24;
     let dur = Tick(2 * TICKS_PER_SECOND);
     let mut m = SourceMap::default();
-    let mut add = |p: &mut Project, g: GeneratorSource| {
-        let info = g.info().clone();
-        let id = p.add_item(
-            &info.name.clone(),
-            Label::Iris,
-            ItemKind::Media(Box::new(MediaClip {
-                media: MediaRef::Generator(g.generator.clone()),
-                info,
-                interpret: Default::default(),
-                mark_in: None,
-                mark_out: None,
-                markers: vec![],
-                offline: false,
-                proxy: None,
-                identity: None,
-            })),
-            None,
-        );
-        m.0.insert(id, Arc::new(g) as Arc<dyn MediaSource>);
-        id
-    };
-    let v = add(&mut p, GeneratorSource::new(Generator::ColorMatte { color }, w, h, r, dur));
-    let a = tone_db.map(|db| add(&mut p, GeneratorSource::new(Generator::Tone { hz: 440.0, db }, w, h, r, dur)));
+    let v = add_generator(&mut p, &mut m, GeneratorSource::new(Generator::ColorMatte { color }, w, h, r, dur));
+    let a = tone_db.map(|db| add_generator(&mut p, &mut m, GeneratorSource::new(Generator::Tone { hz: 440.0, db }, w, h, r, dur)));
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: r, ..Default::default() }, 1, 1, None);
     let vi = p.make_track_item(v, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(vi);
     if let Some(a) = a {
         let ai = p.make_track_item(a, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(ai);
+    }
+    (Arc::new(p), seq, m)
+}
+
+/// A `w`×`h` 24 fps sequence of one-frame colour mattes, `colors[i]` at frame `i`, so a decoder
+/// that shows frames out of presentation order is caught.
+fn matte_steps(colors: &[[f32; 4]], w: u32, h: u32) -> (Arc<Project>, ItemId, SourceMap) {
+    let mut p = Project::new("m");
+    let r = FrameRate::FPS_24;
+    let mut m = SourceMap::default();
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: r, ..Default::default() }, 1, 1, None);
+    for (i, &color) in colors.iter().enumerate() {
+        let v = add_generator(&mut p, &mut m, GeneratorSource::new(Generator::ColorMatte { color }, w, h, r, r.tick_of(1)));
+        let vi = p.make_track_item(v, TrackKind::Video, r.tick_of(i as i64), TimeRange::new(Tick::ZERO, r.tick_of(1)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(vi);
     }
     (Arc::new(p), seq, m)
 }
@@ -1168,6 +1185,66 @@ fn h264_profile_level_and_keyframes() {
 }
 
 /// H.264 High 10 (#1221): MP4 and MOV carry a 10-bit stream ffmpeg decodes without a message;
+/// High 4:2:2 exports 10-bit 4:2:2 in MP4 and QuickTime, and the High 4:2:2 Intra preset is
+/// QuickTime with 24-bit PCM, every frame a keyframe (#1221 stage 2). Each of the 12 frames is a
+/// different colour, so B-frame composition offsets that put a frame out of presentation order fail.
+#[test]
+fn h264_high422_export() {
+    // frame i: green steps by .04, about 25 luma codes, far beyond the ±3 tolerance
+    let colors: Vec<[f32; 4]> = (0..12).map(|i| [0.2, 0.3 + 0.04 * i as f32, 0.9, 1.0]).collect();
+    let (p, seq, m) = matte_steps(&colors, 320, 180);
+    let dir = Scratch::new("high422");
+    let preset = crate::presets::builtin_presets().into_iter().find(|x| x.name == "H.264 High 4:2:2 Intra").unwrap().settings;
+    assert_eq!(
+        (preset.h264_profile, preset.h264_intra_only, preset.multiplexer, preset.audio_codec()),
+        (H264Profile::High422, true, Multiplexer::Mov, AudioCodec::Pcm)
+    );
+    for (ext, s) in
+        [("mp4", ExportSettings { format: Format::H264, h264_profile: H264Profile::High422, include_audio: false, ..Default::default() }), ("mov", preset)]
+    {
+        let path = dir.path(&format!("high422.{ext}"));
+        let mut s = ExportSettings { path: path.clone(), ..s };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        assert!(summary.contains(if s.h264_intra_only { "High 4:2:2 Intra (10-bit 4:2:2)" } else { "High 4:2:2 (10-bit 4:2:2)" }), "{summary}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        // without the oracles (SKIPPED, a failure with FILMCRAFT_REQUIRE_ORACLES=1) the other format still exports
+        let Some(j) = ffprobe_json(&["-show_streams"], &path) else { continue };
+        let st = j["streams"].as_array().unwrap().iter().find(|x| x["codec_type"] == "video").unwrap().clone();
+        assert_eq!(st["profile"], if s.h264_intra_only { "High 4:2:2 Intra" } else { "High 4:2:2" }, "{path}");
+        assert_eq!(st["pix_fmt"], "yuv422p10le", "{path}");
+        let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("export high422") else { continue };
+        let out = std::process::Command::new(ffmpeg)
+            // `-v error`: ffmpeg warns that it guesses the layout of any QuickTime PCM track (ProRes too)
+            .args(["-v", "error", "-i", &path, "-map", "0:v", "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-"])
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        // each matte's BT.709 10-bit codes in a full-height (160x180) chroma plane: Y = 64 + 876·Y'
+        // with Y' = .2126·R + .7152·G + .0722·B, Cb = 512 + 896·(B − Y')/1.8556, Cr = 512 +
+        // 896·(R − Y')/1.5748 (for G = .6: 534, 687, 320), in presentation order for every one of
+        // the 12 exported frames (B-frames in the MP4, all intra in the preset's MOV)
+        let at = |o: usize| u16::from_le_bytes([out.stdout[2 * o], out.stdout[2 * o + 1]]) as i32;
+        let (ys, cs) = (320 * 180, 160 * 180);
+        let fs = ys + 2 * cs;
+        assert_eq!(out.stdout.len(), 12 * fs * 2, "{path}: 12 frames");
+        for (frame, c) in colors.iter().enumerate() {
+            let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            let want = (
+                (64.0 + 876.0 * luma).round() as i32,
+                (512.0 + 896.0 * (c[2] - luma) / 1.8556).round() as i32,
+                (512.0 + 896.0 * (c[0] - luma) / 1.5748).round() as i32,
+            );
+            // every sample of every plane: a 4:2:0-sized or mis-strided chroma plane leaves rows wrong
+            let base = frame * fs;
+            for (plane, start, len, want) in [("Y", base, ys, want.0), ("Cb", base + ys, cs, want.1), ("Cr", base + ys + cs, cs, want.2)] {
+                let bad = (start..start + len).find(|&o| (at(o) - want).abs() > 3);
+                assert!(bad.is_none(), "{path}: frame {frame} {plane} at sample {:?} is {:?}, want {want}", bad.map(|o| o - start), bad.map(at));
+            }
+        }
+    }
+}
+
 /// All Intra makes High 10 Intra with every frame a keyframe; the grey matte keeps its 10-bit code.
 #[test]
 fn h264_high10_and_all_intra_export() {

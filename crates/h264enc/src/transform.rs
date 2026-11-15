@@ -347,6 +347,69 @@ pub fn dequant_chroma_dc(c: &[i32; 4], qt: &QuantTables, qpc: u8) -> [i32; 4] {
     o
 }
 
+/// The 2x4 chroma DC transform of 4:2:2 (§8.5.11.2, 8-329): `A4 · c · B2` over a 4-row, 2-column array
+/// in raster order (row r, column k at `r * 2 + k`). Its own inverse up to a factor of 8.
+fn hadamard_2x4(c: &[i32; 8]) -> [i32; 8] {
+    let mut t = [0i32; 8];
+    // columns: the 4-point transform A4 (rows of A4: ++++, ++--, +--+, +-+-)
+    for k in 0..2 {
+        let (a, b, cc, d) = (c[k], c[2 + k], c[4 + k], c[6 + k]);
+        t[k] = a + b + cc + d;
+        t[2 + k] = a + b - cc - d;
+        t[4 + k] = a - b - cc + d;
+        t[6 + k] = a - b + cc - d;
+    }
+    // rows: the 2-point transform B2
+    let mut o = [0i32; 8];
+    for r in 0..4 {
+        o[r * 2] = t[r * 2] + t[r * 2 + 1];
+        o[r * 2 + 1] = t[r * 2] - t[r * 2 + 1];
+    }
+    o
+}
+
+/// Coding order of the 4:2:2 chroma DC levels: `cdc[i]` is the raster position `CHROMA_DC422_SCAN[i]`
+/// (c = [[c0, c2], [c1, c5], [c3, c6], [c4, c7]], §8.5.11.1).
+pub const CHROMA_DC422_SCAN: [usize; 8] = [0, 2, 1, 4, 6, 3, 5, 7];
+
+/// The chroma DC quantiser of 4:2:2: QP'C + 3 (§8.5.11.2).
+#[inline]
+pub fn chroma_dc422_qp(qpc: u8) -> u8 {
+    qpc + 3
+}
+
+/// 4:2:2 chroma DC (the eight 4x4 DC coefficients, raster 2 wide x 4 tall) -> levels in raster order.
+pub fn quant_chroma_dc422(dc: &[i32; 8], qt: &QuantTables, qpc: u8, dz: Deadzone) -> ([i32; 8], u32) {
+    let h = hadamard_2x4(dc);
+    let qd = chroma_dc422_qp(qpc);
+    let qbits = 16 + (qd / 6) as u32;
+    let f = ((1i64 << qbits) * dz.f256) >> 8;
+    let mf = qt.mf4[(qd % 6) as usize][0] as i64;
+    let mut out = [0i32; 8];
+    let mut nz = 0;
+    for i in 0..8 {
+        let v = h[i];
+        let a = ((v.unsigned_abs() as i64 * mf + f) >> qbits) as i32;
+        out[i] = if v < 0 { -a } else { a };
+        nz += (a != 0) as u32;
+    }
+    (out, nz)
+}
+
+/// Normative 4:2:2 chroma DC inverse (§8.5.11.2): levels (raster 2x4) -> dcC (raster), with
+/// qP,DC = QP'C + 3.
+pub fn dequant_chroma_dc422(c: &[i32; 8], qt: &QuantTables, qpc: u8) -> [i32; 8] {
+    let f = hadamard_2x4(c);
+    let qd = chroma_dc422_qp(qpc);
+    let ls = 16 * qt.v4[(qd % 6) as usize][0];
+    let q6 = (qd / 6) as u32;
+    let mut o = [0i32; 8];
+    for i in 0..8 {
+        o[i] = if q6 >= 6 { (f[i] * ls) << (q6 - 6) } else { (f[i] * ls + (1 << (5 - q6))) >> (6 - q6) };
+    }
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +573,26 @@ mod tests {
         blk[0] = o[0];
         let r = idct4(&blk);
         assert!(r.iter().all(|&v| (v - 10).abs() <= 1), "{r:?}");
+    }
+
+    #[test]
+    fn chroma_dc422_roundtrip() {
+        // the transform is its own inverse up to 8
+        let x = [7, -3, 12, 0, -5, 9, 1, 4];
+        let back = hadamard_2x4(&hadamard_2x4(&x));
+        assert_eq!(back, x.map(|v| v * 8));
+        // quantise then dequantise: dcC ≈ 4 · DC (the scale every dequantised 4x4 coefficient 0 has)
+        let qt = QuantTables::new();
+        for qpc in [0u8, 10, 20, 29, 33, 40, 51] {
+            let dc = [800, -400, 1200, 160, -960, 640, 320, 0];
+            let (lv, _) = quant_chroma_dc422(&dc, &qt, qpc, Deadzone { f256: 128 });
+            let r = dequant_chroma_dc422(&lv, &qt, qpc);
+            let step = 4.0 * 2f64.powf((qpc as f64 + 3.0 - 4.0) / 6.0) * 4.0;
+            for i in 0..8 {
+                let err = (r[i] - 4 * dc[i]).abs() as f64;
+                assert!(err <= 2.0 * step + 4.0, "qpc {qpc} [{i}]: {} vs {}", r[i], 4 * dc[i]);
+            }
+        }
     }
 
     #[test]

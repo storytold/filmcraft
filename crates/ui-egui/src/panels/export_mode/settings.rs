@@ -437,6 +437,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
+/// The Video section of Export mode: frame size, rate, field order, aspect, codec profile (H.264 High 10 / High 4:2:2), bitrate and keyframes.
 fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
     // frame size
     let mut match_size = s.frame_size.is_none();
@@ -522,9 +523,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
             } else {
                 row(ui, t, tl!("Profile"), |ui| {
-                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
+                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10, H264Profile::High422];
                     let labels: Vec<(String, Option<&str>)> = o.iter().map(|p| (p.label().to_string(), None)).collect();
-                    let tip = |i: usize| (o.get(i) == Some(&H264Profile::High10)).then(|| tl!("10-bit color"));
+                    let tip = |i: usize| match o.get(i) {
+                        Some(H264Profile::High10) => Some(tl!("10-bit color")),
+                        Some(H264Profile::High422) => Some(tl!("10-bit color with full-height chroma (4:2:2), for broadcast and editing")),
+                        _ => None,
+                    };
                     if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0, tip) {
                         s.h264_profile = o[i];
                     }

@@ -66,6 +66,7 @@ pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result
             (false, H264Profile::High) => VtProfile::High,
             // 10-bit H.264 is the built-in encoder's
             (false, H264Profile::High10) => return Err("High 10".into()),
+            (false, H264Profile::High422) => return Err("High 4:2:2".into()),
         },
         rate: match s.bitrate_mode {
             BitrateMode::Cbr => VtRate::Cbr { kbps },
@@ -328,6 +329,19 @@ mod tests {
             keyframe_interval: 30,
             profile: VtProfile::High,
             rate: VtRate::Vbr { target_kbps: 2000, max_kbps: 3000 },
+        }
+    }
+
+    /// The 10-bit H.264 profiles are the built-in encoder's: `config_for` declines High 10 and
+    /// High 4:2:2 by name, so the export falls back to software, while High takes the hardware path.
+    /// Pure settings logic: runs without a hardware encoder.
+    #[test]
+    fn ten_bit_h264_profiles_decline_to_the_built_in_encoder() {
+        let s = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, bitrate_mode: BitrateMode::Vbr1Pass, ..Default::default() };
+        let rate = FrameRate { num: 30, den: 1 };
+        assert!(config_for(W, H, rate, &ExportSettings { h264_profile: H264Profile::High, ..s.clone() }).is_ok());
+        for (profile, why) in [(H264Profile::High10, "High 10"), (H264Profile::High422, "High 4:2:2")] {
+            assert_eq!(config_for(W, H, rate, &ExportSettings { h264_profile: profile, ..s.clone() }).err().as_deref(), Some(why));
         }
     }
 

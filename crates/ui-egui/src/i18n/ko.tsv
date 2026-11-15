@@ -3707,3 +3707,9 @@
 	Toggle Color Grading Section	색 보정 섹션 전환
 	Color Grading Section	색 보정 섹션
 	Read Video Scopes	비디오 스코프 읽기
+
+# Export: H.264 High 4:2:2 (#1221).
+	High 4:2:2	High 4:2:2
+	10-bit color with full-height chroma (4:2:2), for broadcast and editing	전체 높이 색차를 갖는 10비트 색상(4:2:2), 방송 및 편집용
+	H.264 High 4:2:2 Intra	H.264 High 4:2:2 Intra
+	QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate	QuickTime, H.264 High 4:2:2 Intra(10비트 4:2:2, 모든 프레임이 키프레임), CRF 12, 24비트 48kHz PCM, 편집하기 쉬운 중간 파일

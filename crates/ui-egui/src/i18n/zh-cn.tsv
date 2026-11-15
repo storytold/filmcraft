@@ -3773,3 +3773,9 @@
 	Toggle Color Grading Section	切换色彩分级分区
 	Color Grading Section	色彩分级分区
 	Read Video Scopes	读取视频示波器
+
+# Export: H.264 High 4:2:2 (#1221).
+	High 4:2:2	High 4:2:2
+	10-bit color with full-height chroma (4:2:2), for broadcast and editing	全高度色度的 10 位色彩 (4:2:2)，适用于广播和剪辑
+	H.264 High 4:2:2 Intra	H.264 High 4:2:2 Intra
+	QuickTime, H.264 High 4:2:2 Intra (10-bit 4:2:2, every frame a keyframe), CRF 12, 24-bit 48 kHz PCM; an edit-friendly intermediate	QuickTime，H.264 High 4:2:2 Intra（10 位 4:2:2，每帧都是关键帧），CRF 12，24 位 48 kHz PCM；便于剪辑的中间文件

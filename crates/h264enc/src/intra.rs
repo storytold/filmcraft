@@ -218,23 +218,26 @@ pub fn pred16x16<P: Pixel>(mode: u8, top: &[P; 16], left: &[P; 16], tl: P, has_t
     }
 }
 
-/// Chroma 8x8 prediction (4:2:0). Modes: 0 DC, 1 H, 2 V, 3 plane.
+/// Chroma prediction of one component (§8.3.4): 8x8 (4:2:0) or 8x16 (4:2:2, `rows` = 16) into an
+/// 8-wide `out`. Modes: 0 DC, 1 H, 2 V, 3 plane. `left` holds `rows` samples.
 #[allow(clippy::too_many_arguments)]
-pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 8], tl: P, has_top: bool, has_left: bool, d: Depth, out: &mut [P; 64]) {
+pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 16], tl: P, has_top: bool, has_left: bool, d: Depth, rows: usize, out: &mut [P; 128]) {
     match mode {
         0 => {
-            for by in 0..2 {
+            for by in 0..rows / 4 {
                 for bx in 0..2 {
                     let st: i32 = top[bx * 4..bx * 4 + 4].iter().map(|&v| v.get()).sum();
                     let sl: i32 = left[by * 4..by * 4 + 4].iter().map(|&v| v.get()).sum();
-                    let dc = if (bx == 0 && by == 0) || (bx == 1 && by == 1) {
+                    // (xO, yO) = (0, 0) or both > 0: top and left; xO > 0, yO = 0: top first;
+                    // xO = 0, yO > 0: left first (§8.3.4.1-3)
+                    let dc = if (bx == 0 && by == 0) || (bx > 0 && by > 0) {
                         match (has_top, has_left) {
                             (true, true) => (st + sl + 4) >> 3,
                             (true, false) => (st + 2) >> 2,
                             (false, true) => (sl + 2) >> 2,
                             _ => d.mid,
                         }
-                    } else if bx == 1 && by == 0 {
+                    } else if bx > 0 && by == 0 {
                         if has_top {
                             (st + 2) >> 2
                         } else if has_left {
@@ -258,30 +261,34 @@ pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 8], tl: P, has_t
             }
         }
         1 => {
-            for y in 0..8 {
+            for y in 0..rows {
                 out[y * 8..y * 8 + 8].fill(left[y]);
             }
         }
         2 => {
-            for y in 0..8 {
+            for y in 0..rows {
                 out[y * 8..y * 8 + 8].copy_from_slice(top);
             }
         }
         _ => {
             let p_t = |x: i32| if x < 0 { tl.get() } else { top[x as usize].get() };
             let p_l = |y: i32| if y < 0 { tl.get() } else { left[y as usize].get() };
+            // yCF = 4 for 4:2:2 (chroma_format_idc != 1), 0 for 4:2:0; xCF = 0 for both
+            let ycf = if rows == 16 { 4 } else { 0 };
             let mut h = 0;
             let mut v = 0;
             for i in 0..4 {
                 h += (i + 1) * (p_t(4 + i) - p_t(2 - i));
-                v += (i + 1) * (p_l(4 + i) - p_l(2 - i));
             }
-            let a = 16 * (p_l(7) + p_t(7));
+            for i in 0..4 + ycf {
+                v += (i + 1) * (p_l(4 + ycf + i) - p_l(2 + ycf - i));
+            }
+            let a = 16 * (p_l(rows as i32 - 1) + p_t(7));
             let b = (34 * h + 32) >> 6;
-            let c = (34 * v + 32) >> 6;
-            for y in 0..8 {
+            let c = ((34 - 29 * (rows == 16) as i32) * v + 32) >> 6;
+            for y in 0..rows {
                 for x in 0..8 {
-                    out[y * 8 + x] = P::clip((a + b * (x as i32 - 3) + c * (y as i32 - 3) + 16) >> 5, d);
+                    out[y * 8 + x] = P::clip((a + b * (x as i32 - 3) + c * (y as i32 - 3 - ycf) + 16) >> 5, d);
                 }
             }
         }
@@ -291,6 +298,54 @@ pub fn pred_chroma<P: Pixel>(mode: u8, top: &[P; 8], left: &[P; 8], tl: P, has_t
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 4:2:2 chroma (8x16, `rows` = 16) in all four modes, with expected values worked by hand from
+    /// §8.3.4: DC per 4x4 block at the picture's top and left edges, H, V, and plane with yCF = 4.
+    #[test]
+    fn chroma_8x16_all_modes() {
+        let d = Depth::new(8);
+        // top = tl = 100 (flat, so the plane's H = 0); left[y] = 104 + 4y continues the ramp from p[-1, -1]
+        let top = [100u8; 8];
+        let left: [u8; 16] = std::array::from_fn(|y| 104 + 4 * y as u8);
+        let mut o = [0u8; 128];
+        let at = |o: &[u8; 128], x: usize, y: usize| o[y * 8 + x];
+        // DC, both neighbours: block (0, 0) and the right-hand blocks below the top row use top + left,
+        // (1, 0) top only, the left-hand blocks below the top row left only
+        pred_chroma(0, &top, &left, 100, true, true, d, 16, &mut o);
+        let lsum = |by: usize| (0..4).map(|y| 104 + 4 * (by * 4 + y) as i32).sum::<i32>();
+        assert_eq!(at(&o, 0, 0) as i32, (400 + lsum(0) + 4) >> 3);
+        assert_eq!(at(&o, 7, 0), 100, "block (1, 0): top only");
+        for by in 1..4 {
+            assert_eq!(at(&o, 0, by * 4) as i32, (lsum(by) + 2) >> 2, "block (0, {by}): left only");
+            assert_eq!(at(&o, 7, by * 4 + 3) as i32, (400 + lsum(by) + 4) >> 3, "block (1, {by}): top and left");
+        }
+        // DC at the top picture edge (no top): every block from its own left rows
+        pred_chroma(0, &top, &left, 100, false, true, d, 16, &mut o);
+        for by in 0..4 {
+            assert_eq!(at(&o, 6, by * 4 + 1) as i32, (lsum(by) + 2) >> 2, "no top, block row {by}");
+        }
+        // DC at the left picture edge (no left): every block from the top row
+        pred_chroma(0, &top, &left, 100, true, false, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 100), "no left: all blocks from the top");
+        // DC with neither: mid-grey for all 16 rows
+        pred_chroma(0, &top, &left, 100, false, false, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 128));
+        // horizontal and vertical cover all 16 rows
+        pred_chroma(1, &top, &left, 100, true, true, d, 16, &mut o);
+        assert!((0..16).all(|y| (0..8).all(|x| at(&o, x, y) == left[y])));
+        pred_chroma(2, &top, &left, 100, true, true, d, 16, &mut o);
+        assert!(o.iter().all(|&v| v == 100));
+        // plane: H = 0; V = sum over y' = 0..7 of (y' + 1)·(p[-1, 8 + y'] − p[-1, 6 − y']) = 8·(1² + … + 8²)
+        // = 1632, c = (5·V + 32) >> 6 = 128, a = 16·(p[-1, 15] + p[7, -1]) = 16·(164 + 100) = 4224,
+        // pred = (a + c·(y − 3 − yCF) + 16) >> 5 = (3344 + 128y) >> 5 = 104 + 4y, the left ramp itself
+        // (4:2:0's yCF = 0 and factor 34 would give a different slope)
+        pred_chroma(3, &top, &left, 100, true, true, d, 16, &mut o);
+        for y in 0..16 {
+            for x in 0..8 {
+                assert_eq!(at(&o, x, y) as usize, 104 + 4 * y, "plane at ({x}, {y})");
+            }
+        }
+    }
 
     #[test]
     fn dc_and_vertical() {
