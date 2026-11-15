@@ -304,6 +304,7 @@ pub mod tags {
     pub const MAKE: u16 = 271;
     pub const MODEL: u16 = 272;
     pub const STRIP_OFFSETS: u16 = 273;
+    pub const ORIENTATION: u16 = 274;
     pub const SAMPLES_PER_PIXEL: u16 = 277;
     pub const ROWS_PER_STRIP: u16 = 278;
     pub const STRIP_BYTE_COUNTS: u16 = 279;
