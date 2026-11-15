@@ -157,28 +157,28 @@ fn l_source(s: shared::Source) -> local::Source {
         nested: s.nested,
     }
 }
-pub(super) fn to_shared(d: local::Document) -> shared::Document {
+pub(crate) fn to_shared(d: local::Document) -> shared::Document {
     shared::Document {
         compositions: d.compositions.into_iter().map(s_comp).collect(),
         sources: d.sources.into_iter().map(s_source).collect(),
         nested: d.nested.into_iter().map(s_comp).collect(),
     }
 }
-pub(super) fn from_shared(d: shared::Document) -> local::Document {
+pub(crate) fn from_shared(d: shared::Document) -> local::Document {
     local::Document {
         compositions: d.compositions.into_iter().map(l_comp).collect(),
         sources: d.sources.into_iter().map(l_source).collect(),
         nested: d.nested.into_iter().map(l_comp).collect(),
     }
 }
-pub(super) fn error(e: craft_aaf::Error) -> crate::Error {
+pub(crate) fn error(e: craft_aaf::Error) -> crate::Error {
     match e {
         craft_aaf::Error::Parse { format, message } => crate::Error::Parse { format, message },
         craft_aaf::Error::Empty => crate::Error::Empty,
         craft_aaf::Error::Other(s) => crate::Error::Other(s),
     }
 }
-pub(super) fn merge_report(dst: &mut crate::Report, src: craft_aaf::Report) {
+pub(crate) fn merge_report(dst: &mut crate::Report, src: craft_aaf::Report) {
     for e in src.entries {
         let level = match e.level {
             craft_aaf::report::Level::Info => crate::Level::Info,

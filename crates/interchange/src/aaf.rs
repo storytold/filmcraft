@@ -32,10 +32,10 @@
 //! sequences (a composition that others use becomes a nested sequence), media items (linked by path; embedded audio is returned as WAV files for the
 //! caller to write) and markers.
 
+#[cfg(test)]
 mod ids;
-mod read;
+#[cfg(test)]
 pub(crate) mod store;
-mod write;
 
 use filmcraft_project::{ItemId, Project};
 use serde::{Deserialize, Serialize};
@@ -61,8 +61,19 @@ pub fn export(project: &Project, sequence: ItemId, opts: &AafOptions) -> Result<
     crate::warn_marker_metadata_loss(project, sequence, &mut report);
     let name = opts.name.clone().or_else(|| project.item(sequence).map(|i| i.name.clone())).unwrap_or_else(|| "Sequence".into());
     let doc = comp::from_project(project, sequence, &name, &opts.media, comp::Nests::Compositions, &mut report)?;
-    let version = if opts.small_sectors { filmcraft_cfb::Version::V3 } else { filmcraft_cfb::Version::V4 };
-    let bytes = write::write(&doc, version, &mut report)?;
+    let identity = craft_aaf::Identity {
+        company: "FilmCraft",
+        product: "FilmCraft",
+        version: env!("CARGO_PKG_VERSION"),
+        platform: "FilmCraft",
+        product_id: [0x4d, 0x4c, 0x49, 0x46, 0x52, 0x43, 0x46, 0x41, b'T', b'-', b'A', b'A', b'F', b'-', b'E', b'P'],
+    };
+    let options = craft_aaf::aaf::WriteOptions { identity, small_sectors: opts.small_sectors };
+    let references = craft_aaf::aaf::ReferenceOptions { source_slot_rate: false, encode_relative_locator: false };
+    let mut shared_report = craft_aaf::Report::default();
+    let bytes = craft_aaf::aaf::write_with_references(&crate::omf::shared_model::to_shared(doc), &options, &references, &mut shared_report)
+        .map_err(crate::omf::shared_model::error)?;
+    crate::omf::shared_model::merge_report(&mut report, shared_report);
     Ok((bytes, report))
 }
 
@@ -70,7 +81,17 @@ pub fn export(project: &Project, sequence: ItemId, opts: &AafOptions) -> Result<
 /// as WAV files whose paths are the paths of the imported media items.
 pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<ExtractedMedia>, Report)> {
     let mut report = Report::default();
-    let doc = read::read(bytes, &mut report)?;
+    let options = craft_aaf::aaf::ReadOptions {
+        source_slot_rate: false,
+        infer_clip_name: false,
+        decode_relative_locator: false,
+        report_flattening: false,
+        permissive_pcm: true,
+    };
+    let mut shared_report = craft_aaf::Report::default();
+    let doc = craft_aaf::aaf::read_with_options(bytes, &options, &mut shared_report).map_err(crate::omf::shared_model::error)?;
+    crate::omf::shared_model::merge_report(&mut report, shared_report);
+    let doc = crate::omf::shared_model::from_shared(doc);
     let (imported, extracted) = comp::to_project(doc, opts, &mut report)?;
     let mut imported = imported;
     crate::bound_start_timecodes(&mut imported, &mut report);
@@ -80,13 +101,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<Extra
 /// Whether `bytes` look like an AAF file (a compound file whose root has the AAF root class or a
 /// `Header-2` storage).
 pub fn sniff(bytes: &[u8]) -> bool {
-    if !filmcraft_cfb::sniff(bytes) {
-        return false;
-    }
-    match filmcraft_cfb::CompoundFile::open(bytes) {
-        Ok(cf) => cf.root().clsid == ids::ROOT || cf.find("Header-2").is_ok(),
-        Err(_) => false,
-    }
+    craft_aaf::aaf::sniff(bytes)
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@
 //! sequence. Premiere Pro's OMF export does the same.
 
 pub(crate) use craft_aaf::omf::bento;
-mod shared_model;
+pub(crate) mod shared_model;
 
 use filmcraft_project::{ItemId, Project};
 use serde::{Deserialize, Serialize};
