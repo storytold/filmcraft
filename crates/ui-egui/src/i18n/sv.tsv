@@ -3471,6 +3471,7 @@
 	Encoder	Kodare
 	Hardware (H.265 has no software encoder)	Hårdvara (H.265 saknar programvarukodare)
 	Hardware (AV1 has no software encoder)	Hårdvara (AV1 saknar programvarukodare)
+	Software (AV1)	Programvara (AV1)
 	Text Properties	Textegenskaper
 	Text Box Height	Textrutans höjd
 	Paragraph Text	Stycketext

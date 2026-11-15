@@ -3470,6 +3470,7 @@
 	Encoder	Kodlayıcı
 	Hardware (H.265 has no software encoder)	Donanım (H.265'in yazılımsal kodlayıcısı yoktur)
 	Hardware (AV1 has no software encoder)	Donanım (AV1'in yazılımsal kodlayıcısı yoktur)
+	Software (AV1)	Yazılımsal (AV1)
 	Text Properties	Metin Özellikleri
 	Text Box Height	Metin Kutusu Yüksekliği
 	Paragraph Text	Paragraf Metni

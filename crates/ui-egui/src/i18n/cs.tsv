@@ -3456,6 +3456,7 @@
 	Encoder	Kodér
 	Hardware (H.265 has no software encoder)	Hardwarový (H.265 nemá softwarový kodér)
 	Hardware (AV1 has no software encoder)	Hardwarový (AV1 nemá softwarový kodér)
+	Software (AV1)	Softwarový (AV1)
 	Text Properties	Vlastnosti textu
 	Text Box Height	Výška textového pole
 	Paragraph Text	Odstavcový text

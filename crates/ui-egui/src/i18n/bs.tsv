@@ -3471,6 +3471,7 @@
 	Encoder	Koder
 	Hardware (H.265 has no software encoder)	Hardver (H.265 nema softverski koder)
 	Hardware (AV1 has no software encoder)	Hardver (AV1 nema softverski koder)
+	Software (AV1)	Softverski (AV1)
 	Text Properties	Svojstva teksta
 	Text Box Height	Visina okvira za tekst
 	Paragraph Text	Tekst pasusa
