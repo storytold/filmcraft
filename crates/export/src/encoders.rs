@@ -1,5 +1,5 @@
 use super::convert::{
-    Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
+    Matrix, Planes444, covers, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
 };
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
@@ -129,8 +129,8 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
 
 /// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
 struct ProResEncoder {
-    enc: filmcraft_prores::Encoder,
-    profile: filmcraft_prores::Profile,
+    enc: craft_video::prores::Encoder,
+    profile: craft_video::prores::Profile,
     /// Code the frames' alpha channel (4444 profiles with Include Alpha Channel).
     alpha: bool,
     w: u32,
@@ -150,10 +150,10 @@ impl VideoEncoder for ProResEncoder {
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
         let chroma = self.profile.chroma();
-        let mut fr = filmcraft_prores::Frame::new(f.width, f.height, chroma, 10, self.alpha);
+        let mut fr = craft_video::prores::Frame::new(f.width, f.height, chroma, 10, self.alpha).map_err(|e| ExportError::Encode(e.to_string()))?;
         let (w, h) = (f.width as usize, f.height as usize);
         timed(Stage::Convert, || match (chroma, f.hdr) {
-            (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
+            (craft_video::prores::ChromaFormat::Yuv444, hdr) => {
                 let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
                 to_yuv444_10(f.rgba, hdr, w, h, Matrix::new(kr, kb), Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: fr.alpha.as_deref_mut() })
             }
@@ -172,8 +172,8 @@ impl VideoEncoder for ProResEncoder {
 }
 
 /// The ProRes profile named by [`ExportSettings::prores_profile`].
-pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
-    use filmcraft_prores::Profile;
+pub fn prores_profile(name: &str) -> craft_video::prores::Profile {
+    use craft_video::prores::Profile;
     match name.to_ascii_lowercase().as_str() {
         "proxy" => Profile::Proxy,
         "lt" => Profile::Lt,
@@ -187,13 +187,13 @@ pub fn prores_profile(name: &str) -> filmcraft_prores::Profile {
 pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::ProRes).then(|| {
         let profile = prores_profile(&s.prores_profile);
-        let mut cfg = filmcraft_prores::EncoderConfig::new(profile, w, h);
+        let mut cfg = craft_video::prores::EncoderConfig::new(profile, w, h);
         if s.signal.is_hdr() {
-            cfg.color = filmcraft_prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
+            cfg.color = craft_video::prores::ColorInfo { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix };
         }
         let alpha = s.keeps_alpha();
         cfg.encode_alpha = alpha;
-        let enc = filmcraft_prores::Encoder::with_config(cfg);
+        let enc = craft_video::prores::Encoder::with_config(cfg);
         Ok(Box::new(ProResEncoder { enc, profile, alpha, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
@@ -279,6 +279,9 @@ struct ApvEncoder {
     h: u32,
     rate: FrameRate,
     signal: ColorSignal,
+    /// Scratch chroma planes for the 4:0:0 luma conversion, reused across frames.
+    cb422: Vec<u16>,
+    cr422: Vec<u16>,
 }
 
 impl VideoEncoder for ApvEncoder {
@@ -291,44 +294,46 @@ impl VideoEncoder for ApvEncoder {
     fn timescale(&self) -> u32 {
         self.rate.num as u32
     }
+    /// Converts `f` into the profile's planes (4:4:4 at full chroma resolution, 4:2:2, or 4:0:0
+    /// luma only), BT.709 for SDR and the signal's matrix for HDR, and codes one access unit.
+    /// A picture buffer shorter than `width` x `height` is an error.
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        use craft_video::apv::ChromaFormat as Cf;
         let (w, h) = (f.width as usize, f.height as usize);
-        let mut fr = craft_video::apv::Frame::new(f.width, f.height, self.chroma, 10, self.chroma == craft_video::apv::ChromaFormat::Yuv4444);
-        let mut y422 = vec![0u16; w * h];
-        let cw = w.div_ceil(2);
-        let mut cb422 = vec![0u16; cw * h];
-        let mut cr422 = vec![0u16; cw * h];
+        let short = |what: &str, got: usize| ExportError::Encode(format!("a {w}x{h} picture needs {what}, got {got}"));
         match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut y422, &mut cb422, &mut cr422);
-            }
-            None => rgba_to_yuv422_10(f.rgba, w, h, &mut y422, &mut cb422, &mut cr422),
+            Some(rgb) if !covers(rgb.len(), w, h, 3) => return Err(short("w*h*3 floats", rgb.len())),
+            None if !covers(f.rgba.len(), w, h, 4) => return Err(short("w*h*4 bytes", f.rgba.len())),
+            _ => {}
         }
-        fr.y = y422;
-        match self.chroma {
-            craft_video::apv::ChromaFormat::Monochrome => {
-                fr.cb.clear();
-                fr.cr.clear();
-            }
-            craft_video::apv::ChromaFormat::Yuv422 => {
-                fr.cb = cb422;
-                fr.cr = cr422;
-            }
-            craft_video::apv::ChromaFormat::Yuv444 | craft_video::apv::ChromaFormat::Yuv4444 => {
-                for row in 0..h {
-                    for x in 0..w {
-                        fr.cb[row * w + x] = cb422[row * cw + x / 2];
-                        fr.cr[row * w + x] = cr422[row * cw + x / 2];
-                    }
+        let mut fr = craft_video::apv::Frame::new(f.width, f.height, self.chroma, 10, self.chroma == Cf::Yuv4444);
+        let (kr, kb) = if f.hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
+        let chroma = self.chroma;
+        let (cb422, cr422) = (&mut self.cb422, &mut self.cr422);
+        timed(Stage::Convert, || match chroma {
+            Cf::Yuv444 | Cf::Yuv4444 => to_yuv444_10(
+                f.rgba,
+                f.hdr,
+                w,
+                h,
+                Matrix::new(kr, kb),
+                Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: fr.alpha.as_deref_mut() },
+            ),
+            Cf::Yuv422 => match f.hdr {
+                Some(rgb) => rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut fr.y, &mut fr.cb, &mut fr.cr),
+                None => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
+            },
+            Cf::Monochrome => {
+                // the 4:2:2 converters want chroma planes; only the luma is coded
+                let n = w.div_ceil(2).saturating_mul(h);
+                cb422.resize(n, 0);
+                cr422.resize(n, 0);
+                match f.hdr {
+                    Some(rgb) => rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut fr.y, cb422, cr422),
+                    None => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, cb422, cr422),
                 }
-                if let Some(a) = fr.alpha.as_mut() {
-                    for (i, dst) in a.iter_mut().enumerate() {
-                        *dst = f.rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
-                    }
-                }
             }
-        }
+        });
         let data = self.enc.encode_raw_au(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(vec![EncodedPacket { data, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
@@ -346,14 +351,14 @@ pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
         }
         let chroma = cfg.chroma;
         let enc = craft_video::apv::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
-        Ok(Box::new(ApvEncoder { enc, chroma, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
+        Ok(Box::new(ApvEncoder { enc, chroma, w, h, rate, signal: s.signal, cb422: Vec::new(), cr422: Vec::new() }) as Box<dyn VideoEncoder>)
     })
 }
 
-/// H.264 (our encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
+/// H.264 (shared encoder): sRGB/709 RGBA8 → limited-range BT.709 4:2:0, 8-bit, or 10-bit for High 10
 /// (HDR frames from their float pixels), length-prefixed samples with the `avcC` in the sample entry.
 struct H264Encoder {
-    enc: filmcraft_h264enc::Encoder,
+    enc: craft_video::h264::Encoder,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -402,15 +407,15 @@ impl H264Encoder {
     }
 
     /// Encode `f` at 10 bits (High 10), converting it on the encoder's threads.
-    fn encode10(&mut self, f: &EncoderFrame) -> Result<Vec<filmcraft_h264enc::Packet>> {
+    fn encode10(&mut self, f: &EncoderFrame) -> Result<Vec<craft_video::h264::Packet>> {
         let (enc, y, u, v, signal) = (&self.enc, &mut self.y16, &mut self.u16, &mut self.v16, self.signal);
         timed(Stage::Convert, || enc.install(|| h264_input10(f, signal, y, u, v)))?;
         let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
+        let frame = craft_video::h264::YuvFrame16 { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
         self.enc.encode16(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))
     }
 
-    fn packets(&self, ps: Vec<filmcraft_h264enc::Packet>) -> Vec<EncodedPacket> {
+    fn packets(&self, ps: Vec<craft_video::h264::Packet>) -> Vec<EncodedPacket> {
         ps.into_iter()
             .map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: self.rate.den as u32, composition_offset: (p.pts - p.dts) as i32 })
             .collect()
@@ -453,7 +458,7 @@ impl VideoEncoder for H264Encoder {
             }
         }
         let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let frame = craft_video::h264::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
@@ -465,7 +470,7 @@ impl VideoEncoder for H264Encoder {
         // With B-frames the first DTS is one frame before the first PTS.
         (self.enc.delay() > 0).then_some(self.rate.den)
     }
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<craft_video::h264::PassStats> {
         self.enc.pass_stats()
     }
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
@@ -493,30 +498,32 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     if format != Format::H264 {
         return None;
     }
-    let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    let mut cfg = craft_video::h264::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    // Keep the existing FilmCraft identification SEI string instead of the shared crate default.
+    cfg.writer = format!("filmcraft-h264enc {}", env!("CARGO_PKG_VERSION"));
     // MXF carries the Annex B byte stream (ST 381-3) with in-band parameter sets
-    cfg.format = if s.format.is_mxf() { filmcraft_h264enc::PacketFormat::AnnexB } else { filmcraft_h264enc::PacketFormat::LengthPrefixed };
+    cfg.format = if s.format.is_mxf() { craft_video::h264::PacketFormat::AnnexB } else { craft_video::h264::PacketFormat::LengthPrefixed };
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
-        BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
+        BitrateMode::Cbr => craft_video::h264::RateControl::Cbr { kbps },
         // the encoder clamps to 0..=51; a NaN from a hand-edited preset becomes the default
-        BitrateMode::Crf => filmcraft_h264enc::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
-        _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
+        BitrateMode::Crf => craft_video::h264::RateControl::Crf(if s.crf.is_finite() { s.crf } else { DEFAULT_CRF }),
+        _ => craft_video::h264::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
     };
     cfg.pass = match &s.h264_pass {
-        H264Pass::Single => filmcraft_h264enc::Pass::Single,
-        H264Pass::First => filmcraft_h264enc::Pass::First,
-        H264Pass::Second(st) => filmcraft_h264enc::Pass::Second(st.clone()),
+        H264Pass::Single => craft_video::h264::Pass::Single,
+        H264Pass::First => craft_video::h264::Pass::First,
+        H264Pass::Second(st) => craft_video::h264::Pass::Second(st.clone()),
     };
     cfg.profile = match s.h264_profile {
-        H264Profile::Baseline => filmcraft_h264enc::Profile::Baseline,
-        H264Profile::Main => filmcraft_h264enc::Profile::Main,
-        H264Profile::High => filmcraft_h264enc::Profile::High,
-        H264Profile::High10 => filmcraft_h264enc::Profile::High10,
+        H264Profile::Baseline => craft_video::h264::Profile::Baseline,
+        H264Profile::Main => craft_video::h264::Profile::Main,
+        H264Profile::High => craft_video::h264::Profile::High,
+        H264Profile::High10 => craft_video::h264::Profile::High10,
     };
     cfg.bit_depth = s.h264_profile.bit_depth();
     cfg.intra_only = s.h264_intra_only;
@@ -525,7 +532,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         cfg.sar = (n.clamp(1, 65535) as u16, d.clamp(1, 65535) as u16);
     }
     if s.signal.is_hdr() {
-        cfg.color = filmcraft_h264enc::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
+        cfg.color = craft_video::h264::ColorConfig { primaries: s.signal.primaries, transfer: s.signal.transfer, matrix: s.signal.matrix, full_range: false };
         if let Some((md, cll)) = s.signal.static_metadata() {
             let mut b = [0u8; 24];
             b.copy_from_slice(&md.to_bytes());
@@ -534,7 +541,7 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         }
     }
     Some(
-        filmcraft_h264enc::Encoder::new(cfg)
+        craft_video::h264::Encoder::new_with_motion_search_starts(cfg, craft_video::h264::MotionSearchStarts::SeedAndNeighbour)
             .map(|enc| {
                 let (y, u, v, y16, u16, v16) = Default::default();
                 Box::new(H264Encoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() }) as Box<dyn VideoEncoder>

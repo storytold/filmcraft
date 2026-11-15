@@ -523,7 +523,7 @@ impl ExportSettings {
     pub fn supports_alpha(&self) -> bool {
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
-            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
+            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == craft_video::prores::ChromaFormat::Yuv444,
             _ => false,
         }
     }
@@ -736,7 +736,7 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::ProRes => {
-                    use filmcraft_prores::Profile;
+                    use craft_video::prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",

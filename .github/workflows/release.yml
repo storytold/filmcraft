@@ -38,6 +38,7 @@ jobs:
       app-name: filmcraft
       app-title: FilmCraft
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      web-craft-fonts: true
       version: ${{ inputs.version }}
       contributors-artifact: ${{ needs.credits.outputs.artifact-name }}
     secrets:

@@ -142,7 +142,13 @@ fn timed_out_connection_releases_slot(partial: &[u8]) {
     let completion = finished.recv_timeout(Duration::from_secs(5));
     let mut unsolicited = String::new();
     if completion.is_ok() {
-        client.read_to_string(&mut unsolicited).unwrap();
+        // Windows can end the expired connection with a reset instead of a close. Either way no
+        // reply came, and bytes read before a reset stay in `unsolicited` for the check below.
+        match client.read_to_string(&mut unsolicited) {
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {}
+            Err(e) => panic!("reading after the server closed the connection failed: {e}"),
+        }
     }
     // Always unblock and join the test worker before asserting, even on the unfixed server.
     let unexpected_command = rx.try_recv().is_ok();
