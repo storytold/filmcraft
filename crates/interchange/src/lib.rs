@@ -32,10 +32,13 @@ pub mod essence;
 pub mod fcp7;
 pub mod fcpxml;
 pub mod omf;
-pub mod otio;
+#[cfg(test)]
+#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+mod otio;
 
 mod common;
 mod comp;
+mod timeline_model;
 pub mod wav;
 mod xml;
 
@@ -324,7 +327,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Edl => edl::import(&text, opts, &mut report)?,
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
-        Format::Otio => otio::import(&text, opts, &mut report)?,
+        Format::Otio => timeline_model::import_otio(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     let mut imported = imported;
@@ -478,7 +481,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Edl => edl::export(project, sequence, opts, &mut report)?,
         Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
-        Format::Otio => otio::export(project, sequence, opts, &mut report)?,
+        Format::Otio => timeline_model::export_otio(project, sequence, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     Ok((text.into_bytes(), report))
