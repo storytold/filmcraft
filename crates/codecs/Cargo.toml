@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-y4m = { workspace = true }
 craft-audio = { workspace = true }
 craft-video = { workspace = true }
 filmcraft-time = { workspace = true }

@@ -1375,6 +1375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-y4m"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=25c7a8959cf70cf8c3f076d05baadb0990710569#25c7a8959cf70cf8c3f076d05baadb0990710569"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2240,6 +2248,7 @@ dependencies = [
  "craft-jpeg",
  "craft-media",
  "craft-video",
+ "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dnx",

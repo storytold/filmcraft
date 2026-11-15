@@ -57,6 +57,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+# Shared YUV4MPEG2 parser and frame index.
+craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "4a2811decec8a3e80ceca40215ae8df821f37e97" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "4a2811decec8a3e80ceca40215ae8df821f37e97" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
