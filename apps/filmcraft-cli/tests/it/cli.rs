@@ -273,6 +273,37 @@ fn exec_save_as_then_reopen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `--project` run without `--save` or `--save-as` drops its edits when the process exits; it must
+/// say so on stderr instead of looking like it changed the project (#4607).
+#[test]
+fn edits_without_save_warn_that_they_were_not_saved() {
+    let (dir, proj) = lock_test_project("unsaved");
+    let warned = |o: &Output| String::from_utf8_lossy(&o.stderr).contains("changes were not saved");
+    let before = std::fs::read(&proj).unwrap();
+    let edit = cli(&["--project", &proj, "exec", "file.newBin", "name=dropped"]);
+    assert!(edit.status.success(), "{}", String::from_utf8_lossy(&edit.stderr));
+    assert!(warned(&edit), "no warning: {}", String::from_utf8_lossy(&edit.stderr));
+    assert!(String::from_utf8_lossy(&edit.stderr).contains("--save"));
+    assert_eq!(std::fs::read(&proj).unwrap(), before);
+    let mut child =
+        crate::filmcraft_command().args(["--project", &proj, "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"{\"id\":\"file.newBin\",\"params\":{\"name\":\"dropped\"}}\n").unwrap();
+    let run = child.wait_with_output().unwrap();
+    assert!(run.status.success() && warned(&run), "{}", String::from_utf8_lossy(&run.stderr));
+    // reading, saving in place, or saving a copy: nothing is dropped, so nothing to warn about
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    let quiet: [&[&str]; 3] = [
+        &["--project", &proj, "exec", "sequence.inspect"],
+        &["--project", &proj, "--save", "exec", "file.newBin", "name=kept"],
+        &["--project", &proj, "--save-as", &other, "exec", "file.newBin", "name=copied"],
+    ];
+    for args in quiet {
+        let o = cli(args);
+        assert!(o.status.success() && !warned(&o), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn run_keep_going_reports_failures() {
     let mut child = crate::filmcraft_command().args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();

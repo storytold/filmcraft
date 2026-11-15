@@ -103,7 +103,8 @@ SUBCOMMANDS
   --version                     print the version
 
 OPTIONS
-  --project <p.fcproj>          open this project first (headless)
+  --project <p.fcproj>          open this project first (headless); edits are kept only with
+                                --save or --save-as (without them, stderr warns they were dropped)
   --demo                        open the built-in demo project (headless)
   --save                        save the project back to --project when done; runs saving one
                                 project take turns, so each edits what the last one saved
@@ -223,12 +224,24 @@ impl Backend {
                 None => Some(self.exec("file.save", json!({})).await),
             }
         } else {
+            // the session ends with this process: say so when its edits are about to be dropped,
+            // or a run that exits 0 looks like it changed the project (#4607)
+            if let (Backend::Local(s), Some(p)) = (&*self, a.opt("--project"))
+                && s.is_dirty()
+            {
+                diag(format_args!("{}", unsaved_warning(p)));
+            }
             None
         };
         if let Some(Err(e)) = r {
             fail(format!("saving: {e}"));
         }
     }
+}
+
+/// The stderr line for a `--project` run that edited the project without `--save` or `--save-as`.
+fn unsaved_warning(project: &str) -> String {
+    format!("filmcraft-cli: warning: the changes were not saved to {project}; add --save to write them back, or --save-as <p.fcproj> to write a copy")
 }
 
 fn print(a: &Args, v: &Value) {
