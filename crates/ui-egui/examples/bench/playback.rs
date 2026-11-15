@@ -170,7 +170,7 @@ impl Display {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest(key.target, key.frame, key.size, key.revision, 6).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i)));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {

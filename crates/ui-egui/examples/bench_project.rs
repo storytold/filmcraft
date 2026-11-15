@@ -216,7 +216,7 @@ impl PreviewDisplay {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest(key.target, key.frame, key.size, key.revision, 6).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i)));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {
@@ -345,12 +345,6 @@ fn main() {
     server.set_r16_unorm(display.r16_unorm());
     server.set_profiling(true);
     let target = display.target(seq);
-    let gpu_play = GpuMonitor::start();
-    let before = StatsSnap::take(&server);
-    let cpu0 = process_cpu_time().unwrap_or_default();
-    let gop0 = filmcraft_codecs::gop_stats();
-    let ram0 = process_ram_mb();
-
     let t_start = Instant::now();
     let mut ttff_ms: Option<f64> = None;
     loop {
@@ -387,6 +381,11 @@ fn main() {
     let mut meter = PlaybackMeter::default();
     meter.start(1.0);
     display.present_ms.clear();
+    let gpu_play = GpuMonitor::start();
+    let before = StatsSnap::take(&server);
+    let cpu0 = process_cpu_time().unwrap_or_default();
+    let gop0 = filmcraft_codecs::gop_stats();
+    let ram0 = process_ram_mb();
     let anchor = Instant::now();
     let mut next = anchor;
     let mut present_samples = Vec::new();

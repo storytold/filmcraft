@@ -265,7 +265,7 @@ impl PreviewDisplay {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest(key.target, key.frame, key.size, key.revision, 6).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i)));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, 6));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {
@@ -450,12 +450,6 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     let last_frame = (rate.frame_at(q.duration()) - 1).max(0);
     let end = Tick::from_seconds_f64(seconds).min(q.duration());
 
-    let gpu_mon = GpuMonitor::start();
-    let tx0 = transfers::snapshot();
-    let hw0 = filmcraft_codecs::hw::hw_stats();
-    let gop0 = filmcraft_codecs::gop_stats();
-    let cpu0 = process_cpu_time().unwrap_or_default();
-
     // TTFF + Preroll
     let t_ttff = Instant::now();
     let mut ttff_ms = None;
@@ -479,12 +473,17 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     }
     let preroll_ms = ms(t_ttff.elapsed());
 
-    // Timed playback loop + A/V sync drift sampling
+    // Timed playback loop + video presentation lag sampling (snapshots isolated from preroll & seeks)
+    let gpu_mon = GpuMonitor::start();
+    let tx0 = transfers::snapshot();
+    let hw0 = filmcraft_codecs::hw::hw_stats();
+    let gop0 = filmcraft_codecs::gop_stats();
+    let cpu0 = process_cpu_time().unwrap_or_default();
     let mut meter = PlaybackMeter::default();
     meter.start(1.0);
     let anchor = Instant::now();
     let mut next = anchor;
-    let mut av_drift_ms = Vec::new();
+    let mut video_lag_ms = Vec::new();
     let mut max_frame_lag: i64 = 0;
     loop {
         let now = Instant::now();
@@ -503,8 +502,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         if let Some(shown_k) = display.last {
             let lag = (frame - shown_k.frame).max(0);
             max_frame_lag = max_frame_lag.max(lag);
-            let drift = ((t - rate.tick_of(shown_k.frame)).seconds() * 1000.0).abs();
-            av_drift_ms.push(drift);
+            let lag_ms = ((t - rate.tick_of(shown_k.frame)).seconds() * 1000.0).abs();
+            video_lag_ms.push(lag_ms);
         }
         next += period;
         let after = Instant::now();
@@ -523,6 +522,8 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
     let tx_play = transfers::snapshot() - tx0;
     let hw1 = filmcraft_codecs::hw::hw_stats();
     let gop_play = filmcraft_codecs::gop_stats() - gop0;
+    let gpu_sum = gpu_mon.stop();
+    let (ram_ws_mb, ram_peak_mb, ram_priv_mb) = process_ram_mb();
 
     // 12 random seeks on a fresh session after releasing playback compositor/caches so VRAM does not double.
     let render_path = display.render_path;
@@ -555,9 +556,6 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         }
     }
     bench.server.retain_queue(|_| false);
-
-    let gpu_sum = gpu_mon.stop();
-    let (ram_ws_mb, ram_peak_mb, ram_priv_mb) = process_ram_mb();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
     let shown = meter.shown;
     let dropped = meter.dropped;
@@ -585,10 +583,10 @@ fn measure_preview(case: &str, s: &Session, seq: ItemId, use_gpu: bool, seconds:
         "seek_p95_ms": pct(&seek_lat_ms, 0.95),
         "ui_present_p50_ms": pct(&present_ms, 0.5),
         "ui_present_p95_ms": pct(&present_ms, 0.95),
-        "av_drift_ms_p50": pct(&av_drift_ms, 0.5),
-        "av_drift_ms_p95": pct(&av_drift_ms, 0.95),
-        "av_drift_ms_max": pct(&av_drift_ms, 1.0),
-        "av_lag_frames_max": max_frame_lag,
+        "video_lag_ms_p50": pct(&video_lag_ms, 0.5),
+        "video_lag_ms_p95": pct(&video_lag_ms, 0.95),
+        "video_lag_ms_max": pct(&video_lag_ms, 1.0),
+        "video_lag_frames_max": max_frame_lag,
         "cpu_pct": cpu_pct,
         "cpu_cores_used": cpu_cores_used,
         "ram_ws_mb": ram_ws_mb,
@@ -942,7 +940,7 @@ fn to_markdown(doc: &Value) -> String {
     let rows = doc["cases"].as_array().unwrap_or(&empty);
 
     md.push_str("## Preview (S1–S5)\n\n");
-    md.push_str("| Case | Res | Eff FPS | Drop % | TTFF ms | Seek p50/p95 ms | UI p95 ms | A/V Drift p95/max ms | CPU % | GPU 3D/Dec % | VRAM Max MB | Peak RAM MB | CPU↔GPU Ops/f | CPU↔GPU MB/f |\n");
+    md.push_str("| Case | Res | Eff FPS | Drop % | TTFF ms | Seek p50/p95 ms | UI p95 ms | Video Lag p95/max ms | CPU % | GPU 3D/Dec % | VRAM Max MB | Peak RAM MB | CPU↔GPU Ops/f | CPU↔GPU MB/f |\n");
     md.push_str("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for r in rows.iter().filter(|r| r["kind"] == "preview") {
         md.push_str(&format!(
@@ -955,8 +953,8 @@ fn to_markdown(doc: &Value) -> String {
             fmt_num(r, "/seek_p50_ms", 1),
             fmt_num(r, "/seek_p95_ms", 1),
             fmt_num(r, "/ui_present_p95_ms", 2),
-            fmt_num(r, "/av_drift_ms_p95", 1),
-            fmt_num(r, "/av_drift_ms_max", 1),
+            fmt_num(r, "/video_lag_ms_p95", 1),
+            fmt_num(r, "/video_lag_ms_max", 1),
             fmt_num(r, "/cpu_pct", 1),
             fmt_num(r, "/gpu/sm_mean_pct", 1),
             fmt_num(r, "/gpu/dec_mean_pct", 1),
