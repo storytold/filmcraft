@@ -1852,11 +1852,11 @@ impl SequenceImport<'_> {
                 t.name = name.clone();
             }
         }
-        let mut transition_ids = BTreeMap::new();
+        let mut added_transitions = BTreeMap::new();
         for item in &track.items {
             let source = self.source(kind, item);
             let clip = self.clip(source, kind, item);
-            self.transitions(kind, track.index, item, &clip, &mut transition_ids);
+            self.transitions(kind, track.index, item, &clip, &mut added_transitions);
             if let Some(t) = self.seq.tracks_mut(kind).get_mut(track.index) {
                 t.items.push(clip);
             }
@@ -1979,8 +1979,9 @@ impl SequenceImport<'_> {
     }
 
     /// The transitions at the edges of `clip`, on track `index` of its kind. A transition the
-    /// clips on both sides of a cut refer to is added once and joined to the second clip.
-    fn transitions(&mut self, kind: TrackKind, index: usize, item: &Item, clip: &TrackItem, transition_ids: &mut BTreeMap<String, TransitionId>) {
+    /// clips on both sides of a cut refer to is added once and joined to the second clip;
+    /// `added` holds each added transition's position on the track, by its ObjectID.
+    fn transitions(&mut self, kind: TrackKind, index: usize, item: &Item, clip: &TrackItem, added: &mut BTreeMap<String, usize>) {
         for transition in &item.transitions {
             let legacy_duration = Tick(transition.duration.0.min(clip.duration.0));
             let start = transition.start.unwrap_or_else(|| if transition.head { clip.start } else { clip.end() - legacy_duration });
@@ -1992,9 +1993,10 @@ impl SequenceImport<'_> {
             if end <= start {
                 continue;
             }
+            // By position, not by searching the track's transitions for each cut.
             if !transition.object_id.is_empty()
-                && let Some(id) = transition_ids.get(&transition.object_id)
-                && let Some(existing) = self.seq.tracks_mut(kind).get_mut(index).and_then(|t| t.transitions.iter_mut().find(|t| t.id == *id))
+                && let Some(&at) = added.get(&transition.object_id)
+                && let Some(existing) = self.seq.tracks_mut(kind).get_mut(index).and_then(|t| t.transitions.get_mut(at))
             {
                 if transition.head {
                     existing.to = Some(clip.id);
@@ -2020,10 +2022,10 @@ impl SequenceImport<'_> {
                 },
                 reverse: false,
             };
-            if !transition.object_id.is_empty() {
-                transition_ids.insert(transition.object_id.clone(), tr.id);
-            }
             if let Some(t) = self.seq.tracks_mut(kind).get_mut(index) {
+                if !transition.object_id.is_empty() {
+                    added.insert(transition.object_id.clone(), t.transitions.len());
+                }
                 t.transitions.push(tr);
             }
         }
@@ -2065,59 +2067,16 @@ fn import_bins(doc: &Document, rate: Option<FrameRate>, b: &mut Builder, report:
         let parent = bin.parent.and_then(|i| bins.get(i).copied());
         bins.push(b.bin(&bin.name, parent));
     }
+    // Each item's bin, the first that lists it, and the items in panel order.
+    let mut filed = std::collections::HashMap::new();
+    let mut order = Vec::new();
     for entry in &doc.items {
-        let id = if let Some(uid) = &entry.nested_sequence {
-            sequences.get(uid).copied()
-        } else if let Some(master) = &entry.adjustment_layer {
-            let key = format!("premiere-adjustment-layer:{master}");
-            Some(b.find_media(&key).unwrap_or_else(|| {
-                let duration = entry.duration.unwrap_or(Tick::ZERO).max(fps.frame_duration());
-                let id = b.p.add_item(&entry.name, Label::Lavender, ItemKind::AdjustmentLayer { width, height, rate: fps, duration }, None);
-                b.register_media(&key, id);
-                id
-            }))
-        } else {
-            let media = if let Some(path) = &entry.media_path {
-                let spec = MediaSpec {
-                    duration: entry.subclip.as_ref().map(|r| r.end),
-                    video: entry.video.then_some((width, height, fps)),
-                    audio: (!entry.video).then_some((48000, 2)),
-                    ..Default::default()
-                };
-                let kind = if entry.video { "video" } else { "audio" };
-                // A subclip's parent is the media file itself.
-                let file = path.rsplit(['/', '\\']).next().filter(|t| !t.is_empty());
-                let name = if entry.subclip.is_some() { file.unwrap_or(&entry.name) } else { &entry.name };
-                let id = b.file_media(&format!("{kind}:{path}"), name, path, &spec, None);
-                if let Some(ItemKind::Media(m)) = b.p.item_mut(id).map(|i| &mut i.kind) {
-                    m.offline = true;
-                }
-                Some(id)
-            } else if let Some((synthetic, g)) = entry.synthetic.as_ref().and_then(|s| Some((s, generator(&s.code)?))) {
-                let key = format!("premiere-generator:{}:{}", synthetic.code, synthetic.media);
-                let name = if entry.subclip.is_some() { g.label() } else { entry.name.clone() };
-                if b.find_media(&key).is_none() && matches!(g, filmcraft_media::Generator::ColorMatte { .. }) {
-                    warning(&mut report, format!("{name}: colour matte imported black (its colour is not read)"));
-                }
-                let audio = matches!(g, filmcraft_media::Generator::BarsAndTone | filmcraft_media::Generator::CountingLeader);
-                let spec = MediaSpec { video: Some((width, height, fps)), audio: audio.then_some((48000, 2)), ..Default::default() };
-                Some(b.generator_media(&key, &name, g, &spec, None))
-            } else {
-                None
-            };
-            match (media, &entry.subclip) {
-                (Some(parent), Some(range)) => {
-                    let kind = ItemKind::Subclip { parent, range: filmcraft_time::TimeRange::from_bounds(range.start, range.end), restrict_trims: range.hard };
-                    Some(b.p.add_item(&entry.name, Label::Iris, kind, None))
-                }
-                (media, _) => media,
-            }
-        };
-        let root = b.p.root.id;
+        let id = bin_item(entry, (width, height, fps), b, report, sequences);
         if let (Some(id), Some(bin)) = (id, entry.bin.and_then(|i| bins.get(i).copied()))
-            && b.p.root.parent_of(id) == Some(root)
+            && let std::collections::hash_map::Entry::Vacant(slot) = filed.entry(id)
         {
-            b.p.move_to_bin(&[id], Some(bin));
+            slot.insert(bin);
+            order.push(id);
         }
         // The panel shows media by its master clip name (a rename), not a timeline clip's label.
         if let Some(id) = id
@@ -2128,6 +2087,35 @@ fn import_bins(doc: &Document, rate: Option<FrameRate>, b: &mut Builder, report:
             && let Some(item) = b.p.item_mut(id)
         {
             item.name = entry.name.clone();
+        }
+    }
+    file_items(&mut b.p, &filed, &order);
+}
+
+/// Move `order`'s items out of the root bin, where the import created them, into the bins
+/// `filed` names, keeping their order. One pass over the root and one search per bin: moving them
+/// one at a time searched the whole bin tree for each item.
+fn file_items(p: &mut filmcraft_project::Project, filed: &std::collections::HashMap<ItemId, filmcraft_project::BinId>, order: &[ItemId]) {
+    use filmcraft_project::BinEntry;
+    let mut taken = std::collections::HashSet::new();
+    p.root.children.retain(|c| match c {
+        BinEntry::Item(id) if filed.contains_key(id) => {
+            taken.insert(*id);
+            false
+        }
+        _ => true,
+    });
+    let mut by_bin: BTreeMap<filmcraft_project::BinId, Vec<BinEntry>> = BTreeMap::new();
+    for id in order.iter().filter(|id| taken.contains(*id)) {
+        if let Some(bin) = filed.get(id) {
+            by_bin.entry(*bin).or_default().push(BinEntry::Item(*id));
+        }
+    }
+    for (bin, entries) in by_bin {
+        match p.root.find_bin_mut(bin) {
+            Some(target) => target.children.extend(entries),
+            // The bins were created above; never lose an item if one is missing.
+            None => p.root.children.extend(entries),
         }
     }
 }
@@ -3086,6 +3074,42 @@ mod tests {
             assert!(media.offline && media.info.video.is_some() && !media.info.audio_streams.is_empty(), "{groups}: {:?}", media.info);
             assert_eq!(media.info.kind, filmcraft_media::MediaKind::Movie, "{groups}");
         }
+    }
+    #[test]
+    fn filed_items_keep_panel_order_and_their_first_bin() {
+        // Hand-written: a second file after the interview in Footage, and a second master clip of
+        // the interview's file in a later bin; the file is one item, which stays in Footage.
+        let groups = r#"<TrackGroup><Second ObjectRef="vg"/></TrackGroup>"#;
+        let xml = av_fixture(groups)
+            .replace(r#"<Item Index="0" ObjectURef="footage"/>"#, r#"<Item Index="0" ObjectURef="footage"/><Item Index="1" ObjectURef="selects"/>"#)
+            .replace(r#"<Item Index="0" ObjectURef="clip-item"/>"#, r#"<Item Index="0" ObjectURef="clip-item"/><Item Index="1" ObjectURef="broll-item"/>"#)
+            .replace(
+                "</PremiereData>",
+                r#"<BinProjectItem ObjectUID="selects"><ProjectItem><Name>Selects</Name></ProjectItem><ProjectItemContainer><Items><Item Index="0" ObjectURef="copy-item"/></Items></ProjectItemContainer></BinProjectItem>
+<ClipProjectItem ObjectUID="copy-item"><ProjectItem><Name>interview.mov</Name></ProjectItem><MasterClip ObjectURef="copy-master"/></ClipProjectItem>
+<MasterClip ObjectUID="copy-master"><Clips><Clip Index="0" ObjectRef="copy-video"/></Clips><Name>Interview</Name></MasterClip>
+<VideoClip ObjectID="copy-video"><Clip><Source ObjectRef="vs"/></Clip></VideoClip>
+<ClipProjectItem ObjectUID="broll-item"><ProjectItem><Name>broll.mov</Name></ProjectItem><MasterClip ObjectURef="broll-master"/></ClipProjectItem>
+<MasterClip ObjectUID="broll-master"><Clips><Clip Index="0" ObjectRef="broll-video"/></Clips><Name>B-roll</Name></MasterClip>
+<VideoClip ObjectID="broll-video"><Clip><Source ObjectRef="broll-source"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="broll-source"><MediaSource><Media ObjectURef="broll"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="broll"><Title>broll.mov</Title><ActualMediaFilePath>/media/broll.mov</ActualMediaFilePath></Media></PremiereData>"#,
+            );
+        let (fragment, _, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        let p = &fragment.project;
+        let names_in = |bin: &str| -> Vec<String> {
+            let found = p.root.children.iter().find_map(|c| match c {
+                filmcraft_project::BinEntry::Bin(b) if b.name == bin => Some(b),
+                _ => None,
+            });
+            let items = found.into_iter().flat_map(|b| &b.children).filter_map(|c| match c {
+                filmcraft_project::BinEntry::Item(id) => p.item(*id).map(|i| i.name.clone()),
+                filmcraft_project::BinEntry::Bin(_) => None,
+            });
+            items.collect()
+        };
+        assert_eq!(names_in("Footage"), ["Interview", "B-roll"], "{report:?}");
+        assert!(names_in("Selects").is_empty());
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
