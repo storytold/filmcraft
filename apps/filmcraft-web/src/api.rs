@@ -1,13 +1,15 @@
 //! `window.filmcraft`: the control channel / agent API for the page.
 //!
-//! The same JSON methods as the desktop control channel (`docs/control-protocol.md`) and the
-//! same engine commands as MCP, as promises:
+//! `request`, `execute`, `commands`, `uiInspect` and `screenshot` come from `craft-web-api`
+//! (storytold/craft-libs#413), the same in every Craft app; FilmCraft adds its own functions on the
+//! same object. The same JSON methods as the desktop control channel (`docs/control-protocol.md`)
+//! and the same engine commands as MCP, as promises:
 //!
 //! ```js
 //! await filmcraft.execute("sequence.razor", {seconds: 2})   // engine command → its result
 //! await filmcraft.request("ui.inspect")                    // control method → its result
 //! await filmcraft.commands()                               // command list
-//! const {pngBase64} = await filmcraft.screenshot()         // the canvas as PNG (base64)
+//! const {data} = await filmcraft.screenshot()            // the canvas as PNG (base64; also `pngBase64`)
 //! await filmcraft.importUrl("/clip.mp4")                   // fetch + import (tests)
 //! await filmcraft.importFiles(input.files)                 // File / FileList / File[]
 //! await filmcraft.openProject(file)                        // .fcproj File or URL
@@ -17,19 +19,21 @@
 //! Results resolve with the method's `result`; errors reject with the error message.
 
 use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
+use craft_web_api::methods::Methods;
+use craft_web_api::page::{PageApi, Request};
 use filmcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
 
-type Waiting = (Receiver<Value>, js_sys::Function, js_sys::Function);
-
 thread_local! {
     static TX: RefCell<Option<Sender<ControlRequest>>> = const { RefCell::new(None) };
-    static WAITING: RefCell<Vec<Waiting>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn set_sender(tx: Sender<ControlRequest>) {
@@ -47,42 +51,40 @@ pub fn from_js(v: &JsValue) -> Value {
     js_sys::JSON::stringify(v).ok().and_then(|s| s.as_string()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null)
 }
 
-/// Resolve the promises of answered control requests (called every frame).
-pub fn poll_replies() {
-    WAITING.with(|w| {
-        w.borrow_mut().retain(|(rx, resolve, reject)| match rx.try_recv() {
-            Ok(v) => {
-                if v.get("ok").and_then(Value::as_bool) == Some(true) {
-                    let _ = resolve.call1(&JsValue::NULL, &to_js(v.get("result").unwrap_or(&Value::Null)));
-                } else {
-                    let msg = v.get("error").and_then(Value::as_str).unwrap_or("error").to_string();
-                    let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new(&msg));
-                }
-                false
-            }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => {
-                let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new("request dropped"));
-                false
-            }
-        });
-    });
+/// How often a waiting call looks for the app's reply, in milliseconds (about a frame).
+const POLL_MS: i32 = 16;
+
+/// Queue a control request for the app and wait for its reply, as the protocol's `{ok, result}` /
+/// `{ok: false, error}` object. FilmCraft's control requests cannot be withdrawn, so a call the page
+/// gave up on still runs when the app reaches it, as it does for a desktop client that timed out.
+fn send(method: &str, params: Value) -> Pin<Box<dyn Future<Output = Value>>> {
+    let (req, rx) = ControlRequest::new(method, params);
+    let sent = TX.with(|t| t.borrow().as_ref().map(|tx| tx.send(req).is_ok()).unwrap_or(false));
+    if !sent {
+        return Box::pin(async { json!({"ok": false, "error": "FilmCraft is not running yet"}) });
+    }
+    crate::repaint();
+    Box::pin(wait(rx))
 }
 
-/// Send a control request; the promise settles when the UI thread answers it.
-pub fn request(method: &str, params: Value) -> js_sys::Promise {
-    let method = method.to_string();
-    let p = js_sys::Promise::new(&mut |resolve, reject| {
-        let (req, rx) = ControlRequest::new(method.clone(), params.clone());
-        let sent = TX.with(|t| t.borrow().as_ref().map(|tx| tx.send(req).is_ok()).unwrap_or(false));
-        if sent {
-            WAITING.with(|w| w.borrow_mut().push((rx, resolve, reject)));
-        } else {
-            let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new("FilmCraft is not running yet"));
+/// The app's reply, polled about once a frame.
+async fn wait(reply: Receiver<Value>) -> Value {
+    loop {
+        match reply.try_recv() {
+            Ok(reply) => return reply,
+            Err(TryRecvError::Empty) => sleep(POLL_MS).await,
+            Err(TryRecvError::Disconnected) => return json!({"ok": false, "error": "request dropped"}),
+        }
+    }
+}
+
+async fn sleep(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
         }
     });
-    crate::repaint();
-    p
+    let _ = JsFuture::from(promise).await;
 }
 
 fn set_fn(obj: &js_sys::Object, name: &str, f: JsValue) -> Result<(), JsValue> {
@@ -115,35 +117,26 @@ pub async fn fetch_file(url: &str, name: Option<String>) -> Result<web_sys::File
     web_sys::File::new_with_blob_sequence(&parts, &name)
 }
 
-/// Install `window.filmcraft`.
+/// Install `window.filmcraft`: the crate's functions, then FilmCraft's own. FilmCraft has no
+/// `document.inspect`, so `docInspect` is not installed; `inspect` is its `ui.inspect`.
 pub fn install() -> Result<(), JsValue> {
-    let obj = js_sys::Object::new();
+    let request: Request = Rc::new(|method, params| send(&method, params));
+    let methods = Methods { doc_inspect: None, ..Methods::default() };
+    Rc::new(PageApi::new("filmcraft", methods, request)).install()?;
+    let window = web_sys::window().ok_or("no window")?;
+    let obj: js_sys::Object = js_sys::Reflect::get(&window, &"filmcraft".into())?.unchecked_into();
     set_fn(
         &obj,
-        "request",
-        Closure::<dyn Fn(String, JsValue) -> js_sys::Promise>::new(|method: String, params: JsValue| {
-            let p = from_js(&params);
-            request(&method, if p.is_null() { json!({}) } else { p })
-        })
-        .into_js_value(),
-    )?;
-    set_fn(
-        &obj,
-        "execute",
-        Closure::<dyn Fn(String, JsValue) -> js_sys::Promise>::new(|command: String, params: JsValue| {
-            let p = from_js(&params);
-            request("engine.execute", json!({"command": command, "params": if p.is_null() { json!({}) } else { p }}))
-        })
-        .into_js_value(),
-    )?;
-    set_fn(&obj, "commands", Closure::<dyn Fn() -> js_sys::Promise>::new(|| request("engine.commands", json!({}))).into_js_value())?;
-    set_fn(&obj, "inspect", Closure::<dyn Fn() -> js_sys::Promise>::new(|| request("ui.inspect", json!({}))).into_js_value())?;
-    set_fn(
-        &obj,
-        "screenshot",
-        Closure::<dyn Fn(JsValue) -> js_sys::Promise>::new(|params: JsValue| {
-            let p = from_js(&params);
-            request("ui.screenshot", if p.is_null() { json!({}) } else { p })
+        "inspect",
+        Closure::<dyn Fn() -> js_sys::Promise>::new(|| {
+            future_to_promise(async {
+                let reply = send("ui.inspect", json!({})).await;
+                if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+                    Ok(to_js(reply.get("result").unwrap_or(&Value::Null)))
+                } else {
+                    Err(js_sys::Error::new(reply.get("error").and_then(Value::as_str).unwrap_or("error")).into())
+                }
+            })
         })
         .into_js_value(),
     )?;
@@ -212,8 +205,6 @@ pub fn install() -> Result<(), JsValue> {
         })
         .into_js_value(),
     )?;
-    let w = web_sys::window().ok_or("no window")?;
-    js_sys::Reflect::set(&w, &"filmcraft".into(), &obj)?;
     Ok(())
 }
 

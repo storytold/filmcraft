@@ -16,7 +16,16 @@
 <script type="module">
 const params = new URLSearchParams(location.search);
 const frame = document.querySelector('#app');
-frame.src = (params.get('app') || 'index.html') + '?empty&norecover';
+// Only an http(s) page on this harness's origin may load in the frame: a javascript: or data:
+// URL (or another origin) from a crafted link must not run with this page's authority.
+const appUrl = new URL(params.get('app') || 'index.html', location.href);
+if (!['http:', 'https:'].includes(appUrl.protocol) || appUrl.origin !== location.origin) {
+  throw new Error('app must be an http(s) page on this origin');
+}
+// Keep the app's own flags (e.g. `?webgl`) and add the ones this harness needs.
+appUrl.searchParams.set('empty', '');
+appUrl.searchParams.set('norecover', '');
+frame.src = appUrl.href;
 const result = document.querySelector('#result');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, message, timeout = 30000) {

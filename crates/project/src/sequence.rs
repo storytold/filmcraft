@@ -12,6 +12,10 @@ pub struct SequenceSettings {
     pub par: (u32, u32),
     pub sample_rate: u32,
     pub drop_frame: bool,
+    /// Video Display Format: how the monitors, timeline and ruler show time (Timecode, Feet +
+    /// Frames 35mm / 16mm, Frames). Files from before this setting load as Timecode.
+    #[serde(default)]
+    pub display: filmcraft_time::TimeDisplay,
     /// Editing mode / preset name shown in the settings dialog.
     pub preset: String,
     pub audio_master: AudioChannels,
@@ -40,6 +44,7 @@ impl Default for SequenceSettings {
             par: (1, 1),
             sample_rate: 48_000,
             drop_frame: false,
+            display: filmcraft_time::TimeDisplay::Timecode,
             preset: "HD 1080p 23.976".into(),
             audio_master: AudioChannels::Stereo,
             preview_codec: "ProRes 422".into(),

@@ -9,8 +9,17 @@
 
 use crate::effect::{EffectDef, EffectKind, ParamDef, ang, b, ch, col, fs, pt};
 
-/// Top-level Effects panel folders, in Premiere's order.
-pub const EFFECT_TOP_FOLDERS: &[&str] = &["Presets", "Lumetri Presets", "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions", "Legacy"];
+/// Stable key used in saved Effects-panel state and automation paths.
+pub const COLOR_PRESETS_FOLDER_KEY: &str = "Lumetri Presets";
+
+/// Presentation is separate from folder identity so saved expansion state keeps working.
+pub fn effect_folder_label(key: &str) -> &str {
+    if key == COLOR_PRESETS_FOLDER_KEY { "Color Grading Presets" } else { key }
+}
+
+/// Top-level Effects panel keys, in their established order.
+pub const EFFECT_TOP_FOLDERS: &[&str] =
+    &["Presets", COLOR_PRESETS_FOLDER_KEY, "Audio Effects", "Audio Transitions", "Video Effects", "Video Transitions", "Legacy"];
 
 /// The ten `Video Transitions` sub-folders, in panel order.
 pub const VIDEO_TRANSITION_FOLDERS: &[&str] =

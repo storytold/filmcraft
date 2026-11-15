@@ -495,7 +495,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
-            match crate::menus::invoke(app, ctx, id, params) {
+            let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
+            match invoke(app, ctx, id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -504,7 +505,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Ok(v) => ok(v),
             Err(e) => err(e),
         },
-        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
+        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items_with_focus(app, ctx)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.docking" => {
             let hits = craft_ui::docking::DockArea::<PanelKind>::hit_rects(ctx, crate::dock_ui::area_id());
@@ -713,7 +714,13 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
             Err(e) => json!({"ok": false, "error": e}),
         };
     }
-    let path = path.map(str::to_string).unwrap_or_else(|| filmcraft_engine::temp_dir().join("filmcraft-screenshot.png").to_string_lossy().to_string());
+    let path = match path {
+        Some(p) => p.to_string(),
+        None => match filmcraft_engine::private_temp_dir() {
+            Ok(d) => d.join("filmcraft-screenshot.png").to_string_lossy().to_string(),
+            Err(e) => return json!({"ok": false, "error": format!("no private temporary folder: {e}")}),
+        },
+    };
     match encode_png(&rgba, cw as u32, ch as u32) {
         Ok(png) => match std::fs::write(&path, png) {
             Ok(()) => json!({"ok": true, "result": {"path": path, "width": cw, "height": ch}}),

@@ -291,6 +291,9 @@ fn next_id_is_raised_past_every_id_in_the_file() {
     let base = decode(&fixture("v1-edit.fcproj")).unwrap().project;
     let seq = ItemId(21);
     let marker = |id| Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(id),
         start: Tick::ZERO,
         duration: Tick::ZERO,

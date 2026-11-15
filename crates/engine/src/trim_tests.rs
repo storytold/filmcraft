@@ -301,6 +301,30 @@ fn dynamic_ripple_backward_shortens_and_stops_at_a_limit() {
     assert_eq!(v1_end(&s), dur0);
 }
 
+/// Each trim's undo step records its trim kind's id, which gives its History icon: from a Trim
+/// Monitor nudge, a dynamic trim and a direct `timeline.trim`.
+#[test]
+fn trim_steps_record_their_trim_kind() {
+    let last = |s: &Session| s.history.undo.last().and_then(|h| h.2.clone());
+    for (kind, origin) in [("ripple", crate::trim::RIPPLE_TRIM_ORIGIN), ("roll", "timeline.roll"), ("trim", "timeline.trim")] {
+        let mut s = demo();
+        select_first_cut(&mut s, kind);
+        s.execute("trim.nudge", json!({"frames": -2})).unwrap();
+        assert_eq!(last(&s).as_deref(), Some(origin), "{kind} nudge");
+        s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 0.0})).unwrap();
+        s.execute("trim.tick", json!({"clock": 0.25})).unwrap();
+        assert_eq!(s.execute("trim.shuttleStop", json!({})).unwrap()["committed"], json!(true));
+        assert_eq!(last(&s).as_deref(), Some(origin), "{kind} dynamic trim");
+    }
+    let mut s = demo();
+    let clip = v1(&s)[0].0;
+    s.execute("timeline.trim", json!({"clip": clip, "edge": "out", "mode": "ripple", "deltaFrames": -2})).unwrap();
+    assert_eq!(last(&s).as_deref(), Some(crate::trim::RIPPLE_TRIM_ORIGIN), "a ripple drag");
+    assert_eq!(s.command_origin, None, "the ripple id is not left behind");
+    s.execute("timeline.trim", json!({"clip": clip, "edge": "out", "mode": "regular", "deltaFrames": -2})).unwrap();
+    assert_eq!(last(&s).as_deref(), Some("timeline.trim"), "a regular drag");
+}
+
 #[test]
 fn another_command_commits_first_and_cancel_restores() {
     let mut s = demo();

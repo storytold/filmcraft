@@ -18,6 +18,18 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
     p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
+    let now = app.now();
+    let encoding: std::collections::HashMap<u64, String> = items
+        .iter()
+        .filter(|it| it["status"] == "encoding")
+        .map(|it| {
+            let id = it["id"].as_u64().unwrap_or(0);
+            let text = app.steady_texts.get(&format!("queue.{id}"), now, || {
+                tlf!("Encoding {n}%", n = format!("{:.0}", it["progress"].as_f64().unwrap_or(0.0) * 100.0)) + &crate::panels::eta_suffix(it)
+            });
+            (id, text)
+        })
+        .collect();
     let mut action: Option<(&'static str, Value)> = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("export-queue"));
     egui::ScrollArea::vertical().id_salt("export-queue-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
@@ -36,10 +48,7 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
                     let preset = it["preset"].as_str().filter(|s| !s.is_empty()).unwrap_or(CUSTOM);
                     let (label, col) = match status {
                         "ready" => (tl!("Ready").to_string(), t.text_dim),
-                        "encoding" => (
-                            tlf!("Encoding {n}%", n = format!("{:.0}", it["progress"].as_f64().unwrap_or(0.0) * 100.0)) + &crate::panels::eta_suffix(it),
-                            t.accent,
-                        ),
+                        "encoding" => (encoding.get(&id).cloned().unwrap_or_default(), t.accent),
                         "done" => (tl!("Done").to_string(), t.render_green),
                         "failed" => (tlf!("Failed: {e}", e = it["error"].as_str().unwrap_or("")), t.danger),
                         _ => (tl!("Cancelled").to_string(), t.text_faint),
@@ -47,7 +56,8 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
                     if status == "encoding" {
                         // the progress and the time left on a line of their own: the column is narrow, and a wrapped "· 15 s left" reads badly
                         ui.label(egui::RichText::new(crate::i18n::t(preset)).size(11.0).color(t.text_dim));
-                        ui.label(egui::RichText::new(label).size(11.0).color(col));
+                        // once a second, with digits of one width, so the time left doesn't shuffle the line
+                        crate::widgets::tabular_label(ui, &label, &Tokens::ui(11.0), col);
                     } else {
                         ui.label(egui::RichText::new(format!("{} · {label}", crate::i18n::t(preset))).size(11.0).color(col));
                     }

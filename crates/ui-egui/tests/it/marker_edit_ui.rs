@@ -86,15 +86,15 @@ fn double_clicking_a_marker_opens_the_dialog_and_ok_applies_the_fields() {
     let mut d = Driver::demo();
     let id = d.setup();
     let undo_before = d.harness.state().session.history.undo.len();
-    assert!(!d.has_element("timeline.markerDialog.ok"), "no dialog before the double-click");
+    assert!(!d.has_element("markerProperties.apply"), "no dialog before the double-click");
     d.click(&format!("timeline.marker.{id}"), 1);
-    assert!(!d.has_element("timeline.markerDialog.ok"), "one click only moves the playhead");
+    assert!(!d.has_element("markerProperties.apply"), "one click only moves the playhead");
     d.click(&format!("timeline.marker.{id}"), 2);
-    assert!(d.has_element("timeline.markerDialog.ok"), "a double-click opens Edit Marker");
-    d.type_into("timeline.markerDialog.name", "Renamed");
-    d.type_into("timeline.markerDialog.comment", "A note");
-    d.click("timeline.markerDialog.ok", 1);
-    assert!(!d.has_element("timeline.markerDialog.ok"), "OK closes the dialog");
+    assert!(d.has_element("markerProperties.apply"), "a double-click opens Edit Marker");
+    d.type_into("markerProperties.name", "Renamed");
+    d.type_into("markerProperties.comment", "A note");
+    d.click("markerProperties.apply", 1);
+    assert!(!d.has_element("markerProperties.apply"), "OK closes the dialog");
     let m = d.marker(id);
     assert_eq!((m.name.as_str(), m.comment.as_str()), ("Renamed", "A note"));
     assert_eq!(d.harness.state().session.history.undo.len(), undo_before + 1, "one OK is one undo step");
@@ -106,9 +106,9 @@ fn cancel_leaves_the_marker_alone() {
     let id = d.setup();
     let before = d.marker(id);
     d.click(&format!("timeline.marker.{id}"), 2);
-    d.type_into("timeline.markerDialog.name", "Nope");
-    d.click("timeline.markerDialog.cancel", 1);
-    assert!(!d.has_element("timeline.markerDialog.cancel"));
+    d.type_into("markerProperties.name", "Nope");
+    d.click("markerProperties.cancel", 1);
+    assert!(!d.has_element("markerProperties.cancel"));
     assert_eq!(d.marker(id), before);
 }
 
@@ -130,8 +130,8 @@ fn ok_keeps_a_duration_that_was_not_edited() {
             })
             .expect("set the duration");
         d.click(&format!("timeline.marker.{id}"), 2);
-        d.type_into("timeline.markerDialog.name", "Renamed");
-        d.click("timeline.markerDialog.ok", 1);
+        d.type_into("markerProperties.name", "Renamed");
+        d.click("markerProperties.apply", 1);
         let m = d.marker(id);
         assert_eq!((m.name.as_str(), m.duration), ("Renamed", want), "only the name changed");
     }

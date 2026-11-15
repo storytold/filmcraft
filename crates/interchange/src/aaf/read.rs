@@ -109,13 +109,15 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let mut r = R { report, mobs, essence, doc: Document::default(), sources: HashMap::new(), nests: HashMap::new(), open: Vec::new() };
     // Top-level compositions: those no other composition uses, among the ones tagged top-level
     // when any are. (Premiere Pro tags a nested sequence's composition top-level too; it is still
-    // only a nested sequence.) Compositions that only use each other in a circle all count.
+    // only a nested sequence.) Compositions that only use each other in a circle all count. The
+    // label older FilmCraft versions wrote for top-level counts as top-level too.
     let comps: Vec<&Obj> = content.objs(pid::MOBS).iter().filter(|m| m.class == cls::COMPOSITION_MOB).collect();
     let mut referenced = HashSet::new();
     for c in &comps {
         collect_refs(c, &mut referenced);
     }
-    let tagged_top: Vec<&Obj> = comps.iter().copied().filter(|c| c.auid(pid::USAGE_CODE) == Some(def::USAGE_TOP_LEVEL)).collect();
+    let is_top = |c: &&Obj| c.auid(pid::USAGE_CODE).is_some_and(|u| u == def::USAGE_TOP_LEVEL || u == def::USAGE_TOP_LEVEL_OLD);
+    let tagged_top: Vec<&Obj> = comps.iter().copied().filter(is_top).collect();
     let pool = if tagged_top.is_empty() { comps } else { tagged_top };
     let unused: Vec<&Obj> = pool.iter().copied().filter(|c| c.mob_id(pid::MOB_ID).is_none_or(|id| !referenced.contains(&id))).collect();
     let top = if unused.is_empty() { pool } else { unused };
