@@ -295,7 +295,7 @@ mod tests {
                     0\
                     100";
         assert_eq!(bits.len() % 8, 0);
-        let payload: Vec<u8> = bits.as_bytes().chunks_exact(8).map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 2).unwrap()).collect();
+        let payload: Vec<u8> = bits.as_bytes().as_chunks::<8>().0.iter().map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 2).unwrap()).collect();
         let mut obu = vec![0x0a];
         write_leb128(payload.len(), &mut obu);
         obu.extend_from_slice(&payload);
