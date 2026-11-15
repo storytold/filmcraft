@@ -26,6 +26,8 @@ fn string<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
         _ => Err(bad(COMMAND, format!("{key} must be a nonempty string"))),
     }
 }
+/// Whether `path` names a Premiere project (a `.prproj` file, in any letter case), which
+/// `file.import` hands to [`import`].
 pub(crate) fn is_project(path: &str) -> bool {
     Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("prproj"))
 }
@@ -132,6 +134,7 @@ struct FolderListings {
 }
 
 impl FolderListings {
+    /// No listings yet; at most `limit` names will be kept.
     fn new(limit: usize) -> Self {
         Self { folders: std::collections::HashMap::new(), names: 0, limit }
     }
@@ -294,10 +297,13 @@ pub(super) struct FileIo<'a> {
     pub copy: &'a dyn Fn(&Path, &Path) -> std::result::Result<(String, u64), CopyError>,
 }
 
+/// `premiere.import`: snapshot a Premiere project into a new destination directory, link or copy
+/// its media, and merge its bins, media and sequences into the project as one undoable edit.
 pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
     import_with_io(s, p, &FileIo { hash: &hash_file, copy: &copy_hashing })
 }
 
+/// [`import`] with its whole-file reads replaceable in tests.
 pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Result<Value> {
     let hash = file_io.hash;
     if s.services.export_in_memory() {
@@ -645,6 +651,7 @@ fn observation_row(reference: &SourceMedia, observation: Observation) -> Value {
     row
 }
 
+/// The Premiere commands: `premiere.import` and `premiere.hashMedia`.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
