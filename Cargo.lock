@@ -1086,6 +1086,15 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93#7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93"
 
 [[package]]
+name = "craft-control-protocol"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82276297a690d71b116f4e0dbd367e0e914088d6#82276297a690d71b116f4e0dbd367e0e914088d6"
+dependencies = [
+ "serde_json",
+ "subtle",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -1961,6 +1970,7 @@ dependencies = [
  "arboard",
  "chrono",
  "cpal",
+ "craft-control-protocol",
  "craft-update",
  "eframe",
  "egui",
@@ -1982,7 +1992,6 @@ dependencies = [
  "pollster 1.0.1",
  "rfd",
  "serde_json",
- "subtle",
  "sys-locale",
  "winit",
  "winreg",
