@@ -1005,6 +1005,7 @@ fn echo_combines_operators() {
 }
 
 /// A clip environment over a synthetic moving picture (for the analysis effects).
+#[derive(Clone, Copy)]
 struct ClipEnv {
     w: usize,
     h: usize,
@@ -1121,7 +1122,6 @@ fn warp_stabilizer_removes_camera_jitter() {
     let mut e = inst("warp_stabilizer");
     set(&mut e, "result", ParamValue::Choice(1)); // No Motion
     set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
-    clear_stabilizer_cache();
     let frames: Vec<(Image, Image)> = [3usize, 9, 15, 21]
         .iter()
         .map(|&f| {
@@ -1312,6 +1312,249 @@ mod stabilizer_analysis {
         assert_eq!(steps.len(), 499);
         assert!(steps.iter().enumerate().all(|(i, s)| s.e == (i * 1000 + i + 1) as f64), "the same steps as without the stop");
     }
+
+    /// Scrubbing cancels a request after a few frames: each one still moves the analysis on, or
+    /// it would never get through a block and never finish.
+    #[test]
+    fn requests_cancelled_after_a_few_frames_still_finish_the_analysis() {
+        use super::super::temporal::Progress;
+        let reads = AtomicUsize::new(0);
+        let decode = |k: usize| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Some(k)
+        };
+        let step = |a: &usize, b: &usize, _| Affine::translate((a * 1000 + b) as f64, 0.0);
+        let mut p = Progress::default();
+        let mut requests = 0;
+        loop {
+            requests += 1;
+            assert!(requests <= 200, "500 frames not analysed after 200 requests that each read 5 frames");
+            let start = reads.load(Ordering::SeqCst);
+            if p.advance(500, ANALYSIS_BLOCK, decode, |_: &usize| (1, 1), step, || reads.load(Ordering::SeqCst) >= start + 5) {
+                break;
+            }
+        }
+        let (steps, _) = p.finished().unwrap();
+        assert_eq!(steps.len(), 499);
+        assert!(steps.iter().enumerate().all(|(i, s)| s.e == (i * 1000 + i + 1) as f64), "the same steps as in one go");
+    }
+}
+
+/// A clip environment that counts the source frames it hands out, and sets the flag it holds
+/// once it has handed out that many.
+struct CountingEnv<'a>(ClipEnv, &'a std::sync::atomic::AtomicUsize, Option<(usize, Arc<std::sync::atomic::AtomicBool>)>);
+impl FxEnv for CountingEnv<'_> {
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+        self.0.frame(dt, upto)
+    }
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        let read = self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if let Some((at, flag)) = &self.2
+            && read >= *at
+        {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.0.source_frame(dt, scale)
+    }
+    fn track(&self, i: usize) -> Option<Image> {
+        self.0.track(i)
+    }
+    fn layer_to_output(&self) -> Affine {
+        self.0.layer_to_output()
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.0.clip_seconds()
+    }
+    fn clip_offset(&self) -> f64 {
+        self.0.clip_offset()
+    }
+    fn frame_rate(&self) -> f64 {
+        self.0.frame_rate()
+    }
+    fn media_timecode(&self) -> String {
+        String::new()
+    }
+    fn file_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.0.sequence_size()
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.0.source_size()
+    }
+    fn clip_key(&self) -> u64 {
+        self.0.clip_key()
+    }
+}
+
+/// An export renders the frames of a batch on every rayon worker, and each of them found no
+/// analysis yet and made its own: 12 analyses of the same clip at once on a 12-thread machine,
+/// all reading frames from the one decoder. One analysis serves them all, and the frames waiting
+/// for it must not keep it from finishing (a worker that waits while holding part of the
+/// analysis' parallel work would wait forever, see #2276).
+#[test]
+fn frames_rendered_together_share_one_analysis() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (w, h) = (96, 64);
+    let reads = AtomicUsize::new(0);
+    let e = inst("warp_stabilizer");
+    let n = 48; // 2 s at 24 fps
+    let frames = rayon::current_num_threads().max(4) * 3;
+    (0..frames).into_par_iter().for_each(|i| {
+        let now = (i % n) as f64 / 24.0;
+        let env = CountingEnv(ClipEnv { w, h, fps: 24.0, secs: 2.0, now, key: 0x5_1F11_6417, seq: (w as u32, h as u32), pic: shaky }, &reads, None);
+        let mut img = env.0.render(now, 1.0);
+        crate::effects::apply(&mut img, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() });
+    });
+    assert_eq!(reads.load(Ordering::SeqCst), n, "each frame of the clip read once for {frames} rendered frames");
+}
+
+/// A nested sequence's frames are rendered with its clips' effects: an analysis reading them
+/// asks for the analysis of a stabilised clip inside, which must not wait for the analysis that
+/// is reading it.
+#[test]
+fn an_analysis_can_read_frames_that_need_another_analysis() {
+    struct Nested(ClipEnv);
+    impl FxEnv for Nested {
+        fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+            self.0.frame(dt, upto)
+        }
+        fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+            // the clip inside the nested sequence, stabilised too
+            let inner = ClipEnv { key: 0x1_4E57_ED02, now: self.0.now + dt, ..self.0 };
+            stabilizer_path(&inner, 0.0, filmcraft_project::TrackMethod::Position, false)?;
+            self.0.source_frame(dt, scale)
+        }
+        fn track(&self, i: usize) -> Option<Image> {
+            self.0.track(i)
+        }
+        fn layer_to_output(&self) -> Affine {
+            Affine::IDENTITY
+        }
+        fn clip_seconds(&self) -> f64 {
+            self.0.clip_seconds()
+        }
+        fn clip_offset(&self) -> f64 {
+            self.0.clip_offset()
+        }
+        fn frame_rate(&self) -> f64 {
+            self.0.frame_rate()
+        }
+        fn media_timecode(&self) -> String {
+            String::new()
+        }
+        fn file_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_size(&self) -> (u32, u32) {
+            self.0.sequence_size()
+        }
+        fn source_size(&self) -> (u32, u32) {
+            self.0.source_size()
+        }
+        fn clip_key(&self) -> u64 {
+            self.0.clip_key()
+        }
+    }
+    let env = Nested(ClipEnv { w: 64, h: 48, fps: 24.0, secs: 1.0, now: 0.0, key: 0x1_4E57_ED01, seq: (64, 48), pic: shaky });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+    });
+    assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(60)), Ok(true), "the outer analysis finishes");
+}
+
+/// A panic in an analysis loses the analysis, not the frame that asked, and doesn't leave later
+/// requests waiting for it.
+#[test]
+fn a_panicking_analysis_leaves_the_next_request_free() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct Panics<'a>(CountingEnv<'a>, &'a AtomicBool);
+    impl FxEnv for Panics<'_> {
+        fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+            self.0.frame(dt, upto)
+        }
+        fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+            if self.1.load(Ordering::SeqCst) {
+                panic!("decoder bug");
+            }
+            self.0.source_frame(dt, scale)
+        }
+        fn track(&self, i: usize) -> Option<Image> {
+            self.0.track(i)
+        }
+        fn layer_to_output(&self) -> Affine {
+            Affine::IDENTITY
+        }
+        fn clip_seconds(&self) -> f64 {
+            self.0.clip_seconds()
+        }
+        fn clip_offset(&self) -> f64 {
+            self.0.clip_offset()
+        }
+        fn frame_rate(&self) -> f64 {
+            self.0.frame_rate()
+        }
+        fn media_timecode(&self) -> String {
+            String::new()
+        }
+        fn file_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_size(&self) -> (u32, u32) {
+            self.0.sequence_size()
+        }
+        fn source_size(&self) -> (u32, u32) {
+            self.0.source_size()
+        }
+        fn clip_key(&self) -> u64 {
+            self.0.clip_key()
+        }
+    }
+    let reads = AtomicUsize::new(0);
+    let panics = AtomicBool::new(true);
+    let clip = ClipEnv { w: 64, h: 48, fps: 24.0, secs: 1.0, now: 0.0, key: 0xBAD_F00D, seq: (64, 48), pic: shaky };
+    let env = Panics(CountingEnv(clip, &reads, None), &panics);
+    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_none(), "no path, no panic");
+    panics.store(false, Ordering::SeqCst);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let _ = tx.send(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(60)), Ok(true), "the next request analyses the clip");
+    });
+}
+
+/// A request that is cancelled stops waiting (and doesn't stabilise its frame), and what the
+/// analysis did meanwhile serves the next request: scrubbing cancels frame requests all the time,
+/// and an analysis that started over each time never finished.
+#[test]
+fn a_cancelled_request_leaves_the_analysis_to_the_next() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let reads = AtomicUsize::new(0);
+    let stop = Arc::new(AtomicBool::new(false));
+    let clip = ClipEnv { w: 64, h: 48, fps: 24.0, secs: 10.0, now: 0.0, key: 0xCA_4CE1, seq: (64, 48), pic: shaky };
+    // cancelled after 120 of its 240 frames
+    let env = CountingEnv(clip, &reads, Some((120, stop.clone())));
+    let r = filmcraft_media::cancel::with_cancel(&stop, || stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false));
+    assert!(r.is_none(), "a cancelled request gets no path");
+    let first = reads.load(Ordering::SeqCst);
+    assert!((120..240).contains(&first), "stopped after {first} reads");
+    let env = CountingEnv(clip, &reads, None);
+    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+    let most = 240 + super::temporal::ANALYSIS_BLOCK + 1;
+    assert!(reads.load(Ordering::SeqCst) <= most, "{} reads for 240 frames", reads.load(Ordering::SeqCst));
 }
 
 #[test]
