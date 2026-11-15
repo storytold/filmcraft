@@ -1,6 +1,6 @@
 use super::format::{ExportSettings, Format};
 use super::output::{AudioWriter, Out, SharedBuf, write_output};
-use super::still_encode::encode_still_with;
+use super::still_encode::encode_still_with_frame;
 use super::{
     Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
     SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, mp3_out, pcm, pipeline, stepped,
@@ -208,15 +208,8 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                     let written: Vec<Result<u64>> = (f..end)
                         .into_par_iter()
                         .map(|fi| {
-                            let data = encode_still_with(
-                                settings.format,
-                                pipe.frame(fi, sources).0,
-                                w,
-                                h,
-                                settings.alpha,
-                                settings.quality,
-                                settings.exr_compression,
-                            )?;
+                            let frame = pipe.frame_rendered(fi, sources);
+                            let data = encode_still_with_frame(settings.format, &frame, w, h, settings.alpha, settings.quality, settings.exr_compression)?;
                             write_output(settings, &pcm::image_sequence_path(&settings.path, (fi - f0) as u64, count), data)
                         })
                         .collect();

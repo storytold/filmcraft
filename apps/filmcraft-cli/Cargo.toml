@@ -29,6 +29,7 @@ filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }
 craft-media = { workspace = true, features = ["mpegts", "mxf", "ogg"] }
 filmcraft-automation = { workspace = true }
+wgpu = { version = "30", features = ["wgsl", "metal", "vulkan", "dx12", "gles"] }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

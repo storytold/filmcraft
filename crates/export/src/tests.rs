@@ -622,7 +622,7 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
         })
         .collect();
     let s = ExportSettings { format: Format::H264, ..Default::default() };
-    let frame = |i: usize| EncoderFrame { width: w, height: h, rgba: &frames[i], hdr: None, index: i as u64 };
+    let frame = |i: usize| EncoderFrame { width: w, height: h, rgba: &frames[i], hdr: None, index: i as u64, nv12: None, rgb8: None };
     let encode_all = |ahead: bool| -> Vec<Vec<u8>> {
         let mut enc = h264_factory(Format::H264, w, h, FrameRate::FPS_24, &s).unwrap().unwrap();
         if ahead {
@@ -631,7 +631,7 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
                 prepare(&frame(i));
             }
             // a picture of another size under index 5: the encoder converts that one itself
-            prepare(&EncoderFrame { width: w / 2, height: h / 2, rgba: &frames[5][..(w * h) as usize], hdr: None, index: 5 });
+            prepare(&EncoderFrame { width: w / 2, height: h / 2, rgba: &frames[5][..(w * h) as usize], hdr: None, index: 5, nv12: None, rgb8: None });
             // and one it is never asked to encode
             prepare(&EncoderFrame { index: 99, ..frame(0) });
         }
@@ -686,7 +686,7 @@ mod apv_chroma {
     fn encode_apv(profile: &str, w: u32, h: u32, signal: ColorSignal, rgba: &[u8], hdr: Option<&[f32]>) -> Result<craft_video::apv::Frame> {
         let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), signal, ..Default::default() };
         let mut enc = apv_factory(Format::Apv, w, h, FrameRate::FPS_24, &s).unwrap()?;
-        let packets = enc.encode(&EncoderFrame { width: w, height: h, rgba, hdr, index: 0 })?;
+        let packets = enc.encode(&EncoderFrame { width: w, height: h, rgba, hdr, index: 0, nv12: None, rgb8: None })?;
         Ok(craft_video::apv::decode_frame(&packets[0].data).unwrap())
     }
 
@@ -767,9 +767,9 @@ mod apv_chroma {
             let s = ExportSettings { format: Format::Apv, apv_profile: profile.into(), ..Default::default() };
             let mut enc = apv_factory(Format::Apv, 16, 8, FrameRate::FPS_24, &s).unwrap().unwrap();
             let short = vec![0u8; 16 * 8 * 4 - 1];
-            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &short, hdr: None, index: 0 }).is_err(), "{profile}");
+            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &short, hdr: None, index: 0, nv12: None, rgb8: None }).is_err(), "{profile}");
             let short = vec![0f32; 16 * 8 * 3 - 1];
-            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &[], hdr: Some(&short), index: 0 }).is_err(), "{profile}");
+            assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &[], hdr: Some(&short), index: 0, nv12: None, rgb8: None }).is_err(), "{profile}");
         }
     }
 }

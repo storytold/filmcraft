@@ -82,6 +82,12 @@ pub struct GpuCompositor {
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
+    output_readback_buf: Option<(wgpu::Buffer, u64)>,
+    cc_bgl: Option<wgpu::BindGroupLayout>,
+    nv12_pipeline: Option<wgpu::ComputePipeline>,
+    rgb8_pipeline: Option<wgpu::ComputePipeline>,
+    cc_storage_buf: Option<(wgpu::Buffer, u64)>,
+    cc_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
     dummy: wgpu::TextureView,
@@ -411,6 +417,68 @@ impl GpuCompositor {
                 }
             })
             .flatten();
+        let (cc_bgl, nv12_pipeline, rgb8_pipeline) =
+            if device.limits().max_compute_invocations_per_workgroup >= 256 && device.limits().max_storage_buffers_per_shader_stage >= 1 {
+                let cc_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("filmcraft-color-convert"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("color_convert.wgsl").into()),
+                });
+                let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("color-convert"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+                let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("color-convert"),
+                    bind_group_layouts: &[Some(&bgl)],
+                    immediate_size: 0,
+                });
+                let nv12 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("rgba-to-nv12"),
+                    layout: Some(&pl),
+                    module: &cc_shader,
+                    entry_point: Some("cs_rgba_to_nv12"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+                let rgb8 = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("rgba-to-rgb8"),
+                    layout: Some(&pl),
+                    module: &cc_shader,
+                    entry_point: Some("cs_rgba_to_rgb8"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+                (Some(bgl), Some(nv12), Some(rgb8))
+            } else {
+                (None, None, None)
+            };
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -424,6 +492,12 @@ impl GpuCompositor {
             backdrop: None,
             output: None,
             accum_readback_buf: None,
+            output_readback_buf: None,
+            cc_bgl,
+            nv12_pipeline,
+            rgb8_pipeline,
+            cc_storage_buf: None,
+            cc_readback_buf: None,
             uploads: HashMap::new(),
             clock: 0,
             dummy,
@@ -1103,6 +1177,280 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
         self.map_accumulator(size)
+    }
+
+    /// Composite `plan` on the GPU with the sRGB resolve pass (`fs_full`) and read the resulting
+    /// `OUTPUT_FORMAT` texture directly back as RGBA8. This skips the half-float to f32 conversion,
+    /// image allocations, and the CPU linear-to-sRGB table lookups of `over_black_rgba8` when an
+    /// export does not need the linear f32 data.
+    pub fn render_export_rgba8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, true);
+        let (_, _, (w, h)) = self.output.as_ref()?;
+        let (w, h) = (*w, *h);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let row = w.checked_mul(4)?.div_ceil(256).checked_mul(256)?;
+        let needed = u64::from(row).checked_mul(u64::from(h))?;
+        if self.output_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("output-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.output_readback_buf = Some((b, needed));
+        }
+        let (tex, _, _) = self.output.as_ref()?;
+        let (buf, capacity) = self.output_readback_buf.take()?;
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-rgba8") });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        wait_mapped(&self.device, &rx)?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let (width, row_usize) = (w as usize, row as usize);
+        let total_bytes = width.checked_mul(h as usize)?.checked_mul(4)?;
+        let mut out = vec![0u8; total_bytes];
+        let data = slice.get_mapped_range().ok()?;
+        let ok = if row_usize == width * 4 {
+            if let Some(src) = data.get(..total_bytes) {
+                out.copy_from_slice(src);
+                true
+            } else {
+                false
+            }
+        } else {
+            out.chunks_exact_mut(width * 4).enumerate().all(|(y, dst)| {
+                let Some(src) = data.get(y * row_usize..y * row_usize + width * 4) else {
+                    return false;
+                };
+                dst.copy_from_slice(src);
+                true
+            })
+        };
+        drop(data);
+        buf.unmap();
+        if !ok {
+            return None;
+        }
+        self.output_readback_buf = Some((buf, capacity));
+        export_renderer::timing::add_convert(t.elapsed());
+        Some((w, h, out))
+    }
+
+    /// Composite `plan` on the GPU and convert directly to biplanar NV12 (8-bit Y plane followed by
+    /// interleaved UV plane) via compute shader, reading back only W * H * 1.5 bytes.
+    pub fn render_export_nv12_prepared(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&PreparedPlan>,
+        matrix_mode: u32,
+        range_mode: u32,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        if self.nv12_pipeline.is_none() || self.cc_bgl.is_none() {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, true);
+        let (_, view, (w, h)) = self.output.as_ref()?;
+        let (w, h) = (*w, *h);
+        if w == 0 || h == 0 || !w.is_multiple_of(4) || !h.is_multiple_of(2) {
+            return None;
+        }
+
+        let total_bytes = u64::from(w).checked_mul(u64::from(h))?.checked_mul(3)? / 2;
+        let needed = total_bytes.div_ceil(4).checked_mul(4)?;
+
+        if self.cc_storage_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cc-storage"),
+                size: needed,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.cc_storage_buf = Some((b, needed));
+        }
+
+        if self.cc_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cc-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.cc_readback_buf = Some((b, needed));
+        }
+
+        let (storage_buf, _) = self.cc_storage_buf.as_ref()?;
+        let (readback_buf, capacity) = self.cc_readback_buf.take()?;
+
+        let bgl = self.cc_bgl.as_ref()?;
+        let pipeline = self.nv12_pipeline.as_ref()?;
+
+        let cfg = [w, h, matrix_mode, range_mode];
+        let bytes: Vec<u8> = cfg.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let ubuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cc-uniforms"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&ubuf, 0, &bytes);
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cc-nv12-bg"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 2, resource: storage_buf.as_entire_binding() },
+            ],
+        });
+
+        let wg_x = w.div_ceil(4).div_ceil(16);
+        let wg_y = h.div_ceil(2).div_ceil(16);
+
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-nv12") });
+        {
+            let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("cs_nv12"), timestamp_writes: None });
+            cpass.set_pipeline(pipeline);
+            cpass.set_bind_group(0, &bg, &[]);
+            cpass.dispatch_workgroups(wg_x, wg_y, 1);
+        }
+        enc.copy_buffer_to_buffer(storage_buf, 0, &readback_buf, 0, needed);
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let slice = readback_buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        wait_mapped(&self.device, &rx)?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let total_usize = usize::try_from(total_bytes).ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let out = data.get(..total_usize)?.to_vec();
+        drop(data);
+        readback_buf.unmap();
+        self.cc_readback_buf = Some((readback_buf, capacity));
+        export_renderer::timing::add_convert(t.elapsed());
+        Some((w, h, out))
+    }
+
+    /// Composite `plan` on the GPU and convert directly to packed 24-bit RGB8 (no alpha padding)
+    /// via compute shader, reading back only W * H * 3 bytes.
+    pub fn render_export_rgb8_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        if self.rgb8_pipeline.is_none() || self.cc_bgl.is_none() {
+            return None;
+        }
+        let t = std::time::Instant::now();
+        self.render_plan(plan, prep, true, true);
+        let (_, view, (w, h)) = self.output.as_ref()?;
+        let (w, h) = (*w, *h);
+        if w == 0 || h == 0 || !w.is_multiple_of(4) {
+            return None;
+        }
+
+        let total_bytes = u64::from(w).checked_mul(u64::from(h))?.checked_mul(3)?;
+        let needed = total_bytes.div_ceil(4).checked_mul(4)?;
+
+        if self.cc_storage_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cc-storage"),
+                size: needed,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.cc_storage_buf = Some((b, needed));
+        }
+
+        if self.cc_readback_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
+            let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cc-readback"),
+                size: needed,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.cc_readback_buf = Some((b, needed));
+        }
+
+        let (storage_buf, _) = self.cc_storage_buf.as_ref()?;
+        let (readback_buf, capacity) = self.cc_readback_buf.take()?;
+
+        let bgl = self.cc_bgl.as_ref()?;
+        let pipeline = self.rgb8_pipeline.as_ref()?;
+
+        let cfg = [w, h, 0, 0];
+        let bytes: Vec<u8> = cfg.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let ubuf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cc-uniforms"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&ubuf, 0, &bytes);
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cc-rgb8-bg"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 2, resource: storage_buf.as_entire_binding() },
+            ],
+        });
+
+        let wg_x = w.div_ceil(4).div_ceil(16);
+        let wg_y = h.div_ceil(16);
+
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export-rgb8") });
+        {
+            let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("cs_rgb8"), timestamp_writes: None });
+            cpass.set_pipeline(pipeline);
+            cpass.set_bind_group(0, &bg, &[]);
+            cpass.dispatch_workgroups(wg_x, wg_y, 1);
+        }
+        enc.copy_buffer_to_buffer(storage_buf, 0, &readback_buf, 0, needed);
+        self.queue.submit([enc.finish()]);
+        export_renderer::timing::add_submit(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let slice = readback_buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        wait_mapped(&self.device, &rx)?;
+        export_renderer::timing::add_map_wait(t.elapsed());
+
+        let t = std::time::Instant::now();
+        let total_usize = usize::try_from(total_bytes).ok()?;
+        let data = slice.get_mapped_range().ok()?;
+        let out = data.get(..total_usize)?.to_vec();
+        drop(data);
+        readback_buf.unmap();
+        self.cc_readback_buf = Some((readback_buf, capacity));
+        export_renderer::timing::add_convert(t.elapsed());
+        Some((w, h, out))
     }
 
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`

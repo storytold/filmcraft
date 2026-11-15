@@ -120,8 +120,16 @@ impl VideoEncoder for NvencEncoder {
             }
             (true, None) => return Err(ExportError::Unsupported("NVENC Main 10 needs the HDR picture (EncoderFrame::hdr)".into())),
             (false, Some(_)) => return Err(ExportError::Unsupported("NVENC Main (8-bit) does not take HDR pictures".into())),
+            (false, None) if !self.enc.takes_rgba() && f.nv12.is_some() => {
+                let Some(nv12) = f.nv12 else {
+                    return Err(ExportError::Encode("NVENC: missing NV12 buffer".into()));
+                };
+                self.enc.encode_nv12(nv12, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
+            }
             // the GPU converts the RGBA picture itself (BT.709 limited range, the same codes as `rgba_to_yuv420_8`)
-            (false, None) if self.enc.takes_rgba() => self.enc.encode_rgba(f.rgba, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?,
+            (false, None) if self.enc.takes_rgba() && !f.rgba.is_empty() => {
+                self.enc.encode_rgba(f.rgba, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
+            }
             (false, None) => {
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
                     filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v)
@@ -234,9 +242,10 @@ fn open(cfg: &Config, signal: &Signal) -> std::result::Result<Nvenc, String> {
     if cfg.profile == Profile::HevcMain10 {
         return Nvenc::with_signal(cfg, signal);
     }
-    Nvenc::with_rgba_input(cfg, signal).or_else(|why| {
-        log::info!("NVENC RGBA input declined ({why}): converting to 4:2:0 on the CPU");
-        Nvenc::with_signal(cfg, signal)
+    // Prefer native NV12 planar input (direct GPU NV12 compute conversion and 1.5 B/px PCIe transfer).
+    Nvenc::with_signal(cfg, signal).or_else(|why| {
+        log::info!("NVENC planar input declined ({why}): falling back to RGBA input");
+        Nvenc::with_rgba_input(cfg, signal)
     })
 }
 

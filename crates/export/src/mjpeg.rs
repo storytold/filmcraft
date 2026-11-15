@@ -13,6 +13,15 @@ pub(super) fn encode(rgba: &[u8], width: u32, height: u32, quality: u8) -> Resul
         .map_err(|e| e.to_string())
 }
 
+pub(super) fn encode_rgb(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>, String> {
+    let expected = usize::try_from(width).ok().and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h))).and_then(|n| n.checked_mul(3));
+    if Some(rgb.len()) != expected {
+        return Err("MJPEG frame dimensions do not match its pixel buffer".into());
+    }
+    craft_jpeg::encode_baseline_low_memory(rgb, width as usize, height as usize, 3, quality, craft_jpeg::ChromaSubsampling::S444, &[])
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
