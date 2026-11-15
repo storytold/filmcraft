@@ -5340,7 +5340,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
         if s.services.read_file(&b).is_err()
-            && let Ok(old) = s.services.read_file(path)
+            && let Ok(old) = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES)
         {
             s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
             backup = Some(b);
@@ -5393,7 +5393,7 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
-    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);

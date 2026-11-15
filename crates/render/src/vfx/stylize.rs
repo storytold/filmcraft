@@ -498,6 +498,9 @@ fn bolt(a: (f32, f32), b: (f32, f32), segs: usize, amp: f32, levels: usize, deta
     pts
 }
 
+/// Most pixels Lightning scans for one frame (a 4K frame is 8.3 million; real bolts need a few million).
+const MAX_LIGHTNING_PIXEL_VISITS: u64 = 1 << 28;
+
 /// Lightning (obsolete): a seeded, re-striking bolt with branches, glow and core colours.
 pub fn lightning(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let s = pv(e, "start", cx, img);
@@ -530,7 +533,9 @@ pub fn lightning(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     }
     let (w, h) = (img.w, img.h);
     let mut dmap = vec![f32::INFINITY; w * h];
-    for (pts, lw) in &lines {
+    // every segment scans a rectangle widened by the (project-supplied) width: stop at a budget
+    let mut budget = MAX_LIGHTNING_PIXEL_VISITS;
+    'lines: for (pts, lw) in &lines {
         for seg in pts.windows(2) {
             let (a, b) = (seg[0], seg[1]);
             let r = lw * 3.0;
@@ -538,6 +543,11 @@ pub fn lightning(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let (y0, y1) = ((a.1.min(b.1) - r).floor().max(0.0) as usize, ((a.1.max(b.1) + r).ceil().max(0.0) as usize).min(h));
             let (ex, ey) = (b.0 - a.0, b.1 - a.1);
             let l2 = (ex * ex + ey * ey).max(1e-6);
+            let area = (x1.saturating_sub(x0) as u64).saturating_mul(y1.saturating_sub(y0) as u64);
+            if area > budget {
+                break 'lines;
+            }
+            budget -= area;
             for y in y0..y1 {
                 for x in x0..x1 {
                     let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
@@ -779,6 +789,12 @@ pub fn paint_bucket(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
+/// Most brush stamps Write-on keeps, and most pixels it paints, for one frame.
+const MAX_WRITE_ON_STAMPS: usize = 1 << 20;
+const MAX_WRITE_ON_PIXEL_VISITS: u64 = 1 << 28;
+/// Interpolated candidate stamps looked at in all, on or off the canvas (a few per kept stamp).
+const MAX_WRITE_ON_CANDIDATES: usize = 4 * MAX_WRITE_ON_STAMPS;
+
 /// Write-on (obsolete): paints the animated Brush Position's path up to now.
 pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let Some(param) = e.param("brush") else { return };
@@ -801,26 +817,50 @@ pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         );
         (fx as f32, fy as f32)
     };
+    let (w, h) = (img.w, img.h);
+    // A stamp wholly off the canvas paints nothing and a repeat of the last stamp changes nothing
+    // (coverage is a maximum), so neither is kept; the history is bounded as well.
+    let (wf, hf) = (w as f32, h as f32);
+    let visible = |p: (f32, f32)| p.0 + r + 1.0 >= 0.0 && p.0 - r - 1.0 < wf && p.1 + r + 1.0 >= 0.0 && p.1 - r - 1.0 < hf;
     let mut stamps: Vec<(f32, f32)> = Vec::new();
     let mut prev: Option<(f32, f32)> = None;
-    for i in first..=n {
+    let mut candidates = 0usize;
+    'path: for i in first..=n {
         let p = to_px(i as f64 * spacing);
+        if prev == Some(p) {
+            continue;
+        }
         if let Some(q) = prev {
             let d = ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt();
             let steps = (d / (r * 0.5)).ceil() as usize;
             for s in 1..steps.min(2000) {
+                // off-canvas candidates keep no stamp, so they are counted here or a long off-canvas path would not be bounded
+                candidates += 1;
+                if candidates > MAX_WRITE_ON_CANDIDATES {
+                    break 'path;
+                }
                 let t = s as f32 / steps as f32;
-                stamps.push((q.0 + (p.0 - q.0) * t, q.1 + (p.1 - q.1) * t));
+                let at = (q.0 + (p.0 - q.0) * t, q.1 + (p.1 - q.1) * t);
+                if visible(at) && stamps.len() < MAX_WRITE_ON_STAMPS {
+                    stamps.push(at);
+                }
             }
         }
-        stamps.push(p);
+        if visible(p) && stamps.len() < MAX_WRITE_ON_STAMPS {
+            stamps.push(p);
+        }
         prev = Some(p);
     }
-    let (w, h) = (img.w, img.h);
     let mut cov = vec![0f32; w * h];
+    let mut budget = MAX_WRITE_ON_PIXEL_VISITS;
     for (sx, sy) in stamps {
         let (x0, x1) = ((sx - r - 1.0).floor().max(0.0) as usize, ((sx + r + 1.0).ceil().max(0.0) as usize).min(w));
         let (y0, y1) = ((sy - r - 1.0).floor().max(0.0) as usize, ((sy + r + 1.0).ceil().max(0.0) as usize).min(h));
+        let area = (x1.saturating_sub(x0) as u64).saturating_mul(y1.saturating_sub(y0) as u64);
+        if area > budget {
+            break;
+        }
+        budget -= area;
         for y in y0..y1 {
             for x in x0..x1 {
                 let d = ((x as f32 + 0.5 - sx).powi(2) + (y as f32 + 0.5 - sy).powi(2)).sqrt();

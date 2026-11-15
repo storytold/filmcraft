@@ -3590,6 +3590,7 @@
 	The default graphics are used from the next start.	Standardgrafiken används från och med nästa start.
 	DirectX 12 only	Endast DirectX 12
 	software rendering	programvarurendering
+	integrated GPU	integrerad GPU
 	Label Color Presets	Förinställningar för etikettfärger
 	{name} (Modified)	{name} (ändrad)
 	Revert to the preset's colors and names	Återgå till förinställningens färger och namn

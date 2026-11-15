@@ -222,9 +222,20 @@ pub struct Report {
     pub entries: Vec<ReportEntry>,
 }
 
+/// Sequences nested inside each other that an importer follows before treating the rest as a gap;
+/// every level is a native recursion in the FCP7 and FCPXML readers.
+pub const MAX_NESTING_DEPTH: usize = 64;
+
+/// Distinct messages a report keeps; a document can produce one per element, so beyond this
+/// they collapse into a single counted entry (the lookup in [`Report::push`] stays bounded too).
+pub const MAX_REPORT_ENTRIES: usize = 2000;
+
 impl Report {
     pub fn push(&mut self, level: Level, message: impl Into<String>) {
-        let message = message.into();
+        let mut message = message.into();
+        if self.entries.len() >= MAX_REPORT_ENTRIES && !self.entries.iter().any(|e| e.level == level && e.message == message) {
+            message = "further diagnostics omitted".into();
+        }
         if let Some(e) = self.entries.iter_mut().find(|e| e.level == level && e.message == message) {
             e.count += 1;
         } else {
@@ -621,5 +632,24 @@ pub fn rebase_source_timecode(project: &mut Project, item: ItemId, start_tc_fram
     if let Some(m) = project.item_mut(item).and_then(|i| i.as_media_mut()) {
         m.info.start_timecode = Some(start_tc_frames);
         m.markers.iter_mut().for_each(|mk| mk.start -= off);
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn report_keeps_a_bounded_number_of_distinct_messages() {
+        let mut r = Report::default();
+        for i in 0..(MAX_REPORT_ENTRIES * 2) {
+            r.warn(format!("line {i} is not recognised"));
+        }
+        assert_eq!(r.entries.len(), MAX_REPORT_ENTRIES + 1);
+        let last = r.entries.last().unwrap();
+        assert_eq!((last.message.as_str(), last.count as usize), ("further diagnostics omitted", MAX_REPORT_ENTRIES));
+        // known messages still merge after the cap
+        r.warn("line 0 is not recognised");
+        assert_eq!(r.entries[0].count, 2);
     }
 }
