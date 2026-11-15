@@ -1024,7 +1024,17 @@ mod win_gpu {
             CPUAccessFlags: 0,
             MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
         };
-        let mut state = PoolState { entries: Vec::with_capacity(count), free: Vec::new(), alive: true };
+        struct PoolGuard<'a> {
+            enc: Handle,
+            api: &'a Api,
+            state: PoolState,
+        }
+        impl Drop for PoolGuard<'_> {
+            fn drop(&mut self) {
+                unregister_entries(self.enc, self.api, &mut self.state.entries);
+            }
+        }
+        let mut guard = PoolGuard { enc, api, state: PoolState { entries: Vec::with_capacity(count), free: Vec::new(), alive: true } };
         for _ in 0..count {
             let mut tex: Option<ID3D11Texture2D> = None;
             // SAFETY: valid D3D11 texture descriptor and out-pointer on live multithread-protected device.
@@ -1050,14 +1060,14 @@ mod win_gpu {
                 let s = reg_fn(enc, &mut r);
                 if s != NV_ENC_SUCCESS || r.registeredResource.is_null() {
                     let _ = CloseHandle(handle);
-                    unregister_entries(enc, api, &mut state.entries);
                     return Err(status("registering a GPU input surface", s, enc, api));
                 }
                 r.registeredResource
             };
             let id = NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed);
-            state.entries.push(SharedEntry { _tex: tex, handle, registered, id });
+            guard.state.entries.push(SharedEntry { _tex: tex, handle, registered, id });
         }
+        let mut state = std::mem::replace(&mut guard.state, PoolState { entries: Vec::new(), free: Vec::new(), alive: false });
         state.free = (0..state.entries.len()).rev().collect();
         Ok(Arc::new(GpuPool(Arc::new(GpuPoolInner { width: w, height: h, state: Mutex::new(state) }))))
     }
