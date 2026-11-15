@@ -16,7 +16,8 @@ The same JSON command works through MCP `command_run` or the desktop control cha
 File → Import and `filmcraft-cli import source.prproj` also dispatch to this importer. Their
 default is linked media and a new `source.filmcraft-import-N` directory beside the source project.
 Use the explicit command for a custom destination, copied media or frame rate. Existing destination
-directories are refused. `sequence` optionally chooses the active sequence by ObjectUID or unique
+directories are refused. As with other documents, the project's items go into `bin` (File → Import
+passes its own `bin`), or the root when it is absent or no longer exists, in the import's one undo step. `sequence` optionally chooses the active sequence by ObjectUID or unique
 name; an ambiguous requested name requires its ObjectUID. All sequences
 are imported. Without it, the sequence with the most video items wins; “Sequence 01” is only
 a tie-break, followed by the latest video end time.

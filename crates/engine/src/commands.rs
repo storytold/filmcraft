@@ -1849,6 +1849,9 @@ fn build() -> Vec<CommandSpec> {
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
                 if crate::premiere::is_project(&path) {
+                    // The Premiere importer reads `bin` (and its own options) from these
+                    // parameters; a project is never a numbered still, so `imageSequence` and
+                    // image-sequence detection do not apply to it.
                     let mut options = p.clone();
                     options["path"] = json!(path);
                     match crate::premiere::import(s, &options) {

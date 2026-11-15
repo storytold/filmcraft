@@ -551,3 +551,35 @@ fn premiere_hash_media_addresses_an_import_by_its_destination() {
         assert!(result.unwrap().is_err(), "{selector}");
     }
 }
+
+#[test]
+fn premiere_import_lands_in_the_requested_bin_in_one_undo_step() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    for (index, command) in ["file.import", "premiere.import"].into_iter().enumerate() {
+        let mut s = Session::default();
+        let bin = filmcraft_project::BinId(s.execute("file.newBin", json!({"name":"Premiere"})).unwrap()["bin"].as_u64().unwrap());
+        let before = (*s.project).clone();
+        let mut params = json!({"bin":bin.0,"destination":fixture.0.join(format!("binned-{index}"))});
+        if command == "file.import" {
+            // A Premiere project is never a numbered still: the image-sequence flag does not apply.
+            params["paths"] = json!([doc]);
+            params["imageSequence"] = json!(true);
+        } else {
+            params["path"] = json!(doc);
+        }
+        let result = s.execute(command, params).unwrap();
+        assert!(result.get("imageSequences").is_none(), "{command}: {result}");
+        let added: Vec<_> = s.project.items.keys().copied().filter(|id| !before.items.contains_key(id)).collect();
+        assert!(added.len() >= 2, "{command}: a sequence and its media: {added:?}");
+        for id in added {
+            assert_eq!(s.project.root.parent_of(id), Some(bin), "{command}: {id:?} is in the bin the import was aimed at");
+        }
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, before, "{command}: the import and its filing are one undo step");
+    }
+    // An unknown bin is the root, as for other documents.
+    let mut s = Session::default();
+    s.execute("file.import", json!({"paths":[doc],"bin":987_654_321u64,"destination":fixture.0.join("unknown-bin")})).unwrap();
+    assert!(s.project.items.keys().all(|id| s.project.root.parent_of(*id) == Some(s.project.root.id)));
+}
