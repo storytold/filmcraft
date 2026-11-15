@@ -114,8 +114,8 @@ reconstructed. Every clip project item (sequence, media file, generated media, s
 adjustment layer) is filed in its bin: the timeline's own item when it is the same source, a new
 one for bin-only items, which pass the same document-path policy and probe as timeline media. Media
 takes its master clip's name (a panel rename); timeline clips keep their own names. An item listed
-in several bins stays in the first. An audio/video file is filed as its video item; a timeline's
-separate audio item of the same file stays at the root. Smart/search bins are reported, not
+in several bins stays in the first. A file is one project item, shared by the video and audio
+clips that cut it, and is filed in its bin. Smart/search bins are reported, not
 imported; caption files and graphic canvases are not listed. Reverse/time-remapped clips, unmapped native effect parameters and unsupported caption
 encodings need additional fixtures before claiming fidelity. No rendered-preview substitution
 is performed.
