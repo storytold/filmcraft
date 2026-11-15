@@ -167,6 +167,7 @@ fn av1_export_with_audio() {
     let s = ExportSettings { include_audio: true, keyframe_distance: Some(24), ..av1(path.clone()) };
     export(&p, seq, &s, &m, &Progress::default()).expect("export");
     let bytes = std::fs::read(&path).unwrap();
+    assert!(!bytes.windows(4).any(|w| w == b"ctts"), "AV1 ISOBMFF must not contain a ctts box");
     let file = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
     assert!(file.track_of_kind(filmcraft_isobmff::TrackKind::Video).is_some());
     let at = file.track_of_kind(filmcraft_isobmff::TrackKind::Audio).expect("an audio track");

@@ -109,9 +109,10 @@ fn the_stream_decodes_to_the_source() {
     assert_eq!(packets.len(), 72, "one packet per picture");
 
     let delay = i64::from(enc.delay());
+    assert_eq!(delay, 0, "AV1 ISOBMFF forbids B-frame reordering / ctts offsets");
     for (k, p) in packets.iter().enumerate() {
         assert_eq!(p.dts, k as i64 - delay, "dts of packet {k}");
-        assert!(p.pts >= p.dts, "pts {} before dts {}", p.pts, p.dts);
+        assert_eq!(p.pts, p.dts, "AV1 packet {k} must have zero composition offset (pts == dts)");
     }
     assert!(packets.windows(2).all(|p| p[0].dts < p[1].dts), "dts strictly increases");
     let mut pts: Vec<i64> = packets.iter().map(|p| p.pts).collect();

@@ -298,7 +298,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
         // the H.264 level setting means nothing for H.265 / AV1: the encoder picks the level
         level: if hevc || av1 { None } else { s.h264_level },
         sar: s.pixel_aspect,
-        bframes: true,
+        bframes: !av1,
     })
 }
 
