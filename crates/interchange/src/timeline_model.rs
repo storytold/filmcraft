@@ -722,6 +722,40 @@ pub(crate) fn export_otio(project: &film::Project, seq: film::ItemId, opts: &cra
     result.map_err(convert_error)
 }
 
+pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
+    let catalog = FilmCatalog;
+    let shared_opts =
+        craft_timeline::ImportOptions { base_dir: opts.base_dir.as_deref(), name: opts.name.as_deref(), catalog: &catalog, namespace: "filmcraft" };
+    let mut shared_report = craft_timeline::Report::default();
+    let result = craft_timeline::fcpxml::import_with_report_limit(text, &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
+    merge_report(report, shared_report);
+    let imported = result.map_err(convert_error)?;
+    let project = from_project(&imported.project).map_err(|e| crate::Error::Other(e.to_string()))?;
+    Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
+}
+pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
+    let project = to_project(project, seq).map_err(|e| crate::Error::Other(e.to_string()))?;
+    let catalog = FilmCatalog;
+    let version = match opts.fcpxml_version {
+        crate::FcpxmlVersion::V1_9 => craft_timeline::FcpxmlVersion::V1_9,
+        crate::FcpxmlVersion::V1_10 => craft_timeline::FcpxmlVersion::V1_10,
+        crate::FcpxmlVersion::V1_11 => craft_timeline::FcpxmlVersion::V1_11,
+    };
+    let shared_opts = craft_timeline::ExportOptions {
+        relative_to: opts.relative_to.as_deref(),
+        name: opts.name.as_deref(),
+        catalog: &catalog,
+        namespace: "filmcraft",
+        xmeml_version: opts.xmeml_version,
+        fcpxml_version: version,
+    };
+    let mut shared_report = craft_timeline::Report::default();
+    let result =
+        craft_timeline::fcpxml::export_with_report_limit(&project, shared::ItemId(seq.0), &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
+    merge_report(report, shared_report);
+    result.map_err(convert_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,6 +786,16 @@ mod tests {
         let opts = crate::ImportOptions::default();
         let old = crate::otio::import(doc, &opts, &mut crate::Report::default()).unwrap();
         let new = import_otio(doc, &opts, &mut crate::Report::default()).unwrap();
+        let old_clip = &old.project.sequence(old.sequences[0]).unwrap().video_tracks[0].items[0];
+        let new_clip = &new.project.sequence(new.sequences[0]).unwrap().video_tracks[0].items[0];
+        assert_eq!((new_clip.start, new_clip.duration, new_clip.source_in), (old_clip.start, old_clip.duration, old_clip.source_in));
+    }
+    #[test]
+    fn shared_fcpxml_reader_matches_legacy_plain_clip_timing() {
+        let doc = r#"<fcpxml version="1.10"><resources><format id="r1" frameDuration="1/24s" width="1920" height="1080"/><asset id="r2" name="A" hasVideo="1" duration="4s"><media-rep kind="original-media" src="file:///tmp/a.mov"/></asset></resources><library><event><project name="P"><sequence format="r1" duration="4s"><spine><asset-clip ref="r2" name="A" offset="0s" start="1s" duration="2s"/></spine></sequence></project></event></library></fcpxml>"#;
+        let opts = crate::ImportOptions::default();
+        let old = crate::fcpxml::import(doc, &opts, &mut crate::Report::default()).unwrap();
+        let new = import_fcpxml(doc, &opts, &mut crate::Report::default()).unwrap();
         let old_clip = &old.project.sequence(old.sequences[0]).unwrap().video_tracks[0].items[0];
         let new_clip = &new.project.sequence(new.sequences[0]).unwrap().video_tracks[0].items[0];
         assert_eq!((new_clip.start, new_clip.duration, new_clip.source_in), (old_clip.start, old_clip.duration, old_clip.source_in));
