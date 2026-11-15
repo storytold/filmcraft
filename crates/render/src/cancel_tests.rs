@@ -204,7 +204,7 @@ fn a_cancelled_job_never_stops_another_jobs_effect_on_the_shared_pool() {
     }
     let src = {
         let mut img = Image::new(96, 96);
-        for (i, p) in img.px.chunks_exact_mut(4).enumerate() {
+        for (i, p) in img.px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let v = ((i * 37) % 255) as f32 / 255.0;
             p.copy_from_slice(&[v, 1.0 - v, (i % 7) as f32 / 7.0, 1.0]);
         }

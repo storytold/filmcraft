@@ -188,7 +188,7 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         if ctx.is_cancelled() {
             return;
         }
-        for (a, p) in arow.iter_mut().zip(prow.chunks_exact(4)) {
+        for (a, p) in arow.iter_mut().zip(prow.as_chunks::<4>().0) {
             if p[3] <= 1e-6 {
                 *a = 0.0;
                 continue;
@@ -242,7 +242,7 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         if ctx.is_cancelled() {
             return;
         }
-        for (p, &a) in prow.chunks_exact_mut(4).zip(arow) {
+        for (p, &a) in prow.as_chunks_mut::<4>().0.iter_mut().zip(arow) {
             let src_a = p[3];
             let mut v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
             let (o1, o2) = (v[(dom + 1) % 3], v[(dom + 2) % 3]);

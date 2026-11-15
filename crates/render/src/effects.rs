@@ -590,7 +590,7 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         if ctx.is_cancelled() {
             return;
         }
-        for p in row.chunks_exact_mut(4) {
+        for p in row.as_chunks_mut::<4>().0 {
             if p[3] <= 0.0 {
                 continue;
             }
@@ -609,7 +609,8 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let lo = dec(o);
             match output {
                 1 => {
-                    p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
+                    let pa = p[3];
+                    *p = [alpha * pa, alpha * pa, alpha * pa, pa];
                 }
                 _ => {
                     p[0] = lo[0] * a;
