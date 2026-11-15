@@ -1129,7 +1129,7 @@ dependencies = [
 [[package]]
 name = "craft-jsonrpc"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5ce8a2366528dbe6a2fc39b1f907a53a4d10c09#c5ce8a2366528dbe6a2fc39b1f907a53a4d10c09"
+source = "git+https://github.com/storytold/craft-libs?rev=baa9bfed789bd04a3a0647d5ec4784455770df03#baa9bfed789bd04a3a0647d5ec4784455770df03"
 dependencies = [
  "serde_json",
  "tokio",
