@@ -1052,3 +1052,34 @@ fn opening_a_clip_in_source_clears_another_panels_maximize() {
     assert_eq!(d.app().ui.keys.maximized, None, "the maximize is cleared so Source is visible");
     assert_eq!(d.app().ui.focused, PanelKind::Source);
 }
+
+/// #4689: the Project panel's ≡ menu is as wide as its items, not the window, so a click on the
+/// Timeline beside it is a click elsewhere and closes it, as Escape does.
+#[test]
+fn project_panel_menu_closes_on_a_click_on_the_timeline_and_on_escape() {
+    fn send(d: &mut Driver, event: egui::Event) {
+        d.harness.input_mut().events.push(event);
+        d.frames(1);
+    }
+    fn rect(d: &mut Driver, id: &str) -> egui::Rect {
+        d.rects(id).into_iter().find(|(i, _)| i == id).map(|(_, r)| r).unwrap()
+    }
+    let mut d = Driver::demo();
+    let timeline = rect(&mut d, "panel.Timeline").center();
+    d.click("panel.menu.Project");
+    assert!(d.has("project.menu.closeProject"), "the menu opens");
+    let menu = rect(&mut d, "panel.menu.scroll");
+    assert!(menu.width() < 800.0 && !menu.contains(timeline), "the menu {menu:?} reaches across the Timeline at {timeline:?}");
+    send(&mut d, egui::Event::PointerMoved(timeline));
+    for pressed in [true, false] {
+        send(&mut d, egui::Event::PointerButton { pos: timeline, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+    }
+    d.frames(2);
+    assert!(!d.has("project.menu.closeProject"), "a click on the Timeline leaves the menu open");
+
+    d.click("panel.menu.Project");
+    assert!(d.has("project.menu.closeProject"), "the menu opens again");
+    send(&mut d, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    d.frames(2);
+    assert!(!d.has("project.menu.closeProject"), "Escape leaves the menu open");
+}

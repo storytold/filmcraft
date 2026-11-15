@@ -380,7 +380,9 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                     // a small window (a floated panel can be narrower than the menu) takes the menu at its width
                     let width = ui.ctx().content_rect().width() - 16.0;
                     ui.set_min_width(190.0_f32.min(width.max(0.0)));
-                    ui.set_max_width(width.max(0.0));
+                    // a cap, never a widening: separators fill the width they are given, and a menu as wide as
+                    // the window takes every click below it as a click inside it (#4689)
+                    ui.set_max_width(width.max(0.0).min(ui.max_rect().width()));
                     // the Timeline's tabs are its open sequences: Close Panel closes the active one and
                     // keeps the panel (Premiere's wording and behaviour)
                     if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
