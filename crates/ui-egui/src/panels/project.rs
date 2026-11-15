@@ -590,46 +590,19 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         x += 28.0;
     }
-    // thumbnail size: in UI state while dragging, saved on release (had the drag changed the
-    // preferences already, the command would see nothing new and not write preferences.json)
-    let sw = (bar.width() - 300.0).clamp(40.0, 120.0);
-    let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
-    let mut sz = v.icon_size;
-    // it sizes Icon view's cards, the Freeform canvas and List view's thumbnails (#3774): a List
-    // without thumbnails has nothing for it to size
-    let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sr).id_salt((pre, "zoom")));
-    if v.mode == ViewMode::List && !app.session.prefs.project_panel.thumbnails {
-        sui.disable();
+    // A narrow panel (say beside a widened Tools panel, #4586) leaves out what has no room rather
+    // than drawing controls over one another: the buttons on the right go from the left end of
+    // their row first, then the Zoom slider and Sort Icons share what is left between the rows.
+    let right_end = bar.max.x - 6.0;
+    let right_shown = (0..RIGHT_BUTTONS).take_while(|&k| right_end - 28.0 * k as f32 - 24.0 >= x).count();
+    let right_start = if right_shown == 0 { right_end } else { right_end - 28.0 * right_shown as f32 + 4.0 };
+    let sort_w = if v.mode == ViewMode::Icon { 30.0 } else { 0.0 };
+    let room = right_start - 6.0 - (x + 8.0) - sort_w;
+    if room >= 40.0 {
+        x = zoom_slider(app, ui, bar, x, (bar.width() - 300.0).clamp(40.0, 120.0).min(room), v, actions);
     }
-    let resp = crate::widgets::accessible_name(sui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
-    app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
-    // a drag ended by Escape goes back to the size it started from (#580)
-    let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
-    if resp.drag_started() {
-        ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
-    }
-    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-    if resp.drag_stopped()
-        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
-        && escaped
-    {
-        sz = before;
-    }
-    if sz != v.icon_size {
-        match v.inst {
-            Inst::Main => app.ui.project_panel.icon_size_drag = Some(sz),
-            Inst::Tab(k) => app.ui.project_panel.tabs[k].icon_size = sz,
-        }
-    }
-    if v.inst == Inst::Main && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
-        app.ui.project_panel.icon_size_drag = None;
-        if !escaped {
-            actions.push(("project.view.set".into(), json!({"iconSize": sz})));
-        }
-    }
-    x = sr.max.x + 6.0;
     // Sort Icons (Icon view)
-    if v.mode == ViewMode::Icon {
+    if v.mode == ViewMode::Icon && x + 24.0 <= right_start - 6.0 {
         let r = Rect::from_min_size(pos2(x, bar.min.y + 5.0), vec2(24.0, 22.0));
         let resp = ui.interact(r, egui::Id::unique((pre, "sortIcons")), Sense::click()).on_hover_text(tl!("Sort Icons"));
         app.auto.add(&format!("{pre}.sortIcons"), r, "Sort Icons");
@@ -639,18 +612,19 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         icons::paint(ui.painter(), r.shrink(5.0), Icon::SortIcons, t.icon);
         egui::Popup::menu(&resp).show(|ui| sort_icons_menu(app, ui, pre, actions));
     }
-    let mut rx = bar.max.x - 6.0;
+    let mut rx = right_end;
     // Clear needs a selection, and Automate to Sequence asks its command (an open sequence and a
     // selected clip), as the ≡ menu does (#2106)
     let clear = crate::panels::project_views::clear_params(&app.session.state.project_selection, app.ui.project_panel.selected_bin);
     let automate = app.session.is_enabled("clip.automateToSequence");
-    for (icon, id, tip) in [
+    let right: [(Icon, &str, &str); RIGHT_BUTTONS] = [
         (Icon::Trash, "project.delete", tl!("Clear (Delete)")),
         (Icon::NewItem, "new-item", tl!("New Item")),
         (Icon::Folder, "file.newBin", tl!("New Bin")),
         (Icon::Search, "find", tl!("Find")),
         (Icon::Automate, "clip.automateToSequence", tl!("Automate to Sequence")),
-    ] {
+    ];
+    for (icon, id, tip) in right.into_iter().take(right_shown) {
         let r = Rect::from_min_size(pos2(rx - 24.0, bar.min.y + 5.0), vec2(24.0, 22.0));
         let enabled = match id {
             "project.delete" => clear.is_some(),
@@ -695,6 +669,51 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         rx -= 28.0;
     }
+}
+
+/// The buttons at the right of the Project panel's footer.
+const RIGHT_BUTTONS: usize = 5;
+
+/// The footer's Zoom slider, `sw` wide after `x`; gives the x after it. The thumbnail size is in
+/// UI state while dragging and saved on release (had the drag changed the preferences already,
+/// the command would see nothing new and not write preferences.json).
+fn zoom_slider(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, x: f32, sw: f32, v: &View, actions: &mut Actions) -> f32 {
+    let pre = &v.prefix;
+    let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
+    let mut sz = v.icon_size;
+    // it sizes Icon view's cards, the Freeform canvas and List view's thumbnails (#3774): a List
+    // without thumbnails has nothing for it to size
+    let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sr).id_salt((pre, "zoom")));
+    if v.mode == ViewMode::List && !app.session.prefs.project_panel.thumbnails {
+        sui.disable();
+    }
+    let resp = crate::widgets::accessible_name(sui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
+    app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
+    // a drag ended by Escape goes back to the size it started from (#580)
+    let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
+    if resp.drag_started() {
+        ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
+    }
+    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if resp.drag_stopped()
+        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
+        && escaped
+    {
+        sz = before;
+    }
+    if sz != v.icon_size {
+        match v.inst {
+            Inst::Main => app.ui.project_panel.icon_size_drag = Some(sz),
+            Inst::Tab(k) => app.ui.project_panel.tabs[k].icon_size = sz,
+        }
+    }
+    if v.inst == Inst::Main && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+        app.ui.project_panel.icon_size_drag = None;
+        if !escaped {
+            actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+        }
+    }
+    sr.max.x + 6.0
 }
 
 pub const NEW_ITEMS: [(&str, &str); 8] = [

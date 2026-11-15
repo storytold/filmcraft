@@ -251,6 +251,50 @@ fn the_divider_beside_tools_moves_both_ways() {
     assert!(narrower <= wider - 100.0, "Tools narrowed only from {wider} to {narrower}");
 }
 
+/// #4586: dragging the divider beside Tools narrows the Project panel, and its footer controls
+/// (view buttons, Zoom slider, Sort Icons, the buttons on the right) must then never be drawn
+/// over one another or outside the panel: the ones without room are left out.
+#[test]
+fn a_project_panel_narrowed_beside_tools_keeps_its_footer_controls_apart() {
+    for view in ["icon", "list"] {
+        for (gutter, dx) in
+            [("dock.gutter.b", -60.0), ("dock.gutter.b", -120.0), ("dock.gutter.b", -200.0), ("dock.gutter.bb", -200.0), ("dock.gutter.b", -330.0)]
+        {
+            let mut session = Session::default();
+            session.execute("file.openDemoProject", json!({})).unwrap();
+            session.execute("project.view.set", json!({"view": view})).unwrap();
+            let app = FilmcraftApp::new(session);
+            let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(10_000).build_eframe(move |_| app);
+            frames(&mut h, 4);
+            let element = h.state().auto.find(gutter).unwrap();
+            let from = Rect::from_min_size(pos2(element.rect[0], element.rect[1]), vec2(element.rect[2], element.rect[3])).center();
+            drag_with(&mut h, PointerButton::Primary, from, from + vec2(dx, 0.0));
+            let rect = |r: [f32; 4]| Rect::from_min_size(pos2(r[0], r[1]), vec2(r[2], r[3]));
+            let panel = rect(h.state().auto.find("panel.Project").unwrap().rect);
+            assert!(panel.width() < 360.0, "{view} {gutter} {dx}: the Project panel is still {} wide", panel.width());
+            let controls: Vec<(String, Rect)> = h
+                .state()
+                .auto
+                .elements
+                .iter()
+                .filter(|e| ["project.view.", "project.iconSize", "project.sortIcons", "project.button."].iter().any(|p| e.id.starts_with(p)))
+                .map(|e| (e.id.clone(), rect(e.rect)))
+                .collect();
+            assert!(controls.iter().any(|(id, _)| id == "project.view.List"), "{view} {gutter} {dx}: no footer drawn: {controls:?}");
+            let width = panel.width();
+            for (i, (id, r)) in controls.iter().enumerate() {
+                // the view buttons come first and stay put; any other control fits in the panel
+                if !id.starts_with("project.view.") {
+                    assert!(r.min.x >= panel.min.x && r.max.x <= panel.max.x, "{view} {gutter} {dx}: {id} {r:?} is outside the {width}-wide panel {panel:?}");
+                }
+                for (other, o) in &controls[i + 1..] {
+                    assert!(!r.intersects(*o), "{view} {gutter} {dx}: {id} {r:?} overlaps {other} {o:?} in the {width}-wide panel");
+                }
+            }
+        }
+    }
+}
+
 fn drag_with(h: &mut Harness<'_, FilmcraftApp>, button: PointerButton, from: egui::Pos2, to: egui::Pos2) {
     h.event(Event::PointerMoved(from));
     step(h);
