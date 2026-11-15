@@ -56,7 +56,7 @@ rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
 # Shared YUV4MPEG2 parser and frame index.
-craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "81057428d1e251d90415eb15f620d5cb3b866fa1" }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7d8884c62c601fbaf784c60b38c863e6c398c303" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }

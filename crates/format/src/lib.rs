@@ -48,11 +48,16 @@ pub mod atomic;
 pub mod autosave;
 
 use filmcraft_project::{Project, ProjectView};
+#[cfg(test)]
 use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
+
+/// Largest project file this build will read (256 MiB). Project JSON is read whole, so
+/// larger files would commit several times their size in memory before validation.
+pub const MAX_PROJECT_BYTES: u64 = 256 << 20;
 
 /// A project read from disk.
 #[derive(Debug)]
@@ -94,10 +99,7 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    let env = craft_fcproj_format::EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
-    let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
-    // Serializing plain data (string keys, finite numbers or null) cannot fail.
-    r.unwrap_or_default()
+    craft_fcproj_format::encode(project, view, generator(), pretty)
 }
 
 /// Read a project file (any supported schema).
@@ -105,16 +107,7 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let found = craft_fcproj_format::detect_bytes(bytes)?;
-    if found == SCHEMA_VERSION {
-        // Fast path: deserialize straight into the model.
-        let env: craft_fcproj_format::EnvelopeIn<Project> = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-        return validate_loaded(loaded(env, found));
-    }
-    let doc: Value = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
-    let doc = migrate_with(MIGRATIONS, doc, found)?;
-    let env: craft_fcproj_format::EnvelopeIn<Project> =
-        serde_json::from_value(doc).map_err(|e| FormatError::Corrupt(format!("after upgrading from schema v{found}: {e}")))?;
+    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
     validate_loaded(loaded(env, found))
 }
 
