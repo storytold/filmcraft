@@ -680,7 +680,7 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 
 /// Eyedropper: while a colour parameter's eyedropper is armed (Effect Controls), the Program picture
 /// takes a crosshair and a click fills that parameter with the colour under the pointer. The colour is
-/// read from a render of the sequence at the playhead with the armed effect switched off (a Ultra Key
+/// read from a render of the sequence at the playhead with the armed effect switched off (an Ultra Key
 /// has already removed the green it is asked to key); Esc disarms.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };

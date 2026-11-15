@@ -40,6 +40,8 @@ const MAX_DEPTH: usize = 16;
 const MAX_ITEMS: usize = 20_000;
 /// Most UTF-8 bytes retained in one expanded leaf path.
 const MAX_PATH_BYTES: usize = 4 * 1024;
+/// Nodes one reference file may make the walk visit, so ancestors that never reach a leaf are bounded too.
+const MAX_NODES: usize = 200_000;
 /// Keys holding a node's label, and its children.
 const LABEL_KEYS: [&str; 3] = ["name", "title", "label"];
 const CHILD_KEYS: [&str; 6] = ["children", "items", "submenu", "menu", "menuItems", "menu_items"];
@@ -284,7 +286,7 @@ fn reference_paths(v: &Value, area: Area) -> Result<Vec<Vec<String>>, String> {
         root = inner;
     }
     let mut out = Vec::new();
-    walk(root, &[], 0, area.min_len(), &mut out)?;
+    walk(root, &[], 0, area.min_len(), &mut out, &mut 0)?;
     Ok(out)
 }
 
@@ -299,15 +301,16 @@ fn is_separator(label: &str) -> bool {
 }
 
 fn push_leaf(prefix: &[String], label: &str, min: usize, out: &mut Vec<Vec<String>>) -> Result<(), String> {
+    // the size limit applies to separators too: a skipped leaf under an oversized ancestor is still refused
+    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
+    if bytes > MAX_PATH_BYTES {
+        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+    }
     if is_separator(label) || prefix.iter().any(|p| is_separator(p)) {
         return Ok(());
     }
     if out.len() >= MAX_ITEMS {
         return Err(format!("reference has more than {MAX_ITEMS} items"));
-    }
-    let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len())).ok_or("reference path is too large")?;
-    if bytes > MAX_PATH_BYTES {
-        return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
     }
     let mut path = prefix.to_vec();
     path.push(label.trim().to_string());
@@ -322,14 +325,29 @@ fn split_path(s: &str) -> Option<Vec<String>> {
     (parts.len() >= 2 && parts.iter().all(|p| !p.is_empty())).then_some(parts)
 }
 
-fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>) -> Result<(), String> {
+/// Spend one node of the walk budget; leaves handled without a recursive call spend one too.
+fn count_node(nodes: &mut usize) -> Result<(), String> {
+    *nodes += 1;
+    if *nodes > MAX_NODES {
+        return Err(format!("reference has more than {MAX_NODES} nodes"));
+    }
+    Ok(())
+}
+
+fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>, nodes: &mut usize) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(format!("reference is nested deeper than {MAX_DEPTH} levels"));
     }
+    count_node(nodes)?;
+    // Checked before the ancestors are copied, so a long ancestor shared by many containers costs nothing.
     let with = |label: &str| {
+        let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len()));
+        if bytes.is_none_or(|b| b > MAX_PATH_BYTES) {
+            return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+        }
         let mut p = prefix.to_vec();
         p.push(label.trim().to_string());
-        p
+        Ok(p)
     };
     match v {
         Value::String(s) => match split_path(s).filter(|_| prefix.is_empty()) {
@@ -343,12 +361,19 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             for el in a {
                 match el {
                     Value::Array(path) if !path.is_empty() && path.iter().all(Value::is_string) => {
+                        count_node(nodes)?;
+                        // checked before the ancestors are copied, whether or not the leaf is skipped
+                        let bytes =
+                            prefix.iter().map(String::len).chain(path.iter().filter_map(Value::as_str).map(str::len)).try_fold(0usize, usize::checked_add);
+                        if bytes.is_none_or(|b| b > MAX_PATH_BYTES) {
+                            return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+                        }
                         let parts: Vec<String> = prefix.iter().cloned().chain(path.iter().filter_map(|p| p.as_str().map(str::to_string))).collect();
                         if let Some((label, menus)) = parts.split_last() {
                             push_leaf(menus, label, min, out)?;
                         }
                     }
-                    _ => walk(el, prefix, depth + 1, min, out)?,
+                    _ => walk(el, prefix, depth + 1, min, out, nodes)?,
                 }
             }
             Ok(())
@@ -357,7 +382,7 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             Some(label) => {
                 let children = CHILD_KEYS.iter().find_map(|k| o.get(*k).filter(|c| has_entries(c)));
                 match children {
-                    Some(c) if !is_separator(label) => walk(c, &with(label), depth + 1, min, out),
+                    Some(c) if !is_separator(label) => walk(c, &with(label)?, depth + 1, min, out, nodes),
                     Some(_) => Ok(()),
                     None => push_leaf(prefix, label, min, out),
                 }
@@ -365,8 +390,9 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             None => {
                 for (k, val) in o {
                     if has_entries(val) {
-                        walk(val, &with(k), depth + 1, min, out)?;
+                        walk(val, &with(k)?, depth + 1, min, out, nodes)?;
                     } else {
+                        count_node(nodes)?;
                         push_leaf(prefix, k, min, out)?;
                     }
                 }
@@ -537,15 +563,13 @@ impl Report {
         ));
         s.push_str(&format!("| {column} | Items | Same place | Elsewhere | Missing | Presence |\n|---|---|---|---|---|---|\n"));
         let mut per: Vec<(String, [usize; 3])> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
         for (p, pl) in &self.items {
             let top = area.group(p);
-            let i = match per.iter().position(|(t, _)| *t == top) {
-                Some(i) => i,
-                None => {
-                    per.push((top, [0; 3]));
-                    per.len() - 1
-                }
-            };
+            let i = *index.entry(top.clone()).or_insert_with(|| {
+                per.push((top, [0; 3]));
+                per.len() - 1
+            });
             let col = match pl {
                 Placement::Same => 0,
                 Placement::Elsewhere(_) => 1,
@@ -631,6 +655,19 @@ mod tests {
             let long = format!("File > {}", "x".repeat(MAX_PATH_BYTES));
             assert!(reference_paths(&json!([long]), area).unwrap_err().contains("bytes"));
         }
+        // a long ancestor over children that are all skipped is refused before it is copied
+        let anc = json!([{ "name": "x".repeat(MAX_PATH_BYTES + 1), "children": ["-"] }]);
+        assert!(reference_paths(&anc, Area::Menus).unwrap_err().contains("bytes"));
+        // so is a walk over more nodes than the budget, even when none becomes an item
+        assert!(reference_paths(&json!(vec![""; MAX_NODES + 1]), Area::Menus).unwrap_err().contains("nodes"));
+        // flat paths and scalar entries spend the node budget, and a skipped leaf cannot hide an oversized path
+        assert!(reference_paths(&json!(vec![json!(["-"]); MAX_NODES + 1]), Area::Menus).unwrap_err().contains("nodes"));
+        let scalars: serde_json::Map<String, Value> = (0..MAX_NODES + 1).map(|i| (i.to_string(), Value::Null)).collect();
+        assert!(reference_paths(&json!([scalars]), Area::Menus).unwrap_err().contains("nodes"));
+        let flat = json!([["x".repeat(MAX_PATH_BYTES + 1), "-"]]);
+        assert!(reference_paths(&flat, Area::Menus).unwrap_err().contains("bytes"));
+        let string_path = json!([format!("{} > -", "x".repeat(MAX_PATH_BYTES + 1))]);
+        assert!(reference_paths(&string_path, Area::Menus).unwrap_err().contains("bytes"));
         // odd values are skipped, not trusted
         assert_eq!(reference_paths(&json!([1, null, true, {"name": 5}, ["File"]]), Area::Menus).unwrap(), Vec::<Vec<String>>::new());
     }

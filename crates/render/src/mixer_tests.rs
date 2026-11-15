@@ -750,6 +750,48 @@ fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     assert!(worst(&mix, start, 8, |t| tone.at(t + 3.0)) < 0.01);
 }
 
+#[test]
+fn a_graph_with_absurd_latency_is_refused_not_allocated() {
+    let mut r = Rig::new(&[impulse]);
+    let mut lim = filmcraft_project::find_effect("hard_limiter").unwrap().instance();
+    lim.param_mut("max").unwrap().value = ParamValue::Float(0.0);
+    // a chain of submixes, each through its own look-ahead limiter
+    let chain: Vec<_> = (0..600).map(|i| r.add_submix(&format!("S{i}"))).collect();
+    for (i, id) in chain.iter().enumerate() {
+        for _ in 0..filmcraft_project::mixer::MAX_INSERTS {
+            r.submix(*id).effects.push(lim.clone());
+        }
+        r.submix(*id).mixer.output = chain.get(i + 1).copied();
+    }
+    r.track(0).mixer.output = Some(chain[0]);
+    // hundreds of limiters of about 26 ms each add up past 10 s of latency at 48 kHz
+    assert_eq!(graph_latency(r.p.sequence(r.seq).unwrap()), 0);
+    let [l, _] = r.mix(0, 1_000);
+    assert!(l.iter().all(|s| *s == 0.0));
+    // the refusal is remembered: the next block is silent too, without building the graph again
+    let [l, _] = r.mix(1_000, 1_000);
+    assert!(l.iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn a_refused_51_graph_returns_six_channels_of_silence() {
+    let mut r = Rig::new(&[dc]);
+    set_master_51(&mut r);
+    let mut lim = filmcraft_project::find_effect("hard_limiter").unwrap().instance();
+    lim.param_mut("max").unwrap().value = ParamValue::Float(0.0);
+    let chain: Vec<_> = (0..600).map(|i| r.add_submix(&format!("S{i}"))).collect();
+    for (i, id) in chain.iter().enumerate() {
+        for _ in 0..filmcraft_project::mixer::MAX_INSERTS {
+            r.submix(*id).effects.push(lim.clone());
+        }
+        r.submix(*id).mixer.output = chain.get(i + 1).copied();
+    }
+    r.track(0).mixer.output = Some(chain[0]);
+    let out = mix_all(&r, 0, 1_000);
+    assert_eq!(out.len(), 6, "a 5.1 Mix keeps its width when the graph is refused");
+    assert!(out.iter().all(|c| c.iter().all(|s| *s == 0.0)));
+}
+
 // ---- Speed/Duration ▸ Maintain Audio Pitch
 
 /// Positive-going zero crossings per second of the mix's left channel.

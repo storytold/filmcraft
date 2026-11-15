@@ -37,31 +37,15 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("bitstream", 0),
     ("isobmff", 0),
-    ("avi", 0),
     ("matroska", 0),
-    ("mxf", 0),
     ("cfb", 0),
-    ("mpegts", 0),
-    ("mpeg2v", 0),
-    ("ac3", 0),
-    ("mpa", 0),
-    ("ogg", 0),
     ("riff", 0),
-    ("h264", 0),
     ("h264enc", 0),
-    ("hevc", 0),
     ("vp8", 0),
-    ("vp9", 0),
     ("prores", 0),
     ("mjpeg", 0),
     ("dnx", 0),
-    ("apv", 0),
     ("dng", 0),
-    ("av1", 0),
-    ("aac", 0),
-    ("mp3enc", 0),
-    ("flac", 0),
-    ("opus", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -358,15 +342,36 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("127.0.0.1:{port}: {e}"))?;
     println!("serving {} on http://127.0.0.1:{port}/", dir.display());
+    // Idle or slow clients hold a thread each: cap the threads, the header bytes and each wait.
+    const MAX_CONNECTIONS: usize = 64;
+    const MAX_HEADER_BYTES: u64 = 16 * 1024;
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
         let dir = dir.to_path_buf();
-        std::thread::spawn(move || {
+        if active.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= MAX_CONNECTIONS {
+            active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            continue; // dropped: the client sees a closed connection
+        }
+        let done = active.clone();
+        let spawned = std::thread::Builder::new().spawn(move || {
+            struct Release(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            }
+            let _release = Release(done);
             let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
             let mut line = String::new();
-            let mut reader = BufReader::new(match stream.try_clone() {
-                Ok(s) => s,
-                Err(_) => return,
-            });
+            let mut reader = BufReader::new(std::io::Read::take(
+                match stream.try_clone() {
+                    Ok(s) => s,
+                    Err(_) => return,
+                },
+                MAX_HEADER_BYTES,
+            ));
             if reader.read_line(&mut line).is_err() {
                 return;
             }
@@ -399,6 +404,9 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
             );
             let _ = stream.write_all(head.as_bytes()).and_then(|_| stream.write_all(&body));
         });
+        if spawned.is_err() {
+            active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
     }
     Ok(())
 }
@@ -447,8 +455,6 @@ const FIXTURE_GENERATORS: &[(&str, &str, &str)] = &[
     ("codecs", "it", "mxf_oracle::generate_fixtures"),
     ("codecs", "it", "mpeg_oracle::generate_fixtures"),
     ("mpeg2v", "it", "oracle::generate_fixtures"),
-    ("ac3", "oracle", "generate_fixtures"),
-    ("mpa", "oracle", "generate_fixtures"),
     ("codecs", "it", "ogg_oracle::generate_fixtures"),
 ];
 
