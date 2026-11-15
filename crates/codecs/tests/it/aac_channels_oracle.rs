@@ -25,11 +25,16 @@ fn tones(ff: &std::path::Path, name: &str, layout: &str, n: usize) -> Option<std
 /// The AAC access units of `path`'s audio track, rewrapped in a new MP4 whose AudioSpecificConfig
 /// says `channel_config` (AAC LC, 48 kHz), keeping each sample's duration and the priming edit.
 fn rewrap(path: &std::path::Path, name: &str, channel_config: u8, channels: u32) -> std::path::PathBuf {
+    // object type 2, rate index 3 (48 kHz), then the configuration
+    let asc = (((2u16 << 11) | (3 << 7) | ((channel_config as u16) << 3)).to_be_bytes()).to_vec();
+    rewrap_asc(path, name, asc, channels)
+}
+
+/// [`rewrap`] with the AudioSpecificConfig `asc` and a sample entry that says `channels`.
+fn rewrap_asc(path: &std::path::Path, name: &str, asc: Vec<u8>, channels: u32) -> std::path::PathBuf {
     let data = bytes(path);
     let file = filmcraft_isobmff::open(&data).unwrap();
     let track = file.tracks.iter().find(|t| t.kind == filmcraft_isobmff::TrackKind::Audio).unwrap();
-    // object type 2, rate index 3 (48 kHz), then the configuration
-    let asc = (((2u16 << 11) | (3 << 7) | ((channel_config as u16) << 3)).to_be_bytes()).to_vec();
     let mut mux = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mp4)).unwrap();
     let id = mux.add_track(TrackConfig::new(SampleEntry::aac(asc, channels, RATE), RATE)).unwrap();
     for s in &track.samples {
@@ -104,5 +109,33 @@ fn aac_channel_configurations_report_and_decode_every_channel() {
         let path = tones(&ff, name, layout, n).unwrap();
         let (ch, got) = ours(&path, name);
         assert_eq!((ch as usize, got.len()), (n, n), "{layout}");
+    }
+}
+
+/// #4258: with configuration 0 a program config element lays the channels out, and the MP4 sample
+/// entry's count need not agree: ffmpeg 4.4 (Lavf58) wrote 2 for 5.1 with side surrounds, which it
+/// writes as a PCE. The PCE decides, so all six channels are reported and decoded, each as ffmpeg
+/// decodes it: centre, LFE and surrounds reach the mix.
+#[test]
+fn aac_program_config_counts_its_channels_whatever_the_sample_entry_says() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let n = 6;
+    let path = tones(&ff, "aac_51_side.mp4", "5.1(side)", n).unwrap();
+    let asc = filmcraft_isobmff::open(bytes(&path)).unwrap().tracks.iter().find_map(|t| match &t.entries.first()?.codec {
+        filmcraft_isobmff::CodecConfig::Aac(a) if a.channel_config == 0 => Some(a.asc.clone()),
+        _ => None,
+    });
+    let Some(asc) = asc else {
+        eprintln!("SKIPPED: this ffmpeg didn't write 5.1(side) AAC as a PCE");
+        return;
+    };
+    let stereo_entry = rewrap_asc(&path, "aac_51_side_pce_says_2.mp4", asc, 2);
+    let (ch, got) = ours(&stereo_entry, "aac_51_side_pce_says_2.mp4");
+    assert_eq!((ch as usize, got.len()), (n, n), "the PCE's six channels, not the sample entry's two");
+    let want = theirs(&ff, &stereo_entry, n);
+    for (c, (a, b)) in got.iter().zip(&want).enumerate() {
+        let d = diff(a, b);
+        println!("5.1(side) PCE, channel {c}: peak {:.3}, max |ours - ffmpeg| {d:.5}", peak(a));
+        assert!(peak(a) > 0.05 && d < 0.01, "channel {c}: off ffmpeg's decode by {d}");
     }
 }
