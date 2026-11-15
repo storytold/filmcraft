@@ -28,7 +28,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -136,6 +136,8 @@ pub struct GpuCompositor {
     output_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     upload_cache_bytes: u64,
+    frame_uploads: HashSet<(usize, u32, u32)>,
+    pending_recycle: Vec<PooledTexture>,
     texture_pool: HashMap<(u32, u32, wgpu::TextureFormat), Vec<PooledTexture>>,
     texture_pool_bytes: u64,
     uniform_pool: UniformPool,
@@ -551,6 +553,8 @@ impl GpuCompositor {
             output_readback_buf: None,
             uploads: HashMap::new(),
             upload_cache_bytes: 0,
+            frame_uploads: HashSet::new(),
+            pending_recycle: Vec::new(),
             texture_pool: HashMap::new(),
             texture_pool_bytes: 0,
             uniform_pool: UniformPool::new("layer-u", (UNIFORM_FLOATS * 4) as u64),
@@ -573,12 +577,24 @@ impl GpuCompositor {
         if self.frame_depth == 0 {
             self.uniform_pool.begin_frame();
             self.transition.begin_frame();
+            self.frame_uploads.clear();
         }
         self.frame_depth = self.frame_depth.saturating_add(1);
     }
 
     fn end_frame(&mut self) {
         self.frame_depth = self.frame_depth.saturating_sub(1);
+    }
+
+    /// Return textures evicted during frame recording back to the pool and trim any
+    /// single-frame cache overshoot once the command buffer has been submitted.
+    fn finish_submit(&mut self) {
+        if self.frame_depth == 0 {
+            self.frame_uploads.clear();
+            let pending = std::mem::take(&mut self.pending_recycle);
+            self.recycle_planes(pending);
+            self.evict_uploads(None);
+        }
     }
 
     /// Whether this device supports uploading 10/12/16-bit YUV planes natively as `R16Unorm`.
@@ -646,12 +662,39 @@ impl GpuCompositor {
         entry
     }
 
-    fn recycle_uploaded(&mut self, up: Uploaded) {
-        self.upload_cache_bytes = self.upload_cache_bytes.saturating_sub(up.gpu_bytes);
-        for p in up.planes {
+    fn recycle_planes(&mut self, planes: Vec<PooledTexture>) {
+        for p in planes {
             if self.texture_pool_bytes.saturating_add(p.bytes) <= TEXTURE_POOL_BUDGET_BYTES {
                 self.texture_pool_bytes += p.bytes;
                 self.texture_pool.entry((p.w, p.h, p.format)).or_default().push(p);
+            }
+        }
+    }
+
+    fn recycle_uploaded(&mut self, up: Uploaded) {
+        self.upload_cache_bytes = self.upload_cache_bytes.saturating_sub(up.gpu_bytes);
+        if self.frame_depth > 0 {
+            self.pending_recycle.extend(up.planes);
+        } else {
+            self.recycle_planes(up.planes);
+        }
+    }
+
+    fn evict_uploads(&mut self, protect: Option<(usize, u32, u32)>) {
+        if self.uploads.len() <= UPLOAD_CACHE_MAX_ENTRIES && self.upload_cache_bytes <= UPLOAD_CACHE_BUDGET_BYTES {
+            return;
+        }
+        let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
+        v.sort_unstable();
+        for (_, k) in v {
+            if self.uploads.len() <= UPLOAD_CACHE_MAX_ENTRIES && self.upload_cache_bytes <= UPLOAD_CACHE_BUDGET_BYTES {
+                break;
+            }
+            if protect == Some(k) || self.frame_uploads.contains(&k) {
+                continue;
+            }
+            if let Some(evicted) = self.uploads.remove(&k) {
+                self.recycle_uploaded(evicted);
             }
         }
     }
@@ -667,6 +710,9 @@ impl GpuCompositor {
         };
         let key = (id, f.width, f.height);
         self.clock += 1;
+        if self.frame_depth > 0 {
+            self.frame_uploads.insert(key);
+        }
         if let Some(u) = self.uploads.get_mut(&key) {
             u.last_used = self.clock;
             return key;
@@ -679,22 +725,8 @@ impl GpuCompositor {
         if let Some(prev) = self.uploads.insert(key, up) {
             self.recycle_uploaded(prev);
         }
-        // Keep recent uploads up to the VRAM budget and entry cap, recycling evicted textures.
-        if self.uploads.len() > UPLOAD_CACHE_MAX_ENTRIES || self.upload_cache_bytes > UPLOAD_CACHE_BUDGET_BYTES {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v {
-                if self.uploads.len() <= UPLOAD_CACHE_MAX_ENTRIES && self.upload_cache_bytes <= UPLOAD_CACHE_BUDGET_BYTES {
-                    break;
-                }
-                if k == key {
-                    continue;
-                }
-                if let Some(evicted) = self.uploads.remove(&k) {
-                    self.recycle_uploaded(evicted);
-                }
-            }
-        }
+        // Keep recent uploads up to the VRAM budget and entry cap, deferring recycling until submit.
+        self.evict_uploads(Some(key));
         key
     }
 
@@ -1037,6 +1069,7 @@ impl GpuCompositor {
         let out = self.record_plan(&mut enc, plan, prep, clear, resolve);
         self.end_frame();
         self.queue.submit([enc.finish()]);
+        self.finish_submit();
         out
     }
 
@@ -1429,8 +1462,12 @@ impl GpuCompositor {
         self.begin_frame();
         self.record_plan(&mut enc, plan, prep, true, false);
         self.end_frame();
-        let size = self.copy_accumulator(&mut enc)?;
+        let Some(size) = self.copy_accumulator(&mut enc) else {
+            self.finish_submit();
+            return None;
+        };
         self.queue.submit([enc.finish()]);
+        self.finish_submit();
         export_renderer::timing::add_submit(t.elapsed());
         self.map_accumulator(size)
     }
@@ -1444,8 +1481,12 @@ impl GpuCompositor {
         self.begin_frame();
         self.record_plan(&mut enc, plan, prep, true, true);
         self.end_frame();
-        let size = self.copy_output(&mut enc)?;
+        let Some(size) = self.copy_output(&mut enc) else {
+            self.finish_submit();
+            return None;
+        };
         self.queue.submit([enc.finish()]);
+        self.finish_submit();
         export_renderer::timing::add_submit(t.elapsed());
         self.map_output(size)
     }
@@ -1502,9 +1543,11 @@ impl GpuCompositor {
         };
         self.end_frame();
         if !ok {
+            self.finish_submit();
             return SurfaceRender::Unavailable;
         }
         let sub = self.queue.submit([enc.finish()]);
+        self.finish_submit();
         export_renderer::timing::add_submit(t.elapsed());
         let wait_t = std::time::Instant::now();
         let finished = matches!(
@@ -1523,10 +1566,12 @@ impl GpuCompositor {
         let key = self.upload(frame, None);
         let Some(src) = self.src_info(frame, key) else {
             self.end_frame();
+            self.finish_submit();
             return None;
         };
         let Some(views) = self.uploads.get(&key).map(|u| u.views.clone()) else {
             self.end_frame();
+            self.finish_submit();
             return None;
         };
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
@@ -1545,12 +1590,14 @@ impl GpuCompositor {
         });
         let Some(stage) = self.fx.as_mut() else {
             self.end_frame();
+            self.finish_submit();
             return None;
         };
         stage.begin_frame();
         let Some(job) = stage.job(&self.device, &self.queue, fx, sbg, &self.dummy) else {
             stage.end_frame();
             self.end_frame();
+            self.finish_submit();
             return None;
         };
         let row = (w * 16).div_ceil(256) * 256;
@@ -1570,6 +1617,7 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         stage.end_frame();
         self.end_frame();
+        self.finish_submit();
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {

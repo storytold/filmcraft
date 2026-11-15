@@ -899,3 +899,75 @@ fn upload_cache_and_pools_reuse_textures_and_uniforms() {
     assert_eq!(c.uploads.len(), UPLOAD_CACHE_MAX_ENTRIES);
     assert!(c.texture_pool_bytes > 0, "evicted textures must be retained in texture_pool");
 }
+
+#[test]
+fn upload_cache_overflow_pins_layers() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |rgba: [u8; 4]| {
+        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()))
+    };
+    let mut layers = Vec::with_capacity(UPLOAD_CACHE_MAX_ENTRIES + 4);
+    layers.push(PlanLayer::new(make_rgba([255, 0, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal));
+    for _ in 0..(UPLOAD_CACHE_MAX_ENTRIES + 3) {
+        layers.push(PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal));
+    }
+    let plan = FramePlan::Layers { width: 4, height: 4, layers };
+    c.composite(&plan);
+    let (_, _, out) = c.read_output().expect("readback");
+    assert_eq!(&out[..4], &[255, 0, 0, 255], "first layer must not be evicted before bind groups are built");
+}
+
+#[test]
+fn upload_cache_overflow_defers_step_recycle() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |rgba: [u8; 4]| {
+        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()))
+    };
+    let step0 = vec![PlanLayer::new(make_rgba([0, 255, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal)];
+    let step1: Vec<PlanLayer> = (0..(UPLOAD_CACHE_MAX_ENTRIES + 4))
+        .map(|_| PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal))
+        .collect();
+    let plan = FramePlan::Composite {
+        width: 4,
+        height: 4,
+        steps: vec![PlanStep::Layers(step0), PlanStep::Layers(step1)],
+    };
+    c.composite(&plan);
+    let (_, _, out) = c.read_output().expect("readback");
+    assert_eq!(&out[..4], &[0, 255, 0, 255], "step0 texture must not be overwritten before command buffer submit");
+}
+
+#[test]
+fn upload_cache_overflow_holds_evicted_textures_until_finish_submit() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |v: u8| {
+        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()))
+    };
+    for i in 0..UPLOAD_CACHE_MAX_ENTRIES {
+        let p = FramePlan::Layers {
+            width: 4,
+            height: 4,
+            layers: vec![PlanLayer::new(make_rgba(i as u8), Affine::IDENTITY, 1.0, Blend::Normal)],
+        };
+        c.composite(&p);
+    }
+    let pool_before = c.texture_pool_bytes;
+    c.begin_frame();
+    // Uploading a new frame evicts one from the prior frame, which must stay pending until submit.
+    c.upload(&make_rgba(255), None);
+    assert_eq!(c.texture_pool_bytes, pool_before, "evicted texture must not return to pool mid-frame");
+    assert!(!c.pending_recycle.is_empty(), "evicted texture must be staged in pending_recycle");
+    c.end_frame();
+    c.finish_submit();
+    assert!(c.pending_recycle.is_empty());
+    assert!(c.texture_pool_bytes > pool_before, "evicted texture must return to pool after submit");
+}
