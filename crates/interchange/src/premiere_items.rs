@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, HashSet};
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 
+/// A walk over the project panel: the object maps, base folder, work budget and report, the panel
+/// items already read, and the bins and entries found so far.
 struct Walk<'a, 'i, 'r> {
     ids: &'r BTreeMap<&'a str, Node<'a, 'i>>,
     uids: &'r BTreeMap<&'a str, Node<'a, 'i>>,
@@ -48,15 +50,19 @@ fn name<'a>(item: Node<'a, '_>) -> &'a str {
     base.and_then(|p| child_text(p, "Name")).unwrap_or("")
 }
 
+/// `name`, refused past 4,096 bytes.
 fn checked_name(name: &str) -> Result<&str> {
     if name.len() > 4096 { Err(error("project item name is too long")) } else { Ok(name) }
 }
 
+/// Whether `n`'s child `name` is `true` or `1`.
 fn flag(n: Node<'_, '_>, name: &str) -> bool {
     child_text(n, name).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
 
 impl<'a, 'i> Walk<'a, 'i, '_> {
+    /// The items `container` (the root bin or a bin) lists, filed in `bin`: bins recursively, at most
+    /// 64 deep, and clip project items as entries. Each panel item is read once.
     fn container(&mut self, container: Node<'a, 'i>, bin: Option<usize>, depth: usize) -> Result<()> {
         spend(self.work, container)?;
         let items = child(container, "ProjectItemContainer").and_then(|c| child(c, "Items"));
