@@ -45,8 +45,9 @@ fn canonical_media_path(path: &str) -> std::io::Result<PathBuf> {
 }
 
 /// A document reference is not a file the user explicitly picked. Refuse it before filesystem
-/// access when policy or extension disallows it, and probe before any hashing or copying.
-fn probe_media(s: &Session, original: &str, document: &Path) -> std::result::Result<(PathBuf, filmcraft_media::MediaInfo), String> {
+/// access when policy or extension disallows it, and probe before any hashing or copying. Returns
+/// the canonical file and the source opened from its stored path.
+fn probe_media(s: &Session, original: &str, document: &Path) -> std::result::Result<(PathBuf, filmcraft_media::SharedSource), String> {
     let resolved = crate::doc_path::resolve(original, Some(document)).map_err(|e| format!("document path refused: {e}"))?;
     if !filmcraft_media::is_importable(Path::new(&resolved)) {
         return Err("unrecognized media extension".into());
@@ -58,7 +59,7 @@ fn probe_media(s: &Session, original: &str, document: &Path) -> std::result::Res
         return Err("not a regular file with a recognized media extension".into());
     }
     let source = s.media.open_file(&path, &*s.services).map_err(|e| format!("media probe failed: {e}"))?;
-    Ok((canonical, source.info().clone()))
+    Ok((canonical, source))
 }
 
 /// Probe the stored path, then the project-relative path (a project moved between computers),
@@ -72,7 +73,7 @@ fn probe_with_fallbacks(
     document: &Path,
     report: &mut filmcraft_interchange::Report,
     listings: &mut FolderListings,
-) -> std::result::Result<(PathBuf, filmcraft_media::MediaInfo), String> {
+) -> std::result::Result<(PathBuf, filmcraft_media::SharedSource), String> {
     let error = match probe_media(s, original, document) {
         Ok(found) => return Ok(found),
         Err(error) => error,
@@ -357,6 +358,9 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     write_new(&snapshot, &bytes)?;
     let mut records = BTreeMap::<String, SourceMedia>::new();
     let mut probed = BTreeMap::new();
+    // The sources probes opened for linked media, by the path their items keep: the media pool
+    // takes them instead of opening those files again.
+    let mut opened = BTreeMap::<String, filmcraft_media::SharedSource>::new();
     let mut listings = FolderListings::new(MAX_LISTED_NAMES);
     let media_dir = destination.join("media");
     if mode == "copy" {
@@ -372,11 +376,14 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
             // when the stored path fails, and passes the same document policy and probe.
             let probed_media = probe_with_fallbacks(s, &original, tree.relative_media.get(&original), &source, &mut report, &mut listings);
             match probed_media {
-                Ok((src, info)) => {
+                Ok((src, media_source)) => {
+                    let info = media_source.info().clone();
                     record.original_path = stored_path(&src);
                     record.imported_path = record.original_path.clone();
                     record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
                     if mode == "copy" {
+                        // The pool opens the copy, not its source.
+                        drop(media_source);
                         // One read: the copy is hashed as it is written, then named by its digest.
                         // `records` grows by one per source, so the partial name is unique.
                         let partial = media_dir.join(format!("{}.partial", records.len()));
@@ -408,6 +415,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
                         // Linked media stays online after a successful probe without a full-file
                         // read for provenance. A later hash is an observation, not import-time proof.
                         record.bytes = record.identity.as_ref().map(|i| i.size);
+                        opened.insert(record.imported_path.clone(), media_source);
                     }
                     probed.insert(original.clone(), info);
                 }
@@ -457,11 +465,13 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
         Ok(sequences)
     })?;
     owned.committed = true;
+    // The first item of a linked file takes the source its probe opened; any other item of that
+    // file (and every copy) opens its own, as the pool keeps one source per item.
     for item in s.project.items.values().filter(|i| !before.contains(&i.id)) {
         if let ItemKind::Media(m) = &item.kind
             && !m.offline
             && let MediaRef::File { path } = &m.media
-            && let Ok(source) = s.media.open_file(path, &*s.services)
+            && let Some(source) = opened.remove(path).or_else(|| s.media.open_file(path, &*s.services).ok())
         {
             s.media.insert_file(item.id, path, source);
         }
