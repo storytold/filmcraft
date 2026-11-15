@@ -1579,14 +1579,8 @@ mod tests {
         });
         let scope_elapsed = t0.elapsed();
         let (wall, _) = acc.totals();
-        assert!(
-            wall <= scope_elapsed + Duration::from_millis(2),
-            "parallel source wall {wall:?} must not exceed outer wall {scope_elapsed:?}"
-        );
-        assert!(
-            wall + Duration::from_millis(30) < sum_individual,
-            "parallel source wall {wall:?} must reflect union, not sum {sum_individual:?}"
-        );
+        assert!(wall <= scope_elapsed + Duration::from_millis(2), "parallel source wall {wall:?} must not exceed outer wall {scope_elapsed:?}");
+        assert!(wall + Duration::from_millis(30) < sum_individual, "parallel source wall {wall:?} must reflect union, not sum {sum_individual:?}");
     }
 
     #[test]

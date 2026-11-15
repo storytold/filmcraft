@@ -556,11 +556,7 @@ fn gpu_hook_scenarios() {
             "frame {f}: a panicking GPU preparer falls back to the CPU"
         );
     }
-    assert!(
-        PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4,
-        "preparer reused after a panic: {}",
-        PANICS.load(std::sync::atomic::Ordering::SeqCst)
-    );
+    assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "preparer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
     crate::reset_frame_renderers_for_tests();
 }
 

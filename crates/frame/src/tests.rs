@@ -579,11 +579,7 @@ fn noop_crop_on_gpu_surface_skips_cpu_readback() {
         }
         fn to_cpu(&self) -> Result<PixelData, String> {
             self.readbacks.fetch_add(1, Ordering::SeqCst);
-            Ok(PixelData::Yuv8 {
-                planes: [Arc::new(vec![128; 16]), Arc::new(vec![128; 4]), Arc::new(vec![128; 4])],
-                chroma: Chroma::C420,
-                alpha: None,
-            })
+            Ok(PixelData::Yuv8 { planes: [Arc::new(vec![128; 16]), Arc::new(vec![128; 4]), Arc::new(vec![128; 4])], chroma: Chroma::C420, alpha: None })
         }
     }
 

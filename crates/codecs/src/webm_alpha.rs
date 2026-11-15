@@ -321,11 +321,7 @@ mod tests {
         fn to_cpu(&self) -> Result<PixelData, String> {
             let n = (self.w * self.h) as usize;
             let c = n / 4;
-            Ok(PixelData::Yuv8 {
-                planes: [Arc::new(vec![self.luma; n]), Arc::new(vec![128; c]), Arc::new(vec![128; c])],
-                chroma: Chroma::C420,
-                alpha: None,
-            })
+            Ok(PixelData::Yuv8 { planes: [Arc::new(vec![self.luma; n]), Arc::new(vec![128; c]), Arc::new(vec![128; c])], chroma: Chroma::C420, alpha: None })
         }
     }
 

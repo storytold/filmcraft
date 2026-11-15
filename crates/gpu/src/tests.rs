@@ -86,10 +86,8 @@ fn yuv_code_range_gpu_matches_cpu() {
 fn yuv16_r16unorm_matches_cpu_and_alpha() {
     let instance = crate::adapter::native_instance();
     let required = std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_some();
-    let Some(adapter) = crate::blend_tests::checked_gpu_result(
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())),
-        required,
-    ) else {
+    let Some(adapter) = crate::blend_tests::checked_gpu_result(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())), required)
+    else {
         return;
     };
     let info = adapter.get_info();
@@ -910,9 +908,7 @@ fn upload_cache_overflow_pins_layers() {
         return;
     };
     let mut c = GpuCompositor::new(&dev, &q);
-    let make_rgba = |rgba: [u8; 4]| {
-        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()))
-    };
+    let make_rgba = |rgba: [u8; 4]| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()));
     let mut layers = Vec::with_capacity(UPLOAD_CACHE_MAX_ENTRIES + 4);
     layers.push(PlanLayer::new(make_rgba([255, 0, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal));
     for _ in 0..(UPLOAD_CACHE_MAX_ENTRIES + 3) {
@@ -930,18 +926,11 @@ fn upload_cache_overflow_defers_step_recycle() {
         return;
     };
     let mut c = GpuCompositor::new(&dev, &q);
-    let make_rgba = |rgba: [u8; 4]| {
-        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()))
-    };
+    let make_rgba = |rgba: [u8; 4]| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()));
     let step0 = vec![PlanLayer::new(make_rgba([0, 255, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal)];
-    let step1: Vec<PlanLayer> = (0..(UPLOAD_CACHE_MAX_ENTRIES + 4))
-        .map(|_| PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal))
-        .collect();
-    let plan = FramePlan::Composite {
-        width: 4,
-        height: 4,
-        steps: vec![PlanStep::Layers(step0), PlanStep::Layers(step1)],
-    };
+    let step1: Vec<PlanLayer> =
+        (0..(UPLOAD_CACHE_MAX_ENTRIES + 4)).map(|_| PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal)).collect();
+    let plan = FramePlan::Composite { width: 4, height: 4, steps: vec![PlanStep::Layers(step0), PlanStep::Layers(step1)] };
     c.composite(&plan);
     let (_, _, out) = c.read_output().expect("readback");
     assert_eq!(&out[..4], &[0, 255, 0, 255], "step0 texture must not be overwritten before command buffer submit");
@@ -953,15 +942,9 @@ fn upload_cache_overflow_holds_evicted_textures_until_finish_submit() {
         return;
     };
     let mut c = GpuCompositor::new(&dev, &q);
-    let make_rgba = |v: u8| {
-        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()))
-    };
+    let make_rgba = |v: u8| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()));
     for i in 0..UPLOAD_CACHE_MAX_ENTRIES {
-        let p = FramePlan::Layers {
-            width: 4,
-            height: 4,
-            layers: vec![PlanLayer::new(make_rgba(i as u8), Affine::IDENTITY, 1.0, Blend::Normal)],
-        };
+        let p = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(make_rgba(i as u8), Affine::IDENTITY, 1.0, Blend::Normal)] };
         c.composite(&p);
     }
     let pool_before = c.texture_pool_bytes;
@@ -1090,9 +1073,7 @@ fn gpu_surface_retires_after_submitted_work_done() {
     drop(plan);
     assert!(!dropped.load(Ordering::Acquire), "cached GpuSurface must stay alive in compositor");
 
-    let make_rgba = |v: u8| {
-        Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()))
-    };
+    let make_rgba = |v: u8| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()));
     c.begin_frame();
     for i in 0..(UPLOAD_CACHE_MAX_ENTRIES + 2) {
         assert!(c.upload(&make_rgba((i % 250) as u8), None).is_some());
