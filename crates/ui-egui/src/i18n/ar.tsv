@@ -1,0 +1,366 @@
+# Arabic (ar) catalog. Columns separated by TAB: context <TAB> source <TAB> translation
+# Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing ….
+# Original clean-room translations from the meaning of FilmCraft's English menu labels,
+# using standard Arabic video-editing vocabulary. No proprietary localization resources were used.
+# Core menu coverage; other interface strings fall back to English.
+# Translations are stored in logical order and rearranged for display when the catalog loads
+# (i18n::ARABIC maps them through rtl::display_rtl: egui lays the runs out left to right).
+
+	About FilmCraft	حول FilmCraft
+	Add Audio Submix Track	إضافة مسار مزج صوتي فرعي
+	Add Caption at Playhead	إضافة تسمية توضيحية عند رأس التشغيل
+	Add Chapter Marker…	إضافة علامة فصل…
+	Add Edit	إضافة قطع
+	Add Edit to All Tracks	إضافة قطع على جميع المسارات
+	Add Flash Cue Marker…	إضافة علامة إشارة Flash…
+	Add Frame Hold	إضافة إيقاف إطار
+	Add Guide…	إضافة دليل…
+	Add Marker	إضافة علامة
+	Add New Caption Track…	إضافة مسار تسميات توضيحية جديد…
+	Add Range Marker	إضافة علامة نطاق
+	Add Range Marker to In and Out	إضافة علامة نطاق بين نقطتي الدخول والخروج
+	Add Tracks…	إضافة مسارات…
+	Adjustment Layer…	طبقة ضبط…
+	Align to Selection	محاذاة إلى التحديد
+	Align to Video Frame	محاذاة إلى إطار الفيديو
+	Align to Video Frame as Group	محاذاة إلى إطار الفيديو كمجموعة
+	All Panels	جميع اللوحات
+	Alpha	ألفا
+	Appearance	المظهر
+	Appearance…	المظهر…
+	Apply Audio Transition	تطبيق انتقال صوتي
+	Apply Default Transitions to Selection	تطبيق الانتقالات الافتراضية على التحديد
+	Apply Video Transition	تطبيق انتقال فيديو
+	Arrange	ترتيب
+	ArtCraft Website	موقع ArtCraft
+	Assembly	التجميع
+	Attach Proxies…	إرفاق ملفات بديلة…
+	Audio	الصوت
+	Audio Channels…	قنوات الصوت…
+	Audio Clip Mixer	مازج مقاطع الصوت
+	Audio Gain…	كسب الصوت…
+	Audio Hardware…	عتاد الصوت…
+	Audio In	دخل الصوت
+	Audio Meters	مقاييس الصوت
+	Audio Options	خيارات الصوت
+	Audio Out	خرج الصوت
+	Audio Track Mixer	مازج مسارات الصوت
+	Audio Waveform	الشكل الموجي الصوتي
+	Auto Save…	الحفظ التلقائي…
+	Automate to Sequence…	أتمتة إلى التسلسل…
+	Bars and Tone…	أشرطة ونغمة…
+	Bin	الحاوية
+	Bin From Selection	حاوية من التحديد
+	Black Video…	فيديو أسود…
+	Blue	أزرق
+	Bottom	أسفل
+	Breakout to Mono	فصل إلى أحادي
+	Bring Forward	تقديم إلى الأمام
+	Bring to Front	إحضار إلى المقدمة
+	Brown	بني
+	Captions	التسميات التوضيحية
+	Captions and Graphics	التسميات التوضيحية والرسومات
+	Captions…	التسميات التوضيحية…
+	Caribbean	كاريبي
+	Center Horizontally	توسيط أفقيًا
+	Center Vertically	توسيط رأسيًا
+	Cerulean	أزرق سماوي
+	Clear	مسح
+	Clear Guides	مسح الأدلة
+	Clear In	مسح نقطة الدخول
+	Clear In and Out	مسح نقطتي الدخول والخروج
+	Clear Markers	مسح العلامات
+	Clear Out	مسح نقطة الخروج
+	Clear Selected Marker	مسح العلامة المحددة
+	Clip	مقطع
+	Close	إغلاق
+	Close All Other Projects	إغلاق جميع المشاريع الأخرى
+	Close All Projects	إغلاق جميع المشاريع
+	Close Gap	إغلاق الفجوة
+	Close Project	إغلاق المشروع
+	Color Management…	إدارة الألوان…
+	Color Matte…	لون مصمت…
+	Comparison View	عرض المقارنة
+	Composite Video	فيديو مركّب
+	Consolidate Duplicates	دمج التكرارات
+	Copy	نسخ
+	Copy Paste Includes Sequence Markers	تضمين علامات التسلسل عند النسخ واللصق
+	Create Captions from Transcript…	إنشاء تسميات توضيحية من النص المدوَّن…
+	Create Multi-Camera Source Sequence…	إنشاء تسلسل مصدر متعدد الكاميرات…
+	Create Proxies…	إنشاء ملفات بديلة…
+	Cut	قص
+	Dark	داكن
+	Darkest	الأغمق
+	Delete Render Files	حذف ملفات المعالجة
+	Delete Render Files In to Out	حذف ملفات المعالجة من الدخول إلى الخروج
+	Delete Tracks…	حذف المسارات…
+	Delete Transcript	حذف النص المدوَّن
+	Demo Footage	لقطات تجريبية
+	Demo Project	مشروع تجريبي
+	Deselect All	إلغاء تحديد الكل
+	Detach Proxies	فصل الملفات البديلة
+	Display Mode	وضع العرض
+	Distribute	توزيع
+	Distribute Horizontally	توزيع أفقيًا
+	Distribute Space Horizontally	توزيع المسافة أفقيًا
+	Distribute Space Vertically	توزيع المسافة رأسيًا
+	Distribute Vertically	توزيع رأسيًا
+	Duplicate	تكرار
+	Dynamic Audio Waveforms	أشكال موجية صوتية ديناميكية
+	Edit	تحرير
+	Edit Offline…	تحرير دون اتصال…
+	Edit Original	تحرير الأصل
+	Edit Subclip…	تحرير المقطع الفرعي…
+	Editing	التحرير
+	Effect Controls	عناصر التحكم في التأثيرات
+	Effects	التأثيرات
+	Ellipse	شكل بيضاوي
+	Enable	تمكين
+	Enable Remix	تمكين Remix
+	Essential Graphics	الرسومات الأساسية
+	Essential Sound	الصوت الأساسي
+	Events	الأحداث
+	Export	تصدير
+	Export As Motion Graphics Template…	تصدير كقالب رسومات متحركة…
+	Extract	استخراج
+	Extract Audio	استخراج الصوت
+	Field Options…	خيارات الحقول…
+	File	ملف
+	File…	ملف…
+	Fill frame	ملء الإطار
+	FilmCraft Help…	تعليمات FilmCraft…
+	FilmCraft on GitHub	موقع FilmCraft على GitHub
+	FilmCraft on getartcraft.com	موقع FilmCraft على getartcraft.com
+	Find Next	بحث عن التالي
+	Find…	بحث…
+	Fit	احتواء
+	Fit to frame	احتواء في الإطار
+	Flatten	تسطيح
+	Forest	أخضر غابي
+	Frame Blending	مزج الإطارات
+	Frame Hold Options…	خيارات إيقاف الإطار…
+	Frame Sampling	أخذ عينات الإطارات
+	From Bin	من الحاوية
+	From Source Monitor	من شاشة المصدر
+	From Source Monitor, Match Frame	من شاشة المصدر، مطابقة الإطار
+	From file…	من ملف…
+	Full	كامل
+	Generate Audio Waveform	توليد الشكل الموجي الصوتي
+	Get Media File Properties for	الحصول على خصائص ملف الوسائط لـ
+	Go to Gap	الانتقال إلى الفجوة
+	Go to In	الانتقال إلى نقطة الدخول
+	Go to Next Caption Segment	الانتقال إلى مقطع التسمية التوضيحية التالي
+	Go to Next Marker	الانتقال إلى العلامة التالية
+	Go to Out	الانتقال إلى نقطة الخروج
+	Go to Previous Caption Segment	الانتقال إلى مقطع التسمية التوضيحية السابق
+	Go to Previous Marker	الانتقال إلى العلامة السابقة
+	Go to Split	الانتقال إلى نقطة القطع
+	Graphics and Titles	الرسومات والعناوين
+	Graphics…	الرسومات…
+	Green	أخضر
+	Group	تجميع
+	Guide Templates	قوالب الأدلة
+	Help	تعليمات
+	Hide All Caption Tracks	إخفاء جميع مسارات التسميات التوضيحية
+	Hide FilmCraft	إخفاء FilmCraft
+	Hide Others	إخفاء الآخرين
+	High Quality Playback	تشغيل عالي الجودة
+	History	المحفوظات
+	Import From	استيراد من
+	Import Image Sequence…	استيراد تسلسل صور…
+	Import from Media Browser	استيراد من متصفح الوسائط
+	Import…	استيراد…
+	Info	معلومات
+	Ingest Settings…	إعدادات الاستيعاب…
+	Insert	إدراج
+	Insert Frame Hold Segment	إدراج مقطع إيقاف إطار
+	Install Motion Graphics Template…	تثبيت قالب رسومات متحركة…
+	Interpret Footage…	تفسير اللقطات…
+	Join the ArtCraft Discord…	الانضمام إلى خادم ArtCraft على Discord…
+	Keyboard Shortcuts…	اختصارات لوحة المفاتيح…
+	Label	تسمية
+	Labels…	التسميات…
+	Language	اللغة
+	Lavender	لافندر
+	Learning	التعلّم
+	Left	يسار
+	Libraries	المكتبات
+	Lift	رفع
+	Light	فاتح
+	Link	ربط
+	Link Media…	ربط الوسائط…
+	Linked Selection	التحديد المرتبط
+	Lock Guides	قفل الأدلة
+	Lumetri Color	Lumetri Color
+	Lumetri Scopes	مقاييس Lumetri
+	Magnification	التكبير
+	Make Offline…	جعل دون اتصال…
+	Make Subclip…	إنشاء مقطع فرعي…
+	Make Subsequence	إنشاء تسلسل فرعي
+	Manage Guides…	إدارة الأدلة…
+	Mark Clip	وضع علامات على المقطع
+	Mark In	تعيين نقطة الدخول
+	Mark Out	تعيين نقطة الخروج
+	Mark Selection	وضع علامات على التحديد
+	Mark Split	وضع علامة على القطع المقسّم
+	Markers	العلامات
+	Match Frame	مطابقة الإطار
+	Media Analysis & Transcription…	تحليل الوسائط والتفريغ النصي…
+	Media Browser	متصفح الوسائط
+	Media Cache…	ذاكرة الوسائط المؤقتة…
+	Media…	الوسائط…
+	Memory…	الذاكرة…
+	Merge Clips…	دمج المقاطع…
+	Metadata	البيانات الوصفية
+	Modify	تعديل
+	Motion Graphics Template…	قالب رسومات متحركة…
+	Multi-Camera	متعدد الكاميرات
+	Multi-Camera View	عرض متعدد الكاميرات
+	Nest…	تداخل…
+	New	جديد
+	New Layer	طبقة جديدة
+	New Project Panel	لوحة مشروع جديدة
+	Next Appearance Mode	وضع المظهر التالي
+	Next in Sequence	التالي في التسلسل
+	Next in Track	التالي في المسار
+	Normalize Mix Track…	تطبيع مسار المزج…
+	Offline File…	ملف دون اتصال…
+	Open Project…	فتح مشروع…
+	Open Recent	فتح الأخيرة
+	Clear Recent Files	مسح الملفات الأخيرة
+	Optical Flow	التدفق البصري
+	Overwrite	استبدال
+	Paste	لصق
+	Paste Attributes…	لصق السمات…
+	Paste Insert	لصق مع إدراج
+	Paused Resolution	دقة الإيقاف المؤقت
+	Playback Resolution	دقة التشغيل
+	Playback…	التشغيل…
+	Plugins…	المكونات الإضافية…
+	Polygon	مضلع
+	Preferences	التفضيلات
+	Previous in Sequence	السابق في التسلسل
+	Previous in Track	السابق في المسار
+	Program	البرنامج
+	Progress	التقدّم
+	Project	المشروع
+	Project Manager…	مدير المشاريع…
+	Project Settings	إعدادات المشروع
+	Project…	المشروع…
+	Properties	الخصائص
+	Purple	أرجواني
+	Quit FilmCraft	إنهاء FilmCraft
+	Reconnect Full Resolution Media…	إعادة ربط الوسائط كاملة الدقة…
+	Recover Unsaved Changes…	استرداد التغييرات غير المحفوظة…
+	Rectangle	مستطيل
+	Red	أحمر
+	Redo	إعادة
+	Reference Monitor	شاشة المرجع
+	Remix	Remix
+	Remix Properties…	خصائص Remix…
+	Remove Attributes…	إزالة السمات…
+	Remove Filler Words	إزالة كلمات الحشو
+	Remove Pauses	إزالة الوقفات
+	Remove Unused	إزالة غير المستخدم
+	Rename…	إعادة تسمية…
+	Render Audio	معالجة الصوت
+	Render Effects In to Out	معالجة التأثيرات من الدخول إلى الخروج
+	Render In to Out	معالجة من الدخول إلى الخروج
+	Render Selection	معالجة التحديد
+	Replace Fonts in Projects…	استبدال الخطوط في المشاريع…
+	Replace With Clip	استبدال بمقطع
+	Report an Issue…	الإبلاغ عن مشكلة…
+	Reset All Parameters	إعادة تعيين جميع المعلمات
+	Reset Duration	إعادة تعيين المدة
+	Reset to Saved Layout	إعادة التعيين إلى التخطيط المحفوظ
+	Restore Captions from Source Clip	استعادة التسميات التوضيحية من مقطع المصدر
+	Reveal Log Files…	إظهار ملفات السجل…
+	Reverse Match Frame	مطابقة الإطار العكسية
+	Revert	استرجاع
+	Revert Remix	التراجع عن Remix
+	Review	مراجعة
+	Right	يمين
+	Ripple Delete	حذف تموّجي
+	Ripple Delete Head Frame	حذف تموّجي لإطار البداية
+	Ripple Sequence Markers	تمويج علامات التسلسل
+	Rose	وردي
+	Safe Margins	هوامش الأمان
+	Save	حفظ
+	Save All	حفظ الكل
+	Save As…	حفظ باسم…
+	Save Guides as Template…	حفظ الأدلة كقالب…
+	Save a Copy…	حفظ نسخة…
+	Save as Template…	حفظ كقالب…
+	Scale to Frame Size	قياس إلى حجم الإطار
+	Scene Edit Detection…	كشف تحرير المشاهد…
+	Scratch Disks…	أقراص العمل…
+	Search Bin	بحث في الحاوية
+	Select	تحديد
+	Select All	تحديد الكل
+	Select All Matching	تحديد كل المتطابق
+	Select Label Group	تحديد مجموعة التسمية
+	Select Next Graphic	تحديد الرسم التالي
+	Select Next Layer	تحديد الطبقة التالية
+	Select Previous Graphic	تحديد الرسم السابق
+	Select Previous Layer	تحديد الطبقة السابقة
+	Selection Follows Playhead	يتبع التحديد رأس التشغيل
+	Selection as FilmCraft Project…	التحديد كمشروع FilmCraft…
+	Selection…	التحديد…
+	Send Backward	إرسال إلى الخلف
+	Send to Back	إرسال إلى الخلف تمامًا
+	Sequence	تسلسل
+	Sequence From Clip	تسلسل من مقطع
+	Sequence Settings…	إعدادات التسلسل…
+	Sequence…	التسلسل…
+	Settings	الإعدادات
+	Show Active Caption Tracks Only	إظهار مسارات التسميات التوضيحية النشطة فقط
+	Show All Caption Tracks	إظهار جميع مسارات التسميات التوضيحية
+	Show All Marker Colors	إظهار جميع ألوان العلامات
+	Show Guides	إظهار الأدلة
+	Show Rulers	إظهار المساطر
+	Show Through Edits	إظهار نقاط القطع الداخلية
+	Simplify Sequence…	تبسيط التسلسل…
+	Snap in Program Monitor	الانجذاب في شاشة البرنامج
+	Snap in Timeline	الانجذاب في الخط الزمني
+	Source	المصدر
+	Source Settings…	إعدادات المصدر…
+	Speed/Duration…	السرعة/المدة…
+	Synchronize…	مزامنة…
+	System Compatibility Report…	تقرير توافق النظام…
+	Tan	رملي
+	Teal	أزرق مخضرّ
+	Text	نص
+	Time Interpolation	الاستيفاء الزمني
+	Timecode	الشفرة الزمنية
+	Timecode…	الشفرة الزمنية…
+	Timeline	الخط الزمني
+	Timeline…	الخط الزمني…
+	Toggle Proxies	تبديل الملفات البديلة
+	Tools	الأدوات
+	Top	أعلى
+	Transcribe Sequence…	تفريغ التسلسل نصيًا…
+	Transcribe…	تفريغ نصي…
+	Transcript	النص المدوَّن
+	Transparent Video…	فيديو شفاف…
+	Trim Edit	تشذيب نقطة التحرير
+	Trim…	تشذيب…
+	Undo	تراجع
+	Ungroup	إلغاء التجميع
+	Universal Counting Leader…	عدّاد بداية عالمي…
+	Update Metadata…	تحديث البيانات الوصفية…
+	Upgrade Caption to Graphic	ترقية التسمية التوضيحية إلى رسم
+	Upgrade to Source Graphic	ترقية إلى رسم المصدر
+	Vertical Text	نص عمودي
+	Video In	دخل الفيديو
+	Video Options	خيارات الفيديو
+	Video Out	خرج الفيديو
+	Video and Audio Waveform Split	تقسيم الشكل الموجي للفيديو والصوت
+	View	عرض
+	Violet	بنفسجي
+	Window	نافذة
+	Workspaces	مساحات العمل
+	Yellow	أصفر
+	Zoom In	تكبير
+	Zoom Out	تصغير
+	Zoom to Sequence	تكبير إلى التسلسل
+	Project Notes	ملاحظات المشروع
