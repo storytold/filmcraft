@@ -1236,3 +1236,48 @@ fn multi_cursor_eviction_preserves_both_active_playheads() {
     assert!(st.frames.contains_key(&200_000), "primary playhead kept");
     assert!(st.frames.contains_key(&9_000), "secondary playhead kept across distant decodes");
 }
+
+#[test]
+fn extra_cursor_cache_hit_does_not_refresh_primary_recency() {
+    let pool = Arc::new(Pool::new(16, IDLE, FRAME_BUDGET).tiered(RECENT, 32));
+    let s = samples(400, 30, 0, false);
+    let c = GopCache::in_pool(None, pool.clone());
+    // Warm primary cursor at sample 0 (pin = 0).
+    assert_eq!(index_of(&c.frame(&s, 0).expect("P0")), 0);
+    let now = Instant::now();
+    {
+        let mut st = c.shared.state.lock().unwrap();
+        let make_cursor = |next: usize, pin: i64, last_used: Instant| StreamCursor {
+            decoder: s.make_decoder().unwrap(),
+            next,
+            start: next.saturating_sub(1),
+            out_max: pin,
+            pin,
+            last_used,
+            background: false,
+        };
+        // Cache frame 100_000 for extra[0]; primary is older than extra[1] and extra[2],
+        // while extra[0] starts oldest until the cache hit refreshes it.
+        c.store_finished(&mut st, 100_000, VideoFrame::rgba8(1, 1, vec![100, 0, 0, 255]), false);
+        st.last_used = now - Duration::from_millis(300);
+        st.primary_last_used = now - Duration::from_millis(300);
+        st.extra = vec![
+            make_cursor(101, 100_000, now - Duration::from_millis(400)),
+            make_cursor(201, 200_000, now - Duration::from_millis(200)),
+            make_cursor(301, 300_000, now - Duration::from_millis(100)),
+        ];
+        pool.decoders.fetch_add(3, Ordering::Relaxed);
+    }
+    // Cache hit near extra[0] (100_000) refreshes extra[0].last_used = hit_now,
+    // leaving primary as the oldest cursor of the four.
+    assert_eq!(index_of(&c.frame(&s, 100_000).expect("hit extra0")), 100);
+    // Distant miss at 360_000 (cannot continue any cursor): must reset the LRU cursor (primary at 0)
+    // and preserve all three extra cursors (100_000, 200_000, 300_000).
+    assert_eq!(index_of(&c.frame(&s, 360_000).expect("distant miss")), 360);
+    let st = c.shared.state.lock().unwrap();
+    let extra_pins: Vec<i64> = st.extra.iter().map(|cur| cur.pin).collect();
+    assert!(extra_pins.contains(&100_000), "extra0 kept: {extra_pins:?}");
+    assert!(extra_pins.contains(&200_000), "extra1 kept: {extra_pins:?}");
+    assert!(extra_pins.contains(&300_000), "extra2 kept: {extra_pins:?}");
+    assert_eq!(st.pin, 360_000);
+}

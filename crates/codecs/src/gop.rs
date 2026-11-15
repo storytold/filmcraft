@@ -231,8 +231,10 @@ struct State {
     /// that takes one does it off the lock (#3467).
     raw: std::collections::BTreeSet<i64>,
     bytes: usize,
-    /// When a frame was last asked of this cache.
+    /// When a frame was last asked of this cache (slot-level activity for pool trimming).
     last_used: Instant,
+    /// When the primary cursor itself was last used (hit, promoted, or decoded).
+    primary_last_used: Instant,
     /// Presentation pts of the frame the last request wanted: eviction keeps a window around it
     /// (not around the newest decoded picture). Walking a long GOP dumps pictures in decode
     /// order; a window around those would throw away the playhead frame and force another walk.
@@ -279,7 +281,7 @@ impl State {
                 start: self.start,
                 out_max: self.out_max,
                 pin: self.pin,
-                last_used: self.last_used,
+                last_used: self.primary_last_used,
                 background: self.background,
             };
             let picked = std::mem::replace(&mut self.extra[idx], cur);
@@ -288,6 +290,7 @@ impl State {
             self.start = picked.start;
             self.out_max = picked.out_max;
             self.pin = picked.pin;
+            self.primary_last_used = picked.last_used;
             self.background = picked.background;
         } else {
             let picked = self.extra.swap_remove(idx);
@@ -296,6 +299,7 @@ impl State {
             self.start = picked.start;
             self.out_max = picked.out_max;
             self.pin = picked.pin;
+            self.primary_last_used = picked.last_used;
             self.background = picked.background;
         }
     }
@@ -320,6 +324,7 @@ impl State {
     fn touch_pin_for_hit(&mut self, want_pts: i64, now: Instant) {
         if self.extra.is_empty() {
             self.pin = want_pts;
+            self.primary_last_used = now;
             return;
         }
         let primary_dist = if self.pin == i64::MIN { u64::MAX } else { want_pts.abs_diff(self.pin) };
@@ -332,6 +337,7 @@ impl State {
             return;
         }
         self.pin = want_pts;
+        self.primary_last_used = now;
     }
 
     /// Evict frames, earliest first, while `more` says so.
@@ -756,6 +762,7 @@ impl GopCache {
                 raw: Default::default(),
                 bytes: 0,
                 last_used: Instant::now(),
+                primary_last_used: Instant::now(),
                 pin: i64::MIN,
                 background: false,
                 extra: Vec::new(),
@@ -1019,7 +1026,6 @@ impl GopCache {
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _decoding = DecodingGuard::enter(me);
         let now = Instant::now();
-        let prev_last_used = st.last_used;
         st.last_used = now;
         let background = filmcraft_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {
@@ -1074,9 +1080,7 @@ impl GopCache {
             };
             if let Some(pick) = close_cursor {
                 if let Some(ei) = pick {
-                    st.last_used = prev_last_used;
                     st.swap_extra(ei);
-                    st.last_used = now;
                 }
             } else if !background && st.extra.len() < MAX_EXTRA_CURSORS && st.take_abandoned_match(i, now).is_some() {
                 // Ping-pong detected: keep the other active stream's cursor in `extra` and open a
@@ -1088,7 +1092,7 @@ impl GopCache {
                         start: st.start,
                         out_max: st.out_max,
                         pin: st.pin,
-                        last_used: prev_last_used,
+                        last_used: st.primary_last_used,
                         background: st.background,
                     };
                     st.extra.push(cur);
@@ -1098,25 +1102,19 @@ impl GopCache {
             } else {
                 match (primary_dist, best_extra) {
                     (Some(pd), Some((ei, ed))) if ed < pd => {
-                        st.last_used = prev_last_used;
                         st.swap_extra(ei);
-                        st.last_used = now;
                     }
                     (Some(_), _) => {}
                     (None, Some((ei, _))) => {
-                        st.last_used = prev_last_used;
                         st.swap_extra(ei);
-                        st.last_used = now;
                     }
                     (None, None) => {
                         // No cursor can continue: pick the least-recently-used cursor to reset,
                         // remembering the replaced position in case the caller returns to it soon.
                         if let Some((lru_ei, _)) = st.extra.iter().enumerate().min_by_key(|(_, c)| c.last_used)
-                            && st.extra[lru_ei].last_used < prev_last_used
+                            && st.extra[lru_ei].last_used < st.primary_last_used
                         {
-                            st.last_used = prev_last_used;
                             st.swap_extra(lru_ei);
-                            st.last_used = now;
                         }
                         if !background && st.next != usize::MAX {
                             let next = st.next;
@@ -1127,6 +1125,7 @@ impl GopCache {
             }
         }
         st.pin = want_pts;
+        st.primary_last_used = now;
         if !background {
             st.background = false;
         } else if st.decoder.is_none() {
