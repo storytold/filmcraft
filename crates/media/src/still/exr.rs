@@ -450,6 +450,10 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
         if y.map(i64::from) != Some(want) {
             return Err(bad(format!("chunk {i} is not at line {want}")));
         }
+        // stored raw: its length follows from the geometry, so check it before the output exists
+        if matches!(h.compression, Compression::None) && size != line.checked_mul(lpc.min(dh - i * lpc)).ok_or_else(|| bad("chunk size".into()))? {
+            return Err(bad(format!("chunk {i} has the wrong size")));
+        }
     }
     let mut px = vec![0f32; px_len];
     if !alpha {

@@ -121,7 +121,7 @@ fn code8(x: f32) -> u8 {
 /// Whether a source of `len` values holds a non-empty `w` x `h` picture of `per_px` values per pixel.
 /// The 8-bit conversions size their planes from `w` and `h`, so they check this first: a short
 /// source would otherwise allocate planes far larger than the data (or index past its end).
-fn covers(len: usize, w: usize, h: usize, per_px: usize) -> bool {
+pub(crate) fn covers(len: usize, w: usize, h: usize, per_px: usize) -> bool {
     w > 0 && h > 0 && w.checked_mul(h).and_then(|n| n.checked_mul(per_px)).is_some_and(|n| len >= n)
 }
 
@@ -190,6 +190,52 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
             }
         },
     );
+}
+
+/// BT.709 limited-range 10-bit 4:2:0 (code values 0..1023) from straight RGBA8, for High 10: the
+/// matrix and the 2×2 chroma average keep their precision instead of rounding to 8 bits (Y = 64 +
+/// 876·Y', C = 512 + 896·C, codes clamped to 4..1019 like [`rgbf_to_yuv420_10`]). The planes are
+/// resized to `w * h` and `ceil(w / 2) * ceil(h / 2)`; an `rgba` slice of the wrong length, a zero
+/// size or a size whose arithmetic overflows is an error.
+pub fn rgba_to_yuv420_10(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u16>, u: &mut Vec<u16>, v: &mut Vec<u16>) -> Result<()> {
+    let bad = || ExportError::Encode(format!("a {w}x{h} picture needs w*h*4 bytes, got {}", rgba.len()));
+    let px = w.checked_mul(h).ok_or_else(bad)?;
+    if w == 0 || h == 0 || px.checked_mul(4) != Some(rgba.len()) {
+        return Err(bad());
+    }
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    y.clear();
+    y.resize(px, 0);
+    u.clear();
+    u.resize(cw * ch, 0);
+    v.clear();
+    v.resize(cw * ch, 0);
+    let code = |x: f32| x.round().clamp(4.0, 1019.0) as u16;
+    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+        let mut us = vec![0f32; cw];
+        let mut vs = vec![0f32; cw];
+        let mut cnt = vec![0f32; cw];
+        for (dy, yrow) in yr.chunks_exact_mut(w).enumerate() {
+            let row = cy * 2 + dy;
+            let Some(src) = rgba.get(row * w * 4..(row + 1) * w * 4) else { continue };
+            for (x, (&[r, g, b, _], yo)) in src.as_chunks::<4>().0.iter().zip(yrow.iter_mut()).enumerate() {
+                let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+                let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                *yo = code(64.0 + 876.0 * yy);
+                if let (Some(a), Some(c), Some(n)) = (us.get_mut(x / 2), vs.get_mut(x / 2), cnt.get_mut(x / 2)) {
+                    *a += (b - yy) / 1.8556;
+                    *c += (r - yy) / 1.5748;
+                    *n += 1.0;
+                }
+            }
+        }
+        for (cx, (uo, vo)) in ur.iter_mut().zip(vr.iter_mut()).enumerate() {
+            let n = cnt.get(cx).copied().unwrap_or(1.0).max(1.0);
+            *uo = code(512.0 + 896.0 * us.get(cx).copied().unwrap_or(0.0) / n);
+            *vo = code(512.0 + 896.0 * vs.get(cx).copied().unwrap_or(0.0) / n);
+        }
+    });
+    Ok(())
 }
 
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).

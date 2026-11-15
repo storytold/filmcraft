@@ -10,7 +10,7 @@ use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
+pub(super) fn step(h: &mut Harness<'static, FilmcraftApp>) {
     let ctx = h.ctx.clone();
     let mut raw = std::mem::take(h.input_mut());
     eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
@@ -19,7 +19,7 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
     h.step();
 }
 
-fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
+pub(super) fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
     if let Some(pressed) = pressed {
         h.input_mut().events.push(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -27,7 +27,7 @@ fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bo
     step(h);
 }
 
-fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
+pub(super) fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
     let [x, y, w, height] = h.state().auto.elements.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("missing {id}")).rect;
     Rect::from_min_size(pos2(x, y), vec2(w, height))
 }
@@ -52,7 +52,7 @@ fn build(s: Session) -> Harness<'static, FilmcraftApp> {
 
 /// A sequence with a cross dissolve: between two clips at 0..48f and 48..96f, or a fade-in on the
 /// single clip at 0..48f when `single`.
-fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
+pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();

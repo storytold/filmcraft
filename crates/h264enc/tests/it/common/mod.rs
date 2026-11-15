@@ -123,10 +123,15 @@ pub fn out_dir(name: &str) -> PathBuf {
 ///   encoder's reconstruction.
 /// - `-err_detect`: also report the non-conformances ffmpeg tolerates by default.
 pub fn ffmpeg_decode(file: &Path) -> (String, Vec<u8>) {
+    ffmpeg_decode_as(file, "yuv420p")
+}
+
+/// [`ffmpeg_decode`] to raw frames of `pix_fmt` (`yuv420p10le` for High 10).
+pub fn ffmpeg_decode_as(file: &Path, pix_fmt: &str) -> (String, Vec<u8>) {
     let out = Command::new(ffmpeg().unwrap())
         .args(["-nostdin", "-hide_banner", "-v", "warning", "-err_detect", "+crccheck+bitstream+buffer+explode", "-i"])
         .arg(file)
-        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+        .args(["-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])
         .output()
         .expect("run ffmpeg");
     let mut diag = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -162,4 +167,67 @@ pub fn psnr(a: &[u8], b: &[u8]) -> f64 {
         return 99.0;
     }
     10.0 * (255.0f64 * 255.0 * a.len() as f64 / se).log10()
+}
+
+/// A 4:2:0 picture with 10-bit samples.
+pub struct Yuv16 {
+    pub w: usize,
+    pub h: usize,
+    pub y: Vec<u16>,
+    pub u: Vec<u16>,
+    pub v: Vec<u16>,
+}
+
+impl Yuv16 {
+    pub fn frame(&self) -> filmcraft_h264enc::YuvFrame16<'_> {
+        filmcraft_h264enc::YuvFrame16 { y: &self.y, u: &self.u, v: &self.v, y_stride: self.w, uv_stride: self.w / 2 }
+    }
+    /// The planes as `yuv420p10le` bytes.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.y.iter().chain(&self.u).chain(&self.v).flat_map(|s| s.to_le_bytes()).collect()
+    }
+}
+
+/// 10-bit synthetic picture `t`: [`synth`]'s content scaled to 10 bits, with the smooth moving gradient
+/// (top-left quarter) and the chroma evaluated at full 10-bit precision. 8 bits can only show those as
+/// bands (one 8-bit step spans four 10-bit codes), so a 10-bit encode has detail to keep.
+pub fn synth10(w: usize, h: usize, t: usize) -> Yuv16 {
+    let b = synth(w, h, t);
+    let tf = t as f32;
+    let mut y: Vec<u16> = b.y.iter().map(|&v| v as u16 * 4).collect();
+    for yy in 0..h / 2 {
+        for xx in 0..w / 2 {
+            let fx = xx as f32 / w as f32;
+            let fy = yy as f32 / h as f32;
+            let v = 512.0 + 360.0 * ((fx * 6.0 + tf * 0.07).sin() * (fy * 4.0 - tf * 0.05).cos());
+            y[yy * w + xx] = v.round().clamp(0.0, 1023.0) as u16;
+        }
+    }
+    let (cw, ch) = (w / 2, h / 2);
+    let mut u = vec![0u16; cw * ch];
+    let mut v = vec![0u16; cw * ch];
+    for yy in 0..ch {
+        for xx in 0..cw {
+            let fx = xx as f32 / cw as f32;
+            let fy = yy as f32 / ch as f32;
+            u[yy * cw + xx] = (512.0 + 240.0 * (fx * 3.0 + tf * 0.03).sin()).round() as u16;
+            v[yy * cw + xx] = (512.0 + 200.0 * (fy * 5.0 - tf * 0.04).cos() * fx).round() as u16;
+        }
+    }
+    Yuv16 { w, h, y, u, v }
+}
+
+/// Luma PSNR of 10-bit planes.
+pub fn psnr10(a: &[u16], b: &[u16]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let se: f64 = a.iter().zip(b).map(|(&x, &y)| (x as f64 - y as f64).powi(2)).sum();
+    if se == 0.0 {
+        return 99.0;
+    }
+    10.0 * (1023.0f64 * 1023.0 * a.len() as f64 / se).log10()
+}
+
+/// Little-endian 16-bit samples.
+pub fn le16(b: &[u8]) -> Vec<u16> {
+    b.as_chunks::<2>().0.iter().map(|&c| u16::from_le_bytes(c)).collect()
 }
