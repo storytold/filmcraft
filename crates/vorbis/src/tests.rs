@@ -160,7 +160,7 @@ fn round_trip(input: &[Vec<f32>], rate: u32, quality: f32, decoder: &str, name: 
         .output()
         .unwrap();
     assert!(out.status.success() && out.stderr.is_empty(), "{name} {decoder}: {}", String::from_utf8_lossy(&out.stderr));
-    let pcm: Vec<f32> = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let pcm: Vec<f32> = out.stdout.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)).collect();
     let ch = input.len();
     Some(((0..ch).map(|c| pcm.iter().skip(c).step_by(ch).copied().collect()).collect(), bytes))
 }
