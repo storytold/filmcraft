@@ -249,8 +249,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   encoder does).
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
-  (audio-only `.m4a`, or ADTS `.aac`; #814); Apple Lossless (ALAC `.m4a`, also in MP4 / MOV, from a
-  clean-room encoder); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
+  (audio-only `.m4a`, or ADTS `.aac`; #814); Apple Lossless (ALAC `.m4a`, also in MP4 / MOV, from craft-audio's
+  encoder); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
   High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a (10-bit SDR and HDR,
   #1221; High 4:2:2, High 4:4:4 Predictive and lossless H.264 are still missing).
 - **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an

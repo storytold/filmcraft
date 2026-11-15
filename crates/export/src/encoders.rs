@@ -115,11 +115,14 @@ impl AudioEncoder for FlacAudio {
     }
 }
 
-/// ALAC (our encoder) in MP4 / QuickTime and `.m4a`: one frame of 4096 samples per access unit,
-/// the last one shorter. The mix's 5.1 order (L R C LFE Ls Rs) becomes ALAC's (C L R Ls Rs LFE).
+/// ALAC (`craft_audio::alac`) in MP4 / QuickTime and `.m4a`: one packet of 4096 samples per
+/// access unit, the last one shorter. The mix's channels are in WAV order (5.1: L R C LFE Ls Rs)
+/// and go to the encoder in ALAC order (C L R Ls Rs LFE).
 pub(crate) struct AlacAudio {
-    enc: filmcraft_alac::Encoder,
+    enc: craft_audio::alac::Encoder,
     format: SampleFormat,
+    /// Samples per channel waiting for a full packet, in WAV order.
+    pending: Vec<Vec<i32>>,
 }
 
 impl AlacAudio {
@@ -129,22 +132,35 @@ impl AlacAudio {
             return Err(ExportError::Unsupported("ALAC export writes 16 or 24 bit: choose one of those sample sizes".into()));
         }
         let ch = u8::try_from(channels).map_err(|_| ExportError::Unsupported("ALAC: too many audio channels".into()))?;
-        let cfg = filmcraft_alac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
-        let enc = filmcraft_alac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("ALAC: {e}")))?;
-        Ok(AlacAudio { enc, format })
+        let cfg = craft_audio::alac::EncoderConfig::new(sample_rate, ch, format.bits() as u8);
+        let enc = craft_audio::alac::Encoder::new(cfg).map_err(|e| ExportError::Unsupported(format!("ALAC: {e}")))?;
+        Ok(AlacAudio { enc, format, pending: vec![Vec::new(); usize::from(ch)] })
     }
 
     fn entry(&self) -> SampleEntry {
-        let cfg = self.enc.config();
-        let codec = filmcraft_isobmff::CodecConfig::Alac { cookie: self.enc.magic_cookie() };
-        SampleEntry::audio(filmcraft_isobmff::FourCc(*b"alac"), codec, u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bits_per_sample))
+        let cfg = self.enc.encoder_config();
+        let codec = filmcraft_isobmff::CodecConfig::Alac { cookie: self.enc.cookie() };
+        SampleEntry::audio(filmcraft_isobmff::FourCc(*b"alac"), codec, u32::from(cfg.channels), f64::from(cfg.sample_rate), u16::from(cfg.bit_depth))
     }
-}
 
-/// ALAC's channel order from the mix's: 5.1 L R C LFE Ls Rs → C L R Ls Rs LFE (mono and stereo as they are).
-fn alac_order(planar: &[Vec<i32>]) -> Vec<&[i32]> {
-    let order: &[usize] = if planar.len() == 6 { &[2, 0, 1, 4, 5, 3] } else { &[] };
-    if order.is_empty() { planar.iter().map(Vec::as_slice).collect() } else { order.iter().filter_map(|&i| planar.get(i).map(Vec::as_slice)).collect() }
+    fn frame_length(&self) -> usize {
+        self.enc.encoder_config().frame_length as usize
+    }
+
+    /// Encodes the first `n` pending samples of every channel as one packet.
+    fn packet(&mut self, n: usize) -> Result<Vec<u8>> {
+        let order = craft_audio::alac::alac_order(self.enc.encoder_config().channels);
+        let wav: Vec<&[i32]> = self.pending.iter().map(|c| c.get(..n).unwrap_or(c)).collect();
+        let refs: Vec<&[i32]> = match order {
+            Some(order) => order.iter().filter_map(|&i| wav.get(i).copied()).collect(),
+            None => wav,
+        };
+        let au = self.enc.encode(&refs).map_err(|e| ExportError::Encode(format!("ALAC: {e}")))?;
+        for c in &mut self.pending {
+            c.drain(..n.min(c.len()));
+        }
+        Ok(au)
+    }
 }
 
 impl AudioEncoder for AlacAudio {
@@ -152,21 +168,35 @@ impl AudioEncoder for AlacAudio {
         self.entry()
     }
     fn encode(&mut self, planar: &[Vec<f32>]) -> Result<Vec<Vec<u8>>> {
-        let ints: Vec<Vec<i32>> = planar.iter().map(|c| c.iter().map(|&s| self.format.quantise(s)).collect()).collect();
-        self.enc.encode_frames(&alac_order(&ints)).map_err(|e| ExportError::Encode(format!("ALAC: {e}")))
+        if planar.len() != self.pending.len() {
+            return Err(ExportError::Encode("ALAC: channel count differs from the configuration".into()));
+        }
+        for (p, c) in self.pending.iter_mut().zip(planar) {
+            p.extend(c.iter().map(|&s| self.format.quantise(s)));
+        }
+        let n = self.frame_length();
+        let mut out = Vec::new();
+        while self.pending.iter().all(|c| c.len() >= n) && n > 0 {
+            out.push(self.packet(n)?);
+        }
+        Ok(out)
     }
     fn flush(&mut self) -> Result<Vec<Vec<u8>>> {
         Ok(self.flush_timed()?.into_iter().map(|(au, _)| au).collect())
     }
     fn flush_timed(&mut self) -> Result<Vec<(Vec<u8>, u32)>> {
-        let tail = self.enc.pending_samples() as u32;
-        Ok(self.enc.finish().map(|last| vec![(last, tail)]).unwrap_or_default())
+        let tail = self.pending.iter().map(Vec::len).min().unwrap_or(0);
+        if tail == 0 {
+            return Ok(Vec::new());
+        }
+        let au = self.packet(tail)?;
+        Ok(vec![(au, u32::try_from(tail).unwrap_or(u32::MAX))])
     }
     fn priming(&self) -> u32 {
         0
     }
     fn frame_size(&self) -> u32 {
-        self.enc.config().frame_length
+        self.enc.encoder_config().frame_length
     }
     fn final_sample_entry(&self) -> Option<SampleEntry> {
         Some(self.entry())

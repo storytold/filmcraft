@@ -188,7 +188,7 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | **AV1** | ✓ | | Main profile, 8/10-bit 4:2:0 and monochrome, every coding tool incl. film grain, superres and spatial layers; bit-exact with libdav1d on the libaom vectors tested; in MP4 and WebM/Matroska |
 | **DNxHD / DNxHR** | ✓ | ✓ | All SMPTE ST 2019-1 CIDs (LB to 444, 8/10/12-bit); export writes DNxHR in MOV |
 | **MJPEG, PCM** | ✓ | ✓ | |
-| **FLAC, ALAC** | ✓ | ✓ | Decoded via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now; exported with our own encoders: FLAC (`.flac`) and Apple Lossless (`.m4a`), both also in MP4 / MOV |
+| **FLAC, ALAC** | ✓ | ✓ | Decoded via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now; exported with the craft-audio encoders: FLAC (`.flac`) and Apple Lossless (`.m4a`), both also in MP4 / MOV |
 | **MP3, Vorbis** | ✓ | | Via symphonia for now, to be replaced by our own |
 | **MP4 / MOV** | ✓ | ✓ | Fragmented MP4, edit lists, timecode tracks |
 | **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
