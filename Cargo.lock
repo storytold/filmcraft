@@ -1138,9 +1138,9 @@ dependencies = [
 [[package]]
 name = "craft-raw"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d16ee7926c8403ded5ea3209bc2ab14b1570281a#d16ee7926c8403ded5ea3209bc2ab14b1570281a"
+source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
 dependencies = [
- "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=d16ee7926c8403ded5ea3209bc2ab14b1570281a)",
+ "craft-tiff",
  "rayon",
  "serde",
  "thiserror 2.0.21",
@@ -1149,16 +1149,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=8b9010ae5356b6588eb22c2e1ca4b4ae12647939#8b9010ae5356b6588eb22c2e1ca4b4ae12647939"
-dependencies = [
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "craft-tiff"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d16ee7926c8403ded5ea3209bc2ab14b1570281a#d16ee7926c8403ded5ea3209bc2ab14b1570281a"
+source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1256,6 +1247,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-y4m"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=25c7a8959cf70cf8c3f076d05baadb0990710569#25c7a8959cf70cf8c3f076d05baadb0990710569"
+dependencies = [
  "thiserror 2.0.21",
 ]
 
@@ -2089,6 +2088,7 @@ dependencies = [
  "craft-jpeg",
  "craft-media",
  "craft-video",
+ "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-dnx",
@@ -2120,7 +2120,6 @@ name = "filmcraft-dng"
 version = "0.20.1"
 dependencies = [
  "craft-raw",
- "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=8b9010ae5356b6588eb22c2e1ca4b4ae12647939)",
  "filmcraft-dng",
  "image",
  "rayon",
