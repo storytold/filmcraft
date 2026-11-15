@@ -499,3 +499,20 @@ fn premiere_project_with_binned_media_and_no_sequence_imports() {
     assert_eq!(bin.name, "Stills");
     assert_eq!(s.project.workflow.as_ref().unwrap().imports[0].media.len(), 1, "probed through the import policy");
 }
+
+#[test]
+fn premiere_offline_media_lists_only_items_added_by_this_import() {
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj");
+    let media = fixture.0.join("source.png");
+    let parked = fixture.0.join("parked.bin");
+    std::fs::rename(&media, &parked).unwrap();
+    let mut s = Session::default();
+    let first = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("offline")})).unwrap();
+    assert_eq!(first["offlineMedia"], json!(["source.png"]));
+    std::fs::rename(&parked, &media).unwrap();
+    let second = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("online")})).unwrap();
+    assert_eq!(second["offlineMedia"], json!([]), "an earlier import's offline item is not this import's");
+    let offline = s.project.items.values().filter(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)).count();
+    assert_eq!(offline, 1, "the earlier offline item stays in the project");
+}
