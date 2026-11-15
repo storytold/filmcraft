@@ -7,7 +7,6 @@
 //! Sequence frames inside a rendered segment come from its render preview instead of the live
 //! render (see `filmcraft_engine::previews`).
 
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -276,28 +275,32 @@ pub fn process_cpu_time() -> Option<Duration> {
     }
 }
 
-thread_local! {
-    /// (wall, cpu) spent in source `video_frame` calls directly on this worker thread.
-    static SOURCE_TIME: Cell<(Duration, Duration)> = const { Cell::new((Duration::ZERO, Duration::ZERO)) };
-    /// This worker is profiling the current job (thread CPU of source calls is measured).
-    static PROFILING: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Atomic source-decode timing shared across any rayon tasks a frame job spawns.
-#[derive(Default)]
+/// Source-decode timing shared across any rayon tasks a frame job spawns.
+///
+/// Tracks the wall-clock union of concurrent intervals (so parallel track reads do not
+/// over-count wall time) alongside the summed thread-CPU time.
 struct SourceAcc {
-    wall_ns: AtomicU64,
+    origin: Instant,
+    intervals: Mutex<Vec<(u64, u64)>>,
     cpu_ns: AtomicU64,
     profiling: bool,
 }
 
 impl SourceAcc {
+    fn new(profiling: bool) -> Self {
+        Self { origin: Instant::now(), intervals: Mutex::new(Vec::new()), cpu_ns: AtomicU64::new(0), profiling }
+    }
+
     fn timed<R>(&self, f: impl FnOnce() -> R) -> R {
         let cpu = || if self.profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
-        let (w0, c0) = (Instant::now(), cpu());
+        let (start, c0) = (Instant::now(), cpu());
         let r = f();
-        let (dw, dc) = (w0.elapsed(), cpu().saturating_sub(c0));
-        self.wall_ns.fetch_add(dw.as_nanos() as u64, Ordering::Relaxed);
+        let (end, dc) = (Instant::now(), cpu().saturating_sub(c0));
+        let s = start.saturating_duration_since(self.origin).as_nanos() as u64;
+        let e = end.saturating_duration_since(self.origin).as_nanos() as u64;
+        if e > s {
+            self.intervals.lock().unwrap_or_else(PoisonError::into_inner).push((s, e));
+        }
         if self.profiling {
             self.cpu_ns.fetch_add(dc.as_nanos() as u64, Ordering::Relaxed);
         }
@@ -305,21 +308,26 @@ impl SourceAcc {
     }
 
     fn totals(&self) -> (Duration, Duration) {
-        (Duration::from_nanos(self.wall_ns.load(Ordering::Relaxed)), Duration::from_nanos(self.cpu_ns.load(Ordering::Relaxed)))
+        let mut intervals = self.intervals.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        intervals.sort_unstable_by_key(|&(s, _)| s);
+        let mut iter = intervals.into_iter();
+        let wall_ns = if let Some((mut cur_s, mut cur_e)) = iter.next() {
+            let mut sum = 0u64;
+            for (s, e) in iter {
+                if s <= cur_e {
+                    cur_e = cur_e.max(e);
+                } else {
+                    sum = sum.saturating_add(cur_e.saturating_sub(cur_s));
+                    cur_s = s;
+                    cur_e = e;
+                }
+            }
+            sum.saturating_add(cur_e.saturating_sub(cur_s))
+        } else {
+            0
+        };
+        (Duration::from_nanos(wall_ns), Duration::from_nanos(self.cpu_ns.load(Ordering::Relaxed)))
     }
-}
-
-/// Run `f`, adding its wall/CPU time to this thread's source-time accumulator.
-fn timed_source<R>(f: impl FnOnce() -> R) -> R {
-    let cpu = || if PROFILING.with(Cell::get) { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
-    let (w0, c0) = (Instant::now(), cpu());
-    let r = f();
-    let (dw, dc) = (w0.elapsed(), cpu().saturating_sub(c0));
-    SOURCE_TIME.with(|s| {
-        let (w, c) = s.get();
-        s.set((w + dw, c + dc));
-    });
-    r
 }
 
 /// A media source that times its `video_frame` calls (see [`JobRecord::source_wall`]).
@@ -879,14 +887,20 @@ impl FrameServer {
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
-    /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
-    pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
+    /// Nearest cached frame at or before `frame`, returning its actual cached [`FrameKey`].
+    pub fn nearest_with_key(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<Rgba>)> {
         for d in 0..=max_back {
-            if let Some(v) = self.get(&FrameKey { target, frame: frame - d, size, revision, draft: false }) {
-                return Some(v);
+            let k = FrameKey { frame: key.frame - d, ..key };
+            if let Some(v) = self.get(&k) {
+                return Some((k, v));
             }
         }
         None
+    }
+
+    /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
+    pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
+        self.nearest_with_key(FrameKey { target, frame, size, revision, draft: false }, max_back).map(|(_, v)| v)
     }
 
     /// Without worker threads (wasm32): run queued jobs on the calling (UI) thread, highest
@@ -1082,9 +1096,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     }
     let profiling = sh.profiling.load(Ordering::Relaxed);
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
-    SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
-    PROFILING.with(|p| p.set(profiling));
-    let acc = Arc::new(SourceAcc { profiling, ..Default::default() });
+    let acc = Arc::new(SourceAcc::new(profiling));
     // A cancelled job may have missed layers (its source gave up): its result is not cached.
     // A job whose media bytes were still loading (web) rendered with missing layers: like a
     // cancelled one, its result is not cached (the caller retries it).
@@ -1122,10 +1134,8 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-    let (tl_wall, tl_cpu) = SOURCE_TIME.with(|s| s.get());
-    let (acc_wall, acc_cpu) = acc.totals();
-    let source_wall = (tl_wall + acc_wall).min(eval_wall);
-    let source_cpu = tl_cpu + acc_cpu;
+    let (acc_wall, source_cpu) = acc.totals();
+    let source_wall = acc_wall.min(eval_wall);
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
@@ -1171,9 +1181,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
 }
 
 /// The preview frame for a sequence job, when its segment has been rendered.
-fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewStore) -> Option<Arc<filmcraft_frame::VideoFrame>> {
+fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewStore, acc: &SourceAcc) -> Option<Arc<filmcraft_frame::VideoFrame>> {
     let rate = job.project.sequence(seq)?.settings.frame_rate;
-    timed_source(|| previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale))
+    acc.timed(|| previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale))
 }
 
 fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, acc: &Arc<SourceAcc>) -> JobProvider {
@@ -1190,7 +1200,7 @@ fn plan_job(
     acc: &Arc<SourceAcc>,
 ) -> (filmcraft_render::plan::FramePlan, bool) {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
-    if let Some(frame) = preview_frame(job, seq, pool, previews)
+    if let Some(frame) = preview_frame(job, seq, pool, previews, acc)
         && let Some(q) = job.project.sequence(seq)
     {
         // One full-frame layer: the preview scaled to the output size. Previews never contain
@@ -1217,7 +1227,7 @@ fn plan_job(
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
 fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore, acc: &Arc<SourceAcc>) -> (Rgba, bool) {
     if let Target::Sequence(seq) | Target::SequencePlan(seq, _) = job.key.target
-        && let Some(f) = preview_frame(job, seq, pool, previews)
+        && let Some(f) = preview_frame(job, seq, pool, previews, acc)
         && let Some(q) = job.project.sequence(seq)
     {
         let (w, h) = filmcraft_render::output_size(q, job.scale);
@@ -1534,5 +1544,64 @@ mod tests {
             matches!(&all.plan, FramePlan::Composite { steps, .. } if steps.iter().any(|st| matches!(st, PlanStep::Adjust { .. }))),
             "an effect stage: the adjustment layer is a step of the plan"
         );
+    }
+
+    #[test]
+    fn source_acc_unions_overlapping_parallel_intervals() {
+        use std::sync::{Arc, Barrier};
+        use std::time::{Duration, Instant};
+
+        let acc = super::SourceAcc::new(false);
+        let barrier = Arc::new(Barrier::new(2));
+        let t0 = Instant::now();
+        let sum_individual = std::thread::scope(|s| {
+            let b1 = Arc::clone(&barrier);
+            let a1 = &acc;
+            let h1 = s.spawn(move || {
+                a1.timed(|| {
+                    b1.wait();
+                    let w0 = Instant::now();
+                    std::thread::sleep(Duration::from_millis(70));
+                    w0.elapsed()
+                })
+            });
+            let b2 = Arc::clone(&barrier);
+            let a2 = &acc;
+            let h2 = s.spawn(move || {
+                a2.timed(|| {
+                    b2.wait();
+                    let w0 = Instant::now();
+                    std::thread::sleep(Duration::from_millis(70));
+                    w0.elapsed()
+                })
+            });
+            h1.join().unwrap() + h2.join().unwrap()
+        });
+        let scope_elapsed = t0.elapsed();
+        let (wall, _) = acc.totals();
+        assert!(
+            wall <= scope_elapsed + Duration::from_millis(2),
+            "parallel source wall {wall:?} must not exceed outer wall {scope_elapsed:?}"
+        );
+        assert!(
+            wall + Duration::from_millis(30) < sum_individual,
+            "parallel source wall {wall:?} must reflect union, not sum {sum_individual:?}"
+        );
+    }
+
+    #[test]
+    fn nearest_with_key_returns_actual_cached_frame_key() {
+        use super::{FrameKey, FrameServer, Rgba, Target};
+        use filmcraft_project::ItemId;
+        use std::sync::{Arc, PoisonError};
+
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media, s.services, s.previews, 1);
+        let k7 = FrameKey { target: Target::Sequence(ItemId(1)), frame: 7, size: 1000, revision: 3, draft: false };
+        let k10 = FrameKey { frame: 10, ..k7 };
+        server.shared.done.lock().unwrap_or_else(PoisonError::into_inner).insert(k7, Arc::new(Rgba { w: 1, h: 1, px: vec![0, 0, 0, 255] }));
+        let (found_k, _) = server.nearest_with_key(k10, 6).expect("cached k7 within max_back=6");
+        assert_eq!(found_k, k7);
+        assert!(server.nearest_with_key(FrameKey { frame: 14, ..k7 }, 6).is_none());
     }
 }
