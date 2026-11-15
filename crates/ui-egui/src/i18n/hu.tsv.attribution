@@ -1,0 +1,8 @@
+asset:        hu.tsv
+title:        Hungarian interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-11-15
+notes:        Original English-to-Hungarian interface translations using clean-room NLE vocabulary (AI-assisted draft; native-speaker review welcome).
