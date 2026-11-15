@@ -1101,7 +1101,7 @@ dependencies = [
 [[package]]
 name = "craft-exr"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d55335423a9719102b2c2f3dfa2f6cbf05e915d3#d55335423a9719102b2c2f3dfa2f6cbf05e915d3"
+source = "git+https://github.com/storytold/craft-libs?rev=b2edb7ed80d8c8fac639050a3ea02f6e0ecaff30#b2edb7ed80d8c8fac639050a3ea02f6e0ecaff30"
 dependencies = [
  "serde_json",
 ]
