@@ -339,6 +339,9 @@ fn compose(p: [f64; 4]) -> Affine {
     Affine { a: s * cs, b: s * sn, c: -s * sn, d: s * cs, e: p[0], f: p[1] }
 }
 
+/// Widest smoothing kernel (Gaussian sigma, in frames) Warp Stabilizer applies: 50 s at 60 fps.
+const MAX_SMOOTH_SIGMA: f64 = 3_000.0;
+
 /// Per-frame correction transforms (current frame px → stabilised px, analysis pixels).
 pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: bool, preserve_scale: bool) -> Vec<Affine> {
     let n = path.steps.len() + 1;
@@ -362,7 +365,9 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         let mean = params.iter().fold([0.0; 4], |a, p| [a[0] + p[0], a[1] + p[1], a[2] + p[2], a[3] + p[3]]).map(|v| v / n as f64);
         vec![mean; n]
     } else {
-        let sigma = smooth_frames.max(0.01);
+        // the loop below runs 6 sigma + 1 times per frame: a project-supplied radius must not size it
+        // a NaN smoothness falls back to the minimum (`clamp` would pass the NaN on)
+        let sigma = if smooth_frames.is_nan() { 0.01 } else { smooth_frames.clamp(0.01, MAX_SMOOTH_SIGMA) };
         let r = (sigma * 3.0).ceil() as isize;
         (0..n as isize)
             .map(|k| {

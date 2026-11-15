@@ -461,3 +461,33 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
     }
     prev[b.len()]
 }
+
+#[test]
+fn repeated_dictionary_lines_keep_each_pronunciation_once_and_a_bounded_number() {
+    let mut dict = String::new();
+    for _ in 0..1000 {
+        dict.push_str("X  EH1 K S\n");
+    }
+    for i in 0..200 {
+        dict.push_str(&format!("Y({})  W AY{}\n", i + 2, i % 3));
+    }
+    for i in 0..200 {
+        dict.push_str(&format!("Z  Z IY{}\n", i % 3));
+    }
+    let lex = Lexicon::parse_cmudict(dict.as_bytes()).unwrap();
+    assert_eq!(lex.pronunciations("X").unwrap().len(), 1);
+    assert_eq!(lex.pronunciations("Z").unwrap().len(), 3, "distinct stress variants stay");
+    assert!(lex.pronunciations("Y").unwrap().len() <= 3);
+}
+
+#[test]
+fn a_script_whose_respellings_expand_past_the_phoneme_budget_is_refused() {
+    let lex = test_lex();
+    let long = format!("/{}/", "ɑ".repeat(150));
+    let ov = Overrides([("zq".into(), long)].into_iter().collect());
+    // 1 MiB of "zq zq …" is 300 000 words of 150 phonemes: far past 16 MiB
+    let script = "zq ".repeat(300_000);
+    assert_eq!(phonemize(&script, Lang::EnUs, &lex, &ov), Err(NormalizeError::TooManyPhonemes));
+    // a script within the budget still phonemizes
+    assert!(phonemize(&"zq ".repeat(1000), Lang::EnUs, &lex, &ov).is_ok());
+}

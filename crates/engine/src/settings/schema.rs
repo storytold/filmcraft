@@ -61,6 +61,9 @@ pub struct Field {
     pub enabled_by: Option<&'static str>,
     /// Whether FilmCraft acts on the value (false = remembered for parity, no effect yet).
     pub wired: bool,
+    /// Drawn greyed out with "This preference is not available yet.": the preference is remembered
+    /// but there is nothing behind it yet (`playback.enableTransmit`).
+    pub unavailable: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -90,7 +93,7 @@ pub struct Category {
 }
 
 const fn f(key: &'static str, label: &'static str, kind: Kind, wired: bool) -> Row {
-    Row::Field(Field { key, label, kind, indent: false, enabled_by: None, wired })
+    Row::Field(Field { key, label, kind, indent: false, enabled_by: None, wired, unavailable: false })
 }
 
 const fn b(key: &'static str, label: &'static str, wired: bool) -> Row {
@@ -98,7 +101,13 @@ const fn b(key: &'static str, label: &'static str, wired: bool) -> Row {
 }
 
 const fn sub(key: &'static str, label: &'static str, kind: Kind, by: &'static str, wired: bool) -> Row {
-    Row::Field(Field { key, label, kind, indent: true, enabled_by: Some(by), wired })
+    Row::Field(Field { key, label, kind, indent: true, enabled_by: Some(by), wired, unavailable: false })
+}
+
+/// A switch with nothing behind it yet: drawn greyed out with the "not available yet" hint, and
+/// still remembered, so the preference round-trips without pretending to work.
+const fn pending(key: &'static str, label: &'static str) -> Row {
+    Row::Field(Field { key, label, kind: Kind::Bool, indent: false, enabled_by: None, wired: false, unavailable: true })
 }
 
 const fn int(min: f64, max: f64, unit: &'static str) -> Kind {
@@ -363,7 +372,7 @@ pub(super) static CATEGORIES: &[Category] = &[
                     f("color.hdrGraphicsWhite", "HDR Graphics White (Nits)", Kind::Choice(HDR_WHITE), false),
                 ],
             ),
-            Row::Note("For color management parameters, go to the Settings tab in the Lumetri Color panel."),
+            Row::Note("For color management parameters, go to the Settings tab in the Color Grading panel."),
         ],
     },
     Category {
@@ -521,7 +530,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             f("playback.postrollSeconds", "Postroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.stepManyFrames", "Step forward/back many", int(1.0, 1000.0, "frames"), true),
             b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
-            b("playback.enableTransmit", "Enable Mercury Transmit", false),
+            pending("playback.enableTransmit", "Enable External Video Output"),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
             f("playback.hardwareDecoding", "Hardware decoding", Kind::Choice(HW_DECODE), true),
