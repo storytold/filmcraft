@@ -55,6 +55,9 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+# DPX and Targa still readers, on the same commit as craft-media.
+craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f" }
+craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
