@@ -164,7 +164,14 @@ fn index_by_lower_case(names: impl IntoIterator<Item = std::ffi::OsString>) -> C
     index
 }
 
+/// SHA-256 (lower-case hex) and size of a whole regular file.
 pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
+    hash_file_within(path, u64::MAX)
+}
+
+/// [`hash_file`], refusing a file longer than `max` bytes once that many have been read (a file
+/// that grows while it is hashed cannot extend the work past the caller's limit).
+pub(super) fn hash_file_within(path: &Path, max: u64) -> Result<(String, u64)> {
     let mut f = std::fs::File::open(path).map_err(io)?;
     if !f.metadata().map_err(io)?.is_file() {
         return Err(bad(COMMAND, "source must be a regular file"));
@@ -174,11 +181,15 @@ pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
     let mut buf = [0u8; 65536];
     loop {
         let n = f.read(&mut buf).map_err(io)?;
-        if n == 0 {
+        let chunk = buf.get(..n).ok_or_else(|| EngineError::Other(format!("{}: read past the buffer", path.display())))?;
+        if chunk.is_empty() {
             break;
         }
-        hash.update(&buf[..n]);
-        size = size.saturating_add(n as u64);
+        size = size.saturating_add(chunk.len() as u64);
+        if size > max {
+            return Err(EngineError::Other(format!("{}: over the {max} byte inspection limit", path.display())));
+        }
+        hash.update(chunk);
     }
     Ok((format!("{:x}", hash.finalize()), size))
 }
@@ -453,9 +464,17 @@ fn destination_of(record: &PremiereImport) -> Option<String> {
     Path::new(&record.snapshot_path).parent().map(|folder| folder.to_string_lossy().into_owned())
 }
 
+/// Most bytes one `premiere.hashMedia` call reads, counting each file once.
+const MAX_HASH_BYTES: u64 = 1 << 40;
+
 /// Explicit, synchronous inspection of current files. Never backfills immutable provenance:
 /// linked media without an import-time hash cannot be certified unchanged since import.
 fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
+    hash_media_with(s, p, &hash_file_within, MAX_HASH_BYTES)
+}
+
+/// `premiere.hashMedia` with its hasher and byte limit replaceable in tests.
+pub(super) fn hash_media_with(s: &Session, p: &Value, hash: &dyn Fn(&Path, u64) -> Result<(String, u64)>, max_bytes: u64) -> Result<Value> {
     const COMMAND: &str = HASH_COMMAND;
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "media hashing requires a native filesystem host"));
@@ -465,23 +484,73 @@ fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
     if record.media.len() > 100_000 {
         return Err(bad(COMMAND, "import exceeds media inspection limit"));
     }
-    let mut media = Vec::new();
+    // Project records are untrusted too; repeat policy, extension and opener checks even when the
+    // same path was accepted by an earlier import (once per stored path in this inspection).
+    let document = Path::new(&record.snapshot_path);
+    let mut files = std::collections::HashMap::<&str, std::result::Result<PathBuf, String>>::new();
     for reference in &record.media {
-        let mut row = json!({"originalPath":reference.original_path,"path":reference.imported_path,
-            "importSha256":reference.sha256,"sha256":null,"bytes":null,"matchesImport":null});
-        // Project records are untrusted too; repeat policy, extension and opener checks even
-        // when the same path was accepted by an earlier import.
-        match probe_media(s, &reference.imported_path, Path::new(&record.snapshot_path)).and_then(|(path, _)| hash_file(&path).map_err(|e| e.to_string())) {
-            Ok((digest, size)) => {
-                row["matchesImport"] = json!(reference.sha256.as_ref().map(|expected| *expected == digest));
-                row["sha256"] = json!(digest);
-                row["bytes"] = json!(size);
-            }
-            Err(error) => row["error"] = json!(error),
+        let path = reference.imported_path.as_str();
+        if !files.contains_key(path) {
+            files.insert(path, probe_media(s, path, document).map(|(file, _)| file));
         }
-        media.push(row);
     }
+    let observed = hash_files(files.values().filter_map(|file| file.as_ref().ok()), hash, max_bytes)?;
+    let media: Vec<Value> = record
+        .media
+        .iter()
+        .map(|reference| {
+            let observation = match files.get(reference.imported_path.as_str()) {
+                Some(Ok(file)) => observed.get(file).cloned().unwrap_or_else(|| Err("not hashed".into())),
+                Some(Err(error)) => Err(error.clone()),
+                None => Err("not probed".into()),
+            };
+            observation_row(reference, observation)
+        })
+        .collect();
     Ok(json!({"import":index,"destination":destination_of(record),"sourceSha256":record.source_sha256,"observation":"current files","media":media}))
+}
+
+/// A file's current SHA-256 and size, or why it could not be read.
+type Observation = std::result::Result<(String, u64), String>;
+
+/// Hash each distinct file once (references that name one file by different paths share it).
+/// When the files' sizes total more than `max_bytes`, the inspection is refused before any file is
+/// read; a file that grows meanwhile is cut off where the remaining budget ends.
+fn hash_files<'a>(
+    files: impl Iterator<Item = &'a PathBuf>,
+    hash: &dyn Fn(&Path, u64) -> Result<(String, u64)>,
+    max_bytes: u64,
+) -> Result<BTreeMap<&'a PathBuf, Observation>> {
+    let distinct: std::collections::BTreeSet<&PathBuf> = files.collect();
+    let total = distinct.iter().map(|file| std::fs::metadata(file).map_or(0, |m| m.len())).fold(0u64, u64::saturating_add);
+    if total > max_bytes {
+        return Err(bad(HASH_COMMAND, format!("the import's media total {total} bytes, over the {max_bytes} byte inspection limit")));
+    }
+    let mut budget = max_bytes;
+    let mut observed = BTreeMap::new();
+    for file in distinct {
+        let observation = hash(file, budget).map_err(|e| e.to_string());
+        if let Ok((_, size)) = &observation {
+            budget = budget.saturating_sub(*size);
+        }
+        observed.insert(file, observation);
+    }
+    Ok(observed)
+}
+
+/// One `premiere.hashMedia` row: the provenance reference and what its file holds now.
+fn observation_row(reference: &SourceMedia, observation: Observation) -> Value {
+    let mut row = json!({"originalPath":reference.original_path,"path":reference.imported_path,
+        "importSha256":reference.sha256,"sha256":null,"bytes":null,"matchesImport":null});
+    match observation {
+        Ok((digest, size)) => {
+            row["matchesImport"] = json!(reference.sha256.as_ref().map(|expected| *expected == digest));
+            row["sha256"] = json!(digest);
+            row["bytes"] = json!(size);
+        }
+        Err(error) => row["error"] = json!(error),
+    }
+    row
 }
 
 pub fn commands() -> Vec<CommandSpec> {
