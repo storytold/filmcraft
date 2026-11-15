@@ -214,7 +214,8 @@ Each codec README has the full fixture matrix and the measured results.
   writes one contact-sheet PNG per folder for eyeballing (never commit them).
 - **Blessing:** `FILMCRAFT_BLESS=1 cargo test -p filmcraft-golden` rewrites the references (and
   writes a `.attribution` sidecar for any new one; it prints the `ATTRIBUTION.md` row to add).
-  References are original work rendered by FilmCraft, must stay under 50 KB (enforced on bless),
+  References are original work rendered by FilmCraft, must stay under 50 KB (enforced on bless: an
+  oversized image is rejected before anything is written, so an existing reference stays as it was),
   and every one needs its sidecar and index row (`cargo xtask assets`). Look at a re-blessed PNG
   before committing it.
 - The same scenes run through `plan_frame` + `GpuCompositor` when a GPU adapter exists
