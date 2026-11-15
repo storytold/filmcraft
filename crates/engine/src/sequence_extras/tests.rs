@@ -125,6 +125,30 @@ fn apply_video_transition_goes_to_the_selection_not_the_playhead() {
 }
 
 #[test]
+fn apply_video_transition_to_many_clips_undoes_in_one_step_with_a_full_history() {
+    // #4825: once the undo history was at its limit, each transition pushed out the oldest step,
+    // so the steps were never collapsed: ⌘Z removed one transition at a time and the state from
+    // before ⌘D was lost
+    let mut s = demo();
+    while s.history.undo.len() < s.history.limit {
+        s.edit("Filler", |_, _| Ok(())).unwrap();
+    }
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert!(clips.len() > 2, "the demo has several clips");
+    let before = s.project.clone();
+    let before_v = before.sequence(s.state.active_sequence.unwrap()).unwrap().video_tracks[0].transitions.len();
+    s.execute("timeline.select", json!({"clips": clips})).unwrap();
+    let r = s.execute("sequence.applyVideoTransition", json!({})).unwrap();
+    assert!(r["transitions"].as_array().map_or(0, Vec::len) > 1, "{r}");
+    assert_eq!(s.history.undo.len(), s.history.limit, "the history stays within its limit");
+    assert_eq!(s.history.undo.last().unwrap().0, "Apply Video Transition");
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), before_v, "one undo removes every transition");
+    assert!(Arc::ptr_eq(&s.project, &before), "undo restores the project from before ⌘D");
+}
+
+#[test]
 fn normalize_mix_track_hits_the_target_peak() {
     let mut s = demo();
     let before = crate::sequence_extras::mix_peak_db(&s).unwrap();

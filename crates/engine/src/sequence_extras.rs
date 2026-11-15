@@ -186,20 +186,24 @@ fn clip_edges(q: &Sequence, clips: &[ClipId]) -> Vec<(TrackKind, ClipId, &'stati
 
 /// Apply a transition at each (track kind, clip, edge) with `settings`, as one undo step `label`.
 fn apply_at_edges(s: &mut Session, edges: Vec<(TrackKind, ClipId, &'static str)>, settings: &Value, label: &str) -> Result<Value> {
-    let n0 = s.history.undo.len();
-    let mut ids = Vec::new();
-    let mut errors = Vec::new();
-    for (kind, clip, edge) in edges {
-        let cmd = if kind == TrackKind::Video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
-        let mut args = settings.as_object().cloned().unwrap_or_default();
-        args.insert("clip".into(), json!(clip.0));
-        args.insert("edge".into(), json!(edge));
-        match s.execute(cmd, Value::Object(args)) {
-            Ok(r) => ids.push(r["transition"].clone()),
-            Err(e) => errors.push(e.to_string()),
+    // `edit_group`, not `collapse_history`: with the undo history at its limit each edge's step
+    // pushed out the oldest one, the steps were never collapsed and undo removed one transition at
+    // a time (#4825). A failed edge is reported, not rolled back, so the closure never fails.
+    let (ids, errors) = s.edit_group(label, |s| {
+        let mut ids = Vec::new();
+        let mut errors = Vec::new();
+        for (kind, clip, edge) in edges {
+            let cmd = if kind == TrackKind::Video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
+            let mut args = settings.as_object().cloned().unwrap_or_default();
+            args.insert("clip".into(), json!(clip.0));
+            args.insert("edge".into(), json!(edge));
+            match s.execute(cmd, Value::Object(args)) {
+                Ok(r) => ids.push(r["transition"].clone()),
+                Err(e) => errors.push(e.to_string()),
+            }
         }
-    }
-    crate::clip_ops::collapse_history(s, n0, label);
+        Ok((ids, errors))
+    })?;
     if ids.is_empty() {
         return Err(EngineError::Other(errors.into_iter().next().unwrap_or_else(|| "no transition could be applied to the selection".into())));
     }
