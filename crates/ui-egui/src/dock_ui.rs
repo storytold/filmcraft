@@ -516,9 +516,11 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// A native floating window drew its last body: its end-of-pass IME check, for the Program
+    /// A native floating window drew its last body: the drag ghost (a drag begun here ends with
+    /// this window's release), the panel menu, and its end-of-pass IME check, for the Program
     /// monitor's text editor when it is there.
     fn window_drawn(&mut self, ui: &mut egui::Ui) {
+        panels::drag_ghost(self.app, ui);
         panels::panel_menu_area(self.app, ui);
         self.app.finish_ime_window(ui.ctx());
     }

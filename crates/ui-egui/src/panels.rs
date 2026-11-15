@@ -190,8 +190,14 @@ fn payload_id() -> egui::Id {
     egui::Id::unique("filmcraft-drag-payload")
 }
 
+/// Start a drag of `payload` in the window `ui` draws in, which owns it until it ends.
+fn start_drag(ui: &egui::Ui, payload: DragPayload) {
+    let owner = ui.ctx().viewport_id();
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(payload, owner))));
+}
+
 pub fn start_drag_source(ui: &egui::Ui, source: source_drag::SourceDrag) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Source(source)))));
+    start_drag(ui, DragPayload::Source(source));
 }
 pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
     match payload(ui) {
@@ -200,10 +206,10 @@ pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
     }
 }
 pub fn start_drag_item(ui: &egui::Ui, item: ItemId) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Item(item)))));
+    start_drag(ui, DragPayload::Item(item));
 }
 pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
+    start_drag(ui, DragPayload::Bin(bin));
 }
 pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
     match payload(ui) {
@@ -212,7 +218,7 @@ pub fn dragged_bin(ui: &egui::Ui) -> Option<u64> {
     }
 }
 pub fn start_drag_template(ui: &egui::Ui, id: &str, name: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Template(id.to_string(), name.to_string())))));
+    start_drag(ui, DragPayload::Template(id.to_string(), name.to_string()));
 }
 pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
     match payload(ui) {
@@ -221,7 +227,7 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
     }
 }
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
+    start_drag(ui, DragPayload::Effect(id.to_string()));
 }
 /// Prefix of a dragged effect payload that names a Color Grading preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
@@ -231,7 +237,8 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
     start_drag_effect(ui, &format!("{LUMETRI_PRESET_PREFIX}{name}"));
 }
 #[derive(Clone, Debug)]
-struct DragPayloadBox(DragPayload);
+/// The payload, and the window whose drag carries it.
+struct DragPayloadBox(DragPayload, egui::ViewportId);
 
 /// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
 pub(crate) fn dragging(ctx: &egui::Context) -> bool {
@@ -295,8 +302,8 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     if !ui.ctx().input(|i| i.pointer.any_down()) {
         ui.ctx().data_mut(|d| d.remove::<bool>(cancelled_id()));
     }
-    let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
+    let Some(DragPayloadBox(pl, owner)) = ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten() else { return };
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         cancel_drag(ui);
         return;
@@ -328,6 +335,17 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
         let r = Rect::from_min_size(p + egui::vec2(12.0, 8.0), egui::vec2(label.len() as f32 * 7.0 + 16.0, 20.0));
         painter.rect_filled(r, 4.0, Color32::from_black_alpha(200));
         painter.text(r.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.5), Color32::WHITE);
+    }
+    // Only the window the drag began in holds the button down, so only its input ends the drag:
+    // to every other window the button is up, and a drag from a panel in its own OS window
+    // would end before it reached the main window's Timeline (#4784).
+    let viewport = ctx.viewport_id();
+    if viewport != owner {
+        // a drag whose window has closed has no release left to come
+        if viewport == egui::ViewportId::ROOT && !app.auto.windows.contains_key(&owner) {
+            clear_drag(ui);
+        }
+        return;
     }
     if ctx.input(|i| i.pointer.any_released()) {
         // cleared next frame so drop targets see the release this frame
