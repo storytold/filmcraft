@@ -56,8 +56,8 @@ rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
 # Shared lossless JPEG decoding for DNG.
-craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7ecd46b6f632d82b3a8740d6bc57429a7356392c" }
-craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7ecd46b6f632d82b3a8740d6bc57429a7356392c", default-features = false }
+craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "2a6d7f719e729d021cdcf04e55626bb2ae282e08" }
+craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "2a6d7f719e729d021cdcf04e55626bb2ae282e08", default-features = false }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
