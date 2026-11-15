@@ -1121,7 +1121,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ef9b72796c1a84dc2ce68fb36155aa686508746a#ef9b72796c1a84dc2ce68fb36155aa686508746a"
+source = "git+https://github.com/storytold/craft-libs?rev=e9c818bcfe03fefaaf08520baf0f8c607840e247#e9c818bcfe03fefaaf08520baf0f8c607840e247"
 dependencies = [
  "thiserror 2.0.21",
 ]

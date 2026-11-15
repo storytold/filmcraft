@@ -21,7 +21,7 @@ filmcraft-matroska = { workspace = true }
 craft-media = { workspace = true, features = ["avi", "mpegts", "mxf", "ogg"] }
 filmcraft-bitstream = { workspace = true }
 filmcraft-dnx = { workspace = true }
-craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "ef9b72796c1a84dc2ce68fb36155aa686508746a" }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "e9c818bcfe03fefaaf08520baf0f8c607840e247" }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

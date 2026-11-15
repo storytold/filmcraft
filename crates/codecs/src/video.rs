@@ -199,27 +199,8 @@ impl VideoDecoder for MjpegDecoder {
         let craft_jpeg::Samples::U8(samples) = decoded.samples else {
             return Err(CodecError::Decode("12-bit Motion JPEG is not supported by FilmCraft frames".into()));
         };
-        let mut rgba = Vec::with_capacity(samples.len().saturating_mul(4));
-        match decoded.components {
-            1 => {
-                for &gray in &samples {
-                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
-                }
-            }
-            3 => {
-                for rgb in samples.as_chunks::<3>().0 {
-                    rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
-                }
-            }
-            4 => {
-                for cmyk in samples.as_chunks::<4>().0 {
-                    let (c, m, y, k) = (u16::from(cmyk[0]), u16::from(cmyk[1]), u16::from(cmyk[2]), u16::from(cmyk[3]));
-                    let rgb = [((255 - c) * (255 - k) / 255) as u8, ((255 - m) * (255 - k) / 255) as u8, ((255 - y) * (255 - k) / 255) as u8];
-                    rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
-                }
-            }
-            n => return Err(CodecError::Decode(format!("unsupported JPEG component count {n}"))),
-        }
+        let rgba = craft_jpeg::to_rgba8(&samples, decoded.components)
+            .map_err(|craft_jpeg::UnsupportedComponents(n)| CodecError::Decode(format!("unsupported JPEG component count {n}")))?;
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(decoded.width, decoded.height, rgba), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
