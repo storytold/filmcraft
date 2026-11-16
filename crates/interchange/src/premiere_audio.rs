@@ -85,8 +85,9 @@ fn is_true(v: &str) -> bool {
 
 /// Whether an audio track is muted on its mixer fader: `AudioTrack/ComponentOwner` points to the
 /// track's component chain, whose `AudioFader` holds Volume (`Param@Index` 0) and Mute (1). Read
-/// by index because the parameter `Name` is localised. Mute automation is not imported: the
-/// value at the start of the sequence is used and a warning says so.
+/// by index because the parameter `Name` is localised. Mute automation is not imported: the value
+/// at the start of the sequence (`StartKeyframe`, else `CurrentValue`) is used and a warning says
+/// so. Without automation the mute is `CurrentValue`, else `StartKeyframe`.
 pub(super) fn fader_muted<'a, 'i>(
     track: Node<'a, 'i>,
     ids: &BTreeMap<&str, Node<'a, 'i>>,
@@ -110,8 +111,11 @@ pub(super) fn fader_muted<'a, 'i>(
     let Some(mute) = referred(pointer, ids, "ObjectRef") else { return Ok(false) };
     spend(work, mute)?;
     let start = value(mute, "StartKeyframe").and_then(|k| k.split(',').nth(1)).map(str::trim);
-    let muted = value(mute, "CurrentValue").or(start).is_some_and(is_true);
-    if value(mute, "Keyframes").is_some_and(|k| !k.trim().is_empty()) {
+    let current = value(mute, "CurrentValue");
+    let automated = value(mute, "Keyframes").is_some_and(|k| !k.trim().is_empty());
+    // With automation, `CurrentValue` can be a later value than the one the sequence starts with.
+    let muted = if automated { start.or(current) } else { current.or(start) }.is_some_and(is_true);
+    if automated {
         warning(report, format!("{context}: track mute automation retained in provenance, not imported; the starting value is used"));
     }
     Ok(muted)
