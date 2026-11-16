@@ -2356,7 +2356,9 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.20.1"
 dependencies = [
+ "craft-audio",
  "craft-dpx",
+ "craft-media",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
