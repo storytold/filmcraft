@@ -336,6 +336,14 @@ pub fn stabilizer_clips(project: &Project, first: Option<filmcraft_project::Item
     out
 }
 
+/// Whether the analysis of `c` is settled already (kept in memory or on disk, or no frame of the
+/// clip could be read), without running one. Reads at most the source's analysis file.
+pub fn stabilizer_ready(project: &Project, c: &StabilizerClip) -> bool {
+    let Some(seq) = project.sequence(c.sequence) else { return false };
+    let Some((_, item)) = seq.find_item(c.clip) else { return false };
+    item.effects.get(c.effect).is_some_and(|e| temporal::ready(project, seq, item, e))
+}
+
 /// How [`analyse_stabilizer`] ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnalysisRun {
