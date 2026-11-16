@@ -12,7 +12,7 @@ repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
 # Shared bounded classic TIFF directory traversal.
-craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "61a9330f4e71cd20c38d505abc33b9fd42c1da44" }
+craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "eafb50aff3c6b1acc14dff53060157877e3e4fce" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
@@ -56,23 +56,32 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
+# Shared OpenEXR ZIP chunk compressor.
+craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
 # DPX still reader, on the same commit as craft-media.
-craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f" }
+craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
 # Shared YUV4MPEG2 parser and frame index.
+craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0c15f7c74913880da6bae5927b95f798c2ecf3c3", features = ["async-lines"] }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6bd1c3dc357f012ddb31c6799ad2e36a1596003d" }
+craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f01f6aca3afdf664b6c3e651e8e58caddc701c62", default-features = false }
+craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "99d0a6eca48082183a9d125cb4ef1a1707576070" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
-craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "61a9330f4e71cd20c38d505abc33b9fd42c1da44", default-features = false }
+craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "eafb50aff3c6b1acc14dff53060157877e3e4fce", default-features = false }
+craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
+# Shared OMF Bento container; its object model stays in FilmCraft.
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "654e8d55e16b349fba04f5a48e8da221680ee7e3" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
-craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false }
-craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
+craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab", default-features = false }
+craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
-craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "156b491b91f3693f4fce53bf69bb97791f51198f", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
+craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
-craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9", features = ["serde"] }
-craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47ce856487bf1c2d64ef2936822f4e9e09997c80", features = ["serde"] }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47ce856487bf1c2d64ef2936822f4e9e09997c80" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.

@@ -4,6 +4,11 @@ use crate::tiff::{Ifd, Tiff};
 use crate::{Error, Result};
 pub use craft_raw::dng_lines::{MAX_SAMPLES, PHOTOMETRIC_CFA, PHOTOMETRIC_LINEAR_RAW, RawImage, RawLayout};
 
+/// Unpack `w` × `h` × `spp` uncompressed samples of `bits` bits, as the shared decoder does.
+pub fn unpack(bytes: &[u8], w: usize, h: usize, spp: usize, bits: u32, big_endian: bool) -> Result<Vec<u16>> {
+    craft_raw::dng_lines::unpack(bytes, w, h, spp, bits, big_endian).map_err(error)
+}
+
 pub(crate) fn error(e: craft_raw::dng_lines::Error) -> Error {
     match e {
         craft_raw::dng_lines::Error::NotTiff => Error::NotDng,
@@ -25,4 +30,15 @@ pub fn layout(t: &Tiff, ifd: &Ifd) -> Result<RawLayout> {
 /// Decode the raw samples of an IFD.
 pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     craft_raw::dng_lines::read(&t.inner(), ifd).map_err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpack_keeps_its_public_signature_and_errors() {
+        assert_eq!(unpack(&[0x12, 0x34], 2, 1, 1, 8, true).unwrap(), [0x12, 0x34]);
+        assert!(matches!(unpack(&[0x12], 1, 1, 1, 0, false), Err(Error::Malformed(_))));
+    }
 }
