@@ -107,6 +107,26 @@ fn sizes_that_are_not_a_whole_number_of_data_units_are_padded() {
 }
 
 #[test]
+fn partial_data_units_keep_their_own_chroma() {
+    // Four distinct chroma units: the last column and row each have a missing partner pixel.
+    let data = [
+        [128, 128, 128, 128, 128, 128], // grey
+        [76, 76, 76, 76, 85, 255],      // red
+        [150, 150, 150, 150, 44, 21],   // green
+        [29, 29, 29, 29, 255, 107],     // blue
+    ]
+    .concat();
+    let r = decode_raster("partial.tiff", &ycbcr_tiff(3, 3, (2, 2), 1, &data, &[])).unwrap();
+    let colors = [[128, 128, 128, 255], [254, 0, 0, 255], [0, 255, 1, 255], [0, 0, 254, 255]];
+    for y in 0..3 {
+        for x in 0..3 {
+            let expected = colors[((y / 2) * 2 + x / 2) as usize];
+            assert!(near(px(&r, x, y), expected), "({x}, {y}): {:?}, expected {expected:?}", px(&r, x, y));
+        }
+    }
+}
+
+#[test]
 fn damaged_ycbcr_tiffs_fail_without_panicking() {
     let data: Vec<u8> = (0..4 * 4 / 4 * 6).map(|i| (i * 37 % 256) as u8).collect();
     let good = ycbcr_tiff(4, 4, (2, 2), 1, &data, &[]);
@@ -129,24 +149,36 @@ fn damaged_ycbcr_tiffs_fail_without_panicking() {
 
 /// ffmpeg (an external oracle) writes YCbCr TIFFs from YUV frames; our decode must match ffmpeg's
 /// own RGB decode of the same file. A smooth gradient, so the chroma upsampling (we repeat chroma
-/// across a data unit) does not dominate; 95 × 63 so the data units do not line up.
+/// across a data unit, while ffmpeg interpolates) does not dominate; 95 × 63 so the data units
+/// do not line up. Generate an even-sized gradient, convert to YUV, then crop: ffmpeg 7 mixes
+/// neutral padding into the last chroma sample when converting odd-sized RGB. That discontinuity
+/// makes the two reconstruction methods disagree; this recipe keeps the edge smooth as well.
 #[test]
 fn ffmpeg_ycbcr_tiffs_match_ffmpeg_decode() {
     let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("YCbCr TIFF oracle") else { return };
     let dir = filmcraft_testkit::fixtures::fixtures_dir("media/tiff_ycbcr");
-    for pix_fmt in ["yuv420p", "yuv422p", "yuv444p"] {
-        let tiff = dir.join(format!("gradient_fixed_{pix_fmt}.tiff"));
+    for (pix_fmt, subsampling) in [("yuv420p", [2, 2]), ("yuv422p", [2, 1]), ("yuv444p", [1, 1])] {
+        let tiff = dir.join(format!("gradient_even_chroma_{pix_fmt}.tiff"));
         let made = filmcraft_testkit::fixtures::generate(&tiff, |tmp| {
             std::process::Command::new(&ff)
                 // Default gradient colors stay random even with a fixed seed.
-                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "gradients=size=95x63:seed=7:c0=0x204060:c1=0xd0a080", "-frames:v", "1", "-pix_fmt", pix_fmt])
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "gradients=size=96x64:seed=7:c0=0x204060:c1=0xd0a080"])
+                .args(["-vf", &format!("format={pix_fmt},crop=95:63:0:0:exact=1"), "-frames:v", "1", "-pix_fmt", pix_fmt])
                 .arg(tmp)
                 .status()
                 .is_ok_and(|s| s.success())
         });
-        let Some(tiff) = made else { continue };
+        let tiff = made.unwrap_or_else(|| panic!("{} failed to generate {pix_fmt} TIFF fixture {}", ff.display(), tiff.display()));
         let out = std::process::Command::new(&ff).args(["-v", "error", "-i"]).arg(&tiff).args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap();
-        let ours = decode_raster("gradient.tiff", &std::fs::read(&tiff).unwrap()).unwrap();
+        let bytes = std::fs::read(&tiff).unwrap();
+        // An encoder fallback must not silently route this test through the RGB TIFF decoder.
+        let (header, first) = filmcraft_dng::tiff::Tiff::new(&bytes).unwrap();
+        let (ifd, _) = header.read_ifd(first, 0).unwrap();
+        let values = |tag| header.uints(ifd.get(tag).unwrap()).unwrap();
+        assert_eq!(values(262), [6], "{pix_fmt}: expected YCbCr photometric interpretation");
+        assert_eq!(values(530), subsampling, "{pix_fmt}: unexpected chroma subsampling");
+        assert!(matches!(values(259).as_slice(), [1 | 32773]), "{pix_fmt}: expected uncompressed or PackBits TIFF");
+        let ours = decode_raster("gradient.tiff", &bytes).unwrap();
         assert_eq!((ours.width, ours.height), (95, 63), "{pix_fmt}");
         let theirs = out.stdout;
         assert_eq!(theirs.len(), 95 * 63 * 3, "{pix_fmt}");

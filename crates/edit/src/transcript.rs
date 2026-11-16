@@ -62,7 +62,7 @@ fn ticks(t: f64) -> Tick {
 pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord> {
     let mut out: Vec<SeqWord> = Vec::new();
     // timeline ranges already served by a higher track's transcribed clips
-    let mut claimed: Vec<TimeRange> = Vec::new();
+    let mut claimed = Coverage::default();
     for (ti, track) in seq.audio_tracks.iter().enumerate() {
         let mut mine = Vec::new();
         for it in &track.items {
@@ -78,7 +78,7 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
                 let w = &tr.words[wi];
                 let (a, b) = (to_tl(w.start), to_tl(w.end.max(w.start)));
                 let mid = Tick(a.0 + (b.0 - a.0) / 2);
-                if mid < it.start || mid >= it.end() || claimed.iter().any(|r| r.contains(mid)) {
+                if mid < it.start || mid >= it.end() || claimed.contains(mid) {
                     continue;
                 }
                 out.push(SeqWord {
@@ -94,10 +94,35 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
                 });
             }
         }
-        claimed.extend(mine);
+        claimed.add(mine);
     }
     out.sort_by_key(|w| (w.start, w.track));
     out
+}
+
+/// Sorted, disjoint, non-empty `[start, end)` ranges: a point lookup is a binary search, so a
+/// project with many clips and words is not checked range by range for every word.
+#[derive(Debug, Default)]
+struct Coverage(Vec<(Tick, Tick)>);
+
+impl Coverage {
+    /// Merge `ranges` in (empty and negative ones cover nothing).
+    fn add(&mut self, ranges: Vec<TimeRange>) {
+        let mut all: Vec<(Tick, Tick)> = std::mem::take(&mut self.0);
+        all.extend(ranges.into_iter().filter(|r| r.end() > r.start).map(|r| (r.start, r.end())));
+        all.sort_unstable();
+        for (a, b) in all {
+            match self.0.last_mut() {
+                Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                _ => self.0.push((a, b)),
+            }
+        }
+    }
+
+    fn contains(&self, t: Tick) -> bool {
+        let i = self.0.partition_point(|r| r.0 <= t);
+        i.checked_sub(1).and_then(|i| self.0.get(i)).is_some_and(|r| t < r.1)
+    }
 }
 
 /// Index of the word being spoken at `t` (the last word starting at or before `t` whose end is
@@ -131,14 +156,35 @@ pub fn search(words: &[SeqWord], query: &str) -> Vec<std::ops::Range<usize>> {
         return Vec::new();
     }
     let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
-    let mut out = Vec::new();
-    for i in 0..norm.len().saturating_sub(q.len() - 1) {
-        let ok = q.iter().enumerate().all(|(k, qw)| if k + 1 == q.len() { norm[i + k].starts_with(qw.as_str()) } else { norm[i + k] == *qw });
-        if ok {
-            out.push(i..i + q.len());
+    let m = q.len();
+    // The leading query words must match whole words; the last may be a prefix. Find every
+    // occurrence of the leading words in one pass (KMP: a mismatch never restarts the query).
+    let (lead, last) = (&q[..m - 1], &q[m - 1]);
+    let mut fail = vec![0usize; lead.len()];
+    for i in 1..lead.len() {
+        let mut k = fail[i - 1];
+        while k > 0 && lead[i] != lead[k] {
+            k = fail[k - 1];
+        }
+        fail[i] = k + usize::from(lead[i] == lead[k]);
+    }
+    let mut starts = Vec::new();
+    if lead.is_empty() {
+        starts.extend(0..norm.len());
+    } else {
+        let mut k = 0;
+        for (j, w) in norm.iter().enumerate() {
+            while k > 0 && *w != lead[k] {
+                k = fail[k - 1];
+            }
+            k += usize::from(*w == lead[k]);
+            if k == lead.len() {
+                starts.push(j + 1 - k);
+                k = fail[k - 1];
+            }
         }
     }
-    out
+    starts.into_iter().filter(|&i| norm.get(i + m - 1).is_some_and(|w| w.starts_with(last.as_str()))).map(|i| i..i + m).collect()
 }
 
 /// Timeline range of words `a..=b`, snapped outward to frames.

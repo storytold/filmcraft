@@ -35,6 +35,15 @@ Point text's origin is its alignment point on the first baseline (the click poin
 tool); paragraph text's origin is the top-left corner of its box; a shape's origin is its centre.
 Colours are `#rrggbb` (sRGB).
 
+Selecting characters with the Type tool makes Fill colour and both Stroke rows apply only to
+those characters. Stroke enablement, colour, width and Outer/Center/Inner placement can each
+be overridden independently. Controls show the first selected character's override, inheriting
+the corresponding layer value where none is set. `graphics.setCharStyle` accepts `stroke`,
+`strokeColor`, `strokeWidth` (0..1000 px), `strokeType` (outer/center/inner or 0/1/2) and the same
+properties prefixed `stroke2`; snake_case names are also accepted. Colours are hex strings or
+`[r,g,b,a]`. Overrides persist in projects and follow text edits; `clear:true` removes them with
+the other character styles. Without a character selection, the controls edit layer values.
+
 ### Point text and paragraph text
 
 A text layer is one of two types, as in Premiere Pro (behaviour observed in Premiere Pro 26):

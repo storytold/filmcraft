@@ -384,6 +384,19 @@ fn omf_separate_files_and_breakout() {
     }
 }
 
+/// OMF holds audio only: the report says the video tracks were left out, when there is video.
+#[test]
+fn omf_report_says_when_video_is_left_out() {
+    let (mut p, s) = sample(FrameRate::FPS_25, false);
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(rep.mentions("video tracks are not written to OMF"), "{rep}");
+    for t in &mut p.sequence_mut(s).unwrap().video_tracks {
+        t.items.clear();
+    }
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(!rep.mentions("video"), "an audio-only sequence: {rep}");
+}
+
 #[test]
 fn empty_and_damaged_documents() {
     let mut p = Project::new("e");
@@ -681,4 +694,38 @@ fn omf_carries_the_rendered_sound_of_a_nested_sequence() {
     assert!(rep.mentions("\"Inner\" was not rendered"), "{rep}");
     let (imp, _, _) = omf::import(&bytes, &ImportOptions::default()).unwrap();
     assert_eq!(imp.project.sequence(only_seq(&imp)).unwrap().audio_tracks[0].items.len(), 1);
+}
+
+/// Media with an absurd channel count and sample rate (a hand-edited or hostile project file)
+/// overflowed the PCM descriptor's block align and average-bytes fields.
+#[test]
+fn absurd_audio_stream_values_export_without_overflow() {
+    let rate = FrameRate::FPS_25;
+    let mut p = Project::new("p");
+    let a = media(&mut p, "/media/A.wav", false, true, rate);
+    if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
+        m.info.audio_streams[0].channels = u32::MAX;
+        m.info.audio_streams[0].sample_rate = u32::MAX;
+    }
+    let s = sequence(&mut p, "S", rate, false);
+    clip(&mut p, s, TrackKind::Audio, 0, a, 0..25, 0);
+    assert!(aaf::export(&p, s, &AafOptions::default()).is_ok());
+}
+
+/// The OMF writer had the same overflow, and cut the channel count to u16 with `as` (65 536
+/// channels became 0).
+#[test]
+fn absurd_audio_stream_values_export_to_omf_without_overflow() {
+    let rate = FrameRate::FPS_25;
+    for channels in [u32::MAX, 65_536, 65_535] {
+        let mut p = Project::new("p");
+        let a = media(&mut p, "/media/A.wav", false, true, rate);
+        if let Some(m) = p.item_mut(a).and_then(|i| i.as_media_mut()) {
+            m.info.audio_streams[0].channels = channels;
+            m.info.audio_streams[0].sample_rate = u32::MAX;
+        }
+        let s = sequence(&mut p, "S", rate, false);
+        clip(&mut p, s, TrackKind::Audio, 0, a, 0..25, 0);
+        assert!(omf::export(&p, s, &OmfOptions::default()).is_ok(), "{channels} channels");
+    }
 }

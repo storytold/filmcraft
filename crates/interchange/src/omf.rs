@@ -49,6 +49,9 @@ pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<
     if !doc.compositions[0].markers.is_empty() {
         report.info("sequence markers are not written to OMF");
     }
+    if project.sequence(sequence).is_some_and(|q| q.video_tracks.iter().any(|t| !t.items.is_empty())) {
+        report.info("video tracks are not written to OMF (audio only)");
+    }
     let bytes = write::write(&doc, &mut report)?;
     Ok((bytes, report))
 }

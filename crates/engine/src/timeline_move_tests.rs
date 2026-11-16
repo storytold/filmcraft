@@ -527,7 +527,7 @@ fn hostile_times_are_refused_or_clamped_never_a_panic() {
     // the sound asked far to the left and the picture far to the right in one call: out of range together
     let moves = json!([{"clip": v.id.0, "track": v_track.0, "time": Tick::MAX.0}, {"clip": a.id.0, "track": a_track.0, "time": i64::MIN}]);
     assert!(matches!(s.execute("timeline.move", json!({"moves": moves})), Err(EngineError::BadParams { .. })));
-    // junk entries are skipped as before; a call with nothing usable is a parameter error
+    // junk entries and a call with nothing usable are parameter errors
     for moves in
         [json!([]), json!([{"clip": v.id.0, "track": v_track.0, "time": "soon"}]), json!([{"clip": v.id.0, "track": v_track.0, "time": 1e300}]), json!("all")]
     {
@@ -535,6 +535,35 @@ fn hostile_times_are_refused_or_clamped_never_a_panic() {
     }
     assert!(s.execute("timeline.move", json!({"moves": [{"clip": 987_654_321u64, "track": v_track.0, "time": 0}]})).is_err(), "a clip that does not exist");
     assert_eq!(*s.project, *before);
+}
+
+/// `time` takes ticks or a time object, as `timeline.place` does for `sourceIn`. An entry without a
+/// `clip`, `track` or `time` it can read is refused by its index and nothing moves. Such an entry
+/// used to be skipped: alone it failed with "need `moves`", next to other entries only those moved.
+#[test]
+fn a_move_time_can_be_a_time_object_and_an_unusable_entry_is_named() {
+    let mut s = demo();
+    let (v_track, v, a_track, a) = pair_in_an_empty_sequence(&mut s, 60.0);
+    let rate = s.sequence_rate();
+    for (time, at) in
+        [(json!({"seconds": 2}), Tick::from_seconds_f64(2.0)), (json!({"frame": 48}), rate.tick_of(48)), (json!(rate.tick_of(30).0), rate.tick_of(30))]
+    {
+        s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": v_track.0, "time": time}], "linked": false})).unwrap();
+        assert_eq!(state(&s, v.id), (v_track, at), "{time}");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    let before = s.project.clone();
+    let good = json!({"clip": v.id.0, "track": v_track.0, "time": 0});
+    for (moves, names) in [
+        (json!([{"clip": v.id.0, "track": v_track.0, "seconds": 2}]), "`moves[0]` needs `time`"),
+        (json!([good.clone(), {"clip": a.id.0, "track": a_track.0, "frame": 48}]), "`moves[1]` needs `time`"),
+        (json!([good.clone(), {"clip": a.id.0, "time": 0}]), "`moves[1]` needs `track`"),
+        (json!([{"track": v_track.0, "time": 0}]), "`moves[0]` needs `clip`"),
+    ] {
+        let e = s.execute("timeline.move", json!({"moves": moves, "linked": false})).unwrap_err();
+        assert!(matches!(&e, EngineError::BadParams { msg, .. } if msg.contains(names)), "{moves}: {e:?}");
+        assert_eq!(*s.project, *before, "{moves}: nothing moved");
+    }
 }
 
 /// Moving one narration line onto a spot another line still held shortened that line and said

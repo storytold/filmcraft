@@ -132,6 +132,23 @@ impl HdrMetadata {
     }
 }
 
+/// Which values of a stream's [`ColorInfo`] FilmCraft assumed, because none of the tags it reads
+/// them from (a container colour box, the colour description of the codec configuration) gives
+/// one it knows: the matrix is then the default for the frame size, and the transfer and
+/// primaries are BT.709. Range is not listed: the bitstreams define a range they don't signal as
+/// limited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ColorAssumed {
+    pub matrix: bool,
+    pub transfer: bool,
+    pub primaries: bool,
+}
+
+impl ColorAssumed {
+    /// Nothing read from the file.
+    pub const ALL: ColorAssumed = ColorAssumed { matrix: true, transfer: true, primaries: true };
+}
+
 impl ColorInfo {
     pub const SRGB_FULL: ColorInfo = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Srgb, primaries: Primaries::Bt709, range: Range::Full };
     pub const REC709: ColorInfo = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };

@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "accesskit"
-version = "0.25.1"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad442f58ee04714aaa0ba0a2768c1ea1935b29507bb22ddece8cbbc76db02932"
+checksum = "4e883d1d28c5fd5568c79ed2d2bd48d9f2fd3945c8974ed0f53690ceddb051be"
 dependencies = [
  "uuid",
 ]
@@ -27,9 +27,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.39.1"
+version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a45e2bb300bea6d5f33a82c3e051c3ddc6f41c209750f68a0acbe991a284344"
+checksum = "f3da8f27636015191b2264ee1df681503170a632cafd832fdc1edfdd4e3a2fd3"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -51,9 +51,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_macos"
-version = "0.27.1"
+version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5701624bf6a11efb6d4c8e922bf44126ed96250e5faa9a7a0468c979635839a4"
+checksum = "123828ceeec755b05255e3976cb0852993202de98a0626c97dd8d34246991f84"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -165,6 +165,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aligned"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee4508988c62edf04abd8d92897fca0c2995d907ce1dfeaf369dac3716a40685"
+dependencies = [
+ "as-slice",
+]
+
+[[package]]
+name = "aligned-vec"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc890384c8602f339876ded803c97ad529f3842aba97f6392b3dba0dd171769b"
+dependencies = [
+ "equator",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -227,6 +245,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -248,6 +278,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arg_enum_proc_macro"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ae92a5119aa49cdbcf6b9f893fe4e1d98b04ccbf82ee0584ad948a44a734dea"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -258,6 +299,15 @@ name = "as-raw-xcb-connection"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
+
+[[package]]
+name = "as-slice"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "516b6b4f0e40d50dcda9365d53964ec74560ad4284da2e7fc97122cd83174516"
+dependencies = [
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "ash"
@@ -472,6 +522,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "av-scenechange"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f321d77c20e19b92c39e7471cf986812cbb46659d2af674adc4331ef3f18394"
+dependencies = [
+ "aligned",
+ "anyhow",
+ "arg_enum_proc_macro",
+ "arrayvec",
+ "log",
+ "num-rational",
+ "num-traits",
+ "pastey 0.1.1",
+ "rayon",
+ "thiserror 2.0.21",
+ "v_frame",
+ "y4m",
+]
+
+[[package]]
+name = "av1-grain"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cfddb07216410377231960af4fcab838eaa12e013417781b78bd95ee22077f8"
+dependencies = [
+ "anyhow",
+ "arrayvec",
+ "log",
+ "nom",
+ "num-rational",
+ "v_frame",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -536,6 +620,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "bitstream-io"
+version = "4.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7eff00be299a18769011411c9def0d827e8f2d7bf0c3dbf53633147a8867fd1f"
+dependencies = [
+ "no_std_io2",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -598,6 +691,12 @@ dependencies = [
  "quote",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "built"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e531d93d39c34eef561e929e8a7f86d77a5af08aac4f6d6e39976c51858e9"
 
 [[package]]
 name = "bumpalo"
@@ -1059,19 +1158,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-audio"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "craft-media",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
+ "log",
+ "rayon",
+ "symphonia 0.6.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-captions"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
+dependencies = [
+ "craft-timeline",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-cfb"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93#7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93"
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
+
+[[package]]
+name = "craft-dpx"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-exr"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "craft-fcproj-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6bd1c3dc357f012ddb31c6799ad2e36a1596003d#6bd1c3dc357f012ddb31c6799ad2e36a1596003d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -1092,17 +1245,80 @@ dependencies = [
 ]
 
 [[package]]
-name = "craft-media"
+name = "craft-jpeg"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=937ac93c5cf3cd4b6a81e195b078fe161eb081b9#937ac93c5cf3cd4b6a81e195b078fe161eb081b9"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
+name = "craft-jsonrpc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=0c15f7c74913880da6bae5927b95f798c2ecf3c3#0c15f7c74913880da6bae5927b95f798c2ecf3c3"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "craft-media"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "chrono",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-raw"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
+dependencies = [
+ "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419)",
+ "rayon",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tga"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tiff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=0eaafeb5054f2113523c8844822a830865cf45f2#0eaafeb5054f2113523c8844822a830865cf45f2"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tiff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419#7738cc6c689060475cb6947a6e3db6ed78fb3419"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-timeline"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "craft-fonts-build",
  "craft-i18n",
@@ -1123,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 dependencies = [
  "chrono",
  "dunce",
@@ -1133,6 +1349,7 @@ dependencies = [
  "image",
  "log",
  "plist",
+ "rustix 1.1.5",
  "semver",
  "serde",
  "serde_json",
@@ -1144,6 +1361,64 @@ dependencies = [
  "winreg",
  "winsafe",
  "zip 9.1.0",
+]
+
+[[package]]
+name = "craft-video"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "craft-media",
+ "rav1e",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-web-api"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=df469bb2bd2cc026ad25a34f65954ccbb46909d6#df469bb2bd2cc026ad25a34f65954ccbb46909d6"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "craft-web-host"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=df469bb2bd2cc026ad25a34f65954ccbb46909d6#df469bb2bd2cc026ad25a34f65954ccbb46909d6"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
+dependencies = [
+ "quick-xml 0.41.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-xml"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab#82062077bba679ba5236e2d1a391f02d1533cbab"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-y4m"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=25c7a8959cf70cf8c3f076d05baadb0990710569#25c7a8959cf70cf8c3f076d05baadb0990710569"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1507,7 +1782,7 @@ dependencies = [
  "bitflags 2.13.2",
  "emath",
  "epaint",
- "itertools",
+ "itertools 0.15.0",
  "log",
  "nohash-hasher",
  "profiling",
@@ -1558,6 +1833,19 @@ dependencies = [
  "web-time",
  "windows-sys 0.61.2",
  "winit",
+]
+
+[[package]]
+name = "egui_extras"
+version = "0.37.0"
+source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "itertools 0.15.0",
+ "log",
+ "profiling",
 ]
 
 [[package]]
@@ -1658,6 +1946,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum-map"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4532960034c15ba2f55e9eee631040ecc473c32e6c4b200828c759840f13a06"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7127272f64b3e098f7d81f350d672081b879bff896d219c42370dc858b1af9ff"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1708,6 +2016,26 @@ dependencies = [
 name = "epaint_default_fonts"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
+
+[[package]]
+name = "equator"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4711b213838dfee0117e3be6ac926007d7f433d7bbe33595975d4190cb07e6fc"
+dependencies = [
+ "equator-macro",
+]
+
+[[package]]
+name = "equator-macro"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44f23cf4b44bfce11a86ace86f8a73ffdec849c9fd00a386a53d278bd9e81fb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "equivalent"
@@ -1831,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "arboard",
  "chrono",
@@ -1860,50 +2188,24 @@ dependencies = [
  "subtle",
  "sys-locale",
  "winit",
+ "winreg",
  "winresource",
  "zbus",
 ]
 
 [[package]]
-name = "filmcraft-aac"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-ac3"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-apv"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-audio-dsp"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-testkit",
 ]
 
 [[package]]
 name = "filmcraft-automation"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "base64",
+ "craft-jsonrpc",
  "filmcraft-engine",
  "filmcraft-time",
  "image",
@@ -1917,110 +2219,80 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-av1"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "rustix 1.1.5",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-avi"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
-]
-
-[[package]]
 name = "filmcraft-bitstream"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "craft-media",
 ]
 
 [[package]]
 name = "filmcraft-captions"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-captions",
  "filmcraft-color",
  "filmcraft-project",
  "filmcraft-text",
  "filmcraft-time",
- "proptest",
- "roxmltree",
- "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "filmcraft-cfb"
-version = "0.15.0"
+version = "0.20.1"
+dependencies = [
+ "craft-cfb",
+]
 
 [[package]]
 name = "filmcraft-cli"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-media",
  "filmcraft-automation",
  "filmcraft-codecs",
  "filmcraft-engine",
  "filmcraft-export",
  "filmcraft-gpu",
  "filmcraft-media",
- "filmcraft-mpegts",
- "filmcraft-mxf",
- "filmcraft-ogg",
  "filmcraft-platform",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-time",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
 [[package]]
 name = "filmcraft-codecs"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
- "filmcraft-aac",
- "filmcraft-ac3",
- "filmcraft-apv",
- "filmcraft-av1",
- "filmcraft-avi",
+ "craft-audio",
+ "craft-jpeg",
+ "craft-media",
+ "craft-video",
+ "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
- "filmcraft-dnx",
  "filmcraft-frame",
- "filmcraft-h264",
- "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
- "filmcraft-mpa",
- "filmcraft-mpeg2v",
- "filmcraft-mpegts",
- "filmcraft-mxf",
- "filmcraft-ogg",
- "filmcraft-opus",
- "filmcraft-prores",
  "filmcraft-testkit",
  "filmcraft-time",
- "filmcraft-vp8",
- "filmcraft-vp9",
  "image",
  "log",
  "rayon",
  "serde_json",
- "symphonia",
+ "symphonia 0.5.5",
  "thiserror 2.0.21",
  "web-time",
 ]
 
 [[package]]
 name = "filmcraft-color"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2028,26 +2300,21 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-dng"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-raw",
+ "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=0eaafeb5054f2113523c8844822a830865cf45f2)",
  "filmcraft-dng",
+ "image",
  "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-dnx"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "filmcraft-edit"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
@@ -2060,10 +2327,11 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-engine"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "craft-docpath",
+ "craft-media",
  "filmcraft-audio-dsp",
  "filmcraft-captions",
  "filmcraft-codecs",
@@ -2077,7 +2345,6 @@ dependencies = [
  "filmcraft-interchange",
  "filmcraft-isobmff",
  "filmcraft-media",
- "filmcraft-mxf",
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",
@@ -2088,36 +2355,39 @@ dependencies = [
  "filmcraft-tts",
  "image",
  "log",
+ "roxmltree",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "web-time",
 ]
 
 [[package]]
 name = "filmcraft-export"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
- "filmcraft-aac",
- "filmcraft-apv",
+ "craft-audio",
+ "craft-dpx",
+ "craft-exr",
+ "craft-media",
+ "craft-tga",
+ "craft-video",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
- "filmcraft-dnx",
- "filmcraft-flac",
  "filmcraft-frame",
  "filmcraft-geom",
- "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
- "filmcraft-mxf",
  "filmcraft-project",
- "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
+ "flate2",
  "image",
+ "log",
  "rayon",
  "serde",
  "serde_json",
@@ -2126,32 +2396,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-flac"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-format"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
+ "craft-fcproj-format",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
  "log",
- "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "filmcraft-frame"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-time",
@@ -2161,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-geom"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2169,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-golden"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-frame",
@@ -2186,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-gpu"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-export",
@@ -2200,43 +2460,16 @@ dependencies = [
  "log",
  "pollster 1.0.1",
  "rayon",
+ "tempfile",
  "wgpu",
 ]
 
 [[package]]
-name = "filmcraft-h264"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-h264enc"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-hevc"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-interchange"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-audio",
+ "craft-timeline",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
@@ -2252,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-isobmff"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "craft-media",
  "filmcraft-testkit",
@@ -2262,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-matroska"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "craft-media",
  "filmcraft-testkit",
@@ -2271,8 +2504,12 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-media"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-audio",
+ "craft-dpx",
+ "craft-media",
+ "craft-tga",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
@@ -2286,64 +2523,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-mpa"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-mpeg2v"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-mpegts"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-mxf"
-version = "0.15.0"
-dependencies = [
- "chrono",
- "filmcraft-testkit",
-]
-
-[[package]]
-name = "filmcraft-ogg"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
-]
-
-[[package]]
-name = "filmcraft-opus"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
-]
-
-[[package]]
 name = "filmcraft-platform"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-video",
  "filmcraft-bitstream",
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-export",
  "filmcraft-frame",
- "filmcraft-h264",
- "filmcraft-hevc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-project",
@@ -2356,12 +2544,13 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "tempfile",
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "filmcraft-project"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "filmcraft-geom",
@@ -2375,18 +2564,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-prores"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-render"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-captions",
@@ -2406,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-scopes"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "serde",
@@ -2415,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-speech"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -2434,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-testkit"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "chrono",
  "png",
@@ -2443,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-text"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-color",
  "harfrust",
@@ -2456,15 +2635,14 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-time"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
- "proptest",
- "serde",
+ "craft-timeline",
 ]
 
 [[package]]
 name = "filmcraft-tts"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -2479,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-tts-text"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2487,13 +2665,14 @@ dependencies = [
 
 [[package]]
 name = "filmcraft-ui-egui"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "cpu-time",
  "craft-ui",
  "craft-update",
  "eframe",
  "egui",
+ "egui_extras",
  "egui_kittest",
  "filmcraft-audio-dsp",
  "filmcraft-captions",
@@ -2528,27 +2707,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-vp8"
-version = "0.15.0"
-dependencies = [
- "filmcraft-testkit",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-vp9"
-version = "0.15.0"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "filmcraft-web"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
+ "craft-web-api",
+ "craft-web-host",
  "eframe",
  "egui",
  "filmcraft-codecs",
@@ -3716,6 +3879,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "interpolate_name"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c34819042dc3d3971c46c2190835914dfbe0c3c13f61449b2997f4e9722dfa60"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "is-docker"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3732,6 +3906,15 @@ checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
 dependencies = [
  "is-docker",
  "once_cell",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
 ]
 
 [[package]]
@@ -3909,6 +4092,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "libfuzzer-sys"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
+dependencies = [
+ "arbitrary",
+ "cc",
+]
+
+[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3991,6 +4184,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "maybe-rayon"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
+dependencies = [
+ "cfg-if",
+ "rayon",
 ]
 
 [[package]]
@@ -4154,6 +4357,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "new_debug_unreachable"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4163,6 +4372,15 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "no_std_io2"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "418abd1b6d34fbf6cae440dc874771b0525a604428704c76e48b29a5e67b8003"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -4178,6 +4396,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "noop_proc_macro"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -4238,6 +4472,17 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
 dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
  "num-integer",
  "num-traits",
 ]
@@ -4746,7 +4991,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -4832,6 +5077,12 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pastey"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "pastey"
@@ -5219,6 +5470,19 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+dependencies = [
+ "profiling-procmacros",
+]
+
+[[package]]
+name = "profiling-procmacros"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "proptest"
@@ -5420,6 +5684,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
+name = "rav1e"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43b6dd56e85d9483277cde964fd1bdb0428de4fec5ebba7540995639a21cb32b"
+dependencies = [
+ "aligned-vec",
+ "arbitrary",
+ "arg_enum_proc_macro",
+ "arrayvec",
+ "av-scenechange",
+ "av1-grain",
+ "bitstream-io",
+ "built",
+ "cfg-if",
+ "interpolate_name",
+ "itertools 0.14.0",
+ "libc",
+ "libfuzzer-sys",
+ "log",
+ "maybe-rayon",
+ "new_debug_unreachable",
+ "noop_proc_macro",
+ "num-derive",
+ "num-traits",
+ "paste",
+ "profiling",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "simd_helpers",
+ "thiserror 2.0.21",
+ "v_frame",
+]
+
+[[package]]
 name = "raw-cpuid"
 version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5531,6 +5829,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5603,7 +5907,7 @@ dependencies = [
  "futures",
  "indexmap",
  "libc",
- "pastey",
+ "pastey 0.2.3",
  "pin-project-lite",
  "rmcp-macros",
  "schemars",
@@ -6108,6 +6412,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "simd_helpers"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6"
+dependencies = [
+ "quote",
+]
+
+[[package]]
 name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6288,17 +6601,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
 dependencies = [
  "lazy_static",
- "symphonia-bundle-flac",
- "symphonia-bundle-mp3",
- "symphonia-codec-aac",
- "symphonia-codec-alac",
- "symphonia-codec-pcm",
- "symphonia-codec-vorbis",
- "symphonia-core",
- "symphonia-format-isomp4",
- "symphonia-format-ogg",
- "symphonia-format-riff",
- "symphonia-metadata",
+ "symphonia-bundle-flac 0.5.5",
+ "symphonia-bundle-mp3 0.5.5",
+ "symphonia-codec-aac 0.5.5",
+ "symphonia-codec-alac 0.5.5",
+ "symphonia-codec-pcm 0.5.5",
+ "symphonia-codec-vorbis 0.5.5",
+ "symphonia-core 0.5.5",
+ "symphonia-format-isomp4 0.5.5",
+ "symphonia-format-ogg 0.5.5",
+ "symphonia-format-riff 0.5.5",
+ "symphonia-metadata 0.5.5",
+]
+
+[[package]]
+name = "symphonia"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424"
+dependencies = [
+ "lazy_static",
+ "symphonia-bundle-flac 0.6.1",
+ "symphonia-bundle-mp3 0.6.1",
+ "symphonia-codec-aac 0.6.1",
+ "symphonia-codec-adpcm",
+ "symphonia-codec-alac 0.6.1",
+ "symphonia-codec-pcm 0.6.1",
+ "symphonia-codec-vorbis 0.6.1",
+ "symphonia-core 0.6.1",
+ "symphonia-format-caf",
+ "symphonia-format-isomp4 0.6.1",
+ "symphonia-format-mkv",
+ "symphonia-format-ogg 0.6.1",
+ "symphonia-format-riff 0.6.1",
+ "symphonia-metadata 0.6.1",
 ]
 
 [[package]]
@@ -6308,9 +6644,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976"
 dependencies = [
  "log",
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
  "symphonia-utils-xiph",
+]
+
+[[package]]
+name = "symphonia-bundle-flac"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6405d5c34ff6f8f7ca08a4101efe66d21e180f7322ef9359900a0e55698a7892"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+ "symphonia-metadata 0.6.1",
 ]
 
 [[package]]
@@ -6321,8 +6669,19 @@ checksum = "4872dd6bb56bf5eac799e3e957aa1981086c3e613b27e0ac23b176054f7c57ed"
 dependencies = [
  "lazy_static",
  "log",
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
+]
+
+[[package]]
+name = "symphonia-bundle-mp3"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98ea5ffc8716bff677dfb3b01b420c7b758de901a72b8c330bf2040ab74b4add"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6333,7 +6692,29 @@ checksum = "4c263845aa86881416849c1729a54c7f55164f8b96111dba59de46849e73a790"
 dependencies = [
  "lazy_static",
  "log",
- "symphonia-core",
+ "symphonia-core 0.5.5",
+]
+
+[[package]]
+name = "symphonia-codec-aac"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5bf8e39552d34a3c4c98333370e62f48c92456d2e814f273b5c3ad7c4a5f45c"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+]
+
+[[package]]
+name = "symphonia-codec-adpcm"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "445932ecb0c59362fde9c082dd63a75380650c5077fdb8b80b8cac850442a74c"
+dependencies = [
+ "log",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6343,7 +6724,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8413fa754942ac16a73634c9dfd1500ed5c61430956b33728567f667fdd393ab"
 dependencies = [
  "log",
- "symphonia-core",
+ "symphonia-core 0.5.5",
+]
+
+[[package]]
+name = "symphonia-codec-alac"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "920a78f96f3cf62932d0c497959c0cc2100ef36b03c7ca1417b260f432a482d8"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6353,7 +6745,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e89d716c01541ad3ebe7c91ce4c8d38a7cf266a3f7b2f090b108fb0cb031d95"
 dependencies = [
  "log",
- "symphonia-core",
+ "symphonia-core 0.5.5",
+]
+
+[[package]]
+name = "symphonia-codec-pcm"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e04ba75686acbe43542fdd374571195f0530c0b7785ca25cc6840e9c6c4b6eea"
+dependencies = [
+ "log",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6363,8 +6765,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f025837c309cd69ffef572750b4a2257b59552c5399a5e49707cc5b1b85d1c73"
 dependencies = [
  "log",
- "symphonia-core",
+ "symphonia-core 0.5.5",
  "symphonia-utils-xiph",
+]
+
+[[package]]
+name = "symphonia-codec-vorbis"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73d90b4fcf796137cc683c538282804ff9629f8ad9dbfd881fcbba331ac4e986"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+]
+
+[[package]]
+name = "symphonia-common"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acc3fcc18ec9b8cdd48614e259c4cf0d27b71d41e5d9b120b42c5adab12d7c4"
+dependencies = [
+ "log",
+ "symphonia-core 0.6.1",
+ "symphonia-metadata 0.6.1",
 ]
 
 [[package]]
@@ -6381,6 +6805,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "symphonia-core"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01c412864d599d4750d0c3d684d7e093ec05e5309681ef5252cc1096a437f6e0"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "lazy_static",
+ "log",
+ "num-complex",
+ "smallvec",
+]
+
+[[package]]
+name = "symphonia-format-caf"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab64327ee1920531c5bf86cf7e9cd1a599d57013ddc30691da62683cefc65191"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+]
+
+[[package]]
 name = "symphonia-format-isomp4"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6388,9 +6837,33 @@ checksum = "243739585d11f81daf8dac8d9f3d18cc7898f6c09a259675fc364b382c30e0a5"
 dependencies = [
  "encoding_rs",
  "log",
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
  "symphonia-utils-xiph",
+]
+
+[[package]]
+name = "symphonia-format-isomp4"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+ "symphonia-metadata 0.6.1",
+]
+
+[[package]]
+name = "symphonia-format-mkv"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d015c5c0558864665894b3f4cbd95e10abb01b9c868e751c72670f326a56360e"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6400,9 +6873,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b4955c67c1ed3aa8ae8428d04ca8397fbef6a19b2b051e73b5da8b1435639cb"
 dependencies = [
  "log",
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
  "symphonia-utils-xiph",
+]
+
+[[package]]
+name = "symphonia-format-ogg"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5495e7f7e3c7035328d82b6d6e377eef289bb0c4105bdeb557fc93a833f994"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core 0.6.1",
+ "symphonia-metadata 0.6.1",
 ]
 
 [[package]]
@@ -6413,8 +6898,20 @@ checksum = "c2d7c3df0e7d94efb68401d81906eae73c02b40d5ec1a141962c592d0f11a96f"
 dependencies = [
  "extended",
  "log",
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
+]
+
+[[package]]
+name = "symphonia-format-riff"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ff70929083a8c1a5f6cd7c904b6071c7914ad04739b510c2f7239dfc9b7dabe"
+dependencies = [
+ "extended",
+ "log",
+ "symphonia-core 0.6.1",
+ "symphonia-metadata 0.6.1",
 ]
 
 [[package]]
@@ -6426,7 +6923,20 @@ dependencies = [
  "encoding_rs",
  "lazy_static",
  "log",
- "symphonia-core",
+ "symphonia-core 0.5.5",
+]
+
+[[package]]
+name = "symphonia-metadata"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83713a97705d77bdef7cdbc0768fd6e5a54e4cd7e48d60a806ae85639e2c87c6"
+dependencies = [
+ "lazy_static",
+ "log",
+ "regex-lite",
+ "smallvec",
+ "symphonia-core 0.6.1",
 ]
 
 [[package]]
@@ -6435,8 +6945,8 @@ version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16"
 dependencies = [
- "symphonia-core",
- "symphonia-metadata",
+ "symphonia-core 0.5.5",
+ "symphonia-metadata 0.5.5",
 ]
 
 [[package]]
@@ -6544,7 +7054,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -7003,6 +7513,17 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "v_frame"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "666b7727c8875d6ab5db9533418d7c764233ac9c0cff1d469aec8fa127597be2"
+dependencies = [
+ "aligned-vec",
+ "num-traits",
  "wasm-bindgen",
 ]
 
@@ -8045,11 +8566,17 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.15.0"
+version = "0.20.1"
 dependencies = [
  "filmcraft-testkit",
  "serde_json",
 ]
+
+[[package]]
+name = "y4m"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
 name = "yoke"
@@ -8304,7 +8831,6 @@ dependencies = [
  "nix",
  "typed-path 0.13.0",
  "windows-sys 0.61.2",
- "zopfli",
 ]
 
 [[package]]
@@ -8318,18 +8844,6 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "zopfli"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaf7fc5d30c28483d93805c4a5e12b05bbb52407fa67c5f8bd552374cd01fb11"
-dependencies = [
- "bumpalo",
- "crc32fast",
- "log",
- "simd-adler32",
-]
 
 [[package]]
 name = "zune-core"
@@ -8389,11 +8903,6 @@ dependencies = [
 
 [[patch.unused]]
 name = "egui_demo_lib"
-version = "0.37.0"
-source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
-
-[[patch.unused]]
-name = "egui_extras"
 version = "0.37.0"
 source = "git+https://github.com/storytold/egui.git?rev=6d518fc799681571963842f95b55a6b68431b15a#6d518fc799681571963842f95b55a6b68431b15a"
 

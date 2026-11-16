@@ -35,6 +35,9 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 #[derive(Clone)]
 pub struct FilmcraftMcp {
     backend: Arc<Backend>,
+    /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
+    /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
+    render_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -197,10 +200,10 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
+        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -209,54 +212,22 @@ impl FilmcraftMcp {
 
     /// Serve MCP over any line stream. A line that isn't JSON gets a JSON-RPC parse error
     /// (`-32700`, id null) instead of being dropped silently; the rest go to the rmcp service. One
-    /// writer task owns `output`, so replies never interleave.
+    /// writer task owns `output`, so replies never interleave. Parse errors wait for room in a
+    /// small queue before more input is read: a client that sends junk and never reads its output
+    /// stalls its own input instead of growing the server's memory.
     pub async fn serve_io(
         self,
         input: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
     ) -> Result<(), AutomationError> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        let (mut to_service, service_in) = tokio::io::duplex(1 << 20);
-        let (service_out, from_service) = tokio::io::duplex(1 << 20);
-        let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let reader = tokio::spawn(async move {
-            let mut lines = BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(_) => {
-                        if to_service.write_all(format!("{line}\n").as_bytes()).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let reply = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}});
-                        let _ = err_tx.send(reply.to_string());
-                    }
-                }
-            }
-            // EOF: closing the pipe ends the service
-            let _ = to_service.shutdown().await;
-        });
-        let writer = tokio::spawn(async move {
-            let mut output = output;
-            let mut replies = BufReader::new(from_service).lines();
-            loop {
-                let line = tokio::select! {
-                    l = replies.next_line() => match l { Ok(Some(l)) => l, _ => break },
-                    Some(e) = err_rx.recv() => e,
-                };
-                if output.write_all(format!("{line}\n").as_bytes()).await.is_err() || output.flush().await.is_err() {
-                    break;
-                }
-            }
-        });
+        // A full-size 268M-pixel RGBA PNG encoded as base64 can exceed 1 GiB.
+        // Bound both directions without imposing the internal duplex pipe's 1 MiB capacity.
+        const MAX_MCP_LINE: usize = 2 * 1024 * 1024 * 1024;
+        let craft_jsonrpc::async_lines::Adapter { service_in, service_out, tasks } =
+            craft_jsonrpc::async_lines::spawn(input, output, MAX_MCP_LINE, MAX_MCP_LINE);
         let running = self.serve((service_in, service_out)).await.map_err(|e| AutomationError::Other(format!("MCP init: {e}")))?;
         let r = running.waiting().await.map_err(|e| AutomationError::Other(e.to_string()));
-        reader.abort();
-        let _ = writer.await;
+        tasks.finish().await;
         r.map(|_| ())
     }
 
@@ -451,6 +422,8 @@ impl FilmcraftMcp {
                 })
             }
             Backend::Bridge(b) => {
+                // held until the playhead is back, also for the no-`seconds` screenshot, which must not catch another call's seek
+                let _turn = self.render_lock.lock().await;
                 let Some(sec) = p.seconds else {
                     return self.screenshot(&b.clone(), Some("Program".into()), max).await;
                 };

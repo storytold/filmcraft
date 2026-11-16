@@ -772,14 +772,16 @@ fn descriptor(w: &mut W, s: &Source) -> Obj {
             .data_prop(pid::COMPONENT_WIDTH, 8u32.to_le_bytes().to_vec())
             .data_prop(pid::HORIZONTAL_SUBSAMPLING, 2u32.to_le_bytes().to_vec()),
         CKind::Sound => {
-            let block = s.file_channels.max(1) * (s.bits as u32).div_ceil(8);
+            // Channel counts and rates come from the project: saturate, as these fields can't
+            // hold more anyway.
+            let block = s.file_channels.max(1).saturating_mul((s.bits as u32).div_ceil(8));
             Obj::new(cls::PCM_DESCRIPTOR)
                 .data_prop(pid::AUDIO_SAMPLING_RATE, rational(s.sample_rate as i64, 1))
                 .data_prop(pid::LOCKED, vec![1])
                 .data_prop(pid::CHANNELS, s.file_channels.max(1).to_le_bytes().to_vec())
                 .data_prop(pid::QUANTIZATION_BITS, (s.bits as u32).to_le_bytes().to_vec())
-                .data_prop(pid::BLOCK_ALIGN, (block as u16).to_le_bytes().to_vec())
-                .data_prop(pid::AVERAGE_BPS, (block * s.sample_rate).to_le_bytes().to_vec())
+                .data_prop(pid::BLOCK_ALIGN, u16::try_from(block).unwrap_or(u16::MAX).to_le_bytes().to_vec())
+                .data_prop(pid::AVERAGE_BPS, block.saturating_mul(s.sample_rate).to_le_bytes().to_vec())
         }
     };
     d.set(pid::SAMPLE_RATE, Value::Data(rational(rate.0, rate.1)));

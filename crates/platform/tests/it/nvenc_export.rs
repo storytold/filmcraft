@@ -42,10 +42,18 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
     (Arc::new(p), seq, m)
 }
 
-fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("fc-nvenc-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name).to_string_lossy().to_string()
+/// A fresh private folder, never a predictable name another user could have prepared; removed when the test ends.
+fn tmp_dir() -> tempfile::TempDir {
+    let mut b = tempfile::Builder::new();
+    b.prefix("fc-nvenc-");
+    // owner-only, so another local user cannot swap an output for a symlink
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    b.tempdir().unwrap()
+}
+
+fn tmp(dir: &tempfile::TempDir, name: &str) -> String {
+    dir.path().join(name).to_string_lossy().to_string()
 }
 
 fn decode(path: &str) -> Vec<Arc<filmcraft_frame::VideoFrame>> {
@@ -79,12 +87,13 @@ fn hardware_export_matches_the_software_export() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
     let (p, seq, m) = project(1280, 720, 72);
-    let soft_path = tmp("soft.mp4");
+    let dir = tmp_dir();
+    let soft_path = tmp(&dir, "soft.mp4");
     let before_soft = hw_encode_stats();
     export(&p, seq, &settings(soft_path.clone(), HardwareEncoding::Off), &m, &Progress::default()).unwrap();
     assert_eq!(hw_encode_stats(), before_soft, "Off: no hardware encoder attempt");
 
-    let hw_path = tmp("hw.mp4");
+    let hw_path = tmp(&dir, "hw.mp4");
     let before = hw_encode_stats();
     let report = export(&p, seq, &settings(hw_path.clone(), HardwareEncoding::Auto), &m, &Progress::default()).unwrap();
     let after = hw_encode_stats();
@@ -117,8 +126,9 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
     let (p, seq, m) = project(640, 360, 24);
+    let dir = tmp_dir();
     let run = |name: &str, f: &dyn Fn(&mut ExportSettings)| {
-        let mut s = settings(tmp(name), HardwareEncoding::Auto);
+        let mut s = settings(tmp(&dir, name), HardwareEncoding::Auto);
         f(&mut s);
         let before = hw_encode_stats();
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
@@ -142,5 +152,5 @@ fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
     // Off never touches the hardware encoder
     assert_eq!(run("off.mp4", &|s| s.hardware_encoding = HardwareEncoding::Off), (0, 0));
     // the decoded file of a declined export is fine
-    assert_eq!(decode(&tmp("odd.mp4")).len(), 24);
+    assert_eq!(decode(&tmp(&dir, "odd.mp4")).len(), 24);
 }

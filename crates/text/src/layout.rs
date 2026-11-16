@@ -172,11 +172,28 @@ impl<'a> Styles<'a> {
         list.extend(runs.iter().map(|r| &r.style));
         let prim = list.iter().map(|s| fonts::resolve(&s.family, &s.style)).collect();
         let per_byte = (!runs.is_empty()).then(|| {
-            let mut v = vec![0u16; text.len() + 1];
-            for (i, r) in runs.iter().enumerate() {
-                let (a, b) = (r.range.start.min(text.len()), r.range.end.min(text.len()));
-                for x in v.iter_mut().take(b).skip(a) {
-                    *x = (i + 1).min(u16::MAX as usize) as u16;
+            // The last run covering a byte wins. Walking the runs backwards and painting each byte
+            // once (`next` jumps over painted bytes) keeps overlapping runs from rewriting bytes.
+            let n = text.len();
+            let mut v = vec![0u16; n + 1];
+            let mut next: Vec<usize> = (0..=n + 1).collect();
+            let find = |next: &mut Vec<usize>, mut x: usize| {
+                let mut root = x;
+                while next[root] != root {
+                    root = next[root];
+                }
+                while next[x] != root {
+                    x = std::mem::replace(&mut next[x], root);
+                }
+                root
+            };
+            for (i, r) in runs.iter().enumerate().rev() {
+                let (a, b) = (r.range.start.min(n), r.range.end.min(n));
+                let mut x = find(&mut next, a);
+                while x < b {
+                    v[x] = (i + 1).min(u16::MAX as usize) as u16;
+                    next[x] = x + 1;
+                    x = find(&mut next, x + 1);
                 }
             }
             v
@@ -309,6 +326,8 @@ struct Item {
     range: Range<usize>,
     rtl: bool,
     glyphs: Vec<ShapedGlyph>,
+    /// Indices of `glyphs` ordered by cluster, so the glyphs of a byte range are found by search.
+    by_cluster: Vec<u32>,
     /// Style index ([`Styles`]).
     style: usize,
 }
@@ -373,6 +392,9 @@ struct ParaLine {
     carets: Vec<(usize, f32)>,
     content: f32,
     left_trim: f32,
+    /// Width of the trailing whitespace that counts into the alignment width: a hard line end (the last line of a
+    /// paragraph) keeps its spaces, a soft-wrapped line lets them hang.
+    trail: f32,
     ascent: f32,
     descent: f32,
     /// Underlined segments `(x0, x1, style)` in line coordinates (rich layouts only).
@@ -422,6 +444,7 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             carets: vec![(base, 0.0)],
             content: 0.0,
             left_trim: 0.0,
+            trail: 0.0,
             ascent: pm.ascent,
             descent: pm.descent,
             underlines: Vec::new(),
@@ -486,7 +509,9 @@ fn shape_items(text: &str, chars: &[CharInfo], sty: &Styles, para: &ParagraphSty
             }
         }
         let end = if j < chars.len() { chars[j].byte } else { text.len() };
-        items.push(Item { range: chars[i].byte..end, rtl, glyphs, style: si });
+        let mut by_cluster: Vec<u32> = (0..glyphs.len() as u32).collect();
+        by_cluster.sort_by_key(|&k| glyphs[k as usize].cluster);
+        items.push(Item { range: chars[i].byte..end, rtl, glyphs, by_cluster, style: si });
         i = j;
     }
     items
@@ -565,14 +590,23 @@ impl Para<'_> {
         let mut extents: Extents = HashMap::new();
         for run in runs {
             let rtl = levels[run.start].is_rtl();
-            let mut idx: Vec<usize> = (0..items.len()).filter(|&k| items[k].range.start < run.end && items[k].range.end > run.start).collect();
+            // items are consecutive and ascending, so those meeting the run are a contiguous stretch
+            let first = items.partition_point(|it| it.range.end <= run.start);
+            let last = first + items[first..].partition_point(|it| it.range.start < run.end);
+            let mut idx: Vec<usize> = (first..last).collect();
             if rtl {
                 idx.reverse();
             }
             for k in idx {
                 let si = items[k].style;
                 let (st, pr) = (sty.list[si], sty.prim[si]);
-                for g in items[k].glyphs.iter().filter(|g| run.contains(&g.cluster)) {
+                let it = &items[k];
+                let by = &it.by_cluster;
+                let lo = by.partition_point(|&g| it.glyphs[g as usize].cluster < run.start);
+                let hi = by.partition_point(|&g| it.glyphs[g as usize].cluster < run.end);
+                let mut inside: Vec<u32> = by[lo..hi].to_vec();
+                inside.sort_unstable(); // back to the shaped (visual) order
+                for g in inside.into_iter().map(|g| &it.glyphs[g as usize]) {
                     let x0 = pen;
                     glyphs.push(Glyph {
                         face: g.face,
@@ -706,6 +740,7 @@ impl Para<'_> {
             carets,
             content: content_w,
             left_trim: if base_rtl { tw } else { 0.0 },
+            trail: if li + 1 == nlines { tw } else { 0.0 },
             ascent,
             descent,
             underlines,
@@ -754,14 +789,19 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
             }
         }
         prev_desc = pl.descent;
+        // spaces at a hard line end count into the width the line is aligned by; in a right-to-left paragraph they
+        // sit left of the content, so the block starts at the aligned position instead of the content; left and
+        // justified lines keep the content at the edge
+        let aw = pl.content + pl.trail;
+        let hang = if matches!(para.align, Align::Center | Align::Right) { pl.trail } else { 0.0 };
         let shift = match (para.width, para.align) {
             (None, Align::Left | Align::Justify) => 0.0,
-            (None, Align::Center) => -pl.content / 2.0,
-            (None, Align::Right) => -pl.content,
+            (None, Align::Center) => -aw / 2.0,
+            (None, Align::Right) => -aw,
             (Some(_), Align::Left | Align::Justify) => 0.0,
-            (Some(w), Align::Center) => (w - pl.content) / 2.0,
-            (Some(w), Align::Right) => w - pl.content,
-        } - pl.left_trim;
+            (Some(w), Align::Center) => (w - aw) / 2.0,
+            (Some(w), Align::Right) => w - aw,
+        } - if pl.left_trim > 0.0 { pl.left_trim - hang } else { 0.0 };
         let g0 = lay.glyphs.len();
         lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
             g.x += shift;
@@ -971,3 +1011,114 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod trailing_space_tests {
+    use super::*;
+
+    fn lines(text: &str, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align: Align::Center, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    #[test]
+    fn trailing_spaces_at_a_hard_line_end_shift_a_centred_line() {
+        let plain = lines("ab\ncd", None);
+        let spaced = lines("ab   \ncd", None);
+        let space_w = lines("a b", None)[0].width - lines("ab", None)[0].width;
+        assert!(space_w > 0.0);
+        // the content moves left by half of the three spaces' width; the width of the content itself is unchanged
+        let dx = plain[0].x - spaced[0].x;
+        assert!((dx - 1.5 * space_w).abs() < 0.01, "dx {dx}, space {space_w}");
+        assert_eq!(plain[0].width, spaced[0].width);
+        assert_eq!(plain[1].x, spaced[1].x);
+    }
+
+    #[test]
+    fn soft_wrapped_lines_still_let_their_trailing_space_hang() {
+        let wrapped = lines("ab cd", Some(lines("ab", None)[0].width + 4.0));
+        let alone = lines("ab", Some(lines("ab", None)[0].width + 4.0));
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].x, alone[0].x);
+    }
+
+    fn aligned(text: &str, align: Align, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    fn space_width() -> f32 {
+        lines("a b", None)[0].width - lines("ab", None)[0].width
+    }
+
+    #[test]
+    fn rtl_left_and_justified_lines_keep_their_content_at_the_edge() {
+        for align in [Align::Left, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                let plain = aligned("\u{5d0}\u{5d1}", align, width);
+                let spaced = aligned("\u{5d0}\u{5d1}   ", align, width);
+                assert_eq!(plain[0].x, spaced[0].x, "{align:?} {width:?}");
+                assert_eq!(plain[0].width, spaced[0].width, "{align:?} {width:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_shift_a_right_aligned_last_line_by_their_full_width() {
+        let plain = aligned("ab\ncd", Align::Right, Some(400.0));
+        let spaced = aligned("ab\ncd   ", Align::Right, Some(400.0));
+        assert_eq!(plain[0].x, spaced[0].x);
+        let dx = plain[1].x - spaced[1].x;
+        assert!((dx - 3.0 * space_width()).abs() < 0.01, "dx {dx}");
+    }
+
+    #[test]
+    fn empty_and_spaces_only_paragraphs_lay_out_sanely() {
+        for align in [Align::Left, Align::Center, Align::Right, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                for text in ["", "   ", "ab\n", "ab\n   "] {
+                    for l in aligned(text, align, width) {
+                        assert!(l.x.is_finite() && l.width.is_finite() && l.width >= 0.0, "{text:?} {align:?}");
+                    }
+                }
+            }
+        }
+        let empty = aligned("", Align::Center, Some(400.0));
+        assert!(empty.iter().all(|l| l.width == 0.0));
+    }
+}
+
+#[cfg(test)]
+mod hostile_layout_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn overlapping_runs_style_each_byte_by_the_last_run() {
+        let text = "abcdefghij";
+        let base = TextStyle::default();
+        let runs: Vec<StyleRun> = [(0, 10), (2, 6), (4, 8), (5, 5), (9, 40), (3, 4)]
+            .iter()
+            .map(|&(a, b)| StyleRun { range: a..b, style: TextStyle { size: 20.0 + a as f32, ..base.clone() } })
+            .collect();
+        let sty = Styles::new(text, &base, &runs);
+        for byte in 0..=text.len() {
+            let want = runs.iter().rposition(|r| r.range.start.min(10) <= byte && byte < r.range.end.min(10)).map_or(0, |i| i + 1);
+            assert_eq!(sty.at(byte), want, "byte {byte}");
+        }
+    }
+
+    #[test]
+    fn many_overlapping_runs_and_many_bidi_runs_stay_fast() {
+        let t = Instant::now();
+        let text = "x".repeat(20_000);
+        let runs: Vec<StyleRun> = (0..5_000).map(|_| StyleRun { range: 0..text.len(), style: TextStyle::default() }).collect();
+        let _ = layout_rich_uncached(&text, &TextStyle::default(), &runs, &ParagraphStyle::default());
+        // alternating directions: one visual run per word, one shaping item per run
+        let mixed = "a \u{5d0} ".repeat(4_000);
+        let _ = layout_uncached(&mixed, &TextStyle::default(), &ParagraphStyle { width: Some(300.0), ..Default::default() });
+        assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());
+    }
+}

@@ -118,25 +118,6 @@ fn ld_in(p: vec2<i32>, r: vec2<i32>) -> vec4<f32> {
     return textureLoad(src, clamp(p, vec2(0), r - 1), 0);
 }
 
-// `Image::sample_bilinear_clamped` within `r`
-fn sample_clamped_in(x: f32, y: f32, r: vec2<i32>) -> vec4<f32> {
-    let fx = clamp(x - 0.5, 0.0, f32(r.x) - 1.0);
-    let fy = clamp(y - 0.5, 0.0, f32(r.y) - 1.0);
-    let x0 = i32(floor(fx));
-    let y0 = i32(floor(fy));
-    let x1 = min(x0 + 1, r.x - 1);
-    let y1 = min(y0 + 1, r.y - 1);
-    let tx = fx - f32(x0);
-    let ty = fy - f32(y0);
-    let a = ld(vec2(x0, y0));
-    let b = ld(vec2(x1, y0));
-    let c = ld(vec2(x0, y1));
-    let d = ld(vec2(x1, y1));
-    let top = a + (b - a) * tx;
-    let bot = c + (d - c) * tx;
-    return top + (bot - top) * ty;
-}
-
 // `Image::get_or_clear` within `r`
 fn ld_or_clear_in(p: vec2<i32>, r: vec2<i32>) -> vec4<f32> {
     if p.x < 0 || p.y < 0 || p.x >= r.x || p.y >= r.y {
@@ -161,21 +142,6 @@ fn sample_bilinear_in(x: f32, y: f32, r: vec2<i32>) -> vec4<f32> {
     let top = a + (b - a) * tx;
     let bot = c + (d - c) * tx;
     return top + (bot - top) * ty;
-}
-
-// `vfx::blur::poly_radius`: radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in
-// direction `theta`; n = 0 is a circle.
-fn poly_radius(n: u32, theta: f32, rot: f32) -> f32 {
-    if n == 0u {
-        return 1.0;
-    }
-    let seg = 6.2831855 / f32(n);
-    var m = (theta - rot) % seg;
-    if m < 0.0 {
-        m += seg;
-    }
-    let a = m - seg / 2.0;
-    return cos(3.1415927 / f32(n)) / cos(a);
 }
 
 // Bokeh Blur's passes (`vfx::bokeh`); i1.xy = the size of the image they read.
@@ -204,27 +170,17 @@ fn bokeh(op: u32, p: vec2<i32>) -> vec4<f32> {
             return vec4(o.rgb * k, o.a);
         }
         case OP_BOKEH: {
+            // the iris gather through its kernel (`vfx::bokeh_kernel`): i1.z entries in aux,
+            // 64 a row, each (dx, dy, weight); the reads edge-clamped within the halved image
             if p.x >= r.x || p.y >= r.y {
                 return vec4(0.0);
             }
-            let pc = vec2<f32>(p) + 0.5;
-            let sides = u.i1.z;
-            let rings = u.i1.w;
-            let rr = u.p0.x;
-            let rot = u.p0.y;
-            var acc = sample_clamped_in(pc.x, pc.y, r);
-            var n_taps = 1u;
-            for (var ring = 1u; ring <= rings; ring++) {
-                let rad = rr * f32(ring) / f32(rings);
-                let n = max(ring * 8u, 6u);
-                for (var i = 0u; i < n; i++) {
-                    let th = 6.2831855 * (f32(i) + 0.5 * f32(ring % 2u)) / f32(n);
-                    let pr = rad * poly_radius(sides, th, rot);
-                    acc += sample_clamped_in(pc.x + cos(th) * pr, pc.y + sin(th) * pr, r);
-                }
-                n_taps += n;
+            var acc = vec4(0.0);
+            for (var k = 0u; k < u.i1.z; k++) {
+                let c = textureLoad(aux, vec2(i32(k % 64u), i32(k / 64u)), 0);
+                acc += ld_in(p + vec2<i32>(c.xy), r) * c.z;
             }
-            return acc * (1.0 / f32(n_taps));
+            return acc;
         }
         default: {
             // OP_BOKEH_UP: `Image::transformed` by the scale back to the whole image

@@ -312,6 +312,14 @@ impl EssentialSound {
         if parts.first().map(String::as_str) == Some("kind") {
             return Err("the audio type is changed with essentialSound.setType".into());
         }
+        // `ducking.against` takes the type names essentialSound.setType takes (`dialogue`) as well as
+        // the labels the settings store (`Dialogue`)
+        let value = &match (parts.as_slice(), value) {
+            ([section, name], Value::Array(types)) if section == "ducking" && name == "against" => {
+                Value::Array(types.iter().map(|t| t.as_str().and_then(AudioType::parse).map_or_else(|| t.clone(), |k| Value::from(k.label()))).collect())
+            }
+            _ => value.clone(),
+        };
         let mut v = self.to_value();
         {
             let mut cur = &mut v;
@@ -781,6 +789,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
@@ -808,6 +817,10 @@ mod tests {
         assert!(s.preset.is_empty(), "a manual change leaves the preset");
         s.set("ducking.against", &json!(["Dialogue", "SFX"])).unwrap();
         assert_eq!(s.ducking.against, vec![AudioType::Dialogue, AudioType::Sfx]);
+        // the type names essentialSound.setType takes work too
+        s.set("ducking.against", &json!(["ambience", "music"])).unwrap();
+        assert_eq!(s.ducking.against, vec![AudioType::Ambience, AudioType::Music]);
+        assert!(s.set("ducking.against", &json!(["speech"])).is_err());
     }
 
     #[test]

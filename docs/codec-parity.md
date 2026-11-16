@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (H.264 High 10 and High 10 Intra in the built-in encoder, #1221) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -15,7 +15,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Codec | Premiere | Our decode | Our encode | Fidelity and tests | % | Est. |
 |---|---|---|---|---|---|---|
-| H.264 / AVC | decode all common profiles incl. High 10, 4:2:2 (XAVC S-I, AVC-Intra); encode 8/10-bit | own decoder, **8-bit 4:2:0 only** (Baseline / Main / High, CABAC / CAVLC); no High 10 / 4:2:2 / 4:4:4, interlaced field / MBAFF, lossless | own encoder (High / Main / Baseline, B-frames, CBR / VBR / 2-pass); 8-bit 4:2:0 only; hardware VideoToolbox / NVENC | decode bit-exact on 37+ conformance streams, 500–600 fps 1080p; encode ffprobe-checked, byte-identical across machines | 65% | 20–35 h |
+| H.264 / AVC | decode all common profiles incl. High 10, 4:2:2 (XAVC S-I, AVC-Intra); encode 8/10-bit | own decoder, **8-bit 4:2:0 only** (Baseline / Main / High, CABAC / CAVLC); no High 10 / 4:2:2 / 4:4:4, interlaced field / MBAFF, lossless | own encoder (High / Main / Baseline 8-bit, High 10 and High 10 Intra 10-bit, B-frames, CBR / VBR / 2-pass / CRF); 4:2:0 only, no 4:2:2 / 4:4:4 / lossless (#1221); hardware VideoToolbox / NVENC (8-bit) | decode bit-exact on 37+ conformance streams, 500–600 fps 1080p; encode ffprobe-checked, byte-identical across machines | 65% | 20–35 h |
 | HEVC / H.265 | decode Main, Main 10, 4:2:2 10 (XAVC HS); encode 8/10-bit, HDR | own decoder Main / Main 10 / Main Still Picture, bit-exact on 41 fixtures, ~225 fps 1080p; **no 4:2:2 / RExt** | **hardware only** (VideoToolbox 8-bit; NVENC 8-bit and Main 10 HDR on Windows); no software encoder | NVENC round trip 48.9 dB (8-bit), 71.1 dB (10-bit); ffprobe | 60% | 30–60 h |
 | ProRes 422 family / 4444 / XQ | decode + encode all | own decode + encode, all six profiles, alpha | yes (export UI exposes 422 flavours; 4444 / XQ request #342) | ±1 LSB, 318 fps; alpha final-run conformance and native macOS HD decode checked ([details](../crates/prores/README.md#alpha-bitstream-conformance)) | 85% | 3–6 h |
 | ProRes RAW | decode | none (#345) | — | — | 0% | 30–50 h (spec availability uncertain) |
@@ -29,6 +29,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | JPEG XS | decode (`libjpegxs`) | none | none | — | 0% | 20–40 h |
 | DV / DVCPRO / DV100 | decode + encode | none | none | — | 0% | 15–25 h |
 | MPEG-4 Part 2 | decode | none | none | — | 0% | 10–20 h |
+| Apple Intermediate Codec (`icod`, iMovie / Final Cut) | not in Adobe's supported-formats list | none (#3646): Apple publishes no specification, so a clean-room decoder needs a maintainer ruling ([AGENTS.md](../AGENTS.md) §2); import names the codec and the Project panel's Unreadable badge shows "no decoder for Apple Intermediate Codec video" on hover | none | — | 0% | — (no estimate without a specification) |
 | WMV / VC-1 | decode, encode on Windows | none | none | — | 0% | 20–35 h |
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
 | Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in) | decode (vendor SDKs) | none (#383) | — | — | 0% | 50–90 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
@@ -61,6 +62,8 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | H.264 High 10 and High 10 Intra in the built-in encoder (#1221) |
+| 2026-11-02 | minor | Apple Intermediate Codec row: named on import and in the no-decoder error, no decoder (#3646) |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
 | 2026-10-10 | major | Created: codec-by-codec comparison with Premiere 26.5.2 from the codec crates' READMEs, the export format registry and the installed bundle's listings |

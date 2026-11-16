@@ -63,6 +63,18 @@ fn block_rect(c: &filmcraft_project::Caption, row: Rect, layout: &Layout, drag: 
     Rect::from_min_max(pos2(layout.x_of(s), row.min.y + 2.0), pos2(layout.x_of(e).max(layout.x_of(s) + 1.0), row.max.y - 2.0))
 }
 
+/// The captions a marquee rectangle touches, on the caption tracks it crosses (#1912).
+pub fn marquee_captions(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
+    let (a, b) = (layout.tick_at(r.min.x), layout.tick_at(r.max.x));
+    let area = Rect::from_min_max(layout.content.min, pos2(layout.content.max.x, layout.content.min.y + seq.caption_tracks.len() as f32 * ROW_H));
+    seq.caption_tracks
+        .iter()
+        .zip(rows(area, seq.caption_tracks.len()))
+        .filter(|(_, row)| row.min.y < r.max.y && row.max.y > r.min.y)
+        .flat_map(|(tr, _)| tr.captions.iter().filter(|c| c.start < b && c.end() > a).map(|c| c.id))
+        .collect()
+}
+
 /// Whether caption `id` follows the live drag `(grabbed, gesture, delta)`.
 fn moves_with(id: ClipId, (grabbed, g, d): (u64, u8, i64), sel: &[ClipId]) -> bool {
     d != 0 && (id.0 == grabbed || (g == 0 && sel.contains(&ClipId(grabbed)) && sel.contains(&id)))
