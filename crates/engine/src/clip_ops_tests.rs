@@ -345,6 +345,18 @@ fn close_project_and_save_all() {
     assert!(!s.history.can_undo());
 }
 
+/// Closing a project lets go of its media as opening another does: the app rebuilds its frame
+/// caches when the pool is replaced, and kept them (1.8 GB) until the next project opened.
+#[test]
+fn closing_a_project_lets_go_of_its_media() {
+    let mut s = demo();
+    s.media.set_use_proxies(true);
+    let before = s.media.clone();
+    s.execute("file.closeProject", json!({"force": true})).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&before, &s.media), "the closed project's pool is still the session's");
+    assert!(s.media.use_proxies(), "the proxy toggle is the user's, not the project's");
+}
+
 #[test]
 fn make_and_edit_subclips() {
     let mut s = demo();

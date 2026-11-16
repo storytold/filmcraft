@@ -609,3 +609,23 @@ mod lifecycle_synthetic_tests {
         assert_eq!(app.synthetic_pending_step.as_ref().map(Vec::len), Some(2), "the queue did not advance");
     }
 }
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// Closing a project lets go of its frame caches (decoded frames, plans, textures) as opening
+    /// another does; they were kept (1.8 GB on a stabilized 4K project) until the next one opened.
+    #[test]
+    fn closing_a_project_drops_its_frame_caches() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(s);
+        app.sync_pool();
+        let before = app.frames.clone();
+        app.session.execute("file.closeProject", serde_json::json!({"force": true})).unwrap();
+        app.sync_pool();
+        assert!(!Arc::ptr_eq(&before, &app.frames), "the closed project's frame server is still in use");
+        assert_eq!(Arc::strong_count(&before), 1, "nothing else holds the closed project's frame server");
+    }
+}

@@ -220,6 +220,11 @@ pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
     s.project = std::sync::Arc::new(Project::new("Untitled"));
+    // a fresh pool, as opening a project makes: the closed project's decoders go with the old one,
+    // and the frontends drop their frame caches when they see it replaced
+    let proxies = s.media.use_proxies();
+    s.media = std::sync::Arc::new(crate::MediaPool::default());
+    s.media.set_use_proxies(proxies);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
