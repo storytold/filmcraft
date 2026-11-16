@@ -91,6 +91,8 @@ pub struct PendingJob {
     /// What each item was when the job started: (item, path, stored duration). An output whose item
     /// has been relinked or refreshed since was made from a different file and is not applied.
     pub started_from: Vec<(ItemId, String, Tick)>,
+    /// `Session::document_epoch` when the job started: item ids mean something else in another project.
+    pub epoch: u64,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -245,7 +247,8 @@ pub fn unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[Str
     loop {
         let name = if n == 1 { format!("{stem}{suffix}.{ext}") } else { format!("{stem}{suffix} {n}.{ext}") };
         let p = dir.join(name);
-        if !p.exists() && !taken.contains(&p.to_string_lossy().into_owned()) {
+        // a dangling symbolic link is taken too: writing through it would create the file where it points
+        if std::fs::symlink_metadata(&p).is_err() && !taken.contains(&p.to_string_lossy().into_owned()) {
             return p;
         }
         n += 1;
@@ -341,7 +344,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
                 *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
                 Err(e)
             }
-            None => Ok(Report { path: String::new(), frames, seconds: secs, bytes, render_fps: frames as f64 / secs.max(1e-6), extra_files: Vec::new() }),
+            None => Ok(Report { path: String::new(), frames, seconds: secs, bytes, render_fps: frames as f64 / secs.max(1e-6), ..Default::default() }),
         };
         *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = match &r {
             Ok(_) => format!("Done in {secs:.1}s"),
@@ -352,7 +355,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations, started_from });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, source_durations, started_from, epoch: s.document_epoch });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -376,6 +379,13 @@ pub fn poll(s: &mut Session) {
         let pj = s.media_jobs.remove(i);
         let outs = std::mem::take(&mut *pj.outputs.lock().unwrap_or_else(|e| e.into_inner()));
         let source_durations = std::mem::take(&mut *pj.source_durations.lock().unwrap_or_else(|e| e.into_inner()));
+        if pj.epoch != s.document_epoch {
+            // the project was replaced under the job: its ids may now name unrelated items
+            if !outs.is_empty() {
+                s.error_toast("job", "the project was replaced; the media copies were not applied");
+            }
+            continue;
+        }
         let (outs, changed): (Vec<_>, Vec<_>) = outs.into_iter().partition(|(item, _)| unchanged_since_start(&s.project, *item, &pj.started_from));
         for (item, _) in &changed {
             let name = s.project.item(*item).map_or_else(|| format!("item {}", item.0), |i| i.name.clone());

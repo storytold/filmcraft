@@ -252,17 +252,7 @@ impl MediaSource for OggSource {
             out.channels = src;
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, OPUS_RATE, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -285,4 +275,74 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
         return None;
     }
     Some(OggSource::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    /// Ogg CRC-32 (polynomial 0x04C11DB7, no reflection, no final XOR; RFC 3533).
+    fn crc(data: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for &b in data {
+            crc ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            }
+        }
+        crc
+    }
+
+    /// One page holding whole packets (each under 255 bytes).
+    fn page(out: &mut Vec<u8>, flags: u8, granule: i64, seq: u32, packets: &[&[u8]]) {
+        let start = out.len();
+        out.extend_from_slice(b"OggS");
+        out.push(0);
+        out.push(flags);
+        out.extend_from_slice(&granule.to_le_bytes());
+        out.extend_from_slice(&9u32.to_le_bytes());
+        out.extend_from_slice(&seq.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.push(packets.len() as u8);
+        out.extend(packets.iter().map(|p| p.len() as u8));
+        for p in packets {
+            out.extend_from_slice(p);
+        }
+        let sum = crc(&out[start..]);
+        out[start + 22..start + 26].copy_from_slice(&sum.to_le_bytes());
+    }
+
+    /// An Ogg Opus file of CELT 20 ms packets with pseudo-random payloads, 3 packets a page.
+    fn opus_file(packets: usize) -> Vec<u8> {
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, 1, 0, 0]);
+        head.extend_from_slice(&48_000u32.to_le_bytes());
+        head.extend_from_slice(&[0, 0, 0]);
+        let mut f = Vec::new();
+        page(&mut f, 0x02, 0, 0, &[&head]);
+        page(&mut f, 0, 0, 1, &[b"OpusTags\0\0\0\0\0\0\0\0"]);
+        let noise = filmcraft_testkit::cuts::noise(packets * 120, 6);
+        let pkts: Vec<Vec<u8>> = noise
+            .chunks(120)
+            .map(|c| {
+                let mut p = vec![0xF8];
+                p.extend(c.iter().map(|v| (v * 127.0 + 128.0) as u8));
+                p
+            })
+            .collect();
+        let mut done = 0;
+        for (seq, chunk) in (2u32..).zip(pkts.chunks(3)) {
+            done += chunk.len();
+            let refs: Vec<&[u8]> = chunk.iter().map(Vec::as_slice).collect();
+            page(&mut f, if done == packets { 0x04 } else { 0 }, done as i64 * 960, seq, &refs);
+        }
+        f
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673): Opus (48 kHz) read at 47 kHz.
+    #[test]
+    fn resampled_opus_does_not_depend_on_the_read_cuts() {
+        let src = OggSource::open("cuts.opus", opus_file(30).into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+    }
 }
