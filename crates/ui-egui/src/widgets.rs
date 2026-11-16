@@ -2,7 +2,7 @@
 
 pub mod color_picker;
 
-use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
 
 use crate::icons::{self, Icon};
@@ -532,7 +532,14 @@ impl DragCheckbox for Ui {
                 sw.left |= !inside && (down || released);
                 sw.left
             } else {
-                (down || released) && inside
+                // a fast drag can pass over a checkbox between two frames: the stretch the pointer
+                // moved this frame counts where it crosses this one, unless something is drawn above
+                let crossed = || {
+                    let path = self.input(|i| i.pointer.latest_pos().map(|p| (p - i.pointer.delta(), p)));
+                    path.and_then(|(from, to)| crossing(from, to, resp.interact_rect.intersect(self.clip_rect())))
+                        .is_some_and(|p| self.ctx().layer_id_at(p) == Some(self.layer_id()))
+                };
+                (down || released) && (inside || (!pressed && crossed()))
             };
             if set && *checked != sw.state {
                 *checked = sw.state;
@@ -543,6 +550,25 @@ impl DragCheckbox for Ui {
         }
         resp
     }
+}
+
+/// A point where the segment from `a` to `b` passes through `r`, if it does.
+fn crossing(a: Pos2, b: Pos2, r: Rect) -> Option<Pos2> {
+    let d = b - a;
+    let (mut enter, mut exit) = (0.0_f32, 1.0_f32);
+    for (p, q) in [(-d.x, a.x - r.min.x), (d.x, r.max.x - a.x), (-d.y, a.y - r.min.y), (d.y, r.max.y - a.y)] {
+        if p == 0.0 {
+            // parallel to this side: outside it, the segment misses the rect
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            enter = enter.max(q / p);
+        } else {
+            exit = exit.min(q / p);
+        }
+    }
+    (enter <= exit).then(|| a + d * ((enter + exit) / 2.0))
 }
 
 /// Search field with a magnifier icon.
@@ -893,6 +919,36 @@ mod tests {
         four_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
         four_checkboxes(&ctx, &mut state, vec![]);
         assert_eq!(state, [true, true, true, false], "the old sweep's state did not reach option 3");
+    }
+
+    /// A drag fast enough to pass over checkboxes between two frames sets the ones it crossed too, but
+    /// not one under a popup.
+    #[test]
+    fn a_fast_drag_sets_the_checkboxes_it_crossed_between_frames() {
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        four_checkboxes(&ctx, &mut state, vec![]);
+        let rects = four_checkboxes(&ctx, &mut state, vec![]);
+        let at = |i: usize| rects[i].center();
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(0), true)]);
+        four_checkboxes(&ctx, &mut state, vec![egui::Event::PointerMoved(at(1)), egui::Event::PointerMoved(at(2)), egui::Event::PointerMoved(at(3))]);
+        four_checkboxes(&ctx, &mut state, vec![primary(at(3), false)]);
+        four_checkboxes(&ctx, &mut state, vec![]);
+        assert_eq!(state, [true; 4], "the two crossed in one frame went on too");
+        // with a popup over the second one, the same flick leaves it alone
+        let ctx = egui::Context::default();
+        let mut state = [false; 4];
+        for _ in 0..3 {
+            checkboxes_under_popup(&ctx, &mut state, vec![], rects[1]);
+        }
+        checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(at(0))], rects[1]);
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(at(0), true)], rects[1]);
+        checkboxes_under_popup(&ctx, &mut state, vec![egui::Event::PointerMoved(at(3))], rects[1]);
+        checkboxes_under_popup(&ctx, &mut state, vec![primary(at(3), false)], rects[1]);
+        checkboxes_under_popup(&ctx, &mut state, vec![], rects[1]);
+        // the popup's button is taller than the checkbox, so it reaches over the third one as well
+        assert_eq!([state[0], state[1], state[3]], [true, false, true], "the covered one is not crossed");
     }
 
     /// A move onto the next checkbox and the release arrive in one frame, as at a low frame rate: the
