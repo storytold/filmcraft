@@ -114,7 +114,7 @@ impl FilmcraftApp {
 /// of the Effects panel opens), then how many warnings the documents it imported reported (a
 /// Premiere project's `reportEntries`) and the first of them. A dialog answered later drops the
 /// command's result, so the status line is where the user sees them.
-fn show_import_result(app: &mut FilmcraftApp, result: &Value) {
+pub(super) fn show_import_result(app: &mut FilmcraftApp, result: &Value) {
     let list = |key: &str| result.get(key).and_then(Value::as_array).filter(|values| !values.is_empty());
     let mut status = Vec::new();
     if let Some(errors) = list("errors") {
