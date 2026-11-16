@@ -303,6 +303,26 @@ fn h265_shows_the_h264_family_controls_without_the_h264_only_ones() {
     d.snapshot("export-h265");
 }
 
+/// The Preset list's entries and its More presets… button have automation ids, and picking an
+/// entry applies that preset.
+#[test]
+fn the_preset_list_entries_have_automation_ids() {
+    let mut d = Driver::new("preset-list");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(3);
+    d.click("export.preset");
+    assert!(d.has("export.preset.menu.more"), "More presets… in the list");
+    // the list scrolls, so pick from its top entries, which are in view: the first that is not the
+    // current preset
+    let current = d.app().ui.export.preset.clone();
+    let mut entries = d.ok("ui.elements", json!({"prefix": "export.preset.option."})).as_array().unwrap().clone();
+    entries.sort_by(|a, b| a["rect"][1].as_f64().unwrap().total_cmp(&b["rect"][1].as_f64().unwrap()));
+    let pick = entries.iter().find(|e| e["label"] != json!(current)).expect("another preset is listed").clone();
+    let name = pick["label"].as_str().unwrap().to_string();
+    d.click(pick["id"].as_str().unwrap());
+    assert_eq!(d.app().ui.export.preset, name);
+}
+
 #[test]
 fn preset_manager_search_favourite_save_apply() {
     let mut d = Driver::new("manager");

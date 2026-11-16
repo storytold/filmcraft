@@ -342,7 +342,9 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                     if !favs.is_empty() {
                         ui.label(egui::RichText::new(tl!("Favorites")).color(t.text_dim).size(11.0));
                         for f in &favs {
-                            if ui.selectable_label(*f == ex.preset, crate::i18n::t(f)).clicked() {
+                            let r = ui.selectable_label(*f == ex.preset, crate::i18n::t(f));
+                            reg.add(format!("export.preset.favorite.{f}"), r.rect, f.clone());
+                            if r.clicked() {
                                 chosen_preset = Some(f.clone());
                             }
                         }
@@ -354,12 +356,16 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                             cat = p.category.clone();
                             ui.label(egui::RichText::new(crate::i18n::t(&cat)).color(t.text_dim).size(11.0));
                         }
-                        if ui.selectable_label(p.name == ex.preset, crate::i18n::t(&p.name)).clicked() {
+                        let r = ui.selectable_label(p.name == ex.preset, crate::i18n::t(&p.name));
+                        reg.add(format!("export.preset.option.{}", p.name), r.rect, p.name.clone());
+                        if r.clicked() {
                             chosen_preset = Some(p.name.clone());
                         }
                     }
                     ui.separator();
-                    if ui.button(tl!("More presets…")).clicked() {
+                    let r = ui.button(tl!("More presets…"));
+                    reg.add("export.preset.menu.more", r.rect, "More presets…");
+                    if r.clicked() {
                         open_manager = true;
                     }
                 },
