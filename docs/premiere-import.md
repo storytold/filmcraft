@@ -15,6 +15,7 @@ filmcraft-cli --save-as /path/to/episode.fcproj exec premiere.import \
 The same JSON command works through MCP `command_run` or the desktop control channel.
 File → Import and `filmcraft-cli import source.prproj` also dispatch to this importer. Their
 default is linked media and a new `source.filmcraft-import-N` directory beside the source project.
+File → Import says in the status line how many warnings the import reported, and the first.
 Use the explicit command for a custom destination, copied media or frame rate. An existing
 destination is refused as invalid parameters (`destination … already exists; choose a new
 directory`). As with other documents, the project's items go into `bin` (File → Import passes its
