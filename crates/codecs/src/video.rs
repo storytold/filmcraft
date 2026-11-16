@@ -1281,6 +1281,38 @@ impl VideoDecoder for RawVideoDecoder {
     }
 }
 
+#[cfg(test)]
+mod raw_video_tests {
+    use super::*;
+    use filmcraft_frame::{Chroma, PixelData};
+
+    #[test]
+    fn uncompressed_frames_keep_their_layout_and_timing() {
+        let mut rgb = RawVideoDecoder::new(RawFormat::Bgrx32, 1, 1, false).unwrap();
+        let out = rgb.decode(&[3, 2, 1, 0], 42).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pts, 42);
+        assert!(matches!(out[0].frame.data, PixelData::Rgba8(_)), "{:?}", out[0].frame.data);
+        let mut uyvy = RawVideoDecoder::new(RawFormat::Uyvy, 2, 1, false).unwrap();
+        let f = &uyvy.decode(&[20, 10, 30, 11], 0).unwrap()[0].frame;
+        assert!(matches!(&f.data, PixelData::Yuv8 { chroma: Chroma::C422, planes, .. } if planes[0].as_slice() == [10, 11]));
+        let mut i420 = RawVideoDecoder::new(RawFormat::I420, 2, 2, false).unwrap();
+        let f = &i420.decode(&[1, 2, 3, 4, 10, 20], 0).unwrap()[0].frame;
+        assert!(matches!(&f.data, PixelData::Yuv8 { chroma: Chroma::C420, planes, .. } if planes[1].as_slice() == [10] && planes[2].as_slice() == [20]));
+        assert!(uyvy.flush().is_empty());
+        uyvy.reset();
+    }
+
+    #[test]
+    fn uncompressed_errors_name_the_frame() {
+        assert!(RawVideoDecoder::new(RawFormat::Gray8, 0, 1, false).is_err());
+        let mut short = RawVideoDecoder::new(RawFormat::I420, 2, 2, false).unwrap();
+        assert!(matches!(short.decode(&[1, 2], 0), Err(CodecError::Decode(m)) if m.contains("2 bytes is too short for 2x2")));
+        let huge = RawVideoDecoder { format: RawFormat::Gray8, width: u32::MAX, height: 1, bottom_up: false };
+        assert!(matches!(huge.picture(&[]), Err(CodecError::Unsupported(m)) if m.contains("uncompressed video")));
+    }
+}
+
 /// Decode with FilmCraft's historical 1 GiB ProRes output-plane ceiling.
 fn decode_prores_frame(sample: &[u8]) -> std::result::Result<craft_video::prores::Frame, craft_video::prores::Error> {
     let limits = craft_video::prores::DecodeLimits { max_pixels: u64::MAX, max_frame_bytes: 1 << 30 };
