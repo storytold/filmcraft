@@ -181,6 +181,7 @@ pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
 }
 
 /// A relative path written as a URL (the inverse of [`resolve_url`]'s decoding).
+#[cfg(test)]
 pub(crate) fn relative_url(path: &str) -> String {
     percent_encode_path(path)
 }
@@ -280,6 +281,7 @@ pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
+#[cfg(test)]
 pub(crate) fn rate_from_f64(r: f64) -> FrameRate {
     if r <= 0.0 || !r.is_finite() || r > MAX_RATE as f64 {
         return FrameRate::FPS_24;
@@ -430,6 +432,7 @@ impl Builder {
         self.media.get(key).copied()
     }
 
+    #[cfg(test)]
     pub fn register_media(&mut self, key: &str, id: ItemId) {
         self.media.insert(key.to_string(), id);
     }

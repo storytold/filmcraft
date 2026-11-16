@@ -16,7 +16,7 @@
 //! ([`crate::essence::NestNeeds::Render`]), is media like any other, in a clip named after the
 //! sequence. Premiere Pro's OMF export does the same.
 
-pub(crate) mod bento;
+pub(crate) use craft_aaf::omf::bento;
 mod read;
 mod write;
 
