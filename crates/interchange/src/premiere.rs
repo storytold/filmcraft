@@ -1795,15 +1795,18 @@ fn import_bins(doc: &Document, rate: Option<FrameRate>, b: &mut Builder, report:
         let parent = bin.parent.and_then(|i| bins.get(i).copied());
         bins.push(b.bin(&bin.name, parent));
     }
-    // Each item's bin, the first that lists it, and the items in panel order.
+    // The items already listed, each item's bin when the first listing of it is in one, and those
+    // items in panel order. An item first listed at the root stays there.
+    let mut listed = std::collections::HashSet::new();
     let mut filed = std::collections::HashMap::new();
     let mut order = Vec::new();
     for entry in &doc.items {
         let id = bin_item(entry, (width, height, fps), b, report, sequences);
-        if let (Some(id), Some(bin)) = (id, entry.bin.and_then(|i| bins.get(i).copied()))
-            && let std::collections::hash_map::Entry::Vacant(slot) = filed.entry(id)
+        if let Some(id) = id
+            && listed.insert(id)
+            && let Some(bin) = entry.bin.and_then(|i| bins.get(i).copied())
         {
-            slot.insert(bin);
+            filed.insert(id, bin);
             order.push(id);
         }
         // The panel shows media by its master clip name (a rename), not a timeline clip's label.
@@ -2935,6 +2938,32 @@ mod tests {
         };
         assert_eq!(names_in("Footage"), ["Interview", "B-roll"], "{report:?}");
         assert!(names_in("Selects").is_empty());
+    }
+    #[test]
+    fn an_item_first_listed_at_the_root_stays_at_the_root() {
+        // Hand-written: the interview's master clip listed at the root, then a second master clip of
+        // the same file in Footage. The file is one item, which stays where it is listed first.
+        let groups = r#"<TrackGroup><Second ObjectRef="vg"/></TrackGroup>"#;
+        let xml = av_fixture(groups)
+            .replace(r#"<Item Index="0" ObjectURef="footage"/>"#, r#"<Item Index="0" ObjectURef="clip-item"/><Item Index="1" ObjectURef="footage"/>"#)
+            .replace(
+                r#"<Item Index="0" ObjectURef="clip-item"/></Items></ProjectItemContainer></BinProjectItem>"#,
+                r#"<Item Index="0" ObjectURef="copy-item"/></Items></ProjectItemContainer></BinProjectItem>"#,
+            )
+            .replace(
+                "</PremiereData>",
+                r#"<ClipProjectItem ObjectUID="copy-item"><ProjectItem><Name>interview.mov</Name></ProjectItem><MasterClip ObjectURef="copy-master"/></ClipProjectItem>
+<MasterClip ObjectUID="copy-master"><Clips><Clip Index="0" ObjectRef="copy-video"/></Clips><Name>Interview</Name></MasterClip>
+<VideoClip ObjectID="copy-video"><Clip><Source ObjectRef="vs"/></Clip></VideoClip></PremiereData>"#,
+            );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(tree.items.iter().map(|e| e.bin).collect::<Vec<_>>(), [None, Some(0)], "{report:?}");
+        let p = &fragment.project;
+        let file = filmcraft_project::MediaRef::File { path: "/media/interview.mov".into() };
+        let items: Vec<_> = p.items.values().filter(|i| i.as_media().is_some_and(|m| m.media == file)).collect();
+        assert_eq!(items.len(), 1, "{report:?}");
+        let bin = p.root.parent_of(items[0].id).and_then(|b| p.root.find_bin(b)).map(|b| b.name.clone());
+        assert_eq!(bin, Some(p.root.name.clone()), "{report:?}");
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
