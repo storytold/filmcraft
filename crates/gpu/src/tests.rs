@@ -1,14 +1,9 @@
+use super::blend_tests::device;
 use super::*;
 use filmcraft_frame::Chroma;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
-
-fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = crate::adapter::native_instance();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))).ok()
-}
 
 /// A 10-bit frame draws the same whether its planes go up as 16-bit codes (`R16Unorm`, on a
 /// device with normalised 16-bit textures) or as half floats, uploaded by a worker's

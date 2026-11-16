@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-font-catalog = { workspace = true }
 filmcraft-color = { workspace = true }
 # Font tables, glyph outlines and metrics (MIT OR Apache-2.0). Rasterisation is our own.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
