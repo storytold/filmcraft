@@ -604,10 +604,15 @@ fn warp(id: u32, r: &mut Reader, img: &mut Image) -> Result<()> {
 #[cfg(any(test, feature = "writer"))]
 /// Encode an opcode list (big-endian), for tests: (id, flags, parameters).
 pub fn encode(list: &[(u32, u32, Vec<u8>)]) -> Result<Vec<u8>> {
-    let records: Vec<Opcode> = list
-        .iter()
-        .map(|(id, flags, params)| Opcode { id: *id, version: if *id == 14 { 0x0106_0000 } else { 0x0103_0000 }, flags: *flags, params: params.clone() })
-        .collect();
+    // staged with fallible allocations, so running out of memory is an error, not an abort
+    let mut records: Vec<Opcode> = Vec::new();
+    records.try_reserve_exact(list.len()).map_err(|_| Error::TooLarge)?;
+    for (id, flags, params) in list {
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(params.len()).map_err(|_| Error::TooLarge)?;
+        copy.extend_from_slice(params);
+        records.push(Opcode { id: *id, version: if *id == 14 { 0x0106_0000 } else { 0x0103_0000 }, flags: *flags, params: copy });
+    }
     craft_raw::opcode_raw::encode(&records).map_err(|_| Error::Malformed("opcode list cannot be encoded"))
 }
 

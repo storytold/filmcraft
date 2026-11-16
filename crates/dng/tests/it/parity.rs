@@ -196,13 +196,11 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
             },
         ),
     ));
-    // opcode lists at each stage: MapPolynomial on list 2, a gain map on list 3, bad pixels on list 1
+    // opcode lists at each stage: MapPolynomial on list 2, a gain map on list 3, bad pixels on list 1;
+    // the gain map is a valid 2 x 2 x 1 grid (unit spacing, zero origin), so it reaches the pixels
     let poly = encode(&[(8, 0, [u(&[0, 0, h as u32, w as u32, 0, 1, 1, 1, 2]), d(&[0.01, 0.9, 0.05])].concat())]);
-    let gain = encode(&[(
-        9,
-        0,
-        [u(&[0, 0, h as u32 - 2, w as u32 - 2, 0, 3, 1, 1, 2, 2]), d(&[0.0, 0.0, 1.0, 1.0]), u(&[0]), d(&[0.0, 0.0]), f32s(&[1.0, 1.2, 0.9, 1.1])].concat(),
-    )]);
+    let gain =
+        encode(&[(9, 0, [u(&[0, 0, h as u32 - 2, w as u32 - 2, 0, 3, 1, 1, 2, 2]), d(&[1.0, 1.0, 0.0, 0.0]), u(&[1]), f32s(&[1.0, 1.2, 0.9, 1.1])].concat())]);
     let bad = encode(&[(4, 0, u(&[0, 0]))]);
     out.push((
         "opcode lists",
@@ -278,7 +276,7 @@ const EXPECTED: &[(&str, u64)] = &[
     ("monochrome 16", 0x284d958a1f4c71ff),
     ("6x6 cfa", 0xbee3e94bf8e25f34),
     ("cinemadng tags tiles big-endian", 0xedf973d5ac4e41b7),
-    ("opcode lists", 0xb15e6d64c0bad19b),
+    ("opcode lists", 0x0678fa3703acda03),
 ];
 
 #[test]
