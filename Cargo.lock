@@ -1074,10 +1074,10 @@ dependencies = [
 [[package]]
 name = "craft-captions"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a553c9f7345513b40bf317f5e387da5a45461d5e#a553c9f7345513b40bf317f5e387da5a45461d5e"
+source = "git+https://github.com/storytold/craft-libs?rev=47ce856487bf1c2d64ef2936822f4e9e09997c80#47ce856487bf1c2d64ef2936822f4e9e09997c80"
 dependencies = [
  "craft-timeline",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a553c9f7345513b40bf317f5e387da5a45461d5e)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=47ce856487bf1c2d64ef2936822f4e9e09997c80)",
  "thiserror 2.0.21",
 ]
 
@@ -1184,7 +1184,7 @@ dependencies = [
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a553c9f7345513b40bf317f5e387da5a45461d5e#a553c9f7345513b40bf317f5e387da5a45461d5e"
+source = "git+https://github.com/storytold/craft-libs?rev=47ce856487bf1c2d64ef2936822f4e9e09997c80#47ce856487bf1c2d64ef2936822f4e9e09997c80"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1193,7 +1193,7 @@ dependencies = [
 [[package]]
 name = "craft-timeline"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a553c9f7345513b40bf317f5e387da5a45461d5e#a553c9f7345513b40bf317f5e387da5a45461d5e"
+source = "git+https://github.com/storytold/craft-libs?rev=47ce856487bf1c2d64ef2936822f4e9e09997c80#47ce856487bf1c2d64ef2936822f4e9e09997c80"
 dependencies = [
  "craft-time",
  "serde",
@@ -1281,7 +1281,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5dcddf5bf09c5250f95c89e8197c695f158b88f5#5dcddf5bf09c5250f95c89e8197c695f158b88f5"
+source = "git+https://github.com/storytold/craft-libs?rev=47ce856487bf1c2d64ef2936822f4e9e09997c80#47ce856487bf1c2d64ef2936822f4e9e09997c80"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
@@ -1291,7 +1291,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a553c9f7345513b40bf317f5e387da5a45461d5e#a553c9f7345513b40bf317f5e387da5a45461d5e"
+source = "git+https://github.com/storytold/craft-libs?rev=5dcddf5bf09c5250f95c89e8197c695f158b88f5#5dcddf5bf09c5250f95c89e8197c695f158b88f5"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
