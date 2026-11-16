@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "craft-font-catalog"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=4e1a15cee23f687959b965c0baaa1e1cf9aa2947#4e1a15cee23f687959b965c0baaa1e1cf9aa2947"
+source = "git+https://github.com/storytold/craft-libs?rev=f01f6aca3afdf664b6c3e651e8e58caddc701c62#f01f6aca3afdf664b6c3e651e8e58caddc701c62"
 dependencies = [
  "skrifa 0.47.0",
  "thiserror 2.0.21",
