@@ -75,15 +75,32 @@ pub trait FxEnv: Sync {
     fn source_size(&self) -> (u32, u32);
     /// Identity of the clip and its source range (cache key for analyses).
     fn clip_key(&self) -> u64;
-    /// What the clip's frames are made from, independent of where the clip sits on the timeline:
-    /// the media file's identity, the part of it the clip plays and how. A Warp Stabilizer
-    /// analysis made of these bytes holds for every clip with the same ones, in any session; it
-    /// is kept on disk when there is a [`set_stabilizer_cache_dir`] folder. `None` (nested
-    /// sequences, generators, media without an identity) keeps analyses in memory, by
-    /// [`FxEnv::clip_key`].
-    fn analysis_identity(&self) -> Option<Vec<u8>> {
+    /// Where the clip's frames lie among its source's, independent of where the clip sits on the
+    /// timeline (see [`AnalysisSpan`]). Warp Stabilizer analyses are shared by every clip with the
+    /// same [`AnalysisSpan::source`], in any session, and kept on disk when there is a
+    /// [`set_stabilizer_cache_dir`] folder. `None` (nested sequences, generators, media without an
+    /// identity) keeps analyses in memory, by [`FxEnv::clip_key`].
+    fn analysis_span(&self) -> Option<AnalysisSpan> {
         None
     }
+    /// The clip's raw picture `k` sequence frames from its start at `scale` × its source size: the
+    /// frames an analysis reads ([`FxEnv::source_frame`] at that time, exactly).
+    fn analysis_frame(&self, k: usize, scale: f32) -> Option<Image> {
+        self.source_frame(k as f64 / self.frame_rate().max(1.0) - self.clip_offset(), scale)
+    }
+}
+
+/// A clip's frames among its source's, for sharing analyses between clips of one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisSpan {
+    /// The source and how its frames are read: the file's size and content fingerprint, the
+    /// picture size, the sequence's frame rate, and the frame grid the clip's frames fall on.
+    /// Clips with the same bytes read frames of one grid, frame `k` of the clip being grid frame
+    /// `first + k`. A clip whose frames depend on its own in or out point (reversed, frame-held,
+    /// blended) has bytes of its own that also name its source range, and `first` 0.
+    pub source: Vec<u8>,
+    /// The grid frame of the clip's first frame.
+    pub first: i64,
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].
@@ -199,8 +216,12 @@ impl FxEnv for ItemEnv<'_> {
     fn clip_key(&self) -> u64 {
         clip_key_of(self.item)
     }
-    fn analysis_identity(&self) -> Option<Vec<u8>> {
-        analysis_identity(self.project, self.seq, self.item)
+    fn analysis_span(&self) -> Option<AnalysisSpan> {
+        analysis_span(self.project, self.seq, self.item)
+    }
+    fn analysis_frame(&self, k: usize, scale: f32) -> Option<Image> {
+        let t = Tick(self.item.start.0.saturating_add(self.seq.settings.frame_rate.tick_of(i64::try_from(k).ok()?).0));
+        crate::base_layer(self.project, self.seq, self.item, t, self.opts, self.sources, scale.clamp(1.0 / 64.0, 1.0))
     }
 }
 
@@ -213,12 +234,14 @@ pub(crate) fn clip_key_of(item: &TrackItem) -> u64 {
     h
 }
 
-/// [`FxEnv::analysis_identity`] of a media clip: the file's size and content fingerprint, the
-/// part of it the clip plays and how (source in, duration, speed, reverse, frame hold, time
-/// interpolation, frame rate interpretation), its picture size (rotation turns it) and the
-/// sequence's frame rate, at which the analysis reads it. Its place on the timeline is left out:
-/// moving the clip keeps its analysis.
-pub(crate) fn analysis_identity(project: &Project, seq: &Sequence, item: &TrackItem) -> Option<Vec<u8>> {
+/// [`FxEnv::analysis_span`] of a media clip. Frame `k` of a clip shows source time `source_in + k ×
+/// step`, step being the sequence's frame duration times the clip's speed. When that is a whole
+/// number of ticks, the clip plays forward at a constant speed and nothing but the source time
+/// makes its picture (Frame Sampling, no frame hold), clips whose in points differ by whole steps
+/// read the same frames: the grid is named by the step and the in point's phase in it. Otherwise
+/// the clip's own range is named too. The picture size (rotation turns it), pixel aspect, frame
+/// rate interpretation and Scale to Frame Size are part of both.
+pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem) -> Option<AnalysisSpan> {
     let filmcraft_project::ItemKind::Media(m) = &project.item(item.item)?.kind else { return None };
     let id = m.identity?;
     let (w, h) = crate::source_size(project, item.item)?;
@@ -228,22 +251,41 @@ pub(crate) fn analysis_identity(project: &Project, seq: &Sequence, item: &TrackI
         filmcraft_project::TimeInterpolation::FrameBlending => 1,
         filmcraft_project::TimeInterpolation::OpticalFlow => 2,
     };
-    let fields = [
+    let rate = seq.settings.frame_rate;
+    let common = [
         id.size,
         id.fingerprint,
-        item.source_in.0 as u64,
-        item.duration.0 as u64,
-        item.speed.to_bits(),
-        item.reverse as u64,
-        item.frame_hold.map_or(u64::MAX, |t| t.0 as u64),
-        interpolation,
         item.scale_to_frame as u64,
         m.interpret.frame_rate.map_or(0, |r| r.as_f64().to_bits()),
         par,
         (w as u64) << 32 | h as u64,
-        seq.settings.frame_rate.as_f64().to_bits(),
+        rate.as_f64().to_bits(),
+        item.speed.to_bits(),
     ];
-    Some(fields.iter().flat_map(|v| v.to_le_bytes()).collect())
+    let frame = rate.frame_duration().0;
+    // frame boundaries at exact multiples of the frame duration (every common rate)
+    let exact = frame > 0 && rate.tick_of(1_000_000).0 == frame.saturating_mul(1_000_000);
+    let step = frame as f64 * item.speed;
+    let grid = (exact
+        && !item.reverse
+        && item.frame_hold.is_none()
+        && item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling
+        && item.speed.is_finite()
+        && item.speed > 0.0
+        && (step - step.round()).abs() < 1e-6
+        && (1.0..9e15).contains(&step.round()))
+    .then_some(step.round() as i64);
+    let bytes = |tag: u8, fields: &[u64]| -> Vec<u8> { std::iter::once(tag).chain(common.iter().chain(fields).flat_map(|v| v.to_le_bytes())).collect() };
+    Some(match grid {
+        Some(step) => {
+            let phase = item.source_in.0.rem_euclid(step);
+            AnalysisSpan { source: bytes(1, &[step as u64, phase as u64]), first: item.source_in.0.div_euclid(step) }
+        }
+        None => {
+            let own = [item.source_in.0 as u64, item.duration.0 as u64, item.reverse as u64, item.frame_hold.map_or(u64::MAX, |t| t.0 as u64), interpolation];
+            AnalysisSpan { source: bytes(0, &own), first: 0 }
+        }
+    })
 }
 
 // ------------------------------------------------------------------ parameters
