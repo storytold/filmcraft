@@ -198,6 +198,7 @@ impl ExrCompression {
         }
     }
     /// The value of the OpenEXR `compression` attribute.
+    #[cfg(test)]
     pub(crate) fn code(self) -> u8 {
         match self {
             ExrCompression::None => 0,
@@ -207,6 +208,7 @@ impl ExrCompression {
         }
     }
     /// Scan lines per chunk.
+    #[cfg(test)]
     pub(crate) fn lines(self) -> usize {
         if self == ExrCompression::Zip { 16 } else { 1 }
     }
