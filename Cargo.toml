@@ -67,7 +67,7 @@ craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7738cc6c689060475cb6947a6e3db6ed78fb3419", default-features = false }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a64f5a6e4a656f6750e72fc699750ce8a2f6f86f" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
-craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "654e8d55e16b349fba04f5a48e8da221680ee7e3" }
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b3643af6477326e840f86be78c89357f5308ba1d" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
