@@ -78,7 +78,7 @@ pub const DEFAULT_COLUMNS: [&str; 5] = ["Name", "Frame Rate", "Media Duration", 
 /// interchange document `file.import` reads ([`crate::interchange::EXTENSIONS`], AAF and OMF
 /// included). Avid Log Exchange (`.ale`) is left out: FilmCraft writes it (File ▸ Export) but,
 /// like Premiere, does not read it (#1292).
-const PROJECT_EXTENSIONS: [&str; 8] = ["fcproj", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi"];
+const PROJECT_EXTENSIONS: [&str; 10] = ["fcproj", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi", "kdenlive", "mlt"];
 const CAPTION_EXTENSIONS: [&str; 3] = ["srt", "vtt", "scc"];
 const RECENT_MAX: usize = 10;
 
