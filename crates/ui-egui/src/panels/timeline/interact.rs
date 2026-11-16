@@ -374,7 +374,12 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             let tracks = razor_line_tracks(app, clip, mods.shift);
             let painter = ui.painter().with_clip_rect(Rect::from_min_max(pos2(layout.content.min.x, layout.content.min.y), layout.content.max));
             for row in layout.rows.iter().filter(|r| tracks.contains(&r.track)) {
-                let seg = [pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)];
+                // the part of the row its pane shows: a row scrolled past the divider draws nothing
+                let shown = layout.shown(row);
+                if shown.height() <= 0.0 {
+                    continue;
+                }
+                let seg = [pos2(x, shown.min.y), pos2(x, shown.max.y)];
                 painter.line_segment(seg, Stroke::new(3.0, Color32::from_black_alpha(110)));
                 painter.line_segment(seg, Stroke::new(1.0, Color32::WHITE));
             }

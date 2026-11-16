@@ -269,8 +269,14 @@ fn an_option_drag_keeps_the_copy_pointer() {
     d.frames(2);
 }
 
+/// How many of `tracks` have a row their pane shows, which is where a preview line can be seen.
+fn shown_rows(d: &Driver, tracks: &[filmcraft_project::TrackId]) -> usize {
+    let layout = d.app().tl.layout.as_ref().expect("a laid out timeline");
+    layout.rows.iter().filter(|r| tracks.contains(&r.track) && layout.shown(r).height() > 0.0).count()
+}
+
 /// The preview line is drawn on the clip's own track and its linked clips' tracks, and on every
-/// track with Shift.
+/// track with Shift, on the rows their panes show.
 #[test]
 fn the_razor_preview_line_is_drawn_on_the_linked_tracks_or_every_track_with_shift() {
     let mut d = Driver::demo();
@@ -281,8 +287,8 @@ fn the_razor_preview_line_is_drawn_on_the_linked_tracks_or_every_track_with_shif
     // nothing to cut off the tracks: what else draws white vertical lines is the baseline
     d.hover(pos2(2.0, 2.0));
     let base = d.white_vertical_lines();
-    let linked = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), false).len();
-    let every = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), true).len();
+    let linked = shown_rows(&d, &filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), false));
+    let every = shown_rows(&d, &filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), true));
     assert!(linked > 1 && every > linked, "the demo clip is linked and there are more tracks: {linked}, {every}");
     d.hover(at);
     assert_eq!(d.white_vertical_lines() - base, linked, "the clip's track and its linked clips' tracks");
@@ -305,6 +311,19 @@ fn the_razor_preview_line_is_drawn_on_the_linked_tracks_or_every_track_with_shif
     assert_eq!(d.white_vertical_lines() - base, every - 1, "Shift: every track but the locked one");
     d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     d.frames(2);
+    // a row its pane does not show gets no line: with the divider at the bottom, no audio row is shown
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": audio.0, "locked": false}}));
+    d.harness.state_mut().ui.timeline.split = 1.0;
+    d.frames(2);
+    let video = {
+        let seq = d.app().session.active_sequence().unwrap();
+        let tracks = filmcraft_ui_egui::panels::timeline::razor_line_tracks(d.app(), ClipId(city), false);
+        tracks.iter().filter(|t| seq.video_tracks.iter().any(|v| v.id == **t)).count()
+    };
+    assert!(video < linked, "the clip has linked audio");
+    let at = clip_center(&mut d, city);
+    d.hover(at);
+    assert_eq!(d.white_vertical_lines() - base, video, "only the video rows draw a line");
 }
 
 /// A clip's edge, in the band of its track where edges are grabbed.
