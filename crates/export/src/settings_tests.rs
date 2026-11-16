@@ -263,6 +263,14 @@ fn jpeg_targa_and_dpx_sequences() {
         }
         // the top-left pixel is the top row (Targa is stored bottom-up), and all of it is blue
         assert!(out.stdout.as_chunks::<4>().0.iter().all(|p| p[2] > 100 && p[0] < 20), "{first}");
+        // FilmCraft's own import (craft-dpx, and the Targa reader) reads the frame as ffmpeg does
+        if matches!(fmt, Format::TgaSequence | Format::DpxSequence) {
+            let ours = filmcraft_media::still::decode_raster(&first, &bytes).unwrap();
+            assert_eq!((ours.width, ours.height), (64, 36), "{first}");
+            assert_eq!(ours.rgba.len(), out.stdout.len(), "{first}: import and ffmpeg frame sizes differ");
+            let worst = ours.rgba.iter().zip(&out.stdout).map(|(&a, &b)| a.abs_diff(b)).max().unwrap_or(0);
+            assert!(worst <= 1, "{first}: import differs from ffmpeg by {worst}");
+        }
     }
     assert!(jpeg_sizes[0] > jpeg_sizes[1], "quality 95 must be larger than quality 20: {jpeg_sizes:?}");
 }
@@ -708,7 +716,7 @@ fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
     let src = filmcraft_codecs::AudioFileSource::decode(path, bytes).unwrap();
     let info = src.info().audio_streams[0].clone();
     // the exported second, past the encoder delay
-    let buf = src.audio(i64::from(filmcraft_mp3enc::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
+    let buf = src.audio(i64::from(craft_audio::mp3::DELAY), info.sample_rate as usize, info.sample_rate).unwrap();
     assert_eq!(buf.channels.len(), info.channels as usize);
     (info.sample_rate, buf.channels)
 }
@@ -728,7 +736,7 @@ fn mp3_export_writes_layer_iii_frames() {
     // MPEG-1 Layer III, no CRC, 320 kbit/s (index 14), 48 kHz (index 1), joint stereo
     assert_eq!((b[0], b[1], b[2] >> 4, (b[2] >> 2) & 3, b[3] >> 6), (0xFF, 0xFB, 14, 1, 1));
     // whole 960-byte frames covering the second and the encoder delay
-    assert_eq!(b.len(), 960 * (48_000 + filmcraft_mp3enc::DELAY as usize).div_ceil(1152));
+    assert_eq!(b.len(), 960 * (48_000 + craft_audio::mp3::DELAY as usize).div_ceil(1152));
     let (rate, pcm) = decode_mp3(&path);
     assert_eq!((rate, pcm.len()), (48_000, 2));
     // the -6 dBFS tone (RMS about 0.35) survives the round trip

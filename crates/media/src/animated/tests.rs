@@ -287,3 +287,23 @@ fn clip_rate_follows_the_common_frame_length() {
     assert_eq!(rate_of(&[ms(5_000), ms(5_000)]), FrameRate::FPS_30, "0.2 fps is not a video rate");
     assert_eq!(rate_of(&[]), FrameRate::FPS_30);
 }
+
+#[test]
+fn repeated_identical_frames_count_once_toward_the_decode_budget() {
+    let (a, b, c) = (picture([9, 9, 9], 255), picture([1, 2, 3], 255), picture([4, 5, 6], 255));
+    let decode = |frames: &[(Vec<u8>, u32)], budget: usize| {
+        let bytes = gif(frames);
+        let mut d = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes[..])).unwrap();
+        d.set_limits(image::Limits::default()).unwrap();
+        AnimatedSource::from_frames("a.gif", Format::Gif, d.into_frames(), bytes.len() as u64, budget)
+    };
+    // a frame is 32 bytes: many repeats of one picture cost 32, so a long valid animation is not cut
+    let long = decode(&[(a.clone(), 100), (a.clone(), 100), (a.clone(), 100), (a.clone(), 100), (b.clone(), 100), (b.clone(), 100)], 70).expect("animation");
+    assert_eq!(long.frame_count(), 2);
+    assert_eq!(long.info().duration, ms(600));
+    // only identical frames and a tight budget: still a still image, nothing was lost
+    assert!(decode(&[(a.clone(), 100), (a.clone(), 100), (a.clone(), 100)], 70).is_none());
+    // distinct pictures past the budget still end the clip there
+    let cut = decode(&[(a, 100), (b, 100), (c, 100)], 70).expect("the truncated animation is kept");
+    assert_eq!(cut.frame_count(), 2);
+}
