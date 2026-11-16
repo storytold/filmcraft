@@ -741,3 +741,75 @@ fn effect_controls_font_and_style_are_drop_downs_that_apply() {
     pick(&mut d, "Bold Italic");
     assert_eq!(text_param(&mut d, clip, "font_style"), Some(filmcraft_project::ParamValue::Text("Bold Italic".into())), "picking a style applies it");
 }
+
+/// The Properties panel's eyedropper fills a colour from the Program picture: arm it, click the
+/// picture, and the Fill colour takes the pixel's colour (the armed effect's own colour is not
+/// sampled back into itself — the layer is switched off for the render).
+#[test]
+fn the_eyedropper_fills_a_graphic_colour_from_the_program_picture() {
+    let mut d = Driver::demo();
+    let clip = d.ok("engine.execute", json!({"command": "graphics.newText", "params": {"text": "Hi"}}))["clip"].as_u64().expect("graphic clip");
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.ok("ui.set", json!({"focused": "Properties"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    // the Appearance rows sit below the fold: scroll until the eyedropper is inside the window
+    let shown = |d: &mut Driver| {
+        d.ok("ui.elements", json!({"prefix": "graphics.prop.fill_color.eyedropper"}))
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "graphics.prop.fill_color.eyedropper")
+            .map(|e| {
+                let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+                (r[1], r[3])
+            })
+    };
+    for _ in 0..15 {
+        match shown(&mut d) {
+            Some((y, h)) if y + h < 960.0 => break,
+            _ => {}
+        }
+        d.ok("ui.scroll", json!({"id": "graphics.prop.scale", "dy": -200.0}));
+        d.frames(2);
+    }
+    match shown(&mut d) {
+        Some((y, h)) if y + h < 960.0 => {}
+        other => panic!("the eyedropper never scrolled into view: {other:?}"),
+    }
+    let before = text_param(&mut d, clip, "fill_color");
+    d.ok("ui.click", json!({"id": "graphics.prop.fill_color.eyedropper"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.eyedropper.is_some(), "the eyedropper is armed");
+    // back to the normal frame, where the Program monitor takes the click
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(4);
+    let picture = |d: &mut Driver| d.ok("ui.elements", json!({"prefix": "program.picture"})).as_array().unwrap().iter().any(|e| e["id"] == "program.picture");
+    for _ in 0..10 {
+        if picture(&mut d) {
+            break;
+        }
+        d.frames(2);
+    }
+    assert!(picture(&mut d), "the Program monitor is visible again");
+    // The colour arrives with the render of the picked frame, on a worker thread; a pick can be
+    // lost while the whole suite's harnesses starve each other's render workers, so click again.
+    let mut picked = false;
+    for _ in 0..3 {
+        d.ok("ui.click", json!({"id": "program.picture"}));
+        for _ in 0..300 {
+            d.frames(2);
+            if d.harness.state().ui.eyedropper.is_none() {
+                picked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if picked {
+            break;
+        }
+    }
+    assert!(picked, "filling disarms the eyedropper");
+    assert_ne!(text_param(&mut d, clip, "fill_color"), before, "the eyedropper filled the Fill colour from the Program picture");
+}

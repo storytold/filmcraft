@@ -42,6 +42,10 @@ struct Ctx<'a> {
     autos: Vec<(String, Rect, String)>,
     /// Characters selected with the Type tool in this layer: character properties apply to them.
     range: Option<(usize, usize)>,
+    /// The eyedropper already armed for one of this panel's colours, if any.
+    armed: Option<crate::state::Eyedropper>,
+    /// A colour whose eyedropper was clicked this frame; the panel arms it once the layer borrow ends.
+    arm: Option<crate::state::Eyedropper>,
 }
 
 /// Character properties a Type-tool selection can carry, with their `graphics.setCharStyle` names.
@@ -272,6 +276,17 @@ impl Ctx<'_> {
         self.auto(id, r.rect, id);
         if r.changed() {
             self.set(id, json!(color_hex(c32.to_srgba_unmultiplied(), alpha != egui::color_picker::Alpha::Opaque)));
+        }
+        // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
+        let target = match (self.range, char_style_key(id)) {
+            (Some((a, b)), Some(style)) => crate::state::Eyedropper::CharStyle { clip: self.clip.0, layer: self.layer, start: a, end: b, style: style.into() },
+            _ => crate::state::Eyedropper::Graphic { clip: self.clip.0, layer: self.layer, prop: id.into(), alpha: alpha != egui::color_picker::Alpha::Opaque },
+        };
+        let armed = self.armed.as_ref() == Some(&target);
+        let drop = crate::widgets::eyedropper::button(vui, &self.t, armed, crate::i18n::t("Eyedropper (pick a color from the Program monitor)"));
+        self.autos.push((format!("graphics.prop.{id}.eyedropper"), drop.rect, "Eyedropper".into()));
+        if drop.clicked() {
+            self.arm = Some(target);
         }
     }
     /// Draw a combo box for a choice parameter, register it for automation and emit the selected
@@ -562,6 +577,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let sel = app.session.state.graphic_layers.first().copied().filter(|l| *l < idx.len());
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut autos: Vec<(String, Rect, String)> = Vec::new();
+    let mut arm: Option<crate::state::Eyedropper> = None;
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("gfx-props"));
     bui.set_clip_rect(rect);
     egui::ScrollArea::vertical().id_salt("gfx-props-scroll").auto_shrink([false, false]).show(&mut bui, |ui| {
@@ -594,7 +610,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let ch = |b: usize| text.get(..b.min(text.len())).map_or(0, |s| s.chars().count());
             Some((ch(ed.caret.min(ed.anchor)), ch(ed.caret.max(ed.anchor))))
         });
-        let mut cx = Ctx { clip, layer: l, eidx: idx[l], e, mt, t, actions: Vec::new(), autos: Vec::new(), range };
+        let mut cx = Ctx { clip, layer: l, eidx: idx[l], e, mt, t, actions: Vec::new(), autos: Vec::new(), range, armed: app.ui.eyedropper.clone(), arm: None };
         if section(ui, app, "Responsive Design - Position", &t) {
             crate::panels::graphics_templates::responsive_position(app, ui, clip, &it, l, &mut cx.autos, &mut cx.actions);
         }
@@ -803,7 +819,11 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         actions.append(&mut cx.actions);
         autos.append(&mut cx.autos);
+        arm = cx.arm.take();
     });
+    if let Some(target) = arm {
+        crate::widgets::eyedropper::toggle(&mut app.ui.eyedropper, target);
+    }
     for (id, r, label) in autos {
         app.auto.add(&id, r, &label);
     }
@@ -923,6 +943,8 @@ mod tests {
             actions: Vec::new(),
             autos: Vec::new(),
             range,
+            armed: None,
+            arm: None,
         };
         // "Drive" selected: its own colour, size and bold
         let sel = cx(Some((6, 11)));
@@ -957,6 +979,8 @@ mod tests {
             actions: Vec::new(),
             autos: Vec::new(),
             range: Some((0, 2)),
+            armed: None,
+            arm: None,
         };
         for (id, key, value) in [
             ("stroke_color", "strokeColor", json!("#ff0000")),
@@ -998,6 +1022,8 @@ mod tests {
                 actions: Vec::new(),
                 autos: Vec::new(),
                 range,
+                armed: None,
+                arm: None,
             };
             for (id, colour) in [("stroke_color", [1.0, 0.0, 0.0, 1.0]), ("stroke2_color", [0.0, 1.0, 0.0, 1.0])] {
                 let expected = if range == Some((0, 2)) { Some(colour) } else { pv(&e, id, Tick(0)).as_color() };

@@ -374,6 +374,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
+        // an eyedropper click brings up the system colour magnifier, so a colour can come from
+        // anywhere on screen, not just from the Program picture
+        app.hooks.screen_sampler =
+            Some(Box::new(|| filmcraft_platform::screen_sampler::start().map(|s| filmcraft_ui_egui::ScreenSample::new(move || s.poll()))));
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;
