@@ -525,3 +525,99 @@ fn project_captured_folder_outside_the_project_is_not_used() {
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+mod control_token {
+    use crate::autosave::{CONTROL_TOKEN_FILE, control_token_from, load_control_token};
+    use crate::settings::ControlServerPrefs;
+
+    const A: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    /// Write `text` as the token file, owner-only like the app writes it.
+    fn put(dir: &std::path::Path, text: &[u8]) {
+        let path = dir.join(CONTROL_TOKEN_FILE);
+        std::fs::write(&path, text).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_environment_wins_then_a_usable_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Some(tmp.path());
+        // No file.
+        assert_eq!(control_token_from(None, dir), None);
+        assert_eq!(control_token_from(Some(A.into()), dir).as_deref(), Some(A));
+        put(tmp.path(), format!("{B}\n").as_bytes());
+        // A valid variable wins; a malformed one is still returned (the caller reports it); an
+        // empty one counts as unset.
+        assert_eq!(control_token_from(Some(A.into()), dir).as_deref(), Some(A));
+        assert_eq!(control_token_from(Some("abc".into()), dir).as_deref(), Some("abc"));
+        assert_eq!(control_token_from(Some(String::new()), dir).as_deref(), Some(B));
+        assert_eq!(control_token_from(None, dir).as_deref(), Some(B));
+        assert_eq!(control_token_from(None, None), None);
+        // A damaged file gives nothing.
+        put(tmp.path(), b"not a token");
+        assert_eq!(control_token_from(None, dir), None);
+        assert_eq!(control_token_from(Some(A.into()), dir).as_deref(), Some(A));
+    }
+
+    #[test]
+    fn only_a_small_owner_only_regular_file_with_a_token_is_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(load_control_token(tmp.path()), Ok(None), "missing");
+        for junk in [&b""[..], b"abc", "g".repeat(64).as_bytes(), "a".repeat(65).as_bytes()] {
+            put(tmp.path(), junk);
+            assert!(load_control_token(tmp.path()).is_err(), "{junk:?}");
+        }
+        put(tmp.path(), &vec![b'a'; 1_000_000]);
+        assert!(load_control_token(tmp.path()).unwrap_err().contains("too large"));
+        put(tmp.path(), format!("  {A}\r\n").as_bytes());
+        assert_eq!(load_control_token(tmp.path()), Ok(Some(A.to_string())));
+        // A folder in place of the file.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(other.path().join(CONTROL_TOKEN_FILE)).unwrap();
+        assert!(load_control_token(other.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_token_others_can_read_or_a_link_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(CONTROL_TOKEN_FILE);
+        put(tmp.path(), A.as_bytes());
+        for mode in [0o644, 0o640, 0o604, 0o620, 0o602] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let e = load_control_token(tmp.path()).unwrap_err();
+            assert!(e.contains("other users"), "{mode:o}: {e}");
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(load_control_token(tmp.path()), Ok(Some(A.to_string())), "read-only for the owner is fine");
+        // A link to a valid, owner-only token is still refused: whoever placed it chose the target.
+        let elsewhere = tempfile::tempdir().unwrap();
+        put(elsewhere.path(), B.as_bytes());
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join(CONTROL_TOKEN_FILE), &path).unwrap();
+        assert!(load_control_token(tmp.path()).unwrap_err().contains("not a regular file"));
+    }
+
+    #[test]
+    fn the_launch_port_needs_the_setting_and_a_usable_port() {
+        for (start, port, want) in [
+            (false, 9876, None),
+            (true, 9876, Some(9876)),
+            (true, 0, None),
+            (true, 1023, None),
+            (true, 1024, Some(1024)),
+            (true, 65_535, Some(65_535)),
+            (true, 65_536, None),
+            (true, u32::MAX, None),
+        ] {
+            assert_eq!(ControlServerPrefs { start_at_launch: start, port }.launch_port(), want, "{start} {port}");
+        }
+    }
+}
