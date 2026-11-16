@@ -4,6 +4,9 @@
 //! 9/10/11; 15/16-bit (5-5-5, the top bit as alpha when the descriptor says one attribute bit),
 //! 24-bit BGR and 32-bit BGRA true-colour, 8-bit grayscale and 16-bit grayscale + alpha, colour maps
 //! of 15/16/24/32-bit entries indexed by 8 or 16 bits; any origin corner.
+//!
+//! A recognized TGA 2.0 footer, extension tables and developer fields are not image or colour-map
+//! bytes. Follow their offsets when bounding image reads so truncated data cannot invent pixels.
 
 use crate::{MediaError, Result, still::Raster};
 
@@ -86,6 +89,98 @@ impl Layout {
     }
 }
 
+fn metadata_offset(body: &[u8], offset: usize, first_pixel: usize) -> Option<usize> {
+    // Optional metadata cannot replace the header, image ID, or colour map.
+    (offset >= first_pixel && offset < body.len()).then_some(offset)
+}
+
+/// The start of every developer-directory payload with a nonzero length, from the directory at
+/// `directory` in `body` (none when that offset holds no readable directory).
+fn developer_payload_starts(body: &[u8], directory: usize) -> Vec<usize> {
+    let Some(count) = body.get(directory..directory.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map(|v| usize::from(u16::from_le_bytes(*v))) else {
+        return Vec::new();
+    };
+    let Some(fields) = body.get(directory.saturating_add(2)..) else { return Vec::new() };
+    fields
+        .chunks(10)
+        .take(count)
+        .filter_map(|field| {
+            let start = field.get(2..6).and_then(|v| v.first_chunk::<4>()).map(|v| u32::from_le_bytes(*v) as usize)?;
+            let length = field.get(6..10).and_then(|v| v.first_chunk::<4>()).map(|v| u32::from_le_bytes(*v))?;
+            (length != 0).then_some(start)
+        })
+        .collect()
+}
+
+fn image_data_end(name: &str, bytes: &[u8], first_pixel: usize) -> Result<usize> {
+    if !bytes.ends_with(FOOTER) {
+        return Ok(bytes.len());
+    }
+    // A TGA 2.0 footer cannot begin inside the mandatory header. A legacy image
+    // may end with the same signature as pixel bytes.
+    let Some(footer) = bytes.len().checked_sub(FOOTER.len() + 8).filter(|&at| at >= HEADER) else {
+        return Ok(bytes.len());
+    };
+    let offsets = bytes.get(footer..footer + 8).and_then(|b| b.first_chunk::<8>()).ok_or_else(|| err(name, "truncated footer"))?;
+    let extension = offsets.first_chunk::<4>().map(|v| u32::from_le_bytes(*v) as usize).ok_or_else(|| err(name, "truncated footer"))?;
+    let directory =
+        offsets.get(4..).and_then(|v| v.first_chunk::<4>()).map(|v| u32::from_le_bytes(*v) as usize).ok_or_else(|| err(name, "truncated footer"))?;
+    let body = bytes.get(..footer).ok_or_else(|| err(name, "truncated footer"))?;
+    let mut end = footer;
+
+    if let Some(offset) = metadata_offset(body, extension, first_pixel) {
+        // An in-body reference is a conservative image boundary, even if it overlaps
+        // required pixels. Those bytes cannot be distinguished from a truncated image
+        // whose missing pixels are supplied by metadata.
+        end = end.min(offset);
+        // TGA 2.0 extension fields at byte offsets 482, 486 and 490 point to the colour
+        // correction, postage-stamp and scan-line tables. The record's first two bytes give
+        // its size (495 in TGA 2.0); a shorter record has no such fields, and a record never
+        // reaches into a developer directory that follows it, so those bytes are not read as
+        // table offsets. Tables may precede the record.
+        let declared = body.get(offset..offset.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map_or(0, |v| usize::from(u16::from_le_bytes(*v)));
+        let mut record_end = offset.saturating_add(declared.min(495));
+        // The developer directory and its payloads may sit anywhere after the pixels, a payload
+        // before its directory included; whichever starts first after the extension ends it.
+        // A directory offset of zero means there is none: the header is not read as one.
+        let payloads = metadata_offset(body, directory, first_pixel).map(|d| developer_payload_starts(body, d)).unwrap_or_default();
+        for next in std::iter::once(directory).chain(payloads) {
+            if next > offset {
+                record_end = record_end.min(next);
+            }
+        }
+        if let Some(area) = body.get(offset..record_end.min(body.len())) {
+            for field in [482, 486, 490] {
+                if let Some(value) = area.get(field..field + 4).and_then(|v| v.first_chunk::<4>())
+                    && let Some(table) = metadata_offset(body, u32::from_le_bytes(*value) as usize, first_pixel)
+                {
+                    end = end.min(table);
+                }
+            }
+        }
+    }
+
+    if let Some(offset) = metadata_offset(body, directory, first_pixel) {
+        end = end.min(offset);
+        if let Some(count) = body.get(offset..offset.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map(|v| usize::from(u16::from_le_bytes(*v)))
+            && let Some(fields) = body.get(offset.saturating_add(2)..)
+        {
+            // A corrupt count or final entry does not hide earlier payload offsets. Each
+            // entry has a 2-byte tag followed by a 4-byte offset and 4-byte length.
+            for field in fields.chunks(10).take(count) {
+                if let Some(value) = field.get(2..6).and_then(|v| v.first_chunk::<4>())
+                    && let Some(length) = field.get(6..10).and_then(|v| v.first_chunk::<4>())
+                    && u32::from_le_bytes(*length) != 0
+                    && let Some(payload) = metadata_offset(body, u32::from_le_bytes(*value) as usize, first_pixel)
+                {
+                    end = end.min(payload);
+                }
+            }
+        }
+    }
+    Ok(end)
+}
+
 /// Decode a Targa file to straight-alpha RGBA8, top row first.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     let h = bytes.first_chunk::<HEADER>().ok_or_else(|| err(name, "truncated header"))?;
@@ -101,22 +196,28 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         return Err(err(name, "empty picture"));
     }
     let pixels = w.checked_mul(ht).filter(|&n| n <= MAX_PIXELS).ok_or_else(|| err(name, "picture too large"))?;
-    let rle = kind >= 9;
-    // stored value layout and, for colour-mapped images, the palette
-    let mut palette: Vec<[u8; 4]> = Vec::new();
     let map_entry_layout = if map_type == 1 {
         Some(Layout::true_colour(map_depth, if map_depth == 16 { attr_bits.min(1) } else { 0 }).ok_or_else(|| err(name, "colour map entry size"))?)
     } else {
         None
     };
-    let mut at = HEADER.checked_add(id_len).ok_or_else(|| err(name, "header"))?;
-    if let Some(l) = map_entry_layout {
-        let size = map_len.checked_mul(l.bytes()).ok_or_else(|| err(name, "colour map"))?;
-        let end = at.checked_add(size).ok_or_else(|| err(name, "colour map"))?;
-        let map = bytes.get(at..end).ok_or_else(|| err(name, "truncated colour map"))?;
-        palette = map.chunks_exact(l.bytes()).map(|e| l.rgba(e)).collect();
-        at = end;
+    let map_start = HEADER.checked_add(id_len).ok_or_else(|| err(name, "header"))?;
+    let first_pixel = if let Some(layout) = map_entry_layout {
+        let size = map_len.checked_mul(layout.bytes()).ok_or_else(|| err(name, "colour map"))?;
+        map_start.checked_add(size).ok_or_else(|| err(name, "colour map"))?
+    } else {
+        map_start
+    };
+    let end = image_data_end(name, bytes, first_pixel)?;
+    let bytes = bytes.get(..end).ok_or_else(|| err(name, "truncated image data"))?;
+    let rle = kind >= 9;
+    // stored value layout and, for colour-mapped images, the palette
+    let mut palette: Vec<[u8; 4]> = Vec::new();
+    if let Some(layout) = map_entry_layout {
+        let map = bytes.get(map_start..first_pixel).ok_or_else(|| err(name, "truncated colour map"))?;
+        palette = map.chunks_exact(layout.bytes()).map(|entry| layout.rgba(entry)).collect();
     }
+    let at = first_pixel;
     let (layout, mapped) = match kind & 7 {
         1 => {
             if map_type != 1 || !matches!(depth, 8 | 16) {
@@ -282,6 +383,430 @@ mod tests {
             f.extend_from_slice(&[0x82, 1, 0, 1, 0x01, 0, 0]);
             f.truncate(n);
             let _ = decode("a.tga", &f);
+        }
+    }
+
+    #[test]
+    fn legacy_pixels_that_end_in_signature_are_not_a_footer_before_header() {
+        for prefix in [0usize, 7] {
+            let width = (prefix + FOOTER.len()) as u16;
+            let mut file = header(3, width, 1, 8, 0x20);
+            file.extend(vec![0; prefix]);
+            file.extend_from_slice(FOOTER);
+            let image = decode("legacy.tga", &file).unwrap();
+            assert_eq!((image.width, image.height), (u32::from(width), 1));
+            let pixels: Vec<u8> = std::iter::repeat_n(0, prefix).chain(FOOTER.iter().copied()).flat_map(|gray| [gray, gray, gray, 255]).collect();
+            assert_eq!(image.rgba, pixels);
+            let source = crate::open_bytes("legacy.tga", file.into(), &[]).unwrap();
+            let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+            assert_eq!(frame.to_rgba8(), pixels);
+        }
+    }
+
+    #[test]
+    fn short_extension_followed_by_a_developer_payload_keeps_the_pixels() {
+        // a 482-byte extension whose size field still says 495, then a developer payload whose
+        // first bytes land where a full extension keeps its colour-correction offset, then the
+        // directory that points back at that payload
+        let mut file = header(2, 1, 1, 24, 0x20);
+        file.extend_from_slice(&[10, 20, 30]);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 482];
+        area[..2].copy_from_slice(&495u16.to_le_bytes());
+        file.extend_from_slice(&area);
+        let payload = file.len() as u32;
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&[0; 14]);
+        let directory = file.len() as u32;
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&0u16.to_le_bytes());
+        file.extend_from_slice(&payload.to_le_bytes());
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let source = crate::open_bytes("short-extension-payload.tga", file.into(), &[]).expect("the image decodes");
+        let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).expect("one frame");
+        assert_eq!((frame.width, frame.height), (1, 1));
+        assert_eq!(frame.to_rgba8(), vec![30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn a_footer_without_a_directory_does_not_read_the_header_as_one() {
+        // no developer directory (offset 0). Read as one, the header's three-byte image ID
+        // length is an entry count, and the third "entry" is the first words of a colour
+        // correction table that sits right after a short pixel area; the extension points at
+        // that table, so the image is incomplete and must stay so.
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file[0] = 3;
+        file.extend_from_slice(&[7, 8, 9]);
+        file.extend_from_slice(&[0, 0, 255]);
+        let table = file.len() as u32;
+        let mut words = vec![0; 2048];
+        words[..4].copy_from_slice(&2074u32.to_le_bytes());
+        words[4..8].copy_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&words);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 495];
+        area[..2].copy_from_slice(&495u16.to_le_bytes());
+        area[482..486].copy_from_slice(&table.to_le_bytes());
+        file.extend_from_slice(&area);
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let decoded =
+            crate::open_bytes("no-directory.tga", file.into(), &[]).and_then(|s| s.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)));
+        assert!(decoded.is_err(), "the second pixel is missing");
+    }
+
+    #[test]
+    fn short_extension_followed_by_a_developer_directory_keeps_the_pixels() {
+        // a complete 1x1 image, a 482-byte extension (its size says so) and right after it a
+        // developer directory whose entry's length lands where a full extension keeps its
+        // scan-line table offset; reading it as one would move the image end into the header
+        let mut file = header(2, 1, 1, 24, 0x20);
+        file.extend_from_slice(&[10, 20, 30]);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 482];
+        area[..2].copy_from_slice(&482u16.to_le_bytes());
+        file.extend_from_slice(&area);
+        let directory = file.len() as u32;
+        let payload = directory + 2 + 10;
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&0u16.to_le_bytes());
+        file.extend_from_slice(&payload.to_le_bytes());
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&[0; 18]);
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let source = crate::open_bytes("short-extension.tga", file.into(), &[]).expect("the image decodes");
+        let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).expect("one frame");
+        assert_eq!((frame.width, frame.height), (1, 1));
+    }
+
+    #[test]
+    fn importing_truncated_pixels_does_not_consume_tga_footer() {
+        for (kind, data) in [(2, vec![0, 0, 255]), (10, vec![0x80, 0, 0, 255])] {
+            for metadata in [None, Some(0usize), Some(1)] {
+                let mut file = header(kind, 2, 1, 24, 0x20);
+                file.extend_from_slice(&data); // only the first of two pixels
+                let mut offsets = [0u8; 8];
+                if let Some(field) = metadata {
+                    let offset = file.len() as u32;
+                    offsets[field * 4..field * 4 + 4].copy_from_slice(&offset.to_le_bytes());
+                    let mut area = vec![0; 495];
+                    if field == 0 {
+                        area[..2].copy_from_slice(&495u16.to_le_bytes());
+                    }
+                    file.extend_from_slice(&area); // optional metadata is not pixel data
+                }
+                file.extend_from_slice(&offsets);
+                file.extend_from_slice(FOOTER);
+                let result = crate::open_bytes("truncated.tga", file.into(), &[]);
+                assert!(matches!(result, Err(MediaError::Decode(_))), "kind {kind}, metadata {metadata:?}: metadata is not a second pixel");
+            }
+        }
+        for kind in [1, 9] {
+            let mut file = header(kind, 1, 1, 8, 0x20);
+            file[1] = 1;
+            file[5] = 1;
+            file[7] = 24;
+            file.extend_from_slice(&[0, 0]); // missing third palette byte and the index
+            file.extend_from_slice(&[0; 8]);
+            file.extend_from_slice(FOOTER);
+            let result = crate::open_bytes("truncated.tga", file.into(), &[]);
+            assert!(matches!(result, Err(MediaError::Decode(_))), "kind {kind}: the footer is not colour-map data");
+        }
+    }
+
+    #[test]
+    fn complete_tga_footer_and_metadata_do_not_change_pixels() {
+        for metadata in [None, Some(0usize), Some(1)] {
+            let mut file = header(2, 1, 1, 24, 0x20);
+            file.extend_from_slice(&[0, 0, 255]);
+            let mut offsets = [0u8; 8];
+            if let Some(field) = metadata {
+                let offset = file.len() as u32;
+                offsets[field * 4..field * 4 + 4].copy_from_slice(&offset.to_le_bytes());
+                let mut area = vec![0; 495];
+                if field == 0 {
+                    area[..2].copy_from_slice(&495u16.to_le_bytes());
+                }
+                file.extend_from_slice(&area);
+            }
+            file.extend_from_slice(&offsets);
+            file.extend_from_slice(FOOTER);
+            let source = crate::open_bytes("complete.tga", file.into(), &[]).unwrap();
+            let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+            assert_eq!(frame.to_rgba8(), [255, 0, 0, 255]);
+        }
+    }
+
+    fn preceding_metadata(complete: bool, metadata: usize) -> Vec<u8> {
+        let mut file = header(2, if complete { 1 } else { 2 }, 1, 24, 0x20);
+        file.extend_from_slice(&[0, 0, 255]);
+        let payload_offset = file.len() as u32;
+        let mut offsets = [0u8; 8];
+        if metadata == 0 {
+            file.extend_from_slice(&[0, 255, 0]);
+            let directory_offset = file.len() as u32;
+            file.extend_from_slice(&1u16.to_le_bytes());
+            file.extend_from_slice(&1u16.to_le_bytes());
+            file.extend_from_slice(&payload_offset.to_le_bytes());
+            file.extend_from_slice(&3u32.to_le_bytes());
+            offsets[4..].copy_from_slice(&directory_offset.to_le_bytes());
+        } else {
+            match metadata {
+                1 => file.extend_from_slice(&[0; 2048]),
+                2 => file.extend_from_slice(&[1, 1, 0, 255, 0]),
+                3 => file.extend_from_slice(&18u32.to_le_bytes()),
+                _ => unreachable!(),
+            }
+            let extension_offset = file.len() as u32;
+            let mut extension = [0; 495];
+            extension[..2].copy_from_slice(&495u16.to_le_bytes());
+            let field = [0, 482, 486, 490][metadata];
+            extension[field..field + 4].copy_from_slice(&payload_offset.to_le_bytes());
+            file.extend_from_slice(&extension);
+            offsets[..4].copy_from_slice(&extension_offset.to_le_bytes());
+        }
+        file.extend_from_slice(&offsets);
+        file.extend_from_slice(FOOTER);
+        file
+    }
+
+    #[test]
+    fn preceding_metadata_cannot_supply_missing_pixels() {
+        let mut accepted = Vec::new();
+        for metadata in 0..4 {
+            let result = crate::open_bytes("truncated.tga", preceding_metadata(false, metadata).into(), &[]);
+            if !matches!(result, Err(MediaError::Decode(_))) {
+                accepted.push(metadata);
+            }
+        }
+        assert!(accepted.is_empty(), "metadata payloads supplied missing pixels: {accepted:?}");
+    }
+
+    #[test]
+    fn complete_pixels_before_metadata_keep_their_colour() {
+        for metadata in 0..4 {
+            let source = crate::open_bytes("complete.tga", preceding_metadata(true, metadata).into(), &[]).unwrap();
+            let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+            assert_eq!(frame.to_rgba8(), [255, 0, 0, 255], "metadata {metadata}");
+        }
+        let mut file = preceding_metadata(true, 1);
+        let footer = file.len() - FOOTER.len() - 8;
+        let extension = u32::from_le_bytes(file[footer..footer + 4].try_into().unwrap()) as usize;
+        file[extension..extension + 2].copy_from_slice(&496u16.to_le_bytes());
+        file.insert(footer, 0);
+        let source = crate::open_bytes("extended.tga", file.into(), &[]).unwrap();
+        let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+        assert_eq!(frame.to_rgba8(), [255, 0, 0, 255], "larger complete extensions preserve pixels");
+    }
+
+    #[test]
+    fn malformed_optional_metadata_keeps_complete_pixels_readable() {
+        let accept = |file: Vec<u8>| {
+            let source = crate::open_bytes("metadata.tga", file.into(), &[]).unwrap();
+            let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
+            assert_eq!(frame.to_rgba8(), [255, 0, 0, 255]);
+        };
+        for field in [0, 4] {
+            let mut file = preceding_metadata(true, 0);
+            let footer = file.len() - FOOTER.len() - 8;
+            file[footer + field..footer + field + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            accept(file);
+        }
+        for metadata in 1..4 {
+            let mut file = preceding_metadata(true, metadata);
+            let footer = file.len() - FOOTER.len() - 8;
+            let extension = u32::from_le_bytes(file[footer..footer + 4].try_into().unwrap()) as usize;
+            let field = [0, 482, 486, 490][metadata];
+            file[extension + field..extension + field + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            accept(file);
+        }
+        let mut file = preceding_metadata(true, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file.drain(directory + 2..footer);
+        accept(file);
+        let mut file = preceding_metadata(true, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory + 8..directory + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+        accept(file);
+        let mut file = preceding_metadata(true, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory..directory + 2].copy_from_slice(&2u16.to_le_bytes());
+        accept(file);
+        // A zero-length entry cannot mark a payload boundary, even if its offset overlaps pixels.
+        let mut file = preceding_metadata(true, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory + 4..directory + 8].copy_from_slice(&19u32.to_le_bytes());
+        file[directory + 8..directory + 12].copy_from_slice(&0u32.to_le_bytes());
+        accept(file);
+        let mut file = preceding_metadata(true, 2);
+        file[21..23].copy_from_slice(&[255, 255]);
+        accept(file);
+        let mut file = preceding_metadata(true, 2);
+        let footer = file.len() - FOOTER.len() - 8;
+        let extension = u32::from_le_bytes(file[footer..footer + 4].try_into().unwrap()) as usize;
+        file[extension..extension + 2].copy_from_slice(&494u16.to_le_bytes());
+        accept(file);
+        let mut file = preceding_metadata(true, 2);
+        let footer = file.len() - FOOTER.len() - 8;
+        file.remove(footer - 1); // extension is physically short, but its postage offset remains
+        accept(file);
+    }
+
+    #[test]
+    fn malformed_metadata_offsets_inside_id_or_palette_keep_complete_pixels() {
+        let mut file = header(1, 1, 1, 8, 0x20);
+        file[0] = 4; // image ID length
+        file[1] = 1; // colour map present
+        file[5..7].copy_from_slice(&1u16.to_le_bytes());
+        file[7] = 24; // one BGR palette entry
+        file.extend_from_slice(&[7, 8, 9, 10]); // image ID
+        file.extend_from_slice(&[0, 0, 255]); // red palette entry
+        file.push(0); // palette index
+        for (field, offset) in [(0, HEADER + 1), (4, HEADER + 4 + 1)] {
+            let mut candidate = file.clone();
+            let mut footer_offsets = [0u8; 8];
+            footer_offsets[field..field + 4].copy_from_slice(&(offset as u32).to_le_bytes());
+            candidate.extend_from_slice(&footer_offsets);
+            candidate.extend_from_slice(FOOTER);
+            let image = decode("complete.tga", &candidate).unwrap();
+            assert_eq!(image.rgba, [255, 0, 0, 255], "footer field {field}");
+        }
+    }
+
+    #[test]
+    fn malformed_optional_metadata_cannot_supply_missing_pixels() {
+        let mut file = preceding_metadata(false, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory + 8..directory + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(decode("truncated.tga", &file), Err(MediaError::Decode(_))));
+
+        // The declared entry count exceeds the bytes before the footer, but the first entry's
+        // payload still precedes the directory and cannot be used as a second pixel.
+        let mut file = preceding_metadata(false, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory..directory + 2].copy_from_slice(&2u16.to_le_bytes());
+        assert!(matches!(decode("truncated.tga", &file), Err(MediaError::Decode(_))));
+
+        let mut file = preceding_metadata(false, 2);
+        let footer = file.len() - FOOTER.len() - 8;
+        let extension = u32::from_le_bytes(file[footer..footer + 4].try_into().unwrap()) as usize;
+        file[extension..extension + 2].copy_from_slice(&494u16.to_le_bytes());
+        assert!(matches!(decode("truncated.tga", &file), Err(MediaError::Decode(_))));
+        let mut file = preceding_metadata(false, 2);
+        let footer = file.len() - FOOTER.len() - 8;
+        file.remove(footer - 1);
+        assert!(matches!(decode("truncated.tga", &file), Err(MediaError::Decode(_))));
+    }
+
+    #[test]
+    fn valid_developer_directory_with_overlapping_payload_rejects_pixels() {
+        let mut file = preceding_metadata(true, 0);
+        let footer = file.len() - FOOTER.len() - 8;
+        let directory = u32::from_le_bytes(file[footer + 4..footer + 8].try_into().unwrap()) as usize;
+        file[directory..directory + 2].copy_from_slice(&2u16.to_le_bytes());
+        let mut extra = [0u8; 10];
+        extra[..2].copy_from_slice(&2u16.to_le_bytes());
+        extra[2..6].copy_from_slice(&(HEADER as u32).to_le_bytes());
+        extra[6..10].copy_from_slice(&1u32.to_le_bytes());
+        file.splice(footer..footer, extra);
+        let moved_footer = file.len() - FOOTER.len() - 8;
+        assert_eq!(u32::from_le_bytes(file[moved_footer + 4..moved_footer + 8].try_into().unwrap()), directory as u32);
+        assert_eq!(u16::from_le_bytes(file[directory..directory + 2].try_into().unwrap()), 2);
+        assert_eq!(&file[directory + 12..directory + 22], &extra);
+        assert!(matches!(decode("overlap.tga", &file), Err(MediaError::Decode(_))));
+    }
+
+    #[test]
+    fn nonempty_developer_reference_inside_pixels_rejects_the_whole_image() {
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file.extend_from_slice(&[0, 0, 255, 0, 255, 0]);
+        let directory = file.len() as u32;
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&(HEADER as u32 + 3).to_le_bytes());
+        file.extend_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        assert!(matches!(decode("overlap.tga", &file), Err(MediaError::Decode(_))), "an overlapping reference must not return a partial image");
+    }
+
+    #[test]
+    fn inflated_developer_count_scans_the_next_chunk_as_an_entry_and_rejects_its_pixel_payload() {
+        // a directory claiming two entries over one real entry: the ten bytes after it, scanned as
+        // the second entry, name a payload inside the pixels, which is refused like any other
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file.extend_from_slice(&[0, 0, 255, 0, 255, 0]);
+        let directory = file.len() as u32;
+        file.extend_from_slice(&2u16.to_le_bytes());
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&(directory + 22).to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&2u16.to_le_bytes());
+        file.extend_from_slice(&(HEADER as u32 + 3).to_le_bytes());
+        file.extend_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        assert!(matches!(decode("inflated.tga", &file), Err(MediaError::Decode(_))), "a scanned entry's payload inside the pixels is refused");
+    }
+
+    #[test]
+    fn legacy_pixels_that_end_in_signature_at_or_after_the_header_are_read_as_a_footer() {
+        // a footerless 36×1 grayscale image whose last 26 bytes happen to be eight zeros and the
+        // signature: the putative trailer begins at byte 28, so it is taken for a footer and the
+        // image, left with 10 pixel bytes, is rejected as truncated (the ambiguity the body states)
+        let prefix = 18usize;
+        let width = (prefix + FOOTER.len()) as u16;
+        let mut file = header(3, width, 1, 8, 0x20);
+        file.extend(vec![0; prefix]);
+        file.extend_from_slice(FOOTER);
+        assert!(matches!(decode("legacy-footerish.tga", &file), Err(MediaError::Decode(_))));
+    }
+
+    #[test]
+    fn mutated_tga_footer_files_never_panic() {
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file.extend_from_slice(&[0, 0, 255, 0, 255, 0]);
+        file.extend_from_slice(&[0; 8]);
+        file.extend_from_slice(FOOTER);
+        for end in 0..file.len() {
+            assert!(std::panic::catch_unwind(|| decode("truncated.tga", &file[..end])).is_ok(), "truncation at {end}");
+        }
+        for at in 0..file.len() {
+            let mut mutated = file.clone();
+            mutated[at] ^= 0xFF;
+            assert!(std::panic::catch_unwind(|| decode("mutated.tga", &mutated)).is_ok(), "mutation at {at}");
+        }
+        for metadata in 0..4 {
+            let file = preceding_metadata(true, metadata);
+            assert!(decode("complete.tga", &file).is_ok());
+            let footer = file.len() - FOOTER.len() - 8;
+            for end in 0..footer {
+                let mut truncated = file[..end].to_vec();
+                truncated.extend_from_slice(&file[footer..]);
+                assert!(
+                    std::panic::catch_unwind(|| decode("truncated-metadata.tga", &truncated)).is_ok(),
+                    "metadata {metadata}, footer-preserving truncation at {end}"
+                );
+            }
+            for at in 0..file.len() {
+                let mut mutated = file.clone();
+                mutated[at] ^= 0xFF;
+                assert!(std::panic::catch_unwind(|| decode("mutated-metadata.tga", &mutated)).is_ok(), "metadata {metadata}, mutation at {at}");
+            }
         }
     }
 
