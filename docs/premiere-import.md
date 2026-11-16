@@ -39,8 +39,10 @@ Their provenance
 The source project is still hashed and snapshotted immediately. Copied media is read once,
 synchronously: it is hashed as it is written, so the copy holds exactly the bytes its digest names,
 and then takes that name. A source whose size or modification time changes during its copy cancels
-the import. The project stores the original source paths, available import-time hashes, source
-tree and warnings independently of timeline edits. Undo does not delete the saved source snapshot.
+the import. The item's media information and fingerprint are read from the finished copy, so they
+describe the bytes it holds even when the source was replaced after its probe; a copy that cannot
+be opened as media cancels the import too. The project stores the original source paths,
+available import-time hashes, source tree and warnings independently of timeline edits. Undo does not delete the saved source snapshot.
 
 For an explicit, potentially expensive inspection of current media, use:
 
