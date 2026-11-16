@@ -36,7 +36,7 @@ use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
 pub use temporal::{
-    AnalysisState, StabilizerPath, clear_stabilizer_cache, set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path,
+    AnalysisPhase, AnalysisState, StabilizerPath, clear_stabilizer_cache, set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path,
     stabilizer_progress, stabilizer_state, without_waiting_for_analysis,
 };
 pub(crate) use text::film_time_format;

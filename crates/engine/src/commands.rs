@@ -5266,9 +5266,9 @@ pub fn inspect_project(s: &Session) -> Value {
 }
 
 /// A clip effect for `sequence.inspect`. A Warp Stabilizer also says where its analysis stands:
-/// `{"state": "done" | "analyzing" | "waiting" | "unreadable"}`, with `progress` (0 to 1) while it
-/// runs and `frames` (read before it was stopped) while it waits. It waits until a frame of the
-/// clip is shown or rendered.
+/// `{"state": "done" | "analyzing" | "waiting" | "unreadable", "framesAnalyzed": n, "totalFrames":
+/// n}`, with `progress` (0 to 1) while it runs. It waits until a frame of the clip is shown or
+/// rendered.
 fn effect_json(
     project: &filmcraft_project::Project,
     q: &filmcraft_project::Sequence,
@@ -5277,13 +5277,18 @@ fn effect_json(
 ) -> Value {
     let mut v = json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()});
     if e.effect == "warp_stabilizer" {
-        use filmcraft_render::vfx::AnalysisState;
-        v["analysis"] = match filmcraft_render::vfx::stabilizer_state(project, q, clip, e) {
-            AnalysisState::Done => json!({"state": "done"}),
-            AnalysisState::Running(f) => json!({"state": "analyzing", "progress": f}),
-            AnalysisState::Waiting { frames } => json!({"state": "waiting", "frames": frames}),
-            AnalysisState::Unreadable => json!({"state": "unreadable"}),
+        use filmcraft_render::vfx::AnalysisPhase;
+        let a = filmcraft_render::vfx::stabilizer_state(project, q, clip, e);
+        let state = match a.phase {
+            AnalysisPhase::Done => "done",
+            AnalysisPhase::Running => "analyzing",
+            AnalysisPhase::Waiting => "waiting",
+            AnalysisPhase::Unreadable => "unreadable",
         };
+        v["analysis"] = json!({"state": state, "framesAnalyzed": a.analyzed, "totalFrames": a.total});
+        if a.phase == AnalysisPhase::Running {
+            v["analysis"]["progress"] = json!(a.analyzed as f64 / a.total.max(1) as f64);
+        }
     }
     v
 }

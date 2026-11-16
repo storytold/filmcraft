@@ -254,6 +254,10 @@ fn sequence_inspect_reports_a_stabilizer_analysis() {
     let seq = s.execute("sequence.inspect", json!({})).unwrap();
     let effects = seq["video"][0]["items"][0]["effects"].as_array().unwrap().clone();
     let effect = |id: &str| effects.iter().find(|e| e["effect"] == id).cloned().unwrap_or_else(|| panic!("{id} missing: {effects:?}"));
-    assert_eq!(effect("warp_stabilizer")["analysis"], json!({"state": "waiting", "frames": 0}), "nothing has shown the clip yet");
+    let analysis = effect("warp_stabilizer")["analysis"].clone();
+    assert_eq!(analysis, json!({"state": "waiting", "framesAnalyzed": 0, "totalFrames": analysis["totalFrames"]}), "nothing has shown the clip yet");
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let fps = s.active_sequence().unwrap().settings.frame_rate.as_f64();
+    assert_eq!(analysis["totalFrames"], json!((clip.duration.seconds() * fps).round() as u64), "the clip's frames");
     assert!(effect("gaussian_blur").get("analysis").is_none(), "only stabilizers analyse");
 }
