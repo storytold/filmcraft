@@ -177,13 +177,22 @@ mod tests {
         })
         .join()
         .unwrap();
-        let decode: Vec<i32> = std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .filter_map(|t| t.ok())
-            .map(|t| t.file_name().to_string_lossy().into_owned())
-            .filter(|tid| std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).is_ok_and(|n| n.starts_with("decode-")))
-            .map(|tid| nice_of(&tid))
-            .collect();
+        // the pool returns before its threads have named themselves: wait for them to
+        let decode_threads = || -> Vec<i32> {
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .filter_map(|t| t.ok())
+                .map(|t| t.file_name().to_string_lossy().into_owned())
+                .filter(|tid| std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).is_ok_and(|n| n.starts_with("decode-")))
+                .map(|tid| nice_of(&tid))
+                .collect()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut decode = decode_threads();
+        while decode.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            decode = decode_threads();
+        }
         assert!(!decode.is_empty(), "no decode pool threads");
         assert!(decode.iter().all(|&n| n == before), "decode pool threads lowered: {decode:?}");
     }

@@ -199,11 +199,15 @@ pub fn register_background_thread_start(f: fn()) {
     *background_thread_hook().write().unwrap_or_else(PoisonError::into_inner) = Some(f);
 }
 
-/// Run the registered background-thread hook, if any, on the calling thread.
+/// Run the registered background-thread hook, if any, on the calling thread. A hook that panics
+/// is logged and the thread goes on at its old priority: the pool has no panic handler, so the
+/// panic would otherwise abort the process.
 pub(crate) fn background_thread_start() {
     let hook = *background_thread_hook().read().unwrap_or_else(PoisonError::into_inner);
-    if let Some(f) = hook {
-        f();
+    if let Some(f) = hook
+        && std::panic::catch_unwind(f).is_err()
+    {
+        log::warn!("the background-thread start hook panicked; this thread keeps its priority");
     }
 }
 

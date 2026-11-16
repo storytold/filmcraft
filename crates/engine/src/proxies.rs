@@ -356,10 +356,19 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     // the next job go when this one is done
     let run = move || {
         #[cfg(not(target_arch = "wasm32"))]
-        ticket.wait(&waiting.cancel);
+        let turn = ticket.wait(&waiting.cancel);
         #[cfg(target_arch = "wasm32")]
-        let _ = &waiting;
-        filmcraft_export::on_own_threads(0, run);
+        let turn = {
+            let _ = &waiting;
+            true
+        };
+        if turn {
+            filmcraft_export::on_own_threads(0, run);
+        } else {
+            // cancelled while it waited: the loop above only records that and lets its outputs go,
+            // here, as the shared pool may be busy with a long export for a while yet
+            run();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         drop(ticket);
     };
