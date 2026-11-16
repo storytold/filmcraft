@@ -691,9 +691,7 @@ fn merge_report(dst: &mut crate::Report, src: craft_timeline::Report) {
             craft_timeline::Level::Info => crate::Level::Info,
             craft_timeline::Level::Warning => crate::Level::Warning,
         };
-        for _ in 0..entry.count {
-            dst.push(level, entry.message.clone());
-        }
+        dst.push_n(level, entry.message, entry.count);
     }
 }
 fn convert_error(e: craft_timeline::Error) -> crate::Error {
@@ -773,69 +771,68 @@ pub(crate) fn export_otio(project: &film::Project, seq: film::ItemId, opts: &cra
     serde_json::to_string_pretty(&value).map_err(|e| crate::Error::Other(e.to_string()))
 }
 
-pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
+/// A shared timeline reader's signature (FCPXML, FCP7 XML).
+type SharedImport = fn(&str, &craft_timeline::ImportOptions, &mut craft_timeline::Report, Option<usize>) -> craft_timeline::Result<craft_timeline::Imported>;
+/// A shared timeline writer's signature (FCPXML, FCP7 XML).
+type SharedExport =
+    fn(&shared::Project, shared::ItemId, &craft_timeline::ExportOptions, &mut craft_timeline::Report, Option<usize>) -> craft_timeline::Result<String>;
+
+/// Read `text` with a shared timeline reader, keeping its report notes, into FilmCraft's model.
+fn import_shared(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report, import: SharedImport) -> crate::Result<crate::Imported> {
     let catalog = FilmCatalog;
     let shared_opts =
         craft_timeline::ImportOptions { base_dir: opts.base_dir.as_deref(), name: opts.name.as_deref(), catalog: &catalog, namespace: "filmcraft" };
     let mut shared_report = craft_timeline::Report::default();
-    let result = craft_timeline::fcpxml::import_with_report_limit(text, &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
+    let result = import(text, &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
     merge_report(report, shared_report);
     let imported = result.map_err(convert_error)?;
     let project = from_project(&imported.project).map_err(|e| crate::Error::Other(e.to_string()))?;
     Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
 }
-pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
+
+/// Write `seq` with a shared timeline writer, after noting the marker details it cannot keep.
+fn export_shared(
+    project: &film::Project,
+    seq: film::ItemId,
+    opts: &crate::ExportOptions,
+    fcpxml_version: craft_timeline::FcpxmlVersion,
+    report: &mut crate::Report,
+    export: SharedExport,
+) -> crate::Result<String> {
     crate::warn_marker_metadata_loss(project, seq, report);
     let project = to_project(project, seq).map_err(|e| crate::Error::Other(e.to_string()))?;
     let catalog = FilmCatalog;
+    let shared_opts = craft_timeline::ExportOptions {
+        relative_to: opts.relative_to.as_deref(),
+        name: opts.name.as_deref(),
+        catalog: &catalog,
+        namespace: "filmcraft",
+        xmeml_version: opts.xmeml_version,
+        fcpxml_version,
+    };
+    let mut shared_report = craft_timeline::Report::default();
+    let result = export(&project, shared::ItemId(seq.0), &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
+    merge_report(report, shared_report);
+    result.map_err(convert_error)
+}
+
+pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
+    import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)
+}
+pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
     let version = match opts.fcpxml_version {
         crate::FcpxmlVersion::V1_9 => craft_timeline::FcpxmlVersion::V1_9,
         crate::FcpxmlVersion::V1_10 => craft_timeline::FcpxmlVersion::V1_10,
         crate::FcpxmlVersion::V1_11 => craft_timeline::FcpxmlVersion::V1_11,
     };
-    let shared_opts = craft_timeline::ExportOptions {
-        relative_to: opts.relative_to.as_deref(),
-        name: opts.name.as_deref(),
-        catalog: &catalog,
-        namespace: "filmcraft",
-        xmeml_version: opts.xmeml_version,
-        fcpxml_version: version,
-    };
-    let mut shared_report = craft_timeline::Report::default();
-    let result =
-        craft_timeline::fcpxml::export_with_report_limit(&project, shared::ItemId(seq.0), &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
-    merge_report(report, shared_report);
-    result.map_err(convert_error)
+    export_shared(project, seq, opts, version, report, craft_timeline::fcpxml::export_with_report_limit)
 }
 
 pub(crate) fn import_fcp7(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
-    let catalog = FilmCatalog;
-    let shared_opts =
-        craft_timeline::ImportOptions { base_dir: opts.base_dir.as_deref(), name: opts.name.as_deref(), catalog: &catalog, namespace: "filmcraft" };
-    let mut shared_report = craft_timeline::Report::default();
-    let result = craft_timeline::fcp7::import_with_report_limit(text, &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
-    merge_report(report, shared_report);
-    let imported = result.map_err(convert_error)?;
-    let project = from_project(&imported.project).map_err(|e| crate::Error::Other(e.to_string()))?;
-    Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
+    import_shared(text, opts, report, craft_timeline::fcp7::import_with_report_limit)
 }
 pub(crate) fn export_fcp7(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
-    crate::warn_marker_metadata_loss(project, seq, report);
-    let project = to_project(project, seq).map_err(|e| crate::Error::Other(e.to_string()))?;
-    let catalog = FilmCatalog;
-    let shared_opts = craft_timeline::ExportOptions {
-        relative_to: opts.relative_to.as_deref(),
-        name: opts.name.as_deref(),
-        catalog: &catalog,
-        namespace: "filmcraft",
-        xmeml_version: opts.xmeml_version,
-        fcpxml_version: Default::default(),
-    };
-    let mut shared_report = craft_timeline::Report::default();
-    let result =
-        craft_timeline::fcp7::export_with_report_limit(&project, shared::ItemId(seq.0), &shared_opts, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
-    merge_report(report, shared_report);
-    result.map_err(convert_error)
+    export_shared(project, seq, opts, Default::default(), report, craft_timeline::fcp7::export_with_report_limit)
 }
 
 #[cfg(test)]
