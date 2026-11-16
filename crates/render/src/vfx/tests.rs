@@ -1943,8 +1943,8 @@ mod stabilizer_live_and_kept {
         fn clip_key(&self) -> u64 {
             self.0.clip_key()
         }
-        fn analysis_identity(&self) -> Option<Vec<u8>> {
-            Some(self.1.clone())
+        fn analysis_span(&self) -> Option<crate::vfx::AnalysisSpan> {
+            Some(crate::vfx::AnalysisSpan { source: self.1.clone(), first: 0 })
         }
     }
 
@@ -2010,7 +2010,7 @@ mod stabilizer_live_and_kept {
         let env = Identified(CountingEnv(clip(0x11FE_0002, 0.0), &first, None), id.clone());
         let made = analyse(&env).unwrap();
         assert_eq!(first.load(Ordering::SeqCst), 24);
-        forget_analysis(key_of(&env, TrackMethod::Position, false));
+        forget_analysis(&env, TrackMethod::Position, false);
         let env = Identified(CountingEnv(clip(0x11FE_0002, 0.0), &second, None), id);
         let read = analyse(&env).unwrap();
         assert_eq!(second.load(Ordering::SeqCst), 0, "read from disk, no frame decoded");
@@ -2019,7 +2019,7 @@ mod stabilizer_live_and_kept {
     }
 
     #[test]
-    fn a_moved_clip_keeps_its_analysis_and_a_retrimmed_one_does_not() {
+    fn a_moved_clip_keeps_its_analysis() {
         cache_dir();
         let reads = AtomicUsize::new(0);
         analyse(&Identified(CountingEnv(clip(0x11FE_0003, 0.0), &reads, None), b"moved clip, in 0".to_vec())).unwrap();
@@ -2028,7 +2028,7 @@ mod stabilizer_live_and_kept {
         analyse(&Identified(CountingEnv(clip(0x11FE_0004, 0.0), &reads, None), b"moved clip, in 0".to_vec())).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 24, "moving the clip keeps its analysis");
         analyse(&Identified(CountingEnv(clip(0x11FE_0004, 0.0), &reads, None), b"moved clip, in 1".to_vec())).unwrap();
-        assert_eq!(reads.load(Ordering::SeqCst), 48, "another source range is analysed again");
+        assert_eq!(reads.load(Ordering::SeqCst), 48, "another source is analysed again");
     }
 
     #[test]
@@ -2037,14 +2037,13 @@ mod stabilizer_live_and_kept {
         let id = b"damaged on disk".to_vec();
         let reads = AtomicUsize::new(0);
         let env = Identified(CountingEnv(clip(0x11FE_0005, 0.0), &reads, None), id.clone());
-        let key = key_of(&env, TrackMethod::Position, false);
         let made = analyse(&env).unwrap();
         let mut full = id.clone();
         full.extend([TrackMethod::Position as u8, 0]);
         let file = dir.join(format!("{:016x}.stab", store::fnv(&full)));
         let bytes = std::fs::read(&file).unwrap();
         std::fs::write(&file, &bytes[..bytes.len() / 2]).unwrap();
-        forget_analysis(key);
+        forget_analysis(&env, TrackMethod::Position, false);
         let again = analyse(&env).unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 48, "a truncated file is ignored");
         assert_eq!(again.steps, made.steps);
@@ -2109,11 +2108,13 @@ mod stabilizer_live_and_kept {
 
     #[test]
     fn analysis_files_are_hostile_input() {
+        use super::super::temporal::ranges::{Range, Ranges};
         let id = b"clip".to_vec();
-        let path = crate::vfx::StabilizerPath { w: 480, h: 270, steps: (0..40).map(|i| Affine::translate(i as f64 * 0.25, -0.5)).collect(), fps: 59.94 };
-        let bytes = store::encode(&id, &path).unwrap();
-        let back = store::decode(&bytes, &id).unwrap();
-        assert_eq!(back.steps, path.steps);
+        let steps = |n: usize, k: f64| (0..n).map(|i| Affine::translate(i as f64 * 0.25 + k, -0.5)).collect::<Vec<_>>();
+        let ranges =
+            Ranges { dims: Some((480, 270)), fps: 59.94, ranges: vec![Range { start: -3, steps: steps(20, 0.0) }, Range { start: 40, steps: steps(12, 1.0) }] };
+        let bytes = store::encode(&id, &ranges).unwrap();
+        assert_eq!(store::decode(&bytes, &id).unwrap(), ranges);
         assert!(store::decode(&bytes, b"another clip").is_none(), "made for another identity");
         for n in 0..bytes.len() {
             assert!(store::decode(&bytes[..n], &id).is_none(), "truncated to {n} bytes");
@@ -2125,25 +2126,37 @@ mod stabilizer_live_and_kept {
             for bit in [0x01u8, 0x80] {
                 let mut b = bytes.clone();
                 b[i] ^= bit;
-                if let Some(p) = store::decode(&b, &id) {
-                    assert!(p.steps.len() <= 20_000 && p.w > 0 && p.h > 0 && p.fps > 0.0);
-                    assert!(p.steps.iter().all(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite())));
+                if let Some(r) = store::decode(&b, &id) {
+                    let (w, h) = r.dims.unwrap();
+                    assert!(r.steps() <= 1 << 20 && w > 0 && h > 0 && r.fps > 0.0);
+                    assert!(r.ranges.windows(2).all(|p| p[1].start > p[0].last().unwrap()), "ranges in order, sharing no frame");
+                    assert!(r.ranges.iter().flat_map(|r| &r.steps).all(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite())));
                 }
             }
         }
-        let nan = crate::vfx::StabilizerPath { steps: vec![Affine::translate(f64::NAN, 0.0)], ..path.clone() };
+        let nan = Ranges { ranges: vec![Range { start: 0, steps: vec![Affine::translate(f64::NAN, 0.0)] }], ..ranges.clone() };
         assert!(store::decode(&store::encode(&id, &nan).unwrap(), &id).is_none(), "a NaN step");
-        let huge = [
-            b"FCSTAB\x00\x01".as_slice(),
-            &4u32.to_le_bytes(),
-            b"clip",
-            &480u32.to_le_bytes(),
-            &270u32.to_le_bytes(),
-            &60f64.to_le_bytes(),
-            &u32::MAX.to_le_bytes(),
-        ]
-        .concat();
+        let header = |count: u32| {
+            [
+                b"FCSTAB\x00\x02".as_slice(),
+                &4u32.to_le_bytes(),
+                b"clip",
+                &480u32.to_le_bytes(),
+                &270u32.to_le_bytes(),
+                &60f64.to_le_bytes(),
+                &count.to_le_bytes(),
+            ]
+            .concat()
+        };
+        assert!(store::decode(&header(u32::MAX), &id).is_none(), "a range count past the limit allocates nothing");
+        let huge = [header(1), i64::MAX.to_le_bytes().to_vec(), u32::MAX.to_le_bytes().to_vec()].concat();
         assert!(store::decode(&huge, &id).is_none(), "a step count past the limit allocates nothing");
+        let past = [header(1), (i64::MAX - 1).to_le_bytes().to_vec(), 2u32.to_le_bytes().to_vec(), vec![0; 96]].concat();
+        assert!(store::decode(&past, &id).is_none(), "a range past the last frame there is");
+        let overlapping = Ranges { ranges: vec![Range { start: 0, steps: steps(4, 0.0) }, Range { start: 4, steps: steps(4, 0.0) }], ..ranges.clone() };
+        assert!(store::decode(&store::encode(&id, &overlapping).unwrap(), &id).is_none(), "ranges sharing a frame");
+        let old = [b"FCSTAB\x00\x01".as_slice(), &bytes[8..]].concat();
+        assert!(store::decode(&old, &id).is_none(), "a file of the first format is analysed again");
     }
 }
 
@@ -2151,7 +2164,7 @@ mod stabilizer_live_and_kept {
 /// for a frame, [`stabilizer_keys`] lists for the project, and moving the clip keeps.
 mod stabilizer_keys_of_a_project {
     use super::*;
-    use crate::vfx::{AnalysisPhase, AnalysisState, analysis_identity, stabilizer_analysed, stabilizer_keys, stabilizer_state, without_waiting_for_analysis};
+    use crate::vfx::{AnalysisPhase, AnalysisState, analysis_span, stabilizer_analysed, stabilizer_keys, stabilizer_state, without_waiting_for_analysis};
     use crate::{RenderOptions, SourceMap, render_sequence};
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{Generator, MediaSource, SharedSource};
@@ -2195,7 +2208,7 @@ mod stabilizer_keys_of_a_project {
         assert!(stabilizer_analysed(waiting[0]), "a render outside analyses the clip");
 
         let item = |p: &Project| p.sequence(seq).unwrap().video_tracks[0].items[0].clone();
-        let id = |p: &Project| analysis_identity(p, p.sequence(seq).unwrap(), &item(p)).unwrap();
+        let id = |p: &Project| analysis_span(p, p.sequence(seq).unwrap(), &item(p)).unwrap();
         let before = id(&p);
         p.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = r.tick_of(40);
         assert_eq!(id(&p), before, "moving the clip keeps its identity");
@@ -2203,8 +2216,9 @@ mod stabilizer_keys_of_a_project {
         let (_, waiting) = without_waiting_for_analysis(|| render_sequence(&p, seq, r.tick_of(43), RenderOptions::default(), &map));
         assert!(waiting.is_empty(), "the moved clip is analysed already");
         p.sequence_mut(seq).unwrap().video_tracks[0].items[0].source_in = r.tick_of(2);
-        assert_ne!(id(&p), before, "another source range is another analysis");
-        assert_ne!(stabilizer_keys(&p), keys);
+        assert_eq!(id(&p).source, before.source, "the same frames of the same source");
+        assert_eq!(id(&p).first, before.first + 2, "two frames further in");
+        assert_ne!(stabilizer_keys(&p), keys, "another clip key");
     }
 
     /// A generator whose `stop_at`-th frame read stops there: it sets `stop` (when given), or
@@ -2305,5 +2319,212 @@ mod stabilizer_keys_of_a_project {
         filmcraft_media::cancel::with_cancel(&stop, || drop(render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map)));
         let st = state(&p, seq);
         assert!(st.phase == AnalysisPhase::Waiting && (1..48).contains(&st.analyzed) && st.total == 48, "{st:?}");
+    }
+}
+
+/// Clips of one source read the same way share its analysis: a trimmed or cut clip reads its
+/// path from what was analysed, an extended one analyses only its new frames, and either path is
+/// the one a fresh analysis of that clip makes.
+mod stabilizer_shared_by_clips_of_a_source {
+    use super::super::temporal::path_of;
+    use super::*;
+    use crate::vfx::{AnalysisPhase, stabilizer_state, without_waiting_for_analysis};
+    use crate::{RenderOptions, SourceMap, render_sequence};
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{FrameRequest, Generator, MediaInfo, MediaSource, SharedSource};
+    use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaIdentity, MediaRef, SequenceSettings, TrackItem, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const R: FrameRate = FrameRate::FPS_24;
+    const W: u32 = 96;
+    const H: u32 = 64;
+
+    /// 20 s of a texture that jumps a few pixels at every 24 fps frame; counts its reads.
+    struct Shaky {
+        info: MediaInfo,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl MediaSource for Shaky {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let t = R.frame_at(req.time) as f64 / 24.0;
+            let mut px = Vec::with_capacity((W * H * 4) as usize);
+            for y in 0..H {
+                for x in 0..W {
+                    let v = (shaky(x as f64, y as f64, t)[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
+                    px.extend([v, v, v, 255]);
+                }
+            }
+            Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(W, H, px)))
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            GeneratorSource::new(Generator::BlackVideo, W, H, R, Tick(TICKS_PER_SECOND)).audio(start, frames, sample_rate)
+        }
+    }
+
+    struct Fixture {
+        p: Project,
+        seq: ItemId,
+        media: ItemId,
+        map: SourceMap,
+        reads: Arc<AtomicUsize>,
+    }
+
+    /// An empty sequence and the shaky source, with file identity `fingerprint`.
+    fn fixture(fingerprint: u64) -> Fixture {
+        let mut p = Project::new("shared");
+        let mut map = SourceMap::default();
+        let g = GeneratorSource::new(Generator::BlackVideo, W, H, R, Tick(20 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let media = p.add_item(
+            "shaky",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: Some(MediaIdentity { size: 0x5A4E_D000, fingerprint }),
+            })),
+            None,
+        );
+        let reads = Arc::new(AtomicUsize::new(0));
+        map.0.insert(media, Arc::new(Shaky { info, reads: reads.clone() }) as SharedSource);
+        let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: R, ..Default::default() }, 1, 0, None);
+        Fixture { p, seq, media, map, reads }
+    }
+
+    impl Fixture {
+        /// Make V1 the stabilized clips `(start, source in, duration)`, in frames.
+        fn clips(&mut self, clips: &[(i64, i64, i64)]) {
+            let items: Vec<TrackItem> = clips
+                .iter()
+                .map(|&(start, src_in, dur)| {
+                    let mut ti =
+                        self.p.make_track_item(self.media, TrackKind::Video, R.tick_of(start), TimeRange::new(R.tick_of(src_in), R.tick_of(dur)), R).unwrap();
+                    ti.effects.push(inst("warp_stabilizer"));
+                    ti
+                })
+                .collect();
+            self.p.sequence_mut(self.seq).unwrap().video_tracks[0].items = items;
+        }
+        fn item(&self, i: usize) -> TrackItem {
+            self.p.sequence(self.seq).unwrap().video_tracks[0].items[i].clone()
+        }
+        fn edit(&mut self, i: usize, f: impl FnOnce(&mut TrackItem)) {
+            f(&mut self.p.sequence_mut(self.seq).unwrap().video_tracks[0].items[i]);
+        }
+        fn stabilizer(item: &TrackItem) -> &EffectInstance {
+            item.effects.iter().find(|e| e.effect == "warp_stabilizer").unwrap()
+        }
+        /// The analyses a monitor frame of clip `i` goes without.
+        fn missing(&self, i: usize) -> Vec<u64> {
+            let t = self.item(i).start + R.tick_of(2);
+            without_waiting_for_analysis(|| render_sequence(&self.p, self.seq, t, RenderOptions::default(), &self.map)).1
+        }
+        /// Render a frame of clip `i` as an export does (waiting for its analysis); the frames
+        /// the source read.
+        fn render(&self, i: usize) -> usize {
+            let before = self.reads.load(Ordering::SeqCst);
+            render_sequence(&self.p, self.seq, self.item(i).start + R.tick_of(2), RenderOptions::default(), &self.map);
+            self.reads.load(Ordering::SeqCst) - before
+        }
+        fn path(&self, i: usize) -> Arc<crate::vfx::StabilizerPath> {
+            let item = self.item(i);
+            path_of(&self.p, self.p.sequence(self.seq).unwrap(), &item, Self::stabilizer(&item)).expect("analysed")
+        }
+        fn state(&self, i: usize) -> crate::vfx::AnalysisState {
+            let item = self.item(i);
+            stabilizer_state(&self.p, self.p.sequence(self.seq).unwrap(), &item, Self::stabilizer(&item))
+        }
+    }
+
+    /// The path a fresh analysis makes of clip `(source in, duration)`: the same frames under
+    /// another file identity, so nothing analysed before is used.
+    fn fresh(fingerprint: u64, src_in: i64, dur: i64) -> Arc<crate::vfx::StabilizerPath> {
+        let mut f = fixture(fingerprint);
+        f.clips(&[(0, src_in, dur)]);
+        assert!(f.render(0) >= dur as usize, "analysed from scratch");
+        f.path(0)
+    }
+
+    #[test]
+    fn a_shortened_or_cut_clip_reads_its_path_from_what_was_analysed() {
+        let mut f = fixture(0x5A4E_0001);
+        f.clips(&[(0, 24, 96)]);
+        assert!(f.render(0) >= 96);
+        assert_eq!(f.path(0).steps.len(), 95);
+
+        // out point 6 frames earlier
+        f.edit(0, |c| c.duration = R.tick_of(90));
+        assert!(f.missing(0).is_empty(), "nothing to analyse");
+        assert_eq!(f.path(0).steps, fresh(0x5A4E_0101, 24, 90).steps);
+        // in point 6 frames later
+        f.edit(0, |c| {
+            c.source_in = R.tick_of(30);
+            c.duration = R.tick_of(84);
+        });
+        assert!(f.missing(0).is_empty(), "nothing to analyse");
+        assert_eq!(f.path(0).steps, fresh(0x5A4E_0102, 30, 84).steps);
+        assert_eq!(f.state(0).phase, AnalysisPhase::Done);
+
+        // cut in two
+        f.clips(&[(0, 24, 40), (40, 64, 56)]);
+        assert!(f.missing(0).is_empty() && f.missing(1).is_empty(), "neither half is analysed again");
+        assert_eq!(f.path(0).steps, fresh(0x5A4E_0103, 24, 40).steps);
+        assert_eq!(f.path(1).steps, fresh(0x5A4E_0104, 64, 56).steps);
+    }
+
+    #[test]
+    fn an_extended_clip_analyses_only_its_new_frames() {
+        let mut f = fixture(0x5A4E_0002);
+        f.clips(&[(0, 24, 48)]);
+        assert!(f.render(0) >= 48);
+
+        // 12 frames more at the end: the 12, and the last one analysed to join them on
+        f.edit(0, |c| c.duration = R.tick_of(60));
+        assert_eq!(f.missing(0).len(), 1);
+        let st = f.state(0);
+        assert_eq!((st.phase, st.analyzed, st.total), (AnalysisPhase::Waiting, 48, 60), "48 of its 60 frames are analysed");
+        let reads = f.render(0);
+        assert!((13..=16).contains(&reads), "{reads} frames read (13 for the analysis, the rest for the frame shown)");
+        assert_eq!(f.path(0).steps, fresh(0x5A4E_0201, 24, 60).steps);
+
+        // 12 frames more at the start
+        f.edit(0, |c| {
+            c.source_in = R.tick_of(12);
+            c.duration = R.tick_of(72);
+        });
+        let reads = f.render(0);
+        assert!((13..=16).contains(&reads), "{reads} frames read");
+        assert_eq!(f.path(0).steps, fresh(0x5A4E_0202, 12, 72).steps);
+    }
+
+    #[test]
+    fn clips_that_read_other_frames_do_not_share() {
+        let mut f = fixture(0x5A4E_0003);
+        f.clips(&[(0, 24, 48)]);
+        f.render(0);
+        let half = Tick(R.frame_duration().0 / 2);
+        let cases: [(&str, Box<dyn Fn(&mut TrackItem)>); 4] = [
+            ("half a frame in", Box::new(move |c: &mut TrackItem| c.source_in = R.tick_of(24) + half)),
+            ("another speed", Box::new(|c: &mut TrackItem| c.speed = 2.0)),
+            ("a frame hold", Box::new(|c: &mut TrackItem| c.frame_hold = Some(R.tick_of(30)))),
+            ("reversed", Box::new(|c: &mut TrackItem| c.reverse = true)),
+        ];
+        for (name, edit) in cases {
+            f.clips(&[(0, 24, 40)]);
+            f.edit(0, |c| edit(c));
+            assert_eq!(f.missing(0).len(), 1, "{name}: analysed for itself");
+        }
     }
 }
