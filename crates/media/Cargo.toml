@@ -13,7 +13,10 @@ workspace = true
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
+craft-audio = { workspace = true, features = ["pcm-encode"] }
+craft-media = { workspace = true }
 filmcraft-dng = { workspace = true }
+craft-dpx = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
