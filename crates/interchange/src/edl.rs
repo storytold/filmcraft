@@ -39,7 +39,7 @@ use craft_timeline::edl::{self as shared_edl, Channel as Ch, Edl as Parsed, Even
 
 fn parse(text: &str, report: &mut Report) -> Parsed {
     let mut shared_report = craft_timeline::Report::default();
-    let parsed = shared_edl::parse(text, &mut shared_report);
+    let parsed = shared_edl::parse_with_report_limit(text, &mut shared_report, Some(crate::MAX_REPORT_ENTRIES));
     for entry in shared_report.entries {
         let level = match entry.level {
             craft_timeline::Level::Info => crate::Level::Info,
@@ -980,5 +980,13 @@ AUD 2\n\
         assert_eq!(w.trans, Trans::Wipe(1));
         assert!(shared_edl::parse_event_line("* comment").is_none());
         assert!(shared_edl::parse_tc("01;00;00;02").unwrap().df);
+    }
+    #[test]
+    fn shared_parser_preserves_filmcraft_diagnostic_budget() {
+        let text = (0..crate::MAX_REPORT_ENTRIES + 10).map(|i| format!("unrecognized-{i}\n")).collect::<String>();
+        let mut report = Report::default();
+        let _ = parse(&text, &mut report);
+        assert_eq!(report.entries.len(), crate::MAX_REPORT_ENTRIES + 1);
+        assert!(report.mentions("further diagnostics omitted"));
     }
 }
