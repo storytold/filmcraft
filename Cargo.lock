@@ -1144,6 +1144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-jsonrpc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=0c15f7c74913880da6bae5927b95f798c2ecf3c3#0c15f7c74913880da6bae5927b95f798c2ecf3c3"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "craft-media"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=5dcddf5bf09c5250f95c89e8197c695f158b88f5#5dcddf5bf09c5250f95c89e8197c695f158b88f5"
@@ -2066,6 +2075,7 @@ name = "filmcraft-automation"
 version = "0.20.1"
 dependencies = [
  "base64",
+ "craft-jsonrpc",
  "filmcraft-engine",
  "filmcraft-time",
  "image",
