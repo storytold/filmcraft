@@ -2509,6 +2509,7 @@ dependencies = [
  "craft-audio",
  "craft-dpx",
  "craft-media",
+ "craft-tga",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
