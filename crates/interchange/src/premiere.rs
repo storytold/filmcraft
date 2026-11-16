@@ -1894,6 +1894,11 @@ fn bin_item(entry: &ProjectEntry, frame: (u32, u32, FrameRate), b: &mut Builder,
             add_streams(b, id, &spec);
             if let Some(ItemKind::Media(m)) = b.p.item_mut(id).map(|i| &mut i.kind) {
                 m.offline = true;
+                // An item an earlier, shorter use created (a timeline cut, another subclip) grows to
+                // cover this subclip; it never shrinks.
+                if let Some(end) = spec.duration {
+                    m.info.duration = m.info.duration.max(end);
+                }
             }
             attach_markers(b, id, &entry.markers);
             Some(id)
@@ -3027,6 +3032,38 @@ mod tests {
         assert_eq!(items.len(), 1, "{report:?}");
         let bin = p.root.parent_of(items[0].id).and_then(|b| p.root.find_bin(b)).map(|b| b.name.clone());
         assert_eq!(bin, Some(p.root.name.clone()), "{report:?}");
+    }
+    #[test]
+    fn a_subclip_lengthens_media_a_shorter_timeline_cut_created_and_never_shortens_it() {
+        // Hand-written: the timeline cuts the first second of the interview, whose panel bin also
+        // holds a subclip of it.
+        let subclip = |start: i64, end: i64| {
+            av_fixture(r#"<TrackGroup><Second ObjectRef="vg"/></TrackGroup>"#)
+                .replace(r#"<Item Index="0" ObjectURef="clip-item"/>"#, r#"<Item Index="0" ObjectURef="clip-item"/><Item Index="1" ObjectURef="answer-item"/>"#)
+                .replace(
+                    "</PremiereData>",
+                    &format!(
+                        r#"<ClipProjectItem ObjectUID="answer-item"><ProjectItem><Name>interview.mov</Name></ProjectItem><MasterClip ObjectURef="answer-master"/></ClipProjectItem>
+<MasterClip ObjectUID="answer-master"><Clips><Clip Index="0" ObjectRef="answer-clip"/></Clips><Name>Answer</Name></MasterClip>
+<VideoClip ObjectID="answer-clip"><Clip><Source ObjectRef="answer-source"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="answer-source"><MediaSource><Content><StartBoundary>{start}</StartBoundary><EndBoundary>{end}</EndBoundary></Content><Media ObjectURef="media"/></MediaSource></VideoMediaSource></PremiereData>"#
+                    ),
+                )
+        };
+        let parent = |start: i64, end: i64| {
+            let (fragment, _, report) = import(subclip(start, end).as_bytes(), &ImportOptions::default(), None).unwrap();
+            let p = &fragment.project;
+            let parent = p.items.values().find_map(|i| match &i.kind {
+                ItemKind::Subclip { parent, range, .. } => Some((*parent, range.start, range.duration)),
+                _ => None,
+            });
+            let (parent, range_start, range_duration) = parent.unwrap_or_else(|| panic!("{report:?}"));
+            assert_eq!((range_start, range_duration), (Tick(start), Tick(end - start)));
+            assert_eq!(p.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].item, parent, "the cut's media is the subclip's parent");
+            p.item(parent).and_then(|i| i.as_media()).unwrap().info.duration
+        };
+        assert_eq!(parent(10 * TPS, 20 * TPS), Tick(20 * TPS), "it covers the subclip");
+        assert_eq!(parent(0, TPS / 2), Tick(TPS), "it still covers the cut");
     }
     #[test]
     fn speed_reads_stored_ratio_not_frame_grid_durations() {
