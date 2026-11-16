@@ -115,6 +115,14 @@ fn add_marker_on_a_marker_opens_its_dialog() {
     assert_eq!(reply, json!({"dialog": "editMarker", "marker": id}));
     assert_eq!(d.harness.state().ui.marker_properties.as_ref().map(|m| m.marker), Some(id));
     assert_eq!(sequence_markers(&d), before, "no second marker");
+    d.harness.state_mut().ui.marker_properties = None;
+    d.frames(2);
+    // a script's markers.add is not a key or a button: it adds the marker it asks for
+    let reply = d.ok("engine.execute", json!({"command": "markers.add", "params": {"name": "Second"}}));
+    d.frames(2);
+    assert!(reply["marker"].as_u64().is_some_and(|m| m != id), "{reply}");
+    assert!(d.harness.state().ui.marker_properties.is_none(), "no dialog");
+    assert_eq!(sequence_markers(&d), before + 1);
 }
 
 /// Two markers already stacked on one frame: Add Marker opens the one drawn on top, the later one.

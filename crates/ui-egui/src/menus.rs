@@ -193,7 +193,25 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if text_field_window(ctx).is_some() && edits_text(id) {
         return activate_native(app, ctx, id);
     }
+    if let Some(reply) = open_marker_at_playhead(app, id, &params) {
+        return Ok(reply);
+    }
     invoke_command(app, ctx, id, params)
+}
+
+/// Add Marker from a key, a button or a menu, on a marker's frame, opens that marker's Edit Marker
+/// dialog instead of stacking a second marker there. `markers.add` sent through `engine.execute`
+/// always adds, so scripts and agents get the marker they ask for.
+fn open_marker_at_playhead(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Value> {
+    if id != "markers.add" {
+        return None;
+    }
+    let mut params = params.clone();
+    if params.get("target").is_none() && targets_source(app, &params) {
+        params.as_object_mut()?.insert("target".into(), json!("source"));
+    }
+    let marker = crate::panels::marker_properties::open_at_playhead(app, &params)?;
+    Some(json!({"dialog": "editMarker", "marker": marker}))
 }
 
 pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> Vec<MenuItem> {
@@ -238,11 +256,6 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
-    }
-    if id == "markers.add"
-        && let Some(marker) = crate::panels::marker_properties::open_at_playhead(app, &params)
-    {
-        return Ok(json!({"dialog": "editMarker", "marker": marker}));
     }
     if matches!(
         id,
@@ -722,6 +735,9 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         return Ok(graphic_text_command(app, ctx, id));
     }
     let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
+        if let Some(reply) = open_marker_at_playhead(app, id, &json!({})) {
+            return Ok(reply);
+        }
         return invoke_command(app, ctx, id, json!({}));
     };
     // Retain main's immediate Select All for the root window, including Project search. Floating
