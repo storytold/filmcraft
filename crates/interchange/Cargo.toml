@@ -18,6 +18,7 @@ filmcraft-project = { workspace = true }
 filmcraft-cfb = { workspace = true }
 craft-timeline = { workspace = true }
 craft-audio = { workspace = true, features = ["pcm-encode"] }
+craft-aaf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

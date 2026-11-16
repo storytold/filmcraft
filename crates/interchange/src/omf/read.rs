@@ -49,7 +49,7 @@ fn read_with_budget(bytes: &[u8], report: &mut Report, budget: usize) -> Result<
     let perr = |m: String| Error::Parse { format: "OMF", message: m };
     let c = Container::open(bytes).map_err(perr)?;
     let class_of = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").and_then(|v| v.get(..4).map(|b| [b[0], b[1], b[2], b[3]]));
-    let head = c.objects.keys().copied().find(|&o| class_of(o) == Some(*b"HEAD")).ok_or_else(|| perr("no OMF header object".into()))?;
+    let head = c.object_ids().find(|&o| class_of(o) == Some(*b"HEAD")).ok_or_else(|| perr("no OMF header object".into()))?;
     let be = c.get(head, "OMFI:HEAD:ByteOrder").is_none_or(|v| v.first() != Some(&0x49));
     let mut r = R {
         c: &c,
@@ -63,18 +63,15 @@ fn read_with_budget(bytes: &[u8], report: &mut Report, budget: usize) -> Result<
         clip_search: HashMap::new(),
     };
     let mob_list = r.refs(head, "OMFI:HEAD:Mobs");
-    let mob_list = if mob_list.is_empty() {
-        c.objects.keys().copied().filter(|&o| matches!(class_of(o).as_ref(), Some(b"CMOB" | b"MMOB" | b"SMOB"))).collect()
-    } else {
-        mob_list
-    };
+    let mob_list =
+        if mob_list.is_empty() { c.object_ids().filter(|&o| matches!(class_of(o).as_ref(), Some(b"CMOB" | b"MMOB" | b"SMOB"))).collect() } else { mob_list };
     for &m in &mob_list {
         if let Some(id) = r.uid(m, "OMFI:MOBJ:MobID") {
             r.mobs.insert(id, m);
         }
     }
     let md = r.refs(head, "OMFI:HEAD:MediaData");
-    let md = if md.is_empty() { c.objects.keys().copied().filter(|&o| matches!(class_of(o).as_ref(), Some(b"WAVE" | b"AIFC"))).collect() } else { md };
+    let md = if md.is_empty() { c.object_ids().filter(|&o| matches!(class_of(o).as_ref(), Some(b"WAVE" | b"AIFC"))).collect() } else { md };
     for m in md {
         let Some(id) = r.uid(m, "OMFI:MDAT:MobID") else { continue };
         if let Some(d) = c.get(m, "OMFI:WAVE:Data") {

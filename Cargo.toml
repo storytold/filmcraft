@@ -63,11 +63,17 @@ craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # Shared YUV4MPEG2 parser and frame index.
 craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0c15f7c74913880da6bae5927b95f798c2ecf3c3", features = ["async-lines"] }
 craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6bd1c3dc357f012ddb31c6799ad2e36a1596003d" }
+<<<<<<< HEAD
 craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f01f6aca3afdf664b6c3e651e8e58caddc701c62", default-features = false }
+=======
+craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "99d0a6eca48082183a9d125cb4ef1a1707576070" }
+>>>>>>> origin/main
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7738cc6c689060475cb6947a6e3db6ed78fb3419", default-features = false }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
+# Shared OMF Bento container; its object model stays in FilmCraft.
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "654e8d55e16b349fba04f5a48e8da221680ee7e3" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
