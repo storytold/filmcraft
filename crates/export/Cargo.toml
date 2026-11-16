@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 craft-audio = { workspace = true }
 craft-exr = { workspace = true }
+craft-tga = { workspace = true }
+craft-dpx = { workspace = true }
 craft-video = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }
