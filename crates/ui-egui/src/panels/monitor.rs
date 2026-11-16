@@ -194,7 +194,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
 
 /// When the frame on screen shows a Warp Stabilizer clip unstabilised (its analysis runs), say so.
 fn analysing_badge(app: &FilmcraftApp, ui: &egui::Ui, pic: Rect, t: &Tokens, on_screen: Option<FrameKey>) {
-    if !on_screen.is_some_and(|k| app.frames.is_provisional(&k)) {
+    if !on_screen.is_some_and(|k| app.frames.waits_for_shown_analysis(&k)) {
         return;
     }
     // the percentage moves on, and the stabilised frame replaces this one when it is done
