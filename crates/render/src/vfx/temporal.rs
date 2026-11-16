@@ -609,35 +609,52 @@ fn effect_key(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectIns
 
 /// Where the analysis of a Warp Stabilizer stands (`sequence.inspect` reports it to agents).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AnalysisState {
+pub struct AnalysisState {
+    pub phase: AnalysisPhase,
+    /// Frames of the clip analysed so far (all of them once it is done).
+    pub analyzed: usize,
+    /// Frames of the clip the analysis reads.
+    pub total: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisPhase {
     /// Finished, in memory or kept on disk: the clip's frames are stabilized.
     Done,
-    /// Running now, this far (0 to 1).
-    Running(f32),
-    /// Neither: it runs when a frame of the clip is shown or rendered, going on from `frames`
-    /// already read by an analysis that was stopped.
-    Waiting { frames: usize },
+    /// Running now.
+    Running,
+    /// Neither: it runs when a frame of the clip is shown or rendered, going on from the frames
+    /// already analysed by an analysis that was stopped.
+    Waiting,
     /// It finished without a frame it could read: the clip is shown unstabilized.
     Unreadable,
+}
+
+/// The frames an analysis of a clip `seconds` long reads at `fps`.
+pub(crate) fn analysis_frames(seconds: f64, fps: f64) -> usize {
+    let n = (seconds * fps.max(1.0)).round();
+    if n.is_finite() && n >= 1.0 { (n as usize).min(MAX_ANALYSIS_FRAMES) } else { 1 }
 }
 
 /// The state of the analysis of the Warp Stabilizer `e` on `item` in `seq`.
 pub fn stabilizer_state(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> AnalysisState {
     let (key, identity) = effect_key(project, seq, item, e);
+    let total = analysis_frames(item.duration.seconds(), seq.settings.frame_rate.as_f64());
     let (a, done) = finished(lock_analyses(), key, identity.as_deref());
-    if done.is_some() {
-        AnalysisState::Done
+    let (phase, analyzed) = if done.is_some() {
+        (AnalysisPhase::Done, total)
     } else if a.unreadable.contains(&key) {
-        AnalysisState::Unreadable
+        (AnalysisPhase::Unreadable, total)
     } else if a.running == Some(key) {
-        AnalysisState::Running(stabilizer_progress().unwrap_or(0.0))
+        (AnalysisPhase::Running, RUNNING_DONE.load(Ordering::Relaxed).min(total))
     } else {
         let frames = match a.clips.get(&key) {
             Some(Analysis::Partial(p)) => p.next,
             _ => 0,
         };
-        AnalysisState::Waiting { frames }
-    }
+        (AnalysisPhase::Waiting, frames.min(total))
+    };
+    AnalysisState { phase, analyzed, total }
 }
 
 /// The running analysis' turn. Ended by its request once its result is kept; ended here when that
@@ -738,7 +755,7 @@ fn analyse(
     report: Option<&AtomicUsize>,
 ) -> (Progress, bool) {
     let fps = env.frame_rate().max(1.0);
-    let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, MAX_ANALYSIS_FRAMES);
+    let n = analysis_frames(env.clip_seconds(), fps);
     if let Some(r) = report {
         r.store(progress.next, Ordering::Relaxed);
         RUNNING_TOTAL.store(n, Ordering::Relaxed);

@@ -2151,7 +2151,7 @@ mod stabilizer_live_and_kept {
 /// for a frame, [`stabilizer_keys`] lists for the project, and moving the clip keeps.
 mod stabilizer_keys_of_a_project {
     use super::*;
-    use crate::vfx::{AnalysisState, analysis_identity, stabilizer_analysed, stabilizer_keys, stabilizer_state, without_waiting_for_analysis};
+    use crate::vfx::{AnalysisPhase, AnalysisState, analysis_identity, stabilizer_analysed, stabilizer_keys, stabilizer_state, without_waiting_for_analysis};
     use crate::{RenderOptions, SourceMap, render_sequence};
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{Generator, MediaSource, SharedSource};
@@ -2284,7 +2284,7 @@ mod stabilizer_keys_of_a_project {
         let gate = Arc::new(std::sync::Barrier::new(2));
         let g2 = gate.clone();
         let (p, seq, map) = held_project(0x57A7_E001, move |inner| Held { inner, reads: Default::default(), stop_at: 10, stop: None, gate: Some(g2) });
-        assert_eq!(state(&p, seq), AnalysisState::Waiting { frames: 0 }, "nothing has asked for it yet");
+        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Waiting, analyzed: 0, total: 48 }, "nothing has asked for it yet");
         let p = Arc::new(p);
         let map = Arc::new(map);
         let (p2, map2) = (p.clone(), map.clone());
@@ -2293,8 +2293,8 @@ mod stabilizer_keys_of_a_project {
         let running = state(&p, seq);
         gate.wait();
         render.join().unwrap();
-        assert!(matches!(running, AnalysisState::Running(f) if (0.0..=1.0).contains(&f)), "{running:?}");
-        assert_eq!(state(&p, seq), AnalysisState::Done);
+        assert!(running.phase == AnalysisPhase::Running && (1..48).contains(&running.analyzed) && running.total == 48, "{running:?}");
+        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Done, analyzed: 48, total: 48 });
     }
 
     #[test]
@@ -2303,7 +2303,7 @@ mod stabilizer_keys_of_a_project {
         let s2 = stop.clone();
         let (p, seq, map) = held_project(0x57A7_E002, move |inner| Held { inner, reads: Default::default(), stop_at: 20, stop: Some(s2), gate: None });
         filmcraft_media::cancel::with_cancel(&stop, || drop(render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map)));
-        let AnalysisState::Waiting { frames } = state(&p, seq) else { panic!("{:?}", state(&p, seq)) };
-        assert!((1..48).contains(&frames), "{frames} of 48 frames read");
+        let st = state(&p, seq);
+        assert!(st.phase == AnalysisPhase::Waiting && (1..48).contains(&st.analyzed) && st.total == 48, "{st:?}");
     }
 }
