@@ -4,7 +4,7 @@
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo nextest run --workspace                   # the same in parallel processes (doctests: cargo test --doc)
 cargo test -p filmcraft-codecs                   # one crate
-cargo test --release -p filmcraft-prores        # codec tests are much faster in release
+cargo test --release -p craft-video --features prores,threads --test prores  # run from the craft-libs workspace
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
@@ -117,8 +117,8 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   parallel test run or on a fresh machine). It runs each crate's ignored `generate_fixtures` test —
   the same generators the oracle tests call — for `h264`, `hevc`, `isobmff`, `matroska`, `dnx`,
   `prores`, `mpeg2v`, `ac3` and `codecs` (MXF, Ogg and MPEG TS / PS), and prints one `made` / `cached` / `skipped` line per fixture plus a summary. The
-  `aac`, `opus` and `h264enc` oracles generate small per-test signals on demand and are not part of
-  the matrix.
+  `aac` and `opus` oracles here generate small per-test signals on demand, and craft-libs H.264
+  encoder tests generate their own signals; none are part of the fixture matrix.
 - Fixture sources are synthetic: `testsrc2`, `mandelbrot`, SMPTE bars, noise and fades, sine tones.
   H.264 and HEVC fixtures need ffmpeg built with libx264 and libx265. VideoToolbox fixtures are
   generated only on macOS. The Media Foundation parity tests (`crates/platform/tests/it/media_foundation.rs`,
@@ -148,7 +148,7 @@ anything is "fixed" to match) and add asserts for anything new.
 |---|---|---|
 | `h264` | decode every fixture single-threaded and frame-threaded; compare with `ffmpeg -f rawvideo -pix_fmt yuv420p` | **bit-exact**, every frame |
 | `hevc` | same, `yuv420p` / `yuv420p10le` | **bit-exact** (8- and 10-bit) |
-| `h264enc` | `ffmpeg -v warning -err_detect +crccheck+bitstream+buffer+explode` decodes our stream | no output at all (a `corrupt decoded frame` warning fails; a negative control checks dropped and truncated slices are reported), exact frame count, **bit-identical to the encoder's reconstruction**; B-frame order checked with ffprobe; rate-control targets |
+| craft-video H.264 encoder (`h264-encode`) | `ffmpeg -v warning -err_detect +crccheck+bitstream+buffer+explode` decodes the shared encoder stream | no output at all (a `corrupt decoded frame` warning fails; a negative control checks dropped and truncated slices are reported), exact frame count, **bit-identical to the encoder's reconstruction**; B-frame order checked with ffprobe; rate-control targets |
 | `prores` decode | ffmpeg `prores_ks` / `prores_aw` fixtures, compared at native depth | within **±1 LSB** (different integer IDCT); alpha bit-exact |
 | `prores` encode | ffmpeg decodes with `-xerror` | no errors; agrees with our decoder within ±1 |
 | `dnx` decode | ffmpeg VC-3 fixtures (13 DNxHD CIDs, DNxHR LB/SQ/HQ/HQX/444), compared at native depth | within **±2 LSB**, ≤ 100 samples per million beyond ±1 (ffmpeg's integer IDCT; we evaluate the exact IDCT) |
@@ -179,6 +179,10 @@ Each codec README has the full fixture matrix and the measured results.
 - `crates/gpu/src/tests.rs` composites the same frame plan (a YUV layer plus a transformed,
   semi-transparent RGBA layer) on the GPU and on the CPU. It requires a 99th-percentile channel
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
+  A software adapter counts: wgpu offers one when there is no GPU, so on a machine without a GPU
+  installing Mesa's lavapipe (`mesa-vulkan-drivers` on Debian / Ubuntu) runs these tests. CI does
+  that and sets `FILMCRAFT_REQUIRE_GPU=1`, so missing adapters/devices fail the normal
+  suite instead of silently skipping; the tests print the selected adapter.
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
@@ -310,8 +314,8 @@ engine behaviour without a window.
 |---|---|
 | H.264 decode, 1080p, threads sweep | in craft-libs: `cargo test --release -p craft-video --features h264-decode,threads --test h264_decode perf:: -- --ignored --nocapture` |
 | HEVC decode, 1080p / 2160p | in craft-libs: `cargo test --release -p craft-video --features hevc-decode,threads --test hevc_decode perf:: -- --ignored --nocapture` |
-| ProRes decode/encode | `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture` |
-| Encoder speed / PSNR / bitrate | `cargo run --release -p filmcraft-h264enc --example h264enc_synth -- …` |
+| ProRes decode/encode | in craft-libs: `cargo test --release -p craft-video --features prores,threads --test prores perf:: -- --ignored --nocapture` |
+| Encoder speed / PSNR / bitrate | in craft-libs: `cargo run --release -p craft-video --features h264-encode --example h264_h264enc_bench -- …` |
 | Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files) | `cargo run --release -p filmcraft-engine --example bench_export -- --runs 7` |
 | Decode a real file through the media stack | `cargo run --release -p filmcraft-cli -- bench-decode file.mp4 --frames 120` |
 | Coding-tool coverage of the fixtures | in craft-libs: `cargo test --release -p craft-video --features h264-decode --test h264_decode conformance::coverage_report -- --ignored --nocapture` (same for `hevc`) |
@@ -407,3 +411,12 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+### Required software-GPU CI, 2026-10-30
+
+The application workflow only calls the shared gate and supplies packages and
+`FILMCRAFT_REQUIRE_GPU=1`. GPU unit and golden tests fail if adapter lookup, device
+creation, or a required float render target is unavailable. No extra application-local
+workflow job or duplicate release-build test pass is added. Local runs without this
+variable retain explicit skip behavior. An adapter log line alone is not proof that
+device creation succeeded.
