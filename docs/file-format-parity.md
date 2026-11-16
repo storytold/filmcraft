@@ -21,6 +21,7 @@ only). "Tested" names the evidence.
 | OMF 2.0 | write | no | yes | never opened in Pro Tools | 50% |
 | EDL (CMX 3600) | read + write | yes | yes | tests | 85% |
 | OpenTimelineIO | read + write (26.0) | yes | yes | tests | 80% |
+| DaVinci Resolve project `.drp` | no | yes: bins, timelines, tracks, cuts, transitions, fades, titles, Transform, volume, compound and multicam clips | no | unit + mutation tests; 23 real Resolve 20 projects matched clip for clip | 70% |
 | Avid Log Exchange (ALE) | write | no | yes | — | 70% |
 | Marker CSV / text | write | — | yes (#454) | — | 80% |
 | Selection as project | Premiere project | — | `.fcproj` only | — | 50% |
