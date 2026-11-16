@@ -272,6 +272,10 @@ impl VideoEncoder for QsvEncoder {
     fn media_start(&self) -> Option<i64> {
         None
     }
+
+    fn hardware(&self) -> Option<&'static str> {
+        Some("Intel Quick Sync")
+    }
 }
 
 /// The export encoder factory registered with `filmcraft_export::register_encoder`.
