@@ -6,9 +6,15 @@
 //! the nearest frame it already has, so scrubbing never flashes black and never blocks the UI.
 //! Sequence frames inside a rendered segment come from its render preview instead of the live
 //! render (see `filmcraft_engine::previews`).
+//!
+//! Monitor frames don't wait for Warp Stabilizer analyses: a clip that isn't analysed yet is shown
+//! unstabilised (the frame is *provisional*), and one analysis thread of the server works through
+//! the analyses those frames went without, in the order they were asked for. When one finishes,
+//! the provisional frames are dropped from the caches and the UI repaints, so the monitors render
+//! them again, stabilised.
 
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
@@ -169,6 +175,31 @@ struct Shared {
     stats: Mutex<FrameStats>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
+    /// Whether an analysis thread runs: without one (wasm32) frames wait for their analyses.
+    live_analysis: bool,
+    /// Cached frames rendered without a Warp Stabilizer analysis they need.
+    provisional: Mutex<HashSet<FrameKey>>,
+    /// The analyses monitor frames went without ([`analysis_worker`]).
+    analyses: Mutex<Analyses>,
+    analyses_cv: Condvar,
+}
+
+/// A render that waits for the Warp Stabilizer analyses `keys`, which a monitor frame went
+/// without: rendering it again outside `without_waiting_for_analysis` runs them.
+struct AnalysisRequest {
+    keys: Vec<u64>,
+    job: Job,
+}
+
+#[derive(Default)]
+struct Analyses {
+    queue: VecDeque<AnalysisRequest>,
+    /// The analyses being run, and the flag that stops them.
+    running: Option<(Vec<u64>, Arc<AtomicBool>)>,
+    /// The newest project a request came with (revision, project). A queued request renders it
+    /// instead of its own, and analyses that are not in it any more (the clip was trimmed or
+    /// deleted meanwhile) are stopped or skipped.
+    latest: Option<(u64, Arc<Project>)>,
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -508,6 +539,10 @@ impl FrameServer {
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
+            live_analysis: cfg!(not(target_arch = "wasm32")),
+            provisional: Mutex::new(HashSet::new()),
+            analyses: Mutex::new(Analyses::default()),
+            analyses_cv: Condvar::new(),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -518,6 +553,11 @@ impl FrameServer {
             let rp = repaint.clone();
             let pv = previews.clone();
             std::thread::Builder::new().name(format!("filmcraft-frames-{i}")).spawn(move || worker(sh, pool, services, pv, rp)).ok();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sh, pool, services, rp, pv) = (shared.clone(), pool.clone(), services.clone(), repaint.clone(), previews.clone());
+            std::thread::Builder::new().name("filmcraft-stabilize".into()).spawn(move || analysis_worker(sh, pool, services, pv, rp)).ok();
         }
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
@@ -591,6 +631,18 @@ impl FrameServer {
             Target::SequencePlan(..) => self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(k),
             _ => self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(k),
         }
+    }
+
+    /// Whether the cached frame `k` was rendered without a Warp Stabilizer analysis it needs
+    /// (it shows the clip unstabilised until the analysis is done).
+    pub fn is_provisional(&self, k: &FrameKey) -> bool {
+        self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).contains(k)
+    }
+
+    /// Whether Warp Stabilizer analyses that monitor frames need are running or queued.
+    pub fn analysing(&self) -> bool {
+        let a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+        a.running.is_some() || !a.queue.is_empty()
     }
 
     /// Nearest cached plan at or before `frame`.
@@ -843,6 +895,14 @@ impl Drop for FrameServer {
             c.store(true, Ordering::Relaxed);
         }
         self.shared.cv.notify_all();
+        let mut a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+        a.queue.clear();
+        a.latest = None;
+        if let Some((_, c)) = &a.running {
+            c.store(true, Ordering::Relaxed);
+        }
+        drop(a);
+        self.shared.analyses_cv.notify_all();
     }
 }
 
@@ -988,32 +1048,38 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     // cancelled one, its result is not cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
-    let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
-        filmcraft_media::cancel::with_catch_up(job.catch_up, || {
-            filmcraft_media::cancel::with_draft(job.key.draft, || {
-                filmcraft_media::cancel::with_background(is_background(job), || {
-                    if let Target::SequencePlan(seq, caps) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+    let mut render = || {
+        filmcraft_media::cancel::with_cancel(&job.cancel, || {
+            filmcraft_media::cancel::with_catch_up(job.catch_up, || {
+                filmcraft_media::cancel::with_draft(job.key.draft, || {
+                    filmcraft_media::cancel::with_background(is_background(job), || {
+                        if let Target::SequencePlan(seq, caps) = job.key.target {
+                            let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                                // Convert texels for upload here, not on the UI thread when the frame is shown.
+                                let prepared = filmcraft_gpu::prepare(&plan);
+                                sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
+                            }
+                            pv
+                        } else {
+                            let (img, pv) = render_job(job, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                                sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
+                            }
+                            pv
                         }
-                        pv
-                    } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
-                        }
-                        pv
-                    }
+                    })
                 })
             })
         })
-    });
+    };
+    let (preview, waiting) = if sh.live_analysis { filmcraft_render::vfx::without_waiting_for_analysis(render) } else { (render(), Vec::new()) };
     let cancelled = job.cancel.load(Ordering::Relaxed);
+    if !waiting.is_empty() && !cancelled && !loading {
+        provisional(sh, job, waiting);
+    }
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
@@ -1059,6 +1125,146 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         sh.records.lock().unwrap_or_else(PoisonError::into_inner).push(rec);
     }
     !loading
+}
+
+/// Note the frame `job` cached without the analyses `keys`, and ask the analysis thread for them.
+fn provisional(sh: &Shared, job: &Job, keys: Vec<u64>) {
+    sh.provisional.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key);
+    // finished meanwhile (the analysis thread already dropped the provisional frames it knew)
+    if keys.iter().all(|&k| filmcraft_render::vfx::stabilizer_analysed(k)) {
+        drop_provisional(sh);
+        return;
+    }
+    let request = AnalysisRequest {
+        keys,
+        job: Job {
+            key: job.key,
+            queued: Instant::now(),
+            cancel: Default::default(),
+            prefetch: false,
+            catch_up: None,
+            time: job.time,
+            scale: job.scale,
+            project: job.project.clone(),
+            prio: job.prio,
+        },
+    };
+    let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+    if sh.stop.load(Ordering::Relaxed) {
+        return;
+    }
+    let revision = request.job.key.revision;
+    if a.latest.as_ref().is_none_or(|(r, _)| revision > *r) {
+        a.latest = Some((revision, request.job.project.clone()));
+        // a running analysis the newest project has no clip for (dragging a trim makes a new one
+        // for every length) is stopped; what it read is kept in case the clip comes back
+        if let Some((running, cancel)) = &a.running {
+            let wanted = filmcraft_render::vfx::stabilizer_keys(&request.job.project);
+            if !running.iter().any(|k| wanted.contains(k)) {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    if a.running.as_ref().is_some_and(|(running, _)| request.keys.iter().all(|k| running.contains(k))) {
+        return;
+    }
+    if let Some(q) = a.queue.iter_mut().find(|q| q.keys.iter().any(|k| request.keys.contains(k))) {
+        for k in request.keys {
+            if !q.keys.contains(&k) {
+                q.keys.push(k);
+            }
+        }
+        q.job = request.job;
+    } else {
+        a.queue.push_back(request);
+    }
+    drop(a);
+    sh.analyses_cv.notify_all();
+}
+
+/// Drop every provisional frame from the caches: the monitors render them again, with the
+/// analyses that are done by now. True when there were any.
+fn drop_provisional(sh: &Shared) -> bool {
+    let keys = std::mem::take(&mut *sh.provisional.lock().unwrap_or_else(PoisonError::into_inner));
+    if keys.is_empty() {
+        return false;
+    }
+    {
+        let mut c = sh.done.lock().unwrap_or_else(PoisonError::into_inner);
+        for k in &keys {
+            if let Some((v, _)) = c.map.remove(k) {
+                c.bytes = c.bytes.saturating_sub(v.px.len());
+            }
+        }
+    }
+    let mut p = sh.plans.lock().unwrap_or_else(PoisonError::into_inner);
+    for k in &keys {
+        if let Some((_, _, b)) = p.map.remove(k) {
+            p.bytes = p.bytes.saturating_sub(b);
+        }
+    }
+    true
+}
+
+/// The analysis thread: runs the Warp Stabilizer analyses that monitor frames went without, one
+/// request at a time, by rendering the request's frame and waiting for them as an export does.
+/// The analysis itself runs on its own pool (`filmcraft_render`); this thread only waits, so no
+/// frame worker is held up meanwhile.
+fn analysis_worker(
+    sh: Arc<Shared>,
+    pool: Arc<MediaPool>,
+    services: Arc<dyn Services>,
+    previews: Arc<PreviewStore>,
+    repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+) {
+    loop {
+        let (mut job, keys, cancel) = {
+            let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+            let request = loop {
+                if sh.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(r) = a.queue.pop_front() {
+                    break r;
+                }
+                a = sh.analyses_cv.wait(a).unwrap_or_else(PoisonError::into_inner);
+            };
+            let mut job = request.job;
+            if let Some((revision, project)) = &a.latest
+                && *revision > job.key.revision
+            {
+                job.project = project.clone();
+                job.key.revision = *revision;
+            }
+            let wanted = filmcraft_render::vfx::stabilizer_keys(&job.project);
+            let keys: Vec<u64> = request.keys.into_iter().filter(|k| wanted.contains(k) && !filmcraft_render::vfx::stabilizer_analysed(*k)).collect();
+            let cancel = Arc::new(AtomicBool::new(false));
+            if !keys.is_empty() {
+                a.running = Some((keys.clone(), cancel.clone()));
+            }
+            (job, keys, cancel)
+        };
+        if !keys.is_empty() {
+            // a plan target renders the same frame on the CPU; the image is not kept
+            if let Target::SequencePlan(seq, _) = job.key.target {
+                job.key.target = Target::Sequence(seq);
+            }
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                filmcraft_media::cancel::with_cancel(&cancel, || {
+                    filmcraft_media::cancel::with_background(false, || render_job(&job, &pool, &services, &previews))
+                })
+            }));
+            if ran.is_err() {
+                log::error!("Warp Stabilizer analysis for frame {:?} panicked; the analysis thread continues", job.key);
+            }
+            sh.analyses.lock().unwrap_or_else(PoisonError::into_inner).running = None;
+        }
+        if drop_provisional(&sh)
+            && let Some(f) = repaint.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        {
+            f();
+        }
+    }
 }
 
 /// The preview frame for a sequence job, when its segment has been rendered.
@@ -1375,5 +1581,118 @@ mod tests {
             matches!(&all.plan, FramePlan::Composite { steps, .. } if steps.iter().any(|st| matches!(st, PlanStep::Adjust { .. }))),
             "an effect stage: the adjustment layer is a step of the plan"
         );
+    }
+
+    /// A stabilised clip and a project holding it, for the Warp Stabilizer tests below.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stabilised_clip(seconds: i64) -> (filmcraft_project::Project, filmcraft_project::ItemId) {
+        use filmcraft_media::generators::GeneratorSource;
+        use filmcraft_media::{DemoScene, MediaSource};
+        use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, Tick, TimeRange};
+
+        let r = FrameRate::FPS_24;
+        let mut p = Project::new("Frames");
+        let g = GeneratorSource::demo(DemoScene::OceanSunset);
+        let info = g.info().clone();
+        let media = p.add_item(
+            &info.name.clone(),
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let mut ti = p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24 * seconds)), r).unwrap();
+        ti.scale_to_frame = true;
+        ti.effects.push(filmcraft_project::find_effect("warp_stabilizer").unwrap().instance());
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+        (p, seq)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn job(key: super::FrameKey, project: &std::sync::Arc<filmcraft_project::Project>) -> super::Job {
+        super::Job {
+            key,
+            queued: web_time::Instant::now(),
+            cancel: Default::default(),
+            prefetch: false,
+            catch_up: None,
+            time: filmcraft_time::FrameRate::FPS_24.tick_of(key.frame),
+            scale: 1.0,
+            project: project.clone(),
+            prio: 0,
+        }
+    }
+
+    /// A monitor frame of a stabilised clip doesn't wait for the clip's analysis: it is shown
+    /// unstabilised at once (provisional), the server's analysis thread runs the analysis, and
+    /// then the provisional frame is dropped so the monitor renders it again, stabilised.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_monitor_frame_is_shown_while_its_clip_is_analysed() {
+        use super::{FrameKey, FrameServer, run_job};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let (p, seq) = stabilised_clip(4);
+        let p = Arc::new(p);
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let key = FrameKey { target: Target::Sequence(seq), frame: 30, size: 1000, revision: 1, draft: false };
+        let t0 = Instant::now();
+        run_job(&server.shared, &job(key, &p), &server.pool, &server.services, &server.previews);
+        let shown = server.get(&key).expect("the frame is cached and shown");
+        assert!(server.is_provisional(&key), "rendered without its analysis ({:?})", t0.elapsed());
+        let keys = filmcraft_render::vfx::stabilizer_keys(&p);
+        let done = || keys.iter().all(|&k| filmcraft_render::vfx::stabilizer_analysed(k));
+        while !(done() && !server.analysing()) && t0.elapsed() < Duration::from_secs(120) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(done(), "the analysis thread analysed the clip");
+        let t1 = Instant::now();
+        while server.is_provisional(&key) && t1.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!server.is_provisional(&key) && server.get(&key).is_none(), "the unstabilised frame is dropped");
+        run_job(&server.shared, &job(key, &p), &server.pool, &server.services, &server.previews);
+        let stabilised = server.get(&key).expect("rendered again");
+        assert!(!server.is_provisional(&key));
+        assert_ne!(shown.px, stabilised.px, "now stabilised");
+    }
+
+    /// Dragging a trim makes a new analysis for every length: the one running for a clip the
+    /// newest project no longer has is stopped instead of finishing first.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_analysis_the_project_no_longer_needs_is_stopped() {
+        use super::{FrameKey, FrameServer, provisional};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (p, seq) = stabilised_clip(1);
+        let p = Arc::new(p);
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let wanted = *filmcraft_render::vfx::stabilizer_keys(&p).iter().next().unwrap();
+        let (gone, kept) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let key = |revision| FrameKey { target: Target::Sequence(seq), frame: 3, size: 1000, revision, draft: false };
+        // an analysis of a clip that is still in the project goes on
+        server.shared.analyses.lock().unwrap().running = Some((vec![wanted], kept.clone()));
+        provisional(&server.shared, &job(key(5), &p), vec![wanted]);
+        assert!(!kept.load(Ordering::SeqCst));
+        // one of a clip the newer project doesn't have is stopped
+        server.shared.analyses.lock().unwrap().running = Some((vec![wanted ^ 1], gone.clone()));
+        provisional(&server.shared, &job(key(6), &p), vec![wanted]);
+        assert!(gone.load(Ordering::SeqCst), "stopped");
     }
 }

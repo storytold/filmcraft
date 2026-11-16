@@ -1888,3 +1888,322 @@ fn lengths_past_the_picture_keep_their_fade_and_weighting() {
     let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
     assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
 }
+
+/// Warp Stabilizer in monitors and across sessions: a monitor frame doesn't wait for the
+/// analysis (it shows the clip unstabilised and says which analysis it went without), and a
+/// finished analysis of a media clip is kept on disk, by what the clip plays rather than where it
+/// sits on the timeline.
+mod stabilizer_live_and_kept {
+    use super::super::temporal::{forget_analysis, key_of, store};
+    use super::*;
+    use crate::vfx::{stabilizer_analysed, without_waiting_for_analysis};
+    use filmcraft_project::TrackMethod;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A clip environment with a media identity.
+    struct Identified<'a>(CountingEnv<'a>, Vec<u8>);
+    impl FxEnv for Identified<'_> {
+        fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+            self.0.frame(dt, upto)
+        }
+        fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+            self.0.source_frame(dt, scale)
+        }
+        fn track(&self, i: usize) -> Option<Image> {
+            self.0.track(i)
+        }
+        fn layer_to_output(&self) -> Affine {
+            self.0.layer_to_output()
+        }
+        fn clip_seconds(&self) -> f64 {
+            self.0.clip_seconds()
+        }
+        fn clip_offset(&self) -> f64 {
+            self.0.clip_offset()
+        }
+        fn frame_rate(&self) -> f64 {
+            self.0.frame_rate()
+        }
+        fn media_timecode(&self) -> String {
+            String::new()
+        }
+        fn file_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_name(&self) -> String {
+            String::new()
+        }
+        fn sequence_size(&self) -> (u32, u32) {
+            self.0.sequence_size()
+        }
+        fn source_size(&self) -> (u32, u32) {
+            self.0.source_size()
+        }
+        fn clip_key(&self) -> u64 {
+            self.0.clip_key()
+        }
+        fn analysis_identity(&self) -> Option<Vec<u8>> {
+            Some(self.1.clone())
+        }
+    }
+
+    /// One folder for every test here (the folder is a process-wide setting); identities are
+    /// unique per test.
+    fn cache_dir() -> std::path::PathBuf {
+        static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let d = std::env::temp_dir().join(format!("filmcraft-stabilizer-tests-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            crate::vfx::set_stabilizer_cache_dir(Some(d.clone()));
+            d
+        })
+        .clone()
+    }
+
+    fn clip(key: u64, now: f64) -> ClipEnv {
+        ClipEnv { w: 96, h: 64, fps: 24.0, secs: 1.0, now, key, seq: (96, 64), pic: shaky }
+    }
+
+    fn analyse(env: &dyn FxEnv) -> Option<Arc<crate::vfx::StabilizerPath>> {
+        stabilizer_path(env, env.clip_offset(), TrackMethod::Position, false)
+    }
+
+    #[test]
+    fn a_monitor_frame_does_not_wait_for_the_analysis() {
+        let reads = AtomicUsize::new(0);
+        let env = CountingEnv(clip(0x11FE_0001, 0.5), &reads, None);
+        let e = inst("warp_stabilizer");
+        let method = if chv(&e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
+        let key = key_of(&env, method, bv(&e, "detailed"));
+        let raw = env.0.render(0.5, 1.0);
+        let apply = |img: &mut Image| crate::effects::apply(img, &e, &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+        let (live, waiting) = without_waiting_for_analysis(|| {
+            let mut img = raw.clone();
+            apply(&mut img);
+            img
+        });
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "no frame read for the monitor frame");
+        assert_eq!(live.px, raw.px, "shown unstabilised");
+        assert_eq!(waiting, vec![key], "the analysis it went without");
+        assert!(!stabilizer_analysed(key));
+        // a render outside waits for the analysis, as an export does
+        let mut waited = raw.clone();
+        apply(&mut waited);
+        assert_eq!(reads.load(Ordering::SeqCst), 24);
+        assert!(stabilizer_analysed(key));
+        assert_ne!(waited.px, raw.px, "stabilised");
+        let (again, waiting) = without_waiting_for_analysis(|| {
+            let mut img = raw.clone();
+            apply(&mut img);
+            img
+        });
+        assert!(waiting.is_empty(), "nothing is missing once it is analysed");
+        assert_eq!(again.px, waited.px);
+    }
+
+    #[test]
+    fn a_finished_analysis_is_read_back_by_the_next_session() {
+        cache_dir();
+        let id = b"kept by the next session".to_vec();
+        let (first, second) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let env = Identified(CountingEnv(clip(0x11FE_0002, 0.0), &first, None), id.clone());
+        let made = analyse(&env).unwrap();
+        assert_eq!(first.load(Ordering::SeqCst), 24);
+        forget_analysis(key_of(&env, TrackMethod::Position, false));
+        let env = Identified(CountingEnv(clip(0x11FE_0002, 0.0), &second, None), id);
+        let read = analyse(&env).unwrap();
+        assert_eq!(second.load(Ordering::SeqCst), 0, "read from disk, no frame decoded");
+        assert_eq!(read.steps, made.steps);
+        assert_eq!((read.w, read.h, read.fps), (made.w, made.h, made.fps));
+    }
+
+    #[test]
+    fn a_moved_clip_keeps_its_analysis_and_a_retrimmed_one_does_not() {
+        cache_dir();
+        let reads = AtomicUsize::new(0);
+        analyse(&Identified(CountingEnv(clip(0x11FE_0003, 0.0), &reads, None), b"moved clip, in 0".to_vec())).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 24);
+        // the same media and range at another place on the timeline: another clip key
+        analyse(&Identified(CountingEnv(clip(0x11FE_0004, 0.0), &reads, None), b"moved clip, in 0".to_vec())).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 24, "moving the clip keeps its analysis");
+        analyse(&Identified(CountingEnv(clip(0x11FE_0004, 0.0), &reads, None), b"moved clip, in 1".to_vec())).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 48, "another source range is analysed again");
+    }
+
+    #[test]
+    fn a_damaged_analysis_file_is_analysed_again() {
+        let dir = cache_dir();
+        let id = b"damaged on disk".to_vec();
+        let reads = AtomicUsize::new(0);
+        let env = Identified(CountingEnv(clip(0x11FE_0005, 0.0), &reads, None), id.clone());
+        let key = key_of(&env, TrackMethod::Position, false);
+        let made = analyse(&env).unwrap();
+        let mut full = id.clone();
+        full.extend([TrackMethod::Position as u8, 0]);
+        let file = dir.join(format!("{:016x}.stab", store::fnv(&full)));
+        let bytes = std::fs::read(&file).unwrap();
+        std::fs::write(&file, &bytes[..bytes.len() / 2]).unwrap();
+        forget_analysis(key);
+        let again = analyse(&env).unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 48, "a truncated file is ignored");
+        assert_eq!(again.steps, made.steps);
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "and replaced by a whole one");
+    }
+
+    /// A clip none of whose frames can be read has no analysis to wait for: monitor frames
+    /// show it unstabilised instead of asking for its analysis again at every frame.
+    #[test]
+    fn an_unreadable_clip_is_not_asked_for_again() {
+        struct Unreadable(ClipEnv);
+        impl FxEnv for Unreadable {
+            fn frame(&self, _: f64, _: &EffectInstance) -> Option<Image> {
+                None
+            }
+            fn source_frame(&self, _: f64, _: f32) -> Option<Image> {
+                None
+            }
+            fn track(&self, _: usize) -> Option<Image> {
+                None
+            }
+            fn layer_to_output(&self) -> Affine {
+                Affine::IDENTITY
+            }
+            fn clip_seconds(&self) -> f64 {
+                self.0.clip_seconds()
+            }
+            fn clip_offset(&self) -> f64 {
+                self.0.clip_offset()
+            }
+            fn frame_rate(&self) -> f64 {
+                self.0.frame_rate()
+            }
+            fn media_timecode(&self) -> String {
+                String::new()
+            }
+            fn file_name(&self) -> String {
+                String::new()
+            }
+            fn sequence_name(&self) -> String {
+                String::new()
+            }
+            fn sequence_size(&self) -> (u32, u32) {
+                self.0.sequence_size()
+            }
+            fn source_size(&self) -> (u32, u32) {
+                self.0.source_size()
+            }
+            fn clip_key(&self) -> u64 {
+                self.0.clip_key()
+            }
+        }
+        let env = Unreadable(clip(0x11FE_0006, 0.0));
+        let key = key_of(&env, TrackMethod::Position, false);
+        let (_, waiting) = without_waiting_for_analysis(|| analyse(&env));
+        assert_eq!(waiting, vec![key]);
+        assert!(analyse(&env).is_none(), "nothing to analyse");
+        assert!(stabilizer_analysed(key), "settled: the clip stays unstabilised");
+        let (_, waiting) = without_waiting_for_analysis(|| analyse(&env));
+        assert!(waiting.is_empty(), "not asked for again");
+    }
+
+    #[test]
+    fn analysis_files_are_hostile_input() {
+        let id = b"clip".to_vec();
+        let path = crate::vfx::StabilizerPath { w: 480, h: 270, steps: (0..40).map(|i| Affine::translate(i as f64 * 0.25, -0.5)).collect(), fps: 59.94 };
+        let bytes = store::encode(&id, &path).unwrap();
+        let back = store::decode(&bytes, &id).unwrap();
+        assert_eq!(back.steps, path.steps);
+        assert!(store::decode(&bytes, b"another clip").is_none(), "made for another identity");
+        for n in 0..bytes.len() {
+            assert!(store::decode(&bytes[..n], &id).is_none(), "truncated to {n} bytes");
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(store::decode(&longer, &id).is_none(), "trailing bytes");
+        for i in 0..bytes.len() {
+            for bit in [0x01u8, 0x80] {
+                let mut b = bytes.clone();
+                b[i] ^= bit;
+                if let Some(p) = store::decode(&b, &id) {
+                    assert!(p.steps.len() <= 20_000 && p.w > 0 && p.h > 0 && p.fps > 0.0);
+                    assert!(p.steps.iter().all(|m| [m.a, m.b, m.c, m.d, m.e, m.f].iter().all(|v| v.is_finite())));
+                }
+            }
+        }
+        let nan = crate::vfx::StabilizerPath { steps: vec![Affine::translate(f64::NAN, 0.0)], ..path.clone() };
+        assert!(store::decode(&store::encode(&id, &nan).unwrap(), &id).is_none(), "a NaN step");
+        let huge = [
+            b"FCSTAB\x00\x01".as_slice(),
+            &4u32.to_le_bytes(),
+            b"clip",
+            &480u32.to_le_bytes(),
+            &270u32.to_le_bytes(),
+            &60f64.to_le_bytes(),
+            &u32::MAX.to_le_bytes(),
+        ]
+        .concat();
+        assert!(store::decode(&huge, &id).is_none(), "a step count past the limit allocates nothing");
+    }
+}
+
+/// The analysis key of a media clip in a project: what [`without_waiting_for_analysis`] reports
+/// for a frame, [`stabilizer_keys`] lists for the project, and moving the clip keeps.
+mod stabilizer_keys_of_a_project {
+    use super::*;
+    use crate::vfx::{analysis_identity, stabilizer_analysed, stabilizer_keys, without_waiting_for_analysis};
+    use crate::{RenderOptions, SourceMap, render_sequence};
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{Generator, MediaSource, SharedSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaIdentity, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+
+    #[test]
+    fn a_monitor_frame_reports_the_analysis_the_project_lists() {
+        let mut p = Project::new("keys");
+        let mut map = SourceMap::default();
+        let r = FrameRate::FPS_24;
+        let g = GeneratorSource::new(Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, 32, 18, r, Tick(10 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let media = p.add_item(
+            "matte",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: Some(MediaIdentity { size: 0x5AB1_11E5, fingerprint: 0x5EED_0001 }),
+            })),
+            None,
+        );
+        map.0.insert(media, Arc::new(g) as SharedSource);
+        let seq = p.new_sequence("s", SequenceSettings { width: 32, height: 18, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let mut ti = p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+        ti.effects.push(inst("warp_stabilizer"));
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+
+        let (_, waiting) = without_waiting_for_analysis(|| render_sequence(&p, seq, r.tick_of(3), RenderOptions::default(), &map));
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        let keys = stabilizer_keys(&p);
+        assert!(keys.contains(&waiting[0]), "{keys:?} lists {:?}", waiting[0]);
+        render_sequence(&p, seq, r.tick_of(3), RenderOptions::default(), &map);
+        assert!(stabilizer_analysed(waiting[0]), "a render outside analyses the clip");
+
+        let item = |p: &Project| p.sequence(seq).unwrap().video_tracks[0].items[0].clone();
+        let id = |p: &Project| analysis_identity(p, p.sequence(seq).unwrap(), &item(p)).unwrap();
+        let before = id(&p);
+        p.sequence_mut(seq).unwrap().video_tracks[0].items[0].start = r.tick_of(40);
+        assert_eq!(id(&p), before, "moving the clip keeps its identity");
+        assert_eq!(stabilizer_keys(&p), keys);
+        let (_, waiting) = without_waiting_for_analysis(|| render_sequence(&p, seq, r.tick_of(43), RenderOptions::default(), &map));
+        assert!(waiting.is_empty(), "the moved clip is analysed already");
+        p.sequence_mut(seq).unwrap().video_tracks[0].items[0].source_in = r.tick_of(2);
+        assert_ne!(id(&p), before, "another source range is another analysis");
+        assert_ne!(stabilizer_keys(&p), keys);
+    }
+}
