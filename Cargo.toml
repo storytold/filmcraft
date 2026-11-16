@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
+# Shared bounded classic TIFF directory traversal.
+craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0eaafeb5054f2113523c8844822a830865cf45f2" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }

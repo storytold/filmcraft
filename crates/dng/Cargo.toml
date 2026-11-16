@@ -15,6 +15,7 @@ writer = []
 serde = ["dep:serde"]
 
 [dependencies]
+craft-tiff = { workspace = true }
 craft-raw = { workspace = true }
 rayon = { workspace = true, optional = true }
 # Baseline (lossy) JPEG for Compression 34892 tiles: the JPEG decoder the workspace already uses
