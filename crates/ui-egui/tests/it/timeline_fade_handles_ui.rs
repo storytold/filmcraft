@@ -151,6 +151,34 @@ fn dragging_a_fade_handle_sets_the_length_of_the_fade_in() {
     assert!(transitions_to(&d, city).is_empty());
 }
 
+/// The handle the button went down on is the one the drag sets, even when the Timeline scrolls
+/// before the drag starts and moves the press point off it.
+#[test]
+fn a_fade_drag_keeps_the_handle_it_was_pressed_on() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let from = handle_at(&mut d, city, false);
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    push(&mut d, egui::Event::PointerMoved(from));
+    d.frames(1);
+    push(&mut d, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    d.frames(1);
+    let tl = &mut d.harness.state_mut().ui.timeline;
+    tl.scroll += 2.0;
+    tl.target_scroll = tl.scroll;
+    d.frames(1);
+    for i in 1..=12 {
+        push(&mut d, egui::Event::PointerMoved(from + egui::vec2(90.0 * i as f32 / 12.0, 0.0)));
+        d.frames(1);
+    }
+    push(
+        &mut d,
+        egui::Event::PointerButton { pos: from + egui::vec2(90.0, 0.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+    );
+    d.frames(2);
+    assert_eq!(transitions_to(&d, city).len(), 1, "the fade is on the clip whose handle was pressed");
+}
+
 #[test]
 fn a_click_on_a_fade_handle_applies_the_default_transition() {
     let mut d = Driver::demo();

@@ -149,6 +149,9 @@ pub struct Pressed {
     /// The vertical scrolls when the button went down (a wheel turn before the drag starts must not move a box's corner).
     pub v_scroll: f32,
     pub a_scroll: f32,
+    /// The fade handle the button went down on (clip, edge, on an audio track), so a scroll before
+    /// the drag starts cannot move the press onto another clip's handle.
+    pub fade: Option<(ClipId, filmcraft_edit::Edge, bool)>,
 }
 
 /// Where a box selection began, in Timeline content coordinates: the time under the pointer, and

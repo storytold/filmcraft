@@ -230,14 +230,15 @@ fn run_fade(app: &mut FilmcraftApp, clip: ClipId, edge: filmcraft_edit::Edge, au
 /// A press at `p` on a fade handle, with the Selection tool and no selection modifier held (which
 /// selects the clip as anywhere else on it), unless a middle-button drag pans: a click applies the
 /// default transition at that edge, held to what a drag could make there; a drag starts setting its
-/// length. Returns whether the press landed on a handle.
-fn press_fade(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response, seq: &Sequence, layout: &Layout, p: Pos2) -> bool {
+/// length. `fade` is the handle under the press when the button went down. Returns whether the
+/// press landed on a handle.
+fn press_fade(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response, seq: &Sequence, fade: Option<(ClipId, filmcraft_edit::Edge, bool)>) -> bool {
     let mods = ctx.input(|i| i.modifiers);
     let selecting = mods.shift || mods.alt || mods.command;
     if app.ui.tool != Tool::Selection || selecting || resp.drag_started_by(egui::PointerButton::Middle) {
         return false;
     }
-    let Some((clip, edge, audio)) = fade_handle_at(seq, layout, p) else { return false };
+    let Some((clip, edge, audio)) = fade.filter(|(clip, ..)| seq.find_item(*clip).is_some()) else { return false };
     if !resp.clicked() {
         if resp.drag_started() {
             app.tl.drag = Some(Drag::Fade { clip, edge, audio, frames: 0 });
@@ -543,6 +544,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
                     grab: grab_at(seq, layout, p, tool, mods, roll_ripple),
                     v_scroll: layout.v_scroll,
                     a_scroll: layout.a_scroll,
+                    fade: fade_handle_at(seq, layout, p),
                 }
             }
         };
@@ -553,7 +555,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
             Grab::Volume { .. } if resp.clicked() && !adding => Grab::Other(pressed.grab.hit()),
             g => g,
         };
-        if !press_fade(app, ctx, resp, seq, layout, p) {
+        if !press_fade(app, ctx, resp, seq, pressed.fade) {
             start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
         }
     }
@@ -1366,7 +1368,14 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         if matches!(grab, Grab::Other(Hit::Ruler)) {
             scrub_playhead(app, seq, layout, p, mods.shift);
         }
-        app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab, v_scroll: layout.v_scroll, a_scroll: layout.a_scroll });
+        app.tl.pressed = Some(Pressed {
+            pos: p,
+            tick: layout.tick_at(p.x),
+            grab,
+            v_scroll: layout.v_scroll,
+            a_scroll: layout.a_scroll,
+            fade: fade_handle_at(seq, layout, p),
+        });
     }
 
     wheel_scroll(app, ui, rect, layout, seq);
