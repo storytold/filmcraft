@@ -1824,8 +1824,9 @@ fn import_bins(doc: &Document, rate: Option<FrameRate>, b: &mut Builder, report:
 }
 
 /// Move `order`'s items out of the root bin, where the import created them, into the bins
-/// `filed` names, keeping their order. One pass over the root and one search per bin: moving them
-/// one at a time searched the whole bin tree for each item.
+/// `filed` names, keeping their order. One pass over the root and one traversal of the bin tree:
+/// moving them one at a time searched the whole tree for each item, and searching it once per bin
+/// was still quadratic in the number of bins.
 fn file_items(p: &mut filmcraft_project::Project, filed: &std::collections::HashMap<ItemId, filmcraft_project::BinId>, order: &[ItemId]) {
     use filmcraft_project::BinEntry;
     let mut taken = std::collections::HashSet::new();
@@ -1842,12 +1843,25 @@ fn file_items(p: &mut filmcraft_project::Project, filed: &std::collections::Hash
             by_bin.entry(*bin).or_default().push(BinEntry::Item(*id));
         }
     }
-    for (bin, entries) in by_bin {
-        match p.root.find_bin_mut(bin) {
-            Some(target) => target.children.extend(entries),
-            // The bins were created above; never lose an item if one is missing.
-            None => p.root.children.extend(entries),
+    // Each bin takes its items when the walk reaches it. Only the bins it held before are walked
+    // into: what it takes are items, not bins to search.
+    let mut stack = vec![&mut p.root];
+    while let Some(bin) = stack.pop() {
+        if by_bin.is_empty() {
+            break;
         }
+        let held = bin.children.len();
+        if let Some(entries) = by_bin.remove(&bin.id) {
+            bin.children.extend(entries);
+        }
+        stack.extend(bin.children.iter_mut().take(held).filter_map(|c| match c {
+            BinEntry::Bin(sub) => Some(sub),
+            BinEntry::Item(_) => None,
+        }));
+    }
+    // The bins were created above; never lose an item if one is missing.
+    for entries in by_bin.into_values() {
+        p.root.children.extend(entries);
     }
 }
 
@@ -2938,6 +2952,55 @@ mod tests {
         };
         assert_eq!(names_in("Footage"), ["Interview", "B-roll"], "{report:?}");
         assert!(names_in("Selects").is_empty());
+    }
+    /// Filing searched the bin tree from the root once per populated bin, so n bins cost O(n²):
+    /// 100,000 took about 22 s in the test profile. One traversal takes milliseconds, so the limit
+    /// separates them on any machine.
+    #[test]
+    fn filing_items_into_many_bins_is_not_quadratic() {
+        use filmcraft_project::BinEntry;
+        let mut p = filmcraft_project::Project::new("Bins");
+        let mut filed = std::collections::HashMap::new();
+        let mut order = Vec::new();
+        for _ in 0..100_000 {
+            let bin = p.add_bin("Bin", None);
+            let layer = ItemKind::AdjustmentLayer { width: 16, height: 16, rate: FrameRate::FPS_24, duration: Tick(TPS) };
+            let item = p.add_item("Layer", Label::Lavender, layer, None);
+            filed.insert(item, bin);
+            order.push(item);
+        }
+        let start = std::time::Instant::now();
+        file_items(&mut p, &filed, &order);
+        assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
+        let in_their_bins = p.root.children.iter().all(|c| match c {
+            BinEntry::Bin(bin) => matches!(bin.children.as_slice(), [BinEntry::Item(id)] if filed.get(id) == Some(&bin.id)),
+            BinEntry::Item(_) => false,
+        });
+        assert!(in_their_bins && p.root.children.len() == 100_000);
+    }
+    #[test]
+    fn filing_reaches_nested_bins_in_order_and_keeps_items_of_a_missing_bin_at_the_root() {
+        use filmcraft_project::BinEntry;
+        let mut p = filmcraft_project::Project::new("Bins");
+        let outer = p.add_bin("Outer", None);
+        let inner = p.add_bin("Inner", Some(outer));
+        let layer = || ItemKind::AdjustmentLayer { width: 16, height: 16, rate: FrameRate::FPS_24, duration: Tick(TPS) };
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|name| p.add_item(name, Label::Lavender, layer(), None));
+        let filed = std::collections::HashMap::from([(a, inner), (b, outer), (c, filmcraft_project::BinId(u64::MAX)), (d, inner)]);
+        file_items(&mut p, &filed, &[d, c, b, a]);
+        let names = |bin: filmcraft_project::BinId| -> Vec<String> {
+            let children = p.root.find_bin(bin).map(|b| b.children.as_slice()).unwrap_or_default();
+            children
+                .iter()
+                .map(|c| match c {
+                    BinEntry::Item(id) => p.item(*id).map(|i| i.name.clone()).unwrap_or_default(),
+                    BinEntry::Bin(sub) => sub.name.clone(),
+                })
+                .collect()
+        };
+        assert_eq!(names(inner), ["d", "a"], "panel order");
+        assert_eq!(names(outer), ["Inner", "b"]);
+        assert_eq!(names(p.root.id), ["Outer", "c"], "an item of a missing bin stays at the root");
     }
     #[test]
     fn an_item_first_listed_at_the_root_stays_at_the_root() {
