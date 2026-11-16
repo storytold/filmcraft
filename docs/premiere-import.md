@@ -83,7 +83,8 @@ opens only if it passes the HTTP/HTTPS check every marker URL does; one longer t
 with control characters is reported and left in the original snapshot; unreadable records are
 skipped with a warning; past 10,000 on one
 sequence or master clip the rest are skipped with a warning; a master clip's markers are read once,
-however many timeline clips cut its media),
+however many timeline clips cut its media, and its media takes them from the first cut the import
+keeps, else from its project panel item),
 disabled clips (`ClipTrackItem/IsMuted`), generated media (black video, colour matte, bars and tone,
 transparent video, counting leader) by the four-character code Premiere stores as its file path,
 as FilmCraft generators that never pass the document-path policy or probe (a colour matte's colour
