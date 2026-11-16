@@ -424,6 +424,48 @@ fn premiere_copy_reads_media_in_one_pass() {
 }
 
 #[test]
+fn premiere_copy_describes_the_bytes_it_copied() {
+    // The source is replaced by other media after its probe and before its copy: the item, its
+    // anchors and its fingerprint follow the copy, not the earlier probe.
+    let fixture = Fixture::new();
+    let source = fixture.0.join("source.png");
+    let doc = fixture.0.join("source.prproj").canonicalize().unwrap();
+    let replaced = |from: &std::path::Path, to: &std::path::Path| {
+        image::RgbaImage::from_pixel(32, 24, image::Rgba([220, 40, 30, 255])).save(from).unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &replaced };
+    let result = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":fixture.0.join("copy"),"mediaMode":"copy"}), &io).unwrap();
+    assert_eq!(result["offlineMedia"], json!([]), "{result}");
+    let item = s.project.items.values().find(|i| i.as_media().is_some()).unwrap();
+    let media = item.as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((32, 24)), "the copy's picture size");
+    let record = &s.project.workflow.as_ref().unwrap().imports[0].media[0];
+    assert_eq!(hash_file(std::path::Path::new(&record.imported_path)).unwrap(), (record.sha256.clone().unwrap(), record.bytes.unwrap()));
+    let identity = crate::relink::identity_of(&*s.services, &record.imported_path).unwrap();
+    assert_eq!((media.identity, record.identity), (Some(identity), Some(identity)), "the copy's fingerprint");
+    let clip = &s.active_sequence().unwrap().video_tracks[0].items[0];
+    let anchor = clip.effects.iter().find_map(|e| e.params.get("anchor")).unwrap();
+    assert!(matches!(&anchor.value, filmcraft_project::ParamValue::Vec2(v) if v.x == 16.0 && v.y == 12.0), "centred in the copy: {anchor:?}");
+    let pooled = s.media.cached(item.id).expect("the item's source is in the pool");
+    assert_eq!(pooled.info().video.as_ref().map(|v| (v.width, v.height)), Some((32, 24)));
+    // Replaced by a file that is not media: its copy cannot be opened, and the import is cancelled.
+    let not_media = |from: &std::path::Path, to: &std::path::Path| {
+        std::fs::write(from, b"not media anymore").unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let before = s.project.clone();
+    let destination = fixture.0.join("changed");
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &not_media };
+    let error = crate::premiere::import_with_io(&mut s, &json!({"path":doc,"destination":destination,"mediaMode":"copy"}), &io).unwrap_err();
+    assert!(error.to_string().contains("changed while copying"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before) && !destination.exists(), "nothing imported, nothing left behind");
+    assert!(source.is_file());
+}
+
+#[test]
 fn premiere_import_reports_levels_and_names_an_existing_destination() {
     let fixture = Fixture::new();
     std::fs::remove_file(fixture.0.join("source.png")).unwrap();
