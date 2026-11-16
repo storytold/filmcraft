@@ -3151,6 +3151,45 @@ mod tests {
             assert_eq!(media.info.kind, filmcraft_media::MediaKind::Movie, "{groups}");
         }
     }
+    // A hand-written comment marker in the DVAMarker JSON shape.
+    fn marker_record(id: &str, name: &str, ticks: i64) -> String {
+        let json = format!(r#"{{"DVAMarker":{{"mName":"{name}","mStartTime":{{"ticks":{ticks}}},"mType":"Comment"}}}}"#);
+        format!(r#"<Marker ObjectID="{id}"><DVAMarker>{}</DVAMarker></Marker>"#, json.replace('"', "&quot;"))
+    }
+    // `av_fixture` with two markers on its master clip, held by the master clip's first clip.
+    fn marked_av_fixture(groups: &str) -> String {
+        av_fixture(groups)
+            .replace(
+                r#"<VideoClip ObjectID="master-video"><Clip><Source ObjectRef="vs"/></Clip></VideoClip>"#,
+                r#"<VideoClip ObjectID="master-video"><Clip><MarkerOwner><Markers ObjectRef="master-markers"/></MarkerOwner><Source ObjectRef="vs"/></Clip></VideoClip>"#,
+            )
+            .replace(
+                "</PremiereData>",
+                &format!(
+                    r#"<Markers ObjectID="master-markers"><Markers><Marker Index="0"><Second ObjectRef="mark-a"/></Marker><Marker Index="1"><Second ObjectRef="mark-b"/></Marker></Markers></Markers>
+{}{}</PremiereData>"#,
+                    marker_record("mark-a", "first", 0),
+                    marker_record("mark-b", "second", TPS / 2)
+                ),
+            )
+    }
+    #[test]
+    fn a_marked_master_cut_on_video_and_audio_tracks_gives_its_one_media_item_the_markers_once() {
+        let video = r#"<TrackGroup><Second ObjectRef="vg"/></TrackGroup>"#;
+        let audio = r#"<TrackGroup><Second ObjectRef="ag"/></TrackGroup>"#;
+        for groups in [format!("{video}{audio}"), format!("{audio}{video}")] {
+            let (fragment, tree, report) = import(marked_av_fixture(&groups).as_bytes(), &ImportOptions::default(), None).unwrap();
+            let p = &fragment.project;
+            let media: Vec<_> = p.items.values().filter_map(|i| i.as_media()).collect();
+            assert_eq!(media.len(), 1, "{groups}: {report:?}");
+            let names: Vec<_> = media[0].markers.iter().map(|m| m.name.as_str()).collect();
+            assert_eq!(names, ["first", "second"], "{groups}: {report:?}");
+            assert_ne!(media[0].markers[0].id, media[0].markers[1].id, "{groups}");
+            // The source tree records them on one of the two cuts.
+            let carried: Vec<_> = tree.sequences[0].tracks.iter().flat_map(|t| &t.items).map(|i| i.media_markers.len()).collect();
+            assert_eq!(carried.iter().sum::<usize>(), 2, "{groups}: {carried:?}");
+        }
+    }
     #[test]
     fn filed_items_keep_panel_order_and_their_first_bin() {
         // Hand-written: a second file after the interview in Footage, and a second master clip of
