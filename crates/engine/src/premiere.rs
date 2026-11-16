@@ -102,7 +102,8 @@ fn probe_with_fallbacks(
 }
 
 /// The one entry of `path`'s folder whose name equals its file name apart from letter case, when
-/// `path` itself does not exist. None when there is no such entry, or more than one.
+/// `path` itself does not exist. None when there is no such entry, more than one, or the folder
+/// could not be listed in full.
 fn case_variant(path: &Path, listings: &mut FolderListings) -> Option<PathBuf> {
     if std::fs::symlink_metadata(path).is_ok() {
         return None;
@@ -112,7 +113,8 @@ fn case_variant(path: &Path, listings: &mut FolderListings) -> Option<PathBuf> {
     listings.find(folder, &name).map(|entry| folder.join(entry))
 }
 
-/// Most entries read from one folder when looking for a letter-case variant.
+/// Most entries read from one folder when looking for a letter-case variant; a folder with more
+/// offers none.
 const MAX_FOLDER_ENTRIES: usize = 100_000;
 /// Most names the folder listings of one import keep (tens of megabytes at most); past it, a
 /// further folder is read again for each lookup, as without a cache.
@@ -125,29 +127,32 @@ type CaseIndex = std::collections::HashMap<String, Option<std::ffi::OsString>>;
 /// Folder listings one import reads while looking for letter-case variants: each folder is read
 /// once, however many of its files are missing, up to a bounded number of names in all.
 struct FolderListings {
-    /// Folder → its entries, or None when it could not be read.
+    /// Folder → its entries, or None when it could not be read in full.
     folders: std::collections::HashMap<PathBuf, Option<CaseIndex>>,
-    /// Names kept so far (an unreadable folder counts as one).
+    /// Names kept so far (a folder that could not be read in full counts as one).
     names: usize,
+    /// Most entries read from one folder ([`MAX_FOLDER_ENTRIES`]).
+    entries: usize,
     /// Most names kept.
     limit: usize,
 }
 
 impl FolderListings {
-    /// No listings yet; at most `limit` names will be kept.
-    fn new(limit: usize) -> Self {
-        Self { folders: std::collections::HashMap::new(), names: 0, limit }
+    /// No listings yet; each folder is read up to `entries` entries, and at most `limit` names
+    /// will be kept.
+    fn new(entries: usize, limit: usize) -> Self {
+        Self { folders: std::collections::HashMap::new(), names: 0, entries, limit }
     }
 
     /// The one entry of `folder` whose name is `lower` (lower case) apart from letter case; None
-    /// when there is no such entry, more than one, or the folder cannot be read.
+    /// when there is no such entry, more than one, or the folder cannot be read in full (kept or
+    /// read again, the listing follows the same rule).
     fn find(&mut self, folder: &Path, lower: &str) -> Option<std::ffi::OsString> {
         if let Some(listing) = self.folders.get(folder) {
             return listing.as_ref()?.get(lower).cloned().flatten();
         }
-        let listing = std::fs::read_dir(folder)
-            .ok()
-            .map(|entries| index_by_lower_case(entries.take(MAX_FOLDER_ENTRIES).filter_map(|entry| entry.ok().map(|entry| entry.file_name()))));
+        let listing =
+            std::fs::read_dir(folder).ok().and_then(|entries| index_by_lower_case(entries.map(|entry| entry.map(|entry| entry.file_name())), self.entries));
         let found = listing.as_ref().and_then(|listing| listing.get(lower).cloned().flatten());
         let cost = listing.as_ref().map_or(0, CaseIndex::len).max(1);
         if let Some(names) = self.names.checked_add(cost).filter(|names| *names <= self.limit) {
@@ -158,14 +163,17 @@ impl FolderListings {
     }
 }
 
-/// Index entry names by lower case; names that are not valid Unicode are left out.
-fn index_by_lower_case(names: impl IntoIterator<Item = std::ffi::OsString>) -> CaseIndex {
+/// Index entry names by lower case; names that are not valid Unicode are left out. None unless
+/// every entry was read: an entry that could not be read, or one past the first `max`, may be a
+/// second name that differs only in letter case, so a partial listing makes no match unique.
+fn index_by_lower_case(names: impl IntoIterator<Item = std::io::Result<std::ffi::OsString>>, max: usize) -> Option<CaseIndex> {
     let mut index = CaseIndex::new();
-    for name in names {
+    for (read, name) in names.into_iter().enumerate() {
+        let name = name.ok().filter(|_| read < max)?;
         let Some(lower) = name.to_str().map(str::to_lowercase) else { continue };
         index.entry(lower).and_modify(|unique| *unique = None).or_insert(Some(name));
     }
-    index
+    Some(index)
 }
 
 /// SHA-256 (lower-case hex) and size of a whole regular file.
@@ -383,7 +391,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     // The sources probes opened for linked media, by the path their items keep: the media pool
     // takes them instead of opening those files again.
     let mut opened = BTreeMap::<String, filmcraft_media::SharedSource>::new();
-    let mut listings = FolderListings::new(MAX_LISTED_NAMES);
+    let mut listings = FolderListings::new(MAX_FOLDER_ENTRIES, MAX_LISTED_NAMES);
     let media_dir = destination.join("media");
     if mode == "copy" {
         std::fs::create_dir(&media_dir).map_err(io)?;
@@ -727,7 +735,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Clip.MOV"), b"").unwrap();
         std::fs::write(dir.join("other.mov"), b"").unwrap();
-        let mut listings = FolderListings::new(MAX_LISTED_NAMES);
+        let mut listings = FolderListings::new(MAX_FOLDER_ENTRIES, MAX_LISTED_NAMES);
         assert_eq!(listings.find(&dir, "clip.mov"), Some("Clip.MOV".into()));
         assert_eq!(listings.find(&dir, "missing.mov"), None);
         // The folder was read once: a file added during the import is not listed.
@@ -735,15 +743,43 @@ mod tests {
         assert_eq!(listings.find(&dir, "late.mov"), None);
         assert_eq!(listings.find(&dir.join("absent"), "clip.mov"), None, "a folder that cannot be read has no match");
         // Past the limit a folder is read for every lookup, as without the cache.
-        let mut full = FolderListings::new(1);
+        let mut full = FolderListings::new(MAX_FOLDER_ENTRIES, 1);
         assert_eq!(full.find(&dir, "late.mov"), Some("Late.MOV".into()));
         std::fs::write(dir.join("Later.MOV"), b"").unwrap();
         assert_eq!(full.find(&dir, "later.mov"), Some("Later.MOV".into()));
         // Two entries whose names differ only in letter case are ambiguous: no match. Built from
         // names, as a case-insensitive disk cannot hold both files.
-        let index = index_by_lower_case(["Take.mov", "take.MOV", "b.png"].map(std::ffi::OsString::from));
+        let index = index_by_lower_case(names(&["Take.mov", "take.MOV", "b.png"]), MAX_FOLDER_ENTRIES).unwrap();
         assert_eq!(index.get("take.mov"), Some(&None));
         assert_eq!(index.get("b.png"), Some(&Some("b.png".into())));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    /// Folder entries read without error, as `index_by_lower_case` takes them.
+    fn names(names: &[&str]) -> Vec<std::io::Result<std::ffi::OsString>> {
+        names.iter().map(|name| Ok(std::ffi::OsString::from(name))).collect()
+    }
+    #[test]
+    fn a_folder_listed_in_part_offers_no_letter_case_variant() {
+        // An entry past the entry limit, or one that could not be read, may be a second name that
+        // differs only in letter case (`clip.MOV` read, `Clip.mov` not): no match is unique then.
+        let whole = index_by_lower_case(names(&["clip.MOV", "b.png"]), 2);
+        assert_eq!(whole.and_then(|index| index.get("clip.mov").cloned().flatten()), Some("clip.MOV".into()), "every entry read, at the limit exactly");
+        assert_eq!(index_by_lower_case(names(&["clip.MOV", "b.png", "Clip.mov"]), 2), None, "more entries than the limit");
+        let mut failed = names(&["clip.MOV"]);
+        failed.push(Err(std::io::Error::other("entry could not be read")));
+        assert_eq!(index_by_lower_case(failed, MAX_FOLDER_ENTRIES), None, "an entry that could not be read");
+        // A real folder past the entry limit offers neither of its names (whichever is read
+        // first), from a kept listing and from one read again for each lookup past the names limit.
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-partial-listing").join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Clip.MOV"), b"").unwrap();
+        std::fs::write(dir.join("other.mov"), b"").unwrap();
+        for limit in [MAX_LISTED_NAMES, 0] {
+            let mut listings = FolderListings::new(1, limit);
+            assert_eq!((listings.find(&dir, "clip.mov"), listings.find(&dir, "other.mov")), (None, None), "names limit {limit}");
+        }
+        assert_eq!(FolderListings::new(2, MAX_LISTED_NAMES).find(&dir, "clip.mov"), Some("Clip.MOV".into()), "listed in full");
         std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
