@@ -22,7 +22,6 @@ craft-aaf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-roxmltree = { workspace = true }
-
 [dev-dependencies]
+roxmltree = { workspace = true }
 proptest = { workspace = true }
