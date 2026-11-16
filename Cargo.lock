@@ -1173,10 +1173,10 @@ dependencies = [
 [[package]]
 name = "craft-captions"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0#a864f0c27eba27cb5069d78e2b4f676b81fb23e0"
+source = "git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c#7d08706a3dc62d99c46f9d31bced0cba3ac4c36c"
 dependencies = [
  "craft-timeline",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c)",
  "thiserror 2.0.21",
 ]
 
@@ -1310,7 +1310,7 @@ dependencies = [
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0#a864f0c27eba27cb5069d78e2b4f676b81fb23e0"
+source = "git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c#7d08706a3dc62d99c46f9d31bced0cba3ac4c36c"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1319,10 +1319,10 @@ dependencies = [
 [[package]]
 name = "craft-timeline"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0#a864f0c27eba27cb5069d78e2b4f676b81fb23e0"
+source = "git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c#7d08706a3dc62d99c46f9d31bced0cba3ac4c36c"
 dependencies = [
  "craft-time",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c)",
  "serde",
  "serde_json",
 ]
@@ -1409,7 +1409,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a64f5a6e4a656f6750e72fc699750ce8a2f6f86f#a64f5a6e4a656f6750e72fc699750ce8a2f6f86f"
+source = "git+https://github.com/storytold/craft-libs?rev=7d08706a3dc62d99c46f9d31bced0cba3ac4c36c#7d08706a3dc62d99c46f9d31bced0cba3ac4c36c"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
@@ -1419,7 +1419,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a864f0c27eba27cb5069d78e2b4f676b81fb23e0#a864f0c27eba27cb5069d78e2b4f676b81fb23e0"
+source = "git+https://github.com/storytold/craft-libs?rev=a64f5a6e4a656f6750e72fc699750ce8a2f6f86f#a64f5a6e4a656f6750e72fc699750ce8a2f6f86f"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",

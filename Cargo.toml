@@ -76,8 +76,8 @@ craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a64f5a6e4a656f6750e72fc699750ce8a2f6f86f", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
-craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a864f0c27eba27cb5069d78e2b4f676b81fb23e0", features = ["serde"] }
-craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a864f0c27eba27cb5069d78e2b4f676b81fb23e0" }
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7d08706a3dc62d99c46f9d31bced0cba3ac4c36c", features = ["serde"] }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7d08706a3dc62d99c46f9d31bced0cba3ac4c36c" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
