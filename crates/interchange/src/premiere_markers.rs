@@ -6,14 +6,68 @@ use crate::xml::{child, child_text};
 use crate::{Report, Result};
 use filmcraft_project::{Label, Marker, MarkerId, MarkerKind};
 use filmcraft_time::Tick;
-use roxmltree::Node;
+use roxmltree::{Node, NodeId};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 
 const MAX_MARKERS: usize = 10_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 /// The longest URL a marker edit accepts (`marker.edit`, the Marker panel's URL field).
 const MAX_URL_BYTES: usize = 8192;
+
+/// Master clip markers, read once per master clip however many clips use it, and kept until the
+/// first use that takes them. A clip the import skips only reads them, so it cannot take them from
+/// a later clip that is kept.
+#[derive(Default)]
+pub(super) struct MasterMarkers(HashMap<NodeId, Option<Vec<Marker>>>);
+
+impl MasterMarkers {
+    /// Read `master`'s markers if no use read them yet, leaving them for a later use to take.
+    pub(super) fn read<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<()> {
+        self.decode(master, ids, work, report, context)?;
+        Ok(())
+    }
+
+    /// `master`'s markers, read on its first use; none once an earlier use took them.
+    pub(super) fn take<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<Vec<Marker>> {
+        let Some(owner) = self.decode(master, ids, work, report, context)? else { return Ok(Vec::new()) };
+        Ok(self.0.get_mut(&owner).and_then(Option::take).unwrap_or_default())
+    }
+
+    /// The element holding `master`'s markers (the `Clip` of the first clip it lists), whose markers
+    /// are read on the first call; none for a master clip without clips.
+    fn decode<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<Option<NodeId>> {
+        let first = child(master, "Clips").and_then(|c| c.children().find(Node::is_element));
+        let Some(owner) = referred(first, ids, "ObjectRef").and_then(|c| child(c, "Clip")) else { return Ok(None) };
+        if let Entry::Vacant(slot) = self.0.entry(owner.id()) {
+            spend(work, owner)?;
+            slot.insert(Some(read(owner, ids, work, report, context)?));
+        }
+        Ok(Some(owner.id()))
+    }
+}
 
 /// The markers of `owner` (a `Sequence`, or the `Clip` element of a master clip's clip), sorted
 /// by start. Ids are left at zero for the caller to allocate.

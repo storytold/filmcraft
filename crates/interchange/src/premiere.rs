@@ -214,7 +214,7 @@ pub struct Item {
     /// The `MasterClip` ObjectUID of an adjustment layer (`IsAdjustmentLayer`).
     #[serde(default)]
     pub adjustment_layer: Option<String>,
-    /// Markers of the source media's master clip, on the first timeline item that uses it.
+    /// Markers of the source media's master clip, on the first kept timeline item that uses it.
     #[serde(default)]
     pub media_markers: Vec<filmcraft_project::Marker>,
     /// The ObjectUID of the sequence it plays, for a nested sequence.
@@ -587,7 +587,7 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
         base_dir,
         work: &mut work_left,
         report,
-        marker_owners: std::collections::HashSet::new(),
+        markers: markers::MasterMarkers::default(),
         item_count: 0,
         skipped_items: BTreeSet::new(),
         unsupported_effects: BTreeMap::new(),
@@ -1168,8 +1168,8 @@ struct Reader<'a, 'i, 'r> {
     base_dir: Option<&'r str>,
     work: &'r mut usize,
     report: &'r mut Report,
-    /// Master clips whose markers were already read.
-    marker_owners: std::collections::HashSet<roxmltree::NodeId>,
+    /// Master clip markers, read once and taken by the first kept timeline item that uses each.
+    markers: markers::MasterMarkers,
     item_count: usize,
     skipped_items: BTreeSet<String>,
     unsupported_effects: BTreeMap<(String, String), usize>,
@@ -1350,7 +1350,7 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         let transitions = self.transitions(item, &label)?;
         let audio_category = value(item, "ESP.Tag").map(str::to_string);
         let disabled = child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
-        let source = self.source(sub, clip, kind, &label, &mut parts)?;
+        let source = self.source(sub, clip, kind, &label, &mut parts, unsupported.is_some())?;
         Ok(Some(Item {
             object_id: item.attribute("ObjectID").unwrap_or("").into(),
             link: item.attribute("ObjectID").and_then(|id| self.links.get(id)).map(|id| (*id).to_string()),
@@ -1505,8 +1505,17 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
     }
 
     /// The item's source: media, generated media, a nested sequence or an adjustment layer, by
-    /// title for an unresolved reference. Generated graphic media sets `parts.graphic`.
-    fn source(&mut self, sub: Option<Node<'a, 'i>>, clip: Option<Node<'a, 'i>>, kind: &str, label: &str, parts: &mut Components) -> Result<ItemSource> {
+    /// title for an unresolved reference. Generated graphic media sets `parts.graphic`. A `skipped`
+    /// item does not take its master clip's markers.
+    fn source(
+        &mut self,
+        sub: Option<Node<'a, 'i>>,
+        clip: Option<Node<'a, 'i>>,
+        kind: &str,
+        label: &str,
+        parts: &mut Components,
+        skipped: bool,
+    ) -> Result<ItemSource> {
         let target = source_target(clip, &self.objects.ids, &self.objects.uids, self.work)?;
         let generated = target.filter(|n| n.has_tag_name("Media")).and_then(|n| Some((n, synthetic_code(n)?)));
         let master = referred(sub.and_then(|s| child(s, "MasterClip")), &self.objects.uids, "ObjectURef");
@@ -1557,7 +1566,7 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         if let Some(path) = &media_path {
             *self.work = self.work.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
         }
-        let media_markers = if media_path.is_some() { self.media_markers(master, label)? } else { Vec::new() };
+        let media_markers = if media_path.is_some() { self.media_markers(master, label, skipped)? } else { Vec::new() };
         Ok(ItemSource { media_path, synthetic, adjustment_layer, nested_sequence, media_markers })
     }
 
@@ -1578,18 +1587,17 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
         }
     }
 
-    /// The markers of the item's master clip, if no earlier item read them.
-    fn media_markers(&mut self, master: Option<Node<'a, 'i>>, label: &str) -> Result<Vec<filmcraft_project::Marker>> {
-        let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
-        // Read once per master clip, onto the first timeline item that uses it:
-        // re-reading for every cut would repeat the work, the warnings and the copy.
-        if let Some(master_clip) = referred(first, &self.objects.ids, "ObjectRef").and_then(|c| child(c, "Clip"))
-            && self.marker_owners.insert(master_clip.id())
-        {
-            spend(self.work, master_clip)?;
-            return markers::read(master_clip, &self.objects.ids, self.work, self.report, label);
+    /// The markers of the item's master clip, if no earlier item took them. Read once per master
+    /// clip, onto the first kept timeline item that uses it: re-reading for every cut would repeat
+    /// the work, the warnings and the copy. A `skipped` item only reads them: the import drops it,
+    /// and they would be lost with it.
+    fn media_markers(&mut self, master: Option<Node<'a, 'i>>, label: &str, skipped: bool) -> Result<Vec<filmcraft_project::Marker>> {
+        let Some(master) = master else { return Ok(Vec::new()) };
+        if skipped {
+            self.markers.read(master, &self.objects.ids, self.work, self.report, label)?;
+            return Ok(Vec::new());
         }
-        Ok(Vec::new())
+        self.markers.take(master, &self.objects.ids, self.work, self.report, label)
     }
 }
 
@@ -2856,6 +2864,29 @@ mod tests {
         let ItemKind::Media(media) = &fragment.project.item(seq.video_tracks[0].items[1].item).unwrap().kind else { panic!() };
         assert_eq!(media.markers.len(), 2, "every cut shows the media's markers");
         assert!(media.markers.iter().any(|m| m.url == "https://example.com"));
+    }
+    #[test]
+    fn a_skipped_cut_leaves_its_master_clip_markers_to_a_kept_cut() {
+        // Hand-written: before the kept cut, a zero-length cut of the same subclip and a cut at an
+        // unsupported speed of another subclip of the same master clip. The import skips both.
+        let xml = marker_fixture()
+            .replace(r#"<TrackItem ObjectRef="20"/>"#, r#"<TrackItem ObjectRef="zero-length"/><TrackItem ObjectRef="zero-speed"/><TrackItem ObjectRef="20"/>"#)
+            .replace(
+                "</PremiereData>",
+                &format!(
+                    r#"<VideoClipTrackItem ObjectID="zero-length"><ClipTrackItem><TrackItem><Start>0</Start><End>0</End></TrackItem><SubClip ObjectRef="21"/></ClipTrackItem></VideoClipTrackItem>
+<VideoClipTrackItem ObjectID="zero-speed"><ClipTrackItem><TrackItem><Start>0</Start><End>{TPS}</End></TrackItem><SubClip ObjectRef="zero-speed-sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="zero-speed-sub"><Name>camera.mov</Name><MasterClip ObjectURef="master"/><Clip ObjectRef="zero-speed-clip"/></SubClip>
+<VideoClip ObjectID="zero-speed-clip"><Clip><InPoint>0</InPoint><PlaybackSpeed>0</PlaybackSpeed></Clip></VideoClip></PremiereData>"#
+                ),
+            );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(report.entries.iter().filter(|e| e.message.contains("clip skipped")).count(), 2, "{report:?}");
+        let items = &tree.sequences[0].tracks[0].items;
+        assert_eq!(items.iter().map(|i| (i.object_id.as_str(), i.media_markers.len())).collect::<Vec<_>>(), [("20", 1)], "{report:?}");
+        let seq = fragment.project.sequence(fragment.sequences[0]).unwrap();
+        let ItemKind::Media(media) = &fragment.project.item(seq.video_tracks[0].items[0].item).unwrap().kind else { panic!() };
+        assert_eq!(media.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["media note"]);
     }
     #[test]
     fn marker_urls_are_kept_as_bounded_text_and_opened_only_through_the_web_url_check() {
