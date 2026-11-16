@@ -31,6 +31,7 @@ pub(crate) fn tga(rgba: &[u8], w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
     craft_tga::rgba8_raw::encode_rgba8_raw(rgba, w, h, alpha).map_err(|e| match e {
         craft_tga::rgba8_raw::Rgba8EncodeError::FrameSize => ExportError::Encode("frame size".into()),
         craft_tga::rgba8_raw::Rgba8EncodeError::Dimensions => ExportError::Unsupported(format!("Targa frames are at most 65535×65535 (got {w}×{h})")),
+        craft_tga::rgba8_raw::Rgba8EncodeError::OutOfMemory => ExportError::Encode(format!("out of memory for a {w}×{h} Targa frame")),
     })
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn dpx(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
     craft_dpx::rgba8_dpx10::encode_rgba8_dpx10(rgba, w, h, "FilmCraft").map_err(|e| match e {
         craft_dpx::rgba8_dpx10::Rgba8EncodeError::FrameSize => ExportError::Encode("frame size".into()),
         craft_dpx::rgba8_dpx10::Rgba8EncodeError::TooLarge => ExportError::Unsupported(format!("a {w}×{h} DPX frame exceeds 4 GB")),
+        craft_dpx::rgba8_dpx10::Rgba8EncodeError::OutOfMemory => ExportError::Encode(format!("out of memory for a {w}×{h} DPX frame")),
     })
 }
 
@@ -318,5 +320,13 @@ mod tests {
             assert!(exr(&[0; 7], 2, 1, false, c).is_err());
             assert!(exr(&[], 0, 1, false, c).is_err());
         }
+    }
+
+    #[test]
+    fn tga_and_dpx_errors_keep_their_export_messages() {
+        assert!(matches!(tga(&[0; 7], 2, 1, true), Err(ExportError::Encode(m)) if m == "frame size"));
+        let wide = vec![0; 65536 * 4];
+        assert!(matches!(tga(&wide, 65536, 1, false), Err(ExportError::Unsupported(m)) if m.contains("65535×65535 (got 65536×1)")));
+        assert!(matches!(dpx(&[0; 7], 2, 1), Err(ExportError::Encode(m)) if m == "frame size"));
     }
 }
