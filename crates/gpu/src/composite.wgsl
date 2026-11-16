@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, effect-source quarter turns
     // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
     q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
@@ -366,9 +366,20 @@ fn linear_to_srgb(v: vec3<f32>) -> vec3<f32> {
 // coordinates can mix adjacent texels at a nominal pixel center, inventing alpha near zero.
 // Keep the regular transformed/minified layer path unchanged; only this source draw uses its
 // exact working-pixel position and the host's integer decimation.
+// The working image may be the source turned clockwise by `u.p3.w` quarter turns (display
+// rotation): its pixel is found on the source's decimated grid, as the CPU turns it after decimating.
 @fragment
 fn fs_fx_source(in: VOut) -> @location(0) vec4<f32> {
-    return layer_color(in.pos.xy * u.p3.z);
+    let p = in.pos.xy;
+    let size = u.m1.zw;
+    var s = p;
+    switch u32(u.p3.w) {
+        case 1u: { s = vec2(p.y, size.x - p.x); }
+        case 2u: { s = size - p; }
+        case 3u: { s = vec2(size.y - p.y, p.x); }
+        default: {}
+    }
+    return layer_color(s * u.p3.z);
 }
 
 // Blend modes that need the destination: written without fixed-function blending.

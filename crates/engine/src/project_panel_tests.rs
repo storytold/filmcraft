@@ -377,3 +377,41 @@ fn select_all_rejects_bad_bins_without_touching_the_selection() {
     let r = s.execute("project.selectAll", json!({"bin": null})).unwrap();
     assert_eq!(r["selected"].as_u64(), Some(s.project.items.len() as u64));
 }
+
+/// New Item / File ▸ New take an optional `bin` and make the item there (#4093).
+#[test]
+fn new_items_land_in_the_given_bin() {
+    let mut s = Session::default();
+    let root = s.project.root.id.0;
+    let bin = s.execute("file.newBin", json!({"name": "Shots"})).unwrap()["bin"].as_u64().unwrap();
+    let cases = [
+        ("file.newSequence", json!({"name": "In bin", "bin": bin}), "sequence"),
+        ("file.newAdjustmentLayer", json!({"bin": bin}), "item"),
+        ("file.newBarsAndTone", json!({"bin": bin}), "item"),
+        ("file.newBlackVideo", json!({"seconds": 2.0, "bin": bin}), "item"),
+        ("file.newColorMatte", json!({"color": "#ff0000", "bin": bin}), "item"),
+        ("file.newCountingLeader", json!({"bin": bin}), "item"),
+        ("file.newTransparentVideo", json!({"bin": bin}), "item"),
+    ];
+    for (command, params, key) in cases {
+        let id = ItemId(s.execute(command, params).unwrap()[key].as_u64().unwrap());
+        assert_eq!(bin_of(&s, id), bin, "{command} lands in the bin");
+        // and not in the root, which only lists the bin itself
+        assert!(!s.project.root.children.iter().any(|c| matches!(c, BinEntry::Item(i) if *i == id)), "{command} is not in the root");
+    }
+    // without a bin, or with null, they still land in the project root
+    for params in [json!({}), json!({"bin": null})] {
+        let id = ItemId(s.execute("file.newBarsAndTone", params).unwrap()["item"].as_u64().unwrap());
+        assert_eq!(bin_of(&s, id), root);
+        let id = ItemId(s.execute("file.newSequence", json!({"bin": null})).unwrap()["sequence"].as_u64().unwrap());
+        assert_eq!(bin_of(&s, id), root);
+    }
+    // a bin that is not there is an error, and makes nothing
+    let (items, undo) = (s.project.items.len(), s.history.undo.len());
+    for (command, params) in
+        [("file.newSequence", json!({"bin": 987_654})), ("file.newBlackVideo", json!({"bin": 987_654})), ("file.newAdjustmentLayer", json!({"bin": "x"}))]
+    {
+        assert!(s.execute(command, params).is_err(), "{command} refuses an unknown bin");
+    }
+    assert_eq!((s.project.items.len(), s.history.undo.len()), (items, undo));
+}

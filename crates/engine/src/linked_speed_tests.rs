@@ -1,5 +1,5 @@
 //! `clip.speedDuration` with `ripple` on a clip that has linked sound: the clip and its sound
-//! change as one edit, and the later clips move once.
+//! change as one edit, and the later clips move once. Maintain Audio Pitch goes with them.
 
 use filmcraft_project::ClipId;
 use filmcraft_time::Tick;
@@ -149,4 +149,50 @@ fn speed_with_ripple_on_a_split_edit() {
     s.active_sequence().unwrap().check().unwrap();
     assert_eq!((range(&s, picture2), range(&s, sound2)), ((f48, f144), (f48, f168)), "picture 48 to 96 frames, sound 60 to 120");
     assert_eq!((range(&s, picture3).0, range(&s, sound3).0), (f156, f168), "the next sound still starts 12 after its picture");
+}
+
+/// Speed/Duration ▸ Maintain Audio Pitch is set on the clip and its linked sound, kept when a later
+/// change leaves it out, shown by `sequence.inspect`, undone in one step and saved with the project.
+#[test]
+fn maintain_audio_pitch_goes_with_the_clip_and_its_sound() {
+    let mut s = Session::default();
+    let [(picture, sound), (other, _), _] = three_clips(&mut s);
+    let flag = |s: &Session, c: ClipId| s.active_sequence().and_then(|q| q.find_item(c)).is_some_and(|(_, i)| i.maintain_pitch);
+    let before = s.project.clone();
+    s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 150, "maintainPitch": true})).unwrap();
+    assert!(flag(&s, picture) && flag(&s, sound));
+    assert!(!flag(&s, other));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.project, *before, "one undo step");
+    s.execute("edit.redo", json!({})).unwrap();
+    // left out: unchanged; `false`: off
+    s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 120})).unwrap();
+    assert!(flag(&s, sound));
+    let inspect = s.execute("sequence.inspect", json!({})).unwrap();
+    let shown = inspect["audio"][0]["items"].as_array().unwrap().iter().find(|c| c["clip"] == json!(sound.0)).unwrap().clone();
+    assert_eq!(shown["maintainPitch"], json!(true), "{shown}");
+    // saved with the project and read back
+    let path = std::env::temp_dir().join(format!("fc-maintain-pitch-{}.fcproj", std::process::id()));
+    s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    let mut opened = Session::default();
+    opened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let saved = |c: ClipId| opened.project.sequences().filter_map(|i| i.as_sequence()).find_map(|q| q.find_item(c)).map(|(_, i)| i.maintain_pitch);
+    assert_eq!((saved(picture), saved(sound), saved(other)), (Some(true), Some(true), Some(false)));
+    s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 120, "maintainPitch": false})).unwrap();
+    assert!(!flag(&s, picture) && !flag(&s, sound));
+}
+
+/// A linked sound on a locked track keeps its speed, and so also how it follows that speed:
+/// turning Maintain Audio Pitch on for its picture leaves the locked sound as it was.
+#[test]
+fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
+    let mut s = Session::default();
+    let [(picture, sound), _, _] = three_clips(&mut s);
+    let flag = |s: &Session, c: ClipId| s.active_sequence().and_then(|q| q.find_item(c)).is_some_and(|(_, i)| i.maintain_pitch);
+    let id = s.state.active_sequence.unwrap();
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().audio_tracks[0].locked = true;
+    s.execute("clip.speedDuration", json!({"clips": [picture.0], "speed": 150, "maintainPitch": true})).unwrap();
+    assert!(flag(&s, picture), "the picture's own setting changes");
+    assert!(!flag(&s, sound), "the locked sound keeps its setting");
 }

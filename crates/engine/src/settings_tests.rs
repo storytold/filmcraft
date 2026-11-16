@@ -880,6 +880,10 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     set(&mut s, "playback.hardwareDecoding", json!("auto"));
     assert!(filmcraft_codecs::hw::hardware_decoding());
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
+    // External Video Output has nothing behind it yet: it stays in the schema and round-trips, and
+    // the dialog greys it out with the "not available yet" hint instead of pretending it works.
+    let transmit = settings::field("playback.enableTransmit").expect("playback.enableTransmit");
+    assert!(!transmit.wired && transmit.unavailable, "External Video Output must not claim to work");
 }
 
 /// Settings ▸ Timeline ▸ "Place files dropped onto the Timeline directly on the Timeline": on by default.

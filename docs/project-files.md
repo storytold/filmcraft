@@ -117,6 +117,10 @@ to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
+Open Project… shows one too. In the desktop app, when the current project has unsaved changes, it
+then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save** and **Save**, and
+the chosen project opens after Save or Don't Save. File ▸ Open Recent and the Recent list on Home
+ask the same way.
 
 ## Auto Save
 
@@ -192,6 +196,16 @@ without asking; the changes stay available through File ▸ Recover Unsaved Chan
 Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HOME/filmcraft` or
 `~/.local/share/filmcraft` elsewhere. A `portable.txt` file next to the executable (the Windows
 portable zip ships one) makes it `data` next to the executable instead.
+
+### Effect Presets
+
+User effect presets live in `<data dir>/presets.json`. In addition, FilmCraft creates and scans
+`<data dir>/Effect Presets` on startup (and whenever **Effects ▸ Presets ▸ Scan Presets Folder** or
+`presets.scan` runs) for `.prfpset` (Adobe Premiere Pro Effect Preset, plain XML or gzip-compressed)
+and `.json` preset packs. Dropping `.prfpset` files into `<data dir>/Effect Presets`, into the
+application window, or importing them via **File ▸ Import…** / **Effects ▸ Presets ▸ Import Presets…**
+loads their presets with their nested folder hierarchy, static parameters, animated keyframes,
+Bezier curves, and keyframe scaling/anchoring modes.
 
 ### Cost
 
