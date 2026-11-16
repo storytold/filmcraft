@@ -843,15 +843,15 @@ pub struct DnxDecoder;
 
 /// Convert a decoded VC-3 frame to a [`VideoFrame`]. RGB (4:4:4) frames are converted to
 /// BT.709 video-range Y'CbCr 4:4:4 at the coded depth.
-pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
+pub fn dnx_to_video_frame(f: craft_video::dnx::Frame) -> VideoFrame {
     use std::sync::Arc;
     let chroma = match f.chroma {
-        filmcraft_dnx::ChromaFormat::Yuv420 => filmcraft_frame::Chroma::C420,
-        filmcraft_dnx::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
-        filmcraft_dnx::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
+        craft_video::dnx::ChromaFormat::Yuv420 => filmcraft_frame::Chroma::C420,
+        craft_video::dnx::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
+        craft_video::dnx::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
     };
     let mut color = filmcraft_color::ColorInfo::REC709;
-    if matches!(f.color_volume, filmcraft_dnx::ColorVolume::Bt2020Ncl | filmcraft_dnx::ColorVolume::Bt2020Cl) {
+    if matches!(f.color_volume, craft_video::dnx::ColorVolume::Bt2020Ncl | craft_video::dnx::ColorVolume::Bt2020Cl) {
         color.matrix = filmcraft_color::Matrix::Bt2020Ncl;
         color.primaries = filmcraft_color::Primaries::Bt2020;
     }
@@ -891,7 +891,7 @@ pub fn dnx_to_video_frame(f: filmcraft_dnx::Frame) -> VideoFrame {
 
 impl VideoDecoder for DnxDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let f = decode_dnx_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
@@ -1443,5 +1443,105 @@ mod prores_resource_tests {
         // 1,120,000,000 bytes is beyond the old ceiling and must fail before allocation.
         let too_large = header(14_000, 10_000);
         assert!(matches!(decode_prores_frame(&too_large), Err(craft_video::prores::Error::Invalid("frame dimensions exceed the decoder memory limit"))));
+    }
+}
+
+/// FilmCraft's historical DNx ceiling: the decoded storage of a whole frame (the coded planes of
+/// every coding unit plus the output picture) stays within 1 GiB. That covers 8K DNxHR 444 with
+/// alpha (about 570 MB of 16-bit samples), which craft-video's default 256 MiB per-unit plane
+/// budget would refuse.
+const DNX_MAX_FRAME_BYTES: usize = 1 << 30;
+
+/// Decode one DNx frame with craft-video, keeping FilmCraft's 1 GiB whole-frame limit.
+fn decode_dnx_frame(sample: &[u8]) -> craft_video::dnx::Result<craft_video::dnx::Frame> {
+    let h = craft_video::dnx::probe(sample)?;
+    check_dnx_frame_budget(&h)?;
+    craft_video::dnx::decode_frame_with(sample, &dnx_decode_options())
+}
+
+/// craft-video decode options with the per-unit plane budget raised to FilmCraft's frame ceiling
+/// (the whole-frame check above is the binding limit).
+fn dnx_decode_options() -> craft_video::dnx::DecodeOptions {
+    craft_video::dnx::DecodeOptions { max_decoded_plane_bytes: DNX_MAX_FRAME_BYTES, ..Default::default() }
+}
+
+/// Reject a frame whose decoded storage would exceed [`DNX_MAX_FRAME_BYTES`] before anything is
+/// allocated (the check the FilmCraft-local decoder ran on the first coding-unit header).
+fn check_dnx_frame_budget(h: &craft_video::dnx::FrameHeader) -> craft_video::dnx::Result<()> {
+    use craft_video::dnx::{ChromaFormat, Error};
+    const TOO_BIG: Error = Error::Invalid("frame dimensions exceed the decoder memory limit");
+    let field_coded = h.interlaced && !h.frame_encoding;
+    let nw = h.mb_width() as usize;
+    let (cw, ch) = match h.chroma {
+        ChromaFormat::Yuv422 => (8, 16),
+        ChromaFormat::Yuv420 => (8, 8),
+        ChromaFormat::Yuv444 => (16, 16),
+    };
+    let ns = h.mb_rows as usize;
+    let luma_rows = ns.checked_mul(16).ok_or(TOO_BIG)?;
+    let chroma_rows = ns.checked_mul(ch).ok_or(TOO_BIG)?;
+    let luma_plane = (nw * 16).checked_mul(luma_rows).ok_or(TOO_BIG)?;
+    let chroma_plane = (nw * cw).checked_mul(chroma_rows).ok_or(TOO_BIG)?;
+    let mut unit = chroma_plane.checked_mul(2).and_then(|n| n.checked_add(luma_plane)).ok_or(TOO_BIG)?;
+    if h.alpha {
+        unit = unit.checked_add(luma_plane).ok_or(TOO_BIG)?;
+    }
+    let units = if field_coded { 2 } else { 1 };
+    let out_h = (h.lines as usize).checked_mul(units).ok_or(TOO_BIG)?;
+    let luma = (h.width as usize).checked_mul(out_h).ok_or(TOO_BIG)?;
+    let chroma = (h.chroma.chroma_width(h.width) as usize).checked_mul(h.chroma.chroma_height(out_h as u32) as usize).ok_or(TOO_BIG)?;
+    let out = chroma.checked_mul(2).and_then(|n| n.checked_add(luma)).and_then(|n| if h.alpha { n.checked_add(luma) } else { Some(n) }).ok_or(TOO_BIG)?;
+    let samples = unit.checked_mul(units).and_then(|n| n.checked_add(out)).ok_or(TOO_BIG)?;
+    if samples.checked_mul(std::mem::size_of::<u16>()).is_none_or(|n| n > DNX_MAX_FRAME_BYTES) {
+        return Err(TOO_BIG);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod dnx_resource_tests {
+    use super::*;
+    use craft_video::dnx::{ChromaFormat, Encoder, Frame, FrameHeader, Profile, header};
+
+    /// A header-only frame (scan-line offsets increasing, no payload) claiming the given raster.
+    fn header_only(width: u32, lines: u32, alpha: bool) -> (FrameHeader, Vec<u8>) {
+        let mut enc = Encoder::new(Profile::R444, 64, 64).unwrap();
+        let d = enc.encode(&Frame::new(64, 64, ChromaFormat::Yuv444, 10, false)).unwrap();
+        let mut h = craft_video::dnx::probe(&d).unwrap();
+        h.width = width;
+        h.lines = lines;
+        h.mb_rows = lines.div_ceil(16);
+        h.alpha = alpha;
+        h.header_size = header::header_size_for(h.lines);
+        let mut data = header::write(&h);
+        let hs = data.len();
+        for s in 0..h.mb_rows as usize {
+            let o = header::SCAN_INDEX_OFFSET + 4 * s;
+            data[o..o + 4].copy_from_slice(&(s as u32).to_be_bytes());
+        }
+        data.resize(hs + 4096, 0);
+        (h, data)
+    }
+
+    #[test]
+    fn dnx_decoder_keeps_the_one_gibibyte_frame_limit() {
+        // Port of the FilmCraft-local `rejects_frames_over_the_memory_limit`: a 16384x16384 4:4:4
+        // header with alpha is refused before any plane is allocated.
+        let (_, big) = header_only(16384, 16384, true);
+        assert!(craft_video::dnx::probe(&big).is_ok());
+        let err = decode_dnx_frame(&big).unwrap_err().to_string();
+        assert!(err.contains("memory limit"), "{err}");
+    }
+
+    #[test]
+    fn dnx_budget_admits_8k_444_with_alpha() {
+        // 8K DNxHR 444 with alpha is about 566 MB of decoded storage (one coding unit of four
+        // 16-bit planes is about 283 MB): inside FilmCraft's 1 GiB ceiling, but above
+        // craft-video's default per-unit budget, so the app must keep raising the shared limit.
+        let (h, _) = header_only(8192, 4320, true);
+        assert!(check_dnx_frame_budget(&h).is_ok());
+        let unit_bytes = 8192 * 4320 * 4 * std::mem::size_of::<u16>();
+        assert!(craft_video::dnx::DecodeOptions::default().max_decoded_plane_bytes < unit_bytes);
+        assert!(dnx_decode_options().max_decoded_plane_bytes >= unit_bytes);
     }
 }

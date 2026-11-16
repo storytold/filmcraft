@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-y4m = { workspace = true }
 craft-audio = { workspace = true }
 craft-video = { workspace = true }
 filmcraft-time = { workspace = true }
@@ -20,8 +21,7 @@ filmcraft-isobmff = { workspace = true }
 filmcraft-matroska = { workspace = true }
 craft-media = { workspace = true, features = ["avi", "mpegts", "mxf", "ogg"] }
 filmcraft-bitstream = { workspace = true }
-filmcraft-dnx = { workspace = true }
-craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "e9c818bcfe03fefaaf08520baf0f8c607840e247" }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "b577b219e96a1aa8cba5ed2966c6b32ea9cfc7b2" }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
