@@ -242,3 +242,18 @@ fn transition_duration_is_clamped_to_what_the_cut_supports() {
         preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": clips[1].0, "edge": "in", "frames": 5}), TrackKind::Video).unwrap_err().to_string();
     assert!(err.contains("no room for a transition"), "{err}");
 }
+
+/// Agents can tell whether a Warp Stabilizer's analysis is done without watching the CPU: it is
+/// reported with the effect (the render crate's tests follow it through running and done).
+#[test]
+fn sequence_inspect_reports_a_stabilizer_analysis() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "warp_stabilizer"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    let seq = s.execute("sequence.inspect", json!({})).unwrap();
+    let effects = seq["video"][0]["items"][0]["effects"].as_array().unwrap().clone();
+    let effect = |id: &str| effects.iter().find(|e| e["effect"] == id).cloned().unwrap_or_else(|| panic!("{id} missing: {effects:?}"));
+    assert_eq!(effect("warp_stabilizer")["analysis"], json!({"state": "waiting", "frames": 0}), "nothing has shown the clip yet");
+    assert!(effect("gaussian_blur").get("analysis").is_none(), "only stabilizers analyse");
+}

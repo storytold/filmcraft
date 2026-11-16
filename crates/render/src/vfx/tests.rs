@@ -2151,11 +2151,11 @@ mod stabilizer_live_and_kept {
 /// for a frame, [`stabilizer_keys`] lists for the project, and moving the clip keeps.
 mod stabilizer_keys_of_a_project {
     use super::*;
-    use crate::vfx::{analysis_identity, stabilizer_analysed, stabilizer_keys, without_waiting_for_analysis};
+    use crate::vfx::{AnalysisState, analysis_identity, stabilizer_analysed, stabilizer_keys, stabilizer_state, without_waiting_for_analysis};
     use crate::{RenderOptions, SourceMap, render_sequence};
     use filmcraft_media::generators::GeneratorSource;
     use filmcraft_media::{Generator, MediaSource, SharedSource};
-    use filmcraft_project::{ItemKind, Label, MediaClip, MediaIdentity, MediaRef, SequenceSettings, TrackKind};
+    use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaIdentity, MediaRef, SequenceSettings, TrackKind};
     use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
 
     #[test]
@@ -2205,5 +2205,105 @@ mod stabilizer_keys_of_a_project {
         p.sequence_mut(seq).unwrap().video_tracks[0].items[0].source_in = r.tick_of(2);
         assert_ne!(id(&p), before, "another source range is another analysis");
         assert_ne!(stabilizer_keys(&p), keys);
+    }
+
+    /// A generator whose `stop_at`-th frame read stops there: it sets `stop` (when given), or
+    /// waits at `gate` twice (when given) so the test can look at the running analysis.
+    struct Held {
+        inner: GeneratorSource,
+        reads: std::sync::atomic::AtomicUsize,
+        stop_at: usize,
+        stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+        gate: Option<Arc<std::sync::Barrier>>,
+    }
+
+    impl MediaSource for Held {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            self.inner.info()
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == self.stop_at {
+                if let Some(stop) = &self.stop {
+                    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                    // long enough for the request to see it and stop the analysis
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                if let Some(gate) = &self.gate {
+                    gate.wait();
+                    gate.wait();
+                }
+            }
+            self.inner.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            self.inner.audio(start, frames, sample_rate)
+        }
+    }
+
+    /// A project with one stabilized clip of a moving pattern, read through a [`Held`].
+    fn held_project(fingerprint: u64, held: impl FnOnce(GeneratorSource) -> Held) -> (Project, ItemId, SourceMap) {
+        let mut p = Project::new("state");
+        let mut map = SourceMap::default();
+        let r = FrameRate::FPS_24;
+        let g = GeneratorSource::new(Generator::BarsAndTone, 32, 18, r, Tick(10 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let media = p.add_item(
+            "bars",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: Some(MediaIdentity { size: 0x57A7_E000, fingerprint }),
+            })),
+            None,
+        );
+        map.0.insert(media, Arc::new(held(g)) as SharedSource);
+        let seq = p.new_sequence("s", SequenceSettings { width: 32, height: 18, frame_rate: r, ..Default::default() }, 1, 0, None);
+        let mut ti = p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(48)), r).unwrap();
+        ti.effects.push(inst("warp_stabilizer"));
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+        (p, seq, map)
+    }
+
+    fn state(p: &Project, seq: ItemId) -> AnalysisState {
+        let q = p.sequence(seq).unwrap();
+        let item = &q.video_tracks[0].items[0];
+        let e = item.effects.iter().find(|e| e.effect == "warp_stabilizer").unwrap();
+        stabilizer_state(p, q, item, e)
+    }
+
+    /// `sequence.inspect` tells agents whether a clip is analysed, being analysed or waiting.
+    #[test]
+    fn the_state_of_an_analysis_is_reported() {
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let g2 = gate.clone();
+        let (p, seq, map) = held_project(0x57A7_E001, move |inner| Held { inner, reads: Default::default(), stop_at: 10, stop: None, gate: Some(g2) });
+        assert_eq!(state(&p, seq), AnalysisState::Waiting { frames: 0 }, "nothing has asked for it yet");
+        let p = Arc::new(p);
+        let map = Arc::new(map);
+        let (p2, map2) = (p.clone(), map.clone());
+        let render = std::thread::spawn(move || drop(render_sequence(&p2, seq, Tick::ZERO, RenderOptions::default(), &*map2)));
+        gate.wait();
+        let running = state(&p, seq);
+        gate.wait();
+        render.join().unwrap();
+        assert!(matches!(running, AnalysisState::Running(f) if (0.0..=1.0).contains(&f)), "{running:?}");
+        assert_eq!(state(&p, seq), AnalysisState::Done);
+    }
+
+    #[test]
+    fn a_stopped_analysis_reports_how_far_it_got() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let (p, seq, map) = held_project(0x57A7_E002, move |inner| Held { inner, reads: Default::default(), stop_at: 20, stop: Some(s2), gate: None });
+        filmcraft_media::cancel::with_cancel(&stop, || drop(render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map)));
+        let AnalysisState::Waiting { frames } = state(&p, seq) else { panic!("{:?}", state(&p, seq)) };
+        assert!((1..48).contains(&frames), "{frames} of 48 frames read");
     }
 }
