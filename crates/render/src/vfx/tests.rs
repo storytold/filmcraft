@@ -2298,7 +2298,7 @@ mod stabilizer_keys_of_a_project {
         let gate = Arc::new(std::sync::Barrier::new(2));
         let g2 = gate.clone();
         let (p, seq, map) = held_project(0x57A7_E001, move |inner| Held { inner, reads: Default::default(), stop_at: 10, stop: None, gate: Some(g2) });
-        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Waiting, analyzed: 0, total: 48 }, "nothing has asked for it yet");
+        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Waiting, analyzed: 0, total: 48, position: None }, "nothing has asked for it yet");
         let p = Arc::new(p);
         let map = Arc::new(map);
         let (p2, map2) = (p.clone(), map.clone());
@@ -2308,7 +2308,7 @@ mod stabilizer_keys_of_a_project {
         gate.wait();
         render.join().unwrap();
         assert!(running.phase == AnalysisPhase::Running && (1..48).contains(&running.analyzed) && running.total == 48, "{running:?}");
-        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Done, analyzed: 48, total: 48 });
+        assert_eq!(state(&p, seq), AnalysisState { phase: AnalysisPhase::Done, analyzed: 48, total: 48, position: None });
     }
 
     #[test]
@@ -2511,6 +2511,26 @@ mod stabilizer_shared_by_clips_of_a_source {
         let reads = f.render(0);
         assert!((13..=16).contains(&reads), "{reads} frames read");
         assert_eq!(f.path(0).steps, fresh(0x5A4E_0202, 12, 72).steps);
+    }
+
+    /// An analysis the application has lined up reports its place in line; a queue withdrawn by
+    /// another owner stays.
+    #[test]
+    fn a_lined_up_analysis_reports_its_place() {
+        use crate::vfx::{clear_analysis_queue, set_analysis_queue};
+        let mut f = fixture(0x5A4E_0005);
+        f.clips(&[(0, 24, 12), (20, 60, 12)]);
+        let key =
+            |f: &Fixture, i: usize| super::super::temporal::key_of_effect(&f.p, f.p.sequence(f.seq).unwrap(), &f.item(i), Fixture::stabilizer(&f.item(i)));
+        let (a, b) = (key(&f, 0), key(&f, 1));
+        assert_eq!(f.state(1).phase, AnalysisPhase::Waiting);
+        set_analysis_queue(0x0E1, vec![a, b]);
+        let st = f.state(1);
+        assert_eq!((st.phase, st.position), (AnalysisPhase::Queued, Some(2)));
+        clear_analysis_queue(0x0E2);
+        assert_eq!(f.state(1).position, Some(2), "another owner's withdrawal leaves it");
+        clear_analysis_queue(0x0E1);
+        assert_eq!(f.state(1).phase, AnalysisPhase::Waiting);
     }
 
     #[test]
