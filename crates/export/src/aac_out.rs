@@ -54,48 +54,22 @@ impl Sink {
     }
 }
 
-/// The fixed fields of an ADTS header, from the AudioSpecificConfig.
+/// Validated ADTS configuration for the encoder's AudioSpecificConfig.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AdtsHeader {
-    /// `profile_ObjectType`: the audio object type minus one (1 = AAC-LC).
-    profile: u8,
-    sf_index: u8,
-    channel_config: u8,
-}
+pub(crate) struct AdtsHeader(craft_audio::aac::AdtsConfig);
 
 impl AdtsHeader {
-    /// Read the object type, sampling frequency index and channel configuration from an
-    /// AudioSpecificConfig; ADTS can carry only object types 1–4 with an indexed rate and a
-    /// channel configuration of 1–7.
-    pub(crate) fn from_asc(asc: &[u8]) -> Result<AdtsHeader> {
-        let (Some(&a), Some(&b)) = (asc.first(), asc.get(1)) else {
-            return Err(ExportError::Encode("AAC: the encoder gave no AudioSpecificConfig".into()));
-        };
-        let object_type = a >> 3;
-        let sf_index = ((a & 0x07) << 1) | (b >> 7);
-        let channel_config = (b >> 3) & 0x0F;
-        if !(1..=4).contains(&object_type) || sf_index > 12 || !(1..=7).contains(&channel_config) {
-            return Err(ExportError::Unsupported(format!(
+    pub(crate) fn from_asc(asc: &[u8]) -> Result<Self> {
+        craft_audio::aac::AdtsConfig::from_asc_prefix(asc).map(Self).map_err(|e| match e {
+            craft_audio::aac::AdtsConfigError::Short => ExportError::Encode("AAC: the encoder gave no AudioSpecificConfig".into()),
+            craft_audio::aac::AdtsConfigError::Unsupported { object_type, sf_index, channel_config } => ExportError::Unsupported(format!(
                 "an ADTS .aac stream cannot carry this AAC configuration (object type {object_type}, rate index {sf_index}, channels {channel_config}): export .m4a instead"
-            )));
-        }
-        Ok(AdtsHeader { profile: object_type - 1, sf_index, channel_config })
+            )),
+        })
     }
 
-    /// The 7-byte header (`protection_absent`) of an access unit of `payload` bytes.
     pub(crate) fn bytes(&self, payload: usize) -> Result<[u8; 7]> {
-        // aac_frame_length is 13 bits and counts the header
-        let too_big = || ExportError::Encode(format!("AAC: a {payload}-byte frame does not fit ADTS"));
-        let len = u32::try_from(payload).ok().and_then(|n| n.checked_add(7)).filter(|n| *n < 1 << 13).ok_or_else(too_big)?;
-        Ok([
-            0xFF,
-            0xF1, // syncword, MPEG-4, layer 0, protection absent
-            (self.profile << 6) | (self.sf_index << 2) | (self.channel_config >> 2),
-            ((self.channel_config & 0x03) << 6) | ((len >> 11) & 0x03) as u8,
-            ((len >> 3) & 0xFF) as u8,
-            (((len & 0x07) << 5) as u8) | 0x1F, // buffer fullness 0x7FF: variable rate
-            0xFC,                               // … and one raw data block
-        ])
+        self.0.header(payload).map_err(|_| ExportError::Encode(format!("AAC: a {payload}-byte frame does not fit ADTS")))
     }
 }
 
@@ -165,7 +139,7 @@ mod tests {
     fn adts_header_fields_follow_the_asc() {
         // AAC-LC (2), 48 kHz (index 3), stereo: 00010 0011 0010 000
         let h = AdtsHeader::from_asc(&[0x11, 0x90]).unwrap();
-        assert_eq!(h, AdtsHeader { profile: 1, sf_index: 3, channel_config: 2 });
+        assert_eq!((h.0.object_type - 1, h.0.sf_index, h.0.channel_config), (1, 3, 2));
         let b = h.bytes(371).unwrap();
         assert_eq!(&b[..2], &[0xFF, 0xF1]);
         assert_eq!(b[2] >> 6, 1);
