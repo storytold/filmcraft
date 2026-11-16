@@ -820,6 +820,7 @@ pub(crate) fn import_fcp7(text: &str, opts: &crate::ImportOptions, report: &mut 
     Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
 }
 pub(crate) fn export_fcp7(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
+    crate::warn_marker_metadata_loss(project, seq, report);
     let project = to_project(project, seq).map_err(|e| crate::Error::Other(e.to_string()))?;
     let catalog = FilmCatalog;
     let shared_opts = craft_timeline::ExportOptions {
