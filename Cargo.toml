@@ -13,7 +13,7 @@ repository = "https://github.com/storytold/filmcraft"
 [workspace.dependencies]
 # Shared bounded classic TIFF directory traversal.
 craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0eaafeb5054f2113523c8844822a830865cf45f2" }
-craft-tga = { git = "https://github.com/storytold/craft-libs", rev = "d2bb64c4ac41c9242479f5e8277580b847151e5a" }
+craft-tga = { git = "https://github.com/storytold/craft-libs", rev = "6253fff31f9a3fd3da914079d0031fdacd283a63" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
