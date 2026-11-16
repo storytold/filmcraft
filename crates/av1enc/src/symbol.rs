@@ -131,11 +131,29 @@ impl SymbolEncoder {
         }
     }
 
-    /// Finalize the tile stream and return the encoded bytes.
+    /// Finalize the tile stream and return the encoded bytes (AV1 spec 8.2.4 `exit_symbol`).
     pub fn finish(mut self) -> Vec<u8> {
-        let total_bits = self.bit_pos + 15;
-        let num_bytes = total_bits.div_ceil(8);
+        let b_pos = self.bit_pos;
+        let byte_idx = b_pos / 8;
+        let bit_in_byte = 7 - (b_pos % 8);
+        if self.stream.len() <= byte_idx {
+            self.stream.resize(byte_idx + 1, 0);
+        }
+        // If the MSB of the remaining 15-bit interval (`L`) at `b_pos` is 1 (`L >= 0x4000`),
+        // add 0x4000 so the carry propagates into `b_pos - 1` and bit `b_pos` becomes 0.
+        // Because `range >= 0x8000`, `0x8000 + 0x3FFF = 0xBFFF < L + range` is always inside `[L, L + range)`.
+        if (self.stream[byte_idx] & (1u8 << bit_in_byte)) != 0 {
+            self.add_value(0x4000);
+        }
+        let num_bytes = (b_pos + 1).div_ceil(8);
+        if self.stream.len() < num_bytes {
+            self.stream.resize(num_bytes, 0);
+        }
         self.stream.truncate(num_bytes);
+        // Set bit `b_pos` to 0 (becomes trailing `1` bit on wire after inversion)
+        // and all remaining bits in the final byte after `b_pos` to 1 (become `0` padding bits on wire).
+        let low_mask = (1u8 << bit_in_byte) - 1;
+        self.stream[byte_idx] = (self.stream[byte_idx] & !(1u8 << bit_in_byte)) | low_mask;
         // Invert bytes for AV1 SymbolDecoder
         for b in &mut self.stream {
             *b = !*b;

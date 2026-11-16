@@ -106,36 +106,28 @@ pub fn write_frame_header(cfg: &FrameHeaderConfig, seq: &SequenceConfig) -> Vec<
         w.write_bit(false);
     }
 
-    // 12. Loop filter:
+    // 12. Loop filter: level 0 so encoder and decoder reference frames stay bit-exact.
     let coded_lossless = cfg.qindex == 0;
     if !coded_lossless {
-        // loop_filter_level adapted to qindex
-        let lf_level = (cfg.qindex / 4).min(63) as u32;
-        w.write_bits(lf_level, 6);
-        w.write_bits(lf_level, 6);
-        if !seq.mono_chrome && lf_level > 0 {
-            w.write_bits(lf_level, 6);
-            w.write_bits(lf_level, 6);
-        }
+        w.write_bits(0, 6);
+        w.write_bits(0, 6);
         // loop_filter_sharpness = 0
         w.write_bits(0, 3);
         // loop_filter_delta_enabled = 0
         w.write_bit(false);
     }
 
-    // CDEF params (spec 5.9.19)
+    // CDEF params (spec 5.9.19): strength 0 so encoder and decoder reference frames stay bit-exact.
     if seq.enable_cdef && !coded_lossless {
-        // cdef_damping - 3 = 2 (damping = 5)
-        w.write_bits(2, 2);
+        // cdef_damping - 3 = 0 (damping = 3)
+        w.write_bits(0, 2);
         // cdef_bits = 0 (1 preset, 0 bits per block in tile)
         w.write_bits(0, 2);
-        let pri = u32::from((cfg.qindex / 16).clamp(1, 15));
-        let sec = (pri / 4).min(2);
-        w.write_bits(pri, 4);
-        w.write_bits(sec, 2);
+        w.write_bits(0, 4);
+        w.write_bits(0, 2);
         if !seq.mono_chrome {
-            w.write_bits(pri, 4);
-            w.write_bits(sec, 2);
+            w.write_bits(0, 4);
+            w.write_bits(0, 2);
         }
     }
 

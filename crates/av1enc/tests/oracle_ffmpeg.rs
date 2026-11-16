@@ -107,12 +107,18 @@ fn ffmpeg_decodes_intra_and_inter_residual_stream() {
     let ffmpeg_out = Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(mp4_path).args(["-f", "null", "-"]).output().unwrap();
     assert!(ffmpeg_out.status.success(), "ffmpeg decode failed: {}", String::from_utf8_lossy(&ffmpeg_out.stderr));
 
-    // 2b. explicit libdav1d decode check when available in ffmpeg build
+    // 2b. explicit libdav1d and libaom-av1 decode checks when available in ffmpeg build
     let decoders_out = Command::new(&ffmpeg).args(["-hide_banner", "-decoders"]).output().unwrap();
-    if String::from_utf8_lossy(&decoders_out.stdout).contains("libdav1d") {
+    let decoders_str = String::from_utf8_lossy(&decoders_out.stdout);
+    if decoders_str.contains("libdav1d") {
         let dav1d_out =
             Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-c:v", "libdav1d", "-i"]).arg(mp4_path).args(["-f", "null", "-"]).output().unwrap();
         assert!(dav1d_out.status.success(), "libdav1d decode failed: {}", String::from_utf8_lossy(&dav1d_out.stderr));
+    }
+    if decoders_str.contains("libaom-av1") {
+        let aom_out =
+            Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-c:v", "libaom-av1", "-i"]).arg(mp4_path).args(["-f", "null", "-"]).output().unwrap();
+        assert!(aom_out.status.success(), "libaom-av1 decode failed: {}", String::from_utf8_lossy(&aom_out.stderr));
     }
 
     // 3. in-tree craft-video AV1 decoder verification
@@ -127,6 +133,163 @@ fn ffmpeg_decodes_intra_and_inter_residual_stream() {
         assert_eq!(pic.width, 642);
         assert_eq!(pic.height, 362);
     }
+
+    verify_textured_moving_stream_quality(&ffmpeg, &decoders_str, w, h);
+}
+
+fn generate_textured_moving_frame(w: u32, h: u32, f_idx: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut y_p = vec![0u8; (w * h) as usize];
+    let mut u_p = vec![0u8; ((w / 2) * (h / 2)) as usize];
+    let mut v_p = vec![0u8; ((w / 2) * (h / 2)) as usize];
+    let sq_x = (40 + f_idx * 28) % (w - 120);
+    let sq_y = (30 + f_idx * 14) % (h - 120);
+    for y in 0..h {
+        for x in 0..w {
+            let base = ((x * 180 / w) + (y * 60 / h)) as i32;
+            let hash = (x.wrapping_mul(1103515245).wrapping_add(y.wrapping_mul(12345)).wrapping_add(f_idx.wrapping_mul(2654435761))) >> 16;
+            let noise = ((hash & 0xF) as i32) - 8;
+            let in_sq = x >= sq_x && x < sq_x + 120 && y >= sq_y && y < sq_y + 120;
+            let val = if in_sq { 220 + noise } else { (base + noise).clamp(16, 235) };
+            y_p[(y * w + x) as usize] = val as u8;
+        }
+    }
+    for cy in 0..(h / 2) {
+        for cx in 0..(w / 2) {
+            let in_sq = (cx * 2) >= sq_x && (cx * 2) < sq_x + 120 && (cy * 2) >= sq_y && (cy * 2) < sq_y + 120;
+            u_p[(cy * (w / 2) + cx) as usize] = if in_sq { 64 } else { (96 + ((cx + f_idx * 3) % 64)) as u8 };
+            v_p[(cy * (w / 2) + cx) as usize] = if in_sq { 200 } else { (160 - ((cy + f_idx * 2) % 64)) as u8 };
+        }
+    }
+    (y_p, u_p, v_p)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_decoder_matches_in_tree_and_psnr(
+    ffmpeg: &std::path::Path,
+    dec_name: &str,
+    tag: &str,
+    mp4_path: &std::path::Path,
+    mp4_len: usize,
+    w: u32,
+    h: u32,
+    src_frames: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
+    in_tree_pics: &[craft_video::av1::decode::Picture],
+) -> f64 {
+    let y_len = (w * h) as usize;
+    let uv_len = ((w / 2) * (h / 2)) as usize;
+    let frame_bytes = y_len + 2 * uv_len;
+    let out = Command::new(ffmpeg)
+        .args(["-v", "error", "-xerror", "-c:v", dec_name, "-i"])
+        .arg(mp4_path)
+        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{dec_name} failed on {tag}: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.stdout.len(), src_frames.len() * frame_bytes, "{dec_name} raw output size mismatch on {tag}");
+
+    let mut min_y_psnr = 100.0f64;
+    let mut min_u_psnr = 100.0f64;
+    let mut min_v_psnr = 100.0f64;
+    for (fi, ((src_y, src_u, src_v), pic)) in src_frames.iter().zip(in_tree_pics.iter()).enumerate() {
+        let base = fi * frame_bytes;
+        let dec_y = &out.stdout[base..base + y_len];
+        let dec_u = &out.stdout[base + y_len..base + y_len + uv_len];
+        let dec_v = &out.stdout[base + y_len + uv_len..base + frame_bytes];
+
+        for (idx, (&dy, &iy)) in dec_y.iter().zip(pic.planes[0].iter()).enumerate() {
+            assert_eq!(dy as u16, iy, "{dec_name} vs in-tree Y mismatch at frame {fi} idx {idx}");
+        }
+        for (idx, (&du, &iu)) in dec_u.iter().zip(pic.planes[1].iter()).enumerate() {
+            assert_eq!(du as u16, iu, "{dec_name} vs in-tree U mismatch at frame {fi} idx {idx}");
+        }
+        for (idx, (&dv, &iv)) in dec_v.iter().zip(pic.planes[2].iter()).enumerate() {
+            assert_eq!(dv as u16, iv, "{dec_name} vs in-tree V mismatch at frame {fi} idx {idx}");
+        }
+        min_y_psnr = min_y_psnr.min(filmcraft_av1enc::compute_psnr(src_y, dec_y).unwrap());
+        min_u_psnr = min_u_psnr.min(filmcraft_av1enc::compute_psnr(src_u, dec_u).unwrap());
+        min_v_psnr = min_v_psnr.min(filmcraft_av1enc::compute_psnr(src_v, dec_v).unwrap());
+    }
+    println!("{tag} ({dec_name}, {mp4_len} bytes): min PSNR Y={min_y_psnr:.2} dB, U={min_u_psnr:.2} dB, V={min_v_psnr:.2} dB");
+    assert!(min_y_psnr >= 26.0, "expected {tag} Y PSNR >= 26.0 dB, got {min_y_psnr:.2} dB");
+    assert!(min_u_psnr >= 27.5, "expected {tag} U PSNR >= 27.5 dB, got {min_u_psnr:.2} dB");
+    assert!(min_v_psnr >= 26.0, "expected {tag} V PSNR >= 26.0 dB, got {min_v_psnr:.2} dB");
+    min_y_psnr
+}
+
+fn verify_textured_moving_stream_quality(ffmpeg: &std::path::Path, decoders_str: &str, w: u32, h: u32) {
+    let mut q90_y_psnr = 0.0f64;
+    let mut cq25_y_psnr = 0.0f64;
+    let mut cq0_y_psnr = 0.0f64;
+    for (tag, rc) in [("q90", RateControl::Qindex(90)), ("cq25", RateControl::ConstantQuality(25.0)), ("cq0", RateControl::ConstantQuality(0.0))] {
+        let mut cfg = EncoderConfig::new(w, h, 24, 1);
+        cfg.preset = Preset::Quality;
+        cfg.key_int = 30;
+        cfg.rate_control = Some(rc);
+        let mut enc = Encoder::new(cfg).unwrap();
+        let mut pkts = Vec::new();
+        let mut src_frames = Vec::new();
+        for f_idx in 0..12u32 {
+            let (y_p, u_p, v_p) = generate_textured_moving_frame(w, h, f_idx);
+            let yf = YuvFrame { y: &y_p, u: &u_p, v: &v_p, y_stride: w as usize, uv_stride: (w / 2) as usize };
+            pkts.push(enc.encode(&yf, (f_idx as i64) * 1000).unwrap());
+            src_frames.push((y_p, u_p, v_p));
+        }
+        let mut cur = Cursor::new(Vec::new());
+        let mut wr = Mp4Writer::new(&mut cur, WriterOptions::new(Brand::Mp4)).unwrap();
+        let tid = wr
+            .add_track(TrackConfig::new(
+                SampleEntry::av1(
+                    Av1Config {
+                        seq_profile: 0,
+                        seq_level_idx_0: enc.seq_level_idx(),
+                        seq_tier_0: false,
+                        high_bitdepth: false,
+                        twelve_bit: false,
+                        monochrome: false,
+                        chroma_subsampling_x: true,
+                        chroma_subsampling_y: true,
+                        chroma_sample_position: 0,
+                        initial_presentation_delay_minus_one: None,
+                        config_obus: enc.sequence_header_obu(),
+                    },
+                    w as u16,
+                    h as u16,
+                ),
+                24,
+            ))
+            .unwrap();
+        for p in &pkts {
+            wr.write_sample(tid, WriteSample { data: &p.data, duration: 1, is_sync: p.keyframe, composition_offset: 0 }).unwrap();
+        }
+        wr.finish().unwrap();
+        let mp4_data = cur.into_inner();
+        let f_mp4 = temp_mp4(&format!("test_av1enc_textured_{tag}.mp4"));
+        fs::write(&f_mp4.0, &mp4_data).unwrap();
+
+        let mut in_tree_dec = craft_video::av1::decode::Decoder::new();
+        let mut in_tree_pics = Vec::new();
+        for p in &pkts {
+            in_tree_pics.extend(in_tree_dec.decode(&p.data).unwrap());
+        }
+        in_tree_pics.extend(in_tree_dec.flush());
+        assert_eq!(in_tree_pics.len(), 12);
+
+        for dec_name in ["libaom-av1", "libdav1d"] {
+            if decoders_str.contains(dec_name) {
+                let min_y_psnr = verify_decoder_matches_in_tree_and_psnr(ffmpeg, dec_name, tag, &f_mp4.0, mp4_data.len(), w, h, &src_frames, &in_tree_pics);
+                match tag {
+                    "q90" => q90_y_psnr = min_y_psnr,
+                    "cq25" => cq25_y_psnr = min_y_psnr,
+                    "cq0" => cq0_y_psnr = min_y_psnr,
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(
+        cq0_y_psnr > q90_y_psnr + 3.0 && cq0_y_psnr > cq25_y_psnr + 3.0,
+        "expected ConstantQuality(0.0) Y PSNR ({cq0_y_psnr:.2} dB) to exceed Qindex(90) ({q90_y_psnr:.2} dB) and ConstantQuality(25.0) ({cq25_y_psnr:.2} dB) by > 3.0 dB"
+    );
 }
 
 #[test]
@@ -186,7 +349,17 @@ fn ffmpeg_and_ffprobe_verify_4k_level_12_agreement() {
     assert!(probe_json.contains("\"height\": 2160"), "expected height 2160, got {probe_json}");
     assert!(probe_json.contains("\"level\": 12"), "expected level 12 (Level 5.0), got {probe_json}");
 
-    // Verify ffmpeg decodes 4K without errors
+    // Verify ffmpeg decodes 4K without errors (default decoder + explicit libdav1d and libaom-av1)
     let ffmpeg_out = Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(mp4_path).args(["-f", "null", "-"]).output().unwrap();
     assert!(ffmpeg_out.status.success(), "ffmpeg 4k decode failed: {}", String::from_utf8_lossy(&ffmpeg_out.stderr));
+
+    let decoders_out = Command::new(&ffmpeg).args(["-hide_banner", "-decoders"]).output().unwrap();
+    let decoders_str = String::from_utf8_lossy(&decoders_out.stdout);
+    for dec_name in ["libdav1d", "libaom-av1"] {
+        if decoders_str.contains(dec_name) {
+            let dec_out =
+                Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-c:v", dec_name, "-i"]).arg(mp4_path).args(["-f", "null", "-"]).output().unwrap();
+            assert!(dec_out.status.success(), "{dec_name} 4k decode failed: {}", String::from_utf8_lossy(&dec_out.stderr));
+        }
+    }
 }

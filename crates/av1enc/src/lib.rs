@@ -25,7 +25,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum RateControl {
     /// Constant Quality / CRF-like mode (crf 0.0..63.0, mapped to qindex 0..255).
     ConstantQuality(f32),
-    /// Direct quantization index (0 = lossless, 255 = maximum compression).
+    /// Direct quantization index (0..=1 = minimum quantizer / highest quality, 255 = maximum compression).
     Qindex(u8),
     /// 1-pass adaptive CBR rate control targeting `kbps`.
     Cbr { kbps: u32 },
@@ -283,16 +283,16 @@ impl Encoder {
             enable_cdef: self.config.enable_cdef,
         };
 
-        // Determine base quantization index for this frame
+        // Determine base quantization index for this frame (clamped to 1..=255 for DCT coding)
         let mut qindex = match self.config.rate_control {
-            Some(RateControl::ConstantQuality(crf)) => (crf * 4.0).round().clamp(0.0, 255.0) as u8,
-            Some(RateControl::Qindex(q)) => q,
-            Some(RateControl::Cbr { .. } | RateControl::Vbr { .. }) => self.active_qindex,
-            None => self.config.qindex,
+            Some(RateControl::ConstantQuality(crf)) => (crf * 4.0).round().clamp(1.0, 255.0) as u8,
+            Some(RateControl::Qindex(q)) => q.max(1),
+            Some(RateControl::Cbr { .. } | RateControl::Vbr { .. }) => self.active_qindex.max(1),
+            None => self.config.qindex.max(1),
         };
 
         // IP offset: Boost Keyframe quality slightly to establish superior reference for downstream P-frames
-        if is_key {
+        if is_key && qindex > 16 {
             qindex = qindex.saturating_sub(4).max(12);
         }
 
@@ -348,10 +348,18 @@ impl Encoder {
                 let x0 = (c as usize) * 64;
                 let block_w = 64.min(width.saturating_sub(x0));
 
-                let is_inter = if !is_key && has_prev_frame {
-                    let recon_sad = compute_block_sad(frame.y, frame.y_stride, ref_y_plane, width, x0, y0, block_w, block_h);
-                    let recon_thresh = ((block_w * block_h) as u64).saturating_mul(6);
-                    recon_sad <= recon_thresh
+                let is_inter = if !is_key && has_prev_frame && block_w == 64 && block_h == 64 {
+                    let y_sad = compute_block_sad(frame.y, frame.y_stride, ref_y_plane, width, x0, y0, block_w, block_h);
+                    let u_sad = compute_block_sad(frame.u, frame.uv_stride, &self.ref_u, width / 2, x0 / 2, y0 / 2, 32, 32);
+                    let v_sad = compute_block_sad(frame.v, frame.uv_stride, &self.ref_v, width / 2, x0 / 2, y0 / 2, 32, 32);
+                    let per_px = if qindex <= 8 {
+                        0
+                    } else if qindex <= 60 {
+                        1
+                    } else {
+                        2
+                    };
+                    y_sad <= (64 * 64) * per_px && u_sad <= (32 * 32) * per_px && v_sad <= (32 * 32) * per_px
                 } else {
                     false
                 };
@@ -382,16 +390,12 @@ impl Encoder {
 
                 let src_sub = frame.y.get(y0 * frame.y_stride + x0..);
                 let mode = if self.config.preset != Preset::Speed {
-                    if let Some(src) = src_sub {
-                        intra::choose_best_intra_mode(src, frame.y_stride, block_w, block_h, above_slice, left_slice)
-                    } else {
-                        intra::DC_PRED
-                    }
+                    if let Some(src) = src_sub { pick_dc_v_h_mode(src, frame.y_stride, block_w, block_h, above_slice, left_slice) } else { intra::DC_PRED }
                 } else {
                     intra::DC_PRED
                 };
 
-                let split = should_split_64x64(frame.y, frame.y_stride, x0, y0, block_w, block_h, self.config.preset);
+                let split = should_split_64x64(frame.y, frame.y_stride, x0, y0, block_w, block_h, self.config.preset, qindex);
 
                 let is_flat = if let Some(src) = src_sub {
                     let var = intra::block_variance(src, frame.y_stride, block_w, block_h);
@@ -445,6 +449,7 @@ impl Encoder {
             mi_rows,
             mi_cols,
             is_key,
+            has_prev_frame,
             qindex,
             preset: self.config.preset,
             recon_y: &mut self.recon_y,
@@ -541,6 +546,7 @@ struct TileEncodeCtx<'a, 'f> {
     mi_rows: usize,
     mi_cols: usize,
     is_key: bool,
+    has_prev_frame: bool,
     qindex: u8,
     preset: Preset,
     recon_y: &'a mut [u8],
@@ -583,6 +589,10 @@ fn encode_partition(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: us
     if r >= ctx.mi_rows || c >= ctx.mi_cols {
         return;
     }
+    if bsl == 0 {
+        encode_block(ctx, r, c, 0, None);
+        return;
+    }
     let num4x4 = 1usize << bsl;
     let half = num4x4 >> 1;
     let has_rows = (r + half) < ctx.mi_rows;
@@ -594,12 +604,30 @@ fn encode_partition(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: us
     let left_split = avail_l && (ctx.grid_bsl.get(r * ctx.mi_cols + c - 1).copied().unwrap_or(4) as usize) < bsl;
     let part_ctx = (left_split as usize) * 2 + (above_split as usize);
 
-    let do_split = if bsl <= 1 {
+    let do_split = if bsl == 0 {
         false
     } else if !has_rows || !has_cols {
-        true
+        bsl > 1
+    } else if bsl == 4 && sb64_analysis.is_some_and(|(_, _, inter)| inter) {
+        false
     } else {
-        bsl == 4 && force_split_64
+        let bw = (num4x4 * 4).min(ctx.width.saturating_sub(c * 4));
+        let bh = (num4x4 * 4).min(ctx.height.saturating_sub(r * 4));
+        (bsl == 4 && force_split_64)
+            || should_split_block(
+                ctx.frame.y,
+                ctx.frame.y_stride,
+                ctx.frame.u,
+                ctx.frame.v,
+                ctx.frame.uv_stride,
+                c * 4,
+                r * 4,
+                bw,
+                bh,
+                bsl,
+                ctx.preset,
+                ctx.qindex,
+            )
     };
 
     if has_rows && has_cols {
@@ -698,6 +726,95 @@ fn update_dc_sign(above: &mut [u8], left: &mut [u8], x4: usize, y4: usize, w4: u
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compute_new_mv_ctx(grid_ref_frame: &[i8], grid_bsl: &[u8], mi_rows: usize, mi_cols: usize, r: usize, c: usize, bw4: usize, bh4: usize) -> usize {
+    let inside = |mr: isize, mc: isize| mr >= 0 && (mr as usize) < mi_rows && mc >= 0 && (mc as usize) < mi_cols;
+    let is_inter_at = |mr: isize, mc: isize| inside(mr, mc) && grid_ref_frame.get((mr as usize) * mi_cols + (mc as usize)).copied().unwrap_or(0) == 1;
+    let scan_row = |delta_row: isize| -> bool {
+        let end4 = (bw4 as isize).min(mi_cols as isize - c as isize).min(16);
+        let use_step16 = bw4 >= 16;
+        let (dr, dc) = if delta_row.abs() > 1 { (delta_row + (r as isize & 1), 1 - (c as isize & 1)) } else { (delta_row, 0) };
+        let mv_row = r as isize + dr;
+        let mut found = false;
+        let mut i = 0isize;
+        while i < end4 {
+            let mv_col = c as isize + dc + i;
+            if !inside(mv_row, mv_col) {
+                break;
+            }
+            if is_inter_at(mv_row, mv_col) {
+                found = true;
+            }
+            let bsl = grid_bsl.get((mv_row as usize) * mi_cols + (mv_col as usize)).copied().unwrap_or(4);
+            let mut len = (bw4 as isize).min(1isize << bsl);
+            if delta_row.abs() > 1 {
+                len = len.max(2);
+            }
+            if use_step16 {
+                len = len.max(4);
+            }
+            i += len.max(1);
+        }
+        found
+    };
+    let scan_col = |delta_col: isize| -> bool {
+        let end4 = (bh4 as isize).min(mi_rows as isize - r as isize).min(16);
+        let use_step16 = bh4 >= 16;
+        let (dr, dc) = if delta_col.abs() > 1 { (1 - (r as isize & 1), delta_col + (c as isize & 1)) } else { (0, delta_col) };
+        let mv_col = c as isize + dc;
+        let mut found = false;
+        let mut i = 0isize;
+        while i < end4 {
+            let mv_row = r as isize + dr + i;
+            if !inside(mv_row, mv_col) {
+                break;
+            }
+            if is_inter_at(mv_row, mv_col) {
+                found = true;
+            }
+            let bsl = grid_bsl.get((mv_row as usize) * mi_cols + (mv_col as usize)).copied().unwrap_or(4);
+            let mut len = (bh4 as isize).min(1isize << bsl);
+            if delta_col.abs() > 1 {
+                len = len.max(2);
+            }
+            if use_step16 {
+                len = len.max(4);
+            }
+            i += len.max(1);
+        }
+        found
+    };
+
+    let mut found_above = scan_row(-1);
+    let mut found_left = scan_col(-1);
+    // For 64x64 superblocks (bw4 == 16), row r - 1 is in the previous superblock row and already written.
+    if bw4.max(bh4) <= 16 && is_inter_at(r as isize - 1, (c + bw4) as isize) {
+        found_above = true;
+    }
+    let close_matches = found_above as usize + found_left as usize;
+    if is_inter_at(r as isize - 1, c as isize - 1) {
+        found_above = true;
+    }
+    if scan_row(-3) {
+        found_above = true;
+    }
+    if scan_col(-3) {
+        found_left = true;
+    }
+    if bh4 > 1 && scan_row(-5) {
+        found_above = true;
+    }
+    if bw4 > 1 && scan_col(-5) {
+        found_left = true;
+    }
+    let total_matches = found_above as usize + found_left as usize;
+    match close_matches {
+        0 => total_matches.min(1),
+        1 => 3,
+        _ => 5,
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize, sb64_analysis: Option<(u8, bool, bool)>) {
     let bw4 = 1usize << bsl;
@@ -715,7 +832,26 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
 
     let (pre_mode, _is_flat, is_inter) = match sb64_analysis {
         Some((m, flat, inter)) if bsl == 4 => (Some(m), flat, inter),
-        _ => (None, false, false),
+        _ => {
+            let inter = if !ctx.is_key && ctx.has_prev_frame && bsl >= 1 && x0 + bw4 * 4 <= ctx.width && y0 + bh4 * 4 <= ctx.height {
+                let y_sad = compute_block_sad(ctx.frame.y, ctx.frame.y_stride, ctx.ref_y, ctx.width, x0, y0, block_w, block_h);
+                let uw = (block_w / 2).max(1);
+                let uh = (block_h / 2).max(1);
+                let u_sad = compute_block_sad(ctx.frame.u, ctx.frame.uv_stride, ctx.ref_u, ctx.uv_width, x0 / 2, y0 / 2, uw, uh);
+                let v_sad = compute_block_sad(ctx.frame.v, ctx.frame.uv_stride, ctx.ref_v, ctx.uv_width, x0 / 2, y0 / 2, uw, uh);
+                let per_px = if ctx.qindex <= 8 {
+                    0
+                } else if ctx.qindex <= 60 {
+                    1
+                } else {
+                    2
+                };
+                y_sad <= ((block_w * block_h) as u64) * per_px && u_sad <= ((uw * uh) as u64) * per_px && v_sad <= ((uw * uh) as u64) * per_px
+            } else {
+                false
+            };
+            (None, false, inter)
+        }
     };
 
     if !ctx.is_key && is_inter {
@@ -748,11 +884,7 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
         ctx.sym.write_symbol_no_update(0, single_ref.get(2).unwrap_or(&single_ref[0]));
         ctx.sym.write_symbol_no_update(0, single_ref.get(3).unwrap_or(&single_ref[0]));
 
-        let new_mv_ctx = match count_last {
-            0 => 0,
-            1 => 3,
-            _ => 5,
-        };
+        let new_mv_ctx = compute_new_mv_ctx(ctx.grid_ref_frame, ctx.grid_bsl, ctx.mi_rows, ctx.mi_cols, r, c, bw4, bh4);
         ctx.sym.write_symbol_no_update(1, tables::DEFAULT_NEW_MV_CDF.get(new_mv_ctx).unwrap_or(&tables::DEFAULT_NEW_MV_CDF[0]));
         ctx.sym.write_symbol_no_update(0, tables::DEFAULT_ZERO_MV_CDF.first().unwrap_or(&tables::DEFAULT_ZERO_MV_CDF[0]));
 
@@ -784,7 +916,7 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
     let actx = tables::INTRA_MODE_CONTEXT.get(above_mode as usize).copied().unwrap_or(0) as usize;
     let lctx = tables::INTRA_MODE_CONTEXT.get(left_mode as usize).copied().unwrap_or(0) as usize;
 
-    let y_mode = if let Some(m) = pre_mode {
+    let raw_y_mode = if let Some(m) = pre_mode {
         m
     } else if ctx.preset != Preset::Speed {
         let mut above_buf = [128u8; 64];
@@ -814,7 +946,7 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
 
         let src_off = y0 * ctx.frame.y_stride + x0;
         if let Some(src_sub) = ctx.frame.y.get(src_off..) {
-            intra::choose_best_intra_mode(
+            pick_dc_v_h_mode(
                 src_sub,
                 ctx.frame.y_stride,
                 block_w,
@@ -828,14 +960,23 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
     } else {
         intra::DC_PRED
     };
+    let y_mode = match raw_y_mode {
+        intra::V_PRED if avail_u && y0 > 0 => intra::V_PRED,
+        intra::H_PRED if avail_l && x0 > 0 => intra::H_PRED,
+        _ => intra::DC_PRED,
+    };
 
-    let uv_mode = if y_mode == intra::V_PRED || y_mode == intra::H_PRED { y_mode } else { intra::DC_PRED };
+    let has_chroma = bsl > 0 || ((r & 1) == 1 && (c & 1) == 1);
+    let avail_u_chroma = if bsl == 0 { r >= 2 } else { avail_u };
+    let avail_l_chroma = if bsl == 0 { c >= 2 } else { avail_l };
+    let uv_mode = intra::DC_PRED;
 
     let luma_scale: i64 = match bsl {
         4 => 512,
         3 => 256,
         2 => 128,
-        _ => 64,
+        1 => 64,
+        _ => 32,
     };
     let chroma_scale: i64 = match bsl {
         4 => 256,
@@ -847,6 +988,10 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
     let luma_tx_h = bh4 * 4;
     let chroma_tx_w = (luma_tx_w / 2).max(4);
     let chroma_tx_h = (luma_tx_h / 2).max(4);
+    let chroma_x0 = (c / 2) * 4;
+    let chroma_y0 = (r / 2) * 4;
+    let chroma_bw = if bsl == 0 { 4.min(ctx.uv_width.saturating_sub(chroma_x0)) } else { (block_w / 2).max(1) };
+    let chroma_bh = if bsl == 0 { 4.min((ctx.height / 2).saturating_sub(chroma_y0)) } else { (block_h / 2).max(1) };
 
     let (dc_level, is_neg) = compute_and_reconstruct_plane_dc(
         ctx.frame.y,
@@ -865,48 +1010,54 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
         ctx.qindex,
         luma_scale,
     );
-    let (u_dc_level, u_is_neg) = compute_and_reconstruct_plane_dc(
-        ctx.frame.u,
-        ctx.frame.uv_stride,
-        ctx.recon_u,
-        ctx.uv_width,
-        x0 / 2,
-        y0 / 2,
-        (block_w / 2).max(1),
-        (block_h / 2).max(1),
-        chroma_tx_w,
-        chroma_tx_h,
-        uv_mode,
-        avail_u,
-        avail_l,
-        ctx.qindex,
-        chroma_scale,
-    );
-    let (v_dc_level, v_is_neg) = compute_and_reconstruct_plane_dc(
-        ctx.frame.v,
-        ctx.frame.uv_stride,
-        ctx.recon_v,
-        ctx.uv_width,
-        x0 / 2,
-        y0 / 2,
-        (block_w / 2).max(1),
-        (block_h / 2).max(1),
-        chroma_tx_w,
-        chroma_tx_h,
-        uv_mode,
-        avail_u,
-        avail_l,
-        ctx.qindex,
-        chroma_scale,
-    );
+    let (u_dc_level, u_is_neg, v_dc_level, v_is_neg) = if has_chroma {
+        let (ul, un) = compute_and_reconstruct_plane_dc(
+            ctx.frame.u,
+            ctx.frame.uv_stride,
+            ctx.recon_u,
+            ctx.uv_width,
+            chroma_x0,
+            chroma_y0,
+            chroma_bw,
+            chroma_bh,
+            chroma_tx_w,
+            chroma_tx_h,
+            uv_mode,
+            avail_u_chroma,
+            avail_l_chroma,
+            ctx.qindex,
+            chroma_scale,
+        );
+        let (vl, vn) = compute_and_reconstruct_plane_dc(
+            ctx.frame.v,
+            ctx.frame.uv_stride,
+            ctx.recon_v,
+            ctx.uv_width,
+            chroma_x0,
+            chroma_y0,
+            chroma_bw,
+            chroma_bh,
+            chroma_tx_w,
+            chroma_tx_h,
+            uv_mode,
+            avail_u_chroma,
+            avail_l_chroma,
+            ctx.qindex,
+            chroma_scale,
+        );
+        (ul, un, vl, vn)
+    } else {
+        (0, false, 0, false)
+    };
 
     let has_residual = dc_level > 0 || u_dc_level > 0 || v_dc_level > 0;
     let cfl_allowed = bsl <= 3 && ctx.qindex > 0;
-    // SIZE_GROUP in AV1 spec: BLOCK_8X8 -> 1, BLOCK_16X16 -> 2, BLOCK_32X32 -> 3, BLOCK_64X64 -> 3
+    // SIZE_GROUP in AV1 spec: BLOCK_4X4 -> 0, BLOCK_8X8 -> 1, BLOCK_16X16 -> 2, BLOCK_32X32/64X64 -> 3
     let size_grp = match bsl {
         4 | 3 => 3,
         2 => 2,
-        _ => 1,
+        1 => 1,
+        _ => 0,
     };
 
     if ctx.is_key {
@@ -928,26 +1079,28 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
         ctx.sym.write_symbol_no_update(y_mode as usize, tables::DEFAULT_Y_MODE_CDF.get(size_grp).unwrap_or(&tables::DEFAULT_Y_MODE_CDF[0]));
     }
 
-    if y_mode == intra::V_PRED || y_mode == intra::H_PRED {
+    if bsl >= 1 && (y_mode == intra::V_PRED || y_mode == intra::H_PRED) {
         let delta_idx = (y_mode as usize).saturating_sub(1);
         ctx.sym.write_symbol_no_update(3, tables::DEFAULT_ANGLE_DELTA_CDF.get(delta_idx).unwrap_or(&tables::DEFAULT_ANGLE_DELTA_CDF[0]));
     }
 
-    if cfl_allowed {
-        ctx.sym.write_symbol_no_update(
-            uv_mode as usize,
-            tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF[0]),
-        );
-    } else {
-        ctx.sym.write_symbol_no_update(
-            uv_mode as usize,
-            tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0]),
-        );
-    }
+    if has_chroma {
+        if cfl_allowed {
+            ctx.sym.write_symbol_no_update(
+                uv_mode as usize,
+                tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF[0]),
+            );
+        } else {
+            ctx.sym.write_symbol_no_update(
+                uv_mode as usize,
+                tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0]),
+            );
+        }
 
-    if uv_mode == intra::V_PRED || uv_mode == intra::H_PRED {
-        let delta_idx = (uv_mode as usize).saturating_sub(1);
-        ctx.sym.write_symbol_no_update(3, tables::DEFAULT_ANGLE_DELTA_CDF.get(delta_idx).unwrap_or(&tables::DEFAULT_ANGLE_DELTA_CDF[0]));
+        if bsl >= 1 && (uv_mode == intra::V_PRED || uv_mode == intra::H_PRED) {
+            let delta_idx = (uv_mode as usize).saturating_sub(1);
+            ctx.sym.write_symbol_no_update(3, tables::DEFAULT_ANGLE_DELTA_CDF.get(delta_idx).unwrap_or(&tables::DEFAULT_ANGLE_DELTA_CDF[0]));
+        }
     }
 
     let uv_w4 = (bw4 / 2).max(1);
@@ -957,37 +1110,41 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
 
     if has_residual {
         let luma_tx_sz_ctx = bsl;
-        let chroma_tx_sz_ctx = bsl - 1;
+        let chroma_tx_sz_ctx = bsl.saturating_sub(1);
 
         let luma_dc_ctx = get_dc_sign_ctx(c, r, bw4, bh4, ctx.mi_cols, ctx.mi_rows, &ctx.above_dc[0], &ctx.left_dc[0]);
-        let u_dc_ctx = get_dc_sign_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[1], &ctx.left_dc[1]);
-        let v_dc_ctx = get_dc_sign_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[2], &ctx.left_dc[2]);
-
-        let u_skip_ctx = get_chroma_txb_skip_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[1], &ctx.left_dc[1]);
-        let v_skip_ctx = get_chroma_txb_skip_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[2], &ctx.left_dc[2]);
-
         if dc_level > 0 {
             coeff::encode_dc_residual(ctx.sym, ctx.qindex, 0, luma_tx_sz_ctx, 0, luma_dc_ctx, dc_level, is_neg, y_mode);
         } else {
             coeff::write_txb_skip(ctx.sym, ctx.qindex, luma_tx_sz_ctx, 0, true);
         }
 
-        if u_dc_level > 0 {
-            coeff::encode_dc_residual(ctx.sym, ctx.qindex, 1, chroma_tx_sz_ctx, u_skip_ctx, u_dc_ctx, u_dc_level, u_is_neg, uv_mode);
-        } else {
-            coeff::write_txb_skip(ctx.sym, ctx.qindex, chroma_tx_sz_ctx, u_skip_ctx, true);
-        }
+        if has_chroma {
+            let u_dc_ctx = get_dc_sign_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[1], &ctx.left_dc[1]);
+            let v_dc_ctx = get_dc_sign_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[2], &ctx.left_dc[2]);
 
-        if v_dc_level > 0 {
-            coeff::encode_dc_residual(ctx.sym, ctx.qindex, 2, chroma_tx_sz_ctx, v_skip_ctx, v_dc_ctx, v_dc_level, v_is_neg, uv_mode);
-        } else {
-            coeff::write_txb_skip(ctx.sym, ctx.qindex, chroma_tx_sz_ctx, v_skip_ctx, true);
+            let u_skip_ctx = get_chroma_txb_skip_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[1], &ctx.left_dc[1]);
+            let v_skip_ctx = get_chroma_txb_skip_ctx(c / 2, r / 2, uv_w4, uv_h4, max_uv_x4, max_uv_y4, &ctx.above_dc[2], &ctx.left_dc[2]);
+
+            if u_dc_level > 0 {
+                coeff::encode_dc_residual(ctx.sym, ctx.qindex, 1, chroma_tx_sz_ctx, u_skip_ctx, u_dc_ctx, u_dc_level, u_is_neg, uv_mode);
+            } else {
+                coeff::write_txb_skip(ctx.sym, ctx.qindex, chroma_tx_sz_ctx, u_skip_ctx, true);
+            }
+
+            if v_dc_level > 0 {
+                coeff::encode_dc_residual(ctx.sym, ctx.qindex, 2, chroma_tx_sz_ctx, v_skip_ctx, v_dc_ctx, v_dc_level, v_is_neg, uv_mode);
+            } else {
+                coeff::write_txb_skip(ctx.sym, ctx.qindex, chroma_tx_sz_ctx, v_skip_ctx, true);
+            }
         }
     }
 
     update_dc_sign(&mut ctx.above_dc[0], &mut ctx.left_dc[0], c, r, bw4, bh4, dc_level, is_neg);
-    update_dc_sign(&mut ctx.above_dc[1], &mut ctx.left_dc[1], c / 2, r / 2, uv_w4, uv_h4, u_dc_level, u_is_neg);
-    update_dc_sign(&mut ctx.above_dc[2], &mut ctx.left_dc[2], c / 2, r / 2, uv_w4, uv_h4, v_dc_level, v_is_neg);
+    if has_chroma {
+        update_dc_sign(&mut ctx.above_dc[1], &mut ctx.left_dc[1], c / 2, r / 2, uv_w4, uv_h4, u_dc_level, u_is_neg);
+        update_dc_sign(&mut ctx.above_dc[2], &mut ctx.left_dc[2], c / 2, r / 2, uv_w4, uv_h4, v_dc_level, v_is_neg);
+    }
 
     let rows = bh4.min(ctx.mi_rows.saturating_sub(r));
     let cols = bw4.min(ctx.mi_cols.saturating_sub(c));
@@ -1001,9 +1158,86 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
     }
 }
 
-fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block_w: usize, block_h: usize, preset: Preset) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn should_split_block(
+    y_plane: &[u8],
+    y_stride: usize,
+    u_plane: &[u8],
+    v_plane: &[u8],
+    uv_stride: usize,
+    x0: usize,
+    y0: usize,
+    block_w: usize,
+    block_h: usize,
+    bsl: usize,
+    preset: Preset,
+    qindex: u8,
+) -> bool {
+    let target = 1usize << (bsl + 2);
+    if bsl == 0 || block_w < target || block_h < target {
+        return false;
+    }
+    if preset == Preset::Speed && bsl < 4 && qindex > 40 {
+        return false;
+    }
+    let y_var = y0
+        .checked_mul(y_stride)
+        .and_then(|o| o.checked_add(x0))
+        .and_then(|idx| y_plane.get(idx..))
+        .map(|sub| intra::block_variance(sub, y_stride, block_w, block_h))
+        .unwrap_or(0);
+    let uw = (block_w / 2).max(1);
+    let uh = (block_h / 2).max(1);
+    let u_var = (y0 / 2)
+        .checked_mul(uv_stride)
+        .and_then(|o| o.checked_add(x0 / 2))
+        .and_then(|idx| u_plane.get(idx..))
+        .map(|sub| intra::block_variance(sub, uv_stride, uw, uh))
+        .unwrap_or(0);
+    let v_var = (y0 / 2)
+        .checked_mul(uv_stride)
+        .and_then(|o| o.checked_add(x0 / 2))
+        .and_then(|idx| v_plane.get(idx..))
+        .map(|sub| intra::block_variance(sub, uv_stride, uw, uh))
+        .unwrap_or(0);
+    let var_thresh = if qindex <= 16 {
+        1
+    } else if bsl == 1 {
+        if qindex >= 70 {
+            u64::MAX
+        } else {
+            let q_scale = (qindex as u64).max(20);
+            match preset {
+                Preset::Quality => q_scale * 2,
+                Preset::Balanced => q_scale * 3,
+                Preset::Speed => u64::MAX,
+            }
+        }
+    } else if bsl == 2 {
+        let q_scale = if qindex >= 70 { (qindex as u64).saturating_mul(2) } else { (qindex as u64 / 3).max(8) };
+        match preset {
+            Preset::Quality => q_scale,
+            Preset::Balanced => q_scale * 2,
+            Preset::Speed => q_scale * 4,
+        }
+    } else {
+        let base = if qindex >= 70 { 45 } else { 12 };
+        match preset {
+            Preset::Quality => base / 2,
+            Preset::Balanced => base,
+            Preset::Speed => base * 4,
+        }
+    };
+    y_var >= var_thresh || u_var >= var_thresh || v_var >= var_thresh
+}
+
+#[allow(clippy::too_many_arguments)]
+fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block_w: usize, block_h: usize, preset: Preset, qindex: u8) -> bool {
     if preset == Preset::Speed || block_w < 64 || block_h < 64 {
         return false;
+    }
+    if qindex <= 16 {
+        return true;
     }
 
     let mut means = [0i64; 4];
@@ -1026,8 +1260,8 @@ fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block
     let range = max_m - min_m;
 
     let threshold = match preset {
-        Preset::Quality => 12,
-        Preset::Balanced => 18,
+        Preset::Quality => 6,
+        Preset::Balanced => 12,
         Preset::Speed => i64::MAX,
     };
 
@@ -1036,8 +1270,8 @@ fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block
     }
 
     let var_threshold = match preset {
-        Preset::Quality => 120,
-        Preset::Balanced => 220,
+        Preset::Quality => 12,
+        Preset::Balanced => 24,
         Preset::Speed => u64::MAX,
     };
 
@@ -1049,6 +1283,49 @@ fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block
         .unwrap_or(0);
 
     var >= var_threshold
+}
+
+fn pick_dc_v_h_mode(src: &[u8], src_stride: usize, w: usize, h: usize, above: Option<&[u8]>, left: Option<&[u8]>) -> u8 {
+    let dc = intra::get_dc_val(above, left, w, h);
+    let mut best_sad = intra::sad_dc(src, src_stride, w, h, dc);
+    let mut best_mode = intra::DC_PRED;
+    if let Some(ab) = above.filter(|a| a.len() >= w) {
+        let sad = intra::sad_v(src, src_stride, w, h, ab);
+        if sad.saturating_add(sad / 16) < best_sad {
+            best_sad = sad;
+            best_mode = intra::V_PRED;
+        }
+    }
+    if let Some(lf) = left.filter(|l| l.len() >= h) {
+        let sad = intra::sad_h(src, src_stride, w, h, lf);
+        if sad.saturating_add(sad / 16) < best_sad {
+            best_mode = intra::H_PRED;
+        }
+    }
+    best_mode
+}
+
+fn av1_dc_recon_shift(dc_level: u32, is_negative: bool, dc_q: i64, log2: u32) -> i64 {
+    if dc_level == 0 {
+        return 0;
+    }
+    let dq_shift = match log2 {
+        5 => 1,
+        6 => 2,
+        _ => 0,
+    };
+    let row_shift = match log2 {
+        2 => 0,
+        3 => 1,
+        _ => 2,
+    };
+    let mag = ((dc_level as i64 * dc_q) & 0xFFFFFF) >> dq_shift;
+    let dq = (if is_negative { -mag } else { mag }).clamp(-32768, 32767);
+    let round2 = |x: i64, n: u32| -> i64 { if n == 0 { x } else { (x + (1i64 << (n - 1))) >> n } };
+    let r1 = round2(dq * 2896, 12);
+    let v = round2(r1, row_shift).clamp(-32768, 32767);
+    let c1 = round2(v * 2896, 12);
+    round2(c1, 4)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1136,15 +1413,24 @@ fn compute_and_reconstruct_plane_dc(
 
     let diff = src_mean - pred_mean;
     let dc_q = tables::DC_QLOOKUP_8BIT[qindex as usize] as i64;
-    let dc_level = ((diff.abs().saturating_mul(scale) + (dc_q / 2)) / dc_q.max(1)) as u32;
+    let approx_level = ((diff.abs().saturating_mul(scale) + (dc_q / 2)) / dc_q.max(1)) as u32;
     let is_negative = diff < 0;
-
-    let recon_shift = if dc_level == 0 {
-        0
-    } else {
-        let mag = (dc_level as i64 * dc_q) / scale.max(1);
-        if is_negative { -mag } else { mag }
-    };
+    let log2 = tx_w.trailing_zeros();
+    let mut dc_level = approx_level;
+    let mut recon_shift = av1_dc_recon_shift(dc_level, is_negative, dc_q, log2);
+    let mut best_err = (diff - recon_shift).abs();
+    for cand in [approx_level.saturating_sub(1), approx_level.saturating_add(1)] {
+        let sh = av1_dc_recon_shift(cand, is_negative, dc_q, log2);
+        let err = (diff - sh).abs();
+        if err < best_err || (err == best_err && cand < dc_level) {
+            best_err = err;
+            dc_level = cand;
+            recon_shift = sh;
+        }
+    }
+    if dc_level == 0 {
+        recon_shift = 0;
+    }
 
     let recon_val = (pred_mean + recon_shift).clamp(0, 255) as u8;
     match mode {
