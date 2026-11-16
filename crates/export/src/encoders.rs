@@ -199,8 +199,8 @@ pub(crate) fn prores_factory(format: Format, w: u32, h: u32, rate: FrameRate, s:
 }
 
 /// The DNxHR profile named by [`ExportSettings::dnx_profile`].
-pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
-    use filmcraft_dnx::Profile;
+pub fn dnx_profile(name: &str) -> craft_video::dnx::Profile {
+    use craft_video::dnx::Profile;
     match name.to_ascii_lowercase().as_str() {
         "lb" => Profile::Lb,
         "sq" => Profile::Sq,
@@ -212,7 +212,7 @@ pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
 /// DNxHR encoder (RGBA8 or HDR floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
 /// LB/SQ/HQ, 10-bit for HQX).
 struct DnxEncoder {
-    enc: filmcraft_dnx::Encoder,
+    enc: craft_video::dnx::Encoder,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -229,7 +229,7 @@ impl VideoEncoder for DnxEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let mut fr = filmcraft_dnx::Frame::new(f.width, f.height, filmcraft_dnx::ChromaFormat::Yuv422, 10, false);
+        let mut fr = craft_video::dnx::Frame::new(f.width, f.height, craft_video::dnx::ChromaFormat::Yuv422, 10, false);
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
@@ -248,11 +248,11 @@ impl VideoEncoder for DnxEncoder {
 
 pub(crate) fn dnx_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     (format == Format::DnxHr).then(|| {
-        let mut cfg = filmcraft_dnx::EncoderConfig::new(dnx_profile(&s.dnx_profile), w, h);
+        let mut cfg = craft_video::dnx::EncoderConfig::new(dnx_profile(&s.dnx_profile), w, h);
         if s.signal.primaries == 9 {
-            cfg.color_volume = filmcraft_dnx::ColorVolume::Bt2020Ncl;
+            cfg.color_volume = craft_video::dnx::ColorVolume::Bt2020Ncl;
         }
-        let enc = filmcraft_dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let enc = craft_video::dnx::Encoder::with_config(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(Box::new(DnxEncoder { enc, w, h, rate, signal: s.signal }) as Box<dyn VideoEncoder>)
     })
 }
