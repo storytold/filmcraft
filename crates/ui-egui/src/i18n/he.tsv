@@ -133,6 +133,7 @@
 	Align Top	יישר למעלה
 	Align and Transform	יישור ושינוי צורה
 	Align to Grid	יישר לרשת
+	Align to Selection	יישור לפי הבחירה
 	Align to Video Frame	יישר למסגרת הווידאו
 	Align to Video Frame as Group	יישר למסגרת הווידאו כקבוצה
 	Alignment	יישור
@@ -397,6 +398,7 @@
 	Brightens inside a feathered circular mask	מבהיר בתוך מסכה מעגלית מרוככת
 	Brightness & Contrast	בהירות וניגודיות
 	Bring Forward	הבאה קדימה
+	Bring to Front	הבאה לקדמה
 	British Stack	מגבר בריטי (British Stack)
 	Broadcast	שידור
 	Browse files…	עיון בקבצים…
@@ -503,6 +505,7 @@
 	Clear Edit Point Selection	נקה בחירת נקודת עריכה
 	Clear Finished	נקה משימות שהסתיימו
 	Clear Finished Exports	נקה ייצואים שהסתיימו
+	Clear Guides	ניקוי קווי עזר
 	Clear In	נקה נקודת כניסה
 	Clear In and Out	נקה נקודות כניסה ויציאה
 	Clear Markers	נקה סמנים
@@ -510,6 +513,7 @@
 	Clear Out	נקה נקודת יציאה
 	Clear Poster Frame	נקה פריים מייצג
 	Clear Recent Directories	נקה תיקיות אחרונות
+	Clear Recent Files	ניקוי רשימת הקבצים האחרונים
 	Clear Selected Marker	נקה סמן נבחר
 	Clear Transition	נקה מעבר
 	Cleared {n} shortcut(s) of {command}	נוקו {n} קיצורי דרך של {command}
@@ -547,11 +551,13 @@
 	Clock Wipe (Legacy)	מחיקת מחוג שעון (מדור קודם)
 	Clockwise	עם כיוון השעון
 	Close	סגירה
+	Close All	סגירת הכול
 	Close All Other Projects	סגור את כל הפרויקטים האחרים
 	Close All Projects	סגור את כל הפרויקטים
 	Close Bin	סגור סל
 	Close Gap	סגור מרווח
 	Close Other Timeline Panels	סגור חלוניות ציר זמן אחרות
+	Close Panel	סגירת חלונית
 	Close Project	סגור פרויקט
 	Close Sequence	סגור רצף
 	Closed Captions	כתוביות סמויות
@@ -757,6 +763,7 @@
 	Delete Empty Caption Tracks	מחק ערוצי כתוביות ריקים
 	Delete Graphic Layer	מחק שכבה גרפית
 	Delete Guide Template	מחק תבנית קווי עזר
+	Delete Layer	מחיקת שכבה
 	Delete Media Cache Files	מחק קובצי מטמון מדיה
 	Delete Preset	מחק הגדרה קבועה מראש
 	Delete Render Files	מחק קובצי רינדור
@@ -779,6 +786,7 @@
 	Denoise	הפחתת רעש
 	Descending	בסדר יורד
 	Description:	תיאור:
+	Deselect All	ביטול הבחירה בהכול
 	Deselect All Project Items	בטל בחירת כל פריטי הפרויקט
 	Destination Path	נתיב יעד
 	Destinations	יעדים
@@ -889,6 +897,7 @@
 	Edit Narration	ערוך קריינות
 	Edit Offline File	ערוך קובץ לא מקוון
 	Edit Offline…	ערוך קובץ לא מקוון…
+	Edit Original	עריכת המקור
 	Edit Project Notes	ערוך הערות פרויקט
 	Edit Subclip	ערוך תת-קליפ
 	Edit Subclip…	ערוך תת-קליפ…
@@ -1405,6 +1414,7 @@
 	Key Color	צבע מפתח
 	Key Frame Distance	מרחק בין פריימי מפתח
 	Key:	מקש:
+	Keyboard Shortcuts…	קיצורי מקשים…
 	Keyboard: US	מקלדת: ארה״ב
 	Keyboard: US (macOS)	מקלדת: ארה״ב (macOS)
 	Keying	חיתוך צבע (Keying)
@@ -1499,6 +1509,7 @@
 	Local Projects	פרויקטים מקומיים
 	Locate…	אתר…
 	Location	מיקום
+	Lock Guides	נעילת קווי עזר
 	Log Note	הערת רישום
 	Log Note:	הערת רישום:
 	Log to Linear	Log לליניארי
@@ -1780,6 +1791,7 @@
 	New Color Matte	משטח צבע חדש
 	New Ellipse	אליפסה חדשה
 	New Item	פריט חדש
+	New Layer	שכבה חדשה
 	New Media Browser Panel	חלונית דפדפן מדיה חדשה
 	New Offline File	קובץ לא מקוון חדש
 	New Project Panel	חלונית פרויקט חדשה
@@ -1791,11 +1803,13 @@
 	New Submix	תת-מיקס חדש
 	New Text	טקסט חדש
 	New Text Layer	שכבת טקסט חדשה
+	New Workspace	סביבת עבודה חדשה
 	New {format} track	ערוץ {format} חדש
 	Next	הבא
 	Next Multi-Camera Page	העמוד הבא בתצוגה מרובת-מצלמות
 	Next in Sequence	הבא ברצף
 	Next in Track	הבא בערוץ
+	Next page	העמוד הבא
 	Next to original media files	לצד קובצי המדיה המקוריים
 	Next to the media	לצד המדיה
 	Next to the original media, in a Proxies folder	לצד המדיה המקורית, בתיקיית Proxies
@@ -1902,6 +1916,7 @@
 	Open Ingest Settings	פתח הגדרות קליטת מדיה
 	Open Most Recent	פתח את האחרון ביותר
 	Open Project…	פתח פרויקט…
+	Open Recent	פתיחת קבצים אחרונים
 	Open Search	פתח חיפוש
 	Open a sequence to export	פתח רצף לייצוא
 	Open a sequence to see its transcript	פתח רצף כדי לראות את התמלול שלו
@@ -2069,6 +2084,7 @@
 	Pre-Delay	השהיה מוקדמת (Pre-Delay)
 	Pre-Fader	לפני הפיידר (Pre-Fader)
 	Pre-roll:	הרצה מוקדמת:
+	Preferences	העדפות
 	Preroll	הרצה מוקדמת
 	Presence Lift	הדגשת נוכחות
 	Preserve Scale	שמור על קנה מידה
@@ -2081,6 +2097,7 @@
 	Previous Multi-Camera Page	העמוד הקודם בתצוגה מרובת-מצלמות
 	Previous in Sequence	הקודם ברצף
 	Previous in Track	הקודם בערוץ
+	Previous page	העמוד הקודם
 	ProcAmp	מגבר עיבוד (ProcAmp)
 	Processing Options	אפשרויות עיבוד
 	Program	תוכנית
@@ -2243,6 +2260,7 @@
 	Repeat Edge Pixels	חזור על פיקסלי קצה
 	Replace	החלפה
 	Replace Color	החלף צבע
+	Replace File	החלפת קובץ
 	Replace Fonts in Projects	החלף גופנים בפרויקטים
 	Replace Fonts in Projects…	החלף גופנים בפרויקטים…
 	Replace With Clip	החלף בקליפ
@@ -2347,8 +2365,10 @@
 	Save Guides as Template…	שמור קווי עזר כתבנית…
 	Save Preset	שמור הגדרה קבועה מראש
 	Save Project	שמור פרויקט
+	Save a Copy…	שמירת עותק…
 	Save as New Workspace…	שמור כסביבת עבודה חדשה…
 	Save as Template	שמירה כתבנית
+	Save as Template…	שמירה כתבנית…
 	Save changes to “{project_name}” before closing?	האם לשמור את השינויים ב-“{project_name}” לפני הסגירה?
 	Save current settings as:	שמור הגדרות נוכחיות בשם:
 	Save preset as:	שמור הגדרה קבועה מראש בשם:
@@ -2506,8 +2526,10 @@
 	Show Dot	הצג נקודה
 	Show Event Indicator	הצג מחוון אירועים
 	Show Focus Area	הצג אזור מיקוד
+	Show Guides	הצגת קווי עזר
 	Show Home	הצג מסך בית
 	Show Keyframes	הצג פריימי מפתח
+	Show Mask	הצגת מסכה
 	Show Mask Tracker Preview	הצג תצוגה מקדימה של עוקב המסכה
 	Show Multi-Camera Preview Monitor	הצג מוניטור תצוגה מקדימה מרובה-מצלמות
 	Show Next Screen	הצג מסך הבא
@@ -2518,6 +2540,7 @@
 	Show Project Load Error Dialog	הצג תיבת דו-שיח של שגיאת טעינת פרויקט
 	Show Rich Tool Tips	הצג תיאורי כלים עשירים
 	Show Role	הצג תפקיד
+	Show Rulers	הצגת סרגלים
 	Show Through Edits	הצג חיתוכים רציפים
 	Show Transport Controls	הצג פקדי ניגון
 	Show Video Thumbnails	הצג תמונות ממוזערות של וידאו
@@ -3127,6 +3150,7 @@
 	Work Area	אזור עבודה
 	Working Color Space	מרחב צבע לעבודה
 	Working Color Space:	מרחב צבע לעבודה:
+	Workspaces	סביבות עבודה
 	Wrap Back	עטיפה לאחור
 	Write	כתיבה
 	Write Automation	כתיבת אוטומציה
