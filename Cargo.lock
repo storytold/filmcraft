@@ -1201,7 +1201,7 @@ dependencies = [
 [[package]]
 name = "craft-exr"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7a9b1c7b2865f50baeeca8eed951c071c80e818b#7a9b1c7b2865f50baeeca8eed951c071c80e818b"
+source = "git+https://github.com/storytold/craft-libs?rev=a64f5a6e4a656f6750e72fc699750ce8a2f6f86f#a64f5a6e4a656f6750e72fc699750ce8a2f6f86f"
 dependencies = [
  "serde_json",
 ]
@@ -1243,6 +1243,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-jsonrpc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=0c15f7c74913880da6bae5927b95f798c2ecf3c3#0c15f7c74913880da6bae5927b95f798c2ecf3c3"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "craft-media"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a64f5a6e4a656f6750e72fc699750ce8a2f6f86f#a64f5a6e4a656f6750e72fc699750ce8a2f6f86f"
@@ -1259,6 +1268,14 @@ dependencies = [
  "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=7738cc6c689060475cb6947a6e3db6ed78fb3419)",
  "rayon",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tga"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a64f5a6e4a656f6750e72fc699750ce8a2f6f86f#a64f5a6e4a656f6750e72fc699750ce8a2f6f86f"
+dependencies = [
  "thiserror 2.0.21",
 ]
 
@@ -2178,6 +2195,7 @@ name = "filmcraft-automation"
 version = "0.20.1"
 dependencies = [
  "base64",
+ "craft-jsonrpc",
  "filmcraft-engine",
  "filmcraft-time",
  "image",
@@ -2340,8 +2358,10 @@ name = "filmcraft-export"
 version = "0.20.1"
 dependencies = [
  "craft-audio",
+ "craft-dpx",
  "craft-exr",
  "craft-media",
+ "craft-tga",
  "craft-video",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
@@ -2439,6 +2459,7 @@ dependencies = [
 name = "filmcraft-interchange"
 version = "0.20.1"
 dependencies = [
+ "craft-audio",
  "craft-timeline",
  "filmcraft-cfb",
  "filmcraft-color",
@@ -2476,7 +2497,9 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.20.1"
 dependencies = [
+ "craft-audio",
  "craft-dpx",
+ "craft-media",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
