@@ -12,7 +12,7 @@ repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
 # Shared bounded classic TIFF directory traversal.
-craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "402dfe46ad568a97f660bcbe30e3a80429b9e1fe" }
+craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "bea91b1861eea3889bec9d26338076f2ff31c4ac" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
@@ -67,7 +67,7 @@ craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/cr
 craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "99d0a6eca48082183a9d125cb4ef1a1707576070" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
-craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "402dfe46ad568a97f660bcbe30e3a80429b9e1fe", default-features = false }
+craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "bea91b1861eea3889bec9d26338076f2ff31c4ac", default-features = false }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
 craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b3643af6477326e840f86be78c89357f5308ba1d" }
