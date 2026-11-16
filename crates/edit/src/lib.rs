@@ -27,7 +27,7 @@ pub mod transitions;
 use std::collections::HashMap;
 
 use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionAlign, TransitionId};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EditError {
@@ -1179,6 +1179,21 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
     Ok(speed)
 }
 
+/// The length at `speed` of a clip that plays `src_len` of media, at most `room`, in whole frames,
+/// as the Speed/Duration dialog shows it: a clip that starts on a frame still ends on one, and a
+/// ripple moves the later clips by whole frames. The length is rounded down, except that the next
+/// frame up is taken when its source span exceeds `src_len` by no more than float rounding (one
+/// tick, plus one per 2^50 ticks, about 74 minutes, of span). A Duration typed in the dialog
+/// arrives as a speed, so it still gives exactly the typed length, and the clip never reads more
+/// than that rounding past the media it played before.
+fn whole_frame_length(rate: FrameRate, src_len: Tick, speed: f64, room: Tick) -> Tick {
+    let exact = Tick((src_len.0 as f64 / speed).round() as i64).min(room);
+    let n = rate.frame_at(exact);
+    let (down, up) = (rate.tick_of(n), rate.tick_of(n.saturating_add(1)));
+    let fits = Tick(src_len.0.saturating_add(1 + (src_len.0 >> 50)));
+    if up <= room && src_of(up, speed) <= fits { up } else { down }
+}
+
 /// Set speed/duration (Clip ▸ Speed/Duration…). `ripple` shifts following material.
 pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
     set_speed_group(seq, &[clip], speed, reverse, ripple, ctx)
@@ -1208,14 +1223,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         let src_len = it.source_out() - it.source_in;
         // a tiny speed saturates the cast: keep the clip's end representable
         let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
-        // whole frames, rounded down as the Speed/Duration dialog shows them: a clip that starts on
-        // a frame still ends on one, and a ripple moves the later clips by whole frames. A thousandth
-        // of a frame of slack keeps a length that float rounding left just short of a frame on that
-        // frame (a Duration typed in the dialog arrives here as a speed).
-        let rate = work.settings.frame_rate;
-        let slack = Tick(rate.frame_duration().0 / 1000);
-        let exact = Tick((src_len.0 as f64 / speed).round() as i64).min(room);
-        let mut new_dur = rate.snap(Tick(exact.0.saturating_add(slack.0))).min(rate.snap(room)).max(ctx.min_duration);
+        let mut new_dur = whole_frame_length(work.settings.frame_rate, src_len, speed, room).max(ctx.min_duration);
         let old_end = it.end();
         let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
         let (_, next_start) = neighbours(tr, *clip);
