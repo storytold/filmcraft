@@ -1327,7 +1327,7 @@ dependencies = [
 [[package]]
 name = "craft-raw"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a4e74a5290bf73c80b9bd064b5e25ce7b4730ac9#a4e74a5290bf73c80b9bd064b5e25ce7b4730ac9"
+source = "git+https://github.com/storytold/craft-libs?rev=402dfe46ad568a97f660bcbe30e3a80429b9e1fe#402dfe46ad568a97f660bcbe30e3a80429b9e1fe"
 dependencies = [
  "craft-tiff",
  "miniz_oxide 0.9.1",
@@ -1349,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=a4e74a5290bf73c80b9bd064b5e25ce7b4730ac9#a4e74a5290bf73c80b9bd064b5e25ce7b4730ac9"
+source = "git+https://github.com/storytold/craft-libs?rev=402dfe46ad568a97f660bcbe30e3a80429b9e1fe#402dfe46ad568a97f660bcbe30e3a80429b9e1fe"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
