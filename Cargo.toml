@@ -63,6 +63,7 @@ craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # Shared YUV4MPEG2 parser and frame index.
 craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0c15f7c74913880da6bae5927b95f798c2ecf3c3", features = ["async-lines"] }
 craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6bd1c3dc357f012ddb31c6799ad2e36a1596003d" }
+craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "f01f6aca3afdf664b6c3e651e8e58caddc701c62", default-features = false }
 craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "99d0a6eca48082183a9d125cb4ef1a1707576070" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
