@@ -8,7 +8,8 @@ use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Layout, Options, Value, write};
 use filmcraft_dng::{DemosaicQuality, Dng, ProcessOptions};
 
-fn noise(n: usize, max: u32, seed: u32) -> Vec<u16> {
+/// Samples up to `max`: a ramp with noise, some clipped high and low. Shared with the parity test.
+pub(crate) fn noise(n: usize, max: u32, seed: u32) -> Vec<u16> {
     let mut s = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     (0..n)
         .map(|i| {
