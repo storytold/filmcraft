@@ -88,7 +88,7 @@ fn written_files_have_the_required_structure() {
     let c = Container::open(&bytes).unwrap();
     let class = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").map(|v| String::from_utf8_lossy(&v).to_string());
     let mut by_class: HashMap<String, Vec<u32>> = HashMap::new();
-    for &o in c.objects.keys() {
+    for o in c.object_ids() {
         if let Some(k) = class(o) {
             by_class.entry(k).or_default().push(o);
         }

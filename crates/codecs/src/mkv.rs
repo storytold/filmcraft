@@ -238,21 +238,17 @@ fn from_tick(t: &filmcraft_matroska::Track, rate: FrameRate, time: Tick, snap: b
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
 /// 1 profile, 2 level, 3 bit depth, 4 chroma subsampling) and the track's `Colour`.
 fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcConfig {
-    let mut c = VpcConfig { bit_depth: 8, colour_primaries: 2, transfer_characteristics: 2, matrix_coefficients: 2, ..Default::default() };
-    let mut p = 0;
-    while p + 2 <= private.len() {
-        let (id, len) = (private[p], private[p + 1] as usize);
-        let Some(val) = private.get(p + 2..p + 2 + len) else { break };
-        let x = val.first().copied().unwrap_or(0);
-        match id {
-            1 => c.profile = x,
-            2 => c.level = x,
-            3 => c.bit_depth = x,
-            4 => c.chroma_subsampling = x,
-            _ => {}
-        }
-        p += 2 + len;
-    }
+    let features = filmcraft_matroska::vp9_features(private);
+    let mut c = VpcConfig {
+        profile: features.profile,
+        level: features.level,
+        bit_depth: features.bit_depth,
+        chroma_subsampling: features.chroma_subsampling,
+        colour_primaries: 2,
+        transfer_characteristics: 2,
+        matrix_coefficients: 2,
+        ..Default::default()
+    };
     if let Some(col) = v.and_then(|v| v.color.as_ref()) {
         if let Some(t) = col.transfer_characteristics {
             c.transfer_characteristics = t as u8;
@@ -814,5 +810,14 @@ mod origin_tests {
         let sound = src.audio(0, 48_000 * 2 / 5, 48_000).unwrap();
         assert!(sound.channels[0][9_590].abs() < 0.001, "silent before the delay");
         assert!((sound.channels[0][9_610] - 0.5).abs() < 0.001, "sound 0.2 s after the first picture");
+    }
+}
+
+#[cfg(test)]
+mod vp9_feature_compat_tests {
+    #[test]
+    fn codec_private_keeps_defaults_after_a_truncated_feature() {
+        let config = super::vp9_config(&[1, 1, 2, 3, 1, 10, 4, 2, 9], None);
+        assert_eq!((config.profile, config.level, config.bit_depth, config.chroma_subsampling), (2, 0, 10, 0));
     }
 }

@@ -36,7 +36,7 @@ pub mod otio;
 
 mod common;
 mod comp;
-pub mod wav;
+pub use craft_audio::essence_pcm as wav;
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
