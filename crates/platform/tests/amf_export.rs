@@ -80,9 +80,10 @@ fn test_amf_hevc_export_and_decode() {
     };
 
     let before = hw_encode_stats();
-    let res = export(&p, seq, &settings, &m, &Progress::default());
-    assert!(res.is_ok(), "AMF HEVC export failed: {res:?}");
+    let report = export(&p, seq, &settings, &m, &Progress::default()).expect("AMF HEVC export failed");
     let after = hw_encode_stats();
+    assert_eq!(report.encoder.as_deref(), Some("AMD AMF"), "the report names the encoder that ran");
+    assert!(report.warnings.is_empty(), "no software-fallback warning: {:?}", report.warnings);
 
     assert!(after.sessions > before.sessions, "AMF session was not recorded");
     assert!(after.frames >= before.frames + 24, "AMF frames were not recorded");
@@ -128,9 +129,10 @@ fn test_amf_h264_export_and_decode() {
     };
 
     let before = hw_encode_stats();
-    let res = export(&p, seq, &settings, &m, &Progress::default());
-    assert!(res.is_ok(), "AMF H.264 export failed: {res:?}");
+    let report = export(&p, seq, &settings, &m, &Progress::default()).expect("AMF H.264 export failed");
     let after = hw_encode_stats();
+    assert_eq!(report.encoder.as_deref(), Some("AMD AMF"), "the report names the encoder that ran");
+    assert!(report.warnings.is_empty(), "no software-fallback warning: {:?}", report.warnings);
 
     assert!(after.sessions > before.sessions, "AMF session was not recorded");
     assert!(after.frames >= before.frames + 24, "AMF frames were not recorded");
@@ -171,6 +173,8 @@ fn test_amf_av1_export_and_decode() {
     let report = export(&p, seq, &settings, &m, &Progress::default()).expect("AMF AV1 export failed");
     let after = hw_encode_stats();
     assert_eq!(report.frames, 72);
+    assert_eq!(report.encoder.as_deref(), Some("AMD AMF"), "the report names the encoder that ran");
+    assert!(report.warnings.is_empty(), "no software-fallback warning: {:?}", report.warnings);
     assert_eq!(after.sessions - before.sessions, 1, "AV1 must use one AMF session");
     assert_eq!(after.frames - before.frames, 72, "Every AV1 picture must go through AMF");
 
