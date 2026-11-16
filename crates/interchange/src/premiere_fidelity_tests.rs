@@ -209,6 +209,24 @@ fn a_track_muted_on_its_fader_imports_muted() {
 }
 
 #[test]
+fn track_mute_automation_imports_the_starting_value_not_the_current_one() {
+    // Hand-written: with mute automation, `CurrentValue` can differ from the value the sequence
+    // starts with, which `StartKeyframe` stores; the import uses the starting value.
+    let muted = |start: bool, current: bool, keys: &str| {
+        let mute = format!("<StartKeyframe>-91445760000000000,{start},0,0,0,0,0,0</StartKeyframe><CurrentValue>{current}</CurrentValue>{keys}");
+        let (p, _, report) = import(with_fader(&mute).as_bytes(), &ImportOptions::default(), None).unwrap();
+        (p.project.sequence(p.sequences[0]).unwrap().audio_tracks[0].muted, report)
+    };
+    let (on, report) = muted(false, true, "<Keyframes>0,false;254016000000,true;</Keyframes>");
+    assert!(!on, "{report:?}");
+    assert!(report.entries.iter().any(|e| e.message.contains("track mute automation") && e.message.contains("starting value")));
+    assert!(muted(true, false, "<Keyframes>0,true;254016000000,false;</Keyframes>").0);
+    // Without automation the current value is the track's mute.
+    assert!(muted(false, true, "").0);
+    assert!(!muted(true, false, "<Keyframes> </Keyframes>").0);
+}
+
+#[test]
 fn the_sequence_frame_is_the_video_frame_rect_not_the_preview_size() {
     let rect = |r: &str| fixture().replace("<FrameRate>10584000000</FrameRate>", &format!("<FrameRate>10584000000</FrameRate>{r}"));
     let size = |xml: &str| {
