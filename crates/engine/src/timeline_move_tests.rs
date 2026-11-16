@@ -492,6 +492,38 @@ fn an_insert_move_to_the_same_time_keeps_the_partner_in_sync() {
     assert_eq!(state(&s, a.id), (a_track, a.start));
 }
 
+/// The sound that goes back to its own place in an insert move (above) kept none of its
+/// transitions and sized the gap with its picture: taking it out and back dropped the crossfade
+/// into it from the sound before, though the two still meet at the same cut, and a split edit's
+/// lead opened the gap early, cutting the shot before the picture on every sync-locked track.
+#[test]
+fn an_insert_move_to_the_same_time_keeps_the_partners_crossfade_and_the_pictures_gap() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (v1, a1, v3) = (q.video_tracks[0].id, q.audio_tracks[0].id, q.video_tracks[2].id);
+    let (first, v, a) = (q.video_tracks[0].items[0].clone(), q.video_tracks[0].items[1].clone(), q.audio_tracks[0].items[1].clone());
+    assert!(v.link.is_some() && v.link == a.link && a.start == v.start, "the demo's second shot and its sound");
+    let cross = q.audio_tracks[0].transitions.iter().find(|t| t.to == Some(a.id)).cloned().unwrap();
+    let insert = |s: &mut Session| s.execute("timeline.move", json!({"moves": [{"clip": v.id.0, "track": v3.0, "time": v.start.0}], "insert": true})).unwrap();
+    let r = insert(&mut s);
+    assert_eq!(r["moved"], json!([v.id.0, a.id.0]));
+    assert_eq!((state(&s, v.id), state(&s, a.id)), ((v3, v.start), (a1, a.start)));
+    let q = s.active_sequence().unwrap();
+    assert!(q.audio_tracks[0].transitions.contains(&cross), "the crossfade into the sound is still on its cut: {:?}", q.audio_tracks[0].transitions);
+    q.check().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // a J-cut: the sound starts 6 frames before its picture
+    let lead = s.sequence_rate().tick_of(6);
+    s.execute("timeline.move", json!({"moves": [{"clip": a.id.0, "track": a1.0, "time": (a.start - lead).0}], "linked": false})).unwrap();
+    let next = s.active_sequence().unwrap().video_tracks[0].items[2].clone();
+    insert(&mut s);
+    assert_eq!((state(&s, v.id), state(&s, a.id)), ((v3, v.start), (a1, a.start - lead)));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].items[0], first, "the shot before the picture is not cut at the sound's start");
+    assert_eq!(state(&s, next.id), (v1, next.start + v.duration), "later shots move by the picture's length");
+    q.check().unwrap();
+}
+
 /// When a clip would start before the sequence start, every clip of the call lands later by the
 /// same amount: a split edit keeps its offset and several listed clips keep their spacing.
 #[test]

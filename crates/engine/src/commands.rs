@@ -607,11 +607,12 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     let copy = bool_p(p, "copy").unwrap_or(false);
     let mut moves: Vec<(ClipId, TrackId, Tick, bool)> = Vec::with_capacity(plan.len());
     for (clip, track, start, was, new_track) in plan {
-        // a partner that ends up where it is does not move (its listed clip only changed track):
-        // re-placing it would drop the transitions at its edges. An insert opens its gap on every
-        // sync-locked track and would push a partner left out of the move away from its clip, so
-        // an insert move places the partner again at its own time (a copy keeps the original pair
-        // together, so it still skips the partner).
+        // a partner that ends up where it is does not move (its listed clip only changed track) and
+        // is not listed in `moved`. An insert opens its gap on every sync-locked track and would
+        // push a partner left out of the move away from its clip, so an insert move places the
+        // partner again at its own time; `edit::move_items` keeps the transitions on its
+        // unchanged cuts and opens the gap from the clips that change place (a copy keeps the
+        // original pair together, so it still skips the partner).
         if was == Some(start + late) && (!ins || copy) {
             continue;
         }
