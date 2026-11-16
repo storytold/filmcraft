@@ -6,11 +6,21 @@ pub fn sniff(name: &str, bytes: &[u8]) -> bool {
 }
 
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
-    let image = craft_tga::decode(bytes, &craft_tga::Limits::default()).map_err(|e| match e {
+    let image = craft_tga::decode(bytes, &limits()).map_err(|e| match e {
         craft_tga::Error::Unsupported(kind) => MediaError::Unsupported(format!("{name}: Targa image type {kind}")),
         other => MediaError::Decode(format!("{name}: {other}")),
     })?;
     Ok(Raster { width: image.width, height: image.height, rgba: image.rgba, has_alpha: image.has_alpha })
+}
+
+/// Film's Targa ceiling is the 2^28-pixel limit alone, as with its previous decoder: the shared
+/// default 256 MiB byte budget would refuse pictures from about 38 million 24-bit pixels. The
+/// budget covers four stored bytes and four RGBA bytes per pixel plus the largest colour map.
+fn limits() -> craft_tga::Limits {
+    let mut limits = craft_tga::Limits::default();
+    let pixels = usize::try_from(limits.max_pixels).unwrap_or(usize::MAX);
+    limits.max_decoded_bytes = pixels.saturating_mul(8).saturating_add(usize::from(u16::MAX) * 4);
+    limits
 }
 
 #[cfg(test)]
@@ -26,6 +36,15 @@ mod tests {
         b.extend_from_slice(&h.to_le_bytes());
         b.extend_from_slice(&[depth, descriptor]);
         b
+    }
+
+    #[test]
+    fn pixel_count_not_the_byte_budget_bounds_a_picture() {
+        let limits = limits();
+        assert_eq!(limits.max_pixels, craft_tga::Limits::default().max_pixels);
+        // An 8000×6000 24-bit picture stores 3 bytes and decodes to 4 bytes per pixel (336 MB).
+        assert!(limits.max_decoded_bytes >= 8000 * 6000 * (3 + 4));
+        assert!(craft_tga::Limits::default().max_decoded_bytes < 8000 * 6000 * (3 + 4));
     }
 
     #[test]
