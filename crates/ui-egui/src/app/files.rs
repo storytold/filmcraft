@@ -26,18 +26,7 @@ impl FilmcraftApp {
                     let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
                     let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
                     if let Ok(v) = &r {
-                        if let Some(errs) = v.get("errors").and_then(Value::as_array)
-                            && !errs.is_empty()
-                        {
-                            app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
-                        } else if let Some(presets) = v.get("presets").and_then(Value::as_array)
-                            && !presets.is_empty()
-                        {
-                            if !app.ui.expanded_fx.contains(&"Presets".to_string()) {
-                                app.ui.expanded_fx.push("Presets".to_string());
-                            }
-                            app.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
-                        }
+                        show_import_result(app, v);
                     }
                     r
                 })
@@ -118,5 +107,37 @@ impl FilmcraftApp {
             };
             r
         })
+    }
+}
+
+/// File ▸ Import's status line: the import's errors, else the presets it imported (their section
+/// of the Effects panel opens), then how many warnings the documents it imported reported (a
+/// Premiere project's `reportEntries`) and the first of them. A dialog answered later drops the
+/// command's result, so the status line is where the user sees them.
+fn show_import_result(app: &mut FilmcraftApp, result: &Value) {
+    let list = |key: &str| result.get(key).and_then(Value::as_array).filter(|values| !values.is_empty());
+    let mut status = Vec::new();
+    if let Some(errors) = list("errors") {
+        status.push(errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "));
+    } else if let Some(presets) = list("presets") {
+        if !app.ui.expanded_fx.contains(&"Presets".to_string()) {
+            app.ui.expanded_fx.push("Presets".to_string());
+        }
+        status.push(tlf!("Imported {n} preset(s)", n = presets.len()));
+    }
+    // Each entry has its level: information is not a warning.
+    let warnings: Vec<&str> = list("documents")
+        .into_iter()
+        .flatten()
+        .filter_map(|document| document.get("reportEntries").and_then(Value::as_array))
+        .flatten()
+        .filter(|entry| entry.get("level").and_then(Value::as_str) == Some("warning"))
+        .filter_map(|entry| entry.get("message").and_then(Value::as_str))
+        .collect();
+    if let Some(first) = warnings.first() {
+        status.push(tlf!("Imported with {n} warning(s): {first}", n = warnings.len(), first));
+    }
+    if !status.is_empty() {
+        app.ui.status = status.join("; ");
     }
 }
