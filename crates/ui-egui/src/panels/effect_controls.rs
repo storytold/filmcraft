@@ -1317,7 +1317,8 @@ pub(crate) fn row_fill(r: Rect) -> Rect {
 }
 
 /// Run the panel's actions (also the Color Grading panel's). Parameter changes made
-/// while the mouse button is down (a drag) share one undo step, which the first change of each
+/// while the mouse button is down (a drag, or a sweep across checkboxes that changes several
+/// parameters) share one undo step, which the first change of each
 /// press begins (#201); typed values and clicks stay separate steps. A drag value only changes once
 /// the mouse moves, after the press frame, so the press that already began a step is remembered by
 /// its start time. That memory is refreshed on every frame the button stays down — including frames
@@ -1332,7 +1333,8 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     for (cmd, mut p) in actions {
         if cmd == "effects.setParam" && down {
             if p.get("merge").is_none() {
-                p["merge"] = json!(true);
+                // one key for the whole press, so a sweep across several parameters is one step
+                p["merge"] = json!("press");
             }
             // only the first write of a frame begins the step: a handle that changes several
             // parameters at once (position and anchor point) sends them together
@@ -1707,6 +1709,45 @@ mod drag_undo_tests {
         app.session.undo();
         assert_eq!(scale(&app), start, "one undo restores the scale from before the drag");
         assert_eq!(app.session.undo(), None, "the drag must not have left extra 1% steps");
+    }
+
+    /// One press that changes several parameters, as a sweep across checkboxes does, is one undo
+    /// step, and the next press is another.
+    #[test]
+    fn several_parameters_changed_in_one_press_are_one_undo_step() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+        let mut app = crate::FilmcraftApp::new(s);
+        let ctx = egui::Context::default();
+        let values = |app: &crate::FilmcraftApp| {
+            let q = app.session.active_sequence().unwrap();
+            let motion = q.find_item(filmcraft_project::ClipId(clip)).unwrap().1.effects.iter().find(|e| e.effect == "motion").unwrap().clone();
+            ["scale", "rotation"].map(|p| motion.params[p].value.as_f64().unwrap())
+        };
+        let start = values(&app);
+        let pos = egui::pos2(10.0, 10.0);
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let mut time = 0.0;
+        let mut frame = |app: &mut crate::FilmcraftApp, events: Vec<egui::Event>, change: Option<(&str, f64)>| {
+            time += 0.1;
+            let raw = egui::RawInput { time: Some(time), events, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let actions = change.map(|(param, v)| ("effects.setParam".to_string(), json!({"clip": clip, "effect": "motion", "param": param, "value": v})));
+                super::run(app, ui.ctx(), actions.into_iter().collect());
+            });
+            out.textures_delta.clear();
+        };
+        for (scale, rotation) in [(150.0, 20.0), (60.0, 45.0)] {
+            frame(&mut app, vec![egui::Event::PointerMoved(pos), button(true)], None);
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)], Some(("scale", scale)));
+            frame(&mut app, vec![egui::Event::PointerMoved(pos)], Some(("rotation", rotation)));
+            frame(&mut app, vec![button(false)], None);
+        }
+        app.session.undo();
+        assert_eq!(values(&app), [150.0, 20.0], "one undo takes back the whole second press");
+        app.session.undo();
+        assert_eq!(values(&app), start, "and one more the first");
     }
 }
 
