@@ -103,7 +103,9 @@ system family (POSIX against a Windows drive or share, or the reverse) is replac
 back to that relative path with a warning. A `RelativePath` that names a drive (`..\..\C:\...`)
 is not used. When neither path exists, a file in the same folder whose name differs only in letter
 case (`clip.mov` stored, `clip.MOV` on a case-sensitive disk) is used, with a warning, if it is the
-only such file. Document references, including that fallback, pass the
+only such file. A folder that cannot be listed in full (an entry that cannot be read, or more than
+100,000 entries) offers no such file, since an entry left unread could be a second one. Document
+references, including that fallback, pass the
 existing document-path policy before canonicalization. Both the reference and resolved file must have a
 recognized media extension, and the registered media opener must accept the file before it is
 hashed or copied. Non-media, refused paths and failed probes stay offline with only their original
