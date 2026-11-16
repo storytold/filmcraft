@@ -178,18 +178,32 @@ fn index_by_lower_case(names: impl IntoIterator<Item = std::io::Result<std::ffi:
 
 /// SHA-256 (lower-case hex) and size of a whole regular file.
 pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
-    hash_file_within(path, u64::MAX)
+    hash_file_within(path, u64::MAX).map_err(|failure| failure.error)
+}
+
+/// Why a file could not be hashed, with how many of its bytes were read first: they count against
+/// the caller's byte limit all the same.
+#[derive(Debug)]
+pub(super) struct HashFailure {
+    pub error: EngineError,
+    pub read: u64,
 }
 
 /// [`hash_file`], refusing a file longer than `max` bytes once that many have been read (a file
-/// that grows while it is hashed cannot extend the work past the caller's limit).
-pub(super) fn hash_file_within(path: &Path, max: u64) -> Result<(String, u64)> {
+/// that grows while it is hashed cannot extend the work past the caller's limit). A failure says
+/// how many bytes were read before it.
+pub(super) fn hash_file_within(path: &Path, max: u64) -> std::result::Result<(String, u64), HashFailure> {
+    let mut read = 0;
+    hash_counting(path, max, &mut read).map_err(|error| HashFailure { error, read })
+}
+
+/// [`hash_file_within`], counting the bytes it reads in `read`.
+fn hash_counting(path: &Path, max: u64, read: &mut u64) -> Result<(String, u64)> {
     let mut f = std::fs::File::open(path).map_err(io)?;
     if !f.metadata().map_err(io)?.is_file() {
         return Err(bad(COMMAND, "source must be a regular file"));
     }
     let mut hash = Sha256::new();
-    let mut size = 0u64;
     let mut buf = [0u8; 65536];
     loop {
         let n = f.read(&mut buf).map_err(io)?;
@@ -197,13 +211,13 @@ pub(super) fn hash_file_within(path: &Path, max: u64) -> Result<(String, u64)> {
         if chunk.is_empty() {
             break;
         }
-        size = size.saturating_add(chunk.len() as u64);
-        if size > max {
+        *read = read.saturating_add(chunk.len() as u64);
+        if *read > max {
             return Err(EngineError::Other(format!("{}: over the {max} byte inspection limit", path.display())));
         }
         hash.update(chunk);
     }
-    Ok((format!("{:x}", hash.finalize()), size))
+    Ok((format!("{:x}", hash.finalize()), *read))
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(io)?;
@@ -613,7 +627,12 @@ fn hash_media(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// `premiere.hashMedia` with its hasher and byte limit replaceable in tests.
-pub(super) fn hash_media_with(s: &Session, p: &Value, hash: &dyn Fn(&Path, u64) -> Result<(String, u64)>, max_bytes: u64) -> Result<Value> {
+pub(super) fn hash_media_with(
+    s: &Session,
+    p: &Value,
+    hash: &dyn Fn(&Path, u64) -> std::result::Result<(String, u64), HashFailure>,
+    max_bytes: u64,
+) -> Result<Value> {
     const COMMAND: &str = HASH_COMMAND;
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "media hashing requires a native filesystem host"));
@@ -654,10 +673,12 @@ type Observation = std::result::Result<(String, u64), String>;
 
 /// Hash each distinct file once (references that name one file by different paths share it).
 /// When the files' sizes total more than `max_bytes`, the inspection is refused before any file is
-/// read; a file that grows meanwhile is cut off where the remaining budget ends.
+/// read; a file that grows meanwhile is cut off where the remaining budget ends. Every byte read
+/// counts, also those of a read that fails, and once the budget is spent the files left are not
+/// read.
 fn hash_files<'a>(
     files: impl Iterator<Item = &'a PathBuf>,
-    hash: &dyn Fn(&Path, u64) -> Result<(String, u64)>,
+    hash: &dyn Fn(&Path, u64) -> std::result::Result<(String, u64), HashFailure>,
     max_bytes: u64,
 ) -> Result<BTreeMap<&'a PathBuf, Observation>> {
     let distinct: std::collections::BTreeSet<&PathBuf> = files.collect();
@@ -668,10 +689,16 @@ fn hash_files<'a>(
     let mut budget = max_bytes;
     let mut observed = BTreeMap::new();
     for file in distinct {
-        let observation = hash(file, budget).map_err(|e| e.to_string());
-        if let Ok((_, size)) = &observation {
-            budget = budget.saturating_sub(*size);
-        }
+        let observation = if budget == 0 {
+            Err(format!("not read: this inspection already read its {max_bytes} byte limit"))
+        } else {
+            let (observation, read) = match hash(file, budget) {
+                Ok((digest, size)) => (Ok((digest, size)), size),
+                Err(failure) => (Err(failure.error.to_string()), failure.read),
+            };
+            budget = budget.saturating_sub(read);
+            observation
+        };
         observed.insert(file, observation);
     }
     Ok(observed)
