@@ -39,7 +39,7 @@ mod otio;
 mod common;
 mod comp;
 mod timeline_model;
-pub mod wav;
+pub use craft_audio::essence_pcm as wav;
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
