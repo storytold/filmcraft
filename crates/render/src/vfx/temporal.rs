@@ -3,21 +3,26 @@
 //! Warp Stabilizer is a 2-D (similarity / translation) stabilizer: on first use it analyses the
 //! clip — every frame decoded small, Shi–Tomasi features tracked frame to frame with pyramidal
 //! Lucas–Kanade and a RANSAC similarity fit (the mask tracker in [`crate::track`]) — and caches
-//! the per-frame steps in memory. Rendering smooths the accumulated camera path with a Gaussian
-//! (Smoothness) or holds it fixed (No Motion), warps each frame onto the smoothed path and frames
-//! the result (crop / auto-scale / synthesise edges). Perspective and Subspace Warp use the
+//! the per-frame steps in memory, and on disk for media clips ([`set_stabilizer_cache_dir`]).
+//! Rendering smooths the accumulated camera path with a Gaussian (Smoothness) or holds it fixed
+//! (No Motion), warps each frame onto the smoothed path and frames the result (crop / auto-scale /
+//! synthesise edges). Perspective and Subspace Warp use the
 //! similarity model (no per-region warping).
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use filmcraft_project::{EffectInstance, TrackMethod};
+use filmcraft_project::{EffectInstance, Project, TrackMethod};
 use rayon::prelude::*;
 
 use super::{Affine, FxCtx, FxEnv, Image, Vec2, affine_warp, bv, chv, fv, luma, offv, over};
 use crate::track::{Gray, Prepared, track_step};
+
+pub(super) mod store;
+pub use store::set_dir as set_stabilizer_cache_dir;
 
 /// Posterize Time: the clip shows a new frame only at the effect's frame rate.
 pub fn posterize_time(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
@@ -230,6 +235,10 @@ pub struct StabilizerPath {
     pub fps: f64,
 }
 
+/// Most frames of a clip an analysis reads (5½ minutes at 60 fps); a longer clip's later frames
+/// keep the last step.
+pub(crate) const MAX_ANALYSIS_FRAMES: usize = 20_000;
+
 /// Frames read, prepared and tracked together. The analysis holds two blocks (the one being
 /// tracked and the next one being read) and one frame carried over, whatever the clip's length.
 pub(super) const ANALYSIS_BLOCK: usize = 16;
@@ -362,6 +371,11 @@ enum Analysis {
 #[derive(Default)]
 struct Analyses {
     clips: HashMap<u64, Analysis>,
+    /// Clips whose analysis was looked for on disk (and not found there).
+    looked_up: HashSet<u64>,
+    /// Clips whose analysis finished without a frame it could read: frames rendered without
+    /// waiting show them unstabilised instead of asking for the analysis again and again.
+    unreadable: HashSet<u64>,
     running: Option<u64>,
     /// Bumped by [`clear_stabilizer_cache`]: an analysis that started before isn't kept.
     generation: u64,
@@ -402,6 +416,8 @@ fn analysis_pool() -> Option<&'static rayon::ThreadPool> {
 pub fn clear_stabilizer_cache() {
     let mut a = lock_analyses();
     a.clips.clear();
+    a.looked_up.clear();
+    a.unreadable.clear();
     a.generation = a.generation.wrapping_add(1);
 }
 
@@ -409,11 +425,39 @@ pub fn clear_stabilizer_cache() {
 /// same clip at once share one analysis. A request that is cancelled while it waits returns
 /// `None`; the analysis it was running stops, keeps what it did, and the next request for the
 /// clip goes on from there.
+///
+/// A finished analysis of a media clip is also kept on disk ([`set_stabilizer_cache_dir`]) and
+/// read from there by later sessions. Inside [`without_waiting_for_analysis`] a clip that isn't
+/// analysed yet returns `None` at once and is reported to the caller instead.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
-    let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
+    let (key, identity) = analysis_key(env.analysis_identity(), env.clip_key(), method, detailed);
     let mut a = lock_analyses();
     if let Some(Analysis::Done(p)) = a.clips.get(&key) {
         return Some(p.clone());
+    }
+    if let Some(id) = identity.as_deref()
+        && !a.looked_up.contains(&key)
+    {
+        drop(a);
+        let found = store::load(id).map(Arc::new);
+        a = lock_analyses();
+        a.looked_up.insert(key);
+        if let Some(p) = found {
+            a.clips.insert(key, Analysis::Done(p.clone()));
+            return Some(p);
+        }
+    }
+    if LIVE.with(Cell::get) {
+        if a.unreadable.contains(&key) {
+            return None;
+        }
+        WAITING.with(|w| {
+            let mut w = w.borrow_mut();
+            if !w.contains(&key) {
+                w.push(key);
+            }
+        });
+        return None;
     }
     #[cfg(not(target_arch = "wasm32"))]
     let pool = analysis_pool();
@@ -428,8 +472,8 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
             _ => Progress::default(),
         };
         drop(a);
-        let (progress, complete) = analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled);
-        return keep(lock_analyses(), key, None, progress, env.frame_rate().max(1.0), complete);
+        let (progress, complete) = analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled, None);
+        return keep(lock_analyses(), key, identity.as_deref(), None, progress, env.frame_rate().max(1.0), complete);
     };
     loop {
         match a.clips.get(&key) {
@@ -454,9 +498,99 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let mut a = lock_analyses();
     // the waiting requests see the analysis' result when they get the lock back
     a.running = None;
+    RUNNING_TOTAL.store(0, Ordering::Relaxed);
     turn.ended = true;
     analyses().1.notify_all();
-    keep(a, key, Some(generation), progress, env.frame_rate().max(1.0), complete)
+    keep(a, key, identity.as_deref(), Some(generation), progress, env.frame_rate().max(1.0), complete)
+}
+
+/// The cache key of an analysis and, for a media clip, the identity it is kept on disk by.
+fn analysis_key(identity: Option<Vec<u8>>, clip_key: u64, method: TrackMethod, detailed: bool) -> (u64, Option<Vec<u8>>) {
+    match identity {
+        Some(mut id) => {
+            id.extend([method as u8, detailed as u8]);
+            (store::fnv(&id), Some(id))
+        }
+        None => (clip_key ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1), None),
+    }
+}
+
+thread_local! {
+    /// Inside [`without_waiting_for_analysis`].
+    static LIVE: Cell<bool> = const { Cell::new(false) };
+    /// The analyses frames rendered inside it went without.
+    static WAITING: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Run `f` (a render) without waiting for Warp Stabilizer analyses: a clip whose analysis isn't
+/// finished renders unstabilised, and the keys of the analyses it went without are returned
+/// (empty when every frame came out finished). For monitors: the frame is shown at once, and
+/// rendered again once [`stabilizer_analysed`] says its analysis is done. Exports and renders
+/// outside it wait for the analysis, as before.
+///
+/// Only the calling thread renders without waiting; work `f` hands to other threads waits.
+pub fn without_waiting_for_analysis<R>(f: impl FnOnce() -> R) -> (R, Vec<u64>) {
+    struct Restore(bool, Vec<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LIVE.with(|l| l.set(self.0));
+            WAITING.with(|w| *w.borrow_mut() = std::mem::take(&mut self.1));
+        }
+    }
+    let restore = Restore(LIVE.with(|l| l.replace(true)), WAITING.with(|w| std::mem::take(&mut *w.borrow_mut())));
+    let r = f();
+    let waiting = WAITING.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    drop(restore);
+    (r, waiting)
+}
+
+/// Forget the analysis `key` in memory, as a new session would (the disk copy stays).
+#[cfg(test)]
+pub(super) fn forget_analysis(key: u64) {
+    let mut a = lock_analyses();
+    a.clips.remove(&key);
+    a.looked_up.remove(&key);
+}
+
+/// The key [`stabilizer_path`] uses for `env`.
+#[cfg(test)]
+pub(super) fn key_of(env: &dyn FxEnv, method: TrackMethod, detailed: bool) -> u64 {
+    analysis_key(env.analysis_identity(), env.clip_key(), method, detailed).0
+}
+
+/// Whether the analysis `key` (from [`without_waiting_for_analysis`] or [`stabilizer_keys`]) is
+/// finished and in memory (or found no frame it could read: the clip stays unstabilised).
+pub fn stabilizer_analysed(key: u64) -> bool {
+    let a = lock_analyses();
+    matches!(a.clips.get(&key), Some(Analysis::Done(_))) || a.unreadable.contains(&key)
+}
+
+/// Frames the running analysis has read, and how many it reads (0: none is running).
+static RUNNING_DONE: AtomicUsize = AtomicUsize::new(0);
+static RUNNING_TOTAL: AtomicUsize = AtomicUsize::new(0);
+
+/// How far the running analysis has got (0 to 1), `None` when none is running.
+pub fn stabilizer_progress() -> Option<f32> {
+    let total = RUNNING_TOTAL.load(Ordering::Relaxed);
+    (total > 0).then(|| (RUNNING_DONE.load(Ordering::Relaxed) as f32 / total as f32).clamp(0.0, 1.0))
+}
+
+/// The analysis keys of every Warp Stabilizer in `project` (every sequence, nested ones too), as
+/// [`without_waiting_for_analysis`] reports them: an analysis whose key isn't among them is no
+/// longer wanted.
+pub fn stabilizer_keys(project: &Project) -> HashSet<u64> {
+    let mut keys = HashSet::new();
+    for p in project.sequences() {
+        let filmcraft_project::ItemKind::Sequence(seq) = &p.kind else { continue };
+        for item in seq.video_tracks.iter().flat_map(|t| t.items.iter()) {
+            for e in item.effects.iter().filter(|e| e.effect == "warp_stabilizer") {
+                let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
+                let identity = super::analysis_identity(project, seq, item);
+                keys.insert(analysis_key(identity, super::clip_key_of(item), method, bv(e, "detailed")).0);
+            }
+        }
+    }
+    keys
 }
 
 /// The running analysis' turn. Ended by its request once its result is kept; ended here when that
@@ -476,21 +610,38 @@ impl Drop for Turn {
 
 /// Record how far the analysis of `key` got (not when the cache was cleared since `generation`)
 /// and return its path when it is finished.
-fn keep(mut a: MutexGuard<'_, Analyses>, key: u64, generation: Option<u64>, progress: Progress, fps: f64, complete: bool) -> Option<Arc<StabilizerPath>> {
+fn keep(
+    mut a: MutexGuard<'_, Analyses>,
+    key: u64,
+    identity: Option<&[u8]>,
+    generation: Option<u64>,
+    progress: Progress,
+    fps: f64,
+    complete: bool,
+) -> Option<Arc<StabilizerPath>> {
     if generation.is_some_and(|g| g != a.generation) {
         return None;
     }
     if a.clips.len() >= KEPT_ANALYSES {
         a.clips.clear();
+        a.looked_up.clear();
+        a.unreadable.clear();
     }
     if !complete {
         a.clips.insert(key, Analysis::Partial(progress));
         return None;
     }
-    // no frame could be read: nothing is kept, the next request tries again
-    let (steps, (w, h)) = progress.finished()?;
+    // no frame could be read: nothing is kept, the next request that waits tries again
+    let Some((steps, (w, h))) = progress.finished() else {
+        a.unreadable.insert(key);
+        return None;
+    };
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     a.clips.insert(key, Analysis::Done(path.clone()));
+    drop(a);
+    if let Some(id) = identity {
+        store::save(id, &path);
+    }
     Some(path)
 }
 
@@ -503,7 +654,8 @@ fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, now: f64, method: Track
         let progress = slot.lock().unwrap_or_else(PoisonError::into_inner).take()?;
         let stopped = || stop.load(Ordering::Relaxed);
         // a panic in the analysis loses it, not the frame that asked: the frame is not stabilised
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.install(|| analyse(env, now, method, detailed, progress, &stopped)))).ok()
+        let report = Some(&RUNNING_DONE);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.install(|| analyse(env, now, method, detailed, progress, &stopped, report)))).ok()
     };
     let done = std::thread::scope(|scope| {
         let Ok(handle) = std::thread::Builder::new().name("stabilize-wait".into()).spawn_scoped(scope, run) else { return None };
@@ -519,7 +671,7 @@ fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, now: f64, method: Track
         Some(r) => r,
         // no thread could be made: analyse here (or nothing, after a panic)
         None => match slot.into_inner().unwrap_or_else(PoisonError::into_inner) {
-            Some(progress) => analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled),
+            Some(progress) => analyse(env, now, method, detailed, progress, &filmcraft_media::cancel::cancelled, None),
             None => (Progress::default(), false),
         },
     }
@@ -528,9 +680,22 @@ fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, now: f64, method: Track
 /// Go on with the analysis of the clip `env` describes from `progress`; true when finished.
 /// Runs without the request's playback hints: a draft or catching-up decode would leave frames
 /// out or degrade them in a path that is kept for every later frame.
-fn analyse(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool, mut progress: Progress, stopped: &(dyn Fn() -> bool + Sync)) -> (Progress, bool) {
+/// `report`, when given, counts the frames read (for [`stabilizer_progress`]).
+fn analyse(
+    env: &dyn FxEnv,
+    now: f64,
+    method: TrackMethod,
+    detailed: bool,
+    mut progress: Progress,
+    stopped: &(dyn Fn() -> bool + Sync),
+    report: Option<&AtomicUsize>,
+) -> (Progress, bool) {
     let fps = env.frame_rate().max(1.0);
-    let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
+    let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, MAX_ANALYSIS_FRAMES);
+    if let Some(r) = report {
+        r.store(progress.next, Ordering::Relaxed);
+        RUNNING_TOTAL.store(n, Ordering::Relaxed);
+    }
     let src_w = env.source_size().0.max(1) as f32;
     let target_w = if detailed { 960.0 } else { 480.0 };
     let scale = (target_w / src_w).min(1.0);
@@ -539,7 +704,12 @@ fn analyse(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool, mut p
             progress.advance(
                 n,
                 ANALYSIS_BLOCK,
-                |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
+                |k| {
+                    if let Some(r) = report {
+                        r.store(k + 1, Ordering::Relaxed);
+                    }
+                    env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f)))
+                },
                 |p: &Prepared| (p.base().w, p.base().h),
                 |a: &Prepared, b: &Prepared, (w, h)| {
                     let m = 8.0;

@@ -35,7 +35,10 @@ use crate::effects::FxCtx;
 use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
-pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub use temporal::{
+    StabilizerPath, clear_stabilizer_cache, set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path, stabilizer_progress,
+    without_waiting_for_analysis,
+};
 pub(crate) use text::film_time_format;
 
 /// What an effect may know about the clip beyond its own pixels.
@@ -72,6 +75,15 @@ pub trait FxEnv: Sync {
     fn source_size(&self) -> (u32, u32);
     /// Identity of the clip and its source range (cache key for analyses).
     fn clip_key(&self) -> u64;
+    /// What the clip's frames are made from, independent of where the clip sits on the timeline:
+    /// the media file's identity, the part of it the clip plays and how. A Warp Stabilizer
+    /// analysis made of these bytes holds for every clip with the same ones, in any session; it
+    /// is kept on disk when there is a [`set_stabilizer_cache_dir`] folder. `None` (nested
+    /// sequences, generators, media without an identity) keeps analyses in memory, by
+    /// [`FxEnv::clip_key`].
+    fn analysis_identity(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].
@@ -185,19 +197,53 @@ impl FxEnv for ItemEnv<'_> {
         crate::source_size(self.project, self.item.item).unwrap_or((self.seq.settings.width, self.seq.settings.height))
     }
     fn clip_key(&self) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for v in [
-            self.item.item.0,
-            self.item.start.0 as u64,
-            self.item.duration.0 as u64,
-            self.item.source_in.0 as u64,
-            self.item.speed.to_bits(),
-            self.item.reverse as u64,
-        ] {
-            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
-        }
-        h
+        clip_key_of(self.item)
     }
+    fn analysis_identity(&self) -> Option<Vec<u8>> {
+        analysis_identity(self.project, self.seq, self.item)
+    }
+}
+
+/// [`FxEnv::clip_key`] of a track item.
+pub(crate) fn clip_key_of(item: &TrackItem) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in [item.item.0, item.start.0 as u64, item.duration.0 as u64, item.source_in.0 as u64, item.speed.to_bits(), item.reverse as u64] {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// [`FxEnv::analysis_identity`] of a media clip: the file's size and content fingerprint, the
+/// part of it the clip plays and how (source in, duration, speed, reverse, frame hold, time
+/// interpolation, frame rate interpretation), its picture size (rotation turns it) and the
+/// sequence's frame rate, at which the analysis reads it. Its place on the timeline is left out:
+/// moving the clip keeps its analysis.
+pub(crate) fn analysis_identity(project: &Project, seq: &Sequence, item: &TrackItem) -> Option<Vec<u8>> {
+    let filmcraft_project::ItemKind::Media(m) = &project.item(item.item)?.kind else { return None };
+    let id = m.identity?;
+    let (w, h) = crate::source_size(project, item.item)?;
+    let par = m.interpret.par.map_or(0, |(a, b)| (a as u64) << 32 | b as u64);
+    let interpolation = match item.time_interpolation {
+        filmcraft_project::TimeInterpolation::FrameSampling => 0,
+        filmcraft_project::TimeInterpolation::FrameBlending => 1,
+        filmcraft_project::TimeInterpolation::OpticalFlow => 2,
+    };
+    let fields = [
+        id.size,
+        id.fingerprint,
+        item.source_in.0 as u64,
+        item.duration.0 as u64,
+        item.speed.to_bits(),
+        item.reverse as u64,
+        item.frame_hold.map_or(u64::MAX, |t| t.0 as u64),
+        interpolation,
+        item.scale_to_frame as u64,
+        m.interpret.frame_rate.map_or(0, |r| r.as_f64().to_bits()),
+        par,
+        (w as u64) << 32 | h as u64,
+        seq.settings.frame_rate.as_f64().to_bits(),
+    ];
+    Some(fields.iter().flat_map(|v| v.to_le_bytes()).collect())
 }
 
 // ------------------------------------------------------------------ parameters

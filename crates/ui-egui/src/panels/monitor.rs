@@ -140,6 +140,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     if let Some(tex) = shown {
         ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
+    analysing_badge(app, ui, pic, &t, on_screen);
     if let Some(ra) = ref_area {
         // the reference frame (CPU path)
         let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
@@ -189,6 +190,25 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         };
         ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
     }
+}
+
+/// When the frame on screen shows a Warp Stabilizer clip unstabilised (its analysis runs), say so.
+fn analysing_badge(app: &FilmcraftApp, ui: &egui::Ui, pic: Rect, t: &Tokens, on_screen: Option<FrameKey>) {
+    if !on_screen.is_some_and(|k| app.frames.is_provisional(&k)) {
+        return;
+    }
+    // the percentage moves on, and the stabilised frame replaces this one when it is done
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    let label = match filmcraft_render::vfx::stabilizer_progress() {
+        Some(p) => tlf!("Analyzing in background ({percent}%)", percent = (p * 100.0).floor() as u32),
+        None => tl!("Analyzing in background").to_string(),
+    };
+    let painter = ui.painter().with_clip_rect(pic.intersect(ui.clip_rect()));
+    let galley = painter.layout_no_wrap(label, Tokens::ui(11.0), t.text);
+    let at = pos2(pic.min.x + 8.0, pic.max.y - 8.0 - galley.size().y);
+    let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
+    painter.rect_filled(back, 3.0, Color32::from_black_alpha(170));
+    painter.galley(at, galley, t.text);
 }
 
 fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
