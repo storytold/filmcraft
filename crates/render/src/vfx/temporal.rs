@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use filmcraft_project::{EffectInstance, Project, TrackMethod};
+use filmcraft_project::{EffectInstance, Project, Sequence, TrackItem, TrackMethod};
 use rayon::prelude::*;
 
 use super::{Affine, FxCtx, FxEnv, Image, Vec2, affine_warp, bv, chv, fv, luma, offv, over};
@@ -431,22 +431,11 @@ pub fn clear_stabilizer_cache() {
 /// analysed yet returns `None` at once and is reported to the caller instead.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
     let (key, identity) = analysis_key(env.analysis_identity(), env.clip_key(), method, detailed);
-    let mut a = lock_analyses();
-    if let Some(Analysis::Done(p)) = a.clips.get(&key) {
-        return Some(p.clone());
+    let (a, done) = finished(lock_analyses(), key, identity.as_deref());
+    if done.is_some() {
+        return done;
     }
-    if let Some(id) = identity.as_deref()
-        && !a.looked_up.contains(&key)
-    {
-        drop(a);
-        let found = store::load(id).map(Arc::new);
-        a = lock_analyses();
-        a.looked_up.insert(key);
-        if let Some(p) = found {
-            a.clips.insert(key, Analysis::Done(p.clone()));
-            return Some(p);
-        }
-    }
+    let mut a = a;
     if LIVE.with(Cell::get) {
         if a.unreadable.contains(&key) {
             return None;
@@ -502,6 +491,27 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     turn.ended = true;
     analyses().1.notify_all();
     keep(a, key, identity.as_deref(), Some(generation), progress, env.frame_rate().max(1.0), complete)
+}
+
+/// The finished analysis of `key`, from memory or (looked for once per key) from disk.
+fn finished(mut a: MutexGuard<'static, Analyses>, key: u64, identity: Option<&[u8]>) -> (MutexGuard<'static, Analyses>, Option<Arc<StabilizerPath>>) {
+    if let Some(Analysis::Done(p)) = a.clips.get(&key) {
+        let p = p.clone();
+        return (a, Some(p));
+    }
+    if let Some(id) = identity
+        && !a.looked_up.contains(&key)
+    {
+        drop(a);
+        let found = store::load(id).map(Arc::new);
+        a = lock_analyses();
+        a.looked_up.insert(key);
+        if let Some(p) = found {
+            a.clips.insert(key, Analysis::Done(p.clone()));
+            return (a, Some(p));
+        }
+    }
+    (a, None)
 }
 
 /// The cache key of an analysis and, for a media clip, the identity it is kept on disk by.
@@ -584,13 +594,50 @@ pub fn stabilizer_keys(project: &Project) -> HashSet<u64> {
         let filmcraft_project::ItemKind::Sequence(seq) = &p.kind else { continue };
         for item in seq.video_tracks.iter().flat_map(|t| t.items.iter()) {
             for e in item.effects.iter().filter(|e| e.effect == "warp_stabilizer") {
-                let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
-                let identity = super::analysis_identity(project, seq, item);
-                keys.insert(analysis_key(identity, super::clip_key_of(item), method, bv(e, "detailed")).0);
+                keys.insert(effect_key(project, seq, item, e).0);
             }
         }
     }
     keys
+}
+
+/// The analysis key (and disk identity) of the Warp Stabilizer `e` on `item`.
+fn effect_key(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> (u64, Option<Vec<u8>>) {
+    let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
+    analysis_key(super::analysis_identity(project, seq, item), super::clip_key_of(item), method, bv(e, "detailed"))
+}
+
+/// Where the analysis of a Warp Stabilizer stands (`sequence.inspect` reports it to agents).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnalysisState {
+    /// Finished, in memory or kept on disk: the clip's frames are stabilized.
+    Done,
+    /// Running now, this far (0 to 1).
+    Running(f32),
+    /// Neither: it runs when a frame of the clip is shown or rendered, going on from `frames`
+    /// already read by an analysis that was stopped.
+    Waiting { frames: usize },
+    /// It finished without a frame it could read: the clip is shown unstabilized.
+    Unreadable,
+}
+
+/// The state of the analysis of the Warp Stabilizer `e` on `item` in `seq`.
+pub fn stabilizer_state(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> AnalysisState {
+    let (key, identity) = effect_key(project, seq, item, e);
+    let (a, done) = finished(lock_analyses(), key, identity.as_deref());
+    if done.is_some() {
+        AnalysisState::Done
+    } else if a.unreadable.contains(&key) {
+        AnalysisState::Unreadable
+    } else if a.running == Some(key) {
+        AnalysisState::Running(stabilizer_progress().unwrap_or(0.0))
+    } else {
+        let frames = match a.clips.get(&key) {
+            Some(Analysis::Partial(p)) => p.next,
+            _ => 0,
+        };
+        AnalysisState::Waiting { frames }
+    }
 }
 
 /// The running analysis' turn. Ended by its request once its result is kept; ended here when that
