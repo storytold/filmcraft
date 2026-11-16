@@ -167,15 +167,12 @@ pub fn sar_par(sar: (u16, u16)) -> (u32, u32) {
 
 /// NAL length-prefix size of an `avcC` record (byte 4: lengthSizeMinusOne).
 pub fn avcc_length_size(avcc: &[u8]) -> usize {
-    avcc.get(4).map_or(4, |b| (b & 3) as usize + 1)
+    filmcraft_isobmff::avcc_length_size(avcc)
 }
 
 /// NAL length-prefix size and highest TemporalId of an `hvcC` record.
 pub fn hvcc_length_size_and_tid(hvcc: &[u8]) -> (usize, Option<u8>) {
-    // hvcC byte 21: constantFrameRate(2) numTemporalLayers(3) temporalIdNested(1) lengthSizeMinusOne(2)
-    let length_size = hvcc.get(21).map_or(4, |b| (b & 3) as usize + 1);
-    let highest_tid = hvcc.get(21).map(|b| (b >> 3) & 7).filter(|&n| n > 0).map(|n| n - 1);
-    (length_size, highest_tid)
+    filmcraft_isobmff::hvcc_length_size_and_tid(hvcc)
 }
 
 /// A factory returns `None` when it does not handle the entry.
@@ -1036,49 +1033,9 @@ fn is_mpeg2_entry(fourcc: &[u8; 4], raw: &[u8]) -> bool {
     match fourcc {
         b"mp2v" | b"mpg2" | b"m2v1" | b"mpg1" | b"m1v " | b"m1v1" | b"mx3n" | b"mx4n" | b"mx5n" | b"mx3p" | b"mx4p" | b"mx5p" | b"xdhd" | b"xdh2" => true,
         [b'x', b'd', b'v' | b'5', _] | [b'h', b'd', b'v', _] => true,
-        b"mp4v" => esds_object_type(raw).is_some_and(|t| (0x60..=0x65).contains(&t) || t == 0x6A),
+        b"mp4v" => filmcraft_isobmff::esds_object_type(raw).is_some_and(|t| (0x60..=0x65).contains(&t) || t == 0x6A),
         _ => false,
     }
-}
-
-/// objectTypeIndication of the DecoderConfigDescriptor inside an `esds` box in `raw`.
-fn esds_object_type(raw: &[u8]) -> Option<u8> {
-    let at = raw.windows(4).position(|w| w == b"esds")? + 8;
-    let mut p = at;
-    let size = |p: &mut usize| -> Option<usize> {
-        let mut n = 0usize;
-        for _ in 0..4 {
-            let b = *raw.get(*p)?;
-            *p += 1;
-            n = (n << 7) | (b & 0x7F) as usize;
-            if b & 0x80 == 0 {
-                break;
-            }
-        }
-        Some(n)
-    };
-    if *raw.get(p)? != 0x03 {
-        return None;
-    }
-    p += 1;
-    size(&mut p)?;
-    let flags = *raw.get(p + 2)?;
-    p += 3;
-    if flags & 0x80 != 0 {
-        p += 2;
-    }
-    if flags & 0x40 != 0 {
-        p += 1 + *raw.get(p)? as usize;
-    }
-    if flags & 0x20 != 0 {
-        p += 2;
-    }
-    if *raw.get(p)? != 0x04 {
-        return None;
-    }
-    p += 1;
-    size(&mut p)?;
-    raw.get(p).copied()
 }
 
 /// Uncompressed QuickTime / MP4 video (`raw ` 24-bit RGB, `2vuy`, `v210`, #2340).
@@ -1437,5 +1394,20 @@ mod dnx_resource_tests {
         let unit_bytes = 8192 * 4320 * 4 * std::mem::size_of::<u16>();
         assert!(craft_video::dnx::DecodeOptions::default().max_decoded_plane_bytes < unit_bytes);
         assert!(dnx_decode_options().max_decoded_plane_bytes >= unit_bytes);
+    }
+}
+
+#[cfg(test)]
+mod config_fields_compat_tests {
+    use super::{avcc_length_size, hvcc_length_size_and_tid};
+
+    #[test]
+    fn truncated_decoder_configuration_keeps_the_existing_defaults() {
+        assert_eq!(avcc_length_size(&[]), 4);
+        assert_eq!(avcc_length_size(&[0, 0, 0, 0, 1]), 2);
+        assert_eq!(hvcc_length_size_and_tid(&[]), (4, None));
+        let mut hvcc = [0; 22];
+        hvcc[21] = (3 << 3) | 2;
+        assert_eq!(hvcc_length_size_and_tid(&hvcc), (3, Some(2)));
     }
 }
