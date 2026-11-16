@@ -13,7 +13,6 @@ repository = "https://github.com/storytold/filmcraft"
 [workspace.dependencies]
 # Shared bounded classic TIFF directory traversal.
 craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0eaafeb5054f2113523c8844822a830865cf45f2" }
-craft-tga = { git = "https://github.com/storytold/craft-libs", rev = "6253fff31f9a3fd3da914079d0031fdacd283a63" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
@@ -65,6 +64,7 @@ craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7738cc6c689060475cb6947a6e3db6ed78fb3419", default-features = false }
+craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a64f5a6e4a656f6750e72fc699750ce8a2f6f86f" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
