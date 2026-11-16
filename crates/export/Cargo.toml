@@ -25,7 +25,6 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
-filmcraft-dnx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
