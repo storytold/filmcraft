@@ -2149,11 +2149,14 @@ mod tests {
     }
 
     /// A render that waits for an analysis (an export) doesn't wait behind a background one.
+    /// Frames take 50 ms to read, so the background analysis needs at least 6 s and the render
+    /// well under half of that, however coarse the platform's timers (Windows sleeps in 15.6 ms
+    /// steps).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_background_analysis_gives_way_to_a_render() {
         let _turn = one_at_a_time();
-        let b = background(&["s"], &[(0, 0, 0, 120), (0, 200, 200, 6)], Some(std::time::Duration::from_millis(20)));
+        let b = background(&["s"], &[(0, 0, 0, 120), (0, 200, 200, 6)], Some(std::time::Duration::from_millis(50)));
         let (long, short) = (b.key(b.clips[0]), b.key(b.clips[1]));
         // the playhead on neither: both are background analyses, the long one first
         b.show(0, 150);
@@ -2165,7 +2168,7 @@ mod tests {
         let took = t0.elapsed();
         assert!(filmcraft_render::vfx::stabilizer_analysed(short), "the render analysed its clip");
         assert!(!b.settled(long), "the background analysis stopped for it");
-        assert!(took < std::time::Duration::from_millis(1500), "rendered in {took:?}, not behind the 120-frame analysis");
+        assert!(took < std::time::Duration::from_secs(3), "rendered in {took:?}, not behind the 120-frame analysis");
         assert!(b.until(60, |b| b.settled(long)), "and went on after");
     }
     /// A clip covered by an opaque clip above it is analysed after every clip that can be seen,
