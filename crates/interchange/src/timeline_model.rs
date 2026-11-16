@@ -153,7 +153,7 @@ fn from_marker(marker: &shared::Marker) -> Result<film::Marker, serde_json::Erro
         color: film::Label::from_name(marker.color.name()).unwrap_or(film::Label::Green),
         url: marker.url.clone(),
         author: marker.author.clone(),
-        custom_color: serde_json::from_value(ext.get("custom_color").cloned().unwrap_or(serde_json::Value::Null))?,
+        custom_color: ext.get("custom_color").and_then(serde_json::Value::as_str).and_then(film::HexColor::parse),
     })
 }
 
@@ -858,6 +858,31 @@ mod tests {
         effect.params.insert("curve".into(), param);
         let neutral = to_effect(&effect).unwrap();
         assert_eq!(from_effect(&neutral).unwrap(), effect);
+    }
+    #[test]
+    fn marker_optional_custom_color_matches_legacy_tolerance() {
+        for (value, expected) in [
+            (serde_json::Value::Null, None),
+            (serde_json::json!(123), None),
+            (serde_json::json!("not-a-color"), None),
+            (serde_json::json!("#12ABef"), film::HexColor::parse("#12ABef")),
+        ] {
+            let marker = shared::Marker {
+                id: shared::MarkerId(1),
+                start: Tick::ZERO,
+                duration: Tick::ZERO,
+                name: "marker".into(),
+                comment: String::new(),
+                kind: shared::MarkerKind::Comment,
+                color: shared::Label::Green,
+                url: String::new(),
+                author: String::new(),
+                ext: Some(serde_json::json!({"custom_color": value}).to_string()),
+            };
+            let converted = from_marker(&marker).expect("optional invalid color must not reject the marker");
+            assert_eq!(converted.custom_color, expected);
+            assert_eq!(converted.name, "marker");
+        }
     }
     #[test]
     fn shared_reader_matches_legacy_plain_clip_timing() {
