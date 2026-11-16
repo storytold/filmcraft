@@ -8,9 +8,15 @@
 //! keyframe commands (`effects.addKeyframe`, `effects.toggleAnimation`, …) take `"mask": n` to
 //! address `path` / `feather` / `opacity` / `expansion`. Every edit is one undo step (`merge`: a
 //! key folds a continuous drag into one step).
+//!
+//! A colour range limits a mask to a hue / saturation / lightness range (`masks.set
+//! {"colorRange": true}` adds one to any mask, `false` removes it; `masks.add {"shape": "color"}`
+//! creates one over the whole frame). Its parameters (`color_hue`, `color_hue_range`,
+//! `color_sat_min`, `color_luma_min`, `color_luma_max`, `color_soften`, `color_blur`) are mask
+//! parameters like `feather`: `effects.setParam` and the keyframe commands reach them with `"mask": n`.
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{ClipId, EffectInstance, Mask, MaskMode, MaskPath, MaskVertex, ParamValue, TrackKind, TrackMethod};
+use filmcraft_project::{ClipId, ColorRange, EffectInstance, Mask, MaskMode, MaskPath, MaskVertex, ParamValue, TrackKind, TrackMethod};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -38,14 +44,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             "masks.add",
             "Create Mask",
-            r#"{"clip":id?,"effect":index|id?="opacity","shape":"ellipse"|"polygon"|"rectangle"|"bezier","path":[[x,y]…]|{vertices}?,"center":[x,y]?,"size":[w,h]?,"cornerRadius":px?}"#,
+            r#"{"clip":id?,"effect":index|id?="opacity","shape":"ellipse"|"polygon"|"rectangle"|"bezier"|"color","path":[[x,y]…]|{vertices}?,"center":[x,y]?,"size":[w,h]?,"cornerRadius":px?}"#,
             add,
         ),
         spec("masks.remove", "Delete Mask", r#"{"clip":id?,"effect":index|id?,"mask":n?}"#, remove),
         spec(
             "masks.set",
             "Change Mask",
-            r#"{"clip":id?,"effect":index|id?,"mask":n?,"name":str?,"inverted":bool?,"mode":"none|add|subtract|intersect|lighten|darken|difference"?,"trackMethod":"position|positionRotation|positionScaleRotation"?,"feather":px?,"opacity":pct?,"expansion":px?,"path":path?,"time":ticks?,"merge":key?}"#,
+            r#"{"clip":id?,"effect":index|id?,"mask":n?,"name":str?,"inverted":bool?,"mode":"none|add|subtract|intersect|lighten|darken|difference"?,"trackMethod":"position|positionRotation|positionScaleRotation"?,"feather":px?,"opacity":pct?,"expansion":px?,"path":path?,"colorRange":bool?,"time":ticks?,"merge":key?}"#,
             set,
         ),
         spec(
@@ -174,6 +180,18 @@ fn source_size(s: &Session, clip: ClipId) -> (f64, f64) {
     (w as f64, h as f64)
 }
 
+/// Size of the frame an effect mask on `clip` is drawn in: `source` for a clip, but the sequence's
+/// for an adjustment layer, whose effects (and their masks) work on the sequence picture below it
+/// whatever the layer's own size.
+fn mask_frame_size(s: &Session, clip: ClipId, source: (f64, f64)) -> (f64, f64) {
+    let Some(seq) = s.active_sequence() else {
+        return source;
+    };
+    let adjustment =
+        seq.find_item(clip).and_then(|(_, i)| s.project.item(i.item)).is_some_and(|pi| matches!(pi.kind, filmcraft_project::ItemKind::AdjustmentLayer { .. }));
+    if adjustment { (f64::from(seq.settings.width), f64::from(seq.settings.height)) } else { source }
+}
+
 /// Run `f` on the addressed mask as one undoable edit. `f` gets the mask and the clip (media) time
 /// of the edit.
 fn edit_mask<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Mask, Tick) -> Result<R>) -> Result<R> {
@@ -210,6 +228,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = target_clip(s, p)?;
     let (w, h) = source_size(s, clip);
     let shape = str_p(p, "shape").unwrap_or("ellipse").to_ascii_lowercase();
+    let color = shape == "color";
     let center = p.get("center").and_then(pt).unwrap_or(Vec2::new(w / 2.0, h / 2.0));
     let r = w.min(h) * 0.2;
     let size = p.get("size").and_then(pt).unwrap_or(Vec2::new(r * 2.0, r * 2.0));
@@ -224,6 +243,11 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                     Some(r) => MaskPath::rounded_rect(x0, y0, x1, y1, r),
                     None => MaskPath::rect(x0, y0, x1, y1),
                 }
+            }
+            // a colour range over the whole frame (and well past it, so no edge shows)
+            "color" => {
+                let (fw, fh) = mask_frame_size(s, clip, (w, h));
+                MaskPath::rect(-fw, -fh, 2.0 * fw, 2.0 * fh)
             }
             _ => return Err(bad("masks.add", "a bezier mask needs `path` (pen points)")),
         },
@@ -246,7 +270,12 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let n = e.masks.iter().filter_map(|m| m.name.strip_prefix("Mask (")?.strip_suffix(')')?.parse::<usize>().ok()).max().unwrap_or(0) + 1;
         let name = format!("Mask ({n})");
-        e.masks.push(Mask::new(name.clone(), path));
+        let mut m = Mask::new(name.clone(), path);
+        if color {
+            m.feather.value = ParamValue::Float(0.0);
+            m.color = Some(Box::default());
+        }
+        e.masks.push(m);
         let mi = e.masks.len() - 1;
         st.selected_mask = Some(MaskSel { clip, effect: ei, mask: mi });
         st.selected_effect = None;
@@ -293,6 +322,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let name = str_p(p, "name").map(str::to_string);
     let inverted = bool_p(p, "inverted");
+    let color_range = bool_p(p, "colorRange");
     let nums: Vec<(&str, f64)> = ["feather", "opacity", "expansion"].into_iter().filter_map(|k| f64_p(p, k).map(|v| (k, v))).collect();
     edit_mask(s, p, "Change Mask", move |m, t| {
         if let Some(n) = name {
@@ -306,6 +336,11 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(me) = method {
             m.track_method = me;
+        }
+        match color_range {
+            Some(true) if m.color.is_none() => m.color = Some(Box::<ColorRange>::default()),
+            Some(false) => m.color = None,
+            _ => {}
         }
         for (k, v) in nums {
             let v = match k {
@@ -576,6 +611,9 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
                         "expansion": m.expansion.f64_at(mt),
                         "path": path_to_json(&m.path_at(mt)),
                         "pathKeyframes": m.path.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(),
+                        "colorRange": m.color.as_ref().map(|_| {
+                            filmcraft_project::mask::COLOR_PARAMS.iter().filter_map(|id| Some((id.to_string(), json!(m.param(id)?.f64_at(mt))))).collect::<serde_json::Map<_, _>>()
+                        }),
                         "selected": s.state.selected_mask == Some(MaskSel { clip: it.id, effect: ei, mask: mi }),
                     }));
                 }
