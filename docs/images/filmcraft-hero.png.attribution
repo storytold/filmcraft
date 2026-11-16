@@ -7,10 +7,10 @@ license-file:
 added:        2026-10-01 by Claude (agent) for Brandon Thomas
 notes:        A 3:10 documentary cut of the Apollo 11 mission, built entirely through FilmCraft's control channel, captured
               mid-playback in the Color workspace at 2400x1285 logical px (2x) and downscaled to 2400 px wide.
-              Shown: Effect Controls of the selected liftoff shot (Motion Scale push-in and Lumetri Exposure keyframes,
+              Shown: Effect Controls of the selected liftoff shot (Motion Scale push-in and Color Grading Exposure keyframes,
               a Basic Correction grade with the Warm Film look); the Program monitor on the Saturn V clearing the
               tail-service mast at Launch Complex 39A, with a lower-third title (Inter Bold/Regular) and a subtitle from the
-              NASA air-to-ground transcript; the Lumetri Color panel; Project bins of NASA selects, mission audio, music and
+              NASA air-to-ground transcript; the Color Grading panel; Project bins of NASA selects, mission audio, music and
               the sequence; a timeline with 49 picture cuts and dissolves on V1, B-roll cutaways on V2, titles on V3, a
               caption track, nat sound, mission audio and a ducked music bed, named markers, In/Out around the launch and
               a rendered (green) section; live loudness meters. All UI icons are drawn in code; fonts are Inter and
@@ -44,7 +44,7 @@ Reproduction: download the four NASA files (the "~medium" MP4 renditions; the Fi
   EVA montage = whole file. Run `filmcraft --control <port>` and drive it with the scripts kept (not committed) in
   target/demo-media/apollo11/scripts/: build.py (bins, imports, 1920x1080 30p sequence, 49 V1 cuts), build2.py (V2 cutaways,
   A2 mission audio, A3 music, track names, dissolves and audio fades), build3.py (titles with graphics.newText/graphics.set,
-  caption track from the transcript, markers), build_fixups.py A, build4.py (Lumetri grades, motion/exposure keyframes,
+  caption track from the transcript, markers), build_fixups.py A, build4.py (Color Grading grades, motion/exposure keyframes,
   Essential Sound types, essentialSound.generateDucking on the music), build_fixups.py B, build5.py (liftoff shot as hero),
   build_fixups.py C (In/Out 00:00:46:15-00:01:34:00, Render In to Out). The resulting project is
   target/demo-media/Apollo 11 - Tranquility.fcproj. Capture: setup_ui.py 77.5 (Color workspace, Effect Controls tab, bins

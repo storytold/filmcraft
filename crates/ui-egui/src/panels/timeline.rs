@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_engine::sequence_tools::{DuplicateFrames, duplicate_frames};
 use filmcraft_project::{ClipId, ItemId, MarkerId, Sequence, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeDisplay, TimeRange, format_time};
+use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -23,7 +23,9 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
+use super::timeline_hit::{
+    EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, hit_secondary, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect,
+};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 mod clips;
@@ -257,6 +259,8 @@ pub enum Drag {
     Marquee {
         start: MarqueeAnchor,
         before: Vec<ClipId>,
+        /// The caption selection when the drag began (the box selects captions too, #1912).
+        before_captions: Vec<ClipId>,
         add: bool,
         individual: bool,
     },

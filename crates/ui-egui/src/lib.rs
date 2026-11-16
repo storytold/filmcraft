@@ -203,6 +203,13 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211), on its own output so opening it never waits for the device
+    /// (#2633). Falls back to `audio` when the platform layer installs none (headless tests).
+    pub scrub_out: Option<Box<dyn scrub::ScrubOut>>,
+    /// The sequence sample rate `scrub_out` was last configured for (`sync_scrub_output`).
+    pub(crate) scrub_rate: Option<u32>,
+    /// The sequence the open scrub stream's fill was built for (`sync_scrub_output`).
+    pub(crate) scrub_sequence: Option<filmcraft_project::ItemId>,
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
