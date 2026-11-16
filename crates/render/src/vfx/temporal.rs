@@ -720,6 +720,14 @@ pub(super) fn forget_analysis(env: &dyn FxEnv, method: TrackMethod, detailed: bo
     a.looked_up.remove(&key.source);
 }
 
+/// Whether the analysis of the Warp Stabilizer `e` on `item` is settled without running one: kept
+/// (in memory or on disk), or found to have no frame to read.
+pub(super) fn ready(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> bool {
+    let key = effect_key(project, seq, item, e);
+    let (a, done) = finished(lock_analyses(), &key);
+    done.is_some() || a.unreadable.contains(&key.clip)
+}
+
 /// The clip key of the Warp Stabilizer `e` on `item`, for tests.
 #[cfg(test)]
 pub(super) fn key_of_effect(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> u64 {
@@ -831,12 +839,12 @@ pub fn stabilizer_state(project: &Project, seq: &Sequence, item: &TrackItem, e: 
     } else {
         (AnalysisPhase::Waiting, a.sources.get(&key.source).map_or(0, |r| r.known(key.first, key.n)))
     };
-    let running = a.running;
-    drop(a);
     let mut position = None;
     let phase = if phase == AnalysisPhase::Waiting {
+        // a place among the analyses still to run (not one that is running or done)
         let q = queue().lock().unwrap_or_else(PoisonError::into_inner);
-        position = q.1.iter().filter(|k| Some(**k) != running).position(|k| *k == key.clip).map(|i| i + 1);
+        position =
+            q.1.iter().filter(|k| Some(**k) != a.running && !a.clips.contains_key(k) && !a.unreadable.contains(k)).position(|k| *k == key.clip).map(|i| i + 1);
         if position.is_some() { AnalysisPhase::Queued } else { phase }
     } else {
         phase

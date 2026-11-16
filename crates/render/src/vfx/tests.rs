@@ -2531,6 +2531,11 @@ mod stabilizer_shared_by_clips_of_a_source {
         assert_eq!(f.state(1).position, Some(2), "another owner's withdrawal leaves it");
         clear_analysis_queue(0x0E1);
         assert_eq!(f.state(1).phase, AnalysisPhase::Waiting);
+        // a place among those still to run: a done one ahead of it doesn't count
+        f.render(0);
+        set_analysis_queue(0x0E1, vec![a, b]);
+        assert_eq!(f.state(1).position, Some(1));
+        clear_analysis_queue(0x0E1);
     }
 
     #[test]
