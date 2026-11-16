@@ -1091,6 +1091,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
 
 [[package]]
+name = "craft-dpx"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=156b491b91f3693f4fce53bf69bb97791f51198f#156b491b91f3693f4fce53bf69bb97791f51198f"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=47107f660191de2f0b425569506f4daa4faadac9#47107f660191de2f0b425569506f4daa4faadac9"
@@ -1138,7 +1146,7 @@ dependencies = [
 [[package]]
 name = "craft-raw"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=1f5aac5e3bbce20c1e182bf35dc66cc33d616574#1f5aac5e3bbce20c1e182bf35dc66cc33d616574"
+source = "git+https://github.com/storytold/craft-libs?rev=61a9330f4e71cd20c38d505abc33b9fd42c1da44#61a9330f4e71cd20c38d505abc33b9fd42c1da44"
 dependencies = [
  "craft-tiff",
  "image",
@@ -1150,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=1f5aac5e3bbce20c1e182bf35dc66cc33d616574#1f5aac5e3bbce20c1e182bf35dc66cc33d616574"
+source = "git+https://github.com/storytold/craft-libs?rev=61a9330f4e71cd20c38d505abc33b9fd42c1da44#61a9330f4e71cd20c38d505abc33b9fd42c1da44"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2092,7 +2100,6 @@ dependencies = [
  "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
- "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-isobmff",
  "filmcraft-matroska",
@@ -2127,16 +2134,6 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "filmcraft-dnx"
-version = "0.20.1"
-dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
- "rayon",
  "thiserror 2.0.21",
 ]
 
@@ -2201,7 +2198,6 @@ dependencies = [
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
  "filmcraft-color",
- "filmcraft-dnx",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-isobmff",
@@ -2331,6 +2327,7 @@ dependencies = [
 name = "filmcraft-media"
 version = "0.20.1"
 dependencies = [
+ "craft-dpx",
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
@@ -6731,7 +6728,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

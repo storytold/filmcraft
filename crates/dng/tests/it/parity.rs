@@ -5,7 +5,11 @@
 //! picture size, the raw image's size, the as-shot temperature / tint or the `Info` changed. Run
 //! with `FILMCRAFT_DNG_PARITY_PRINT=1` to print the current hashes.
 
-use filmcraft_dng::opcode::encode;
+use filmcraft_dng::opcode::encode as encode_checked;
+
+fn encode(list: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
+    encode_checked(list).unwrap()
+}
 use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Layout, Options, Value, write};
 use filmcraft_dng::{DemosaicQuality, Dng, Highlights, ProcessOptions, WhiteBalance};
