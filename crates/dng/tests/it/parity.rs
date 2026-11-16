@@ -14,22 +14,7 @@ use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Layout, Options, Value, write};
 use filmcraft_dng::{DemosaicQuality, Dng, Highlights, ProcessOptions, WhiteBalance};
 
-fn noise(n: usize, max: u32, seed: u32) -> Vec<u16> {
-    let mut s = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
-    (0..n)
-        .map(|i| {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            let v = (i as u32 * 37) % (max + 1);
-            (match s % 23 {
-                0 => 0,
-                1 => max,
-                _ => (v ^ (s & 63)).min(max),
-            }) as u16
-        })
-        .collect()
-}
+use super::equivalence::noise;
 
 /// FNV-1a over 64 bits.
 fn fnv(h: &mut u64, bytes: &[u8]) {
