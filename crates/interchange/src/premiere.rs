@@ -119,6 +119,9 @@ pub struct ProjectEntry {
     /// A subclip's range of its media.
     #[serde(default)]
     pub subclip: Option<SubclipRange>,
+    /// Media only: its master clip's markers, when no kept timeline item took them first.
+    #[serde(default)]
+    pub markers: Vec<filmcraft_project::Marker>,
 }
 /// A subclip's media ticks; `hard` is Restrict Trims To Subclip Boundaries (`BoundariesAreHard`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -597,374 +600,9 @@ pub fn read(bytes: &[u8], base_dir: Option<&str>, report: &mut Report) -> Result
     for n in root.children().filter(|n| n.has_tag_name("Sequence")) {
         sequences.push(reader.sequence(n)?);
     }
-    let mut sequences = Vec::new();
-    let mut marker_owners = std::collections::HashSet::new();
-    let mut item_count = 0usize;
-    let mut skipped_items = BTreeSet::new();
-    let mut unsupported_effects = BTreeMap::new();
-    for n in root.children().filter(|n| n.has_tag_name("Sequence")) {
-        spend(&mut work_left, n)?;
-        let name = child_text(n, "Name").unwrap_or("Sequence").to_string();
-        // The sequence frame is the video track group's `FrameRect`; the preview size is only the
-        // fallback (it can differ: a 2560x1440 sequence previewing at 1920x1080).
-        let mut width = dimension(value(n, "MZ.Sequence.PreviewFrameSizeWidth"), 1920)?;
-        let mut height = dimension(value(n, "MZ.Sequence.PreviewFrameSizeHeight"), 1080)?;
-        let mut frame_rect: Option<(u32, u32)> = None;
-        let mut frame_rate = None;
-        let mut sample_rate = None;
-        let mut tracks = Vec::new();
-        let pointers = child(n, "TrackGroups")
-            .into_iter()
-            .flat_map(|groups| groups.children())
-            .filter(|group| group.has_tag_name("TrackGroup"))
-            .filter_map(|group| child(group, "Second"));
-        for pointer in pointers {
-            let Some(group) = referred(Some(pointer), &ids, "ObjectRef") else {
-                warning(report, format!("{name}: unresolved track group"));
-                continue;
-            };
-            spend(&mut work_left, group)?;
-            let kind = if group.tag_name().name().starts_with("Video") {
-                "video"
-            } else if group.tag_name().name().starts_with("Audio") {
-                "audio"
-            } else {
-                "caption"
-            };
-            if group.has_tag_name("VideoTrackGroup")
-                && let Some(rate) = child(group, "TrackGroup").and_then(|group| child(group, "FrameRate"))
-            {
-                let rate = sequence_rate(rate.text().unwrap_or(""))?;
-                if frame_rate.is_some_and(|previous| previous != rate) {
-                    return Err(error(format!("{name}: conflicting video track group frame rates")));
-                }
-                frame_rate = Some(rate);
-            }
-            if group.has_tag_name("VideoTrackGroup")
-                && let Some(rect) = child_text(group, "FrameRect")
-            {
-                let size = frame_rect_size(rect)?;
-                if frame_rect.is_some_and(|previous| previous != size) {
-                    return Err(error(format!("{name}: conflicting video track group frame sizes")));
-                }
-                frame_rect = Some(size);
-            }
-            if group.has_tag_name("AudioTrackGroup")
-                && let Some(rate) = child(group, "TrackGroup").and_then(|g| child(g, "FrameRate"))
-            {
-                let raw = rate.text().unwrap_or("").trim().parse::<i64>().map_err(|_| error("invalid audio ticks per sample"))?;
-                if raw <= 0 || filmcraft_time::TICKS_PER_SECOND % raw != 0 {
-                    return Err(error("invalid audio ticks per sample"));
-                }
-                let parsed = u32::try_from(filmcraft_time::TICKS_PER_SECOND / raw).map_err(|_| error("invalid audio sample rate"))?;
-                if !(8000..=384000).contains(&parsed) || sample_rate.is_some_and(|old| old != parsed) {
-                    return Err(error("unsupported or conflicting audio sample rate"));
-                }
-                sample_rate = Some(parsed);
-            }
-            for (fallback, pointer) in group.descendants().filter(|n| n.has_tag_name("Track") && n.attribute("ObjectURef").is_some()).enumerate() {
-                let Some(track) = referred(Some(pointer), &uids, "ObjectURef") else {
-                    warning(report, format!("{name}: unresolved {kind} track"));
-                    continue;
-                };
-                spend(&mut work_left, track)?;
-                let index = value(track, "Index").map(|s| s.parse::<usize>()).transpose().map_err(|_| error("invalid track index"))?.unwrap_or(fallback);
-                if index >= MAX_TRACKS || tracks.len() >= MAX_TRACKS * 3 {
-                    return Err(error("too many tracks"));
-                }
-                if tracks.iter().any(|t: &Track| t.kind == kind && t.index == index) {
-                    return Err(error("duplicate track index"));
-                }
-                let muted = value(track, "IsMuted").is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1")
-                    || (kind == "audio" && audio::fader_muted(track, &ids, &mut work_left, report, &name)?);
-                let base = child(track, "ClipTrack").and_then(|c| child(c, "Track"));
-                let locked = base.and_then(|b| child_text(b, "IsLocked")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
-                let track_name = base
-                    .and_then(|b| child(b, "Node"))
-                    .and_then(|n| child(n, "Properties"))
-                    .and_then(|p| child_text(p, "MZ.TrackName"))
-                    .filter(|s| !s.trim().is_empty());
-                if track_name.is_some_and(|s| s.len() > 4096) {
-                    return Err(error("track name is too long"));
-                }
-                let track_name = track_name.map(str::to_string);
-                let mut items = Vec::new();
-                for pointer in track.descendants().filter(|n| n.has_tag_name("TrackItem") && n.attribute("ObjectRef").is_some()) {
-                    let Some(item) = referred(Some(pointer), &ids, "ObjectRef") else {
-                        warning(report, format!("{name}: unresolved timeline item"));
-                        continue;
-                    };
-                    spend(&mut work_left, item)?;
-                    item_count += 1;
-                    if item_count > 100_000 {
-                        return Err(error("too many timeline items"));
-                    }
-                    // TransitionItems are a separate list, not source clips (also separated
-                    // by upstream PR #1694). Their Head/Tail references are handled below.
-                    if item.tag_name().name().ends_with("TransitionTrackItem") {
-                        continue;
-                    }
-                    let start = ticks(value(item, "Start"), Tick::ZERO)?;
-                    let end = ticks(value(item, "End"), start)?;
-                    let sub = referred(descendant(item, "SubClip"), &ids, "ObjectRef");
-                    if let Some(sub) = sub {
-                        spend(&mut work_left, sub)?;
-                    }
-                    let label = sub.and_then(|s| child_text(s, "Name")).unwrap_or(item.tag_name().name()).to_string();
-                    let clip = referred(sub.and_then(|s| child(s, "Clip")), &ids, "ObjectRef");
-                    if let Some(clip) = clip {
-                        spend(&mut work_left, clip)?;
-                    }
-                    let mut source_in = signed_ticks(clip.and_then(|s| value(s, "InPoint")), Tick::ZERO)?;
-                    if source_in < Tick::ZERO {
-                        // A slip past the source's first frame stores a negative in point.
-                        warning(report, format!("{label}: in point precedes the source start; clip starts at the source start"));
-                        source_in = Tick::ZERO;
-                    }
-                    let source_out = match clip.and_then(|s| value(s, "OutPoint")) {
-                        Some(raw) => ticks(Some(raw), Tick::ZERO)?,
-                        None => Tick(source_in.0.checked_add((end.0 - start.0).max(0)).ok_or_else(|| error("source time overflow"))?),
-                    };
-                    let speed = clip.and_then(|s| value(s, "PlaybackSpeed")).unwrap_or("1").parse::<f64>().map_err(|_| error("invalid playback speed"))?;
-                    let unsupported = if end <= start {
-                        Some("timeline item must have positive duration")
-                    } else if !speed.is_finite()
-                        || !(0.001..=1000.0).contains(&speed)
-                        || source_out < source_in
-                        || source_out > Tick::MAX
-                        || source_in.0 as f64 + (end.0 - start.0) as f64 * speed > Tick::MAX.0 as f64
-                    {
-                        Some("unsupported playback speed or source range")
-                    } else {
-                        None
-                    };
-                    if let Some(reason) = unsupported {
-                        warning(report, format!("{label}: {reason}; clip skipped"));
-                        skipped_items.insert(item.attribute("ObjectID").unwrap_or("").to_string());
-                    }
-                    let mut effects = Vec::new();
-                    let mut motion = BTreeMap::new();
-                    let mut motion_keys = BTreeMap::new();
-                    let mut audio = BTreeMap::new();
-                    let mut video_effects = Vec::new();
-                    let mut graphic = false;
-                    let mut text = None;
-                    let chain = referred(descendant(item, "ComponentOwner").and_then(|n| child(n, "Components")), &ids, "ObjectRef");
-                    if let Some(chain) = chain {
-                        spend(&mut work_left, chain)?;
-                        for ptr in chain.descendants().filter(|n| n.has_tag_name("Component")) {
-                            let Some(c) = referred(Some(ptr), &ids, "ObjectRef") else { continue };
-                            spend(&mut work_left, c)?;
-                            let effect = value(c, "DisplayName").or_else(|| child_text(c, "FilterMatchName")).unwrap_or("Unknown").to_string();
-                            let match_name = child_text(c, "MatchName").or_else(|| child_text(c, "FilterMatchName"));
-                            let is_text = matches!(match_name, Some("AE.ADBE Text" | "ADBE Text"));
-                            let is_shape = matches!(match_name, Some("AE.ADBE Shape" | "ADBE Shape"));
-                            graphic |= is_text || is_shape;
-                            if is_shape {
-                                warning(
-                                    report,
-                                    format!(
-                                        "{label}: native shape retained as a graphic canvas; opaque path/appearance data is retained in provenance, not rendered"
-                                    ),
-                                );
-                            }
-                            if is_text {
-                                // User-owned XML stores Source Text in parameter 1. InstanceName
-                                // is the renameable layer label, not the displayed text.
-                                for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
-                                    let Some(p) = referred(Some(ptr), &ids, "ObjectRef") else { continue };
-                                    spend(&mut work_left, p)?;
-                                    if child_text(p, "ParameterID") == Some("1")
-                                        && !child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                                        && let Some(v) = child(p, "StartKeyframeValue").filter(|v| v.attribute("Encoding") == Some("base64"))
-                                    {
-                                        text = v.text().and_then(caption_text);
-                                    }
-                                }
-                                if text.is_none() {
-                                    warning(report, format!("{label}: static Source Text unavailable; layer name not used as visible text"));
-                                }
-                            }
-                            if matches!(match_name, Some("AE.ADBE Motion" | "ADBE Motion")) {
-                                for ptr in c.descendants().filter(|n| n.has_tag_name("Param")) {
-                                    if let Some(p) = referred(Some(ptr), &ids, "ObjectRef") {
-                                        spend(&mut work_left, p)?;
-                                        if let Some(key) = motion_parameter(p) {
-                                            if child_text(p, "IsTimeVarying").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1") {
-                                                if motion_keys.insert(key.to_string(), motion::read(p, key, report)?).is_some() {
-                                                    return Err(error("duplicate animated Motion control"));
-                                                }
-                                            } else if let Some(v) = static_parameter_value(p) {
-                                                motion.insert(key.to_string(), v.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if kind == "video" && matches!(match_name, Some("AE.ADBE Lumetri" | "ADBE Lumetri")) {
-                                video_effects.push(color::read(c, &ids, &mut work_left, report)?);
-                            } else if kind == "audio"
-                                && match_name.is_some_and(|m| m.starts_with("Internal Volume") || m.starts_with("Internal Channel Volume"))
-                            {
-                                audio::read(c, match_name.unwrap_or_default(), &ids, &mut work_left, &mut audio, report)?;
-                            } else if !is_text && !is_shape {
-                                let count = unsupported_effects.entry((effect.clone(), match_name.unwrap_or("unknown").to_string())).or_insert(0usize);
-                                *count = count.saturating_add(1);
-                            }
-                            effects.push(effect);
-                        }
-                    }
-                    if kind == "caption" {
-                        let block = referred(descendant(item, "BlockVectorItem"), &ids, "ObjectRef");
-                        if let Some(block) = block {
-                            spend(&mut work_left, block)?;
-                        }
-                        text = block.and_then(|b| child_text(b, "FormattedTextData")).and_then(caption_text);
-                        if text.is_none() {
-                            warning(report, format!("{label}: caption text could not be decoded"));
-                        }
-                    }
-                    let mut transitions = Vec::new();
-                    for key in ["HeadTransition", "TailTransition"] {
-                        if let Some(t) = referred(descendant(item, key), &ids, "ObjectRef") {
-                            spend(&mut work_left, t)?;
-                            let name = value(t, "DisplayName").unwrap_or("Transition").to_string();
-                            let start = signed_ticks(value(t, "Start"), Tick::ZERO)?;
-                            let end = signed_ticks(value(t, "End"), start)?;
-                            if end < start {
-                                warning(report, format!("{label}: {name} end precedes start; transition skipped"));
-                                continue;
-                            }
-                            transitions.push(SourceTransition {
-                                object_id: t.attribute("ObjectID").unwrap_or("").to_string(),
-                                start: t.tag_name().name().ends_with("TransitionTrackItem").then_some(start),
-                                end: t.tag_name().name().ends_with("TransitionTrackItem").then_some(end),
-                                head: key == "HeadTransition",
-                                name,
-                                duration: end - start,
-                            });
-                        }
-                    }
-                    let audio_category = value(item, "ESP.Tag").map(str::to_string);
-                    let disabled =
-                        child(item, "ClipTrackItem").and_then(|c| child_text(c, "IsMuted")).is_some_and(|s| s.eq_ignore_ascii_case("true") || s == "1");
-                    let target = source_target(clip, &ids, &uids, &mut work_left)?;
-                    let generated = target.filter(|n| n.has_tag_name("Media")).and_then(|n| Some((n, synthetic_code(n)?)));
-                    let master = referred(sub.and_then(|s| child(s, "MasterClip")), &uids, "ObjectURef");
-                    // An adjustment layer's master clip is flagged over generated black video.
-                    let adjustment_layer = master
-                        .filter(|_| kind == "video")
-                        .filter(|m| child_text(*m, "IsAdjustmentLayer").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"))
-                        .and_then(|m| m.attribute("ObjectUID"))
-                        .map(str::to_string);
-                    let mut synthetic = None;
-                    match &generated {
-                        _ if adjustment_layer.is_some() => {}
-                        // A graphic's canvas; its text and shapes are read from the components.
-                        Some((_, code)) if code == "GRFV" => graphic = true,
-                        // The source of caption clips; their text is read with the caption track.
-                        Some((_, code)) if code == "SCPF" => {}
-                        Some((media, code)) => {
-                            if generator(code).is_none() {
-                                warning(report, format!("{label}: generated media {code} is not supported; kept offline placeholder"));
-                            }
-                            let media = media.attribute("ObjectUID").or_else(|| media.attribute("ObjectID")).unwrap_or("").to_string();
-                            synthetic = Some(SyntheticMedia { code: code.clone(), media });
-                        }
-                        None => {}
-                    }
-                    let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, base_dir));
-                    let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
-                    if adjustment_layer.is_some() {
-                        media_path = None;
-                        nested_sequence = None;
-                    }
-                    if graphic {
-                        // Generated graphic media may have an internal numeric pseudo-path.
-                        // It is a native canvas, not a missing filesystem asset.
-                        media_path = None;
-                        nested_sequence = None;
-                    }
-                    if media_path.is_none()
-                        && nested_sequence.is_none()
-                        && generated.is_none()
-                        && adjustment_layer.is_none()
-                        && kind != "caption"
-                        && !graphic
-                        && text.is_none()
-                    {
-                        let named_sequence = names.get(label.as_str()).copied().flatten();
-                        let named_media = media.get(&label);
-                        if ambiguous.contains(&label) || names.get(label.as_str()) == Some(&None) || (named_sequence.is_some() && named_media.is_some()) {
-                            warning(report, format!("{label}: unresolved source reference; ambiguous title fallback refused; left offline"));
-                        } else if named_sequence.is_some() || named_media.is_some() {
-                            warning(report, format!("{label}: unresolved source reference; using title fallback"));
-                            media_path = named_media.cloned();
-                            nested_sequence = named_sequence.map(str::to_string);
-                        }
-                    }
-                    if let Some(path) = &media_path {
-                        work_left = work_left.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
-                    }
-                    let mut media_markers = Vec::new();
-                    if media_path.is_some() {
-                        let first = master.and_then(|m| child(m, "Clips")).and_then(|c| c.children().find(Node::is_element));
-                        // Read once per master clip, onto the first timeline item that uses it:
-                        // re-reading for every cut would repeat the work, the warnings and the copy.
-                        if let Some(master_clip) = referred(first, &ids, "ObjectRef").and_then(|c| child(c, "Clip"))
-                            && marker_owners.insert(master_clip.id())
-                        {
-                            spend(&mut work_left, master_clip)?;
-                            media_markers = markers::read(master_clip, &ids, &mut work_left, report, &label)?;
-                        }
-                    }
-                    items.push(Item {
-                        object_id: item.attribute("ObjectID").unwrap_or("").into(),
-                        link: item.attribute("ObjectID").and_then(|id| links.get(id)).map(|id| (*id).to_string()),
-                        audio,
-                        video_effects,
-                        graphic,
-                        disabled,
-                        motion_keys,
-                        media_path,
-                        synthetic,
-                        adjustment_layer,
-                        media_markers,
-                        nested_sequence,
-                        label,
-                        start,
-                        end,
-                        source_in,
-                        source_out,
-                        speed,
-                        text,
-                        audio_category,
-                        effects,
-                        motion,
-                        transitions,
-                    });
-                }
-                tracks.push(Track { kind: kind.into(), index, muted, name: track_name, locked, items });
-            }
-        }
-        if let Some((w, h)) = frame_rect {
-            (width, height) = (w, h);
-        }
-        filmcraft_project::validate_frame_size(width, height).map_err(error)?;
-        let object_uid = n.attribute("ObjectUID").ok_or_else(|| error("sequence without ObjectUID"))?.to_string();
-        let markers = markers::read(n, &ids, &mut work_left, report, &name)?;
-        sequences.push(Sequence {
-            object_uid,
-            name,
-            width,
-            height,
-            frame_rate,
-            sample_rate,
-            work_out: ticks(value(n, "MZ.WorkOutPoint"), Tick::ZERO)?,
-            markers,
-            tracks,
-        });
-    }
-    let (bins, items) = items::read(root, &ids, &uids, base_dir, &mut work_left, report)?;
+    let Reader { skipped_items, unsupported_effects, mut markers, .. } = reader;
+    // After the timeline: a master clip's media in the panel takes the markers no kept item took.
+    let (bins, items) = items::read(root, &objects.ids, &objects.uids, base_dir, &mut work_left, report, &mut markers)?;
     // A project with bins or media but no sequence still imports them.
     if sequences.is_empty() && bins.is_empty() && items.is_empty() {
         return Err(Error::Empty);
@@ -1168,7 +806,8 @@ struct Reader<'a, 'i, 'r> {
     base_dir: Option<&'r str>,
     work: &'r mut usize,
     report: &'r mut Report,
-    /// Master clip markers, read once and taken by the first kept timeline item that uses each.
+    /// Master clip markers, read once and taken by the first kept timeline item that uses each; the
+    /// project panel's media takes the rest.
     markers: markers::MasterMarkers,
     item_count: usize,
     skipped_items: BTreeSet<String>,
@@ -2005,17 +1644,10 @@ impl SequenceImport<'_> {
         };
         let id = self.b.file_media(&media_key(&path), &item.label, &path, &spec, None);
         add_streams(self.b, id, &spec);
-        let media_markers: Vec<_> =
-            item.media_markers.iter().map(|marker| filmcraft_project::Marker { id: filmcraft_project::MarkerId(self.b.alloc()), ..marker.clone() }).collect();
-        if let Some(pi) = self.b.p.item_mut(id)
-            && let ItemKind::Media(m) = &mut pi.kind
-        {
+        if let Some(ItemKind::Media(m)) = self.b.p.item_mut(id).map(|i| &mut i.kind) {
             m.offline = true;
-            // Several timeline clips share one media item; its first markers win.
-            if m.markers.is_empty() {
-                m.markers = media_markers;
-            }
         }
+        attach_markers(self.b, id, &item.media_markers);
         if item.media_path.is_none() {
             warning(self.report, format!("{}: media unresolved; kept offline placeholder", item.label));
         }
@@ -2138,6 +1770,18 @@ fn add_streams(b: &mut Builder, id: ItemId, spec: &MediaSpec) {
     }
 }
 
+/// Give media `id` its master clip's `markers`, with new ids, unless it has markers: several
+/// timeline clips and project panel items can share one media item, and its first markers win.
+fn attach_markers(b: &mut Builder, id: ItemId, markers: &[filmcraft_project::Marker]) {
+    if markers.is_empty() || b.p.item(id).and_then(|i| i.as_media()).is_none_or(|m| !m.markers.is_empty()) {
+        return;
+    }
+    let markers: Vec<_> = markers.iter().map(|marker| filmcraft_project::Marker { id: filmcraft_project::MarkerId(b.alloc()), ..marker.clone() }).collect();
+    if let Some(m) = b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
+        m.markers = markers;
+    }
+}
+
 /// Project panel bins and the items they hold: the timeline's own item where it is the same
 /// source, a new one otherwise. An item listed in several bins stays in the first.
 fn import_bins(doc: &Document, rate: Option<FrameRate>, b: &mut Builder, report: &mut Report, sequences: &BTreeMap<String, ItemId>) {
@@ -2234,6 +1878,7 @@ fn bin_item(entry: &ProjectEntry, frame: (u32, u32, FrameRate), b: &mut Builder,
             if let Some(ItemKind::Media(m)) = b.p.item_mut(id).map(|i| &mut i.kind) {
                 m.offline = true;
             }
+            attach_markers(b, id, &entry.markers);
             Some(id)
         } else if let Some((synthetic, g)) = entry.synthetic.as_ref().and_then(|s| Some((s, generator(&s.code)?))) {
             let key = format!("premiere-generator:{}:{}", synthetic.code, synthetic.media);
@@ -3220,6 +2865,40 @@ mod tests {
             let carried: Vec<_> = tree.sequences[0].tracks.iter().flat_map(|t| &t.items).map(|i| i.media_markers.len()).collect();
             assert_eq!(carried.iter().sum::<usize>(), 2, "{groups}: {carried:?}");
         }
+    }
+    #[test]
+    fn a_master_clip_no_kept_cut_uses_brings_its_markers_to_its_panel_media() {
+        let names = |fragment: &Imported, path: &str| {
+            let file = filmcraft_project::MediaRef::File { path: path.into() };
+            let media = fragment.project.items.values().filter_map(|i| i.as_media()).find(|m| m.media == file).unwrap();
+            media.markers.iter().map(|m| (m.start, m.name.clone())).collect::<Vec<_>>()
+        };
+        // Hand-written: the panel's interview master clip, which no timeline clip uses, holds a marker.
+        let xml = subclip_fixture("")
+            .replace(
+                r#"<VideoClip ObjectID="answer-clip"><Clip><Source ObjectRef="answer-source"/></Clip></VideoClip>"#,
+                r#"<VideoClip ObjectID="answer-clip"><Clip><MarkerOwner><Markers ObjectRef="answer-markers"/></MarkerOwner><Source ObjectRef="answer-source"/></Clip></VideoClip>"#,
+            )
+            .replace(
+                "</PremiereData>",
+                &format!(
+                    r#"<Markers ObjectID="answer-markers"><Markers><Marker Index="0"><Second ObjectRef="question"/></Marker></Markers></Markers>{}</PremiereData>"#,
+                    marker_record("question", "question", TPS)
+                ),
+            );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(names(&fragment, "/media/interview.mov"), [(Tick(TPS), "question".to_string())], "{report:?}");
+        assert_eq!(tree.items.iter().map(|e| e.markers.len()).collect::<Vec<_>>(), [1]);
+        // The same when the master clip's only cuts are skipped.
+        let groups = r#"<TrackGroup><Second ObjectRef="vg"/></TrackGroup><TrackGroup><Second ObjectRef="ag"/></TrackGroup>"#;
+        let skipped = marked_av_fixture(groups).replace(&format!("<End>{TPS}</End>"), "<End>0</End>");
+        let (fragment, tree, report) = import(skipped.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(tree.sequences[0].tracks.iter().all(|t| t.items.is_empty()), "{report:?}");
+        assert_eq!(names(&fragment, "/media/interview.mov"), [(Tick::ZERO, "first".to_string()), (Tick(TPS / 2), "second".to_string())], "{report:?}");
+        // A kept cut brings them instead; its media, which the panel also lists, gets them once.
+        let (fragment, tree, report) = import(marked_av_fixture(groups).as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert_eq!(names(&fragment, "/media/interview.mov").len(), 2, "{report:?}");
+        assert!(tree.items.iter().all(|e| e.markers.is_empty()), "the source tree records them on the cut only");
     }
     #[test]
     fn filed_items_keep_panel_order_and_their_first_bin() {

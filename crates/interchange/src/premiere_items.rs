@@ -3,6 +3,7 @@
 //! each a `BinProjectItem` (whose own container is read the same way) or a `ClipProjectItem`
 //! pointing to its `MasterClip`. A subclip's master clip has a media source whose `Content` holds
 //! `StartBoundary`/`EndBoundary` in media ticks. Original work, MIT OR Apache-2.0.
+use super::markers::MasterMarkers;
 use super::{ProjectEntry, SourceBin, SubclipRange, SyntheticMedia, error, generator, media_path, reference, referred, spend, synthetic_code, warning};
 use crate::xml::{child, child_text};
 use crate::{Report, Result};
@@ -13,21 +14,24 @@ use std::collections::{BTreeMap, HashSet};
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 
-/// A walk over the project panel: the object maps, base folder, work budget and report, the panel
-/// items already read, and the bins and entries found so far.
+/// A walk over the project panel: the object maps, base folder, work budget and report, the master
+/// clip markers the timeline left, the panel items already read, and the bins and entries found so
+/// far.
 struct Walk<'a, 'i, 'r> {
     ids: &'r BTreeMap<&'a str, Node<'a, 'i>>,
     uids: &'r BTreeMap<&'a str, Node<'a, 'i>>,
     base_dir: Option<&'r str>,
     work: &'r mut usize,
     report: &'r mut Report,
+    markers: &'r mut MasterMarkers,
     seen: HashSet<NodeId>,
     bins: Vec<SourceBin>,
     out: Vec<ProjectEntry>,
 }
 
 /// The project's bins (parents before children) and the panel items the importer understands, in
-/// panel order. A project without a root bin has none.
+/// panel order. A project without a root bin has none. Media takes the markers of its master clip
+/// that `markers` still holds.
 pub(super) fn read<'a, 'i>(
     root: Node<'a, 'i>,
     ids: &BTreeMap<&'a str, Node<'a, 'i>>,
@@ -35,10 +39,11 @@ pub(super) fn read<'a, 'i>(
     base_dir: Option<&str>,
     work: &mut usize,
     report: &mut Report,
+    markers: &mut MasterMarkers,
 ) -> Result<(Vec<SourceBin>, Vec<ProjectEntry>)> {
     let Some(project) = root.children().find(|n| n.has_tag_name("Project") && n.attribute("ObjectID").is_some()) else { return Ok(Default::default()) };
     let Some(top) = reference(child(project, "RootProjectItem"), ids, uids) else { return Ok(Default::default()) };
-    let mut walk = Walk { ids, uids, base_dir, work, report, seen: HashSet::new(), bins: Vec::new(), out: Vec::new() };
+    let mut walk = Walk { ids, uids, base_dir, work, report, markers, seen: HashSet::new(), bins: Vec::new(), out: Vec::new() };
     walk.seen.insert(top.id());
     walk.container(top, None, 0)?;
     Ok((walk.bins, walk.out))
@@ -127,6 +132,7 @@ impl<'a, 'i> Walk<'a, 'i, '_> {
             duration: None,
             video,
             subclip: None,
+            markers: Vec::new(),
         };
         if let Some(sequence) = sources.iter().find_map(|(s, _)| {
             let pointer = child(*s, "SequenceSource").and_then(|n| child(n, "Sequence"));
@@ -183,6 +189,11 @@ impl<'a, 'i> Walk<'a, 'i, '_> {
             let what = if entry.subclip.is_some() { "subclip" } else { "media" };
             warning(self.report, format!("{}: {what} media unresolved; {what} skipped", entry.name));
             return Ok(None);
+        }
+        // The master clip's markers (read once per master clip), unless a kept timeline item took
+        // them. A FilmCraft subclip has no markers of its own.
+        if entry.subclip.is_none() {
+            entry.markers = self.markers.take(master, self.ids, self.work, self.report, &entry.name)?;
         }
         Ok(Some(entry))
     }
