@@ -642,6 +642,12 @@ pub(super) fn forget_analysis(env: &dyn FxEnv, method: TrackMethod, detailed: bo
     a.looked_up.remove(&key.source);
 }
 
+/// [`in_size`], for tests.
+#[cfg(test)]
+pub(super) fn steps_in_size(steps: Vec<Affine>, from: (usize, usize), to: (usize, usize)) -> Vec<Affine> {
+    in_size(steps, from, to)
+}
+
 /// The finished path of the Warp Stabilizer `e` on `item`, as frames rendered now would use it.
 #[cfg(test)]
 pub(super) fn path_of(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> Option<Arc<StabilizerPath>> {
@@ -772,17 +778,12 @@ fn keep(
     let kept = a.sources.entry(key.source).or_insert_with(|| Ranges { dims: None, fps, ranges: Vec::new() });
     let mut added = false;
     for (from, p) in runs {
-        match (kept.dims, p.dims) {
-            (None, Some(d)) => kept.dims = Some(d),
-            // frames of another size (the file changed under the same identity): start over
-            (Some(k), Some(d)) if k != d => *kept = Ranges { dims: Some(d), fps, ranges: Vec::new() },
-            // no frame of the run could be read, and no size is known to make a path of
-            (None, None) => continue,
-            _ => {}
-        }
+        // no frame of the run could be read: nothing is kept, a later analysis tries again
+        let Some(d) = p.dims else { continue };
+        let k = *kept.dims.get_or_insert(d);
         let Some(start) = key.first.checked_add(from as i64) else { continue };
         if !p.steps.is_empty() {
-            kept.insert(Range { start, steps: p.steps });
+            kept.insert(Range { start, steps: in_size(p.steps, d, k) });
             added = true;
         }
     }
@@ -807,6 +808,17 @@ fn keep(
         store::save(id, &ranges);
     }
     path
+}
+
+/// `steps` measured on frames of size `from`, as measured on frames of size `to`: a source's proxy
+/// and original, read the same way, can decode to frames of different sizes.
+fn in_size(steps: Vec<Affine>, from: (usize, usize), to: (usize, usize)) -> Vec<Affine> {
+    if from == to {
+        return steps;
+    }
+    let (sx, sy) = (to.0 as f64 / from.0.max(1) as f64, to.1 as f64 / from.1.max(1) as f64);
+    let (s, back) = (Affine::scale(sx, sy), Affine::scale(1.0 / sx, 1.0 / sy));
+    steps.iter().map(|m| s.then_apply(m).then_apply(&back)).collect()
 }
 
 /// Run [`analyse`] on the analysis pool, stopping it when this request is cancelled. The request
