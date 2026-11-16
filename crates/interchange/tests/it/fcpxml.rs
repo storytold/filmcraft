@@ -141,6 +141,37 @@ fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
 }
 
 #[test]
+fn media_cut_off_by_xml_layout_is_complete_when_revisited_at_the_same_media_depth() {
+    // Both references have media-chain depth zero, but the first is reached through connected
+    // clips. Its resource must not remain cached as complete after the XML-layout guard fires.
+    for depth in [125, 126] {
+        let nested = format!(
+            "{}<ref-clip lane=\"1\" ref=\"m0\" offset=\"0s\" duration=\"1s\"/>{}",
+            "<gap lane=\"1\" offset=\"0s\" duration=\"1s\">".repeat(depth),
+            "</gap>".repeat(depth)
+        );
+        let xml = format!(
+            r#"<fcpxml version="1.10"><resources>
+          <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+          <media id="m0" name="M0"><sequence format="r1"><spine>
+            <ref-clip ref="m1" offset="0s" duration="1s"/>
+          </spine></sequence></media>
+          <media id="m1" name="M1"><sequence format="r1"><spine/></sequence></media>
+        </resources><library><event>
+          <project name="A"><sequence format="r1"><spine>{nested}</spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine>
+            <ref-clip ref="m0" offset="0s" duration="1s"/>
+          </spine></sequence></project>
+        </event></library></fcpxml>"#
+        );
+        let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+        assert!(rep.mentions("XML") && rep.mentions("nested"), "{rep:?}");
+        let m0 = imp.project.sequences().find(|i| i.name == "M0").and_then(|i| imp.project.sequence(i.id)).unwrap();
+        assert_eq!(m0.video_tracks[0].items.len(), 1, "M0 keeps its nested M1 after the shallower revisit");
+    }
+}
+
+#[test]
 fn golden_connected_clips() {
     let d = doc();
     assert_eq!(detect(d.as_bytes(), Some("fcpxml")), Some(Format::Fcpxml));

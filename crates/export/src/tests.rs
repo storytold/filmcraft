@@ -219,10 +219,7 @@ fn dnxhr_export_roundtrip() {
 /// `burn_captions` or above the caption.
 #[test]
 fn caption_burn_in_h264_ffmpeg_oracle() {
-    let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
-        eprintln!("ffmpeg not found; skipping oracle test");
-        return;
-    };
+    let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("H.264 caption burn-in export") else { return };
     let mut p = Project::new("cap");
     let (w, h) = (640u32, 360u32);
     let g = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 0.2, 1.0] }, w, h, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
@@ -269,7 +266,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
         let path = tmp(if burn { "burn.mp4" } else { "noburn.mp4" });
         let s = ExportSettings { format: Format::H264, path: path.clone(), include_audio: false, burn_captions: burn, ..Default::default() };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
-        let out = std::process::Command::new(ffmpeg)
+        let out = std::process::Command::new(&ffmpeg)
             .args(["-v", "error", "-i", &path, "-vf", "select=eq(n\\,12)", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
             .output()
             .unwrap();

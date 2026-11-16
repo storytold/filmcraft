@@ -41,7 +41,7 @@ pub trait VideoEncoder: Send {
         None
     }
     /// First-pass statistics of a two-pass encode (H.264).
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<craft_video::h264::PassStats> {
         None
     }
     /// Work on a rendered picture that needs nothing of the encoder's state (H.264: the colour

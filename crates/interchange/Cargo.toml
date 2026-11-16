@@ -10,17 +10,18 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-timeline = { workspace = true, features = ["xml", "otio"] }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-cfb = { workspace = true }
-craft-timeline = { workspace = true }
+craft-audio = { workspace = true, features = ["pcm-encode"] }
+craft-aaf = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-roxmltree = { workspace = true }
-
 [dev-dependencies]
+roxmltree = { workspace = true }
 proptest = { workspace = true }

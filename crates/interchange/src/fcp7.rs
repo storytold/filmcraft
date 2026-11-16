@@ -120,6 +120,10 @@ struct PendingLink {
     refs: Vec<String>,
 }
 
+/// Deepest `bin`/`children`/`project` nesting a hostile file may walk. XML containers can nest
+/// without limit in the file, and the walk recurses once per level (audit: FilmCraft F3).
+const MAX_XML_DEPTH: usize = 128;
+
 struct Imp<'a, 'i, 'r> {
     b: Builder,
     opts: &'a ImportOptions,
@@ -142,6 +146,8 @@ struct Imp<'a, 'i, 'r> {
     /// `(sequence key, file key)` pairs where some audio clip item of that file uses `sourcetrack/trackindex` > 1,
     /// i.e. the file's channels are split onto mono tracks in that sequence (#463).
     split_files: HashSet<(String, String)>,
+    /// Current container nesting, checked against [`MAX_XML_DEPTH`].
+    depth: usize,
 }
 
 /// The `(sequence key, file key)` an audio clip item belongs to, if it references a file.
@@ -190,6 +196,7 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
         links: Vec::new(),
         xml_clip_ids: HashMap::new(),
         split_files: HashSet::new(),
+        depth: 0,
     };
     for n in root.descendants().filter(|n| n.is_element()) {
         match n.tag_name().name() {
@@ -218,6 +225,11 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
 impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Walk `xmeml`, `project`, `bin` and `children` containers.
     fn walk_container(&mut self, n: Node<'a, 'i>, bin: Option<BinId>, top: bool) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.report.warn(format!("XML containers are nested more than {MAX_XML_DEPTH} deep; deeper bins and clips were skipped"));
+            return;
+        }
+        self.depth += 1;
         for c in elements(n) {
             match c.tag_name().name() {
                 "project" => {
@@ -243,6 +255,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 _ => {}
             }
         }
+        self.depth -= 1;
     }
 
     /// A master clip in a bin: its file(s) become media items.
