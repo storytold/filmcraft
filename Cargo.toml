@@ -62,6 +62,7 @@ craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "a64f5a6e4a656f6750e72fc699750ce8a2f6f86f" }
 # Shared YUV4MPEG2 parser and frame index.
 craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "0c15f7c74913880da6bae5927b95f798c2ecf3c3", features = ["async-lines"] }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6bd1c3dc357f012ddb31c6799ad2e36a1596003d" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7738cc6c689060475cb6947a6e3db6ed78fb3419", default-features = false }
