@@ -483,17 +483,21 @@ fn warp(sets: Vec<Radial>, center: [f64; 2], img: &mut Image) -> Result<()> {
 
 #[cfg(any(test, feature = "writer"))]
 /// Encode an opcode list (big-endian), for tests: (id, flags, parameters).
-pub fn encode(list: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
+pub fn encode(list: &[(u32, u32, Vec<u8>)]) -> Result<Vec<u8>> {
     let records: Vec<Opcode> = list
         .iter()
         .map(|(id, flags, params)| Opcode { id: *id, version: if *id == 14 { 0x0106_0000 } else { 0x0103_0000 }, flags: *flags, params: params.clone() })
         .collect();
-    craft_raw::opcode_raw::encode(&records)
+    craft_raw::opcode_raw::encode(&records).map_err(|_| Error::Malformed("opcode list cannot be encoded"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode(list: &[(u32, u32, Vec<u8>)]) -> Vec<u8> {
+        super::encode(list).unwrap()
+    }
 
     fn u(v: &[u32]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_be_bytes()).collect()
