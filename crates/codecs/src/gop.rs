@@ -350,7 +350,9 @@ pub fn set_frame_budget(bytes: usize) {
     let _guard = BUDGET_UPDATE.lock().unwrap_or_else(|e| e.into_inner());
     GLOBAL_BUDGET.store(pool, Ordering::Relaxed);
     CACHE_BUDGET.store(per_cache, Ordering::Relaxed);
-    Pool::global().budget_val.store(pool, Ordering::Relaxed);
+    let global = Pool::global();
+    global.budget_val.store(pool, Ordering::Relaxed);
+    global.cache_budget_val.store(per_cache, Ordering::Relaxed);
 }
 
 /// Retrieve the active global frame budget in bytes.
@@ -372,6 +374,7 @@ struct Pool {
     /// Bytes of the frames the caches hold.
     bytes: AtomicUsize,
     budget_val: AtomicUsize,
+    cache_budget_val: AtomicUsize,
 }
 
 /// The part of a [`GopCache`] its pool reaches.
@@ -408,6 +411,7 @@ impl Pool {
             hard_decoders: max_decoders,
             bytes: AtomicUsize::new(0),
             budget_val: AtomicUsize::new(budget),
+            cache_budget_val: AtomicUsize::new(FRAME_CACHE_CEILING),
         }
     }
 
@@ -421,7 +425,12 @@ impl Pool {
     /// The pool of every cache in the process.
     fn global() -> Arc<Pool> {
         static POOL: std::sync::OnceLock<Arc<Pool>> = std::sync::OnceLock::new();
-        POOL.get_or_init(|| Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, active_frame_budget()).tiered(RECENT, HARD_DECODERS))).clone()
+        POOL.get_or_init(|| {
+            let p = Pool::new(MAX_LIVE_DECODERS, IDLE, active_frame_budget()).tiered(RECENT, HARD_DECODERS);
+            p.cache_budget_val.store(CACHE_BUDGET.load(Ordering::Relaxed), Ordering::Relaxed);
+            Arc::new(p)
+        })
+        .clone()
     }
 
     fn register(&self, c: &Arc<Shared>) {
@@ -693,7 +702,7 @@ impl GopCache {
             pool: pool.clone(),
         });
         pool.register(&shared);
-        let global = CACHE_BUDGET.load(Ordering::Relaxed);
+        let global = pool.cache_budget_val.load(Ordering::Relaxed);
         Self { shared, explicit_color, rotation: 0, crop: None, budget: global, inherited_budget: global }
     }
 
@@ -771,7 +780,7 @@ impl GopCache {
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
     fn cache_budget(&self, frame_bytes: usize) -> usize {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        let limit = if self.budget == self.inherited_budget { CACHE_BUDGET.load(Ordering::Relaxed) } else { self.budget };
+        let limit = if self.budget == self.inherited_budget { self.shared.pool.cache_budget_val.load(Ordering::Relaxed) } else { self.budget };
         if limit == 0 { reserve } else { limit.min(FRAME_CACHE_CEILING) }
     }
 

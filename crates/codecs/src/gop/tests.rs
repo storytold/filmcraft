@@ -1232,26 +1232,119 @@ fn low_configured_budget_is_not_enlarged_by_large_frame_reserve() {
 
 #[test]
 fn inherited_budget_tracks_global_updates_while_explicit_limit_is_preserved() {
-    struct RestoreGlobal(usize);
-    impl Drop for RestoreGlobal {
-        fn drop(&mut self) {
-            CACHE_BUDGET.store(self.0, Ordering::Relaxed);
-        }
-    }
-    let _guard = RestoreGlobal(CACHE_BUDGET.load(Ordering::Relaxed));
-
-    CACHE_BUDGET.store(64 << 20, Ordering::Relaxed);
-    let inherited = GopCache::new(None);
-    let mut explicit = GopCache::new(None);
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET));
+    pool.cache_budget_val.store(64 << 20, Ordering::Relaxed);
+    let inherited = GopCache::in_pool(None, pool.clone());
+    let mut explicit = GopCache::in_pool(None, pool.clone());
     explicit.budget = 32 << 20;
 
-    // Increase global budget: inherited cache tracks it (up to FRAME_CACHE_CEILING), explicit stays at 32 MiB.
-    CACHE_BUDGET.store(128 << 20, Ordering::Relaxed);
+    // Increase pool's per-cache budget: inherited cache tracks it (up to FRAME_CACHE_CEILING), explicit stays at 32 MiB.
+    pool.cache_budget_val.store(128 << 20, Ordering::Relaxed);
     assert_eq!(inherited.cache_budget(4 << 20), 128 << 20);
     assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
 
     // Above FRAME_CACHE_CEILING: inherited cache is still capped at FRAME_CACHE_CEILING.
-    CACHE_BUDGET.store(FRAME_CACHE_CEILING * 2, Ordering::Relaxed);
+    pool.cache_budget_val.store(FRAME_CACHE_CEILING * 2, Ordering::Relaxed);
     assert_eq!(inherited.cache_budget(4 << 20), FRAME_CACHE_CEILING);
     assert_eq!(explicit.cache_budget(4 << 20), 32 << 20);
+}
+
+#[test]
+#[ignore = "allocates ~2.1 GiB of 4K RGBA8 frames to benchmark 1.0 / 1.5 / 2.5 GiB pool tiers"]
+fn bench_4k_multi_clip_scrub_across_ram_tiers() {
+    struct FourKSamples {
+        gop: usize,
+        resets: Arc<AtomicUsize>,
+        decodes: Arc<AtomicUsize>,
+    }
+    struct FourKDec {
+        resets: Arc<AtomicUsize>,
+        decodes: Arc<AtomicUsize>,
+    }
+    impl VideoDecoder for FourKDec {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            self.decodes.fetch_add(1, Ordering::Relaxed);
+            // 3840x2160 RGBA8 frame = 33,177,600 bytes (~31.64 MiB), non-zero to fault physical pages
+            let frame = VideoFrame::rgba8(3840, 2160, vec![16u8; 3840 * 2160 * 4]);
+            Ok(vec![DecodedFrame { pts, frame, draft: false }])
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::Relaxed);
+        }
+        fn name(&self) -> &str {
+            "4k-test"
+        }
+    }
+    impl VideoSamples for FourKSamples {
+        fn count(&self) -> usize {
+            self.gop
+        }
+        fn pts(&self, i: usize) -> i64 {
+            i as i64 * 1000
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            i / self.gop * self.gop
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            let i = (t / 1000) as usize;
+            (i < self.gop).then_some(i)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            Ok(vec![i as u8])
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(FourKDec { resets: self.resets.clone(), decodes: self.decodes.clone() }))
+        }
+    }
+
+    for (label, budget) in [("1.0 GiB (main / <16 GiB)", 1024 << 20), ("1.5 GiB (16 GiB tier)", 1536 << 20), ("2.5 GiB (32 GiB tier)", 2560 << 20)] {
+        let pool = Arc::new(Pool::new(HARD_DECODERS, Duration::ZERO, budget));
+        let clips = 6usize;
+        let gop = 11usize; // 11 * 31.64 MiB = 348.05 MiB per clip (within 384 MiB ceiling)
+        let s: Vec<FourKSamples> = (0..clips).map(|_| FourKSamples { gop, resets: Default::default(), decodes: Default::default() }).collect();
+        let c: Vec<GopCache> = (0..clips).map(|_| GopCache::in_pool(None, pool.clone())).collect();
+
+        let before = gop_stats();
+        let t0 = Instant::now();
+        // Forward scrub across 6 clips (end of each 11-frame GOP)
+        for k in 0..clips {
+            let _ = c[k].frame(&s[k], 10_000).expect("forward frame");
+        }
+        let t_fwd = t0.elapsed();
+        let t1 = Instant::now();
+        // Scrub back one frame earlier on each clip (most recently visited back to earliest)
+        for k in (0..clips).rev() {
+            let _ = c[k].frame(&s[k], 9_000).expect("reverse scrub frame");
+        }
+        let t_rev = t1.elapsed();
+        let delta = gop_stats() - before;
+        let total_resets: usize = s.iter().map(|x| x.resets.load(Ordering::Relaxed)).sum();
+        let total_decodes: usize = s.iter().map(|x| x.decodes.load(Ordering::Relaxed)).sum();
+        let resident_mib = pool.bytes.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
+        println!(
+            "{label}: hits={} misses={} seeks={} decoded={total_decodes} resets={total_resets} evicted={} resident={resident_mib:.1} MiB fwd_ms={:.1} rev_scrub_ms={:.1}",
+            delta.hits,
+            delta.misses,
+            delta.seeks,
+            delta.evicted,
+            t_fwd.as_secs_f64() * 1e3,
+            t_rev.as_secs_f64() * 1e3,
+        );
+        match budget {
+            b if b == 1024 << 20 => {
+                assert_eq!((delta.hits, delta.misses, total_resets, total_decodes, delta.evicted), (3, 9, 9, 96, 64));
+            }
+            b if b == 1536 << 20 => {
+                assert_eq!((delta.hits, delta.misses, total_resets, total_decodes, delta.evicted), (5, 7, 7, 76, 28));
+            }
+            b if b == 2560 << 20 => {
+                assert_eq!((delta.hits, delta.misses, total_resets, total_decodes, delta.evicted), (6, 6, 6, 66, 0));
+            }
+            _ => {}
+        }
+        drop(c);
+    }
 }
