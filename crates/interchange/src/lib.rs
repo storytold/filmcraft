@@ -240,14 +240,21 @@ pub const MAX_REPORT_ENTRIES: usize = 2000;
 
 impl Report {
     pub fn push(&mut self, level: Level, message: impl Into<String>) {
+        self.push_n(level, message, 1);
+    }
+    /// Record `count` occurrences of one message in a single step.
+    pub fn push_n(&mut self, level: Level, message: impl Into<String>, count: u32) {
+        if count == 0 {
+            return;
+        }
         let mut message = message.into();
         if self.entries.len() >= MAX_REPORT_ENTRIES && !self.entries.iter().any(|e| e.level == level && e.message == message) {
             message = "further diagnostics omitted".into();
         }
         if let Some(e) = self.entries.iter_mut().find(|e| e.level == level && e.message == message) {
-            e.count += 1;
+            e.count = e.count.saturating_add(count);
         } else {
-            self.entries.push(ReportEntry { level, message, count: 1 });
+            self.entries.push(ReportEntry { level, message, count });
         }
     }
     pub fn warn(&mut self, message: impl Into<String>) {
@@ -659,5 +666,15 @@ mod report_tests {
         // known messages still merge after the cap
         r.warn("line 0 is not recognised");
         assert_eq!(r.entries[0].count, 2);
+    }
+
+    #[test]
+    fn repeated_counts_merge_in_one_step() {
+        let mut r = Report::default();
+        r.push_n(Level::Info, "skipped", 0);
+        assert!(r.entries.is_empty());
+        r.push_n(Level::Info, "skipped", 3);
+        r.push_n(Level::Info, "skipped", u32::MAX);
+        assert_eq!((r.entries.len(), r.entries[0].count), (1, u32::MAX));
     }
 }

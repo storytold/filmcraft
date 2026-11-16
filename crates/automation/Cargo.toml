@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 craft-jsonrpc = { workspace = true }
+craft-control-protocol = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-time = { workspace = true }
 serde = { workspace = true }

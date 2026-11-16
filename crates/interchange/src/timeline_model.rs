@@ -691,9 +691,7 @@ fn merge_report(dst: &mut crate::Report, src: craft_timeline::Report) {
             craft_timeline::Level::Info => crate::Level::Info,
             craft_timeline::Level::Warning => crate::Level::Warning,
         };
-        for _ in 0..entry.count {
-            dst.push(level, entry.message.clone());
-        }
+        dst.push_n(level, entry.message, entry.count);
     }
 }
 fn convert_error(e: craft_timeline::Error) -> crate::Error {
