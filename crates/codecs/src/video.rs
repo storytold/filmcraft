@@ -184,6 +184,23 @@ pub type VideoDecoderFactory = fn(&SampleEntry) -> Option<Result<Box<dyn VideoDe
 /// Motion-JPEG / Photo-JPEG (each sample is a complete JPEG).
 pub struct MjpegDecoder;
 
+/// Convert decoded 8-bit Motion JPEG samples to RGBA, reporting a component count FilmCraft cannot show.
+fn mjpeg_rgba(samples: &[u8], components: u8) -> Result<Vec<u8>> {
+    craft_jpeg::to_rgba8(samples, components)
+        .map_err(|craft_jpeg::UnsupportedComponents(n)| CodecError::Decode(format!("unsupported JPEG component count {n}")))
+}
+
+#[cfg(test)]
+mod mjpeg_rgba_tests {
+    use super::*;
+
+    #[test]
+    fn mjpeg_samples_convert_or_name_the_component_count() {
+        assert_eq!(mjpeg_rgba(&[7], 1).unwrap(), [7, 7, 7, 255]);
+        assert!(matches!(mjpeg_rgba(&[1, 2], 2), Err(CodecError::Decode(m)) if m == "unsupported JPEG component count 2"));
+    }
+}
+
 impl VideoDecoder for MjpegDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         let sample = craft_jpeg::with_avi1_default_huffman(sample);
@@ -199,8 +216,7 @@ impl VideoDecoder for MjpegDecoder {
         let craft_jpeg::Samples::U8(samples) = decoded.samples else {
             return Err(CodecError::Decode("12-bit Motion JPEG is not supported by FilmCraft frames".into()));
         };
-        let rgba = craft_jpeg::to_rgba8(&samples, decoded.components)
-            .map_err(|craft_jpeg::UnsupportedComponents(n)| CodecError::Decode(format!("unsupported JPEG component count {n}")))?;
+        let rgba = mjpeg_rgba(&samples, decoded.components)?;
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(decoded.width, decoded.height, rgba), draft: false }])
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
