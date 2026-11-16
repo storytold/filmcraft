@@ -232,6 +232,50 @@ fn s(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// A Premiere project in `dir` whose one media file is missing: it imports, with warnings.
+fn premiere_project(dir: &std::path::Path) -> PathBuf {
+    let xml = format!(
+        r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>missing.png</Name></SubClip><Media><Title>missing.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
+        dir.join("missing.png").display()
+    );
+    let path = dir.join("warnings.prproj");
+    std::fs::write(&path, xml).unwrap();
+    path
+}
+
+/// File ▸ Import of a Premiere project says in the status line how many warnings its import
+/// reported, and the first, whether the dialog answers at once or later (a dialog answered later
+/// drops the command's result).
+#[test]
+fn a_premiere_import_shows_its_warnings_in_the_status_line() {
+    let dir = fresh_dir("premiere-warnings");
+    let project = s(&premiere_project(&dir));
+    // at once: the command's result has the report the status line sums up
+    let mut d = Driver::new(false);
+    let picked = project.clone();
+    d.app().hooks.pick_files = Some(Box::new(move |_| vec![picked.clone()]));
+    d.app().ui.status.clear();
+    let result = d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    let entries = result["documents"][0]["reportEntries"].as_array().cloned().unwrap_or_default();
+    let warnings: Vec<&str> = entries.iter().filter(|e| e["level"] == "warning").filter_map(|e| e["message"].as_str()).collect();
+    assert!(warnings.iter().any(|w| w.contains("offline placeholder")), "{result}");
+    let expected = format!("Imported with {} warning(s): {}", warnings.len(), warnings[0]);
+    assert_eq!(d.app().ui.status, expected);
+    // later: the same project again, through the host's runner
+    let mut d = Driver::new(true);
+    d.app().ui.status.clear();
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "file.import"})), json!({"dialog": "open"}));
+    let (_, answer) = d.asked();
+    answer.send(vec![project]).unwrap();
+    d.frames(2);
+    assert!(!d.app().native_dialog_open());
+    assert_eq!(d.app().ui.status, expected);
+    // and the status bar shows it
+    let shown = d.ok("ui.elements", json!({"prefix": "status.text"}));
+    let label = shown.as_array().and_then(|elements| elements.iter().find(|e| e["id"] == "status.text")).map(|e| e["label"].clone());
+    assert_eq!(label, Some(json!(expected)), "{shown}");
+}
+
 /// #1644: GTK's file chooser saves the name as typed. Save As adds `.fcproj` when the name has no
 /// such extension, and asks before replacing a file that only the added extension names (the
 /// dialog's own prompt was about the name as typed).
