@@ -345,3 +345,15 @@ fn a_floating_window_hidden_by_a_maximized_timeline_does_not_block_drops() {
     assert_eq!(point_on_row(&h, "timeline.track.V1.target"), at);
     assert!(hover_at(&mut h, at));
 }
+
+/// A Premiere project dropped on the window says in the status line how many warnings its import
+/// reported, and the first, as File > Import does.
+#[test]
+fn a_dropped_premiere_project_shows_its_warnings_in_the_status_line() {
+    let project = crate::native_dialogs_ui::premiere_project(&crate::native_dialogs_ui::fresh_dir("premiere-drop-warnings"));
+    let mut h = harness();
+    h.state_mut().ui.status.clear();
+    drop_on_empty_timeline(&mut h, &project);
+    let status = h.state().ui.status.clone();
+    assert!(status.starts_with("Imported with ") && status.contains("warning(s): "), "status: {status}");
+}

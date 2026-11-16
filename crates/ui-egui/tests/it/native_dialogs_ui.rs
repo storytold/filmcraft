@@ -221,7 +221,7 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
 }
 
 /// An empty folder for one test in Cargo's temporary folder.
-fn fresh_dir(name: &str) -> PathBuf {
+pub(crate) fn fresh_dir(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-dialogs").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -233,7 +233,7 @@ fn s(p: &std::path::Path) -> String {
 }
 
 /// A Premiere project in `dir` whose one media file is missing: it imports, with warnings.
-fn premiere_project(dir: &std::path::Path) -> PathBuf {
+pub(crate) fn premiere_project(dir: &std::path::Path) -> PathBuf {
     let xml = format!(
         r#"<PremiereData><Sequence ObjectUID="s"><Name>Sequence 01</Name><TrackGroups><TrackGroup><Second ObjectRef="1"/></TrackGroup></TrackGroups></Sequence><VideoTrackGroup ObjectID="1"><TrackGroup><FrameRate>8467191533</FrameRate><Tracks><Track ObjectURef="t"/></Tracks></TrackGroup></VideoTrackGroup><VideoClipTrack ObjectUID="t"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="2"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack><VideoClipTrackItem ObjectID="2"><ClipTrackItem><TrackItem><Start>0</Start><End>254016000000</End></TrackItem><SubClip ObjectRef="3"/></ClipTrackItem></VideoClipTrackItem><SubClip ObjectID="3"><Name>missing.png</Name></SubClip><Media><Title>missing.png</Title><FilePath>{}</FilePath></Media></PremiereData>"#,
         dir.join("missing.png").display()
