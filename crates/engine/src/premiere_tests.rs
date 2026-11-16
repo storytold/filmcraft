@@ -769,3 +769,41 @@ fn premiere_hash_media_hashes_each_file_once_within_a_byte_limit() {
     assert!(crate::premiere::hash_file_within(&fixture.0.join("source.png"), expected.1 - 1).is_err());
     assert_eq!(crate::premiere::hash_file_within(&fixture.0.join("source.png"), expected.1).unwrap(), expected);
 }
+
+#[test]
+fn premiere_hash_media_counts_a_failed_read_against_its_byte_limit() {
+    let fixture = Fixture::new();
+    let other = fixture.0.join("other.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])).save(&other).unwrap();
+    let mut s = Session::default();
+    s.execute("premiere.import", json!({"path":fixture.0.join("source.prproj"),"destination":fixture.0.join("import")})).unwrap();
+    // A second file in the import's record, so that one call hashes two.
+    let mut project = (*s.project).clone();
+    let workflow = std::sync::Arc::make_mut(project.workflow.as_mut().unwrap());
+    let import = std::sync::Arc::make_mut(&mut workflow.imports[0]);
+    let reference = import.media[0].clone();
+    import.media.push(filmcraft_project::workflow::SourceMedia { imported_path: other.to_string_lossy().into_owned(), ..reference });
+    s.project = std::sync::Arc::new(project);
+    // Their sizes fit the limit, so the inspection starts.
+    let max = hash_file(&fixture.0.join("source.png")).unwrap().1 + hash_file(&other).unwrap().1;
+    // The limit each read is given; each fails after reading `read` bytes.
+    let limits = std::cell::RefCell::new(Vec::new());
+    let fail = |limit: u64, read: u64| {
+        limits.borrow_mut().push(limit);
+        Err::<(String, u64), _>(crate::premiere::HashFailure { error: crate::EngineError::Other("read failed".into()), read })
+    };
+    // Each file has grown since the sizes were summed: its read stops one byte past what is left of
+    // the limit, as `hash_file_within` does, and fails. That spends the limit: the other file is
+    // not read at all.
+    let grown = |_: &std::path::Path, limit: u64| fail(limit, limit + 1);
+    let observed = crate::premiere::hash_media_with(&s, &json!({"import":0}), &grown, max).unwrap();
+    assert_eq!(*limits.borrow(), [max], "{observed}");
+    let rows = observed["media"].as_array().unwrap();
+    assert!(rows.iter().all(|row| row["sha256"].is_null()), "{observed}");
+    assert_eq!(rows.iter().filter(|row| row["error"].as_str().is_some_and(|e| e.contains("not read"))).count(), 1, "{observed}");
+    // A read that fails partway charges what it read: the next file gets the rest of the limit.
+    limits.borrow_mut().clear();
+    let partway = |_: &std::path::Path, limit: u64| fail(limit, 10);
+    crate::premiere::hash_media_with(&s, &json!({"import":0}), &partway, max).unwrap();
+    assert_eq!(*limits.borrow(), [max, max - 10]);
+}

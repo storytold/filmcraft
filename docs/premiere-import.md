@@ -62,7 +62,8 @@ does not backfill provenance, rewrite `provenance.json`, save the project or add
 Within one call each stored path is checked once and each file hashed once, however many
 references name it (one row per reference). One call reads at most 1 TiB: an import whose
 distinct files total more is refused before any file is read, and a file that grows while it is
-hashed stops at the limit with a per-file error.
+hashed stops at the limit with a per-file error. The bytes of a read that fails count too; once
+the limit is spent, the files left are not read, and their rows say so.
 It runs synchronously only when explicitly requested; it is not a background job or a promise
 that the remaining probe/copy work cannot block the UI.
 
