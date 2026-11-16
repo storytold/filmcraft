@@ -61,7 +61,7 @@ craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # DPX still reader, on the same commit as craft-media.
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5dcddf5bf09c5250f95c89e8197c695f158b88f5" }
 # Shared YUV4MPEG2 parser and frame index.
-craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7d8884c62c601fbaf784c60b38c863e6c398c303" }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6bd1c3dc357f012ddb31c6799ad2e36a1596003d" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7738cc6c689060475cb6947a6e3db6ed78fb3419", default-features = false }

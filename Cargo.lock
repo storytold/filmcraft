@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "craft-fcproj-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=7d8884c62c601fbaf784c60b38c863e6c398c303#7d8884c62c601fbaf784c60b38c863e6c398c303"
+source = "git+https://github.com/storytold/craft-libs?rev=6bd1c3dc357f012ddb31c6799ad2e36a1596003d#6bd1c3dc357f012ddb31c6799ad2e36a1596003d"
 dependencies = [
  "serde",
  "serde_json",
