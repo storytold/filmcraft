@@ -1195,10 +1195,10 @@ dependencies = [
 [[package]]
 name = "craft-captions"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12#5689c73d293db85aa47419356ff7470778448d12"
+source = "git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0#57288edafdc45552e30481cc649021de446abfa0"
 dependencies = [
- "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
+ "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
  "thiserror 2.0.21",
 ]
 
@@ -1364,7 +1364,7 @@ dependencies = [
 [[package]]
 name = "craft-time"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12#5689c73d293db85aa47419356ff7470778448d12"
+source = "git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0#57288edafdc45552e30481cc649021de446abfa0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1382,10 +1382,10 @@ dependencies = [
 [[package]]
 name = "craft-timeline"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12#5689c73d293db85aa47419356ff7470778448d12"
+source = "git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0#57288edafdc45552e30481cc649021de446abfa0"
 dependencies = [
- "craft-time 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
- "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
+ "craft-time 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
+ "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
  "serde",
  "serde_json",
 ]
@@ -1480,7 +1480,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12#5689c73d293db85aa47419356ff7470778448d12"
+source = "git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0#57288edafdc45552e30481cc649021de446abfa0"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
@@ -2565,7 +2565,7 @@ version = "0.20.1"
 dependencies = [
  "craft-aaf",
  "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
- "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
+ "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
  "filmcraft-cfb",
  "filmcraft-color",
  "filmcraft-geom",
@@ -2734,7 +2734,7 @@ dependencies = [
 name = "filmcraft-time"
 version = "0.20.1"
 dependencies = [
- "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5689c73d293db85aa47419356ff7470778448d12)",
+ "craft-timeline 0.1.0 (git+https://github.com/storytold/craft-libs?rev=57288edafdc45552e30481cc649021de446abfa0)",
 ]
 
 [[package]]
