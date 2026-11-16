@@ -2326,7 +2326,7 @@ mod stabilizer_keys_of_a_project {
 /// path from what was analysed, an extended one analyses only its new frames, and either path is
 /// the one a fresh analysis of that clip makes.
 mod stabilizer_shared_by_clips_of_a_source {
-    use super::super::temporal::path_of;
+    use super::super::temporal::{path_of, steps_in_size};
     use super::*;
     use crate::vfx::{AnalysisPhase, stabilizer_state, without_waiting_for_analysis};
     use crate::{RenderOptions, SourceMap, render_sequence};
@@ -2344,6 +2344,8 @@ mod stabilizer_shared_by_clips_of_a_source {
     struct Shaky {
         info: MediaInfo,
         reads: Arc<AtomicUsize>,
+        /// The size frames decode to (the picture is the same at any size).
+        size: (u32, u32),
     }
 
     impl MediaSource for Shaky {
@@ -2353,14 +2355,16 @@ mod stabilizer_shared_by_clips_of_a_source {
         fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             let t = R.frame_at(req.time) as f64 / 24.0;
-            let mut px = Vec::with_capacity((W * H * 4) as usize);
-            for y in 0..H {
-                for x in 0..W {
-                    let v = (shaky(x as f64, y as f64, t)[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
+            let (w, h) = self.size;
+            let mut px = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let (sx, sy) = (x as f64 * W as f64 / w as f64, y as f64 * H as f64 / h as f64);
+                    let v = (shaky(sx, sy, t)[0].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
                     px.extend([v, v, v, 255]);
                 }
             }
-            Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(W, H, px)))
+            Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(w, h, px)))
         }
         fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
             GeneratorSource::new(Generator::BlackVideo, W, H, R, Tick(TICKS_PER_SECOND)).audio(start, frames, sample_rate)
@@ -2398,7 +2402,7 @@ mod stabilizer_shared_by_clips_of_a_source {
             None,
         );
         let reads = Arc::new(AtomicUsize::new(0));
-        map.0.insert(media, Arc::new(Shaky { info, reads: reads.clone() }) as SharedSource);
+        map.0.insert(media, Arc::new(Shaky { info, reads: reads.clone(), size: (W, H) }) as SharedSource);
         let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: R, ..Default::default() }, 1, 0, None);
         Fixture { p, seq, media, map, reads }
     }
@@ -2507,6 +2511,39 @@ mod stabilizer_shared_by_clips_of_a_source {
         let reads = f.render(0);
         assert!((13..=16).contains(&reads), "{reads} frames read");
         assert_eq!(f.path(0).steps, fresh(0x5A4E_0202, 12, 72).steps);
+    }
+
+    #[test]
+    fn steps_change_size_with_the_frames() {
+        let m = Affine::translate(2.0, 1.0).then_apply(&Affine::rotate_deg(3.0));
+        let got = steps_in_size(vec![m], (100, 50), (200, 100))[0];
+        let want = Affine::translate(4.0, 2.0).then_apply(&Affine::rotate_deg(3.0));
+        for (g, w) in [got.a, got.b, got.c, got.d, got.e, got.f].iter().zip([want.a, want.b, want.c, want.d, want.e, want.f]) {
+            assert!((g - w).abs() < 1e-12, "{got:?} vs {want:?}");
+        }
+        assert_eq!(steps_in_size(vec![m], (100, 50), (100, 50)), vec![m]);
+    }
+
+    /// A proxy and its original can decode to frames of different sizes. What was analysed at one
+    /// size stays, and frames read at the other add to it.
+    #[test]
+    fn frames_of_another_size_add_to_what_was_analysed() {
+        let mut f = fixture(0x5A4E_0004);
+        f.clips(&[(0, 24, 48), (100, 200, 24)]);
+        f.render(0);
+        f.render(1);
+        let before = f.path(0);
+        // the same frames, now decoded half as large again
+        let info = f.map.0.get(&f.media).unwrap().info().clone();
+        f.map.0.insert(f.media, Arc::new(Shaky { info, reads: f.reads.clone(), size: (W * 3 / 2, H * 3 / 2) }) as SharedSource);
+        f.edit(0, |c| c.duration = R.tick_of(60));
+        let reads = f.render(0);
+        assert!((13..=16).contains(&reads), "{reads} frames read: only the new ones");
+        assert_eq!(f.state(0).phase, AnalysisPhase::Done);
+        let after = f.path(0);
+        assert_eq!((after.w, after.h), (before.w, before.h), "kept at the size analysed first");
+        assert_eq!(after.steps[..47], before.steps[..], "what was analysed stays");
+        assert!(f.missing(1).is_empty(), "and so does the other clip's analysis");
     }
 
     #[test]
