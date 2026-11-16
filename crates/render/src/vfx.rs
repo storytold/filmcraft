@@ -36,8 +36,8 @@ use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
 pub use temporal::{
-    AnalysisPhase, AnalysisState, StabilizerPath, clear_stabilizer_cache, set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path,
-    stabilizer_progress, stabilizer_state, without_waiting_for_analysis,
+    AnalysisPhase, AnalysisState, StabilizerPath, analysis_wanted_elsewhere, clear_analysis_queue, clear_stabilizer_cache, giving_way, set_analysis_queue,
+    set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path, stabilizer_progress, stabilizer_state, without_waiting_for_analysis,
 };
 pub(crate) use text::film_time_format;
 
@@ -286,6 +286,87 @@ pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem)
             AnalysisSpan { source: bytes(0, &own), first: 0 }
         }
     })
+}
+
+/// An enabled Warp Stabilizer on a clip, for analysing a project's clips ahead of time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StabilizerClip {
+    /// Its analysis key (as [`stabilizer_keys`] and [`without_waiting_for_analysis`] give them).
+    pub key: u64,
+    pub sequence: filmcraft_project::ItemId,
+    pub clip: filmcraft_project::ClipId,
+    /// Index of the effect in the clip's effects.
+    pub effect: usize,
+    /// Where the clip is on its sequence's timeline.
+    pub start: Tick,
+    pub end: Tick,
+}
+
+/// Every enabled Warp Stabilizer on an enabled clip of `project`: the sequence `first` (the one
+/// the user is looking at) first, then the others by name, each in timeline order (by start,
+/// then track).
+pub fn stabilizer_clips(project: &Project, first: Option<filmcraft_project::ItemId>) -> Vec<StabilizerClip> {
+    let mut seqs: Vec<(filmcraft_project::ItemId, String)> =
+        project.sequences().filter(|p| matches!(p.kind, filmcraft_project::ItemKind::Sequence(_))).map(|p| (p.id, p.name.to_lowercase())).collect();
+    seqs.sort_by(|a, b| (Some(a.0) != first).cmp(&(Some(b.0) != first)).then_with(|| a.1.cmp(&b.1)).then(a.0.0.cmp(&b.0.0)));
+    let mut out = Vec::new();
+    for (id, _) in seqs {
+        let Some(seq) = project.sequence(id) else { continue };
+        let mut clips: Vec<(Tick, usize, StabilizerClip)> = Vec::new();
+        for (track, t) in seq.video_tracks.iter().enumerate() {
+            for item in t.items.iter().filter(|i| i.enabled) {
+                for (index, e) in item.effects.iter().enumerate().filter(|(_, e)| e.effect == "warp_stabilizer" && e.enabled) {
+                    let key = temporal::effect_key(project, seq, item, e).clip;
+                    clips.push((item.start, track, StabilizerClip { key, sequence: id, clip: item.id, effect: index, start: item.start, end: item.end() }));
+                }
+            }
+        }
+        clips.sort_by_key(|c| (c.0, c.1));
+        out.extend(clips.into_iter().map(|c| c.2));
+    }
+    out
+}
+
+/// How [`analyse_stabilizer`] ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisRun {
+    /// Analysed, or no frame of the clip could be read (it stays unstabilised).
+    Settled,
+    /// Stopped first, keeping what it read: cancelled, or given way to a render
+    /// ([`giving_way`]). It goes on when asked again.
+    Stopped,
+    /// It ended without a path for another reason (the clip is gone, the analysis failed).
+    Failed,
+}
+
+/// Analyse (or finish analysing) the Warp Stabilizer `c` of `project` without rendering a frame,
+/// under the calling thread's cancel flag.
+pub fn analyse_stabilizer(project: &Project, c: &StabilizerClip, sources: &dyn SourceProvider) -> AnalysisRun {
+    let Some(seq) = project.sequence(c.sequence) else { return AnalysisRun::Failed };
+    let Some((_, item)) = seq.find_item(c.clip) else { return AnalysisRun::Failed };
+    let Some(e) = item.effects.get(c.effect) else { return AnalysisRun::Failed };
+    let tc = String::new();
+    let env = ItemEnv {
+        project,
+        seq,
+        item,
+        t: item.start,
+        opts: RenderOptions::default(),
+        sources,
+        want: 1.0,
+        layer_size: (1, 1),
+        layer_to_output: Affine::IDENTITY,
+        tc: &tc,
+    };
+    let method = if chv(e, "method") == 0 { filmcraft_project::TrackMethod::Position } else { filmcraft_project::TrackMethod::PositionScaleRotation };
+    let (path, gave_way) = temporal::noting_give_way(|| stabilizer_path(&env, 0.0, method, bv(e, "detailed")));
+    if path.is_some() || stabilizer_analysed(temporal::effect_key(project, seq, item, e).clip) {
+        AnalysisRun::Settled
+    } else if gave_way || filmcraft_media::cancel::cancelled() {
+        AnalysisRun::Stopped
+    } else {
+        AnalysisRun::Failed
+    }
 }
 
 // ------------------------------------------------------------------ parameters

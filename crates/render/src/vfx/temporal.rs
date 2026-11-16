@@ -470,26 +470,35 @@ pub fn stabilizer_path(env: &dyn FxEnv, _now: f64, method: TrackMethod, detailed
         let (runs, complete) = analyse(env, method, detailed, &todo, &filmcraft_media::cancel::cancelled, None);
         return keep(lock_analyses(), &key, None, runs, fps, complete);
     };
-    loop {
-        let (g, done) = finished(a, &key);
-        a = g;
-        if done.is_some() {
-            return done;
+    let yielding = YIELDING.with(Cell::get);
+    {
+        // a request that waits counts, unless it is one that gives way itself
+        let _waiting = (!yielding).then(Waiting::new);
+        loop {
+            let (g, done) = finished(a, &key);
+            a = g;
+            if done.is_some() {
+                return done;
+            }
+            if yielding && WAITERS.load(Ordering::Relaxed) > 0 {
+                GAVE_WAY.with(|g| g.set(true));
+                return None;
+            }
+            if a.running.is_none() {
+                break;
+            }
+            if filmcraft_media::cancel::cancelled() {
+                return None;
+            }
+            a = analyses().1.wait_timeout(a, WAIT_POLL).map_or_else(|e| e.into_inner().0, |(g, _)| g);
         }
-        if a.running.is_none() {
-            break;
-        }
-        if filmcraft_media::cancel::cancelled() {
-            return None;
-        }
-        a = analyses().1.wait_timeout(a, WAIT_POLL).map_or_else(|e| e.into_inner().0, |(g, _)| g);
     }
     let todo = Todo::of(&a, &key);
     a.running = Some(key.clip);
     let generation = a.generation;
     drop(a);
     let mut turn = Turn { ended: false };
-    let (runs, complete) = analyse_on(pool, env, method, detailed, &todo);
+    let (runs, complete) = analyse_on(pool, env, method, detailed, &todo, yielding);
     let mut a = lock_analyses();
     // the waiting requests see the analysis' result when they get the lock back
     a.running = None;
@@ -500,9 +509,9 @@ pub fn stabilizer_path(env: &dyn FxEnv, _now: f64, method: TrackMethod, detailed
 }
 
 /// Which analysis a clip needs.
-struct Key {
+pub(super) struct Key {
     /// The clip's own (its finished path, whether it is running or unreadable).
-    clip: u64,
+    pub(super) clip: u64,
     /// Its source's, shared by the clips that read the same frames of it the same way.
     source: u64,
     /// The source's identity on disk (media clips only).
@@ -601,7 +610,76 @@ impl Todo {
     }
 }
 
+/// Requests waiting for another request's analysis to end before theirs can run (renders that
+/// wait: exports, Render In to Out). Analyses run [`giving_way`] stop for them.
+static WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// One request counted in [`WAITERS`] while it lives.
+struct Waiting;
+
+impl Waiting {
+    fn new() -> Waiting {
+        WAITERS.fetch_add(1, Ordering::Relaxed);
+        Waiting
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        WAITERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Run `f` with its analyses giving way: one stops (keeping what it read) as soon as a render is
+/// waiting for its turn, and none starts while one is. For analyses nobody is looking at yet.
+pub fn giving_way<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            YIELDING.with(|y| y.set(self.0));
+        }
+    }
+    let _restore = Restore(YIELDING.with(|y| y.replace(true)));
+    f()
+}
+
+/// Whether a render is waiting for an analysis (an analysis [`giving_way`] would not start now).
+pub fn analysis_wanted_elsewhere() -> bool {
+    WAITERS.load(Ordering::Relaxed) > 0
+}
+
+/// The analyses an application has lined up, in the order it runs them, and who lined them up.
+fn queue() -> &'static Mutex<(u64, Vec<u64>)> {
+    static Q: Mutex<(u64, Vec<u64>)> = Mutex::new((0, Vec::new()));
+    &Q
+}
+
+/// Publish the analyses `owner` has lined up (clip keys, in order) for [`stabilizer_state`].
+pub fn set_analysis_queue(owner: u64, keys: Vec<u64>) {
+    *queue().lock().unwrap_or_else(PoisonError::into_inner) = (owner, keys);
+}
+
+/// Withdraw `owner`'s queue (it is gone); another owner's stays.
+pub fn clear_analysis_queue(owner: u64) {
+    let mut q = queue().lock().unwrap_or_else(PoisonError::into_inner);
+    if q.0 == owner {
+        *q = (0, Vec::new());
+    }
+}
+
+/// Run `f` and say whether an analysis it ran gave way to a waiting render ([`giving_way`]).
+pub(super) fn noting_give_way<R>(f: impl FnOnce() -> R) -> (R, bool) {
+    let before = GAVE_WAY.with(|g| g.replace(false));
+    let r = f();
+    let gave = GAVE_WAY.with(|g| g.replace(before));
+    (r, gave)
+}
+
 thread_local! {
+    /// Inside [`giving_way`].
+    static YIELDING: Cell<bool> = const { Cell::new(false) };
+    /// An analysis run [`giving_way`] stopped (or didn't start) for a waiting render.
+    static GAVE_WAY: Cell<bool> = const { Cell::new(false) };
     /// Inside [`without_waiting_for_analysis`].
     static LIVE: Cell<bool> = const { Cell::new(false) };
     /// The analyses frames rendered inside it went without.
@@ -640,6 +718,12 @@ pub(super) fn forget_analysis(env: &dyn FxEnv, method: TrackMethod, detailed: bo
     a.unreadable.remove(&key.clip);
     a.sources.remove(&key.source);
     a.looked_up.remove(&key.source);
+}
+
+/// The clip key of the Warp Stabilizer `e` on `item`, for tests.
+#[cfg(test)]
+pub(super) fn key_of_effect(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> u64 {
+    effect_key(project, seq, item, e).clip
 }
 
 /// [`in_size`], for tests.
@@ -694,7 +778,7 @@ pub fn stabilizer_keys(project: &Project) -> HashSet<u64> {
 }
 
 /// The analysis keys of the Warp Stabilizer `e` on `item`.
-fn effect_key(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> Key {
+pub(super) fn effect_key(project: &Project, seq: &Sequence, item: &TrackItem, e: &EffectInstance) -> Key {
     let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
     let n = analysis_frames(item.duration.seconds(), seq.settings.frame_rate.as_f64());
     analysis_key(super::analysis_span(project, seq, item), super::clip_key_of(item), method, bv(e, "detailed"), n)
@@ -708,6 +792,8 @@ pub struct AnalysisState {
     pub analyzed: usize,
     /// Frames of the clip the analysis reads.
     pub total: usize,
+    /// Its place in line while queued (1: next).
+    pub position: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -716,8 +802,10 @@ pub enum AnalysisPhase {
     Done,
     /// Running now.
     Running,
-    /// Neither: it runs when a frame of the clip is shown or rendered, going on from the frames
-    /// already analysed by an analysis that was stopped.
+    /// Lined up behind other analyses; it starts by itself ([`AnalysisState::position`]).
+    Queued,
+    /// None of these: it runs when a frame of the clip is shown or rendered, going on from the
+    /// frames already analysed by an analysis that was stopped.
     Waiting,
     /// It finished without a frame it could read: the clip is shown unstabilized.
     Unreadable,
@@ -743,7 +831,17 @@ pub fn stabilizer_state(project: &Project, seq: &Sequence, item: &TrackItem, e: 
     } else {
         (AnalysisPhase::Waiting, a.sources.get(&key.source).map_or(0, |r| r.known(key.first, key.n)))
     };
-    AnalysisState { phase, analyzed, total }
+    let running = a.running;
+    drop(a);
+    let mut position = None;
+    let phase = if phase == AnalysisPhase::Waiting {
+        let q = queue().lock().unwrap_or_else(PoisonError::into_inner);
+        position = q.1.iter().filter(|k| Some(**k) != running).position(|k| *k == key.clip).map(|i| i + 1);
+        if position.is_some() { AnalysisPhase::Queued } else { phase }
+    } else {
+        phase
+    };
+    AnalysisState { phase, analyzed, total, position }
 }
 
 /// The running analysis' turn. Ended by its request once its result is kept; ended here when that
@@ -788,7 +886,8 @@ fn keep(
         }
     }
     let path = kept.path(key.first, key.n).filter(|_| complete).map(Arc::new);
-    let save = (added && key.identity.is_some()).then(|| kept.clone());
+    // written when an analysis ends, not each time one is stopped (moving the playhead stops one)
+    let save = (added && complete && key.identity.is_some()).then(|| kept.clone());
     match &path {
         Some(p) => {
             if a.clips.len() >= KEPT_ANALYSES {
@@ -823,8 +922,9 @@ fn in_size(steps: Vec<Affine>, from: (usize, usize), to: (usize, usize)) -> Vec<
 
 /// Run [`analyse`] on the analysis pool, stopping it when this request is cancelled. The request
 /// waits on a thread of its own, which takes no other rayon work meanwhile (see [`analysis_pool`]).
-fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, method: TrackMethod, detailed: bool, todo: &Todo) -> (Vec<(usize, Progress)>, bool) {
+fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, method: TrackMethod, detailed: bool, todo: &Todo, yielding: bool) -> (Vec<(usize, Progress)>, bool) {
     let stop = AtomicBool::new(false);
+    let gave_way = AtomicBool::new(false);
     let started = AtomicBool::new(false);
     let run = || {
         started.store(true, Ordering::Relaxed);
@@ -839,10 +939,17 @@ fn analyse_on(pool: &rayon::ThreadPool, env: &dyn FxEnv, method: TrackMethod, de
             if filmcraft_media::cancel::cancelled() {
                 stop.store(true, Ordering::Relaxed);
             }
+            if yielding && WAITERS.load(Ordering::Relaxed) > 0 {
+                gave_way.store(true, Ordering::Relaxed);
+                stop.store(true, Ordering::Relaxed);
+            }
             std::thread::sleep(WAIT_POLL);
         }
         handle.join().ok().flatten()
     });
+    if gave_way.load(Ordering::Relaxed) {
+        GAVE_WAY.with(|g| g.set(true));
+    }
     match done {
         Some(r) => r,
         // no thread could be made: analyse here (or nothing, after a panic)

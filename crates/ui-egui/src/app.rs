@@ -279,6 +279,9 @@ impl FilmcraftApp {
         // a frame server rebuilt by sync_pool (another project opened) gets its wake-up now: no
         // poll asks for the next frame, so its finished frames would wait for the mouse (#2438 review)
         self.frames.set_context(ctx);
+        // Warp Stabilizer analyses: the clips under the playhead first, then the whole project
+        let playhead = self.session.playhead();
+        self.frames.set_view(&self.session.project, self.session.revision, self.session.state.active_sequence, playhead, self.playback.playing);
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);

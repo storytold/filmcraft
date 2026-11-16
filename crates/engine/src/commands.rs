@@ -5266,9 +5266,10 @@ pub fn inspect_project(s: &Session) -> Value {
 }
 
 /// A clip effect for `sequence.inspect`. A Warp Stabilizer also says where its analysis stands:
-/// `{"state": "done" | "analyzing" | "waiting" | "unreadable", "framesAnalyzed": n, "totalFrames":
-/// n}`, with `progress` (0 to 1) while it runs. It waits until a frame of the clip is shown or
-/// rendered.
+/// `{"state": "done" | "analyzing" | "queued" | "waiting" | "unreadable", "framesAnalyzed": n,
+/// "totalFrames": n}`, with `progress` (0 to 1) while it runs and `position` (1: next) while it is
+/// queued. The app queues every enabled one of the open project; elsewhere (headless) one waits
+/// until a frame of the clip is rendered.
 fn effect_json(
     project: &filmcraft_project::Project,
     q: &filmcraft_project::Sequence,
@@ -5282,10 +5283,14 @@ fn effect_json(
         let state = match a.phase {
             AnalysisPhase::Done => "done",
             AnalysisPhase::Running => "analyzing",
+            AnalysisPhase::Queued => "queued",
             AnalysisPhase::Waiting => "waiting",
             AnalysisPhase::Unreadable => "unreadable",
         };
         v["analysis"] = json!({"state": state, "framesAnalyzed": a.analyzed, "totalFrames": a.total});
+        if let Some(position) = a.position {
+            v["analysis"]["position"] = json!(position);
+        }
         if a.phase == AnalysisPhase::Running {
             v["analysis"]["progress"] = json!(a.analyzed as f64 / a.total.max(1) as f64);
         }

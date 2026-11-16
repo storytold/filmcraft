@@ -8,10 +8,14 @@
 //! render (see `filmcraft_engine::previews`).
 //!
 //! Monitor frames don't wait for Warp Stabilizer analyses: a clip that isn't analysed yet is shown
-//! unstabilised (the frame is *provisional*), and one analysis thread of the server works through
-//! the analyses those frames went without, in the order they were asked for. When one finishes,
-//! the provisional frames are dropped from the caches and the UI repaints, so the monitors render
-//! them again, stabilised.
+//! unstabilised (the frame is *provisional*), and one analysis thread of the server runs the
+//! analyses, one at a time: first those the frame on screen went without and those of the clips
+//! under the playhead, then (once the app shows the server its project, [`FrameServer::set_view`])
+//! every other enabled Warp Stabilizer of the project, the sequence on screen first, in timeline
+//! order, then the other sequences by name. A background analysis stops (keeping what it read) as
+//! soon as the view needs another one, the monitors are busy (playback, scrubbing) or a render
+//! waits for an analysis (an export). When one finishes, the provisional frames it settles are
+//! dropped from the caches and the UI repaints, so the monitors render them again, stabilised.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -177,29 +181,137 @@ struct Shared {
     stop: AtomicBool,
     /// Whether an analysis thread runs: without one (wasm32) frames wait for their analyses.
     live_analysis: bool,
-    /// Cached frames rendered without a Warp Stabilizer analysis they need.
-    provisional: Mutex<HashSet<FrameKey>>,
-    /// The analyses monitor frames went without ([`analysis_worker`]).
+    /// Cached frames rendered without Warp Stabilizer analyses they need, and those analyses.
+    provisional: Mutex<HashMap<FrameKey, Vec<u64>>>,
+    /// What the analysis thread works through ([`analysis_worker`]).
     analyses: Mutex<Analyses>,
     analyses_cv: Condvar,
+    /// Names this server's analysis queue ([`filmcraft_render::vfx::set_analysis_queue`]).
+    owner: u64,
 }
 
-/// A render that waits for the Warp Stabilizer analyses `keys`, which a monitor frame went
-/// without: rendering it again outside `without_waiting_for_analysis` runs them.
-struct AnalysisRequest {
-    keys: Vec<u64>,
-    job: Job,
-}
+/// How long the monitors must have asked for no new frame before background analyses run: the
+/// analysis shares a source's decoder with them.
+const QUIET: Duration = Duration::from_millis(1000);
 
+/// What the analysis thread works through.
 #[derive(Default)]
 struct Analyses {
-    queue: VecDeque<AnalysisRequest>,
-    /// The analyses being run, and the flag that stops them.
-    running: Option<(Vec<u64>, Arc<AtomicBool>)>,
-    /// The newest project a request came with (revision, project). A queued request renders it
-    /// instead of its own, and analyses that are not in it any more (the clip was trimmed or
-    /// deleted meanwhile) are stopped or skipped.
-    latest: Option<(u64, Arc<Project>)>,
+    /// The newest project the server was shown, with the sequence on screen and its playhead.
+    view: Option<View>,
+    /// The enabled Warp Stabilizers of the view's project, in background order, for its revision
+    /// and sequence.
+    clips: Vec<filmcraft_render::vfx::StabilizerClip>,
+    clips_for: Option<(u64, Option<ItemId>)>,
+    /// Analyses the frames on screen went without, most wanted first.
+    current: Vec<u64>,
+    /// Analyses run to their end this session (analysed, or no frame to read). The thread keeps
+    /// its own record: the render crate keeps only so many finished paths in memory, and would
+    /// have it analyse forever on a project with more stabilised clips than that.
+    settled: HashSet<u64>,
+    /// The analysis running: its key, whether it is a background one, and the flag that stops it.
+    running: Option<(u64, bool, Arc<AtomicBool>)>,
+    /// Background analysis is on: the app shows the server its project ([`FrameServer::set_view`]).
+    background: bool,
+    /// The monitors asked for a frame lately: background analyses wait until then.
+    quiet_after: Option<Instant>,
+    /// Analyses started, in order (tests).
+    #[cfg(test)]
+    started: Vec<u64>,
+}
+
+#[derive(Clone)]
+struct View {
+    revision: u64,
+    project: Arc<Project>,
+    sequence: Option<ItemId>,
+    playhead: Tick,
+    playing: bool,
+}
+
+impl Analyses {
+    /// Bring the clip list up to date with the view.
+    fn refresh(&mut self) {
+        let Some(v) = &self.view else { return };
+        if self.clips_for == Some((v.revision, v.sequence)) {
+            return;
+        }
+        self.clips = filmcraft_render::vfx::stabilizer_clips(&v.project, v.sequence);
+        self.clips_for = Some((v.revision, v.sequence));
+        let keys: HashSet<u64> = self.clips.iter().map(|c| c.key).collect();
+        self.settled.retain(|k| keys.contains(k));
+        self.current.retain(|k| keys.contains(k));
+    }
+
+    /// The analyses the view needs now: those the frame on screen went without, then those of
+    /// the clips under the playhead.
+    fn foreground(&self) -> Vec<u64> {
+        let mut keys: Vec<u64> = self.current.iter().copied().filter(|k| !self.settled.contains(k)).collect();
+        if let Some(v) = &self.view {
+            for c in self.clips.iter().filter(|c| Some(c.sequence) == v.sequence && c.start <= v.playhead && v.playhead < c.end) {
+                if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
+                    keys.push(c.key);
+                }
+            }
+        }
+        keys
+    }
+
+    /// Every analysis still to run, in the order they run.
+    fn order(&self) -> Vec<u64> {
+        let mut keys = self.foreground();
+        if self.background {
+            for c in &self.clips {
+                if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
+                    keys.push(c.key);
+                }
+            }
+        }
+        keys
+    }
+
+    /// Whether background analyses may run now.
+    fn background_allowed(&self) -> bool {
+        self.background
+            && !self.view.as_ref().is_some_and(|v| v.playing)
+            && self.quiet_after.is_none_or(|t| Instant::now() >= t)
+            && !filmcraft_render::vfx::analysis_wanted_elsewhere()
+    }
+
+    /// The next analysis to run, and whether it is a background one.
+    fn next(&mut self) -> Option<(filmcraft_render::vfx::StabilizerClip, bool)> {
+        self.refresh();
+        let clip = |k: u64| self.clips.iter().find(|c| c.key == k).cloned();
+        if let Some(c) = self.foreground().into_iter().find_map(clip) {
+            return Some((c, false));
+        }
+        if !self.background_allowed() {
+            return None;
+        }
+        self.clips.iter().find(|c| !self.settled.contains(&c.key)).cloned().map(|c| (c, true))
+    }
+
+    /// Stop the running analysis when the view no longer needs it first.
+    fn preempt(&self) {
+        let Some((key, background, cancel)) = &self.running else { return };
+        let wanted = self.foreground();
+        let gone = self.clips_for.is_some() && !self.clips.iter().any(|c| c.key == *key);
+        if gone || (!wanted.is_empty() && !wanted.contains(key)) || (*background && !self.background_allowed()) {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Take `view` when it is no older than the one held.
+    fn take_view(&mut self, view: View) {
+        if self.view.as_ref().is_some_and(|v| v.revision > view.revision) {
+            return;
+        }
+        if view.playing {
+            self.quiet_after = Some(Instant::now() + QUIET);
+        }
+        self.view = Some(view);
+        self.refresh();
+    }
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -540,9 +652,13 @@ impl FrameServer {
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
             live_analysis: cfg!(not(target_arch = "wasm32")),
-            provisional: Mutex::new(HashSet::new()),
+            provisional: Mutex::new(HashMap::new()),
             analyses: Mutex::new(Analyses::default()),
             analyses_cv: Condvar::new(),
+            owner: {
+                static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                OWNERS.fetch_add(1, Ordering::Relaxed)
+            },
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -557,7 +673,8 @@ impl FrameServer {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (sh, pool, services, rp, pv) = (shared.clone(), pool.clone(), services.clone(), repaint.clone(), previews.clone());
-            std::thread::Builder::new().name("filmcraft-stabilize".into()).spawn(move || analysis_worker(sh, pool, services, pv, rp)).ok();
+            let _ = pv;
+            std::thread::Builder::new().name("filmcraft-stabilize".into()).spawn(move || analysis_worker(sh, pool, services, rp)).ok();
         }
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
@@ -636,13 +753,31 @@ impl FrameServer {
     /// Whether the cached frame `k` was rendered without a Warp Stabilizer analysis it needs
     /// (it shows the clip unstabilised until the analysis is done).
     pub fn is_provisional(&self, k: &FrameKey) -> bool {
-        self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).contains(k)
+        self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).contains_key(k)
     }
 
-    /// Whether Warp Stabilizer analyses that monitor frames need are running or queued.
+    /// Whether a Warp Stabilizer analysis is running, or one the view needs is still to run.
     pub fn analysing(&self) -> bool {
         let a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
-        a.running.is_some() || !a.queue.is_empty()
+        a.running.is_some() || !a.foreground().is_empty()
+    }
+
+    /// Show the server the project the user is editing, the sequence on screen and its playhead
+    /// (each UI tick): the analysis thread then analyses every enabled Warp Stabilizer of the
+    /// project, the clips under the playhead first. Background analyses wait while `playing`.
+    pub fn set_view(&self, project: &Arc<Project>, revision: u64, sequence: Option<ItemId>, playhead: Tick, playing: bool) {
+        let mut a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+        let same = a.view.as_ref().is_some_and(|v| {
+            v.revision == revision && Arc::ptr_eq(&v.project, project) && v.sequence == sequence && v.playhead == playhead && v.playing == playing
+        });
+        if same && a.background && !playing {
+            return;
+        }
+        a.background = true;
+        a.take_view(View { revision, project: project.clone(), sequence, playhead, playing });
+        a.preempt();
+        drop(a);
+        self.shared.analyses_cv.notify_all();
     }
 
     /// Nearest cached plan at or before `frame`.
@@ -688,6 +823,11 @@ impl FrameServer {
         if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
         {
+            // back on a frame shown unstabilised: its analyses are the ones wanted now
+            let keys = (prio == 0).then(|| self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned()).flatten();
+            if let Some(keys) = keys {
+                wanted_now(&self.shared, keys);
+            }
             hit();
             return;
         }
@@ -709,6 +849,12 @@ impl FrameServer {
             return;
         }
         self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_misses += 1;
+        if prio == 0 && !prefetch {
+            // the monitors decode: background analyses (which share the decoders) wait
+            let mut a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+            a.quiet_after = Some(Instant::now() + QUIET);
+            a.preempt();
+        }
         if prio == 0 {
             // A new frame on screen for this view replaces the one asked for before: scrubbing
             // asks for one per refresh, and without this the oldest position would decode
@@ -896,13 +1042,15 @@ impl Drop for FrameServer {
         }
         self.shared.cv.notify_all();
         let mut a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
-        a.queue.clear();
-        a.latest = None;
-        if let Some((_, c)) = &a.running {
+        a.current.clear();
+        a.view = None;
+        a.background = false;
+        if let Some((_, _, c)) = &a.running {
             c.store(true, Ordering::Relaxed);
         }
         drop(a);
         self.shared.analyses_cv.notify_all();
+        filmcraft_render::vfx::clear_analysis_queue(self.shared.owner);
     }
 }
 
@@ -1129,63 +1277,65 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
 
 /// Note the frame `job` cached without the analyses `keys`, and ask the analysis thread for them.
 fn provisional(sh: &Shared, job: &Job, keys: Vec<u64>) {
-    sh.provisional.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key);
-    // finished meanwhile (the analysis thread already dropped the provisional frames it knew)
-    if keys.iter().all(|&k| filmcraft_render::vfx::stabilizer_analysed(k)) {
-        drop_provisional(sh);
-        return;
-    }
-    let request = AnalysisRequest {
-        keys,
-        job: Job {
-            key: job.key,
-            queued: Instant::now(),
-            cancel: Default::default(),
-            prefetch: false,
-            catch_up: None,
-            time: job.time,
-            scale: job.scale,
-            project: job.project.clone(),
-            prio: job.prio,
-        },
-    };
+    sh.provisional.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, keys.clone());
     let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
     if sh.stop.load(Ordering::Relaxed) {
         return;
     }
-    let revision = request.job.key.revision;
-    if a.latest.as_ref().is_none_or(|(r, _)| revision > *r) {
-        a.latest = Some((revision, request.job.project.clone()));
-        // a running analysis the newest project has no clip for (dragging a trim makes a new one
-        // for every length) is stopped; what it read is kept in case the clip comes back
-        if let Some((running, cancel)) = &a.running {
-            let wanted = filmcraft_render::vfx::stabilizer_keys(&request.job.project);
-            if !running.iter().any(|k| wanted.contains(k)) {
-                cancel.store(true, Ordering::Relaxed);
+    let sequence = match job.key.target {
+        Target::Sequence(s) | Target::SequencePlan(s, _) | Target::SequenceLive(s) => Some(s),
+        _ => a.view.as_ref().and_then(|v| v.sequence),
+    };
+    let playing = a.view.as_ref().is_some_and(|v| v.playing);
+    let playhead = a.view.as_ref().filter(|v| v.sequence == sequence).map_or(job.time, |v| v.playhead);
+    a.take_view(View { revision: job.key.revision, project: job.project.clone(), sequence, playhead, playing });
+    // the frame went without them: whatever was settled, they are wanted (again)
+    for k in &keys {
+        if !filmcraft_render::vfx::stabilizer_analysed(*k) {
+            a.settled.remove(k);
+        }
+    }
+    if job.prio == 0 {
+        a.current = keys;
+    } else {
+        for k in keys {
+            if !a.current.contains(&k) {
+                a.current.push(k);
             }
         }
     }
-    if a.running.as_ref().is_some_and(|(running, _)| request.keys.iter().all(|k| running.contains(k))) {
+    a.preempt();
+    drop(a);
+    sh.analyses_cv.notify_all();
+    // finished meanwhile
+    drop_provisional(sh);
+}
+
+/// The frame on screen needs the analyses `keys` (it is a provisional one shown again).
+fn wanted_now(sh: &Shared, keys: Vec<u64>) {
+    let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+    if a.current == keys {
         return;
     }
-    if let Some(q) = a.queue.iter_mut().find(|q| q.keys.iter().any(|k| request.keys.contains(k))) {
-        for k in request.keys {
-            if !q.keys.contains(&k) {
-                q.keys.push(k);
-            }
-        }
-        q.job = request.job;
-    } else {
-        a.queue.push_back(request);
-    }
+    a.current = keys;
+    a.preempt();
     drop(a);
     sh.analyses_cv.notify_all();
 }
 
-/// Drop every provisional frame from the caches: the monitors render them again, with the
-/// analyses that are done by now. True when there were any.
+/// Drop the provisional frames whose analyses are all settled from the caches: the monitors
+/// render them again, with those analyses. True when there were any.
 fn drop_provisional(sh: &Shared) -> bool {
-    let keys = std::mem::take(&mut *sh.provisional.lock().unwrap_or_else(PoisonError::into_inner));
+    let settled = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner).settled.clone();
+    let keys: Vec<FrameKey> = {
+        let mut p = sh.provisional.lock().unwrap_or_else(PoisonError::into_inner);
+        let ready: Vec<FrameKey> =
+            p.iter().filter(|(_, keys)| keys.iter().all(|k| settled.contains(k) || filmcraft_render::vfx::stabilizer_analysed(*k))).map(|(f, _)| *f).collect();
+        for f in &ready {
+            p.remove(f);
+        }
+        ready
+    };
     if keys.is_empty() {
         return false;
     }
@@ -1206,58 +1356,65 @@ fn drop_provisional(sh: &Shared) -> bool {
     true
 }
 
-/// The analysis thread: runs the Warp Stabilizer analyses that monitor frames went without, one
-/// request at a time, by rendering the request's frame and waiting for them as an export does.
-/// The analysis itself runs on its own pool (`filmcraft_render`); this thread only waits, so no
-/// frame worker is held up meanwhile.
-fn analysis_worker(
-    sh: Arc<Shared>,
-    pool: Arc<MediaPool>,
-    services: Arc<dyn Services>,
-    previews: Arc<PreviewStore>,
-    repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
-) {
+/// The analysis thread: runs the Warp Stabilizer analyses, one at a time, in the order
+/// [`Analyses::next`] gives. The analysis itself runs on its own pool (`filmcraft_render`); this
+/// thread only waits, so no frame worker is held up meanwhile.
+fn analysis_worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Services>, repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>) {
     loop {
-        let (mut job, keys, cancel) = {
+        let (clip, background, cancel, project) = {
             let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
-            let request = loop {
+            let next = loop {
                 if sh.stop.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Some(r) = a.queue.pop_front() {
-                    break r;
+                if let Some(n) = a.next() {
+                    break n;
                 }
-                a = sh.analyses_cv.wait(a).unwrap_or_else(PoisonError::into_inner);
+                if a.background {
+                    filmcraft_render::vfx::set_analysis_queue(sh.owner, a.order());
+                }
+                // background analyses wait for the monitors, playback or a render: look again soon
+                let waiting = a.background && a.clips.iter().any(|c| !a.settled.contains(&c.key));
+                a = if waiting {
+                    sh.analyses_cv.wait_timeout(a, Duration::from_millis(200)).map_or_else(|e| e.into_inner().0, |(g, _)| g)
+                } else {
+                    sh.analyses_cv.wait(a).unwrap_or_else(PoisonError::into_inner)
+                };
             };
-            let mut job = request.job;
-            if let Some((revision, project)) = &a.latest
-                && *revision > job.key.revision
-            {
-                job.project = project.clone();
-                job.key.revision = *revision;
-            }
-            let wanted = filmcraft_render::vfx::stabilizer_keys(&job.project);
-            let keys: Vec<u64> = request.keys.into_iter().filter(|k| wanted.contains(k) && !filmcraft_render::vfx::stabilizer_analysed(*k)).collect();
+            let Some(project) = a.view.as_ref().map(|v| v.project.clone()) else { continue };
             let cancel = Arc::new(AtomicBool::new(false));
-            if !keys.is_empty() {
-                a.running = Some((keys.clone(), cancel.clone()));
+            a.running = Some((next.0.key, next.1, cancel.clone()));
+            #[cfg(test)]
+            a.started.push(next.0.key);
+            if a.background {
+                filmcraft_render::vfx::set_analysis_queue(sh.owner, a.order());
             }
-            (job, keys, cancel)
+            (next.0, next.1, cancel, project)
         };
-        if !keys.is_empty() {
-            // a plan target renders the same frame on the CPU; the image is not kept
-            if let Target::SequencePlan(seq, _) = job.key.target {
-                job.key.target = Target::Sequence(seq);
-            }
-            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                filmcraft_media::cancel::with_cancel(&cancel, || {
-                    filmcraft_media::cancel::with_background(false, || render_job(&job, &pool, &services, &previews))
+        let provider = JobProvider { inner: pool.provider(project.clone(), services.clone()) };
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            filmcraft_media::cancel::with_cancel(&cancel, || {
+                filmcraft_media::cancel::with_background(false, || {
+                    if background {
+                        filmcraft_render::vfx::giving_way(|| filmcraft_render::vfx::analyse_stabilizer(&project, &clip, &provider))
+                    } else {
+                        filmcraft_render::vfx::analyse_stabilizer(&project, &clip, &provider)
+                    }
                 })
-            }));
-            if ran.is_err() {
-                log::error!("Warp Stabilizer analysis for frame {:?} panicked; the analysis thread continues", job.key);
+            })
+        }));
+        let run = ran.unwrap_or_else(|_| {
+            log::error!("Warp Stabilizer analysis of clip {:?} panicked; the analysis thread continues", clip.clip);
+            filmcraft_render::vfx::AnalysisRun::Failed
+        });
+        {
+            let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+            a.running = None;
+            // stopped for another analysis, the monitors or a render: it goes on later. Anything
+            // else (it ended, or failed) settles it, so the thread never analyses it again and again.
+            if run != filmcraft_render::vfx::AnalysisRun::Stopped {
+                a.settled.insert(clip.key);
             }
-            sh.analyses.lock().unwrap_or_else(PoisonError::into_inner).running = None;
         }
         if drop_provisional(&sh)
             && let Some(f) = repaint.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
@@ -1640,6 +1797,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_monitor_frame_is_shown_while_its_clip_is_analysed() {
+        let _turn = one_at_a_time();
         use super::{FrameKey, FrameServer, run_job};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -1675,6 +1833,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn an_analysis_the_project_no_longer_needs_is_stopped() {
+        let _turn = one_at_a_time();
         use super::{FrameKey, FrameServer, provisional};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1687,12 +1846,255 @@ mod tests {
         let (gone, kept) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         let key = |revision| FrameKey { target: Target::Sequence(seq), frame: 3, size: 1000, revision, draft: false };
         // an analysis of a clip that is still in the project goes on
-        server.shared.analyses.lock().unwrap().running = Some((vec![wanted], kept.clone()));
+        server.shared.analyses.lock().unwrap().running = Some((wanted, false, kept.clone()));
         provisional(&server.shared, &job(key(5), &p), vec![wanted]);
         assert!(!kept.load(Ordering::SeqCst));
         // one of a clip the newer project doesn't have is stopped
-        server.shared.analyses.lock().unwrap().running = Some((vec![wanted ^ 1], gone.clone()));
+        server.shared.analyses.lock().unwrap().running = Some((wanted ^ 1, false, gone.clone()));
         provisional(&server.shared, &job(key(6), &p), vec![wanted]);
         assert!(gone.load(Ordering::SeqCst), "stopped");
+    }
+
+    use std::sync::Arc;
+
+    /// Analyses take turns process-wide: the tests that run them take turns too, so one test's
+    /// analysis doesn't hold up another's render.
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        L.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A project with one moving source, read through [`Slow`] when `delay` is set, and the
+    /// clips `(sequence, start, source in, duration)` in frames, each with a Warp Stabilizer.
+    struct Background {
+        p: Arc<filmcraft_project::Project>,
+        seqs: Vec<filmcraft_project::ItemId>,
+        clips: Vec<filmcraft_project::ClipId>,
+        server: super::FrameServer,
+        session: filmcraft_engine::Session,
+    }
+
+    /// A source that takes `delay` for each frame.
+    struct Slow(filmcraft_media::SharedSource, std::time::Duration);
+
+    impl filmcraft_media::MediaSource for Slow {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            self.0.info()
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            std::thread::sleep(self.1);
+            self.0.video_frame(req)
+        }
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            self.0.audio(start, frames, sample_rate)
+        }
+    }
+
+    fn background(names: &[&str], clips: &[(usize, i64, i64, i64)], delay: Option<std::time::Duration>) -> Background {
+        use filmcraft_media::generators::GeneratorSource;
+        use filmcraft_media::{DemoScene, MediaSource};
+        use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+        use filmcraft_time::{FrameRate, TimeRange};
+        let r = FrameRate::FPS_24;
+        let mut p = Project::new("Background");
+        let g = GeneratorSource::demo(DemoScene::OceanSunset);
+        let info = g.info().clone();
+        let media = p.add_item(
+            &info.name.clone(),
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seqs: Vec<_> =
+            names.iter().map(|n| p.new_sequence(n, SequenceSettings { width: 160, height: 90, frame_rate: r, ..Default::default() }, 1, 0, None)).collect();
+        let mut ids = Vec::new();
+        for &(seq, start, src_in, dur) in clips {
+            let mut ti = p.make_track_item(media, TrackKind::Video, r.tick_of(start), TimeRange::new(r.tick_of(src_in), r.tick_of(dur)), r).unwrap();
+            ti.scale_to_frame = true;
+            ti.effects.push(filmcraft_project::find_effect("warp_stabilizer").unwrap().instance());
+            ids.push(ti.id);
+            p.sequence_mut(seqs[seq]).unwrap().video_tracks[0].items.push(ti);
+        }
+        let session = filmcraft_engine::Session::default();
+        if let Some(d) = delay {
+            session.media.insert(media, Arc::new(Slow(Arc::new(g), d)));
+        }
+        let server = super::FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), 1);
+        Background { p: Arc::new(p), seqs, clips: ids, server, session }
+    }
+
+    impl Background {
+        fn key(&self, clip: filmcraft_project::ClipId) -> u64 {
+            filmcraft_render::vfx::stabilizer_clips(&self.p, None).into_iter().find(|c| c.clip == clip).map(|c| c.key).expect("a stabilised clip")
+        }
+        fn show(&self, seq: usize, frame: i64) {
+            self.server.set_view(&self.p, 1, Some(self.seqs[seq]), filmcraft_time::FrameRate::FPS_24.tick_of(frame), false);
+        }
+        fn started(&self) -> Vec<u64> {
+            self.server.shared.analyses.lock().unwrap().started.clone()
+        }
+        fn running(&self) -> Option<u64> {
+            self.server.shared.analyses.lock().unwrap().running.as_ref().map(|r| r.0)
+        }
+        fn settled(&self, k: u64) -> bool {
+            self.server.shared.analyses.lock().unwrap().settled.contains(&k)
+        }
+        /// Wait (up to `secs`) for `f`.
+        fn until(&self, secs: u64, f: impl Fn(&Self) -> bool) -> bool {
+            let t0 = std::time::Instant::now();
+            while !f(self) {
+                if t0.elapsed() > std::time::Duration::from_secs(secs) {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            true
+        }
+    }
+
+    /// An open project's stabilised clips are all analysed: the one under the playhead first, then
+    /// the sequence on screen in timeline order, then the other sequences by name. Disabled clips
+    /// and effects are left alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_open_project_is_analysed_in_order() {
+        let _turn = one_at_a_time();
+        let mut b = background(
+            &["Visible", "b second", "A first"],
+            &[(0, 96, 40, 12), (0, 0, 0, 12), (0, 48, 20, 12), (1, 0, 60, 12), (2, 0, 80, 12), (0, 150, 100, 12), (0, 200, 120, 12)],
+            None,
+        );
+        {
+            let p = Arc::make_mut(&mut b.p);
+            let q = p.sequence_mut(b.seqs[0]).unwrap();
+            let (off, no_fx) = (b.clips[5], b.clips[6]);
+            for c in &mut q.video_tracks[0].items {
+                if c.id == off {
+                    c.enabled = false;
+                }
+                if c.id == no_fx {
+                    c.effects.iter_mut().filter(|e| e.effect == "warp_stabilizer").for_each(|e| e.enabled = false);
+                }
+            }
+        }
+        let k = |i: usize| b.key(b.clips[i]);
+        let want = vec![k(2), k(1), k(0), k(4), k(3)];
+        b.show(0, 50);
+        assert!(b.until(120, |b| want.iter().all(|k| b.settled(*k)) && b.running().is_none()), "analysed {:?}", b.started());
+        // an analysis stopped part way (another test's render waited for its turn) starts again
+        let mut first = Vec::new();
+        for k in b.started() {
+            if !first.contains(&k) {
+                first.push(k);
+            }
+        }
+        assert_eq!(first, want, "under the playhead, then Visible in timeline order, then A first, then b second");
+        assert!(!b.server.analysing());
+    }
+
+    /// More stabilised clips than the render crate keeps finished paths of, one of them with no
+    /// frame to read: each is analysed once, and the thread goes idle.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_analysis_thread_finishes_a_large_project() {
+        let _turn = one_at_a_time();
+        let clips: Vec<(usize, i64, i64, i64)> = (0..70).map(|i| (0, i * 2, i * 2, 2)).collect();
+        let mut b = background(&["Many"], &clips, None);
+        {
+            use filmcraft_media::MediaSource;
+            let p = Arc::make_mut(&mut b.p);
+            let info = filmcraft_media::generators::GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset).info().clone();
+            let gone = p.add_item(
+                "gone.mov",
+                filmcraft_project::Label::Iris,
+                filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
+                    media: filmcraft_project::MediaRef::File { path: "/nonexistent/gone.mov".into() },
+                    info,
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let r = filmcraft_time::FrameRate::FPS_24;
+            let mut ti = p
+                .make_track_item(
+                    gone,
+                    filmcraft_project::TrackKind::Video,
+                    r.tick_of(200),
+                    filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(4)),
+                    r,
+                )
+                .unwrap();
+            ti.effects.push(filmcraft_project::find_effect("warp_stabilizer").unwrap().instance());
+            p.sequence_mut(b.seqs[0]).unwrap().video_tracks[0].items.push(ti);
+        }
+        b.show(0, 1000);
+        let all = filmcraft_render::vfx::stabilizer_clips(&b.p, None);
+        assert_eq!(all.len(), 71);
+        assert!(
+            b.until(240, |b| all.iter().all(|c| b.settled(c.key)) && b.running().is_none()),
+            "{} of 71 settled",
+            all.iter().filter(|c| b.settled(c.key)).count()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let started = b.started();
+        let unique: std::collections::HashSet<u64> = started.iter().copied().collect();
+        assert_eq!(unique.len(), 71, "each analysed");
+        assert!(started.len() < 2 * 71, "{} starts for 71 clips: none again and again", started.len());
+        assert!(!b.server.analysing() && b.running().is_none(), "idle");
+    }
+
+    /// Moving the playhead onto another clip moves the analysis there at once; the one it left
+    /// goes on later.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_analysis_follows_the_playhead() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 48), (0, 48, 100, 48)], Some(std::time::Duration::from_millis(20)));
+        let (first, second) = (b.key(b.clips[0]), b.key(b.clips[1]));
+        b.show(0, 10);
+        assert!(b.until(30, |b| b.running() == Some(first)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        b.show(0, 60);
+        assert!(b.until(60, |b| b.settled(second)), "{:?}", b.started());
+        assert_eq!(b.started()[..2], [first, second], "the second clip was started as soon as the playhead moved");
+        assert!(!b.settled(first) || b.started().len() == 3, "the first was stopped, then finished after");
+        assert!(b.until(60, |b| b.settled(first)), "and it is finished in the background");
+    }
+
+    /// A render that waits for an analysis (an export) doesn't wait behind a background one.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_background_analysis_gives_way_to_a_render() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 120), (0, 200, 200, 6)], Some(std::time::Duration::from_millis(20)));
+        let (long, short) = (b.key(b.clips[0]), b.key(b.clips[1]));
+        // the playhead on neither: both are background analyses, the long one first
+        b.show(0, 150);
+        assert!(b.until(30, |b| b.running() == Some(long)));
+        let t0 = std::time::Instant::now();
+        let provider = b.session.media.provider(b.p.clone(), b.session.services.clone());
+        let r = filmcraft_time::FrameRate::FPS_24;
+        filmcraft_render::render_sequence(&b.p, b.seqs[0], r.tick_of(202), filmcraft_render::RenderOptions::default(), &provider);
+        let took = t0.elapsed();
+        assert!(filmcraft_render::vfx::stabilizer_analysed(short), "the render analysed its clip");
+        assert!(!b.settled(long), "the background analysis stopped for it");
+        assert!(took < std::time::Duration::from_millis(1500), "rendered in {took:?}, not behind the 120-frame analysis");
+        assert!(b.until(60, |b| b.settled(long)), "and went on after");
     }
 }
