@@ -1,7 +1,7 @@
 //! Structural checks of written AAF files against the required properties and rules of the AAF
 //! Object Specification v1.1 and the Edit Protocol, read back through our compound file reader.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use filmcraft_project::{Project, SequenceSettings, TrackKind, TransitionAlign, TransitionId, find_effect};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
@@ -95,28 +95,122 @@ fn keys(dict: &Obj, p: u16) -> HashSet<Vec<u8>> {
     dict.objs(p).iter().filter_map(|d| d.data(pid::IDENTIFICATION).map(<[u8]>::to_vec)).collect()
 }
 
-/// #323: readers that load the meta-dictionary (pyaaf2) need its ClassDefinitions and
-/// TypeDefinitions sets. They are empty: everything written uses the baseline classes and types
-/// those readers already know.
+/// The project of [`project`] with a sequence marker, volume keyframes and embedded audio, so that
+/// an export uses every class the writer knows.
+fn rich_export(small_sectors: bool) -> Vec<u8> {
+    use crate::essence::{AudioEssence, EssenceData, MediaOptions, NeedOptions, audio_needs};
+    use filmcraft_project::{Interpolation, Keyframe, Label, Marker, MarkerId, MarkerKind, Param, ParamValue};
+    let (mut p, s) = project();
+    let r = FrameRate::FPS_24;
+    let q = p.sequence_mut(s).unwrap();
+    q.markers.push(Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
+        id: MarkerId(9001),
+        start: r.tick_of(50),
+        duration: r.tick_of(10),
+        name: "Fix this".into(),
+        comment: "colour".into(),
+        kind: MarkerKind::Comment,
+        color: Label::Mango,
+    });
+    let mut level = Param::new(ParamValue::Float(0.0));
+    for (f, db) in [(0, -12.0), (24, 0.0)] {
+        let mut k = Keyframe::new(r.tick_of(f), ParamValue::Float(db));
+        k.interp = Interpolation::Linear;
+        level.keyframes.push(k);
+    }
+    q.audio_tracks[0].items[0].effect_mut("volume").unwrap().params.insert("level".into(), level);
+    let essence = audio_needs(&p, s, &NeedOptions::default())
+        .iter()
+        .map(|n| {
+            let frames = ((n.end - n.start).0 / (filmcraft_time::TICKS_PER_SECOND / 48_000)) as u64;
+            let data = EssenceData::Embedded(vec![0; frames as usize * 2 * 3]);
+            AudioEssence { key: n.key, channel: None, start: n.start, frames, sample_rate: 48_000, bits: 24, channels: 2, data, effects_rendered: false }
+        })
+        .collect();
+    let opts = AafOptions { small_sectors, media: MediaOptions { essence, ..Default::default() }, ..Default::default() };
+    export(&p, s, &opts).unwrap().0
+}
+
+fn weak_target(v: Option<&Value>, path: [u16; 2]) -> Vec<u8> {
+    match v {
+        Some(Value::Weak(p, k, key)) if *p == path && *k == pid::META_IDENTIFICATION => key.clone(),
+        other => panic!("not a weak reference into {path:04x?}: {other:?}"),
+    }
+}
+
+/// AAF Object Specification v1.1 §5: "An AAF file shall contain the class model being used by the
+/// file in the MetaDictionary object's ClassDefinitions and TypeDefinitions properties." LibAAF
+/// refuses a file whose ClassDefinitions set is empty. Every property of every object written is
+/// defined, with its local tag, on the object's class or an ancestor, and every class, type and
+/// reference in that model resolves.
 #[test]
-fn the_meta_dictionary_has_its_class_and_type_definition_sets() {
+fn the_meta_dictionary_holds_the_class_model_of_the_file() {
     let (p, s) = project();
-    for small in [false, true] {
-        let (bytes, _) = export(&p, s, &AafOptions { small_sectors: small, ..Default::default() }).unwrap();
+    for (bytes, small, rich) in
+        [(export(&p, s, &AafOptions::default()).unwrap().0, false, false), (rich_export(false), false, true), (rich_export(true), true, true)]
+    {
         let cf = filmcraft_cfb::CompoundFile::open(&bytes).unwrap();
+        assert_eq!(cf.version, if small { 3 } else { 4 });
         assert_eq!(cf.entries[cf.find("MetaDictionary-1").unwrap()].clsid, ids::META_DICTIONARY);
-        for name in ["ClassDefinitions-3", "TypeDefinitions-4"] {
-            // u32 count, u32 first free key, u32 last free key, u16 key pid, u8 key size
-            let index = cf.read_path(&format!("MetaDictionary-1/{name} index")).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(index.len(), 15, "{name}: an empty set");
-            assert_eq!(index[0..4], 0u32.to_le_bytes(), "{name}: no entries");
-            assert_eq!(u16::from_le_bytes([index[12], index[13]]), pid::META_IDENTIFICATION, "{name}: keyed by the definition's AUID");
-            assert_eq!(index[14], 16, "{name}: 16-byte keys");
-        }
         let root = store::read(&bytes).unwrap();
         let meta = root.strong(pid::ROOT_META_DICTIONARY).unwrap();
-        for set in [pid::META_CLASS_DEFINITIONS, pid::META_TYPE_DEFINITIONS] {
-            assert!(matches!(meta.get(set), Some(Value::StrongSet(items, k)) if items.is_empty() && *k == pid::META_IDENTIFICATION), "{set:#06x}");
+        let by_id = |set: u16| -> HashMap<Vec<u8>, &Obj> {
+            assert!(matches!(meta.get(set), Some(Value::StrongSet(items, k)) if !items.is_empty() && *k == pid::META_IDENTIFICATION), "{set:#06x}");
+            meta.objs(set).iter().map(|o| (o.data(pid::META_IDENTIFICATION).unwrap().to_vec(), o)).collect()
+        };
+        let (classes, types) = (by_id(pid::META_CLASS_DEFINITIONS), by_id(pid::META_TYPE_DEFINITIONS));
+        assert!(classes.values().all(|c| c.class == ids::meta::CLASS_DEFINITION));
+
+        // every class reaches InterchangeObject (its own parent); every property has a known type
+        let interchange_object = ids::class(0x01).to_vec();
+        let mut defined: HashMap<Vec<u8>, HashSet<u16>> = HashMap::new();
+        for (id, c) in &classes {
+            let mut at = id.clone();
+            for _ in 0..classes.len() {
+                at = weak_target(classes[&at].get(pid::CLASS_PARENT), path::META_CLASSES);
+                assert!(classes.contains_key(&at), "parent of {id:02x?}");
+            }
+            assert_eq!(at, interchange_object);
+            for prop in c.objs(pid::CLASS_PROPERTIES) {
+                assert_eq!(prop.class, ids::meta::PROPERTY_DEFINITION);
+                assert!(types.contains_key(prop.data(pid::PROPERTY_TYPE).unwrap()), "type of {:?}", prop.string(pid::META_NAME));
+                assert!(defined.entry(id.clone()).or_default().insert(prop.u16(pid::PROPERTY_LOCAL_ID).unwrap()));
+            }
+        }
+        // every type a type is made of is defined, and every class it refers to
+        for t in types.values() {
+            for (_, v) in &t.props {
+                match v {
+                    Value::Weak(p, ..) if *p == path::META_TYPES => assert!(types.contains_key(&weak_target(Some(v), path::META_TYPES))),
+                    Value::Weak(..) => assert!(classes.contains_key(&weak_target(Some(v), path::META_CLASSES))),
+                    Value::WeakVec(p, _, keys) => assert!(*p == path::META_TYPES.to_vec() && keys.iter().all(|k| types.contains_key(k))),
+                    _ => {}
+                }
+            }
+        }
+
+        // every object written uses a defined class and defined properties
+        let header = root.strong(pid::ROOT_HEADER).unwrap();
+        let mut all = Vec::new();
+        walk(header, &mut all);
+        let mut used = HashSet::new();
+        for o in all {
+            used.insert(o.class);
+            for (p, _) in &o.props {
+                let mut at = o.class.to_vec();
+                while !defined.get(&at).is_some_and(|d| d.contains(p)) {
+                    assert_ne!(at, interchange_object, "property {p:#06x} of class {:02x?} is not in the meta-dictionary", o.class);
+                    at = weak_target(classes.get(&at).unwrap_or_else(|| panic!("class {at:02x?}")).get(pid::CLASS_PARENT), path::META_CLASSES);
+                }
+            }
+        }
+        if rich {
+            for c in [cls::ESSENCE_DATA, cls::PCM_DESCRIPTOR, cls::COMMENT_MARKER, cls::EVENT_MOB_SLOT, cls::VARYING_VALUE, cls::CONTROL_POINT] {
+                assert!(used.contains(&c), "the rich export uses {c:02x?}");
+            }
         }
     }
 }
