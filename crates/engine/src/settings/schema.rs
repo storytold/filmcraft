@@ -618,6 +618,18 @@ pub fn field(key: &str) -> Option<Field> {
 
 /// Check a value for `key` against the schema (choices, colours). Ranges are clamped later.
 pub fn validate(key: &str, v: &Value) -> std::result::Result<(), String> {
+    if key == "fonts.favorites" || key == "fonts.recent" {
+        let items = v.as_array().ok_or(format!("`{key}` must be a list of family names"))?;
+        for item in items {
+            if item.as_str().is_none_or(|s| s.trim().is_empty()) {
+                return Err(format!("`{key}` holds family names, got {item}"));
+            }
+        }
+        if key == "fonts.recent" && items.len() > crate::autosave::FontPrefs::RECENT {
+            return Err(format!("`{key}` keeps at most {} families", crate::autosave::FontPrefs::RECENT));
+        }
+        return Ok(());
+    }
     if key == "appearance.favoriteThemes" {
         let items = v.as_array().ok_or("favorite themes must be a list")?;
         let mut seen = Vec::new();

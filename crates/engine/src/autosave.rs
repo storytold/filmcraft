@@ -182,6 +182,8 @@ pub struct Preferences {
     pub project_panel: crate::project_panel::ProjectPanelPrefs,
     /// Media Browser: Favorites, recent directories, file types, view, columns.
     pub media_browser: crate::media_browser::MediaBrowserPrefs,
+    /// Font pickers: favourites and recently used families.
+    pub fonts: FontPrefs,
 }
 
 impl Default for Preferences {
@@ -209,7 +211,62 @@ impl Default for Preferences {
             voice_over: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            fonts: Default::default(),
         }
+    }
+}
+
+/// Font pickers: the families marked as favourites and the recently used ones. Families are stored
+/// by their English name (what projects hold); the pickers show the Chinese name when the font has
+/// one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FontPrefs {
+    pub favorites: Vec<String>,
+    /// Newest first.
+    pub recent: Vec<String>,
+}
+
+impl FontPrefs {
+    /// How many recent families are kept.
+    pub const RECENT: usize = 12;
+
+    /// Record a family as used: move it to the front, keep one copy, drop the tail.
+    pub fn used(&mut self, family: &str) {
+        self.recent.retain(|f| !f.eq_ignore_ascii_case(family));
+        self.recent.insert(0, family.to_string());
+        self.recent.truncate(Self::RECENT);
+    }
+
+    /// Add or remove a favourite. Returns whether it is one now.
+    pub fn toggle_favorite(&mut self, family: &str) -> bool {
+        if let Some(i) = self.favorites.iter().position(|f| f.eq_ignore_ascii_case(family)) {
+            self.favorites.remove(i);
+            false
+        } else {
+            self.favorites.push(family.to_string());
+            true
+        }
+    }
+
+    pub fn is_favorite(&self, family: &str) -> bool {
+        self.favorites.iter().any(|f| f.eq_ignore_ascii_case(family))
+    }
+
+    fn clamp(&mut self) {
+        self.recent.truncate(Self::RECENT);
+        // One copy of each, in the order they were added.
+        let mut seen: Vec<String> = Vec::new();
+        self.favorites.retain(|f| {
+            let l = f.to_lowercase();
+            if seen.contains(&l) || f.trim().is_empty() {
+                false
+            } else {
+                seen.push(l);
+                true
+            }
+        });
+        self.recent.retain(|f| !f.trim().is_empty());
     }
 }
 
@@ -406,6 +463,7 @@ impl Preferences {
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
         self.labels.sanitize_labels();
         self.appearance.sync_color_theme();
+        self.fonts.clamp();
         self.version = settings::PREFS_VERSION;
     }
 

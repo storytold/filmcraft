@@ -18,6 +18,9 @@ pub struct FaceNames {
     pub full_name: String,
     pub weight: u16,
     pub italic: bool,
+    /// The family's name in Chinese (`思源黑体`), when the font carries one. The project always stores
+    /// the English family; this is only what the pickers show.
+    pub family_zh: Option<String>,
 }
 
 fn be16(b: &[u8], o: usize) -> Option<u16> {
@@ -82,6 +85,9 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     let nb = read_at(r, no, nl)?;
     let get = |id: u16| name_string(&nb, id);
     let family = get(16).or_else(|| get(1))?;
+    // nameID 16 (typographic family) first: a CJK family's legacy name often carries the style
+    // ("思源黑体 Normal"), its typographic name does not.
+    let family_zh = name_string_zh(&nb, 16).or_else(|| name_string_zh(&nb, 1));
     let style = get(17).or_else(|| get(2)).unwrap_or_else(|| "Regular".into());
     let full_name = get(4).unwrap_or_else(|| format!("{family} {style}"));
     let (mut weight, mut italic) = (400u16, false);
@@ -93,7 +99,40 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     }
     let sl = style.to_ascii_lowercase();
     italic |= sl.contains("italic") || sl.contains("oblique");
-    Some(FaceNames { index, family, style, full_name, weight, italic })
+    Some(FaceNames { index, family, style, full_name, weight, italic, family_zh })
+}
+
+/// A name-table string by id in Chinese, preferring Simplified over Traditional: Windows Unicode
+/// records for zh-CN, zh-SG, zh-TW, zh-HK in that order. `None` for the many fonts that ship no
+/// Chinese name (every Latin family).
+fn name_string_zh(b: &[u8], id: u16) -> Option<String> {
+    const ZH: [u16; 4] = [0x804, 0x1004, 0x404, 0xc04];
+    let count = be16(b, 2)? as usize;
+    let storage = be16(b, 4)? as usize;
+    let mut best: Option<(usize, String)> = None;
+    for i in 0..count {
+        let r = 6 + i * 12;
+        let (plat, enc, lang, nid, len, off) =
+            (be16(b, r)?, be16(b, r + 2)?, be16(b, r + 4)?, be16(b, r + 6)?, be16(b, r + 8)? as usize, be16(b, r + 10)? as usize);
+        if nid != id || plat != 3 || !(enc == 1 || enc == 10) {
+            continue;
+        }
+        let Some(rank) = ZH.iter().position(|l| *l == lang) else { continue };
+        if best.as_ref().is_some_and(|(current, _)| *current <= rank) {
+            continue;
+        }
+        let Some(raw) = b.get(storage + off..storage + off + len) else { continue };
+        let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        best = Some((rank, String::from_utf16_lossy(&u)));
+    }
+    // Some fonts tag a non-Chinese string with a Chinese language id (Noto's Devanagari families
+    // do); a label that has no CJK character is not a Chinese name and would draw as tofu.
+    best.map(|(_, s)| s).filter(|s| !s.trim().is_empty() && s.chars().any(is_cjk))
+}
+
+/// Whether a character is a CJK ideograph (the ranges a Chinese family name is written in).
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
 }
 
 /// A name-table string by id, preferring Windows Unicode English, then any Unicode, then Mac Roman.
@@ -146,6 +185,8 @@ fn name_string(b: &[u8], id: u16) -> Option<String> {
         };
         best = Some((rank, s));
     }
+    // Some fonts tag a non-Chinese string with a Chinese language id (Noto's Devanagari families
+    // do); a label that has no CJK character is not a Chinese name and would draw as tofu.
     best.map(|(_, s)| s).filter(|s| !s.trim().is_empty())
 }
 
