@@ -1221,86 +1221,16 @@ mod hevc_convert_tests {
     }
 }
 
-/// Uncompressed video layouts (AVI `BI_RGB` and YUV FourCCs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RawFormat {
-    /// 24-bit B, G, R; rows padded to 4 bytes.
-    Bgr24,
-    /// 32-bit B, G, R, X.
-    Bgrx32,
-    /// Packed 4:2:2: Y0 U Y1 V (`YUY2`, `YUYV`).
-    Yuy2,
-    /// Packed 4:2:2: U Y0 V Y1 (`UYVY`, `2vuy`).
-    Uyvy,
-    /// Planar 4:2:0: Y, U, V (`I420`, `IYUV`).
-    I420,
-    /// Planar 4:2:0: Y, V, U (`YV12`).
-    Yv12,
-    /// Y plane, interleaved U V at half resolution (`NV12`).
-    Nv12,
-    /// Luma only (`Y800`, `GREY`, `Y8  `).
-    Gray8,
-    /// 24-bit R, G, B; rows unpadded (QuickTime `raw ` at depth 24).
-    Rgb24,
-    /// 10-bit 4:2:2 Y'CbCr, six pixels in four little-endian words, rows padded to 128 bytes
-    /// (QuickTime `v210`); shown at 8 bits.
-    V210,
-}
+/// Uncompressed AVI and QuickTime pixel layouts from the shared video library.
+pub use craft_video::raw_video::RawFormat;
 
-impl RawFormat {
-    /// The layout of an AVI video stream: `BI_RGB` with its bit count, or a YUV FourCC.
-    pub fn from_avi(compression: [u8; 4], bit_count: u16) -> Option<RawFormat> {
-        if matches!(u32::from_le_bytes(compression), 0 | 3) {
-            return match bit_count {
-                24 => Some(RawFormat::Bgr24),
-                32 => Some(RawFormat::Bgrx32),
-                _ => None,
-            };
-        }
-        let mut upper = compression;
-        upper.make_ascii_uppercase();
-        Some(match &upper {
-            b"YUY2" | b"YUYV" | b"YUNV" | b"V422" => RawFormat::Yuy2,
-            b"UYVY" | b"2VUY" | b"UYNV" | b"HDYC" => RawFormat::Uyvy,
-            b"I420" | b"IYUV" => RawFormat::I420,
-            b"YV12" => RawFormat::Yv12,
-            b"NV12" => RawFormat::Nv12,
-            b"Y800" | b"GREY" | b"GRAY" | b"Y8  " => RawFormat::Gray8,
-            _ => return None,
-        })
-    }
-
-    /// The layout of a QuickTime / MP4 video sample entry (`raw ` RGB at depth 24, `2vuy`, `v210`).
-    pub fn from_mov(fourcc: [u8; 4], depth: u16) -> Option<RawFormat> {
-        match (&fourcc, depth) {
-            (b"raw ", 24) => Some(RawFormat::Rgb24),
-            (b"2vuy", _) => Some(RawFormat::Uyvy),
-            (b"v210", _) => Some(RawFormat::V210),
-            _ => None,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            RawFormat::Bgr24 | RawFormat::Rgb24 => "Uncompressed RGB 24-bit",
-            RawFormat::Bgrx32 => "Uncompressed RGB 32-bit",
-            RawFormat::Yuy2 | RawFormat::Uyvy => "Uncompressed YUV 4:2:2",
-            RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 => "Uncompressed YUV 4:2:0",
-            RawFormat::Gray8 => "Uncompressed greyscale",
-            RawFormat::V210 => "Uncompressed YUV 4:2:2 10-bit",
-        }
-    }
-}
-
-/// Uncompressed frames (each sample one picture of a [`RawFormat`]).
+/// Uncompressed frame decoder retaining FilmCraft timing and color presentation.
 pub struct RawVideoDecoder {
     format: RawFormat,
     width: u32,
     height: u32,
-    /// RGB rows are stored bottom-up (a positive `BITMAPINFOHEADER` height).
     bottom_up: bool,
 }
-
 impl RawVideoDecoder {
     pub fn new(format: RawFormat, width: u32, height: u32, bottom_up: bool) -> Result<Self> {
         if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
@@ -1308,7 +1238,19 @@ impl RawVideoDecoder {
         }
         Ok(Self { format, width, height, bottom_up })
     }
-
+    fn picture(&self, sample: &[u8]) -> Result<VideoFrame> {
+        let pixels = craft_video::raw_video::decode(self.format, self.width, self.height, self.bottom_up, sample).map_err(|e| match e {
+            craft_video::raw_video::Error::UnsupportedDimensions => CodecError::Unsupported(format!("{}x{} uncompressed video", self.width, self.height)),
+            craft_video::raw_video::Error::Truncated => {
+                CodecError::Decode(format!("{} frame of {} bytes is too short for {}x{}", self.format.label(), sample.len(), self.width, self.height))
+            }
+        })?;
+        match pixels {
+            craft_video::raw_video::RawPixels::Rgba(rgba) => Ok(VideoFrame::rgba8(self.width, self.height, rgba)),
+            craft_video::raw_video::RawPixels::Yuv420(planes) => Ok(self.yuv(planes, filmcraft_frame::Chroma::C420)),
+            craft_video::raw_video::RawPixels::Yuv422(planes) => Ok(self.yuv(planes, filmcraft_frame::Chroma::C422)),
+        }
+    }
     fn yuv(&self, planes: [Vec<u8>; 3], chroma: filmcraft_frame::Chroma) -> VideoFrame {
         use std::sync::Arc;
         let [y, u, v] = planes;
@@ -1320,102 +1262,6 @@ impl RawVideoDecoder {
             par: (1, 1),
             pts: filmcraft_time::Tick::ZERO,
         }
-    }
-
-    fn picture(&self, s: &[u8]) -> Result<VideoFrame> {
-        let (w, h) = (self.width as usize, self.height as usize);
-        let short = || CodecError::Decode(format!("{} frame of {} bytes is too short for {w}x{h}", self.format.label(), s.len()));
-        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-        Ok(match self.format {
-            RawFormat::Bgr24 | RawFormat::Bgrx32 => {
-                let bpp = if self.format == RawFormat::Bgr24 { 3 } else { 4 };
-                let stride = (w * bpp).div_ceil(4) * 4;
-                if s.len() < stride * h {
-                    return Err(short());
-                }
-                let mut rgba = Vec::with_capacity(w * h * 4);
-                for row in 0..h {
-                    let src = if self.bottom_up { h - 1 - row } else { row };
-                    for px in s.get(src * stride..src * stride + w * bpp).unwrap_or_default().chunks_exact(bpp) {
-                        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
-                    }
-                }
-                VideoFrame::rgba8(self.width, self.height, rgba)
-            }
-            RawFormat::Rgb24 => {
-                let stride = w * 3;
-                if s.len() < stride * h {
-                    return Err(short());
-                }
-                let mut rgba = Vec::with_capacity(w * h * 4);
-                for px in s.get(..stride * h).unwrap_or_default().as_chunks::<3>().0 {
-                    rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-                }
-                VideoFrame::rgba8(self.width, self.height, rgba)
-            }
-            RawFormat::V210 => {
-                // 6 pixels per 16 bytes; each row padded to a multiple of 128 bytes (48 pixels)
-                let stride = w.div_ceil(48) * 128;
-                if s.len() < stride * h {
-                    return Err(short());
-                }
-                let (mut y, mut u, mut v) = (Vec::with_capacity(w * h), Vec::with_capacity(cw * h), Vec::with_capacity(cw * h));
-                for row in s.chunks_exact(stride).take(h) {
-                    // the row's 10-bit samples in order: Cb Y Cr Y Cb Y Cr Y …, kept at 8 bits
-                    let mut comps = row.as_chunks::<4>().0.iter().flat_map(|b| {
-                        let word = u32::from_le_bytes(*b);
-                        [word & 0x3ff, (word >> 10) & 0x3ff, (word >> 20) & 0x3ff].map(|c| (c >> 2) as u8)
-                    });
-                    for x in 0..cw {
-                        let (Some(cb), Some(y0), Some(cr), Some(y1)) = (comps.next(), comps.next(), comps.next(), comps.next()) else { break };
-                        u.push(cb);
-                        v.push(cr);
-                        y.push(y0);
-                        if 2 * x + 1 < w {
-                            y.push(y1);
-                        }
-                    }
-                }
-                self.yuv([y, u, v], filmcraft_frame::Chroma::C422)
-            }
-            RawFormat::Yuy2 | RawFormat::Uyvy => {
-                let stride = cw * 4;
-                if s.len() < stride * h {
-                    return Err(short());
-                }
-                let (yo, uo, vo, y2) = if self.format == RawFormat::Yuy2 { (0, 1, 3, 2) } else { (1, 0, 2, 3) };
-                let (mut y, mut u, mut v) = (Vec::with_capacity(w * h), Vec::with_capacity(cw * h), Vec::with_capacity(cw * h));
-                for row in s.chunks_exact(stride).take(h) {
-                    for (k, q) in row.as_chunks::<4>().0.iter().enumerate() {
-                        y.push(q[yo]);
-                        if 2 * k + 1 < w {
-                            y.push(q[y2]);
-                        }
-                        u.push(q[uo]);
-                        v.push(q[vo]);
-                    }
-                }
-                self.yuv([y, u, v], filmcraft_frame::Chroma::C422)
-            }
-            RawFormat::I420 | RawFormat::Yv12 | RawFormat::Nv12 | RawFormat::Gray8 => {
-                let luma = w * h;
-                let need = if self.format == RawFormat::Gray8 { luma } else { luma + 2 * cw * ch };
-                if s.len() < need {
-                    return Err(short());
-                }
-                let y = s.get(..luma).unwrap_or_default().to_vec();
-                let (u, v) = match self.format {
-                    RawFormat::Gray8 => (vec![128; cw * ch], vec![128; cw * ch]),
-                    RawFormat::Nv12 => s.get(luma..luma + 2 * cw * ch).unwrap_or_default().as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).unzip(),
-                    _ => {
-                        let a = s.get(luma..luma + cw * ch).unwrap_or_default().to_vec();
-                        let b = s.get(luma + cw * ch..luma + 2 * cw * ch).unwrap_or_default().to_vec();
-                        if self.format == RawFormat::Yv12 { (b, a) } else { (a, b) }
-                    }
-                };
-                self.yuv([y, u, v], filmcraft_frame::Chroma::C420)
-            }
-        })
     }
 }
 
@@ -1432,6 +1278,38 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod raw_video_tests {
+    use super::*;
+    use filmcraft_frame::{Chroma, PixelData};
+
+    #[test]
+    fn uncompressed_frames_keep_their_layout_and_timing() {
+        let mut rgb = RawVideoDecoder::new(RawFormat::Bgrx32, 1, 1, false).unwrap();
+        let out = rgb.decode(&[3, 2, 1, 0], 42).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pts, 42);
+        assert!(matches!(out[0].frame.data, PixelData::Rgba8(_)), "{:?}", out[0].frame.data);
+        let mut uyvy = RawVideoDecoder::new(RawFormat::Uyvy, 2, 1, false).unwrap();
+        let f = &uyvy.decode(&[20, 10, 30, 11], 0).unwrap()[0].frame;
+        assert!(matches!(&f.data, PixelData::Yuv8 { chroma: Chroma::C422, planes, .. } if planes[0].as_slice() == [10, 11]));
+        let mut i420 = RawVideoDecoder::new(RawFormat::I420, 2, 2, false).unwrap();
+        let f = &i420.decode(&[1, 2, 3, 4, 10, 20], 0).unwrap()[0].frame;
+        assert!(matches!(&f.data, PixelData::Yuv8 { chroma: Chroma::C420, planes, .. } if planes[1].as_slice() == [10] && planes[2].as_slice() == [20]));
+        assert!(uyvy.flush().is_empty());
+        uyvy.reset();
+    }
+
+    #[test]
+    fn uncompressed_errors_name_the_frame() {
+        assert!(RawVideoDecoder::new(RawFormat::Gray8, 0, 1, false).is_err());
+        let mut short = RawVideoDecoder::new(RawFormat::I420, 2, 2, false).unwrap();
+        assert!(matches!(short.decode(&[1, 2], 0), Err(CodecError::Decode(m)) if m.contains("2 bytes is too short for 2x2")));
+        let huge = RawVideoDecoder { format: RawFormat::Gray8, width: u32::MAX, height: 1, bottom_up: false };
+        assert!(matches!(huge.picture(&[]), Err(CodecError::Unsupported(m)) if m.contains("uncompressed video")));
     }
 }
 
