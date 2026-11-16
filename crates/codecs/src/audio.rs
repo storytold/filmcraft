@@ -586,43 +586,9 @@ pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>>
 
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
-    let ch = cfg.channels.max(1) as usize;
-    // A hostile `ipcm`/`fpcm` sample entry can declare `bits == 0` (`a.sample_size` is
-    // applied unchecked, unlike the `sowt`/`twos` arms of `qt_pcm` which default it): `bps`
-    // would be 0 and the length division below would panic. There are no samples to decode.
-    if cfg.bits == 0 {
-        return vec![Vec::new(); ch];
-    }
-    let bps = (cfg.bits as usize).div_ceil(8);
-    let n = data.len() / (bps * ch);
-    let mut out = vec![Vec::with_capacity(n); ch];
-    for i in 0..n {
-        for (c, o) in out.iter_mut().enumerate() {
-            let off = (i * ch + c) * bps;
-            let b = &data[off..off + bps];
-            let v = match (cfg.bits, cfg.float, cfg.big_endian) {
-                (32, true, false) => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-                (32, true, true) => f32::from_be_bytes([b[0], b[1], b[2], b[3]]),
-                (64, true, false) => f64::from_le_bytes(b.try_into().unwrap_or([0; 8])) as f32,
-                (64, true, true) => f64::from_be_bytes(b.try_into().unwrap_or([0; 8])) as f32,
-                (8, _, _) => {
-                    if cfg.signed {
-                        b[0] as i8 as f32 / 128.0
-                    } else {
-                        (b[0] as f32 - 128.0) / 128.0
-                    }
-                }
-                (16, _, false) => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
-                (16, _, true) => i16::from_be_bytes([b[0], b[1]]) as f32 / 32768.0,
-                (24, _, false) => (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0,
-                (24, _, true) => (i32::from_be_bytes([b[0], b[1], b[2], 0]) >> 8) as f32 / 8_388_608.0,
-                (32, false, false) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                (32, false, true) => i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                _ => 0.0,
-            };
-            o.push(v);
-        }
-    }
+    let mut out = vec![Vec::new(); cfg.channels.max(1) as usize];
+    let format = craft_audio::pcm_interleaved::Format { bits: cfg.bits, float: cfg.float, big_endian: cfg.big_endian, signed: cfg.signed };
+    craft_audio::pcm_interleaved::decode_into(data, format, &mut out);
     out
 }
 
@@ -1355,6 +1321,12 @@ mod gapless_tests {
 #[cfg(test)]
 mod decode_pcm_tests {
     use super::*;
+
+    #[test]
+    fn pcm_adapter_decodes_interleaved_big_endian_samples() {
+        let cfg = filmcraft_isobmff::PcmConfig { bits: 16, float: false, big_endian: true, signed: true, channels: 2, sample_rate: 48_000.0 };
+        assert_eq!(decode_pcm(&[0x40, 0, 0xc0, 0, 0xff], &cfg), [vec![0.5], vec![-0.5]]);
+    }
 
     #[test]
     fn zero_bits_decode_to_empty_channels_without_panicking() {
