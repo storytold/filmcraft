@@ -1213,6 +1213,15 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93#7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93"
 
 [[package]]
+name = "craft-cloud"
+version = "0.1.0"
+source = "git+https://github.com/wdunn001/craft-libs?rev=6f0a6d2#6f0a6d2f4c24140d5ea988e5e40a85b2c6058401"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-control-protocol"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=99d0a6eca48082183a9d125cb4ef1a1707576070#99d0a6eca48082183a9d125cb4ef1a1707576070"
@@ -2765,6 +2774,7 @@ name = "filmcraft-ui-egui"
 version = "0.20.1"
 dependencies = [
  "cpu-time",
+ "craft-cloud",
  "craft-ui",
  "craft-update",
  "eframe",

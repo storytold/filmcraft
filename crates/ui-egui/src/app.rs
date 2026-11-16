@@ -130,6 +130,8 @@ impl FilmcraftApp {
             workspace_restored: false,
             workspaces,
             menu_workspaces: Default::default(),
+            cloud: Default::default(),
+            cloud_page: None,
         }
     }
 
@@ -282,6 +284,7 @@ impl FilmcraftApp {
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
+        crate::cloud::pump(self);
     }
 
     /// Apply engine events that change the active sequence/view, IME target, toast or project.

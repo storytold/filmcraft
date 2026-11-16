@@ -447,6 +447,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Settings ▸ Appearance ▸ Appearance Mode ▸ Sync with system on Linux desktops whose
         // compositor reports no theme to winit (no polling: see appearance.rs).
         app.hooks.system_theme = appearance::service();
+        // No CloudBackend/ShareBackend is wired up yet: storytold/craft-libs#160 is what brings
+        // the storytold-hosted contracts this app can point at, so the cloud UI stays hidden.
         app.hooks.raise_without_focus = Some(Box::new(|| {
             window_raise::raise_without_focus();
         }));

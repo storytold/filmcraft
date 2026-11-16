@@ -220,6 +220,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
+                // No CloudBackend/ShareBackend is wired up yet: the storytold/craft-libs#160
+                // contracts land before this app connects one, so the cloud UI stays hidden.
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);
@@ -265,3 +267,4 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     }
     Ok(())
 }
+

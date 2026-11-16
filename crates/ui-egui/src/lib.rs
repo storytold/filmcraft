@@ -43,6 +43,7 @@ pub mod brand;
 pub mod calc;
 pub mod capture;
 mod cjk;
+pub mod cloud;
 pub mod control;
 pub mod crash;
 pub mod credits;
@@ -397,6 +398,11 @@ pub struct FilmcraftApp {
     pub workspaces: dock::WorkspacePrefs,
     /// Workspace names and the current one, as last handed to the native menu.
     menu_workspaces: (Vec<String>, String),
+    /// Open and Save against cloud storage. Inert until a host connects a [`cloud::CloudBackend`]
+    /// (none does yet; see `crates/ui-egui/src/cloud.rs`).
+    pub cloud: cloud::CloudState,
+    /// Cloud Open / Save As page from the File menu, if any.
+    pub cloud_page: Option<cloud::CloudPage>,
 }
 
 pub struct GpuState {

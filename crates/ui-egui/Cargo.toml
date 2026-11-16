@@ -11,6 +11,13 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true }
+# Vendor-neutral cloud types (Entry, Capability, the Files/Sharing contracts). No IO, no
+# provider name: also buildable for the web. craft-ui's own `cloud` feature (the Open/Save
+# pages, share dialog, account badge and presence bar craft-ui would draw for us) is on hold
+# until storytold/craft-libs#160 merges: that PR also moves craft-ui onto the egui release this
+# workspace already uses, which the wdunn001/craft-libs fork's cloud feature predates. Until
+# then the cloud UI here is drawn locally (see `cloud.rs`) and hidden while no backend is set.
+craft-cloud = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }

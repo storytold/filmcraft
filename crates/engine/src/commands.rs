@@ -5414,6 +5414,12 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
+/// Encode the open project (with view) to `.fcproj` bytes without touching the filesystem.
+pub fn project_bytes(s: &Session) -> Vec<u8> {
+    let view = s.project_view();
+    filmcraft_format::encode_with_view(&s.project, Some(&view), false)
+}
+
 /// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.
 fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let per = s.persistence.as_ref().ok_or_else(|| EngineError::Other("recovery is not running".into()))?;
