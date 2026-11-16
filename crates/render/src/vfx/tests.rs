@@ -2585,3 +2585,166 @@ mod stabilizer_shared_by_clips_of_a_source {
         }
     }
 }
+
+/// A stabilised clip covered by opaque clips above it for all its time is listed as hidden
+/// (analysed last); anything that might let it show leaves it listed as seen.
+mod hidden_stabilizers {
+    use super::*;
+    use crate::vfx::stabilizer_clips;
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{Generator, MediaSource};
+    use filmcraft_project::{
+        ItemId, ItemKind, Keyframe, Label, MediaClip, MediaRef, Param, ParamValue, SequenceSettings, TrackItem, TrackKind, Transition, TransitionId,
+    };
+    use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+
+    const R: FrameRate = FrameRate::FPS_24;
+
+    struct Scene {
+        p: Project,
+        seq: ItemId,
+        cover: ItemId,
+    }
+
+    fn media(p: &mut Project, file: bool, alpha: bool) -> ItemId {
+        let g = GeneratorSource::new(Generator::BarsAndTone, 64, 36, R, Tick(60 * TICKS_PER_SECOND));
+        let mut info = g.info().clone();
+        if let Some(v) = &mut info.video {
+            v.has_alpha = alpha;
+        }
+        let media = if file { MediaRef::File { path: "/footage/cover.mov".into() } } else { MediaRef::Generator(g.generator.clone()) };
+        p.add_item(
+            "m",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media,
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        )
+    }
+
+    /// A stabilised clip on V1 (frames 24..72) and, on V2, cover clips at `(start, duration)`.
+    fn scene(covers: &[(i64, i64)]) -> Scene {
+        let mut p = Project::new("hidden");
+        let shaky = media(&mut p, false, false);
+        let cover = media(&mut p, true, false);
+        let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 36, frame_rate: R, ..Default::default() }, 2, 0, None);
+        let mut s = p.make_track_item(shaky, TrackKind::Video, R.tick_of(24), TimeRange::new(Tick::ZERO, R.tick_of(48)), R).unwrap();
+        s.effects.push(inst("warp_stabilizer"));
+        let cs: Vec<TrackItem> = covers
+            .iter()
+            .map(|&(start, dur)| p.make_track_item(cover, TrackKind::Video, R.tick_of(start), TimeRange::new(R.tick_of(start), R.tick_of(dur)), R).unwrap())
+            .collect();
+        let q = p.sequence_mut(seq).unwrap();
+        q.video_tracks[0].items.push(s);
+        q.video_tracks[1].items = cs;
+        Scene { p, seq, cover }
+    }
+
+    impl Scene {
+        fn hidden(&self) -> bool {
+            stabilizer_clips(&self.p, None)[0].hidden
+        }
+        fn cover(&mut self, f: impl FnOnce(&mut TrackItem)) {
+            f(&mut self.p.sequence_mut(self.seq).unwrap().video_tracks[1].items[0]);
+        }
+        fn set(&mut self, effect: &str, param: &str, v: ParamValue) {
+            self.cover(|c| {
+                let e = c.effects.iter_mut().find(|e| e.effect == effect).unwrap();
+                e.params.insert(param.into(), Param::new(v));
+            });
+        }
+    }
+
+    #[test]
+    fn covered_for_all_its_time() {
+        assert!(scene(&[(0, 100)]).hidden(), "one clip over all of it");
+        assert!(scene(&[(10, 30), (40, 40)]).hidden(), "two, one after the other");
+        assert!(!scene(&[(0, 60)]).hidden(), "the last frames show");
+        assert!(!scene(&[(0, 30), (31, 60)]).hidden(), "a frame between them shows");
+        assert!(!scene(&[]).hidden());
+    }
+
+    #[test]
+    fn only_an_opaque_frame_filling_clip_covers() {
+        let mut cases: Vec<(&str, Box<dyn Fn(&mut Scene)>)> = vec![
+            ("half opacity", Box::new(|s: &mut Scene| s.set("opacity", "opacity", ParamValue::Float(50.0)))),
+            ("Multiply", Box::new(|s: &mut Scene| s.set("opacity", "blend", ParamValue::Choice(3)))),
+            ("scaled down", Box::new(|s: &mut Scene| s.set("motion", "scale", ParamValue::Float(80.0)))),
+            ("moved", Box::new(|s: &mut Scene| s.set("motion", "position", ParamValue::Vec2(filmcraft_geom::Vec2::new(40.0, 18.0))))),
+            ("rotated", Box::new(|s: &mut Scene| s.set("motion", "rotation", ParamValue::Float(5.0)))),
+            ("another effect", Box::new(|s: &mut Scene| s.cover(|c| c.effects.push(inst("gaussian_blur"))))),
+            ("disabled", Box::new(|s: &mut Scene| s.cover(|c| c.enabled = false))),
+            ("track off", Box::new(|s: &mut Scene| s.p.sequence_mut(s.seq).unwrap().video_tracks[1].enabled = false)),
+            (
+                "opacity keyframed",
+                Box::new(|s: &mut Scene| {
+                    s.cover(|c| {
+                        let e = c.effects.iter_mut().find(|e| e.effect == "opacity").unwrap();
+                        let mut p = Param::new(ParamValue::Float(100.0));
+                        p.keyframes = vec![Keyframe::new(Tick::ZERO, ParamValue::Float(100.0)), Keyframe::new(R.tick_of(10), ParamValue::Float(0.0))];
+                        e.params.insert("opacity".into(), p);
+                    })
+                }),
+            ),
+            (
+                "media with alpha",
+                Box::new(|s: &mut Scene| {
+                    if let Some(ItemKind::Media(m)) = s.p.items.get_mut(&s.cover).map(|i| &mut i.kind)
+                        && let Some(v) = &mut m.info.video
+                    {
+                        v.has_alpha = true;
+                    }
+                }),
+            ),
+            (
+                "a transition",
+                Box::new(|s: &mut Scene| {
+                    let t = &mut s.p.sequence_mut(s.seq).unwrap().video_tracks[1];
+                    let id = t.items[0].id;
+                    t.transitions.push(Transition {
+                        id: TransitionId(1),
+                        effect: inst("cross_dissolve"),
+                        start: R.tick_of(30),
+                        duration: R.tick_of(10),
+                        from: None,
+                        to: Some(id),
+                        align: Default::default(),
+                        reverse: false,
+                    });
+                }),
+            ),
+        ];
+        assert!(scene(&[(0, 100)]).hidden());
+        for (name, f) in cases.drain(..) {
+            let mut s = scene(&[(0, 100)]);
+            f(&mut s);
+            assert!(!s.hidden(), "{name}: the clip under it may show");
+        }
+        // a generator (a transparent video) never covers
+        let mut s = scene(&[(0, 100)]);
+        if let Some(ItemKind::Media(m)) = s.p.items.get_mut(&s.cover).map(|i| &mut i.kind) {
+            m.media = MediaRef::Generator(Generator::BlackVideo);
+        }
+        assert!(!s.hidden(), "a generator");
+        // larger than the frame still fills it
+        let mut s = scene(&[(0, 100)]);
+        s.set("motion", "scale", ParamValue::Float(150.0));
+        assert!(s.hidden(), "scaled up");
+    }
+
+    #[test]
+    fn a_clip_on_a_track_turned_off_is_hidden() {
+        let mut s = scene(&[]);
+        s.p.sequence_mut(s.seq).unwrap().video_tracks[0].enabled = false;
+        assert!(s.hidden());
+    }
+}

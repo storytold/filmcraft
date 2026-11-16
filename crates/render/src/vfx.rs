@@ -300,6 +300,9 @@ pub struct StabilizerClip {
     /// Where the clip is on its sequence's timeline.
     pub start: Tick,
     pub end: Tick,
+    /// Nothing of the clip can be seen: its track is off, or opaque clips on the tracks above
+    /// cover the whole frame for all of its time ([`covers_frame`]). It is analysed last.
+    pub hidden: bool,
 }
 
 /// Every enabled Warp Stabilizer on an enabled clip of `project`: the sequence `first` (the one
@@ -315,9 +318,15 @@ pub fn stabilizer_clips(project: &Project, first: Option<filmcraft_project::Item
         let mut clips: Vec<(Tick, usize, StabilizerClip)> = Vec::new();
         for (track, t) in seq.video_tracks.iter().enumerate() {
             for item in t.items.iter().filter(|i| i.enabled) {
+                let mut hidden = None;
                 for (index, e) in item.effects.iter().enumerate().filter(|(_, e)| e.effect == "warp_stabilizer" && e.enabled) {
                     let key = temporal::effect_key(project, seq, item, e).clip;
-                    clips.push((item.start, track, StabilizerClip { key, sequence: id, clip: item.id, effect: index, start: item.start, end: item.end() }));
+                    let hidden = *hidden.get_or_insert_with(|| !t.enabled || covered(project, seq, track, item.start, item.end()));
+                    clips.push((
+                        item.start,
+                        track,
+                        StabilizerClip { key, sequence: id, clip: item.id, effect: index, start: item.start, end: item.end(), hidden },
+                    ));
                 }
             }
         }
@@ -337,6 +346,85 @@ pub enum AnalysisRun {
     Stopped,
     /// It ended without a path for another reason (the clip is gone, the analysis failed).
     Failed,
+}
+
+/// Whether clips on the tracks above `track` of `seq` cover the whole frame from `start` to `end`.
+fn covered(project: &Project, seq: &Sequence, track: usize, start: Tick, end: Tick) -> bool {
+    let mut spans: Vec<(Tick, Tick)> = Vec::new();
+    for t in seq.video_tracks.iter().skip(track + 1).filter(|t| t.enabled) {
+        for c in t.items.iter().filter(|c| c.start < end && c.end() > start && covers_frame(project, seq, c)) {
+            // a transition mixes the clip with another (or with nothing)
+            let mut from = c.start;
+            let mut to = c.end();
+            for tr in t.transitions.iter().filter(|tr| tr.from == Some(c.id) || tr.to == Some(c.id)) {
+                let r = tr.range();
+                if tr.to == Some(c.id) {
+                    from = from.max(r.end());
+                }
+                if tr.from == Some(c.id) {
+                    to = to.min(r.start);
+                }
+            }
+            if from < to {
+                spans.push((from, to));
+            }
+        }
+    }
+    spans.sort();
+    let mut at = start;
+    for (from, to) in spans {
+        if from > at {
+            return false;
+        }
+        at = at.max(to);
+        if at >= end {
+            return true;
+        }
+    }
+    at >= end
+}
+
+/// Whether `c` hides everything under it whenever it is shown: an enabled clip of a media file
+/// with no alpha (not a generator, nested sequence, graphic or adjustment layer), at full
+/// opacity in Normal mode, with nothing but fixed Motion and Opacity (no other effect, mask or
+/// keyframe), placed so that it fills the frame. Anything else might let the clips under it
+/// show, and doesn't count.
+pub(crate) fn covers_frame(project: &Project, seq: &Sequence, c: &TrackItem) -> bool {
+    if !c.enabled {
+        return false;
+    }
+    let Some(pi) = project.item(c.item) else { return false };
+    if !matches!(pi.kind, filmcraft_project::ItemKind::Media(_) | filmcraft_project::ItemKind::Subclip { .. }) {
+        return false;
+    }
+    let Some((_, m, _)) = project.resolve_media(c.item) else { return false };
+    if m.offline || !matches!(m.media, filmcraft_project::MediaRef::File { .. }) || m.info.video.as_ref().is_none_or(|v| v.has_alpha) {
+        return false;
+    }
+    for e in &c.effects {
+        // Time Remapping only chooses the frame shown
+        if !e.enabled || e.effect == "time_remap" {
+            continue;
+        }
+        if !matches!(e.effect.as_str(), "motion" | "opacity") || e.is_animated() || !e.masks.is_empty() {
+            return false;
+        }
+    }
+    let (op, bl) = crate::opacity_blend(c, c.start);
+    if op < 1.0 || bl != crate::Blend::Normal {
+        return false;
+    }
+    let Some(src) = crate::source_size(project, c.item) else { return false };
+    let mm = crate::motion_matrix(seq, c, src, crate::source_par(project, c.item), c.start);
+    if mm.b.abs() > 1e-9 || mm.c.abs() > 1e-9 {
+        return false;
+    }
+    let (x0, x1) = (mm.e, mm.a * src.0 as f64 + mm.e);
+    let (y0, y1) = (mm.f, mm.d * src.1 as f64 + mm.f);
+    let (w, h) = (seq.settings.width as f64, seq.settings.height as f64);
+    // even a fraction of a pixel short of an edge lets the clip under it show along it
+    let e = 1e-6;
+    x0.min(x1) <= e && x0.max(x1) >= w - e && y0.min(y1) <= e && y0.max(y1) >= h - e
 }
 
 /// Analyse (or finish analysing) the Warp Stabilizer `c` of `project` without rendering a frame,

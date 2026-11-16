@@ -243,12 +243,17 @@ impl Analyses {
         self.current.retain(|k| keys.contains(k));
     }
 
+    /// Whether nothing of the clip `key` can be seen ([`filmcraft_render::vfx::StabilizerClip::hidden`]).
+    fn hidden(&self, key: u64) -> bool {
+        self.clips.iter().any(|c| c.key == key && c.hidden)
+    }
+
     /// The analyses the view needs now: those the frame on screen went without, then those of
-    /// the clips under the playhead.
+    /// the clips under the playhead (not hidden ones: the picture doesn't show them).
     fn foreground(&self) -> Vec<u64> {
-        let mut keys: Vec<u64> = self.current.iter().copied().filter(|k| !self.settled.contains(k)).collect();
+        let mut keys: Vec<u64> = self.current.iter().copied().filter(|k| !self.settled.contains(k) && !self.hidden(*k)).collect();
         if let Some(v) = &self.view {
-            for c in self.clips.iter().filter(|c| Some(c.sequence) == v.sequence && c.start <= v.playhead && v.playhead < c.end) {
+            for c in self.clips.iter().filter(|c| !c.hidden && Some(c.sequence) == v.sequence && c.start <= v.playhead && v.playhead < c.end) {
                 if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
                     keys.push(c.key);
                 }
@@ -257,13 +262,15 @@ impl Analyses {
         keys
     }
 
-    /// Every analysis still to run, in the order they run.
+    /// Every analysis still to run, in the order they run: hidden clips last.
     fn order(&self) -> Vec<u64> {
         let mut keys = self.foreground();
         if self.background {
-            for c in &self.clips {
-                if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
-                    keys.push(c.key);
+            for hidden in [false, true] {
+                for c in self.clips.iter().filter(|c| c.hidden == hidden) {
+                    if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
+                        keys.push(c.key);
+                    }
                 }
             }
         }
@@ -288,7 +295,8 @@ impl Analyses {
         if !self.background_allowed() {
             return None;
         }
-        self.clips.iter().find(|c| !self.settled.contains(&c.key)).cloned().map(|c| (c, true))
+        let left = |hidden: bool| self.clips.iter().find(|c| c.hidden == hidden && !self.settled.contains(&c.key)).cloned();
+        left(false).or_else(|| left(true)).map(|c| (c, true))
     }
 
     /// Stop the running analysis when the view no longer needs it first.
@@ -754,6 +762,15 @@ impl FrameServer {
     /// (it shows the clip unstabilised until the analysis is done).
     pub fn is_provisional(&self, k: &FrameKey) -> bool {
         self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).contains_key(k)
+    }
+
+    /// Whether the cached frame `k` waits for the analysis of a clip it shows: provisional, and
+    /// not only for clips hidden under others (the frame looks the same with those; it is
+    /// rendered again all the same once they are analysed).
+    pub fn waits_for_shown_analysis(&self, k: &FrameKey) -> bool {
+        let Some(keys) = self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).get(k).cloned() else { return false };
+        let a = self.shared.analyses.lock().unwrap_or_else(PoisonError::into_inner);
+        keys.iter().any(|key| !a.hidden(*key))
     }
 
     /// Whether a Warp Stabilizer analysis is running, or one the view needs is still to run.
@@ -1891,6 +1908,11 @@ mod tests {
     }
 
     fn background(names: &[&str], clips: &[(usize, i64, i64, i64)], delay: Option<std::time::Duration>) -> Background {
+        background_on(names, 1, clips, delay)
+    }
+
+    /// [`background`] with `tracks` video tracks in each sequence (the clips go on V1).
+    fn background_on(names: &[&str], tracks: usize, clips: &[(usize, i64, i64, i64)], delay: Option<std::time::Duration>) -> Background {
         use filmcraft_media::generators::GeneratorSource;
         use filmcraft_media::{DemoScene, MediaSource};
         use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
@@ -1915,8 +1937,10 @@ mod tests {
             })),
             None,
         );
-        let seqs: Vec<_> =
-            names.iter().map(|n| p.new_sequence(n, SequenceSettings { width: 160, height: 90, frame_rate: r, ..Default::default() }, 1, 0, None)).collect();
+        let seqs: Vec<_> = names
+            .iter()
+            .map(|n| p.new_sequence(n, SequenceSettings { width: 160, height: 90, frame_rate: r, ..Default::default() }, tracks, 0, None))
+            .collect();
         let mut ids = Vec::new();
         for &(seq, start, src_in, dur) in clips {
             let mut ti = p.make_track_item(media, TrackKind::Video, r.tick_of(start), TimeRange::new(r.tick_of(src_in), r.tick_of(dur)), r).unwrap();
@@ -2096,5 +2120,59 @@ mod tests {
         assert!(!b.settled(long), "the background analysis stopped for it");
         assert!(took < std::time::Duration::from_millis(1500), "rendered in {took:?}, not behind the 120-frame analysis");
         assert!(b.until(60, |b| b.settled(long)), "and went on after");
+    }
+    /// A clip covered by an opaque clip above it is analysed after every clip that can be seen,
+    /// even under the playhead, and a frame that only lacks its analysis shows no badge.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_hidden_clip_is_analysed_last() {
+        let _turn = one_at_a_time();
+        let mut b = background_on(&["s"], 2, &[(0, 0, 0, 12), (0, 24, 40, 12)], None);
+        {
+            use filmcraft_media::MediaSource;
+            let p = Arc::make_mut(&mut b.p);
+            let mut info = filmcraft_media::generators::GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset).info().clone();
+            if let Some(v) = &mut info.video {
+                v.has_alpha = false;
+            }
+            let cover = p.add_item(
+                "cover.mov",
+                filmcraft_project::Label::Iris,
+                filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
+                    media: filmcraft_project::MediaRef::File { path: "/footage/cover.mov".into() },
+                    info,
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let r = filmcraft_time::FrameRate::FPS_24;
+            let mut ti = p
+                .make_track_item(
+                    cover,
+                    filmcraft_project::TrackKind::Video,
+                    filmcraft_time::Tick::ZERO,
+                    filmcraft_time::TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(20)),
+                    r,
+                )
+                .unwrap();
+            ti.scale_to_frame = true;
+            p.sequence_mut(b.seqs[0]).unwrap().video_tracks[1].items.push(ti);
+        }
+        let (hidden, seen) = (b.key(b.clips[0]), b.key(b.clips[1]));
+        assert!(filmcraft_render::vfx::stabilizer_clips(&b.p, None).iter().any(|c| c.key == hidden && c.hidden));
+        // a frame under the playhead that went without the hidden clip's analysis only
+        let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: 5, size: 1000, revision: 1, draft: false };
+        super::provisional(&b.server.shared, &job(frame, &b.p), vec![hidden]);
+        assert!(b.server.is_provisional(&frame), "rendered again once it is analysed");
+        assert!(!b.server.waits_for_shown_analysis(&frame), "but nothing it shows is waiting");
+        b.show(0, 5);
+        assert!(b.until(120, |b| b.settled(hidden) && b.settled(seen)), "{:?}", b.started());
+        assert_eq!(b.started()[..2], [seen, hidden], "the clip that can be seen first");
     }
 }
