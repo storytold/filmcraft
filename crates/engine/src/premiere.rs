@@ -273,6 +273,41 @@ fn publish_copy(partial: &Path, target: &Path, digest: &str, hash: &dyn Fn(&Path
     Ok(())
 }
 
+/// A source copy mode copied: the finished copy's stored path, SHA-256 and size, and the source
+/// its probe opened.
+struct Copied {
+    path: String,
+    digest: String,
+    size: u64,
+    source: filmcraft_media::SharedSource,
+}
+
+/// Copy mode: copy `src` into the new file `partial` in `media_dir`, hashing it on the way, give
+/// the copy its digest name, then probe the copy. The item describes the bytes the copy holds, not
+/// the source as its earlier probe saw it: the source may have been replaced in between. `Ok(Err)`
+/// says why the source could not be read (it stays an offline placeholder); a copy that cannot be
+/// opened as media means its source changed after the probe, and cancels the import.
+fn copy_media(s: &Session, src: &Path, partial: &Path, media_dir: &Path, file_io: &FileIo) -> Result<std::result::Result<Copied, String>> {
+    // One read: the copy is hashed as it is written, then named by its digest.
+    let (digest, size) = match (file_io.copy)(src, partial) {
+        Ok(copied) => copied,
+        Err(CopyError::Unreadable(error)) => {
+            remove_partial(partial)?;
+            return Ok(Err(error));
+        }
+        Err(CopyError::Cancel(error)) => return Err(error),
+    };
+    let ext = src.extension().and_then(|e| e.to_str()).filter(|s| s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or("media");
+    let target = media_dir.join(format!("{digest}.{ext}"));
+    publish_copy(partial, &target, &digest, file_io.hash)?;
+    let path = stored_path(&target);
+    let source = s
+        .media
+        .open_file(&path, &*s.services)
+        .map_err(|e| bad(COMMAND, format!("media changed while copying; import cancelled: the copy of {} cannot be opened: {e}", stored_path(src))))?;
+    Ok(Ok(Copied { path, digest, size, source }))
+}
+
 /// Only a directory created by this invocation is removed on failure. Existing destinations are
 /// always refused, including dangling symlinks. Successful snapshots survive undo.
 struct OwnedDirectory {
@@ -388,8 +423,8 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     write_new(&snapshot, &bytes)?;
     let mut records = BTreeMap::<String, SourceMedia>::new();
     let mut probed = BTreeMap::new();
-    // The sources probes opened for linked media, by the path their items keep: the media pool
-    // takes them instead of opening those files again.
+    // The sources probes opened (a linked file, or a finished copy), by the path their items keep:
+    // the media pool takes them instead of opening those files again.
     let mut opened = BTreeMap::<String, filmcraft_media::SharedSource>::new();
     let mut listings = FolderListings::new(MAX_FOLDER_ENTRIES, MAX_LISTED_NAMES);
     let media_dir = destination.join("media");
@@ -407,20 +442,23 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
             let probed_media = probe_with_fallbacks(s, &original, tree.relative_media.get(&original), &source, &mut report, &mut listings);
             match probed_media {
                 Ok((src, media_source)) => {
-                    let info = media_source.info().clone();
                     record.original_path = stored_path(&src);
                     record.imported_path = record.original_path.clone();
-                    record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
-                    if mode == "copy" {
-                        // The pool opens the copy, not its source.
+                    let media_source = if mode == "copy" {
+                        // The pool takes the copy's source, not this one.
                         drop(media_source);
-                        // One read: the copy is hashed as it is written, then named by its digest.
                         // `records` grows by one per source, so the partial name is unique.
                         let partial = media_dir.join(format!("{}.partial", records.len()));
-                        let (digest, size) = match (file_io.copy)(&src, &partial) {
-                            Ok(copied) => copied,
-                            Err(CopyError::Unreadable(error)) => {
-                                remove_partial(&partial)?;
+                        match copy_media(s, &src, &partial, &media_dir, file_io)? {
+                            Ok(copied) => {
+                                record.sha256 = Some(copied.digest);
+                                record.bytes = Some(copied.size);
+                                record.imported_path = copied.path;
+                                copied.source
+                            }
+                            Err(error) => {
+                                // The placeholder keeps the source's fingerprint when it can be read.
+                                record.identity = crate::relink::identity_of(&*s.services, &record.original_path).ok();
                                 filmcraft_interchange::premiere::warning(
                                     &mut report,
                                     format!("unreadable media: {}; {error}; offline placeholder retained", stored_path(&src)),
@@ -429,25 +467,20 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
                                 m.offline = true;
                                 continue;
                             }
-                            Err(CopyError::Cancel(error)) => return Err(error),
-                        };
-                        record.sha256 = Some(digest.clone());
-                        record.bytes = Some(size);
-                        let ext = src
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .filter(|s| s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric()))
-                            .unwrap_or("media");
-                        let target = media_dir.join(format!("{digest}.{ext}"));
-                        publish_copy(&partial, &target, &digest, hash)?;
-                        record.imported_path = stored_path(&target);
+                        }
                     } else {
+                        media_source
+                    };
+                    // Like its media information, the fingerprint is of the file the item names:
+                    // the source when linked, the finished copy when copied.
+                    record.identity = crate::relink::identity_of(&*s.services, &record.imported_path).ok();
+                    if mode != "copy" {
                         // Linked media stays online after a successful probe without a full-file
                         // read for provenance. A later hash is an observation, not import-time proof.
                         record.bytes = record.identity.as_ref().map(|i| i.size);
-                        opened.insert(record.imported_path.clone(), media_source);
                     }
-                    probed.insert(original.clone(), info);
+                    probed.insert(original.clone(), media_source.info().clone());
+                    opened.insert(record.imported_path.clone(), media_source);
                 }
                 Err(error) => filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; offline placeholder retained")),
             }
@@ -496,8 +529,8 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
         Ok(sequences)
     })?;
     owned.committed = true;
-    // The first item of a linked file takes the source its probe opened; any other item of that
-    // file (and every copy) opens its own, as the pool keeps one source per item.
+    // The first item of each file takes the source its probe opened (in copy mode, the copy's);
+    // any other item of that file opens its own, as the pool keeps one source per item.
     for item in s.project.items.values().filter(|i| !before.contains(&i.id)) {
         if let ItemKind::Media(m) = &item.kind
             && !m.offline
