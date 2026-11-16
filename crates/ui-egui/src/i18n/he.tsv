@@ -3304,3 +3304,39 @@
 	Show Audio Names	הצג שמות השמע
 	Video Names	שמות הווידאו
 	Audio Names	שמות השמע
+
+# DAY-04 2026-11-16: source-pinned original AI-assisted Hebrew; human/native visual review pending.
+	Clip Mismatch Warning	אזהרה על אי־התאמה בין קליפ לרצף
+	This clip does not match the sequence settings.	הקליפ אינו תואם להגדרות הרצף.
+	Clip: {settings}	קליפ: {settings}
+	Sequence: {settings}	רצף: {settings}
+	Change the sequence to match the clip's settings?	לשנות את הגדרות הרצף כך שיתאימו לקליפ?
+	Change Sequence Settings	שינוי הגדרות הרצף
+	Keep Existing Settings	השארת ההגדרות הקיימות
+	A range marker needs a positive duration	סמן טווח מחייב משך זמן חיובי
+	No saved colors	אין צבעים שמורים
+	Remove saved color	הסרת צבע שמור
+	Save color	שמירת צבע
+	Select all visible markers	בחירת כל הסמנים הגלויים
+	Sequence: {name}	רצף: {name}
+	Source: {name}	מקור: {name}
+	Source: {name} (shared source markers)	מקור: {name} (סמני מקור משותפים)
+	Edit Markers	עריכת סמנים
+	Delete Markers	מחיקת סמנים
+	Marker changed or was removed. Reopen it to continue.	הסמן השתנה או הוסר. יש לפתוח אותו מחדש כדי להמשיך.
+	Open Presets Folder	פתיחת תיקיית ההגדרות הקבועות מראש
+	Scan Presets Folder	סריקת תיקיית ההגדרות הקבועות מראש
+	From preset file:	מתוך קובץ הגדרות קבועות מראש:
+	No presets folder: the app has no data directory	אין תיקיית הגדרות קבועות מראש: ליישום אין תיקיית נתונים
+	Imported {n} preset(s)	יובאו {n} הגדרות קבועות מראש
+	Imported {n} preset(s); {skipped} skipped	יובאו {n} הגדרות קבועות מראש; דולגו {skipped}
+	Imported {n} preset(s); {warnings} with unsupported parameters	יובאו {n} הגדרות קבועות מראש; ב־{warnings} מהן יש פרמטרים שאינם נתמכים
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	יובאו {n} הגדרות קבועות מראש; דולגו {skipped}, וב־{warnings} יש פרמטרים שאינם נתמכים
+	Imported {n} preset(s); not imported: {error}	יובאו {n} הגדרות קבועות מראש; לא יובאו: {error}
+	Preset library updated: {imported} loaded, {removed} removed	ספריית ההגדרות הקבועות מראש עודכנה: נטענו {imported}, הוסרו {removed}
+	Preset library updated	ספריית ההגדרות הקבועות מראש עודכנה
+	Preset library is up to date	ספריית ההגדרות הקבועות מראש מעודכנת
+	Enter a valid HH:MM:SS:FF timecode	יש להזין קוד זמן תקין בתבנית HH:MM:SS:FF
+	Open Link	פתיחת קישור
+	Opens this address in your web browser	פתיחת כתובת זו בדפדפן האינטרנט
+	Enter a valid HTTP or HTTPS URL without credentials	יש להזין כתובת HTTP או HTTPS תקינה ללא פרטי התחברות
