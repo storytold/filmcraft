@@ -332,12 +332,13 @@ impl Mp4Source {
             if matches!(entry.codec, CodecConfig::Dnx { .. }) {
                 // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
                 let s0 = &t.samples[0];
-                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_dnx::probe(&d).ok()) {
-                    info.codec = filmcraft_dnx::cid_name(h.cid);
+                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| craft_video::dnx::probe(&d).ok())
+                {
+                    info.codec = craft_video::dnx::cid_name(h.cid);
                     let sub = match h.chroma {
-                        filmcraft_dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
-                        filmcraft_dnx::ChromaFormat::Yuv422 => "YUV 4:2:2",
-                        filmcraft_dnx::ChromaFormat::Yuv444 => "4:4:4",
+                        craft_video::dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
+                        craft_video::dnx::ChromaFormat::Yuv422 => "YUV 4:2:2",
+                        craft_video::dnx::ChromaFormat::Yuv444 => "4:4:4",
                     };
                     info.pixel_format = format!("{sub} {}-bit", h.bit_depth);
                     info.has_alpha = h.alpha;
