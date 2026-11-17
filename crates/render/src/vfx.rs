@@ -94,7 +94,8 @@ pub trait FxEnv: Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisSpan {
     /// The source and how its frames are read: the file's size and content fingerprint, the
-    /// picture size, the sequence's frame rate, and the frame grid the clip's frames fall on.
+    /// picture size, the sequence's frame rate and colour pipeline (with the clip's colour-space
+    /// override and peak brightness), and the frame grid the clip's frames fall on.
     /// Clips with the same bytes read frames of one grid, frame `k` of the clip being grid frame
     /// `first + k`. A clip whose frames depend on its own in or out point (reversed, frame-held,
     /// blended) has bytes of its own that also name its source range, and `first` 0.
@@ -240,7 +241,8 @@ pub(crate) fn clip_key_of(item: &TrackItem) -> u64 {
 /// makes its picture (Frame Sampling, no frame hold), clips whose in points differ by whole steps
 /// read the same frames: the grid is named by the step and the in point's phase in it. Otherwise
 /// the clip's own range is named too. The picture size (rotation turns it), pixel aspect, frame
-/// rate interpretation and Scale to Frame Size are part of both.
+/// rate interpretation, Scale to Frame Size and colour management (the sequence's pipeline, the
+/// clip's colour-space override and peak brightness) are part of both.
 pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem) -> Option<AnalysisSpan> {
     let filmcraft_project::ItemKind::Media(m) = &project.item(item.item)?.kind else { return None };
     let id = m.identity?;
@@ -252,6 +254,9 @@ pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem)
         filmcraft_project::TimeInterpolation::OpticalFlow => 2,
     };
     let rate = seq.settings.frame_rate;
+    // the pictures are colour managed into the sequence's working space before they are tracked
+    let colour = serde_json::to_vec(&(&seq.settings.color, &m.interpret.color_space, crate::colorman::source_peak_nits(project, item.item).map(f32::to_bits)))
+        .map_or(0, |b| temporal::store_fnv(&b));
     let common = [
         id.size,
         id.fingerprint,
@@ -261,6 +266,7 @@ pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem)
         (w as u64) << 32 | h as u64,
         rate.as_f64().to_bits(),
         item.speed.to_bits(),
+        colour,
     ];
     let frame = rate.frame_duration().0;
     // frame boundaries at exact multiples of the frame duration (every common rate)

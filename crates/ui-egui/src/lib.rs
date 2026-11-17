@@ -246,6 +246,8 @@ pub struct FilmcraftApp {
     ime_viewports: Vec<egui::ViewportId>,
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
+    /// The last [`frames::FrameServer::settled_frames`] number seen.
+    settled_seen: u64,
     /// The UI pass each thumbnail texture was last used in: thumbnails beyond
     /// [`MAX_THUMB_TEXTURES`] are freed, least recently used first (#1682).
     thumb_used: HashMap<String, u64>,

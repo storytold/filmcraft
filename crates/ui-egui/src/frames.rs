@@ -188,6 +188,10 @@ struct Shared {
     analyses_cv: Condvar,
     /// Names this server's analysis queue ([`filmcraft_render::vfx::set_analysis_queue`]).
     owner: u64,
+    /// Provisional frames dropped once their analyses were settled, numbered: the app shows a
+    /// frame again only when its key changes, so it must hear that these will look different
+    /// ([`FrameServer::settled_frames`]).
+    settled_frames: Mutex<(u64, Vec<FrameKey>)>,
 }
 
 /// How long the monitors must have asked for no new frame before background analyses run: the
@@ -207,6 +211,9 @@ struct Analyses {
     current: Vec<u64>,
     /// Clips looked for among the analyses kept from before (memory or disk) without analysing.
     probed: HashSet<u64>,
+    /// Analyses that failed this session (the clip went, the analysis panicked): settled for good,
+    /// a frame that goes without one doesn't ask for it again, and its frame is final as it is.
+    failed: HashSet<u64>,
     /// Analyses run to their end this session (analysed, or no frame to read). The thread keeps
     /// its own record: the render crate keeps only so many finished paths in memory, and would
     /// have it analyse forever on a project with more stabilised clips than that.
@@ -243,6 +250,7 @@ impl Analyses {
         let keys: HashSet<u64> = self.clips.iter().map(|c| c.key).collect();
         self.settled.retain(|k| keys.contains(k));
         self.probed.retain(|k| keys.contains(k));
+        self.failed.retain(|k| keys.contains(k));
         self.current.retain(|k| keys.contains(k));
     }
 
@@ -674,6 +682,7 @@ impl FrameServer {
                 static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 OWNERS.fetch_add(1, Ordering::Relaxed)
             },
+            settled_frames: Mutex::new((0, Vec::new())),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -771,6 +780,25 @@ impl FrameServer {
         self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).contains_key(k)
     }
 
+    /// The frames dropped since `seen` (a number this returns) because the analyses they lacked
+    /// are settled: rendered again, they look different under the same key, so whatever shows
+    /// one (a texture, the GPU's last frame) must be redrawn.
+    pub fn settled_frames(&self, seen: u64) -> (u64, Vec<FrameKey>) {
+        let mut s = self.shared.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
+        if s.0 == seen {
+            return (seen, Vec::new());
+        }
+        (s.0, std::mem::take(&mut s.1))
+    }
+
+    /// Announce `keys` as settled frames ([`Self::settled_frames`]), for tests.
+    #[cfg(test)]
+    pub(crate) fn announce_settled_for_test(&self, keys: Vec<FrameKey>) {
+        let mut s = self.shared.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
+        s.0 = s.0.wrapping_add(1);
+        s.1.extend(keys);
+    }
+
     /// Whether the cached frame `k` waits for the analysis of a clip it shows: provisional, and
     /// not only for clips hidden under others (the frame looks the same with those; it is
     /// rendered again all the same once they are analysed).
@@ -798,6 +826,12 @@ impl FrameServer {
             return;
         }
         a.background = true;
+        // the app's view is the one that counts: no render job's replaces it
+        if let Some(v) = &a.view
+            && v.revision > revision
+        {
+            a.view = None;
+        }
         a.take_view(View { revision, project: project.clone(), sequence, playhead, playing });
         a.preempt();
         drop(a);
@@ -1301,28 +1335,48 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
 
 /// Note the frame `job` cached without the analyses `keys`, and ask the analysis thread for them.
 fn provisional(sh: &Shared, job: &Job, keys: Vec<u64>) {
-    sh.provisional.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, keys.clone());
     let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
     if sh.stop.load(Ordering::Relaxed) {
         return;
     }
-    let sequence = match job.key.target {
-        Target::Sequence(s) | Target::SequencePlan(s, _) | Target::SequenceLive(s) => Some(s),
-        _ => a.view.as_ref().and_then(|v| v.sequence),
-    };
-    let playing = a.view.as_ref().is_some_and(|v| v.playing);
-    let playhead = a.view.as_ref().filter(|v| v.sequence == sequence).map_or(job.time, |v| v.playhead);
-    a.take_view(View { revision: job.key.revision, project: job.project.clone(), sequence, playhead, playing });
-    // the frame went without them: whatever was settled, they are wanted (again)
-    for k in &keys {
-        if !filmcraft_render::vfx::stabilizer_analysed(*k) {
-            a.settled.remove(k);
-        }
+    // an analysis that failed stays undone: the frame is final as it is
+    if keys.iter().all(|k| a.failed.contains(k)) {
+        return;
     }
-    // the frame on screen says what is wanted now; frames fetched ahead don't (playback would
-    // keep the clip it left wanted)
-    if job.prio == 0 && !job.prefetch {
-        a.current = keys;
+    {
+        let mut p = sh.provisional.lock().unwrap_or_else(PoisonError::into_inner);
+        // frames the caches let go of are not shown again from them
+        if p.len() >= 64 {
+            let done = sh.done.lock().unwrap_or_else(PoisonError::into_inner);
+            let plans = sh.plans.lock().unwrap_or_else(PoisonError::into_inner);
+            p.retain(|f, _| done.map.contains_key(f) || plans.map.contains_key(f));
+        }
+        p.insert(job.key, keys.clone());
+    }
+    // A job of the project the app shows (its revision) speaks for the view; the app's view is
+    // the only one taken once it shows one (the eyedropper renders a project of its own, under a
+    // revision of its own). Without the app (headless), the newest job's project is the view.
+    let of_view = a.view.as_ref().is_some_and(|v| v.revision == job.key.revision);
+    if !a.background {
+        let sequence = match job.key.target {
+            Target::Sequence(s) | Target::SequencePlan(s, _) | Target::SequenceLive(s) => Some(s),
+            _ => a.view.as_ref().and_then(|v| v.sequence),
+        };
+        let playhead = a.view.as_ref().filter(|v| v.sequence == sequence).map_or(job.time, |v| v.playhead);
+        a.take_view(View { revision: job.key.revision, project: job.project.clone(), sequence, playhead, playing: false });
+    }
+    if !a.background || of_view {
+        // the frame went without them: whatever was settled, they are wanted (again)
+        for k in &keys {
+            if !a.failed.contains(k) && !filmcraft_render::vfx::stabilizer_analysed(*k) {
+                a.settled.remove(k);
+            }
+        }
+        // the frame on screen says what is wanted now; frames fetched ahead don't (playback
+        // would keep the clip it left wanted)
+        if job.prio == 0 && !job.prefetch {
+            a.current = keys;
+        }
     }
     a.preempt();
     drop(a);
@@ -1358,6 +1412,16 @@ fn drop_provisional(sh: &Shared) -> bool {
     };
     if keys.is_empty() {
         return false;
+    }
+    {
+        let mut s = sh.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
+        s.0 = s.0.wrapping_add(1);
+        s.1.extend(keys.iter().copied());
+        // the app reads them every frame: a backlog means nobody does
+        if s.1.len() > 4096 {
+            let excess = s.1.len() - 4096;
+            s.1.drain(..excess);
+        }
     }
     {
         let mut c = sh.done.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1457,6 +1521,9 @@ fn analysis_worker(sh: Arc<Shared>, pool: Arc<MediaPool>, services: Arc<dyn Serv
             // else (it ended, or failed) settles it, so the thread never analyses it again and again.
             if run != filmcraft_render::vfx::AnalysisRun::Stopped {
                 a.settled.insert(clip.key);
+            }
+            if run == filmcraft_render::vfx::AnalysisRun::Failed {
+                a.failed.insert(clip.key);
             }
         }
         if drop_provisional(&sh)
@@ -2266,5 +2333,93 @@ mod tests {
         b.show(0, 1000);
         assert!(b.until(60, |b| b.settled(done) && b.settled(other)), "{:?}", b.started());
         assert_eq!(b.started(), vec![other], "only the clip that needed it was analysed");
+    }
+    /// A render of a project of its own (the eyedropper's, under a revision of its own) doesn't
+    /// become the view: the app's next views are still taken.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_auxiliary_render_does_not_replace_the_view() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 12)], None);
+        b.show(0, 1000);
+        let own = Arc::new((*b.p).clone());
+        let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: 3, size: 100, revision: 1 ^ 0x5eed_d70b_0000_0000, draft: false };
+        super::provisional(&b.server.shared, &job(frame, &own), vec![b.key(b.clips[0])]);
+        let view = |b: &Background| b.server.shared.analyses.lock().unwrap().view.as_ref().map(|v| (v.revision, Arc::ptr_eq(&v.project, &b.p)));
+        assert_eq!(view(&b), Some((1, true)), "the app's view stays");
+        let r = filmcraft_time::FrameRate::FPS_24;
+        b.server.set_view(&b.p, 2, Some(b.seqs[0]), r.tick_of(5), false);
+        assert_eq!(view(&b), Some((2, true)), "and the next one is taken");
+    }
+
+    /// A source that can't be read without panicking.
+    struct Panics(filmcraft_media::MediaInfo);
+
+    impl filmcraft_media::MediaSource for Panics {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.0
+        }
+        fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            panic!("a decoder bug")
+        }
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            panic!("a decoder bug")
+        }
+    }
+
+    /// An analysis that fails (here its decoder panics) is not asked for again and again by the
+    /// frames that go without it, and those frames are final as they are.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_failed_analysis_is_not_run_again() {
+        use filmcraft_media::MediaSource;
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 12)], None);
+        let media = b.p.sequence(b.seqs[0]).unwrap().video_tracks[0].items[0].item;
+        let info = filmcraft_media::generators::GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset).info().clone();
+        b.session.media.insert(media, Arc::new(Panics(info)));
+        let key = b.key(b.clips[0]);
+        b.show(0, 1000);
+        assert!(b.until(60, |b| b.settled(key) && b.running().is_none()));
+        for f in 0..5 {
+            let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: f, size: 100, revision: 1, draft: false };
+            super::provisional(&b.server.shared, &job(frame, &b.p), vec![key]);
+            assert!(!b.server.is_provisional(&frame), "nothing to wait for");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(b.started(), vec![key], "analysed once");
+    }
+
+    /// Provisional frames the caches let go of are forgotten, not scanned again and again.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn evicted_provisional_frames_are_forgotten() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 12)], None);
+        let key = b.key(b.clips[0]);
+        for f in 0..200 {
+            let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: f, size: 100, revision: 1, draft: false };
+            super::provisional(&b.server.shared, &job(frame, &b.p), vec![key ^ 1]);
+        }
+        let n = b.server.shared.provisional.lock().unwrap().len();
+        assert!(n <= 64, "{n} provisional frames kept for 200 rendered and none cached");
+    }
+
+    /// A frame dropped once its analyses are settled is announced, once.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn settled_frames_are_announced() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 12)], None);
+        let key = b.key(b.clips[0]);
+        let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: 3, size: 100, revision: 1, draft: false };
+        super::provisional(&b.server.shared, &job(frame, &b.p), vec![key]);
+        let (seen, none) = b.server.settled_frames(0);
+        assert!(none.is_empty());
+        b.server.shared.analyses.lock().unwrap().settled.insert(key);
+        assert!(super::drop_provisional(&b.server.shared));
+        let (seen2, keys) = b.server.settled_frames(seen);
+        assert_eq!(keys, vec![frame]);
+        assert_eq!(b.server.settled_frames(seen2).1, Vec::<super::FrameKey>::new(), "once");
     }
 }

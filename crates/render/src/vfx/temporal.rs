@@ -381,6 +381,9 @@ struct Analyses {
     running: Option<u64>,
     /// Bumped by [`clear_stabilizer_cache`]: an analysis that started before isn't kept.
     generation: u64,
+    /// Numbers the snapshots of source analyses taken to be saved, so an older one written late
+    /// never replaces a newer one ([`save_in_order`]).
+    snapshots: u64,
 }
 
 fn analyses() -> &'static (Mutex<Analyses>, Condvar) {
@@ -667,6 +670,11 @@ pub fn clear_analysis_queue(owner: u64) {
     }
 }
 
+/// 64-bit FNV-1a of `bytes` (stable across builds), for identities.
+pub(super) fn store_fnv(bytes: &[u8]) -> u64 {
+    store::fnv(bytes)
+}
+
 /// Run `f` and say whether an analysis it ran gave way to a waiting render ([`giving_way`]).
 pub(super) fn noting_give_way<R>(f: impl FnOnce() -> R) -> (R, bool) {
     let before = GAVE_WAY.with(|g| g.replace(false));
@@ -896,6 +904,10 @@ fn keep(
     let path = kept.path(key.first, key.n).filter(|_| complete).map(Arc::new);
     // written when an analysis ends, not each time one is stopped (moving the playhead stops one)
     let save = (added && complete && key.identity.is_some()).then(|| kept.clone());
+    let snapshot = {
+        a.snapshots = a.snapshots.wrapping_add(1);
+        a.snapshots
+    };
     match &path {
         Some(p) => {
             if a.clips.len() >= KEPT_ANALYSES {
@@ -912,9 +924,22 @@ fn keep(
     }
     drop(a);
     if let (Some(id), Some(ranges)) = (key.identity.as_deref(), save) {
-        store::save(id, &ranges);
+        save_in_order(key.source, snapshot, id, &ranges);
     }
     path
+}
+
+/// Write snapshot number `snapshot` of `source`'s analyses, unless a later snapshot of it was
+/// written already: two analyses of a source can end close together, and the first one's write
+/// could otherwise land last and drop what the second added.
+pub(super) fn save_in_order(source: u64, snapshot: u64, identity: &[u8], ranges: &Ranges) {
+    static SAVED: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
+    let mut saved = SAVED.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner);
+    if saved.get(&source).is_some_and(|s| *s >= snapshot) {
+        return;
+    }
+    store::save(identity, ranges);
+    saved.insert(source, snapshot);
 }
 
 /// `steps` measured on frames of size `from`, as measured on frames of size `to`: a source's proxy
