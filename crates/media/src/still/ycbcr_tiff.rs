@@ -4,6 +4,7 @@ use super::Raster;
 use crate::{MediaError, Result};
 use craft_tiff::classic::{Tiff, Type, tags};
 use craft_tiff::{Entry, Ifd, Value};
+use craft_tiff_ycbcr as craft_tiff;
 use image::metadata::Orientation;
 
 const MAX_PIXELS: u64 = 1 << 28;
