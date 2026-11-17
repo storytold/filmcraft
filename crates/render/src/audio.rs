@@ -392,8 +392,8 @@ fn read_speed(item: &TrackItem) -> f64 {
 /// `channels` channels at `rate`. A source refuses a read whose buffer would hold more than
 /// `MAX_AUDIO_BUFFER_BYTES`, at the requested rate or at its own (the AVI, MKV, MP4 and MXF readers
 /// count the two samples a resampling read takes past the window), and a nested sequence's mix,
-/// `channels` wide at its own rate, is held to the same size. A clip is read at no more than
-/// [`MAX_CLIP_SPEED`], but a long request can still pass this; past it the clip reads silence.
+/// `channels` wide at its own rate, is held to the same size. A request whose source window is
+/// longer than this is read in pieces ([`varispeed`]).
 fn source_read_limit(channels: usize, rate: u32, sr: u32) -> usize {
     let frames = filmcraft_media::MAX_AUDIO_BUFFER_BYTES / channels.max(1).saturating_mul(std::mem::size_of::<f32>());
     // a margin for that rounding and those samples, as the engine's sync analysis keeps
@@ -418,6 +418,45 @@ fn source_position(item: &TrackItem, x: i64, sr: u32) -> (i64, f64) {
     let tps = TICKS_PER_SECOND as i128;
     let frac = (t.0 as i128 * sr as i128).rem_euclid(tps) as f64 / tps as f64;
     (if item.reverse { whole.saturating_sub(1) } else { whole }, frac)
+}
+
+/// A varispeed clip's samples at the source positions `at`, one for each output sample (a whole
+/// source sample and the fraction of the way to the next one), interpolated linearly. The function
+/// reads the positions in runs whose source window, from the lowest position to the sample after
+/// the highest, holds at most `limit` samples, so a request too long to read at once plays the same
+/// samples as the shorter requests it could be cut into. A run the source refuses is silent, and the
+/// result is `None` when the source refuses every run. With a limit too small for a sample and the
+/// one after it, the function makes one read cut to the limit, as a single read always did.
+fn varispeed(at: &[(i64, f32)], src: SourceAudio, sr: u32, limit: usize) -> Option<AudioBuffer> {
+    let window = |lo: i64, hi: i64| usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2);
+    let mut out: Option<AudioBuffer> = None;
+    let mut i = 0;
+    while let Some(&(p, _)) = at.get(i) {
+        let (mut lo, mut hi, mut j) = (p, p, i + 1);
+        while let Some(&(q, _)) = at.get(j) {
+            if window(lo.min(q), hi.max(q)) > limit {
+                break;
+            }
+            (lo, hi, j) = (lo.min(q), hi.max(q), j + 1);
+        }
+        if window(lo, hi) > limit {
+            j = at.len();
+            (lo, hi) = at[i..].iter().fold((lo, hi), |(l, h), &(q, _)| (l.min(q), h.max(q)));
+        }
+        if let Some(raw) = src(lo, window(lo, hi).min(limit)) {
+            let b = out.get_or_insert_with(|| AudioBuffer::silence(sr, raw.channel_count(), at.len()));
+            for (dst, ch) in b.channels.iter_mut().zip(&raw.channels) {
+                for (d, &(whole, fr)) in dst[i..j].iter_mut().zip(&at[i..j]) {
+                    let i0 = usize::try_from(whole.saturating_sub(lo)).unwrap_or(0);
+                    let a = ch.get(i0).copied().unwrap_or(0.0);
+                    let bb = ch.get(i0 + 1).copied().unwrap_or(a);
+                    *d = a + (bb - a) * fr;
+                }
+            }
+        }
+        i = j;
+    }
+    out
 }
 
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
@@ -453,27 +492,13 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         // the block starts above and a transition's handles do.
         let capped = (speed != item.speed.abs()).then(|| TrackItem { speed, ..item.clone() });
         let timing = capped.as_ref().unwrap_or(item);
-        let (first, last) = (source_position(timing, a0, sr), source_position(timing, a1 - 1, sr));
-        let (lo, hi) = if item.reverse { (last.0, first.0) } else { (first.0, last.0) };
-        // the read runs from the lowest position to the sample after the highest one
-        let span = usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2).min(limit);
-        src(lo, span).map(|raw| {
-            let at: Vec<(usize, f32)> = (a0..a1)
-                .map(|x| {
-                    let (whole, frac) = source_position(timing, x, sr);
-                    (usize::try_from(whole.saturating_sub(lo)).unwrap_or(0), frac as f32)
-                })
-                .collect();
-            let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);
-            for (c, ch) in raw.channels.iter().enumerate() {
-                for (i, &(i0, fr)) in at.iter().enumerate() {
-                    let a = ch.get(i0).copied().unwrap_or(0.0);
-                    let bb = ch.get(i0 + 1).copied().unwrap_or(a);
-                    b.channels[c][i] = a + (bb - a) * fr;
-                }
-            }
-            b
-        })
+        let at: Vec<(i64, f32)> = (a0..a1)
+            .map(|x| {
+                let (whole, frac) = source_position(timing, x, sr);
+                (whole, frac as f32)
+            })
+            .collect();
+        varispeed(&at, src, sr, limit)
     };
     let Some(buf) = buf else { return out };
     if buf.channels.is_empty() {
@@ -625,19 +650,55 @@ mod tests {
     }
 
     #[test]
-    fn a_long_read_at_the_speed_cap_stops_at_what_a_source_returns() {
+    fn a_long_read_at_the_speed_cap_reads_no_more_than_a_source_returns() {
         // At 100x, 700 000 samples cover 70 million source samples, more than a two-channel 48 kHz
-        // source returns at once: the read stops at the limit and the clip is silent.
+        // source returns at once: the clip reads them in two pieces, each within the limit, and a
+        // source that refuses both leaves the clip silent.
         let mut it = item(1000.0);
         it.duration = Tick::from_seconds_f64(20.0);
-        let widest = std::cell::Cell::new(0usize);
+        let reads = std::cell::RefCell::new(Vec::new());
         let refuse = |_: i64, len: usize| -> Option<AudioBuffer> {
-            widest.set(widest.get().max(len));
+            reads.borrow_mut().push(len);
             None
         };
         let limit = source_read_limit(2, 48_000, 48_000);
         let out = raw_channels(&it, &refuse, 0, 700_000, 48_000, 2, limit);
-        assert_eq!(widest.get(), limit);
+        let reads = reads.into_inner();
+        assert_eq!(reads.len(), 2, "reads of {reads:?} frames");
+        assert!(reads.iter().all(|&len| len <= limit), "reads of {reads:?} frames, limit {limit}");
         assert!(out.iter().all(|c| c.iter().all(|v| *v == 0.0)));
+    }
+
+    #[test]
+    fn a_request_longer_than_a_source_returns_plays_what_shorter_requests_play() {
+        // With room for 1 000 source samples in a read, 200 samples at 100x span about 19 900 and
+        // 200 samples at 37.3x about 7 400: the clip reads them in pieces, each within the limit and
+        // each with the sample after its last position, so every sample plays what a request for
+        // that sample alone plays.
+        let limit = 1000;
+        let reads = std::cell::RefCell::new(Vec::new());
+        let counted = |m: i64, len: usize| {
+            reads.borrow_mut().push(len);
+            ramp(m, len)
+        };
+        for (speed, reverse) in [(1000.0, false), (1000.0, true), (37.3, false), (37.3, true)] {
+            let mut it = item(speed);
+            it.reverse = reverse;
+            reads.borrow_mut().clear();
+            let whole = raw_channels(&it, &counted, 0, 200, 48_000, 2, limit);
+            let at = format!("speed {speed}, reversed {reverse}, reads of {:?} frames", reads.borrow());
+            assert!(reads.borrow().len() > 1 && reads.borrow().iter().all(|&len| len <= limit), "{at}");
+            for k in 0..200 {
+                let alone = raw_channels(&it, &ramp, k as i64, 1, 48_000, 2, limit);
+                assert_eq!(whole[0][k], alone[0][0], "{at}: sample {k}");
+                assert_eq!(whole[1][k], alone[1][0], "{at}: sample {k}");
+            }
+        }
+        // forward at 100x, timeline sample k reads source sample 100 k
+        let whole = raw_channels(&item(1000.0), &ramp, 0, 200, 48_000, 2, limit);
+        for k in [0usize, 9, 10, 11, 150, 199] {
+            let want = (100 * k) as f32 / 1e6;
+            assert!((whole[0][k] - want).abs() < 1e-6, "sample {k}: {} vs {want}", whole[0][k]);
+        }
     }
 }
