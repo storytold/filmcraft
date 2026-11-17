@@ -428,11 +428,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         app.hooks.pick_folder = Some(Box::new(|| rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string())));
         app.hooks.pick_folder_at =
             Some(Box::new(|dir: &str| rfd::FileDialog::new().set_directory(dir).pick_folder().map(|p| p.to_string_lossy().into_owned())));
-        // Linux: the XDG portal call blocks until the user chooses, which would stop the frame
-        // loop (GNOME offers to force-quit the window after about five seconds, #260). Show the
-        // dialog on its own thread instead; the app keeps running and acts on the answer.
-        #[cfg(target_os = "linux")]
-        {
+        // Native dialogs run on their own thread on Linux and macOS (#260, #4995). On
+        // Linux the XDG portal call blocks until the user chooses, which would stop the
+        // frame loop (GNOME offers to force-quit the window after about five seconds);
+        // on macOS a modal rfd dialog inside winit's event handler panics when an event
+        // arrives while the handler is borrowed. The app keeps running and acts on the
+        // answer when it arrives.
+        if dialogs_need_worker_thread(std::env::consts::OS) {
             app.hooks.run_dialog = Some(Box::new(run_dialog_off_thread));
         }
         app.hooks.open_path = Some(Box::new(open_path));
@@ -594,10 +596,19 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
-/// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260). Filter
-/// names are translated here, on the UI thread (the interface language is per thread). A dialog
-/// thread that can't start or panics drops the sender: the app takes that as cancelled.
-#[cfg(target_os = "linux")]
+/// Whether native file dialogs on `target_os` must run on a worker thread instead of
+/// inside the frame: Linux, where the XDG portal call blocks the frame loop (#260),
+/// and macOS, where a modal rfd dialog inside winit's event handler panics when an
+/// event arrives while the handler is borrowed (#4995). One place lists the
+/// platforms, so a platform that needs the runner cannot be missed in a second `cfg`
+/// at the call site.
+fn dialogs_need_worker_thread(target_os: &str) -> bool {
+    matches!(target_os, "linux" | "macos")
+}
+
+/// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260, #4995).
+/// Filter names are translated here, on the UI thread (the interface language is per thread). A
+/// dialog thread that can't start or panics drops the sender: the app takes that as cancelled.
 fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> std::sync::mpsc::Receiver<Vec<String>> {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -655,10 +666,9 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     rx
 }
 
-/// A dialog as the Linux dialog thread shows it: filter names translated (here, on the UI thread:
-/// the interface language is per thread) and every extension list turned into the
+/// A dialog as the off-thread dialog runner shows it: filter names translated (here, on the UI
+/// thread: the interface language is per thread) and every extension list turned into the
 /// case-insensitive patterns the synchronous pickers use, so `CLIP.MP4` stays visible (#262).
-#[cfg(target_os = "linux")]
 fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> filmcraft_ui_egui::native_dialogs::FileDialog {
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
@@ -673,7 +683,6 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
 }
 
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
-#[cfg(target_os = "linux")]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
 }
@@ -720,9 +729,8 @@ mod tests {
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
     }
 
-    /// #262 on Linux: the dialogs shown off the UI thread (#260) filter with the same
+    /// #262: the dialogs shown off the UI thread (#260, #4995) filter with the same
     /// case-insensitive patterns as the synchronous pickers, so upper- and mixed-case files show.
-    #[cfg(target_os = "linux")]
     #[test]
     fn off_thread_dialogs_keep_case_insensitive_filters() {
         use filmcraft_ui_egui::RelinkHint;
@@ -747,5 +755,16 @@ mod tests {
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
         // #1644: the Open Project dialog's "All files" fallback is a single `*`.
         assert_eq!(super::file_filters::all_files(), ["*"]);
+    }
+
+    /// The worker-thread dialog runner covers macOS as well as Linux (#4995): on macOS a
+    /// modal rfd dialog inside winit's event handler panics when an event arrives while
+    /// the handler is borrowed ("tried to handle event while another event is currently
+    /// being handled"), and the panic is inside an ObjC block, so the app aborts.
+    #[test]
+    fn worker_thread_dialogs_cover_linux_and_macos() {
+        assert!(super::dialogs_need_worker_thread("linux"), "the XDG portal call blocks the frame loop (#260)");
+        assert!(super::dialogs_need_worker_thread("macos"), "a modal dialog inside winit's macOS event handler panics (#4995)");
+        assert!(!super::dialogs_need_worker_thread("windows"), "unchanged: no report of either failure there");
     }
 }
