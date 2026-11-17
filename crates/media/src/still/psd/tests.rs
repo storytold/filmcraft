@@ -281,3 +281,50 @@ fn opens_as_a_still() {
     assert_eq!(src.info().kind, crate::MediaKind::Still);
     assert_eq!(src.info().video.as_ref().map(|v| (v.width, v.height, v.codec.as_str())), Some((4, 2, "PSD")));
 }
+
+// Prior Film decoder retained only as a compatibility oracle.
+/// Expand one PackBits-coded row into `out`, which it must fill exactly.
+fn legacy_unpack(name: &str, src: &[u8], out: &mut [u8]) -> Result<()> {
+    let (mut i, mut o) = (0, 0);
+    while o < out.len() {
+        let n = *src.get(i).ok_or_else(|| err(name, "truncated run-length row"))? as i8;
+        i += 1;
+        if n >= 0 {
+            let k = n as usize + 1;
+            let lit = src.get(i..i + k).ok_or_else(|| err(name, "truncated run-length row"))?;
+            out.get_mut(o..o + k).ok_or_else(|| err(name, "run-length row longer than the picture"))?.copy_from_slice(lit);
+            i += k;
+            o += k;
+        } else if n != -128 {
+            let k = usize::from(n.unsigned_abs()) + 1;
+            let v = *src.get(i).ok_or_else(|| err(name, "truncated run-length row"))?;
+            out.get_mut(o..o + k).ok_or_else(|| err(name, "run-length row longer than the picture"))?.fill(v);
+            i += 1;
+            o += k;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn shared_packbits_preserves_film_row_acceptance_and_bytes() {
+    for header in 0..=255u8 {
+        let full = std::iter::once(header).chain((0..128).map(|i| i as u8)).collect::<Vec<_>>();
+        for src in [vec![header], vec![header, 9], full] {
+            for width in [0, 1, 2, 127, 128, 129] {
+                let mut old = vec![0xA5; width];
+                let mut new = old.clone();
+                let before = legacy_unpack("a.psd", &src, &mut old);
+                let after = unpack("a.psd", &src, &mut new);
+                assert_eq!(before.is_ok(), after.is_ok(), "header={header}, width={width}, input={src:?}");
+                assert_eq!(old, new, "completed packets and untouched suffix agree even on error");
+                if let Err(e) = after {
+                    assert!(matches!(e, MediaError::Decode(_)));
+                }
+            }
+        }
+    }
+    let mut row = [0; 3];
+    unpack("a.psd", &[128, 0, 7, 128, 255, 9, 255], &mut row).unwrap();
+    assert_eq!(row, [7, 9, 9], "no-ops allowed, trailing truncated packet ignored");
+}
