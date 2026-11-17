@@ -27,8 +27,18 @@ fn bodies_id() -> egui::Id {
     area_id().with("bodies")
 }
 
-/// Width of the ≡ panel menu button at the end of each tab strip.
-const MENU_W: f32 = 26.0;
+/// Room the ≡ panel menu button takes at the end of the shown tab's label.
+const TAB_MENU_W: f32 = 18.0;
+
+/// Width of the » button at the right end of a tab strip whose tabs do not all fit.
+const CHEVRON_W: f32 = 24.0;
+
+/// craft-ui's padding around a tab's label (`docking::surface::TAB_PADDING`, private there): a
+/// tab's natural width is its label's plus this.
+const TAB_PADDING: f32 = 24.0;
+
+/// craft-ui's width for its own overflow button (`docking::render::group::OVERFLOW_WIDTH`).
+const CRAFT_OVERFLOW_W: f32 = 22.0;
 
 pub(crate) fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if id == "window.dockAction" {
@@ -263,6 +273,7 @@ impl FilmcraftApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         let seq_width = dock::sequence_tabs_width(ui, &seqs);
+        let (min_tab_width, drag_bar_width, tab_font) = (style.min_tab_width, style.drag_bar_width, style.font.clone());
         // Known before anything draws, so header elements of a native window (the ≡ menu, the
         // Timeline's sequence tabs), drawn before its bodies, carry that window too.
         self.auto.windows =
@@ -274,12 +285,18 @@ impl FilmcraftApp {
             tokens: t,
             seq_actions: Vec::new(),
             menu: None,
+            ctx: ctx.clone(),
+            min_tab_width,
+            drag_bar_width,
+            tab_font,
+            chevrons: std::cell::RefCell::default(),
+            picked_tab: None,
             seq_menu_viewport: egui::ViewportId::ROOT,
             bodies: Vec::new(),
             restore_workspace: false,
         };
         let output = area.show_content(&mut child, &layout, &style, &mut content);
-        let FilmContent { seq_actions, mut menu, seq_menu_viewport, bodies, restore_workspace, .. } = content;
+        let FilmContent { seq_actions, mut menu, seq_menu_viewport, bodies, restore_workspace, picked_tab, .. } = content;
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
@@ -302,6 +319,12 @@ impl FilmcraftApp {
                 if let Err(error) = self.dock_command(&ctx, action) {
                     self.ui.status = error;
                 }
+            }
+        }
+        if let Some(panel) = picked_tab {
+            match self.dock_command(&ctx, Action::Activate { panel }) {
+                Ok(()) => self.ui.focused = panel,
+                Err(error) => self.ui.status = error,
             }
         }
         if restore_workspace {
@@ -355,6 +378,17 @@ impl FilmcraftApp {
         let hits = DockArea::<PanelKind>::hit_rects(&ctx, area_id());
         self.register_dock_hits(&hits);
         panels::panel_menu_popup(self, ui);
+    }
+
+    /// A layout action chosen in a panel ≡ menu, through `window.dockAction` as the dock area's
+    /// own actions go: a close that would remove the Timeline while a sequence is open closes
+    /// the active sequence instead. A failure goes to the status bar.
+    pub(crate) fn run_layout_action(&mut self, ctx: &egui::Context, action: Action<PanelKind>) {
+        for action in self.close_keeping_timeline(action) {
+            if let Err(error) = self.dock_command(ctx, action) {
+                self.ui.status = error;
+            }
+        }
     }
 
     /// The Timeline's tabs stand for its open sequences: a close from the dock area (a tab's
@@ -481,6 +515,16 @@ struct FilmContent<'a> {
     seq_actions: Vec<SeqAction>,
     /// The ≡ button clicked: its panel and where its menu opens.
     menu: Option<(PanelKind, egui::Pos2, egui::ViewportId)>,
+    /// For measuring tab labels in [`DockContent::group_header_width`], which has no `Ui`.
+    ctx: egui::Context,
+    /// The dock style's tab minimum, drag bar width and tab font, as craft-ui fits tabs with them.
+    min_tab_width: f32,
+    drag_bar_width: f32,
+    tab_font: egui::FontId,
+    /// The groups (by shown panel) whose tabs overflow this pass, so their header draws a ».
+    chevrons: std::cell::RefCell<Vec<PanelKind>>,
+    /// A tab chosen in a » list: it is activated after the dock area is drawn.
+    picked_tab: Option<PanelKind>,
     /// The viewport of the Timeline tab strip whose sequence tab menu was opened this pass.
     seq_menu_viewport: egui::ViewportId,
     bodies: Vec<(PanelKind, Rect, egui::LayerId)>,
@@ -502,6 +546,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         panels::show(self.app, &mut child, *panel, rect);
+        self.tab_menu_button(ui, *panel, rect);
         // FilmCraft's drag payload lives in context data, not egui's drag-and-drop, so craft-ui
         // routes it to the native window under the pointer only when asked, each frame.
         if panels::dragging(ui.ctx()) {
@@ -541,9 +586,10 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// With no sequence open, the Timeline's tab says so.
-    fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
-        if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
+    /// With no sequence open, the Timeline's tab says so. The shown tab of a group keeps room
+    /// after its name for its ≡ button.
+    fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
+        self.tab_label(panel, logical, font, color).into()
     }
 
     /// FilmCraft's own panel items head a tab's context menu, as in its ≡ menu; craft-ui adds
@@ -574,38 +620,211 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// The ≡ menu, and the Timeline's sequence tabs before it while the Timeline is shown.
-    /// The sequence tabs take at most two thirds of the strip, so the group's own tabs keep room;
-    /// past that they scroll into their » list.
-    fn group_header_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool, strip_width: f32) -> f32 {
-        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { (self.seq_width + MENU_W).min(strip_width * 2.0 / 3.0).max(MENU_W) } else { MENU_W }
+    /// The Timeline's sequence tabs while the Timeline is shown, and the » list when the group's
+    /// tabs do not all fit. The sequence tabs take at most two thirds of the strip, so the group's
+    /// own tabs keep room; past that they scroll into their own » list.
+    fn group_header_width(&self, panels: &[PanelKind], active: &PanelKind, _floating: bool, strip_width: f32) -> f32 {
+        let base = if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { self.seq_width.min(strip_width * 2.0 / 3.0) } else { 0.0 };
+        let bar = self.drag_bar_width.clamp(0.0, (strip_width - base).max(0.0));
+        let widths: Vec<f32> = panels.iter().map(|panel| self.tab_width(panel)).collect();
+        let overflow = tabs_overflow(&widths, strip_width - base - bar, self.min_tab_width);
+        // `group_header` draws the » for the groups that asked for its room this pass
+        let mut chevrons = self.chevrons.borrow_mut();
+        chevrons.retain(|panel| panel != active);
+        if overflow {
+            chevrons.push(*active);
+            (base + CHEVRON_W).min(strip_width.max(0.0))
+        } else {
+            base
+        }
     }
 
-    /// The ≡ panel menu of the group's shown panel; for the Timeline, its sequence tabs first.
-    fn group_header(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
+    /// The Timeline's sequence tabs, then the » list of every tab in the group when they overflow.
+    fn group_header(&mut self, ui: &mut egui::Ui, panels: &[PanelKind], active: &PanelKind, _floating: bool) {
         let t = self.tokens;
         let header = ui.max_rect();
-        let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
+        let chevron = self.chevrons.borrow().contains(active);
+        let seq_strip = if chevron { Rect::from_min_max(header.min, egui::pos2((header.max.x - CHEVRON_W).max(header.min.x), header.max.y)) } else { header };
         if *active == PanelKind::Timeline && !self.seqs.open.is_empty() {
-            let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));
-            let actions = dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto);
+            let actions = dock::sequence_tabs(ui, seq_strip, &self.seqs, &t, &mut self.app.auto);
             if actions.iter().any(|a| matches!(a, SeqAction::Menu(..))) {
                 self.seq_menu_viewport = ui.ctx().viewport_id();
             }
             self.seq_actions.extend(actions);
         }
-        let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
-        let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
-        self.app.auto.add_response(&format!("panel.menu.{}", active.id()), &response, "panel menu");
-        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
-        icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), Icon::Hamburger, color);
-        dock::paint_widget_focus(ui.painter(), &response, &t);
-        if response.clicked() {
-            self.app.ui.focused = *active;
-            self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
+        if chevron {
+            let rect = Rect::from_min_max(egui::pos2(seq_strip.max.x, header.min.y), header.max);
+            self.tab_list(ui, rect, panels, *active);
         }
     }
+}
+
+impl FilmContent<'_> {
+    /// A tab's label: the panel's name (the Timeline's with no sequence open says so), with room
+    /// after it for the ≡ button when the panel is the one its group shows.
+    fn tab_label(&self, panel: &PanelKind, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::text::LayoutJob {
+        let name = if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label() } else { logical.to_owned() };
+        let format = egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(&name, 0.0, format.clone());
+        if self.app.ui.dock.is_visible(*panel) {
+            job.append(" ", TAB_MENU_W, format);
+        }
+        job
+    }
+
+    /// A tab's natural width, as craft-ui measures it to fit the group's tabs.
+    fn tab_width(&self, panel: &PanelKind) -> f32 {
+        let logical = crate::i18n::t(panel.title()).to_string();
+        let job = self.tab_label(panel, &logical, &self.tab_font, egui::Color32::WHITE);
+        self.ctx.fonts_mut(|fonts| fonts.layout_job(job)).size().x + TAB_PADDING
+    }
+
+    /// The ≡ button at the end of the shown tab of `panel`'s group, whose body is `body`: it opens
+    /// the panel menu below it. The tab is the one craft-ui drew this pass right above the body;
+    /// an accordion entry or a tab from an earlier pass has none.
+    fn tab_menu_button(&mut self, ui: &mut egui::Ui, panel: PanelKind, body: Rect) {
+        let t = self.tokens;
+        let Some(tab) = ui.ctx().read_response(DockArea::<PanelKind>::hit_id(area_id(), &Hit::Tab(panel))).map(|response| response.rect) else { return };
+        if !tab_menu_fits(tab, body) {
+            return;
+        }
+        let rect = tab_menu_rect(tab);
+        // Drawn on the tab's layer after the tab, so the button takes the click; a drag from
+        // it still moves the tab, which senses drags.
+        let mut over = ui.new_child(egui::UiBuilder::new().max_rect(tab).id_salt(("tab-menu", panel.id())));
+        over.set_clip_rect(tab);
+        let response = over.interact(rect, egui::Id::unique(("panel-menu-button", panel.id())), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
+        self.app.auto.add_response(&format!("panel.menu.{}", panel.id()), &response, "panel menu");
+        let painter = over.painter();
+        // a squeezed tab's cut label runs under the button
+        painter.rect_filled(rect, 0.0, t.panel_bg);
+        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
+        icons::paint(painter, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), Icon::Hamburger, color);
+        dock::paint_widget_focus(painter, &response, &t);
+        if response.clicked() {
+            self.app.ui.focused = panel;
+            self.menu = Some((panel, rect.left_bottom(), ui.ctx().viewport_id()));
+        }
+    }
+
+    /// The » button in `rect` and its list of every tab in the group, the shown one ticked.
+    /// Choosing one shows it.
+    fn tab_list(&mut self, ui: &mut egui::Ui, rect: Rect, panels: &[PanelKind], active: PanelKind) {
+        let t = self.tokens;
+        let list_id = egui::Id::unique(("panel-tab-list", active.id()));
+        let button = Rect::from_center_size(rect.center(), vec2(18.0, 20.0)).intersect(rect);
+        let response = ui.interact(button, egui::Id::unique(("panel-tab-list-button", active.id())), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "all tabs"));
+        self.app.auto.add_response(&format!("panel.tabs.all.{}", active.id()), &response, "all tabs");
+        let color = if response.hovered() { t.tab_text_active } else { t.tab_text };
+        let painter = ui.painter_at(rect);
+        icons::paint(&painter, button.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, color);
+        icons::paint(&painter, button.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, color);
+        dock::paint_widget_focus(&painter, &response, &t);
+        let mut opened = false;
+        if response.clicked() {
+            let open = ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false);
+            ui.ctx().data_mut(|d| d.insert_temp(list_id, !open));
+            opened = !open;
+        }
+        if !ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false) {
+            return;
+        }
+        let mut picked = None;
+        let auto = &mut self.app.auto;
+        let area = egui::Area::new(list_id.with("area")).order(egui::Order::Foreground).pivot(egui::Align2::RIGHT_TOP).fixed_pos(button.right_bottom()).show(
+            ui.ctx(),
+            |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    egui::containers::menu::menu_style(ui.style_mut());
+                    // the names line up whether ticked or not
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let measure =
+                        |ui: &egui::Ui, text: &str| ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.into(), font.clone(), egui::Color32::WHITE)).size().x;
+                    let tick = measure(ui, "✓ ");
+                    // as wide as the longest name, not the window (#4446)
+                    let widest = panels.iter().map(|panel| measure(ui, crate::i18n::t(panel.title()))).fold(0.0_f32, f32::max);
+                    let width = (tick + widest + 2.0 * ui.spacing().button_padding.x).clamp(160.0, 480.0);
+                    ui.set_width(width);
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for (panel, shown) in tab_list_entries(panels, active) {
+                            let name = crate::i18n::t(panel.title());
+                            let format = egui::TextFormat { font_id: font.clone(), color: ui.visuals().text_color(), ..Default::default() };
+                            let mut job = egui::text::LayoutJob::default();
+                            if shown {
+                                job.append("✓ ", 0.0, format.clone());
+                                job.append(name, 0.0, format);
+                            } else {
+                                job.append(name, tick, format);
+                            }
+                            let response = ui.add(egui::Button::new(job).min_size(vec2(width, 0.0)));
+                            // the label says which is shown, as the list does
+                            let label = if shown { format!("✓ {}", panel.title()) } else { panel.title().to_owned() };
+                            auto.add_response(&format!("panel.tabs.list.{}", panel.id()), &response, &label);
+                            if response.clicked() {
+                                picked = Some(panel);
+                            }
+                        }
+                    });
+                });
+            },
+        );
+        if picked.is_some() {
+            self.picked_tab = picked;
+        }
+        if picked.is_some() || (!opened && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
+            ui.ctx().data_mut(|d| d.remove::<bool>(list_id));
+        }
+    }
+}
+
+/// The panels of the tab group holding `panel`, docked or floating, in tab order; just `panel`
+/// when it is not in a tab group (an accordion entry), nothing when it is closed.
+pub(crate) fn group_of(layout: &Layout<PanelKind>, panel: PanelKind) -> Vec<PanelKind> {
+    fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+        match node {
+            Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),
+            Node::Dock { columns, .. } => {
+                columns.iter().flat_map(|column| column.groups.iter()).find(|group| group.panels.contains(&panel)).map(|group| group.panels.clone())
+            }
+            Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
+            _ => None,
+        }
+    }
+    let found = layout.root.iter().chain(layout.floating.iter().map(|window| &window.root)).find_map(|root| find(root, panel));
+    match found {
+        Some(panels) => panels,
+        None if layout.contains(&panel) => vec![panel],
+        None => Vec::new(),
+    }
+}
+
+/// Whether `tab` is the tab right above `body`, so its ≡ belongs on it: a rect from an earlier
+/// pass, after the layout changed, sits elsewhere.
+fn tab_menu_fits(tab: Rect, body: Rect) -> bool {
+    tab.is_positive() && (tab.bottom() - body.top()).abs() <= 1.0 && tab.left() >= body.left() - 1.0 && tab.right() <= body.right() + 1.0
+}
+
+/// Where the ≡ button sits on a shown `tab`: in the room its label keeps for it, before the tab's
+/// right padding. A tab squeezed narrower than that keeps the button inside it, over the cut label.
+fn tab_menu_rect(tab: Rect) -> Rect {
+    let half = TAB_MENU_W * 0.5;
+    let x = tab.right() - TAB_PADDING * 0.5 - half + 4.0;
+    let x = if tab.width() <= TAB_MENU_W { tab.center().x } else { x.clamp(tab.left() + half, tab.right() - half) };
+    Rect::from_center_size(egui::pos2(x, tab.center().y), vec2(TAB_MENU_W, TAB_MENU_W)).intersect(tab)
+}
+
+/// Whether a group's tabs, of natural `widths`, overflow a strip with `available` room for them
+/// (craft-ui's fit: tabs shrink to `minimum`, then the rest go to a list). One tab never does.
+fn tabs_overflow(widths: &[f32], available: f32, minimum: f32) -> bool {
+    !craft_ui::tabs::fit(widths, 0, available, minimum, CRAFT_OVERFLOW_W).overflow.is_empty()
+}
+
+/// The » list of a group: every tab in order, with whether it is the shown one.
+fn tab_list_entries(panels: &[PanelKind], active: PanelKind) -> Vec<(PanelKind, bool)> {
+    panels.iter().map(|panel| (*panel, *panel == active)).collect()
 }
 
 /// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
@@ -632,7 +851,7 @@ mod tests {
     use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
     use craft_ui::layout::{SplitAxis, SplitSize};
 
-    use super::tab_group;
+    use super::{group_of, tab_group, tab_list_entries, tab_menu_fits, tab_menu_rect, tabs_overflow};
     use crate::dock::{Layout, PanelKind};
 
     /// The Timeline beside a dock column holding `group`.
@@ -655,5 +874,58 @@ mod tests {
         let entries = [PanelKind::Properties, PanelKind::Program].map(|panel| StackEntry { panel, open: false, height: None }).to_vec();
         let accordion = Layout { root: Some(Node::Stack { entries }), floating: vec![] };
         assert_eq!(tab_group(&accordion, PanelKind::Program), None, "an accordion");
+    }
+
+    /// Tabs overflow only when even at the minimum width they do not fit, as craft-ui fits them.
+    #[test]
+    fn tabs_overflow_only_past_their_minimum_width() {
+        assert!(!tabs_overflow(&[120.0, 120.0], 240.0, 54.0), "both fit");
+        assert!(!tabs_overflow(&[120.0, 120.0], 110.0, 54.0), "both shrink to fit");
+        assert!(tabs_overflow(&[120.0, 120.0, 120.0], 110.0, 54.0), "three at their minimum do not fit");
+        assert!(!tabs_overflow(&[400.0], 10.0, 54.0), "one tab never overflows");
+        assert!(!tabs_overflow(&[], 0.0, 54.0));
+        assert!(tabs_overflow(&[60.0, 60.0], -5.0, 54.0), "no room at all");
+        assert!(!tabs_overflow(&[f32::NAN, f32::INFINITY], f32::NAN, f32::NAN), "hostile widths do not panic");
+    }
+
+    /// The » list holds every tab of the group in order, only the shown one ticked.
+    #[test]
+    fn the_tab_list_ticks_only_the_shown_tab() {
+        use PanelKind::{Effects, MediaBrowser, Project};
+        assert_eq!(tab_list_entries(&[Project, MediaBrowser, Effects], MediaBrowser), vec![(Project, false), (MediaBrowser, true), (Effects, false)]);
+        assert_eq!(tab_list_entries(&[Project], Effects), vec![(Project, false)], "a shown panel outside the group ticks nothing");
+        assert!(tab_list_entries(&[], Project).is_empty());
+    }
+
+    /// Close Other Panels in Group acts on the group holding the panel: docked, in a dock column
+    /// or floating.
+    #[test]
+    fn group_of_finds_the_panels_tab_group_wherever_it_is() {
+        use PanelKind::{Effects, History, Program, Project, Timeline};
+        use craft_ui::docking::Floating;
+        let mut layout = beside_dock(Group::new(vec![Program, Effects], 0), false);
+        layout.floating.push(Floating::single(vec![Project, History], 1, [0.0, 0.0, 300.0, 200.0]));
+        assert_eq!(group_of(&layout, Timeline), vec![Timeline]);
+        assert_eq!(group_of(&layout, Effects), vec![Program, Effects], "a dock column's group");
+        assert_eq!(group_of(&layout, History), vec![Project, History], "a floating window's group");
+        assert!(group_of(&layout, PanelKind::Markers).is_empty(), "a closed panel has none");
+    }
+
+    /// The ≡ sits inside its tab at every width, and only on the tab right above the body.
+    #[test]
+    fn the_tab_menu_stays_inside_its_tab() {
+        use egui::{Rect, pos2};
+        let body = Rect::from_min_max(pos2(0.0, 30.0), pos2(400.0, 300.0));
+        for width in [0.5, 10.0, 18.0, 30.0, 120.0] {
+            let tab = Rect::from_min_max(pos2(4.0, 6.0), pos2(4.0 + width, 30.0));
+            let menu = tab_menu_rect(tab);
+            assert!(tab.contains_rect(menu), "{width}: {menu:?} in {tab:?}");
+        }
+        let tab = Rect::from_min_max(pos2(4.0, 6.0), pos2(124.0, 30.0));
+        assert!(tab_menu_rect(tab).center().x > tab.center().x, "after the name");
+        assert!(tab_menu_fits(tab, body));
+        assert!(!tab_menu_fits(tab.translate(egui::vec2(0.0, 40.0)), body), "a tab elsewhere is from an earlier layout");
+        assert!(!tab_menu_fits(tab.translate(egui::vec2(500.0, 0.0)), body), "outside the body's width");
+        assert!(!tab_menu_fits(Rect::NOTHING, body));
     }
 }

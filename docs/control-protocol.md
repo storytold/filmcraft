@@ -230,6 +230,11 @@ locates a split divider (`a`/`b` per split level), `dock.corner.<outer path>.<in
 four-way handle where two dividers meet, `panel.float.<index>.gutter.<path>` and
 `panel.float.<index>.corner.<outer path>.<inner path>` the same inside a floating window;
 `ui.docking` lists every docking gesture source. Named workspace saves include floating windows.
+`panel.menu.<Panel>` is the ≡ on the shown tab of each group; its menu's group items are
+`panel.menu.<Panel>.close`, `.undock`, `.closeOthersInGroup` and `.groupSettings` (Panel Group
+Settings: `.closeGroup`, `.undockGroup`, `.maximize`). A group whose tabs do not all fit shows
+`panel.tabs.all.<Panel>` (») at the right end of its strip, listing every tab as
+`panel.tabs.list.<Panel>`.
 
 The panels use craft-ui's shared docking with its split-tree settings. Its control commands
 (`window.panel.move`, `.float`, `.dock`, `.activate`, `.close`, `.closeGroup`, `.closeOthers`,
