@@ -115,7 +115,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
   VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode; ~48 of Premiere's
-  ~82 accelerated effects (keys, masks, Color Grading curves / wheels / HSL, distortions, transitions);
+  ~82 accelerated effects (Ultra Key (Color Key and Luma Key run on the GPU), masks, Color Grading curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
   a CPU fallback adapter renders everything on the CPU (#632).
 - **Estimate:** 120–200 h (hardware we don't own needs a human). Doc:

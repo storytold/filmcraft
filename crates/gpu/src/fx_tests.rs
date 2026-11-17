@@ -359,7 +359,37 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        // keys (Color Key, Luma Key): alpha changes, so premultiplication is checked too
+        ("color_key", vec![("color", col(0.1, 0.8, 0.2)), ("tolerance", fl(120.0)), ("feather", fl(20.0))], true),
+        ("color_key", vec![("color", col(0.9, 0.2, 0.1)), ("tolerance", fl(30.0))], true),
+        ("luma_key", vec![("threshold", fl(60.0)), ("cutoff", fl(20.0))], true),
+        ("luma_key", vec![("threshold", fl(70.0)), ("cutoff", fl(30.0)), ("invert", ParamValue::Bool(true))], true),
     ]
+}
+
+/// The key op's spill suppression and alpha-matte view, which Color Key itself never asks for, on
+/// the GPU against the CPU reference.
+#[test]
+fn gpu_key_spill_and_matte_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let key_ycc = filmcraft_color::rgb_to_ycbcr(0.1, 0.8, 0.2, filmcraft_color::Matrix::Bt709);
+    for (dom, matte) in [(1u32, false), (1, true), (0, false), (2, false)] {
+        let op = FxOp::Key { key_ycc, tol: 0.1, soft: 0.08, spill: 0.6, dom, matte };
+        assert!(op.gpu_ok());
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] };
+        let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst <= EXACT && flips <= FLIPS, "dom {dom} matte {matte}: {worst:.2e}, flips {flips:.4}");
+    }
 }
 
 /// Every effect case on the GPU against its CPU reference, on the working image read back as f32.
