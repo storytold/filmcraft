@@ -1,8 +1,8 @@
 //! Marker mapping from contributor-authored project XML. `MarkerOwner/Markers@ObjectRef` points
 //! to a markers object whose `Markers` list entries point (`Second@ObjectRef`) to `Marker`
 //! objects holding one `DVAMarker` JSON record. Original work, MIT OR Apache-2.0.
+use super::xml::{child, child_text};
 use super::{referred, spend, warning};
-use crate::xml::{child, child_text};
 use crate::{Report, Result};
 use filmcraft_project::{Label, Marker, MarkerId, MarkerKind};
 use filmcraft_time::Tick;

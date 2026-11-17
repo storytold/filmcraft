@@ -1,6 +1,8 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (B2: bins and markers available; M8 Fujifilm colour spaces retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-08 · **Change:** minor (B2: bins and markers available; M8: Fujifilm F-Log / F-Log2 / F-Log2 C colour spaces; E-AC-3 #788, AVI #650, Russian #610, French #804, Indonesian #878, pt-BR #866 and German #630 no longer listed as open) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 Forward-looking plan: milestones with status, the current focus and what's next, with estimates in
 Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md#calibration)).
@@ -48,7 +50,7 @@ Beta = ready for real work ≥ ~75% and `.prproj` opens reliably ([target-app-pa
 |---|---|---|---|
 | B1 | PR CI on three OSs + launch-crash fixes | ⬜ | 40–80 |
 | B2 | `.prproj` import: sequences/clips/timing/provenance, bins and markers available; full effect fidelity, reverse/time-remapped clips and smart bins remain ([limits](premiere-import.md)) | partial | not re-estimated |
-| B3 | Camera media: H.264 High 10 / 4:2:2, HEVC 4:2:2, E-AC-3, AVI, multi-track audio confirmed | 🟡 (multi-stream audio #361) | 50–90 |
+| B3 | Camera media: H.264 High 10 / 4:2:2, HEVC 4:2:2, multi-track audio confirmed (E-AC-3 #788 and AVI #650 done) | 🟡 (multi-stream audio #361) | 50–90 |
 | B4 | Fidelity harness + `cargo xtask parity` + media corpus + workflow tests | ⬜ | 90–160 |
 | B5 | Hardware: zero-copy, more GPU effects, Windows vendor encoders, VideoToolbox Main 10 | 🟡 | 60–100 |
 | B6 | UI fidelity top issues and Windows / Linux runtime | 🟡 | 90–160 |

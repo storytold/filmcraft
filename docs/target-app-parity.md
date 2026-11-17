@@ -1,6 +1,8 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available; AVI import #650, E-AC-3 decode #647 and Russian menus #610 no longer counted as missing; percentages and hours not re-measured) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -297,7 +299,7 @@ niche requests among the bug reports about two to one, and nobody reports having
 
 **Alpha.** It passes the core-workflow gate ([roadmap.md](roadmap.md#alpha-gate): all six of Premiere's core daily workflows work end to end on macOS and the project saves and reopens). Core workflows run end to end (import, edit, trim, colour, mix, caption, deliver,
 round-trip through XML / AAF), but ready-for-real-work is ~56%, below the ~75% beta bar, and the
-standard's beta condition "opens and saves the target's main format reliably" is not yet met:
+beta condition "opens and saves the target's main format reliably" is not yet met:
 FilmCraft opens a bounded subset of `.prproj` projects (sequences, bins, markers); smart bins,
 reverse/time-remapped clips and full effect fidelity remain unsupported ([limits](premiere-import.md)). The readiness scores and effort estimates
 below have not been re-measured for this importer.
@@ -358,6 +360,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 |---|---|---|
 | 2026-11-08 | minor | Stage text: Premiere import now covers bins and markers; smart bins, reverse/time-remapped clips and full effect fidelity remain. No score, stage or estimate change. |
 | 2026-10-17 | minor | Record bounded Premiere project import and its limits; no readiness-score, stage or effort-total change. |
+| 2026-10-12 | minor | Outdated entries corrected from merged work: AVI import (#650) and E-AC-3 decode (#647, via #788) removed from the failing lists; VP8 WebM decodes (#432, via #1064); localization "4 of 12" now 9 of 12 (localization-parity.md); scores and hours not re-measured |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

@@ -1,8 +1,8 @@
 //! Intrinsic audio parameter mapping from contributor-authored project XML.
 //! Raw normalized 0.17782794 reads as 0 dB in Premiere; zero represents silence.
 //! Original work, MIT OR Apache-2.0. Temporal handles are explicitly approximate.
+use super::xml::child;
 use super::{error, referred, spend, value, warning};
-use crate::xml::child;
 use crate::{Report, Result};
 use filmcraft_project::{Keyframe, Param, ParamValue};
 use filmcraft_time::Tick;
