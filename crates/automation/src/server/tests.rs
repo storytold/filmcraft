@@ -505,22 +505,29 @@ async fn failed_output_stops_the_reader() {
 
 /// `sequence_inspect` reads a sequence that is not the active one through `item`, as
 /// `sequence.inspect` does, without opening it; with no arguments it still reads the active one.
+/// The editor's selection belongs to the active sequence, so another sequence reports none.
 #[tokio::test(flavor = "multi_thread")]
 async fn sequence_inspect_reads_the_sequence_named_by_item() {
     let mut s = demo();
     let demo_seq = s.execute("project.inspect", json!({})).unwrap()["activeSequence"].as_u64().unwrap();
     let other = s.execute("file.newSequence", json!({"name": "Other", "video": 1, "audio": 1})).unwrap()["sequence"].as_u64().unwrap();
     assert_ne!(demo_seq, other);
+    s.execute("sequence.open", json!({"item": demo_seq})).unwrap();
+    let picked = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("timeline.select", json!({"clips": [picked]})).unwrap();
     let mut c = Client::start(s);
     c.init().await;
     let read = |r: Value| -> Value { serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{r}"))).unwrap() };
-    let named = read(c.call(1, "sequence_inspect", json!({"item": demo_seq})).await);
-    assert_eq!(named["id"].as_u64(), Some(demo_seq), "{named}");
-    assert!(named["video"][0]["items"].as_array().is_some_and(|a| !a.is_empty()), "the demo sequence's clips: {named}");
+    let named = read(c.call(1, "sequence_inspect", json!({"item": other})).await);
+    assert_eq!(named["id"].as_u64(), Some(other), "{named}");
+    assert_eq!(named["selection"], json!([]), "the active sequence's selection is not the named one's: {named}");
+    assert!(named["gapSelection"].is_null(), "{named}");
     let active = read(c.call(2, "sequence_inspect", json!({})).await);
-    assert_eq!(active["id"].as_u64(), Some(other), "{active}");
+    assert_eq!(active["id"].as_u64(), Some(demo_seq), "{active}");
+    assert!(active["video"][0]["items"].as_array().is_some_and(|a| !a.is_empty()), "the demo sequence's clips: {active}");
+    assert!(active["selection"].as_array().is_some_and(|a| a.contains(&json!(picked))), "{active}");
     let project = read(c.call(3, "project_inspect", json!({})).await);
-    assert_eq!(project["activeSequence"].as_u64(), Some(other), "inspecting a sequence does not open it: {project}");
+    assert_eq!(project["activeSequence"].as_u64(), Some(demo_seq), "inspecting a sequence does not open it: {project}");
     let r = c.call(4, "sequence_inspect", json!({"item": 999_999})).await;
     assert_eq!(r["result"]["isError"], true, "an id that is not a sequence is an error: {r}");
 }

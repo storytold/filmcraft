@@ -5283,6 +5283,8 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
     };
     // the frames export renders, a partial last frame included
     let (f0, f1) = filmcraft_export::frame_span(rate, TimeRange::new(Tick::ZERO, q.duration()));
+    // the editor's selections belong to the active sequence; another sequence has none
+    let active = s.state.active_sequence == Some(id);
     json!({
         "id": id.0,
         "name": s.project.item(id).map(|i| i.name.clone()),
@@ -5296,9 +5298,9 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color_value(), "author": m.author, "url": m.url})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
-        "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
-        "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>(),
-        "gapSelection": s.state.gap_selection.map(|g| json!({"track": g.track.0, "start": g.range.start.0, "end": g.range.end().0})),
+        "selection": if active { s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>() } else { Vec::new() },
+        "transitionSelection": if active { s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>() } else { Vec::new() },
+        "gapSelection": s.state.gap_selection.filter(|_| active).map(|g| json!({"track": g.track.0, "start": g.range.start.0, "end": g.range.end().0})),
     })
 }
 
