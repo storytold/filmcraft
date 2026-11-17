@@ -395,7 +395,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some(pos) = sresp.interact_pointer_pos()
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
+        // the right edge is the clip's last frame, not its end (the next clip's first frame, #4922)
+        let last = rate.tick_of(rate.frame_at(it.end() - Tick(1))).max(it.start);
+        let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64)).clamp(it.start, last);
         app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
@@ -409,7 +411,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().line_segment([pos2(split + 1.5, rect.min.y), pos2(split + 1.5, rect.max.y - 26.0)], Stroke::new(1.0, dcol));
     app.auto.add("effectControls.divider", divider, "divider");
     // playhead: a handle on the ruler and a line down the lane, while it is on the clip
-    if ph >= it.start && ph <= it.end() {
+    if ph >= it.start && ph < it.end() {
         let px = lx(ph);
         let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
         let head = vec![pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
