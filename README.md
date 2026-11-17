@@ -188,7 +188,7 @@ No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rus
 | **AV1** | ✓ | | Main profile, 8/10-bit 4:2:0 and monochrome, every coding tool incl. film grain, superres and spatial layers; bit-exact with libdav1d on the libaom vectors tested; in MP4 and WebM/Matroska |
 | **DNxHD / DNxHR** | ✓ | ✓ | All SMPTE ST 2019-1 CIDs (LB to 444, 8/10/12-bit); export writes DNxHR in MOV |
 | **MJPEG, PCM** | ✓ | ✓ | |
-| **MP3, FLAC, ALAC, Vorbis** | ✓ | MP3 | Decoding via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own. MP3 export: our own Layer III encoder, CBR 32–320 kbit/s, 16–48 kHz, mono or joint stereo (no VBR, gapless tag or ID3) |
+| **MP3, FLAC, ALAC, Vorbis** | ✓ | MP3 | Decoding via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own. MP3 export: our own Layer III encoder, CBR 32–320 kbit/s at 32–48 kHz and 8–160 kbit/s at 16–24 kHz, mono or joint stereo (no VBR, gapless tag or ID3) |
 | **MP4 / MOV** | ✓ | ✓ | Fragmented MP4, edit lists, timecode tracks |
 | **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
 | **AVI** | ✓ | | AVI 1.0 and OpenDML (files past 1 GB); Motion JPEG, H.264, HEVC and uncompressed RGB / YUV with PCM, MP3, MP2 or AC-3. DivX / Xvid and DV not yet |

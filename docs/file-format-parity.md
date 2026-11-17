@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-17 · **Change:** minor (MP3 export's bit rates per sample rate: 8-160 kbit/s at 16-24 kHz) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Containers, stills, audio files, project and interchange files, captions and presets. Codecs inside
 the containers are in [codec-parity.md](codec-parity.md). Our import list is
@@ -68,7 +68,7 @@ only). "Tested" names the evidence.
 |---|---|---|---|---|
 | WAV / BWF (timecode, iXML partial) | read + write | yes | yes | 90% |
 | AIFF / AIFC | read + write | yes | yes | 95% |
-| MP3 | read + write | read | yes (MP3 format: CBR 32-320 kbit/s, 16-48 kHz, mono / joint stereo, own encoder, #977; no VBR, gapless tag or ID3) | 85% |
+| MP3 | read + write | read | yes (MP3 format: CBR 32-320 kbit/s at 32-48 kHz and 8-160 kbit/s at 16-24 kHz, mono / joint stereo, own encoder, #977; no VBR, gapless tag or ID3) | 85% |
 | AAC / M4A | read + write | yes | yes (in MP4 / MOV, and AAC Audio: `.m4a` or ADTS `.aac`, #814) | 95% |
 | FLAC, Ogg, Opus | partial | yes | no | ahead on read |
 | WMA | read (Windows) | no | no | 0% |
@@ -98,3 +98,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
 | 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
 | 2026-11-09 | minor | Stills: uncompressed and PackBits YCbCr TIFF apply their Orientation tag; DNG not yet |
+| 2026-11-17 | minor | MP3 export's bit rates per sample rate: 32-320 kbit/s at 32-48 kHz, 8-160 kbit/s at 16-24 kHz (craft-libs `crates/audio/src/mp3`) |

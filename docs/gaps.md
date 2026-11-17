@@ -245,9 +245,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
   (audio-only `.m4a`, or ADTS `.aac`; #814); MP3 (`.mp3`, our own Layer III encoder, CBR
-  32-320 kbit/s, 16-48 kHz, mono / joint stereo; #977); ProRes 4444 / 4444 XQ in the export UI
-  (#342); H.264 High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a
-  (10-bit SDR and HDR, #1221).
+  32-320 kbit/s at 32-48 kHz and 8-160 kbit/s at 16-24 kHz, mono / joint stereo; #977); ProRes
+  4444 / 4444 XQ in the export UI (#342); H.264 High 10 and High 10 Intra from the built-in
+  encoder in MP4, MOV and MXF OP1a (10-bit streams; HDR keeps 10-bit precision, SDR is rendered
+  at 8 bits and widened, #1221).
 - **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an
   explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
   regions and clearing prior frames. Partial transparency remains a GIF limitation. See the
@@ -362,4 +363,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
-| 2026-11-17 | minor | G13: the two Have lists and the broken Missing list merged into one each; ZIP / ZIPS OpenEXR and MP3 export are Have, not Missing; G6: #432 (black WebM) noted as fixed by #1064; estimates unchanged |
+| 2026-11-17 | minor | G13: the two Have lists and the broken Missing list merged into one each; ZIP / ZIPS OpenEXR and MP3 export are Have, not Missing; MP3's bit rates per sample rate; High 10 SDR is rendered at 8 bits; G6: #432 (black WebM) noted as fixed by #1064; estimates unchanged |
