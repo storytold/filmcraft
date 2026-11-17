@@ -523,16 +523,20 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     let w = ui.available_width().max(1.0);
     let h = if hue { w * 0.45 } else { w }.min(420.0);
     let (area, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
+    // The plot is inset from the allocated area: mapped to the full area, the end points
+    // would sit on its corners, where the dock divider's hit zone covers the white point
+    // and it can never be grabbed (#4915).
+    let plot = area.shrink(10.0);
     let p = ui.painter();
     p.rect_filled(area, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
     for i in 1..4 {
         let f = i as f32 / 4.0;
         p.line_segment(
-            [pos2(area.min.x + area.width() * f, area.min.y), pos2(area.min.x + area.width() * f, area.max.y)],
+            [pos2(plot.min.x + plot.width() * f, plot.min.y), pos2(plot.min.x + plot.width() * f, plot.max.y)],
             Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
         );
         p.line_segment(
-            [pos2(area.min.x, area.min.y + area.height() * f), pos2(area.max.x, area.min.y + area.height() * f)],
+            [pos2(plot.min.x, plot.min.y + plot.height() * f), pos2(plot.max.x, plot.min.y + plot.height() * f)],
             Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
         );
     }
@@ -544,16 +548,16 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
             let c = Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8);
             p.rect_filled(
                 Rect::from_min_max(
-                    pos2(area.min.x + area.width() * f0, area.max.y - 6.0),
-                    pos2(area.min.x + area.width() * (f0 + 1.0 / n as f32) + 0.5, area.max.y),
+                    pos2(plot.min.x + plot.width() * f0, area.max.y - 6.0),
+                    pos2(plot.min.x + plot.width() * (f0 + 1.0 / n as f32) + 0.5, area.max.y),
                 ),
                 0.0,
                 c,
             );
         }
     }
-    let to_screen = |q: [f32; 2]| pos2(area.min.x + q[0] * area.width(), area.max.y - q[1] * area.height());
-    let from_screen = |s: Pos2| [((s.x - area.min.x) / area.width()).clamp(0.0, 1.0), ((area.max.y - s.y) / area.height()).clamp(0.0, 1.0)];
+    let to_screen = |q: [f32; 2]| pos2(plot.min.x + q[0] * plot.width(), plot.max.y - q[1] * plot.height());
+    let from_screen = |s: Pos2| [((s.x - plot.min.x) / plot.width()).clamp(0.0, 1.0), ((plot.max.y - s.y) / plot.height()).clamp(0.0, 1.0)];
     // curve polyline
     let draw_pts: Vec<[f32; 2]> = if hue && pts.is_empty() { vec![[0.0, 0.5], [1.0, 0.5]] } else { pts.clone() };
     // the hue curves wrap around red; Luma vs Sat and Sat vs Sat do not (same LUTs as the render)
