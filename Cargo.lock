@@ -1215,7 +1215,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=7f3fdc0dfebd03f33a241f
 [[package]]
 name = "craft-cloud"
 version = "0.1.0"
-source = "git+https://github.com/wdunn001/craft-libs?rev=6f0a6d2#6f0a6d2f4c24140d5ea988e5e40a85b2c6058401"
+source = "git+https://github.com/storytold/craft-libs?rev=fd7232d7a3a03ca1ccfe059a8afc8391b65668f0#fd7232d7a3a03ca1ccfe059a8afc8391b65668f0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",

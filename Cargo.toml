@@ -97,11 +97,11 @@ egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "47107f660191de2f0b425569506f4daa4faadac9", features = ["egui"] }
 # Vendor-neutral cloud contracts (Entry, Capability, Files/Sharing traits). No IO, no provider
-# names: buildable for the web and testable with no service. craft-ui on main has no cloud
-# feature yet (storytold/craft-libs#160, open); craft-cloud itself has no egui dependency, so
-# pinning it to wdunn001/craft-libs alone carries no egui-version risk. Once #160 merges, this
-# moves to the same storytold/craft-libs rev as craft-ui above, in one commit.
-craft-cloud = { git = "https://github.com/wdunn001/craft-libs", rev = "6f0a6d2" }
+# names: buildable for the web and testable with no service. Pinned to the revision that merged
+# storytold/craft-libs#160, where this crate landed. craft-cloud has no egui dependency, so a
+# revision of its own beside craft-ui's carries no egui-version risk; the two converge the next
+# time this workspace moves its craft-libs revision.
+craft-cloud = { git = "https://github.com/storytold/craft-libs", rev = "fd7232d7a3a03ca1ccfe059a8afc8391b65668f0" }
 rfd = "0.17"
 
 [workspace.lints.rust]
