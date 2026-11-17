@@ -98,3 +98,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
 | 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
 | 2026-11-09 | minor | Stills: uncompressed and PackBits YCbCr TIFF apply their Orientation tag; DNG not yet |
+| 2026-11-17 | minor | HEIF / HEIC stills: row changed from "read: no" to read via craft-heif (#4952); percentage estimated, dimension figure not re-measured |

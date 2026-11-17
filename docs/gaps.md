@@ -367,3 +367,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
+| 2026-11-17 | minor | G10: HEIF / HEIC stills import through craft-heif (single and grid-tiled, 8–16 bit, alpha, rotation / mirror / crop, Display P3 and BT.2020 converted to sRGB) (#4952) |
