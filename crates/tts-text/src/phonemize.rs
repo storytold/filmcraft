@@ -295,6 +295,9 @@ fn flush_sentence(
     lang: Lang,
 ) -> Result<(), NormalizeError> {
     let tokens = std::mem::take(sentence);
+    if lang == Lang::Fr {
+        return flush_sentence_fr(tokens, chunks, spent, overrides);
+    }
     let mut out = String::new();
     for token in &tokens {
         match token {
@@ -324,6 +327,57 @@ fn flush_sentence(
         }
     }
     Ok(())
+}
+
+/// [`flush_sentence`] for French: words are pronounced as a run, so liaisons see the next word.
+fn flush_sentence_fr(tokens: Vec<Token>, chunks: &mut Vec<Chunk>, spent: &mut usize, overrides: &BTreeMap<String, String>) -> Result<(), NormalizeError> {
+    let words: Vec<&str> = tokens.iter().filter_map(|t| if let Token::Word(w) = t { Some(w.as_str()) } else { None }).collect();
+    let mut said = fr::words(&words).into_iter();
+    let mut out = String::new();
+    for token in &tokens {
+        match token {
+            Token::Word(w) => {
+                let ruled = said.next().unwrap_or_default();
+                let p = fr_override(w, overrides).unwrap_or(ruled);
+                if p.is_empty() {
+                    continue;
+                }
+                *spent = spent.saturating_add(p.len() + 1);
+                if *spent > MAX_PHONEME_BYTES {
+                    return Err(NormalizeError::TooManyPhonemes);
+                }
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(&p);
+            }
+            Token::Punct(c) => {
+                if KEPT_PUNCT.contains(c) {
+                    out.push(*c);
+                }
+            }
+            Token::Pause { .. } | Token::SentenceEnd | Token::SentenceEndWith(_) => {}
+        }
+    }
+    for piece in split_long_chunk(out) {
+        if !piece.is_empty() {
+            chunks.push(Chunk::Phonemes(piece));
+        }
+    }
+    Ok(())
+}
+
+/// A French override: raw phonemes between slashes (only French phoneme symbols), or a
+/// French respelling read by the rules.
+fn fr_override(word: &str, overrides: &BTreeMap<String, String>) -> Option<String> {
+    let value = overrides.get(&word.to_lowercase())?;
+    if let Some(inner) = value.strip_prefix('/').and_then(|v| v.strip_suffix('/')) {
+        return (!inner.is_empty() && inner.chars().all(|c| fr::SYMBOLS.contains(c))).then(|| inner.to_string());
+    }
+    let tokens = normalize::normalize(value, Lang::Fr).ok()?;
+    let words: Vec<&str> = tokens.iter().filter_map(|t| if let Token::Word(w) = t { Some(w.as_str()) } else { None }).collect();
+    let said = fr::words(&words).join(" ");
+    (!said.is_empty()).then_some(said)
 }
 
 /// Split a phoneme string longer than [`MAX_CHUNK_CHARS`] at the last `,` `;` `:`
@@ -1082,6 +1136,8 @@ fn is_vowel_kokoro(s: &str) -> bool {
         None => false,
     }
 }
+
+pub mod fr;
 
 #[cfg(test)]
 mod tests;

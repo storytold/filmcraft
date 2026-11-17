@@ -80,12 +80,24 @@ impl TtsDraft {
 
 /// The natural voice package is downloaded.
 fn natural_installed() -> bool {
-    filmcraft_engine::transcript::models_dir().as_deref().is_some_and(filmcraft_tts::catalog::installed)
+    filmcraft_engine::transcript::models_dir().as_deref().is_some_and(|m| filmcraft_tts::catalog::voice_ready(m, "kokoro-heart"))
 }
 
 /// This build can download and run the natural voices (`neural-voices` on the engine).
 fn natural_voices_available() -> bool {
     filmcraft_engine::narration::natural_voices_available()
+}
+
+/// The voice a language starts with: an installed natural voice, else a natural one to download,
+/// else a built-in one (French has natural voices only).
+fn first_voice(voices: &[filmcraft_tts::VoiceInfo], language: &str, available: bool) -> Option<&'static str> {
+    let of = |engine: &str, installed: Option<bool>| {
+        voices
+            .iter()
+            .find(|v| v.language == language && v.engine == engine && installed.is_none_or(|i| v.installed == i) && (engine != "neural" || available))
+            .map(|v| v.id)
+    };
+    of("neural", Some(true)).or_else(|| of("neural", None)).or_else(|| of("basic", None))
 }
 
 /// The panel offers the download only when this build includes the feature and the package is not installed.
@@ -220,7 +232,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let models = filmcraft_engine::transcript::models_dir();
     let available = natural_voices_available();
     let voices = filmcraft_tts::voices_in(models.as_deref());
-    let installed = models.as_deref().is_some_and(filmcraft_tts::catalog::installed);
+    // the selected natural voice can speak (a voice added later needs only its own download)
+    let installed = models.as_deref().is_some_and(|m| filmcraft_tts::catalog::voice_ready(m, &app.ui.tts.voice));
     let busy = app.ui.tts.pending.is_some();
     let download = app
         .ui
@@ -259,6 +272,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             for (id, name) in filmcraft_tts::LANGUAGES {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
                     d.language = id.to_string();
+                    // keep the voice only if it speaks the new language
+                    if !voices.iter().any(|v| v.id == d.voice && v.language == d.language)
+                        && let Some(v) = first_voice(&voices, &d.language, available)
+                    {
+                        d.voice = v.to_string();
+                    }
                 }
             }
         });
