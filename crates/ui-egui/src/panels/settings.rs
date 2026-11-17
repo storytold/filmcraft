@@ -485,10 +485,17 @@ fn number(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, value: f64, range: (f6
     (r.changed() && x != value).then_some(x)
 }
 
+/// Whether `f`'s control can be used: a switch that only applies while another preference is on is
+/// greyed out when that one is off, and a preference with nothing behind it yet is always greyed out
+/// ([`Field::unavailable`]).
+fn field_enabled(f: &Field, values: &Value) -> bool {
+    !f.unavailable && f.enabled_by.is_none_or(|k| get(values, k).as_bool().unwrap_or(true))
+}
+
 fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Field) {
-    let enabled = f.enabled_by.is_none_or(|k| get(&d.values, k).as_bool().unwrap_or(true));
+    let enabled = field_enabled(f, &d.values);
     let cur = get(&d.values, f.key).clone();
-    ui.add_enabled_ui(enabled, |ui| {
+    let drawn = ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
             if f.indent {
                 ui.add_space(22.0);
@@ -596,8 +603,11 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     color_field(app, ui, d, f.key, f.label);
                 }
             }
-        });
+        })
     });
+    if f.unavailable {
+        drawn.response.on_disabled_hover_text(tl!("This preference is not available yet."));
+    }
 }
 
 /// A colour swatch (opens a picker) and its `#rrggbb` text.
@@ -1078,6 +1088,27 @@ mod tests {
         system.store(2, Ordering::Relaxed);
         app.apply_prefs(&ctx);
         assert_eq!(app.tokens.kind, ThemeKind::Dark);
+    }
+
+    /// A preference with nothing behind it yet is greyed out, and so is a switch whose parent
+    /// switch is off; neither claims to be usable.
+    #[test]
+    fn unavailable_settings_are_drawn_greyed_out() {
+        let mut values = json!({"playback": {"enableTransmit": true}, "mediaCache": {"autoClean": false}});
+        let transmit = settings::field("playback.enableTransmit").expect("playback.enableTransmit");
+        assert!(!field_enabled(&transmit, &values), "External Video Output has nothing behind it");
+        // The stored value is untouched: it round-trips, it just is not offered.
+        values["playback"]["enableTransmit"] = json!(true);
+        assert!(!field_enabled(&transmit, &values));
+        let plain = settings::field("timeline.stillImageDuration").expect("timeline.stillImageDuration");
+        assert!(field_enabled(&plain, &values), "an ordinary preference stays usable");
+        // A switch that only applies while another one is on follows that one, and keeps the
+        // dialog's own hint rather than the "not available yet" one.
+        let dependent = settings::field("autoSave.intervalMinutes").expect("autoSave.intervalMinutes");
+        assert_eq!(dependent.enabled_by, Some("autoSave.enabled"));
+        assert!(!field_enabled(&dependent, &json!({"autoSave": {"enabled": false}})));
+        assert!(field_enabled(&dependent, &json!({"autoSave": {"enabled": true}})));
+        assert!(!dependent.unavailable);
     }
 
     #[test]

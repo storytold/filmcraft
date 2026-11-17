@@ -130,9 +130,31 @@ impl Default for Options {
     }
 }
 
+/// Add `extra` to `base`; an entry replaces any earlier one with the same tag (the last of
+/// several in `extra` wins). One pass: scanning `base` for every extra tag was quadratic.
+fn merge_tags(base: &mut Vec<(u16, Value)>, extra: &[(u16, Value)]) {
+    // inserted one at a time: collecting would reserve `extra.len()` entries up front, and there are at most 65 536 distinct tags
+    let mut last: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+    for (i, e) in extra.iter().enumerate() {
+        last.insert(e.0, i);
+    }
+    base.retain(|e| !last.contains_key(&e.0));
+    for (i, (t, v)) in extra.iter().enumerate() {
+        if last.get(t) == Some(&i) {
+            base.push((*t, v.clone()));
+        }
+    }
+}
+
 /// Pack `rows` rows of `per_row` samples of `bits` bits (8/16-bit in byte order `be`, other
 /// depths most significant bit first, each row starting on a byte boundary).
+///
+/// Samples are 16 bits wide, so a depth outside 1..=16 packs nothing (it would shift past the
+/// accumulator, or emit bytes per sample without end).
 pub fn pack(samples: &[u16], per_row: usize, bits: u32, be: bool) -> Vec<u8> {
+    if !(1..=16).contains(&bits) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for row in samples.chunks(per_row.max(1)) {
         match bits {
@@ -451,10 +473,14 @@ pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
     try_write(samples, o).unwrap_or_else(|e| panic!("cannot write the DNG: {e}"))
 }
 
-/// [`write`], returning an error for options the format cannot hold: a lossy JPEG DNG needs
+/// [`write`], returning an error for options the format cannot hold: `bits` outside 1..=16, or a lossy JPEG DNG, which needs
 /// 8-bit LinearRaw (`bits` 8, `cfa` `None`) with 1 or 3 samples per pixel, and a chunk the JPEG
 /// encoder refuses is an error too.
 pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
+    // the samples are 16 bits wide: a file with empty or wrong raw strips must not be returned as if it were written
+    if !(1..=16).contains(&o.bits) {
+        return Err(format!("{} bits per sample is outside 1..=16", o.bits));
+    }
     if matches!(o.compression, Compression::LossyJpeg { .. }) && (o.bits != 8 || o.cfa.is_some()) {
         return Err("a lossy JPEG DNG needs bits 8 and cfa None (LinearRaw)".into());
     }
@@ -499,13 +525,7 @@ pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
         None => raw.push((tags::PHOTOMETRIC, Value::Short(vec![34892]))),
     }
     // later entries replace earlier ones with the same tag
-    let merge = |base: &mut Vec<(u16, Value)>, extra: &[(u16, Value)]| {
-        for (t, v) in extra {
-            base.retain(|e| e.0 != *t);
-            base.push((*t, v.clone()));
-        }
-    };
-    merge(&mut raw, &o.raw_tags);
+    merge_tags(&mut raw, &o.raw_tags);
     let mut main = vec![(tags::DNG_VERSION, Value::Byte(vec![1, 4, 0, 0])), (tags::UNIQUE_CAMERA_MODEL, Value::Ascii("FilmCraft Synthetic".into()))];
     let ifd0 = if o.preview {
         let raw_at = put_ifd(&mut buf, raw, be);
@@ -529,14 +549,47 @@ pub fn try_write(samples: &[u16], o: &Options) -> Result<Vec<u8>, String> {
             (tags::SUB_IFDS, Value::Long(vec![raw_at])),
         ];
         p.append(&mut main);
-        merge(&mut p, &o.main_tags);
+        merge_tags(&mut p, &o.main_tags);
         put_ifd(&mut buf, p, be)
     } else {
         raw.append(&mut main);
-        merge(&mut raw, &o.main_tags);
+        merge_tags(&mut raw, &o.main_tags);
         put_ifd(&mut buf, raw, be)
     };
     let off = if be { ifd0.to_be_bytes() } else { ifd0.to_le_bytes() };
     buf[4..8].copy_from_slice(&off);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn tags_merge_last_wins_in_one_pass() {
+        let mut base = vec![(1u16, Value::Short(vec![1])), (2, Value::Short(vec![2])), (3, Value::Short(vec![3]))];
+        let extra = [(2u16, Value::Short(vec![20])), (4, Value::Short(vec![4])), (2, Value::Short(vec![21]))];
+        merge_tags(&mut base, &extra);
+        let tags: Vec<u16> = base.iter().map(|e| e.0).collect();
+        assert_eq!(tags, [1, 3, 4, 2], "replaced entries move to the end, in the order of their last mention");
+        assert!(matches!(&base[3].1, Value::Short(v) if v == &[21]));
+        // many distinct tags merge without a scan per tag
+        let many: Vec<(u16, Value)> = (0..60_000u32).map(|i| ((i % 65_000) as u16, Value::Byte(vec![]))).collect();
+        merge_tags(&mut Vec::new(), &many);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 1..=16")]
+    fn write_rejects_a_depth_outside_one_to_sixteen() {
+        write(&[0; 4], &Options { width: 2, height: 2, bits: 17, compression: Compression::None, ..Default::default() });
+    }
+
+    #[test]
+    fn pack_refuses_a_depth_outside_one_to_sixteen() {
+        assert!(pack(&[1, 2, 3], 3, 0, false).is_empty());
+        assert!(pack(&[1, 2, 3], 3, 17, false).is_empty());
+        assert!(pack(&[1, 2, 3], 3, u32::MAX, false).is_empty());
+        assert_eq!(pack(&[0xAB, 0xCD], 2, 8, false), [0xAB, 0xCD]);
+        assert_eq!(pack(&[1], 1, 12, false).len(), 2);
+    }
 }

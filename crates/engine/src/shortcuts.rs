@@ -53,7 +53,7 @@ pub const PANELS: &[&str] = &[
     "Essential Graphics",
     "Text",
     "Properties",
-    "Lumetri Color",
+    "Color Grading",
 ];
 
 pub const DEFAULT_PRESET: &str = "FilmCraft Default";
@@ -426,6 +426,8 @@ fn category_of(id: &str, menu: &[&str]) -> String {
         "view" => "View".into(),
         "app" | "help" | "mode" => "Application".into(),
         "captions" => "Captions".into(),
+        // Keep legacy command ids stable without exposing their old feature name.
+        "lumetri" => "Color Grading".into(),
         "tts" => "Text to Speech".into(),
         _ => menu.first().map(|s| s.to_string()).unwrap_or_else(|| {
             let mut c = prefix.chars();
@@ -1055,6 +1057,7 @@ fn check_panel(panel: Option<&str>) -> std::result::Result<Option<&'static str>,
                 "sourcemonitor" => "source",
                 "projects" => "project",
                 "timelines" => "timeline",
+                "lumetricolor" | "colorgrade" => "colorgrading",
                 _ => n.as_str(),
             };
             PANELS
@@ -1268,4 +1271,29 @@ pub fn commands() -> Vec<CommandSpec> {
             Ok(json!({"count": a.len(), "assigned": a}))
         }),
     ]
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::{Binding, CommandInfo, Platform, check_panel, convert};
+
+    #[test]
+    fn grading_shortcut_category_preserves_legacy_command_identity() {
+        let command = CommandInfo::new("lumetri.setLook", "Set Creative Look", &[], Some("Cmd+Alt+L"));
+        assert_eq!(command.category, "Color Grading");
+        assert_eq!(command.id, "lumetri.setLook");
+        assert_eq!(command.label, "Set Creative Look");
+        assert!(command.menu.is_empty());
+        assert_eq!(command.defaults, [("Cmd+Alt+L".to_string(), None)]);
+    }
+
+    #[test]
+    fn grading_shortcuts_import_old_and_current_panel_names() {
+        for name in ["Lumetri Color", "Color Grade", "Color Grading"] {
+            assert_eq!(check_panel(Some(name)).unwrap(), Some("Color Grading"));
+            let bindings = convert(vec![Binding::new("playback.toggle", "Cmd+1", Some(name))], Some(Platform::Mac));
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].panel.as_deref(), Some("Color Grading"));
+        }
+    }
 }

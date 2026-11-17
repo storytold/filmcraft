@@ -1,4 +1,4 @@
-//! `scopes.read`: Lumetri Scopes as numbers (M8.9), so agents can check colour without looking.
+//! `scopes.read`: Video Scopes as numbers (M8.9), so agents can check colour without looking.
 //! It renders the active sequence at the playhead (or `time`), computes the scopes with
 //! `filmcraft-scopes` and returns levels in percent (per channel and per column range), histogram
 //! bins, and the densest vectorscope spots with their angle and saturation.
@@ -121,7 +121,7 @@ fn scopes_read(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: "scopes.read",
-        label: "Read Lumetri Scopes",
+        label: "Read Video Scopes",
         menu: &[],
         shortcut: None,
         params: r#"{"scopes":["waveform","parade","histogram","vectorscopeYuv","vectorscopeHls"]?,"waveformType":"rgb|luma|yc|ycNoChroma"?,"paradeType":"rgb|yuv|rgbWhite"?,"colorSpace":"auto|601|709|2100"?,"clamp":bool=true,"columns":n=8,"peaks":n=8,"bins":bool=true,"scale":0.5,"time":ticks?|"frame"|"seconds"|"timecode"}"#,

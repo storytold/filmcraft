@@ -83,6 +83,16 @@ fn natural_installed() -> bool {
     filmcraft_engine::transcript::models_dir().as_deref().is_some_and(filmcraft_tts::catalog::installed)
 }
 
+/// This build can download and run the natural voices (`neural-voices` on the engine).
+fn natural_voices_available() -> bool {
+    filmcraft_engine::narration::natural_voices_available()
+}
+
+/// The panel offers the download only when this build includes the feature and the package is not installed.
+fn offer_natural_download(available: bool, installed: bool) -> bool {
+    available && !installed
+}
+
 /// State of job `id`: `None` while running, else its result.
 fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
     use std::sync::atomic::Ordering;
@@ -208,6 +218,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, t.panel_bg);
     let models = filmcraft_engine::transcript::models_dir();
+    let available = natural_voices_available();
     let voices = filmcraft_tts::voices_in(models.as_deref());
     let installed = models.as_deref().is_some_and(filmcraft_tts::catalog::installed);
     let busy = app.ui.tts.pending.is_some();
@@ -257,6 +268,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let voice_name = voices.iter().find(|v| v.id == d.voice).map_or(d.voice.as_str(), |v| v.name);
         let cb = craft_ui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
             for (engine, heading) in [("neural", "Natural voices"), ("basic", "Basic voices (built in)")] {
+                if engine == "neural" && !available {
+                    continue;
+                }
                 ui.label(egui::RichText::new(heading).color(t.text_faint).size(11.0));
                 for v in voices.iter().filter(|v| v.language == d.language && v.engine == engine) {
                     let label = if v.engine == "neural" && !v.installed { format!("{} (download)", v.name) } else { v.name.to_string() };
@@ -268,8 +282,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         });
         auto.add("tts.voice", visible(ui, cb.response.rect), "Voice");
+        if !available {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Natural voices are not included in this build.").color(t.text_dim).size(11.5));
+        }
         let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
-        if natural && !installed {
+        if natural && offer_natural_download(available, installed) {
             ui.add_space(6.0);
             egui::Frame::new().fill(t.field_bg).stroke(egui::Stroke::new(1.0, t.field_border)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(w - 18.0);
@@ -462,4 +480,44 @@ fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primar
     icons::paint(p, Rect::from_center_size(pos2(x0 + 7.0, r.center().y), vec2(14.0, 14.0)), icon, fg);
     p.galley(pos2(x0 + 18.0, r.center().y - g.size().y / 2.0), g, fg);
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FilmcraftApp;
+
+    #[test]
+    fn the_download_is_offered_only_when_the_build_includes_natural_voices() {
+        assert!(!offer_natural_download(false, false));
+        assert!(!offer_natural_download(false, true));
+        assert!(offer_natural_download(true, false));
+        assert!(!offer_natural_download(true, true));
+    }
+
+    fn frame(app: &mut FilmcraftApp, ctx: &egui::Context) {
+        app.auto.begin_frame();
+        let mut out = ctx.run_ui(
+            egui::RawInput { time: Some(1.0), screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() },
+            |ui| show(app, ui, Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 700.0))),
+        );
+        out.textures_delta.clear();
+    }
+
+    fn has_id(app: &FilmcraftApp, id: &str) -> bool {
+        app.auto.elements.iter().any(|w| w.id == id)
+    }
+
+    #[test]
+    fn a_build_without_the_feature_does_not_offer_the_natural_voice_download() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        // A natural voice in the draft must not surface a download the build cannot perform (#2318).
+        app.ui.tts.voice = "kokoro-heart".into();
+        frame(&mut app, &ctx);
+        assert!(!filmcraft_engine::narration::natural_voices_available(), "ui-egui tests build the engine without neural-voices");
+        assert!(!has_id(&app, "tts.download"), "download offered in a build without neural-voices");
+        assert!(!has_id(&app, "tts.download.confirm"));
+    }
 }
