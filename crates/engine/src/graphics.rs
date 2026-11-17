@@ -1048,7 +1048,8 @@ pub fn commands() -> Vec<CommandSpec> {
                 // a title made without a place (menu, Cmd+T) is centred on the frame: anchored by
                 // its left end at the centre it ran off to the right, and an export cropped to
                 // 9:16 cut it ("Vacan…"); text placed with the Type tool keeps its alignment
-                if !vertical && vec2_p(p, "position").is_none() && vec2_p(p, "box").is_none() {
+                let unplaced = !vertical && vec2_p(p, "position").is_none() && vec2_p(p, "box").is_none();
+                if unplaced {
                     layer.params.insert("align".into(), Param::new(ParamValue::Choice(1)));
                 }
                 if let Some(b) = vec2_p(p, "box").filter(|_| !vertical) {
@@ -1063,6 +1064,18 @@ pub fn commands() -> Vec<CommandSpec> {
                 for (k, id) in [("font", "font"), ("fontStyle", "font_style")] {
                     if let Some(v) = str_p(p, k) {
                         layer.params.insert(id.into(), Param::new(ParamValue::Text(v.into())));
+                    }
+                }
+                // and vertically: the anchor is the first baseline, so it moves up by half the laid-out
+                // text (with its font settled), and the lines sit around the frame's middle
+                if unplaced
+                    && let Some(spec) = eval_layer(&layer, Tick::ZERO, (w, h))
+                    && let LayerContent::Text(tp) = &spec.content
+                {
+                    let b = text_layout(tp).bounds;
+                    let mid = (f64::from(b[1]) + f64::from(b[3])) / 2.0;
+                    if mid.is_finite() {
+                        layer.params.insert("position".into(), Param::new(ParamValue::Vec2(Vec2::new(pos.x, pos.y - mid))));
                     }
                 }
                 let into = if p.get("newClip").and_then(Value::as_bool) == Some(true) { None } else { u64_p(p, "clip").map(ClipId) };
