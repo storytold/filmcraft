@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-17 · **Change:** minor (G13: one Missing and one Have list; G6: the black WebM of #432 was fixed) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -133,9 +133,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   damaged files, long GOP, odd containers, multi-track audio), each with an import → edit → export
   round trip checked against an ffprobe / ffmpeg oracle; scripted MCP sessions that do real jobs
   end to end.
-- **Evidence:** export stopped producing frames with iPhone HEVC clips on Linux (#480); WebM shows
-  black (#432); only the first audio track imported (#397, #416, #601; multi-stream support landed
-  in #361, reporters not yet confirmed); bitrate target produced 6.1 Mb/s for 40 (#371).
+- **Evidence:** export stopped producing frames with iPhone HEVC clips on Linux (#480); WebM showed
+  black (#432, since fixed by the VP8 decoder in #1064); only the first audio track imported (#397,
+  #416, #601; multi-stream support landed in #361, reporters not yet confirmed); bitrate target
+  produced 6.1 Mb/s for 40 (#371).
 - **Done when:** corpus fetched pinned and sha256-verified (as PhotoCraft's `cargo xtask corpus`), runs nightly, ≥ 50 files. **40–70 h.**
 
 ## G7. No measured parity tool in CI
@@ -237,21 +238,16 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G13. Delivery formats
 
 - **Missing:** AV1 export (software or hardware), MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 MXF,
-  AS-10 / AS-11, XDCAM HD MXF, P2, compressed (ZIP / PIZ / DWA) OpenEXR, interlaced encoding,
-  smart render, HEVC software encoder (HEVC exists only where a hardware encoder does); MP3
-  beyond CBR long blocks (block switching, VBR, Xing / LAME gapless tag, ID3 metadata).
-- **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
-  sequences (half float, linear, uncompressed; #806); AAC Audio (audio-only `.m4a`, or ADTS
-  `.aac`; #814); MP3 (`.mp3`, our own Layer III encoder, CBR 32-320 kbit/s, 16-48 kHz, mono /
-  joint stereo; #977); ProRes 4444 / 4444 XQ in the export UI (#342).
-  AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, MP3 audio,
-  interlaced encoding, smart render, HEVC software encoder (HEVC exists only where a hardware
-  encoder does).
+  AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, interlaced
+  encoding, smart render, HEVC software encoder (HEVC exists only where a hardware encoder does);
+  MP3 beyond CBR long blocks (block switching, VBR, Xing / LAME gapless tag, ID3 metadata); H.264
+  High 4:2:2, High 4:4:4 Predictive and lossless.
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
-  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
-  High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a (10-bit SDR and HDR,
-  #1221; High 4:2:2, High 4:4:4 Predictive and lossless H.264 are still missing).
+  (audio-only `.m4a`, or ADTS `.aac`; #814); MP3 (`.mp3`, our own Layer III encoder, CBR
+  32-320 kbit/s, 16-48 kHz, mono / joint stereo; #977); ProRes 4444 / 4444 XQ in the export UI
+  (#342); H.264 High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a
+  (10-bit SDR and HDR, #1221).
 - **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an
   explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
   regions and clearing prior frames. Partial transparency remains a GIF limitation. See the
@@ -366,3 +362,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
+| 2026-11-17 | minor | G13: the two Have lists and the broken Missing list merged into one each; ZIP / ZIPS OpenEXR and MP3 export are Have, not Missing; G6: #432 (black WebM) noted as fixed by #1064; estimates unchanged |

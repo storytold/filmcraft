@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (H.264 High 10 and High 10 Intra in the built-in encoder, #1221) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** minor (MP3 encode: our own Layer III encoder, #977; E-AC-3 behind only for its 7.1 and advanced coding tools) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -44,7 +44,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | AAC (LC, HE, LATM) | decode + encode | own decoder (LC, HE core), LATM | own LC encoder | loudness oracle vs ffmpeg | 90% | 3–5 h |
 | AC-3 | decode (licensed) | own decoder (ATSC A/52) | none | conformance | 80% | — |
 | E-AC-3 (Dolby Digital Plus) | decode | own decoder (ATSC A/52 Annex E, #647): independent substream, 1–6 blocks, spectral extension; **no** adaptive hybrid transform, enhanced coupling or 7.1 dependent substreams (plays the 5.1 core) | none | SNR vs ffmpeg 65–91 dB (raw, MP4, MOV, Matroska, TS) | 75% | 10–20 h |
-| MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | **none** | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | 10–20 h (MP3 encoder) |
+| MP3 / MP2 | decode + MP3 encode | MP3: symphonia (MPL-2.0); MP1 / MP2: own decoder (ISO/IEC 11172-3 / 13818-3, #809), also the bit rate / mode combinations ffmpeg writes by default (mono 384 kbit/s); in raw, MP4, MOV (#800), Matroska, TS, PS | MP3: own Layer III encoder (#977), CBR 32–320 kbit/s, 16–48 kHz, mono / joint stereo, long blocks; **no** VBR, block switching, gapless tag or ID3 | MP1 / MP2: SNR vs ffmpeg 73–84 dB; MP2 in MP4 / MOV within 1e-4 of ffmpeg, also after a seek (#800) | 65% | — |
 | Opus | — (not a Premiere import format) | own decoder, RFC 8251 range-exact | none | conformance vectors | ahead | — |
 | FLAC, ALAC, Vorbis | partial | decode (symphonia), also FLAC in MP4 / MOV (#603) | none | — | 70% | 3–6 h |
 | WMA | decode on Windows | none | none | — | 0% | 10–20 h |
@@ -54,7 +54,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 - **Ahead of Premiere:** VP9, Opus, APV decode / encode; bit-exact software decoders everywhere,
   including Linux and FreeBSD, where Premiere does not run.
 - **Behind, by user impact:** 10-bit / 4:2:2 H.264 and HEVC in software ([G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)),
-  E-AC-3, camera RAW, HEVC and AV1 software encoding, MPEG-2 / JPEG 2000 encoding for broadcast
+  E-AC-3 7.1 and its advanced coding tools, camera RAW, HEVC and AV1 software encoding, MPEG-2 / JPEG 2000 encoding for broadcast
   and DCP, DV, WMV.
 - **Codec dimension: ~60%, 150–250 h** ([target-app-parity.md](target-app-parity.md#by-dimension)).
 
@@ -62,6 +62,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-17 | minor | MP3 encode is our own Layer III encoder (#977), no longer "none"; the encoder estimate removed. E-AC-3 is behind only for 7.1 and its advanced coding tools; percentages not re-measured |
 | 2026-11-05 | minor | H.264 High 10 and High 10 Intra in the built-in encoder (#1221) |
 | 2026-11-02 | minor | Apple Intermediate Codec row: named on import and in the no-decoder error, no decoder (#3646) |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |
