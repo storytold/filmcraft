@@ -13,6 +13,8 @@ repository = "https://github.com/storytold/filmcraft"
 [workspace.dependencies]
 # Shared bounded classic TIFF directory traversal.
 craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3af2280ee3434a2c860012df2f440652621c2c81" }
+# Isolated YCbCr codec pin; DNG keeps its craft-raw/craft-tiff type identity.
+craft-tiff-ycbcr = { package = "craft-tiff", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "cca00b22bfae6e8aafdb47e122efc5137fee269a" }
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
