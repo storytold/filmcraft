@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 craft-psd = { workspace = true }
+craft-tiff-ycbcr = { workspace = true }
 craft-tga = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
