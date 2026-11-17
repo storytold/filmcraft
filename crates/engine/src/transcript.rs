@@ -407,7 +407,8 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A well-formed BCP 47 language tag (RFC 5646, 2.1): a 2-3 or 5-8 letter primary language, then
 /// subtags of 1-8 letters or digits; a singleton (a one-character extension or `x` private-use
-/// introducer) must be followed by at least one subtag. Grandfathered tags are not accepted.
+/// introducer) must be followed by a subtag: 2-8 characters after an extension singleton, 1-8 after
+/// `x`, which makes every later subtag private use. Grandfathered tags are not accepted.
 pub(crate) fn valid_language_tag(tag: &str) -> bool {
     if tag.is_empty() || tag.len() > 64 {
         return false;
@@ -417,18 +418,24 @@ pub(crate) fn valid_language_tag(tag: &str) -> bool {
     if !(matches!(first.len(), 2 | 3 | 5..=8) && first.bytes().all(|b| b.is_ascii_alphabetic())) {
         return false;
     }
-    let mut after_singleton = false;
+    // after `x` every subtag is private use (1-8 characters, `fr-x-a` included)
+    let mut private = false;
     for (k, sub) in subtags.iter().enumerate().skip(1) {
         if sub.is_empty() || sub.len() > 8 || !sub.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return false;
         }
-        if sub.len() == 1 {
-            // a singleton needs a subtag after it
-            if subtags.get(k + 1).is_none_or(|n| n.is_empty()) {
+        if private || sub.len() != 1 {
+            continue;
+        }
+        let next = subtags.get(k + 1);
+        if sub.eq_ignore_ascii_case("x") {
+            // the private-use introducer needs a subtag after it
+            if next.is_none_or(|n| n.is_empty()) {
                 return false;
             }
-            after_singleton = true;
-        } else if after_singleton && sub.len() < 2 && !sub.eq_ignore_ascii_case("x") {
+            private = true;
+        } else if next.is_none_or(|n| n.len() < 2) {
+            // an extension singleton needs a subtag of 2-8 characters after it
             return false;
         }
     }
