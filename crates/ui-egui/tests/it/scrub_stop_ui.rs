@@ -104,10 +104,34 @@ impl Driver {
     /// playhead where the pointer is, and starts no grain.
     fn click_ruler(&mut self) {
         let r = self.rect("timeline.ruler");
+        self.press_ruler(r);
+        self.release_ruler(r);
+    }
+
+    /// Press the Timeline ruler and hold it, with the move and the press in the same frame.
+    ///
+    /// A frame with the button up between them would let the scrub stream's 0.25 s linger expire
+    /// on a slow (coverage) runner, closing the output: an extra stop the press did not cause.
+    fn press_ruler(&mut self, r: egui::Rect) {
         let pos = egui::pos2(r.min.x + 40.0, r.center().y);
-        self.send(egui::Event::PointerMoved(pos));
-        self.send(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-        self.send(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        self.frames(1);
+    }
+
+    fn release_ruler(&mut self, r: egui::Rect) {
+        let pos = egui::pos2(r.min.x + 40.0, r.center().y);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
         self.frames(2);
     }
 
@@ -158,10 +182,13 @@ fn a_press_on_the_ruler_while_stopped_does_not_close_the_audio_output() {
     assert!(d.harness.state().scrub.is_open(), "the stream lingers after the release");
     let stops = d.stops();
     let before = d.harness.state().session.playhead();
-    d.click_ruler();
+    // The ruler's rect is already known: the press is the first frame after the capture, so the
+    // stream's linger cannot expire in a control round trip before the press reaches the app.
+    d.press_ruler(r);
     assert_ne!(d.harness.state().session.playhead(), before, "the press moved the playhead");
     assert_eq!(d.stops(), stops, "nothing was playing, so the press had nothing to stop");
     assert!(d.harness.state().scrub.is_open(), "the open stream survived the press");
+    d.release_ruler(r);
 }
 
 /// The press still stops a running transport: that is what `stop()` is for.

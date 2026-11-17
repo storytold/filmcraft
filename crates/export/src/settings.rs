@@ -170,6 +170,8 @@ impl MxfVideoCodec {
     }
 }
 
+/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF; MP3 only in
+/// the MP3 format.
 /// Compression of OpenEXR stills (the file's `compression` attribute). Every mode is lossless.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +198,7 @@ impl ExrCompression {
         }
     }
     /// The value of the OpenEXR `compression` attribute.
+    #[cfg(test)]
     pub(crate) fn code(self) -> u8 {
         match self {
             ExrCompression::None => 0,
@@ -205,12 +208,14 @@ impl ExrCompression {
         }
     }
     /// Scan lines per chunk.
+    #[cfg(test)]
     pub(crate) fn lines(self) -> usize {
         if self == ExrCompression::Zip { 16 } else { 1 }
     }
 }
 
-/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC.
+/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC,
+/// MP3 in MP3.
 /// MP4 and QuickTime can also carry FLAC; MXF is always PCM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +224,7 @@ pub enum AudioCodec {
     Auto,
     Aac,
     Pcm,
+    Mp3,
     /// Lossless compression (the FLAC format).
     Flac,
 }
@@ -276,6 +282,15 @@ pub enum SampleFormat {
 }
 
 impl SampleFormat {
+    pub(crate) fn shared(self) -> craft_audio::pcm_export::SampleFormat {
+        match self {
+            Self::Int16 => craft_audio::pcm_export::SampleFormat::Int16,
+            Self::Int24 => craft_audio::pcm_export::SampleFormat::Int24,
+            Self::Int32 => craft_audio::pcm_export::SampleFormat::Int32,
+            Self::Float32 => craft_audio::pcm_export::SampleFormat::Float32,
+        }
+    }
+
     pub const ALL: [SampleFormat; 4] = [SampleFormat::Int16, SampleFormat::Int24, SampleFormat::Int32, SampleFormat::Float32];
 
     pub fn bits(self) -> u16 {
@@ -308,21 +323,13 @@ impl SampleFormat {
     /// One mix sample as a signed integer of this size, clipped at full scale (0 for
     /// [`SampleFormat::Float32`], which is never quantised). Not-a-number becomes silence.
     pub fn quantise(self, s: f32) -> i32 {
-        // f32 products for 16 and 24 bit (the bytes every earlier export wrote); f64 for 32 bit,
-        // whose full scale 2^31 - 1 f32 cannot hold. NaN casts to 0, the casts saturate.
-        let s = s.clamp(-1.0, 1.0);
-        match self {
-            SampleFormat::Int16 => (s * 32_767.0).round() as i32,
-            SampleFormat::Int24 => (s * 8_388_607.0).round() as i32,
-            SampleFormat::Int32 => (f64::from(s) * 2_147_483_647.0).round() as i32,
-            SampleFormat::Float32 => 0,
-        }
+        self.shared().quantise(s)
     }
 
     /// One mix sample as stored by [`SampleFormat::Float32`]: as it is, NaN as silence and
     /// infinities as the largest finite values.
     pub fn float(s: f32) -> f32 {
-        if s.is_nan() { 0.0 } else { s.clamp(f32::MIN, f32::MAX) }
+        craft_audio::pcm_export::SampleFormat::float(s)
     }
 }
 
@@ -519,7 +526,7 @@ impl ExportSettings {
     pub fn supports_alpha(&self) -> bool {
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
-            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
+            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == craft_video::prores::ChromaFormat::Yuv444,
             _ => false,
         }
     }
@@ -564,11 +571,22 @@ impl ExportSettings {
         Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
     }
 
+    /// The sample rate, channel count and bit rate (kbit/s) of the MP3 stream these settings
+    /// make from a sequence at `seq_sr`: MP3 carries 16-48 kHz (other rates are resampled to the
+    /// nearest one above, 48 kHz above 48 kHz), mono or stereo (5.1 is folded to stereo), and the
+    /// Layer III bit rate nearest at or below the setting.
+    pub fn mp3_stream(&self, seq_sr: u32) -> (u32, u32, u32) {
+        let rate = craft_audio::mp3::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
+        let channels = if self.audio.channels <= 1 { 1 } else { 2 };
+        let kbps = craft_audio::mp3::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
+        (rate, channels, kbps)
+    }
+
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
-    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC none.
+    /// AIFF and QuickTime takes all four, MXF integers only; FLAC integers only; AAC and MP3 none.
     pub fn supports_sample_format(&self, f: SampleFormat) -> bool {
         match self.audio_codec() {
-            AudioCodec::Aac => false,
+            AudioCodec::Aac | AudioCodec::Mp3 => false,
             AudioCodec::Flac => !f.is_float(),
             AudioCodec::Pcm | AudioCodec::Auto => !(f.is_float() && self.format.is_mxf()),
         }
@@ -580,11 +598,12 @@ impl ExportSettings {
             (Format::Flac, _) => AudioCodec::Flac,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::Aac, _) => AudioCodec::Aac,
+            (Format::Mp3, _) => AudioCodec::Mp3,
             // MP4 and QuickTime both carry FLAC (`fLaC` + `dfLa`)
             (_, AudioCodec::Flac) => AudioCodec::Flac,
             (f, _) if f.is_mp4_with(self.multiplexer) => AudioCodec::Aac,
-            (_, AudioCodec::Auto) if self.format.is_mp4_video() => AudioCodec::Aac,
-            (_, AudioCodec::Auto) => AudioCodec::Pcm,
+            (_, AudioCodec::Auto | AudioCodec::Mp3) if self.format.is_mp4_video() => AudioCodec::Aac,
+            (_, AudioCodec::Auto | AudioCodec::Mp3) => AudioCodec::Pcm,
             (_, c) => c,
         }
     }
@@ -611,7 +630,7 @@ impl ExportSettings {
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
-            Format::Aac => 0.0,
+            Format::Aac | Format::Mp3 => 0.0,
             Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
@@ -626,9 +645,9 @@ impl ExportSettings {
             }
             Format::Apv => {
                 let bpp = match crate::apv_profile(&self.apv_profile) {
-                    filmcraft_apv::Profile::P422_12 => 3.6,
-                    filmcraft_apv::Profile::P444_10 => 4.2,
-                    filmcraft_apv::Profile::P444_12 | filmcraft_apv::Profile::P4444_10 | filmcraft_apv::Profile::P4444_12 => 5.0,
+                    craft_video::apv::Profile::P422_12 => 3.6,
+                    craft_video::apv::Profile::P444_10 => 4.2,
+                    craft_video::apv::Profile::P444_12 | craft_video::apv::Profile::P4444_10 | craft_video::apv::Profile::P4444_12 => 5.0,
                     _ => 3.0,
                 };
                 px * fps * bpp
@@ -652,6 +671,7 @@ impl ExportSettings {
             let pcm = r.sample_rate as f64 * r.channels as f64 * f64::from(self.audio.sample_format().bits());
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
+                AudioCodec::Mp3 => self.mp3_stream(seq_sr).2 as f64 * 1000.0,
                 // typical of music and dialogue; noise compresses less, silence far more
                 AudioCodec::Flac => pcm * 0.6,
                 _ => pcm,
@@ -719,7 +739,7 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::ProRes => {
-                    use filmcraft_prores::Profile;
+                    use craft_video::prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",
@@ -752,6 +772,10 @@ impl ExportSettings {
             };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
+                AudioCodec::Mp3 => {
+                    let (rate, channels, kbps) = self.mp3_stream(seq_sr);
+                    format!("MP3, {kbps} kbps, {rate} Hz, {}", if channels == 1 { "Mono" } else { "Stereo" })
+                }
                 AudioCodec::Flac => {
                     format!("FLAC (lossless) {}-bit, level {}, {} Hz, {ch}", self.audio.sample_format().bits(), self.audio.flac_level.min(8), r.sample_rate)
                 }
