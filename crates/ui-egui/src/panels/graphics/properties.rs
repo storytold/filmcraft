@@ -559,6 +559,22 @@ fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) 
     ids
 }
 
+/// The clip-level Responsive Design - Time section: shown with no layer selected, and again
+/// below the layer's own sections when one is, so a selection never hides it (#4972).
+fn responsive_time_section(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    it: &TrackItem,
+    t: &Tokens,
+    autos: &mut Vec<(String, Rect, String)>,
+    actions: &mut Vec<(String, Value)>,
+) {
+    if section(ui, app, "Responsive Design - Time", t) {
+        crate::panels::graphics_templates::responsive_time(app, ui, clip, it, autos, actions);
+    }
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -595,9 +611,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::panels::graphics_templates::template_controls(app, ui, clip, &it, mt, &mut autos, &mut actions);
         }
         let Some(l) = sel else {
-            if section(ui, app, "Responsive Design - Time", &t) {
-                crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
-            }
+            responsive_time_section(app, ui, clip, &it, &t, &mut autos, &mut actions);
             ui.add_space(12.0);
             ui.label(egui::RichText::new(tl!("Select a layer to edit its properties.")).color(t.text_faint));
             return;
@@ -819,6 +833,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, tl!("   Blur"), NumberField { id: "shadow_blur", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
             }
         }
+        // ---- responsive design: time (the clip's own timing, below the layer's sections)
+        responsive_time_section(app, ui, clip, &it, &t, &mut autos, &mut actions);
         // a property change goes to the layer of every clip in the group (#4625); character styles
         // of a Type-tool selection stay on their own clip
         if group.len() > 1 {
