@@ -9,7 +9,8 @@ pub(super) fn encode(rgba: &[u8], width: u32, height: u32, quality: u8) -> Resul
         return Err("MJPEG frame dimensions do not match its pixel buffer".into());
     }
     let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
-    craft_jpeg::encode_baseline(&rgb, width as usize, height as usize, 3, quality, craft_jpeg::ChromaSubsampling::S444, &[]).map_err(|e| e.to_string())
+    craft_jpeg::encode_baseline_low_memory(&rgb, width as usize, height as usize, 3, quality, craft_jpeg::ChromaSubsampling::S444, &[])
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -51,7 +52,7 @@ mod tests {
                         [rgb[0], rgb[1], rgb[2], i as u8]
                     })
                     .collect();
-                let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| p[..3].iter().copied()).collect();
+                let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| p[..3].iter().copied()).collect();
                 for q in [1, 25, 50, 75, 90, 100] {
                     let old = legacy(&rgba, w, h, q);
                     let new = encode(&rgba, w, h, q).unwrap();
@@ -90,5 +91,22 @@ mod tests {
         {
             assert!(encode(rgba, w, h, 75).is_err());
         }
+    }
+
+    #[test]
+    fn mjpeg_low_memory_matches_retained_encoder_for_high_entropy_frames() {
+        let (width, height) = (1025u32, 513u32);
+        let mut state = 0x1234_5678u32;
+        let rgba: Vec<u8> = (0..width * height * 4)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let expected = craft_jpeg::encode_baseline(&rgb, width as usize, height as usize, 3, 100, craft_jpeg::ChromaSubsampling::S444, &[]).unwrap();
+        assert_eq!(encode(&rgba, width, height, 100).unwrap(), expected);
     }
 }
