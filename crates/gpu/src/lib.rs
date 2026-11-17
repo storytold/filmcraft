@@ -1275,6 +1275,9 @@ impl GpuCompositor {
 
         let total_bytes = u64::from(w).checked_mul(u64::from(h))?.checked_mul(3)? / 2;
         let needed = total_bytes.div_ceil(4).checked_mul(4)?;
+        if needed > self.device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
 
         if self.cc_storage_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
             let b = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1372,6 +1375,9 @@ impl GpuCompositor {
 
         let total_bytes = u64::from(w).checked_mul(u64::from(h))?.checked_mul(3)?;
         let needed = total_bytes.div_ceil(4).checked_mul(4)?;
+        if needed > self.device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
 
         if self.cc_storage_buf.as_ref().is_none_or(|(_, size)| *size < needed) {
             let b = self.device.create_buffer(&wgpu::BufferDescriptor {

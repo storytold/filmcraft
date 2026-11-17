@@ -205,7 +205,7 @@ fn software_h264_keeps_the_filmcraft_encoder_identification() {
     let s = ExportSettings { format: Format::H264, include_audio: false, ..Default::default() };
     let mut enc = h264_factory(Format::H264, 64, 64, FrameRate::FPS_24, &s).unwrap().unwrap();
     let rgba = vec![128u8; 64 * 64 * 4];
-    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &rgba, hdr: None, index: 0 }).unwrap();
+    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &rgba, hdr: None, index: 0, nv12: None, rgb8: None }).unwrap();
     packets.extend(enc.flush().unwrap());
     let first = String::from_utf8_lossy(&packets[0].data);
     let expected = format!("filmcraft-h264enc {}", env!("CARGO_PKG_VERSION"));

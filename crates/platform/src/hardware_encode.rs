@@ -351,7 +351,7 @@ mod tests {
         let mut packets = Vec::new();
         for i in 0..3u64 {
             let px = picture(i);
-            packets.extend(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: i }).expect("encode"));
+            packets.extend(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: i, nv12: None, rgb8: None }).expect("encode"));
         }
         packets.extend(enc.flush().expect("flush"));
         assert_eq!(packets.len(), 3);
@@ -412,10 +412,10 @@ mod tests {
         };
         let mut enc = HardwareEncoder::around(vt);
         let px = picture(0);
-        enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: 0 }).expect("first frame");
+        enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: 0, nv12: None, rgb8: None }).expect("first frame");
         // a short picture is refused before it reaches VideoToolbox; so is one of another size
-        assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px[..100], hdr: None, index: 1 }).is_err());
-        assert!(enc.encode(&EncoderFrame { width: W + 2, height: H, rgba: &px, hdr: None, index: 1 }).is_err());
+        assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px[..100], hdr: None, index: 1, nv12: None, rgb8: None }).is_err());
+        assert!(enc.encode(&EncoderFrame { width: W + 2, height: H, rgba: &px, hdr: None, index: 1, nv12: None, rgb8: None }).is_err());
         assert!(enc.takes_rgba(), "no restart after the first frame");
     }
 }

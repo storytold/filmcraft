@@ -12,10 +12,10 @@ use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
-use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
+use crate::settings::{ExportEffects, H264Profile, HardwareEncoding, Placement, Scaling, TextOverlay};
 use crate::{
-    ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, RenderedFrame, Result, build_frame_renderer, keep_idle_renderers, note_gpu_fallback,
-    note_gpu_frame, take_frame_renderer,
+    ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, RenderedFrame, Result, keep_idle_renderers, note_gpu_fallback, note_gpu_frame,
+    take_frame_renderer,
 };
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
@@ -143,6 +143,8 @@ pub(crate) struct Pipeline {
     pub w: u32,
     pub h: u32,
     pub format: Format,
+    pub h264_profile: H264Profile,
+    pub hardware_encoding: HardwareEncoding,
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
@@ -250,6 +252,8 @@ impl Pipeline {
             w: r.width,
             h: r.height,
             format: settings.format,
+            h264_profile: settings.h264_profile,
+            hardware_encoding: settings.hardware_encoding,
             geom,
             opts,
             hdr_out,
@@ -275,8 +279,13 @@ impl Pipeline {
 
         let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
         if can_direct && let Some(pool) = pool {
-            // Direct NV12 for H.264 and SDR HEVC
-            let wants_nv12 = (self.format == Format::H264 || self.format == Format::Hevc) && self.w.is_multiple_of(4) && self.h.is_multiple_of(2);
+            // Direct NV12 for 8-bit H.264 (non-High-10) and SDR HEVC when the encoder supports it
+            // (on macOS, VideoToolbox hardware encoder requires RGBA8 input).
+            let vt_hw = cfg!(target_os = "macos") && self.hardware_encoding != HardwareEncoding::Off;
+            let wants_nv12 = !vt_hw
+                && ((self.format == Format::H264 && self.h264_profile != H264Profile::High10) || self.format == Format::Hevc)
+                && self.w.is_multiple_of(4)
+                && self.h.is_multiple_of(2);
             if wants_nv12 {
                 let asked = web_time::Instant::now();
                 let direct_nv12 = pool
@@ -294,12 +303,12 @@ impl Pipeline {
                 }
             }
 
-            // Direct RGB8 for Motion-JPEG, JpegSequence, BmpSequence, or non-alpha Png/Tiff
+            // Direct RGB8 for Motion-JPEG, JpegSequence, BmpSequence, or non-alpha Png
             let wants_rgb8 = self.w.is_multiple_of(4)
                 && (self.format == Format::Mjpeg
                     || self.format == Format::JpegSequence
                     || self.format == Format::BmpSequence
-                    || (!self.alpha && (self.format == Format::PngSequence || self.format == Format::TiffSequence)));
+                    || (!self.alpha && self.format == Format::PngSequence));
             if wants_rgb8 {
                 let asked = web_time::Instant::now();
                 let direct_rgb8 = pool

@@ -617,7 +617,7 @@ mod mjpeg_adapter_tests {
                 assert_eq!(encoder.timescale(), rate.num as u32);
                 let rgba = [25, 80, 195, 123];
                 for index in [0, 1, 99] {
-                    let packets = encoder.encode(&EncoderFrame { width: 1, height: 1, rgba: &rgba, hdr: None, index }).unwrap();
+                    let packets = encoder.encode(&EncoderFrame { width: 1, height: 1, rgba: &rgba, hdr: None, index, nv12: None, rgb8: None }).unwrap();
                     assert_eq!(packets.len(), 1);
                     let packet = &packets[0];
                     assert!(packet.key);

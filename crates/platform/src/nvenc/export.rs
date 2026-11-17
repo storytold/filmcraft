@@ -130,6 +130,16 @@ impl VideoEncoder for NvencEncoder {
             (false, None) if self.enc.takes_rgba() && !f.rgba.is_empty() => {
                 self.enc.encode_rgba(f.rgba, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
             }
+            (false, None) if self.enc.takes_rgba() && f.nv12.is_some() => {
+                let Some(nv12) = f.nv12 else {
+                    return Err(ExportError::Encode("NVENC: missing NV12 buffer".into()));
+                };
+                let mut rgba = vec![0u8; w.saturating_mul(h).saturating_mul(4)];
+                filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
+                    nv12_to_rgba8(nv12, w, h, &mut rgba);
+                });
+                self.enc.encode_rgba(&rgba, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
+            }
             (false, None) => {
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
                     filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v)
@@ -247,6 +257,34 @@ fn open(cfg: &Config, signal: &Signal) -> std::result::Result<Nvenc, String> {
         log::info!("NVENC planar input declined ({why}): falling back to RGBA input");
         Nvenc::with_rgba_input(cfg, signal)
     })
+}
+
+/// Fallback conversion from NV12 to straight sRGB RGBA8 when NVENC takes only RGBA input.
+fn nv12_to_rgba8(nv12: &[u8], w: usize, h: usize, rgba: &mut [u8]) {
+    let y_size = w.saturating_mul(h);
+    let Some(y_plane) = nv12.get(..y_size) else { return };
+    let uv_plane = nv12.get(y_size..).unwrap_or(&[]);
+    for y_idx in 0..h {
+        for x_idx in 0..w {
+            let Some(&y_code) = y_plane.get(y_idx * w + x_idx) else { continue };
+            let uv_offset = (y_idx / 2) * w + (x_idx / 2) * 2;
+            let u_code = uv_plane.get(uv_offset).copied().unwrap_or(128);
+            let v_code = uv_plane.get(uv_offset + 1).copied().unwrap_or(128);
+            let y = ((y_code as f32 - 16.0) / 219.0).clamp(0.0, 1.0);
+            let cb = ((u_code as f32 - 128.0) / 224.0).clamp(-0.5, 0.5);
+            let cr = ((v_code as f32 - 128.0) / 224.0).clamp(-0.5, 0.5);
+            let r = (y + 1.5748 * cr).clamp(0.0, 1.0);
+            let g = (y - 0.1873 * cb - 0.4681 * cr).clamp(0.0, 1.0);
+            let b = (y + 1.8556 * cb).clamp(0.0, 1.0);
+            let out_idx = (y_idx * w + x_idx) * 4;
+            if let Some(pixel) = rgba.get_mut(out_idx..out_idx + 4) {
+                pixel[0] = (r * 255.0).round() as u8;
+                pixel[1] = (g * 255.0).round() as u8;
+                pixel[2] = (b * 255.0).round() as u8;
+                pixel[3] = 255;
+            }
+        }
+    }
 }
 
 /// The H.264 side of [`factory`], with the driver call (`open`) passed in so tests can stand in for it.
