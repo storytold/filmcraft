@@ -199,19 +199,21 @@ impl FilmcraftApp {
     /// Frames the frame server rendered again once the Warp Stabilizer analyses they lacked were
     /// settled look different under the same key: a texture or GPU frame showing one is redrawn.
     fn redraw_settled_frames(&mut self) {
-        let (seen, keys) = self.frames.settled_frames(self.settled_seen);
+        let (seen, keys, overflowed) = self.frames.settled_frames(self.settled_seen);
         self.settled_seen = seen;
-        if keys.is_empty() {
+        if keys.is_empty() && !overflowed {
             return;
         }
+        // more were settled than listed: redraw whatever is shown
+        let settled = |k: &FrameKey| overflowed || keys.contains(k);
         for (k, _) in self.textures.values_mut() {
-            if keys.contains(k) {
+            if settled(k) {
                 // a key no frame has: the next upload replaces the picture
                 k.frame = i64::MIN;
             }
         }
         if let Some(g) = &mut self.gpu
-            && g.last_key.is_some_and(|k| keys.contains(&k))
+            && g.last_key.is_some_and(|k| settled(&k))
         {
             g.last_key = None;
         }
@@ -654,5 +656,12 @@ mod settled_tests {
         app.frames.announce_settled_for_test(vec![key]);
         app.redraw_settled_frames();
         assert_ne!(app.texture_key("monitor-program"), Some(key), "the next upload replaces it");
+        // so many settled that some went unlisted: every texture is redrawn
+        let tex = ctx.load_texture("monitor-source", egui::ColorImage::new([2, 2], vec![egui::Color32::BLACK; 4]), egui::TextureOptions::LINEAR);
+        let other = frames::FrameKey { frame: 99, ..key };
+        app.textures.insert("monitor-source".into(), (other, tex));
+        app.frames.announce_settled_for_test((0..5000).map(|f| frames::FrameKey { frame: 10_000 + f, ..key }).collect());
+        app.redraw_settled_frames();
+        assert_ne!(app.texture_key("monitor-source"), Some(other), "redrawn though it wasn't listed");
     }
 }

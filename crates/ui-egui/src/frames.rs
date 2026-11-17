@@ -191,8 +191,21 @@ struct Shared {
     /// Provisional frames dropped once their analyses were settled, numbered: the app shows a
     /// frame again only when its key changes, so it must hear that these will look different
     /// ([`FrameServer::settled_frames`]).
-    settled_frames: Mutex<(u64, Vec<FrameKey>)>,
+    settled_frames: Mutex<SettledFrames>,
 }
+
+/// Provisional frames dropped once their analyses were settled ([`FrameServer::settled_frames`]).
+#[derive(Default)]
+struct SettledFrames {
+    /// Bumped with every batch.
+    number: u64,
+    keys: Vec<FrameKey>,
+    /// Keys were let go of unread (more than [`MAX_SETTLED`] waited).
+    overflowed: bool,
+}
+
+/// Most settled frames kept for the app to read.
+const MAX_SETTLED: usize = 4096;
 
 /// How long the monitors must have asked for no new frame before background analyses run: the
 /// analysis shares a source's decoder with them.
@@ -256,7 +269,10 @@ impl Analyses {
 
     /// Whether nothing of the clip `key` can be seen ([`filmcraft_render::vfx::StabilizerClip::hidden`]).
     fn hidden(&self, key: u64) -> bool {
-        self.clips.iter().any(|c| c.key == key && c.hidden)
+        // two clips of the same frames of a source share an analysis: it is needed as soon as
+        // one of them can be seen
+        let mut uses = self.clips.iter().filter(|c| c.key == key).peekable();
+        uses.peek().is_some() && uses.all(|c| c.hidden)
     }
 
     /// The analyses the view needs now: those the frame on screen went without, then those of
@@ -264,7 +280,7 @@ impl Analyses {
     fn foreground(&self) -> Vec<u64> {
         let mut keys: Vec<u64> = self.current.iter().copied().filter(|k| !self.settled.contains(k) && !self.hidden(*k)).collect();
         if let Some(v) = &self.view {
-            for c in self.clips.iter().filter(|c| !c.hidden && Some(c.sequence) == v.sequence && c.start <= v.playhead && v.playhead < c.end) {
+            for c in self.clips.iter().filter(|c| !self.hidden(c.key) && Some(c.sequence) == v.sequence && c.start <= v.playhead && v.playhead < c.end) {
                 if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
                     keys.push(c.key);
                 }
@@ -278,7 +294,7 @@ impl Analyses {
         let mut keys = self.foreground();
         if self.background {
             for hidden in [false, true] {
-                for c in self.clips.iter().filter(|c| c.hidden == hidden) {
+                for c in self.clips.iter().filter(|c| self.hidden(c.key) == hidden) {
                     if !self.settled.contains(&c.key) && !keys.contains(&c.key) {
                         keys.push(c.key);
                     }
@@ -309,7 +325,7 @@ impl Analyses {
         if !self.background_allowed() {
             return None;
         }
-        let left = |hidden: bool| self.clips.iter().find(|c| c.hidden == hidden && !self.settled.contains(&c.key)).cloned();
+        let left = |hidden: bool| self.clips.iter().find(|c| self.hidden(c.key) == hidden && !self.settled.contains(&c.key)).cloned();
         left(false).or_else(|| left(true)).map(|c| (c, true))
     }
 
@@ -682,7 +698,7 @@ impl FrameServer {
                 static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 OWNERS.fetch_add(1, Ordering::Relaxed)
             },
-            settled_frames: Mutex::new((0, Vec::new())),
+            settled_frames: Mutex::new(SettledFrames::default()),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -782,21 +798,20 @@ impl FrameServer {
 
     /// The frames dropped since `seen` (a number this returns) because the analyses they lacked
     /// are settled: rendered again, they look different under the same key, so whatever shows
-    /// one (a texture, the GPU's last frame) must be redrawn.
-    pub fn settled_frames(&self, seen: u64) -> (u64, Vec<FrameKey>) {
+    /// one (a texture, the GPU's last frame) must be redrawn. The flag says more were dropped
+    /// than could be listed: everything shown must be redrawn.
+    pub fn settled_frames(&self, seen: u64) -> (u64, Vec<FrameKey>, bool) {
         let mut s = self.shared.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
-        if s.0 == seen {
-            return (seen, Vec::new());
+        if s.number == seen {
+            return (seen, Vec::new(), false);
         }
-        (s.0, std::mem::take(&mut s.1))
+        (s.number, std::mem::take(&mut s.keys), std::mem::take(&mut s.overflowed))
     }
 
     /// Announce `keys` as settled frames ([`Self::settled_frames`]), for tests.
     #[cfg(test)]
     pub(crate) fn announce_settled_for_test(&self, keys: Vec<FrameKey>) {
-        let mut s = self.shared.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
-        s.0 = s.0.wrapping_add(1);
-        s.1.extend(keys);
+        announce_settled(&self.shared, keys);
     }
 
     /// Whether the cached frame `k` waits for the analysis of a clip it shows: provisional, and
@@ -1414,16 +1429,6 @@ fn drop_provisional(sh: &Shared) -> bool {
         return false;
     }
     {
-        let mut s = sh.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
-        s.0 = s.0.wrapping_add(1);
-        s.1.extend(keys.iter().copied());
-        // the app reads them every frame: a backlog means nobody does
-        if s.1.len() > 4096 {
-            let excess = s.1.len() - 4096;
-            s.1.drain(..excess);
-        }
-    }
-    {
         let mut c = sh.done.lock().unwrap_or_else(PoisonError::into_inner);
         for k in &keys {
             if let Some((v, _)) = c.map.remove(k) {
@@ -1431,13 +1436,31 @@ fn drop_provisional(sh: &Shared) -> bool {
             }
         }
     }
-    let mut p = sh.plans.lock().unwrap_or_else(PoisonError::into_inner);
-    for k in &keys {
-        if let Some((_, _, b)) = p.map.remove(k) {
-            p.bytes = p.bytes.saturating_sub(b);
+    {
+        let mut p = sh.plans.lock().unwrap_or_else(PoisonError::into_inner);
+        for k in &keys {
+            if let Some((_, _, b)) = p.map.remove(k) {
+                p.bytes = p.bytes.saturating_sub(b);
+            }
         }
     }
+    // Announced only once the frames are out of the caches: the app, told sooner, could take
+    // the provisional frame again and show it under the key it just let go of.
+    announce_settled(sh, keys);
     true
+}
+
+/// Tell the app the frames `keys` are rendered again with settled analyses.
+fn announce_settled(sh: &Shared, keys: Vec<FrameKey>) {
+    let mut s = sh.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
+    s.number = s.number.wrapping_add(1);
+    s.keys.extend(keys);
+    // the app reads them every frame: a backlog means it didn't, and it redraws everything
+    if s.keys.len() > MAX_SETTLED {
+        let excess = s.keys.len() - MAX_SETTLED;
+        s.keys.drain(..excess);
+        s.overflowed = true;
+    }
 }
 
 /// The analysis thread: runs the Warp Stabilizer analyses, one at a time, in the order
@@ -2414,12 +2437,44 @@ mod tests {
         let key = b.key(b.clips[0]);
         let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: 3, size: 100, revision: 1, draft: false };
         super::provisional(&b.server.shared, &job(frame, &b.p), vec![key]);
-        let (seen, none) = b.server.settled_frames(0);
+        b.server.shared.done.lock().unwrap().insert(frame, Arc::new(super::Rgba { w: 1, h: 1, px: vec![0; 4] }));
+        let (seen, none, _) = b.server.settled_frames(0);
         assert!(none.is_empty());
         b.server.shared.analyses.lock().unwrap().settled.insert(key);
         assert!(super::drop_provisional(&b.server.shared));
-        let (seen2, keys) = b.server.settled_frames(seen);
-        assert_eq!(keys, vec![frame]);
+        let (seen2, keys, overflowed) = b.server.settled_frames(seen);
+        assert_eq!((keys, overflowed), (vec![frame], false));
+        assert!(b.server.get(&frame).is_none(), "out of the cache by the time it is announced");
         assert_eq!(b.server.settled_frames(seen2).1, Vec::<super::FrameKey>::new(), "once");
+        // more than are kept for the app to read: it hears that some were let go of
+        let many: Vec<super::FrameKey> = (0..super::MAX_SETTLED as i64 + 10).map(|f| super::FrameKey { frame: f, ..frame }).collect();
+        b.server.announce_settled_for_test(many);
+        let (_, kept, overflowed) = b.server.settled_frames(seen2);
+        assert_eq!((kept.len(), overflowed), (super::MAX_SETTLED, true));
+    }
+
+    /// Two clips of the same frames of a source share an analysis: it is a hidden one only when
+    /// every clip that uses it is hidden.
+    #[test]
+    fn an_analysis_one_visible_clip_uses_is_not_hidden() {
+        use filmcraft_render::vfx::StabilizerClip;
+        let seq = filmcraft_project::ItemId(1);
+        let clip = |id: u64, hidden: bool, start: i64| StabilizerClip {
+            key: 0xAB,
+            sequence: seq,
+            clip: filmcraft_project::ClipId(id),
+            effect: 2,
+            start: filmcraft_time::Tick(start),
+            end: filmcraft_time::Tick(start + 100),
+            hidden,
+        };
+        let mut a = super::Analyses { clips: vec![clip(1, true, 0), clip(2, false, 500)], clips_for: Some((1, Some(seq))), ..Default::default() };
+        a.current = vec![0xAB];
+        assert!(!a.hidden(0xAB), "the visible clip needs it");
+        assert_eq!(a.foreground(), vec![0xAB]);
+        a.clips[1].hidden = true;
+        assert!(a.hidden(0xAB), "all its clips hidden");
+        assert!(a.foreground().is_empty());
+        assert!(!a.hidden(0xCD), "a key no clip uses isn't hidden");
     }
 }
