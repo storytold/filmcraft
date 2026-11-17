@@ -401,21 +401,19 @@ mod tests {
                 Job::Account => post.send(Event::Account(Ok(Account { display: "mock@example.test".into(), capabilities: vec![] }))),
                 Job::List(path) => post.send(Event::Listed { path, entries: Ok(self.entries.clone()) }),
                 Job::Read { entry } => post.send(Event::Read { entry, bytes: Ok(b"not a real project".to_vec()) }),
-                Job::Create { name, .. } => {
-                    post.send(Event::Created(Ok(Entry {
-                        id: "mock-id".into(),
-                        room: "mock-room".into(),
-                        name,
-                        path: String::new(),
-                        kind: EntryKind::File,
-                        size: Some(0),
-                        modified: None,
-                        mime: None,
-                        etag: Some("1".into()),
-                        writable: true,
-                        shared_by: None,
-                    })))
-                }
+                Job::Create { name, .. } => post.send(Event::Created(Ok(Entry {
+                    id: "mock-id".into(),
+                    room: "mock-room".into(),
+                    name,
+                    path: String::new(),
+                    kind: EntryKind::File,
+                    size: Some(0),
+                    modified: None,
+                    mime: None,
+                    etag: Some("1".into()),
+                    writable: true,
+                    shared_by: None,
+                }))),
             }
         }
     }

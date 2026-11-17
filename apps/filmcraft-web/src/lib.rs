@@ -267,4 +267,3 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     }
     Ok(())
 }
-
