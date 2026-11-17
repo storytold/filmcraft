@@ -366,7 +366,8 @@ pub struct CaptionBlock {
 fn punctuation_break(words: &[SeqWord], a: usize, i: usize, cap_chars: usize) -> Option<usize> {
     let block = words.get(a..i)?;
     let chars_before = |k: usize| block.iter().take(k - a).map(|w| w.text.chars().count() + 1).sum::<usize>();
-    let after = |marks: &[char]| (a + 1..i).rev().find(|&k| words.get(k - 1).is_some_and(|w| w.text.ends_with(marks)) && chars_before(k) * 3 >= cap_chars);
+    // through the block's last word: "Done now. Go." breaks after "Go." when the next word overflows
+    let after = |marks: &[char]| (a + 1..=i).rev().find(|&k| words.get(k - 1).is_some_and(|w| w.text.ends_with(marks)) && chars_before(k) * 3 >= cap_chars);
     after(&['.', '?', '!', '…']).or_else(|| after(&[',', ';', ':']))
 }
 

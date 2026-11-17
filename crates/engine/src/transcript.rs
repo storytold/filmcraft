@@ -405,13 +405,43 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
+/// A well-formed BCP 47 language tag (RFC 5646, 2.1): a 2-3 or 5-8 letter primary language, then
+/// subtags of 1-8 letters or digits; a singleton (a one-character extension or `x` private-use
+/// introducer) must be followed by at least one subtag. Grandfathered tags are not accepted.
+pub(crate) fn valid_language_tag(tag: &str) -> bool {
+    if tag.is_empty() || tag.len() > 64 {
+        return false;
+    }
+    let subtags: Vec<&str> = tag.split('-').collect();
+    let Some(first) = subtags.first() else { return false };
+    if !(matches!(first.len(), 2 | 3 | 5..=8) && first.bytes().all(|b| b.is_ascii_alphabetic())) {
+        return false;
+    }
+    let mut after_singleton = false;
+    for (k, sub) in subtags.iter().enumerate().skip(1) {
+        if sub.is_empty() || sub.len() > 8 || !sub.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return false;
+        }
+        if sub.len() == 1 {
+            // a singleton needs a subtag after it
+            if subtags.get(k + 1).is_none_or(|n| n.is_empty()) {
+                return false;
+            }
+            after_singleton = true;
+        } else if after_singleton && sub.len() < 2 && !sub.eq_ignore_ascii_case("x") {
+            return false;
+        }
+    }
+    true
+}
+
 /// The language most of `words` were recognised in (each transcript's `language`), when it is a
-/// plausible language tag ("fr", "pt-BR"); None otherwise.
+/// well-formed language tag ("fr", "pt-BR"); None otherwise.
 fn spoken_language(s: &Session, words: &[SeqWord]) -> Option<String> {
     let mut counts: Vec<(&str, usize)> = Vec::new();
     for w in words {
         let Some(l) = s.project.transcripts.get(&w.item).map(|t| t.language.as_str()) else { continue };
-        if l.is_empty() || l.len() > 16 || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        if !valid_language_tag(l) {
             continue;
         }
         match counts.iter_mut().find(|(k, _)| *k == l) {

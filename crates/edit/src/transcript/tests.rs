@@ -320,6 +320,12 @@ fn full_captions_end_at_sentence_or_clause_boundaries() {
     let w2: Vec<SeqWord> = one.split(' ').enumerate().map(|(i, t)| SeqWord { text: t.into(), index: i, ..words[0].clone() }).collect();
     let b = caption_blocks(&w2, &rules, R);
     assert!(b[0].text.ends_with("plage,"), "{:?}", b[0].text);
+    // the block's last word may be the break: "Done now. Go." when "Unfortunately," overflows
+    let one_line = CaptionRules { max_chars: 24, lines: 1, ..CaptionRules::default() };
+    let w3: Vec<SeqWord> =
+        "Done now. Go. Unfortunately, it rained.".split(' ').enumerate().map(|(i, t)| SeqWord { text: t.into(), index: i, ..words[0].clone() }).collect();
+    let b = caption_blocks(&w3, &one_line, R);
+    assert_eq!(b[0].text, "Done now. Go.");
 }
 
 #[test]

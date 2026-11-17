@@ -198,3 +198,30 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// Caption-track languages are well-formed BCP 47 tags: private-use and region subtags pass,
+/// malformed ones are refused (the track then keeps its default).
+#[test]
+fn caption_languages_are_well_formed_tags() {
+    use crate::transcript::valid_language_tag as ok;
+    for good in ["fr", "en", "pt-BR", "zh-Hant-TW", "fr-Latn-FR-x-test", "es-419", "de-CH-1996"] {
+        assert!(ok(good), "{good}");
+    }
+    for bad in [
+        "",
+        "f",
+        "123",
+        "fr-x",
+        "fr--FR",
+        "fr-",
+        "-fr",
+        "fr_FR",
+        "fr
+<script>",
+        "abcdefghi",
+        "fr-abcdefghi",
+        &"a-".repeat(40),
+    ] {
+        assert!(!ok(bad), "{bad:?}");
+    }
+}
