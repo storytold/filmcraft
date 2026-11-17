@@ -62,6 +62,7 @@ impl FilmcraftApp {
             ime_active_sequence,
             ime_viewports: Vec::new(),
             textures: HashMap::new(),
+            settled_seen: 0,
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
@@ -196,6 +197,27 @@ impl FilmcraftApp {
         }
     }
 
+    /// Frames the frame server rendered again once the Warp Stabilizer analyses they lacked were
+    /// settled look different under the same key: a texture or GPU frame showing one is redrawn.
+    fn redraw_settled_frames(&mut self) {
+        let (seen, keys) = self.frames.settled_frames(self.settled_seen);
+        self.settled_seen = seen;
+        if keys.is_empty() {
+            return;
+        }
+        for (k, _) in self.textures.values_mut() {
+            if keys.contains(k) {
+                // a key no frame has: the next upload replaces the picture
+                k.frame = i64::MIN;
+            }
+        }
+        if let Some(g) = &mut self.gpu
+            && g.last_key.is_some_and(|k| keys.contains(&k))
+        {
+            g.last_key = None;
+        }
+    }
+
     pub fn status(&mut self, s: impl Into<String>) {
         self.ui.status = s.into();
     }
@@ -283,6 +305,7 @@ impl FilmcraftApp {
         // Warp Stabilizer analyses: the clips under the playhead first, then the whole project
         let playhead = self.session.playhead();
         self.frames.set_view(&self.session.project, self.session.revision, self.session.state.active_sequence, playhead, self.playback.playing);
+        self.redraw_settled_frames();
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
@@ -612,5 +635,26 @@ mod lifecycle_synthetic_tests {
         eframe::App::raw_input_hook(&mut app, &ctx, &mut preserved);
         assert_eq!(texts(&preserved.events), 1, "the preserved raw input must keep exactly one copy");
         assert_eq!(app.synthetic_pending_step.as_ref().map(Vec::len), Some(2), "the queue did not advance");
+    }
+}
+
+#[cfg(test)]
+mod settled_tests {
+    use super::*;
+
+    /// A monitor texture showing a frame the frame server rendered again (its Warp Stabilizer
+    /// analysis settled) is uploaded again, though the frame's key is the same.
+    #[test]
+    fn a_texture_of_a_settled_frame_is_redrawn() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        let key = frames::FrameKey { target: frames::Target::Sequence(filmcraft_project::ItemId(7)), frame: 3, size: 100, revision: 1, draft: false };
+        let tex = ctx.load_texture("monitor-program", egui::ColorImage::new([2, 2], vec![egui::Color32::BLACK; 4]), egui::TextureOptions::LINEAR);
+        app.textures.insert("monitor-program".into(), (key, tex));
+        app.redraw_settled_frames();
+        assert_eq!(app.texture_key("monitor-program"), Some(key), "nothing settled yet");
+        app.frames.announce_settled_for_test(vec![key]);
+        app.redraw_settled_frames();
+        assert_ne!(app.texture_key("monitor-program"), Some(key), "the next upload replaces it");
     }
 }

@@ -2106,6 +2106,22 @@ mod stabilizer_live_and_kept {
         assert!(waiting.is_empty(), "not asked for again");
     }
 
+    /// Two analyses of a source can end close together: the one taken first, written last,
+    /// doesn't replace what the other added.
+    #[test]
+    fn an_older_snapshot_written_late_is_not_kept() {
+        use super::super::temporal::ranges::{Range, Ranges};
+        use super::super::temporal::save_in_order;
+        cache_dir();
+        let id = b"saved out of order".to_vec();
+        let steps = |n: usize| (0..n).map(|i| Affine::translate(i as f64, 0.0)).collect::<Vec<_>>();
+        let older = Ranges { dims: Some((96, 64)), fps: 24.0, ranges: vec![Range { start: 0, steps: steps(10) }] };
+        let newer = Ranges { ranges: vec![Range { start: 0, steps: steps(30) }], ..older.clone() };
+        save_in_order(0x5A7E_0001, 2, &id, &newer);
+        save_in_order(0x5A7E_0001, 1, &id, &older);
+        assert_eq!(store::load(&id), Some(newer), "the newer analyses stay");
+    }
+
     #[test]
     fn analysis_files_are_hostile_input() {
         use super::super::temporal::ranges::{Range, Ranges};
@@ -2219,6 +2235,57 @@ mod stabilizer_keys_of_a_project {
         assert_eq!(id(&p).source, before.source, "the same frames of the same source");
         assert_eq!(id(&p).first, before.first + 2, "two frames further in");
         assert_ne!(stabilizer_keys(&p), keys, "another clip key");
+    }
+
+    /// Pictures are colour managed into the sequence's working space before they are tracked: the
+    /// same clip in sequences managed differently (or with its colour space overridden) is
+    /// analysed for each.
+    #[test]
+    fn colour_management_is_part_of_the_identity() {
+        let mut p = Project::new("colour");
+        let r = FrameRate::FPS_24;
+        let g = GeneratorSource::new(Generator::BarsAndTone, 32, 18, r, Tick(10 * TICKS_PER_SECOND));
+        let media = p.add_item(
+            "m",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info: g.info().clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: Some(MediaIdentity { size: 0x00C0_100E, fingerprint: 0x00C0_100F }),
+            })),
+            None,
+        );
+        let mut hlg = SequenceSettings { width: 32, height: 18, frame_rate: r, ..Default::default() };
+        hlg.color.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+        let mut wide = SequenceSettings { width: 32, height: 18, frame_rate: r, ..Default::default() };
+        wide.color.wide_gamut = !wide.color.wide_gamut;
+        let seqs: Vec<ItemId> = [SequenceSettings { width: 32, height: 18, frame_rate: r, ..Default::default() }, hlg, wide]
+            .into_iter()
+            .map(|st| {
+                let seq = p.new_sequence("s", st, 1, 0, None);
+                let mut ti = p.make_track_item(media, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
+                ti.effects.push(inst("warp_stabilizer"));
+                p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
+                seq
+            })
+            .collect();
+        let span = |p: &Project, seq: ItemId| {
+            let q = p.sequence(seq).unwrap();
+            analysis_span(p, q, &q.video_tracks[0].items[0]).unwrap().source
+        };
+        let plain = span(&p, seqs[0]);
+        assert_ne!(span(&p, seqs[1]), plain, "an HLG working space");
+        assert_ne!(span(&p, seqs[2]), plain, "wide gamut compositing");
+        if let Some(ItemKind::Media(m)) = p.items.get_mut(&media).map(|i| &mut i.kind) {
+            m.interpret.color_space = Some(filmcraft_color::ColorSpace::Rec2100Hlg);
+        }
+        assert_ne!(span(&p, seqs[0]), plain, "the clip's colour space overridden");
     }
 
     /// A generator whose `stop_at`-th frame read stops there: it sets `stop` (when given), or
