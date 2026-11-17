@@ -374,6 +374,17 @@ pub fn tr_ctx<'a>(context: &str, text: &'a str) -> &'a str {
     lang.catalog().and_then(|c| c.contextual(context, text)).unwrap_or_else(|| lang.tr(text))
 }
 
+/// A size written by the engine ("34 MB", "1.2 GB", "12 KB") with its unit in the interface
+/// language (French: Ko, Mo, Go). Anything else comes back as it is.
+pub fn byte_units(size: &str) -> String {
+    for unit in ["KB", "MB", "GB"] {
+        if let Some(n) = size.strip_suffix(unit).and_then(|n| n.strip_suffix(' ')) {
+            return format!("{n} {}", t(unit));
+        }
+    }
+    size.to_string()
+}
+
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::new();
