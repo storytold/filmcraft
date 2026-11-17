@@ -322,7 +322,8 @@ pub fn reframe_size(w: u32, h: u32, aspect: &str) -> Option<(u32, u32)> {
         "16:9" => (16, 9),
         _ => return None,
     };
-    let short = u64::from(w.min(h)).clamp(2, 8192);
+    // the largest short side that keeps the long side within 16384 for this aspect
+    let short = u64::from(w.min(h)).clamp(2, 16384 * aw.min(ah) / aw.max(ah));
     // the short side of the new frame is the old one; the long side follows the ratio
     let (nw, nh) = if aw <= ah { (short, short * ah / aw) } else { (short * aw / ah, short) };
     let even = |v: u64| u32::try_from((v / 2 * 2).clamp(2, 16384)).ok();
@@ -357,7 +358,7 @@ fn auto_reframe(s: &mut Session, p: &Value) -> Result<Value> {
             for it in &mut t.items {
                 // pictures only: titles and shapes are laid out for the new frame already, and a
                 // clip reframed by hand keeps what was chosen
-                let picture = pr.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Sequence(_)));
+                let picture = pr.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)));
                 if !picture || it.effects.iter().any(|e| e.effect == "auto_reframe") {
                     continue;
                 }

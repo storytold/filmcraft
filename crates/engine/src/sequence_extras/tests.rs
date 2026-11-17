@@ -331,7 +331,7 @@ fn auto_reframe_sequence_makes_a_vertical_copy() {
         .video_tracks
         .iter()
         .flat_map(|t| &t.items)
-        .filter(|it| s.project.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Sequence(_))))
+        .filter(|it| s.project.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_))))
         .collect();
     assert!(!pictures.is_empty());
     assert!(pictures.iter().all(|it| it.effects.iter().filter(|e| e.effect == "auto_reframe").count() == 1));
@@ -347,6 +347,9 @@ fn auto_reframe_sequence_makes_a_vertical_copy() {
     assert_eq!(crate::sequence_extras::reframe_size(1920, 1080, "1:1"), Some((1080, 1080)));
     assert_eq!(crate::sequence_extras::reframe_size(1920, 1080, "4:5"), Some((1080, 1350)));
     assert_eq!(crate::sequence_extras::reframe_size(1080, 1920, "16:9"), Some((1920, 1080)));
+    // a short side above 8192 is kept while the long side fits 16384
+    assert_eq!(crate::sequence_extras::reframe_size(10000, 10000, "1:1"), Some((10000, 10000)));
+    assert_eq!(crate::sequence_extras::reframe_size(12000, 10000, "9:16"), Some((9216, 16384)));
     // hostile sizes stay even and bounded
     for (w, h) in [(0, 0), (1, 3), (u32::MAX, u32::MAX), (7, 100_000)] {
         for a in ["9:16", "1:1", "4:5", "16:9"] {
@@ -356,4 +359,23 @@ fn auto_reframe_sequence_makes_a_vertical_copy() {
     }
     assert!(s.execute("sequence.autoReframe", json!({"aspect": "3:2"})).is_err());
     assert!(s.execute("sequence.autoReframe", json!({"preset": "warp"})).is_err());
+}
+
+/// A subclip edited into the timeline is a picture too: the reframed copy gives it Auto Reframe.
+#[test]
+fn auto_reframe_sequence_covers_subclips() {
+    let mut s = demo();
+    let ocean = s.project.items.iter().find(|(_, it)| it.name == "Ocean_Sunset.mp4").map(|(id, _)| *id).unwrap();
+    let r24 = filmcraft_time::FrameRate::FPS_23_976;
+    s.execute("source.open", json!({"item": ocean.0})).unwrap();
+    s.execute("project.setMarks", json!({"item": ocean.0, "in": r24.tick_of(24).0, "out": r24.tick_of(71).0})).unwrap();
+    let sub = s.execute("clip.makeSubclip", json!({})).unwrap()["item"].as_u64().unwrap();
+    s.execute("source.open", json!({"item": sub})).unwrap();
+    s.execute("playhead.set", json!({"frame": 0})).unwrap();
+    s.execute("source.overwrite", json!({})).unwrap();
+    s.execute("sequence.autoReframe", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let placed: Vec<_> = q.video_tracks.iter().flat_map(|t| &t.items).filter(|it| it.item.0 == sub).collect();
+    assert!(!placed.is_empty(), "the subclip is on a video track");
+    assert!(placed.iter().all(|it| it.effects.iter().any(|e| e.effect == "auto_reframe")), "the subclip is reframed");
 }
