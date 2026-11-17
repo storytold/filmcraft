@@ -90,6 +90,23 @@ pub fn h264_disposable(sample: &[u8], length_size: usize) -> bool {
     slices > 0
 }
 
+/// Whether an H.264 access unit (its NAL units) is a random-access point: an IDR, or a
+/// non-IDR one with a recovery point SEI of recovery_frame_cnt 0 (open GOP), the same rule as
+/// the transport stream splitter's `key`.
+pub(crate) fn h264_random_access<'a>(mut nals: impl Iterator<Item = &'a [u8]>) -> bool {
+    nals.any(|n| match n.first().map(|h| h & 0x1f) {
+        Some(5) => true,
+        Some(6) => craft_media::mpegts::sei_has_recovery_point(n),
+        _ => false,
+    })
+}
+
+/// Whether an HEVC access unit (its NAL units) is a random-access point: an IRAP picture
+/// (IDR / CRA / BLA, types 16..=21).
+pub(crate) fn hevc_random_access<'a>(mut nals: impl Iterator<Item = &'a [u8]>) -> bool {
+    nals.any(|n| n.first().is_some_and(|h| (16..=21).contains(&((h >> 1) & 0x3F))))
+}
+
 /// [`h264_disposable`] for an Annex B (start-code) sample.
 pub fn h264_disposable_annexb(sample: &[u8]) -> bool {
     let mut slices = 0;
@@ -332,16 +349,15 @@ impl VideoDecoder for H264Decoder {
         h264_disposable(sample, self.length_size)
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
-        // Annex B samples carry their parameter sets: an IDR access unit is a starting point, and
-        // so is a non-IDR one with a recovery point SEI of recovery_frame_cnt 0 (open GOP), the
-        // same rule as the transport stream splitter's `key`.
-        (self.length_size == 0).then(|| {
-            filmcraft_bitstream::annexb_nals(sample).iter().any(|n| match n.first().map(|h| h & 0x1f) {
-                Some(5) => true,
-                Some(6) => craft_media::mpegts::sei_has_recovery_point(n),
-                _ => false,
-            })
-        })
+        // Annex B samples carry their parameter sets; length-prefixed (avcC) samples are
+        // walked the same way instead of answering "unknown", or an MP4 without `stss`
+        // (every sample flagged sync) never steps back to a real random-access picture.
+        // A truncated sample cannot be told (`None`: trust the container's sync flags).
+        if self.length_size == 0 {
+            return Some(h264_random_access(filmcraft_bitstream::annexb_nals(sample).into_iter()));
+        }
+        let nals = filmcraft_bitstream::length_prefixed_nals(sample, self.length_size).ok()?;
+        Some(h264_random_access(nals.into_iter()))
     }
 }
 
@@ -451,9 +467,13 @@ impl VideoDecoder for HevcDecoder {
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
         // Annex B samples carry their parameter sets: an IDR / CRA / BLA access unit is a
-        // starting point.
-        (self.length_size == 0)
-            .then(|| filmcraft_bitstream::annexb_nals(sample).iter().any(|n| n.first().is_some_and(|h| (16..=21).contains(&((h >> 1) & 0x3F)))))
+        // starting point. Length-prefixed (hvcC) samples are walked the same way instead of
+        // answering "unknown" (see the H.264 note above); a truncated sample cannot be told.
+        if self.length_size == 0 {
+            return Some(hevc_random_access(filmcraft_bitstream::annexb_nals(sample).into_iter()));
+        }
+        let nals = filmcraft_bitstream::length_prefixed_nals(sample, self.length_size).ok()?;
+        Some(hevc_random_access(nals.into_iter()))
     }
 }
 

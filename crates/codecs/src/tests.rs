@@ -695,6 +695,86 @@ fn vp9_random_access_ignores_bogus_sync_flags() {
     }
 }
 
+/// H.264 / HEVC in an MP4 without `stss`: every sample is flagged sync, so a direct seek must
+/// step back to a real random-access picture instead of starting at a P-frame (#5015).
+#[test]
+fn h264_random_access_ignores_bogus_sync_flags() {
+    check_no_stss_random_access(
+        "h264_longgop.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30:duration=6",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-bf",
+            "2",
+            "-x264-params",
+            "keyint=infinite:sc_threshold=0",
+            "-movflags",
+            "+faststart",
+        ],
+    );
+}
+
+#[test]
+fn hevc_random_access_ignores_bogus_sync_flags() {
+    check_no_stss_random_access(
+        "hevc_longgop.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30:duration=6",
+            "-c:v",
+            "libx265",
+            "-tag:v",
+            "hvc1",
+            "-x265-params",
+            "keyint=100000:min-keyint=100000:scenecut=0",
+            "-movflags",
+            "+faststart",
+        ],
+    );
+}
+
+fn check_no_stss_random_access(name: &str, args: &[&str]) {
+    let Some(bytes) = fixture(name, args) else {
+        return;
+    };
+    // Remove the sync sample table: rename the one `stss` box to `free`, nothing else changed.
+    // `faststart` puts the moov first, so the first `stss` in the file is the box itself.
+    let mut nostss = bytes.to_vec();
+    let Some(pos) = nostss.windows(4).position(|w| w == b"stss") else {
+        panic!("{name}: no stss box to remove");
+    };
+    nostss[pos..pos + 4].copy_from_slice(b"free");
+    let nostss: Arc<[u8]> = nostss.into();
+    let nostss_name = name.replace(".mp4", "_nostss.mp4");
+
+    // Decode frames 0..=132 in order, then jump straight to 4.4 s on a fresh source: the two
+    // pictures must match.
+    let sequential = crate::open_bytes(&nostss_name, nostss.clone()).unwrap();
+    let rate = sequential.info().frame_rate();
+    let target = rate.tick_of(132);
+    let mut expected = Vec::new();
+    for k in 0..=132 {
+        let f = sequential.video_frame(FrameRequest::full(rate.tick_of(k))).unwrap();
+        if k == 132 {
+            expected = yuv_bytes(&f);
+        }
+    }
+    let direct = crate::open_bytes(&nostss_name, nostss).unwrap();
+    let f = direct.video_frame(FrameRequest::full(target)).unwrap();
+    let got = yuv_bytes(&f);
+    assert_eq!(got.len(), expected.len(), "direct seek produced a different-size picture");
+    let diff: u64 = got.iter().zip(&expected).map(|(a, b)| a.abs_diff(*b) as u64).sum();
+    assert_eq!(diff, 0, "direct seek to 4.4 s differs from decoding up to it (total abs diff {diff})");
+}
+
 /// VP9 RGB (profile 1, colour space sRGB; planes G, B, R) decodes to RGBA in the right order.
 #[test]
 fn mkv_vp9_rgb() {
