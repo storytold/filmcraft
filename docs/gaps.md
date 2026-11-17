@@ -199,7 +199,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
   JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
   settings; DNG frames and folders import since #1065); stills: PSD layers (Merged Layers, Individual Layers, layers as a sequence) and PSB / CMYK / Lab / indexed / 32-bit / ZIP-compressed documents, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
-  tiled, multi-part, deep), HEIF / HEIC,
+  tiled, multi-part, deep), HEIF image sequences and AVIF (HEIF / HEIC stills import since
+  2026-11-15 through craft-heif: single and grid-tiled, 8–16 bit, alpha, rotation / mirror / crop),
   AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
   since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
   video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV multi-audio (#601);
