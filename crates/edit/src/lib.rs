@@ -527,7 +527,8 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
     Ok(spans)
 }
 
-/// Close the gap containing `t` on a track (Ripple Delete on a gap).
+/// Close the gap containing `t` on a track (Ripple Delete on a gap). Sync-locked tracks move with
+/// it, caption tracks too (#4948), as in the other ripple edits.
 pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
     let gap = closable_gap(seq, track, t)?;
     let mut work = seq.clone();
@@ -536,6 +537,9 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
             continue;
         }
         shift_track_from(tr, gap.end(), -gap.duration);
+    }
+    for ct in work.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+        captions::shift_from(ct, gap.end(), -gap.duration);
     }
     *seq = work;
     Ok(())
@@ -558,6 +562,13 @@ pub fn closable_gap(seq: &Sequence, track: TrackId, t: Tick) -> Result<TimeRange
     let gap = TimeRange::from_bounds(prev_end, next_start);
     if let Some(tr) = seq.all_tracks().find(|tr| tr.id != track && !tr.locked && tr.sync_lock && !track_range_empty(tr, gap)) {
         return Err(EditError::SyncLockConflict(track_label(seq, tr.id)));
+    }
+    // A sync-locked caption track moves with the gap too, so a caption in the gap is in the way, as
+    // a clip on a sync-locked track is: closing the gap would run it into the captions before it.
+    if let Some(i) =
+        seq.caption_tracks.iter().position(|ct| !ct.locked && ct.sync_lock && ct.captions.iter().any(|c| c.start < gap.end() && c.end() > gap.start))
+    {
+        return Err(EditError::SyncLockConflict(format!("C{}", i + 1)));
     }
     Ok(gap)
 }

@@ -368,6 +368,52 @@ fn close_gap_works() {
     assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10)]);
 }
 
+/// #4948: Ripple Delete on a gap moves sync-locked caption tracks with the clips, as the other
+/// ripple edits do; a caption in the gap is in the way, as a clip on a sync-locked track is; and a
+/// locked or unsynced caption track stays where it is.
+#[test]
+fn close_gap_moves_sync_locked_captions() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a1 = fx.a(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    let c2 = fx.add_caption_track("C2", CaptionFormat::Subtitle);
+    let c3 = fx.add_caption_track("C3", CaptionFormat::Subtitle);
+    fx.put(v1, 0, 10, 0);
+    fx.put(v1, 25, 10, 0);
+    fx.put(a1, 0, 10, 0);
+    fx.put(a1, 25, 10, 0);
+    for c in [c1, c2, c3] {
+        fx.add_caption(c, 2, 6, "before");
+        fx.add_caption(c, 26, 4, "after");
+    }
+    fx.seq.caption_track_mut(c2).unwrap().locked = true;
+    fx.seq.caption_track_mut(c3).unwrap().sync_lock = false;
+    close_gap(&mut fx.seq, v1, f(15)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10)]);
+    assert_eq!(fx.spans(a1), vec![(0, 10), (10, 10)], "the sync-locked audio closes too");
+    assert_eq!(fx.caption_spans(c1), vec![(2, 6, "before".into()), (11, 4, "after".into())], "captions after the gap move with it");
+    for c in [c2, c3] {
+        assert_eq!(fx.caption_spans(c), vec![(2, 6, "before".into()), (26, 4, "after".into())], "locked or unsynced: unchanged");
+    }
+
+    // A caption in the gap on a sync-locked caption track: the gap doesn't close, nothing moves.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    fx.put(v1, 0, 10, 0);
+    fx.put(v1, 25, 10, 0);
+    fx.add_caption(c1, 12, 4, "in the gap");
+    let before = fx.seq.clone();
+    assert_eq!(closable_gap(&fx.seq, v1, f(15)), Err(EditError::SyncLockConflict("C1".into())));
+    assert_eq!(close_gap(&mut fx.seq, v1, f(15)), Err(EditError::SyncLockConflict("C1".into())));
+    assert_eq!(fx.seq, before);
+    // Unsynced, it doesn't stop the gap closing and stays put.
+    fx.seq.caption_track_mut(c1).unwrap().sync_lock = false;
+    close_gap(&mut fx.seq, v1, f(15)).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(12, 4, "in the gap".into())]);
+}
+
 #[test]
 fn reversed_trim_uses_the_handle_its_playback_direction_consumes() {
     let mut fx = Fx::new();
