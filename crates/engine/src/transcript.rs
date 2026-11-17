@@ -405,41 +405,71 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
-/// A well-formed BCP 47 language tag (RFC 5646, 2.1): a 2-3 or 5-8 letter primary language, then
-/// subtags of 1-8 letters or digits; a singleton (a one-character extension or `x` private-use
-/// introducer) must be followed by a subtag: 2-8 characters after an extension singleton, 1-8 after
-/// `x`, which makes every later subtag private use. Grandfathered tags are not accepted.
+/// A well-formed BCP 47 language tag (RFC 5646 2.1, `langtag` and `privateuse`; grandfathered
+/// tags are not accepted). Subtags come in this order, each kind at most where the grammar allows:
+/// language (2-3 letters, up to three 3-letter extlangs; or 4 or 5-8 letters), script (4 letters),
+/// region (2 letters or 3 digits), variants (5-8 alphanumerics, or a digit and 3 alphanumerics),
+/// extensions (a singleton other than `x`, then subtags of 2-8), and private use (`x`, then subtags
+/// of 1-8). A tag that is only private use (`x-…`) is accepted too.
 pub(crate) fn valid_language_tag(tag: &str) -> bool {
     if tag.is_empty() || tag.len() > 64 {
         return false;
     }
-    let subtags: Vec<&str> = tag.split('-').collect();
-    let Some(first) = subtags.first() else { return false };
-    if !(matches!(first.len(), 2 | 3 | 5..=8) && first.bytes().all(|b| b.is_ascii_alphabetic())) {
+    let subs: Vec<&str> = tag.split('-').collect();
+    let alpha = |s: &str| s.bytes().all(|b| b.is_ascii_alphabetic());
+    let digit = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    let alnum = |s: &str| !s.is_empty() && s.len() <= 8 && s.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !subs.iter().all(|s| alnum(s)) {
         return false;
     }
-    // after `x` every subtag is private use (1-8 characters, `fr-x-a` included)
-    let mut private = false;
-    for (k, sub) in subtags.iter().enumerate().skip(1) {
-        if sub.is_empty() || sub.len() > 8 || !sub.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return false;
-        }
-        if private || sub.len() != 1 {
-            continue;
-        }
-        let next = subtags.get(k + 1);
-        if sub.eq_ignore_ascii_case("x") {
-            // the private-use introducer needs a subtag after it
-            if next.is_none_or(|n| n.is_empty()) {
-                return false;
+    let mut i = 0;
+    let at = |i: usize| subs.get(i).copied();
+    // private use from `i` on: `x` then one or more subtags of 1-8
+    let private_from = |i: usize| at(i).is_some_and(|s| s.eq_ignore_ascii_case("x")) && subs.len() > i + 1;
+    if private_from(0) {
+        return true;
+    }
+    // language
+    match at(i) {
+        Some(l) if alpha(l) && matches!(l.len(), 2 | 3) => {
+            i += 1;
+            let mut ext = 0;
+            while ext < 3 && at(i).is_some_and(|s| s.len() == 3 && alpha(s)) {
+                i += 1;
+                ext += 1;
             }
-            private = true;
-        } else if next.is_none_or(|n| n.len() < 2) {
-            // an extension singleton needs a subtag of 2-8 characters after it
+        }
+        Some(l) if alpha(l) && (4..=8).contains(&l.len()) => i += 1,
+        _ => return false,
+    }
+    // script
+    if at(i).is_some_and(|s| s.len() == 4 && alpha(s)) {
+        i += 1;
+    }
+    // region
+    if at(i).is_some_and(|s| (s.len() == 2 && alpha(s)) || (s.len() == 3 && digit(s))) {
+        i += 1;
+    }
+    // variants
+    while at(i).is_some_and(|s| (5..=8).contains(&s.len()) || (s.len() == 4 && s.bytes().next().is_some_and(|b| b.is_ascii_digit()))) {
+        i += 1;
+    }
+    // extensions: a singleton (not x), then one or more subtags of 2-8
+    while at(i).is_some_and(|s| s.len() == 1 && !s.eq_ignore_ascii_case("x")) {
+        i += 1;
+        let first = i;
+        while at(i).is_some_and(|s| (2..=8).contains(&s.len())) {
+            i += 1;
+        }
+        if i == first {
             return false;
         }
     }
-    true
+    if i == subs.len() {
+        return true;
+    }
+    // private use ends the tag
+    private_from(i)
 }
 
 /// The language most of `words` were recognised in (each transcript's `language`), when it is a

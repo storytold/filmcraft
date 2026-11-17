@@ -204,10 +204,45 @@ fn generate_without_a_transcriber() {
 #[test]
 fn caption_languages_are_well_formed_tags() {
     use crate::transcript::valid_language_tag as ok;
-    for good in ["fr", "en", "pt-BR", "zh-Hant-TW", "fr-Latn-FR-x-test", "es-419", "de-CH-1996", "fr-x-a", "en-a-bbb-x-a-ccc"] {
+    for good in [
+        "fr",
+        "en",
+        "pt-BR",
+        "zh-Hant-TW",
+        "fr-Latn-FR-x-test",
+        "es-419",
+        "de-CH-1996",
+        "fr-x-a",
+        "en-a-bbb-x-a-ccc",
+        "fr-FR",
+        "zh-yue-HK",
+        "sl-rozaj-biske",
+        "x-whatever",
+        "en-US-u-islamcal",
+    ] {
         assert!(ok(good), "{good}");
     }
-    for bad in ["", "f", "123", "fr-x", "fr--FR", "fr-", "-fr", "fr_FR", "fr-a-b", "fr\n<script>", "abcdefghi", "fr-abcdefghi", &"a-".repeat(40)] {
+    for bad in [
+        "",
+        "f",
+        "123",
+        "fr-x",
+        "fr--FR",
+        "fr-",
+        "-fr",
+        "fr_FR",
+        "fr-a-b",
+        "fr-FR-FR",
+        "fr-Latn-FR-Latn",
+        "fr-419-FR",
+        "en-u",
+        "en-x",
+        "en-a-x-y",
+        "fr\n<script>",
+        "abcdefghi",
+        "fr-abcdefghi",
+        &"a-".repeat(40),
+    ] {
         assert!(!ok(bad), "{bad:?}");
     }
 }
