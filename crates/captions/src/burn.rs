@@ -114,6 +114,41 @@ fn vtt_overrides(settings: &str) -> (Option<f32>, Option<CaptionAlign>) {
 
 /// Lay out and rasterise one caption for a `w`×`h` frame.
 pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
+    render_caption_at(c, style, w, h, None)
+}
+
+/// The word being spoken `progress` (0 … 1) of the way through a caption of `lines`: words are
+/// timed in proportion to their length (plus one for the space), as nothing finer is stored.
+/// Returns (line, byte range of the word in that line).
+fn spoken_word(lines: &[String], progress: f32) -> Option<(usize, std::ops::Range<usize>)> {
+    let mut words: Vec<(usize, std::ops::Range<usize>, f32)> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let mut at = 0;
+        for wd in l.split(' ') {
+            if !wd.is_empty() {
+                words.push((i, at..at + wd.len(), (wd.chars().count() + 1) as f32));
+            }
+            at += wd.len() + 1;
+        }
+    }
+    let total: f32 = words.iter().map(|w| w.2).sum();
+    if total <= 0.0 || !progress.is_finite() {
+        return None;
+    }
+    let target = progress.clamp(0.0, 1.0) * total;
+    let mut acc = 0.0;
+    for (i, r, wt) in &words {
+        acc += wt;
+        if target < acc {
+            return Some((*i, r.clone()));
+        }
+    }
+    words.last().map(|(i, r, _)| (*i, r.clone()))
+}
+
+/// [`render_caption`] `progress` (0 … 1) of the way through the caption: with a highlight colour
+/// in the style, the word being spoken is drawn in it (animated captions).
+pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, progress: Option<f32>) -> Option<Overlay> {
     if w == 0 || h == 0 {
         return None;
     }
@@ -176,6 +211,9 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     }
     let mut cover = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
+    // the spoken word, drawn a second time into its own mask for the highlight colour
+    let spoken = style.highlight.zip(progress).and_then(|(_, f)| spoken_word(&lines, f));
+    let mut hi = if spoken.is_some() { vec![0.0f32; ow * oh] } else { Vec::new() };
     for (i, line) in lines.iter().enumerate() {
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
@@ -195,9 +233,21 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
         render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
         cover = m.a;
+        if let Some((_, r)) = spoken.as_ref().filter(|(si, _)| *si == i)
+            && let (Some(through), Some(word)) = (line.get(..r.end), line.get(r.clone()))
+        {
+            // where the word starts: the line up to its end, less the word (measuring the text
+            // before it would drop the trailing space)
+            let x = xs[i] + filmcraft_text::measure(through, &ts) - filmcraft_text::measure(word, &ts);
+            let wl = layout(word, &ts, &ParagraphStyle::default());
+            let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut hi) };
+            render::draw(&wl, &render::at(x, baseline.round()), &mut m, (ox, oy));
+            hi = m.a;
+        }
     }
     let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+    let hc = style.highlight.map(lin);
     let mut out = vec![0.0f32; ow * oh * 4];
     for j in 0..ow * oh {
         let mut p = [0.0f32; 4];
@@ -212,7 +262,13 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         if !stroke.is_empty() {
             over(&mut p, oc, stroke[j]);
         }
-        over(&mut p, tc, cover[j]);
+        match (hc, hi.get(j).copied()) {
+            (Some(hc), Some(a)) if a > 0.0 => {
+                over(&mut p, tc, cover[j] * (1.0 - a));
+                over(&mut p, hc, a);
+            }
+            _ => over(&mut p, tc, cover[j]),
+        }
         out[j * 4..j * 4 + 4].copy_from_slice(&p);
     }
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
@@ -276,7 +332,8 @@ pub fn track_overlay(track: &CaptionTrack, t: Tick, w: usize, h: usize) -> Optio
         return None;
     }
     let c = track.caption_at(t)?;
-    render_caption(c, &track.style, w, h)
+    let progress = (c.duration > Tick::ZERO).then(|| ((t - c.start).0 as f64 / c.duration.0 as f64) as f32);
+    render_caption_at(c, &track.style, w, h, progress)
 }
 
 /// Overlays of every visible caption track of a sequence at `t`, bottom track first.
@@ -615,6 +672,39 @@ mod tests {
         // a style the family lacks falls back to the nearest weight, like graphic text
         let missing = CaptionStyle { font_style: "No Such Style".into(), ..Default::default() };
         assert!(render_caption(&cap("Hello world"), &missing, 1920, 1080).is_some());
+    }
+
+    /// Animated captions: with a highlight colour the word being spoken
+    /// is drawn in it, moving through the caption as it plays; without one nothing changes.
+    #[test]
+    fn the_spoken_word_is_highlighted_as_the_caption_plays() {
+        let c = cap("one two three four");
+        let plain = CaptionStyle { background: false, ..Default::default() };
+        let animated = CaptionStyle { highlight: Some([255, 200, 0, 255]), ..plain.clone() };
+        let (w, h) = (1280, 720);
+        assert_eq!(render_caption_at(&c, &plain, w, h, Some(0.5)), render_caption(&c, &plain, w, h), "no colour: plain captions");
+        let yellow =
+            |o: &Overlay| -> Vec<usize> { (0..o.w * o.h).filter(|j| o.px[j * 4 + 3] > 0.5 && o.px[j * 4 + 2] < 0.5 * o.px[j * 4]).map(|j| j % o.w).collect() };
+        let early = render_caption_at(&c, &animated, w, h, Some(0.05)).unwrap();
+        let late = render_caption_at(&c, &animated, w, h, Some(0.95)).unwrap();
+        let (e, l) = (yellow(&early), yellow(&late));
+        assert!(!e.is_empty() && !l.is_empty(), "a word is highlighted");
+        let mean = |v: &[usize]| v.iter().sum::<usize>() as f32 / v.len() as f32;
+        assert!(mean(&e) + 40.0 < mean(&l), "the highlight moves right as the caption plays");
+        // the coloured word covers the word itself: no white of it shows beside the highlight
+        // (it was drawn a space to the left)
+        let white_right_of =
+            |o: &Overlay, x0: usize| (0..o.w * o.h).filter(|j| j % o.w > x0 && o.px[j * 4 + 3] > 0.5 && o.px[j * 4 + 2] > 0.8 * o.px[j * 4]).count();
+        let last_x = *l.iter().max().unwrap();
+        assert_eq!(white_right_of(&late, last_x + 2), 0, "the last word is entirely highlighted");
+        assert_eq!(spoken_word(&["one two".into()], 0.0), Some((0, 0..3)));
+        assert_eq!(spoken_word(&["one two".into()], 1.0), Some((0, 4..7)));
+        assert_eq!(spoken_word(&["one".into(), "two".into()], 0.99), Some((1, 0..3)));
+        for f in [f32::NAN, f32::INFINITY, -1.0, 2.0] {
+            let _ = render_caption_at(&c, &animated, w, h, Some(f));
+        }
+        assert_eq!(spoken_word(&[], 0.5), None);
+        assert_eq!(spoken_word(&["  ".into()], 0.5), None);
     }
 
     #[test]

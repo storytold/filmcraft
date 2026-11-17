@@ -96,6 +96,10 @@ pub struct CaptionStyle {
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
+    /// Animated captions: the word being spoken is drawn in this colour (sRGB + alpha) as the
+    /// caption plays, each word timed in proportion to its length. None: plain captions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<[u8; 4]>,
 }
 
 impl Default for CaptionStyle {
@@ -113,6 +117,7 @@ impl Default for CaptionStyle {
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
             font_style: "SemiBold".into(),
+            highlight: None,
         }
     }
 }
