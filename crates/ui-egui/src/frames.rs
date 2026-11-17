@@ -338,7 +338,10 @@ impl Analyses {
         let wanted = self.foreground();
         let gone = self.clips_for.is_some() && !self.clips.iter().any(|c| c.key == *key);
         let playing = self.view.as_ref().is_some_and(|v| v.playing);
-        if gone || playing || (!wanted.is_empty() && !wanted.contains(key)) || (*background && !self.background_allowed()) {
+        // A foreground run the view no longer wants stops (it goes on later as a background one,
+        // which gives way to renders); a background one stops when the view wants another.
+        let unwanted = !wanted.contains(key) && (!*background || !wanted.is_empty());
+        if gone || playing || unwanted || (*background && !self.background_allowed()) {
             cancel.store(true, Ordering::Relaxed);
         }
     }
@@ -2541,5 +2544,39 @@ mod tests {
         b.server.shared.done.lock().unwrap().insert(aux, Arc::new(super::Rgba { w: 1, h: 1, px: vec![0; 4] }));
         b.server.request(aux, r.tick_of(30), 1.0, &b.p, 0);
         assert_eq!(b.server.shared.analyses.lock().unwrap().current, vec![left], "not the view's frame");
+    }
+
+    /// A foreground analysis the view no longer wants stops (to go on later as a background one,
+    /// which gives way to renders); a background one goes on while the view wants nothing else.
+    #[test]
+    fn an_analysis_the_view_no_longer_wants_stops() {
+        // the background check reads how many renders wait for an analysis, process-wide
+        let _turn = one_at_a_time();
+        use filmcraft_render::vfx::StabilizerClip;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let seq = filmcraft_project::ItemId(1);
+        let clip = StabilizerClip {
+            key: 0xA1,
+            sequence: seq,
+            clip: filmcraft_project::ClipId(1),
+            effect: 2,
+            start: filmcraft_time::Tick(0),
+            end: filmcraft_time::Tick(100),
+            hidden: false,
+        };
+        let project = Arc::new(filmcraft_project::Project::new("p"));
+        let view = super::View { revision: 1, project, sequence: Some(seq), playhead: filmcraft_time::Tick(500), playing: false };
+        let mut a = super::Analyses { clips: vec![clip], clips_for: Some((1, Some(seq))), view: Some(view), background: true, ..Default::default() };
+        let run = |a: &mut super::Analyses, background: bool| {
+            let stop = Arc::new(AtomicBool::new(false));
+            a.running = Some((0xA1, background, stop.clone()));
+            a.preempt();
+            stop.load(Ordering::SeqCst)
+        };
+        a.current = vec![0xA1];
+        assert!(!run(&mut a, false), "wanted: it goes on");
+        a.current.clear();
+        assert!(run(&mut a, false), "released by a final frame: it stops");
+        assert!(!run(&mut a, true), "as a background analysis it goes on");
     }
 }
