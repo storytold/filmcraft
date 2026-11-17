@@ -443,10 +443,12 @@ fn add_keyframe_at_the_out_point_stays_there_and_the_replies_say_what_happened()
     let past_media = media_at(&s, past);
     delete(&mut s, past_media);
 
-    // only the playhead fallback is pinned to the clip: a playhead past the end lands on its last tick
+    // only the playhead fallback is pinned to the clip: a playhead past the end lands on its last
+    // frame, where the playhead can stop, not on the tick before the out point (#4840)
     s.execute("playhead.set", json!({"seconds": past.seconds()})).unwrap();
     let r = s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).unwrap();
-    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, end - Tick(1)).0)), "{r}");
+    let last = s.sequence_rate().snap(end - Tick(1));
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, last).0)), "{r}");
 
     // hostile times neither panic nor leave a half-made keyframe; a delete that names no time is an error
     for t in [i64::MIN, i64::MAX] {
@@ -721,7 +723,8 @@ fn set_param_keeps_a_keyframe_outside_the_clip_at_its_time() {
     s.execute("playhead.set", json!({"time": (end + len).0})).unwrap();
     s.execute("effects.setParam", json!({"clip": c, "effect": "opacity", "param": "opacity", "value": 40.0})).unwrap();
     let (keys, it) = opacity(&s);
-    assert!(keys.contains(&(it.source_time_at(end - Tick(1)), 40.0)), "{keys:?}");
+    let last = s.sequence_rate().snap(end - Tick(1));
+    assert!(keys.contains(&(it.source_time_at(last), 40.0)), "{keys:?}");
 }
 
 /// A choice parameter takes its option name as well as its index, as transition parameters do

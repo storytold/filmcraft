@@ -3818,8 +3818,9 @@ fn build() -> Vec<CommandSpec> {
                     s.history.merge_key = None;
                 }
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                    let rate = q.settings.frame_rate;
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                    let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+                    let mt = it.effect_time_at(at.unwrap_or_else(|| it.playhead_frame_in(ph, rate)));
                     let e = match &eff {
                         Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                         Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3899,8 +3900,9 @@ fn build() -> Vec<CommandSpec> {
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
             let ph = s.playhead();
             s.edit_sequence("Toggle Animation", |q, _, _| {
+                let rate = q.settings.frame_rate;
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                let mt = it.effect_time_at(it.playhead_frame_in(ph, rate));
                 let e = match &eff {
                     Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                     Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3939,8 +3941,9 @@ fn build() -> Vec<CommandSpec> {
             let source = s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, i)| s.project.source_size(i.item)).unwrap_or(frame);
             let ph = s.playhead();
             s.edit_sequence("Reset Effect", |q, _, _| {
+                let rate = q.settings.frame_rate;
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                let mt = it.effect_time_at(it.playhead_frame_in(ph, rate));
                 if let Some(e) = it.effects.get_mut(idx) {
                     reset_params(e, None, frame, source, mt);
                 }
@@ -3956,8 +3959,9 @@ fn build() -> Vec<CommandSpec> {
             let source = s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, i)| s.project.source_size(i.item)).unwrap_or(frame);
             let ph = s.playhead();
             s.edit_sequence("Reset Parameter", |q, _, _| {
+                let rate = q.settings.frame_rate;
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                let mt = it.effect_time_at(it.playhead_frame_in(ph, rate));
                 let e = match &eff {
                     Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                     Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -4305,8 +4309,9 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     }
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
         let mut reply = Value::Null;
+        let rate = q.settings.frame_rate;
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-        let mt_now = it.effect_time_at(at.unwrap_or_else(|| playhead.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+        let mt_now = it.effect_time_at(at.unwrap_or_else(|| it.playhead_frame_in(playhead, rate)));
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
