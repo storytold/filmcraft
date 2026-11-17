@@ -44,6 +44,8 @@ pub mod media_foundation;
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvenc;
+#[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
+pub mod nvof;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod vaapi;
 #[cfg(target_os = "macos")]
@@ -69,7 +71,10 @@ pub enum Availability {
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
-    filmcraft_export::register_encoder(nvenc::export::factory);
+    {
+        filmcraft_export::register_encoder(nvenc::export::factory);
+        filmcraft_render::flow::register_optical_flow(nvof::factory);
+    }
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
@@ -97,7 +102,10 @@ pub fn register() -> Availability {
         static ENCODERS: std::sync::Once = std::sync::Once::new();
         // Export ▸ Hardware encoding (NVENC H.264): in front of the software encoder, taking an
         // export only when asked for and when NVENC can do it
-        ENCODERS.call_once(|| filmcraft_export::register_encoder(nvenc::export::factory));
+        ENCODERS.call_once(|| {
+            filmcraft_export::register_encoder(nvenc::export::factory);
+            filmcraft_render::flow::register_optical_flow(nvof::factory);
+        });
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
         Availability::Available("Media Foundation")

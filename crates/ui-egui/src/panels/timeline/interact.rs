@@ -1,6 +1,6 @@
 use super::clips::paint_hatch;
 use super::layout::{Layout, max_scroll, min_pps, new_track_at};
-use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
+use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, optical_flow_menu, ruler_menu};
 use super::snap::{snap, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
@@ -1396,6 +1396,10 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                     }
                     if cmd == "clip.multicam" {
                         multicam_menu(app, ui, &picked);
+                        continue;
+                    }
+                    if cmd == "clip.opticalFlowOverlay" {
+                        optical_flow_menu(app, ui);
                         continue;
                     }
                     let label = match cmd {

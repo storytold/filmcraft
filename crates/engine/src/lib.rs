@@ -36,6 +36,7 @@ pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod optical_flow;
 mod palette;
 pub mod panels;
 pub mod paste_media;
@@ -569,6 +570,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Optical-flow overlay jobs whose clips are placed when they finish.
+    pub flow_jobs: Vec<optical_flow::PendingFlow>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -678,6 +681,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            flow_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -776,6 +780,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        optical_flow::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -849,6 +854,11 @@ impl Session {
         // `poll_persistence`: apply background mask tracking before each command (#3302)
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
+        }
+        // the same for optical-flow overlay jobs, so an agent that started one without `wait`
+        // gets its clips placed (by `jobs.list` or any later command)
+        if self.exec_depth == 0 && !self.flow_jobs.is_empty() {
+            optical_flow::poll(self);
         }
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {

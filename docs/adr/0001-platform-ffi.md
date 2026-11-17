@@ -18,7 +18,8 @@ Using it needs FFI into C / Objective-C APIs, which is `unsafe` Rust. The bindin
 ## Decision
 
 Allow `unsafe` in exactly one crate, `crates/platform` (`filmcraft-platform`, layer L5), for one
-job: OS media FFI (hardware decoding, and hardware encoding through NVENC). Audio output, dialogs, menus
+job: OS media FFI (hardware decoding, hardware encoding through NVENC, and hardware optical flow
+through NVOFA). Audio output, dialogs, menus
 and other OS integration do not go in it.
 
 Containment rules:
@@ -66,6 +67,7 @@ remain in effect; implementation differences are not exceptions to those rules.
 | Windows | [`media_foundation::gpu`](../../crates/platform/src/media_foundation/gpu.rs), [`media_foundation::mft`](../../crates/platform/src/media_foundation/mft.rs) | COM, Media Foundation, D3D11 device setup and surface readback. |
 | Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
+| Windows / 64-bit Linux | [`nvof::session`](../../crates/platform/src/nvof/session.rs) | NVIDIA Optical Flow (NVOFA) and CUDA driver loading, session and buffer setup, pitched uploads / readback and `nvOFExecute`. |
 | Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
 | Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
 
@@ -73,10 +75,10 @@ The media allowances are on module declarations in
 [`lib.rs`](../../crates/platform/src/lib.rs) and the backend module files
 ([Media Foundation](../../crates/platform/src/media_foundation.rs),
 [NVENC](../../crates/platform/src/nvenc.rs),
-[NVDEC](../../crates/platform/src/nvdec.rs), [VA-API](../../crates/platform/src/vaapi.rs)).
+[NVDEC](../../crates/platform/src/nvdec.rs), [NVOF](../../crates/platform/src/nvof.rs), [VA-API](../../crates/platform/src/vaapi.rs)).
 They apply to the module's contents, rather than to individual blocks; the cursor allowance is
 on the Windows function itself. There is no crate-wide `allow(unsafe_code)`.
-`vaapi::ffi` and `nvdec::ffi` contain public declarations but do not carry an unsafe allowance.
+`vaapi::ffi`, `nvdec::ffi` and `nvof::ffi` contain declarations but do not carry an unsafe allowance.
 
 ### Callbacks into Rust and panic handling
 
@@ -243,3 +245,18 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum (2026-11-17): NVIDIA Optical Flow (NVOFA) on Windows and 64-bit Linux
+
+Clip ▸ Video Options ▸ Optical Flow Track computes dense motion vectors. NVIDIA GPUs from Turing on
+have a fixed-function optical-flow engine for that, so `nvof/` binds it the way `nvenc/` binds the
+encoder: `nvofapi64.dll` (System32 only) or `libnvidia-opticalflow.so.1` and the CUDA driver are
+loaded at run time, nothing is bundled, `nvof/ffi.rs` is transcribed from NVIDIA's BSD-3-Clause
+Optical Flow SDK 2.0 headers (`ATTRIBUTION.md`), and only `nvof::session` carries
+`#[allow(unsafe_code)]`. It sits behind the safe `filmcraft_render::flow::FlowSession` trait, which
+`register()` installs; the pure-Rust Lucas–Kanade pyramid in `crates/render/src/flow.rs` is the
+tested fallback, used without an NVIDIA GPU or driver, outside the engine's frame-size limits, and
+for the rest of a clip after any hardware failure. Optical flow is a media operation on decoded
+pictures, the same kind of work as decoding and encoding, so this stays within the crate's one job.
+Its own CUDA primary-context reference is retained per session and released after the session's
+buffers and handle.

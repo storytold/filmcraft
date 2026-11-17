@@ -549,3 +549,63 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }
+
+/// Largest frame side [`encode_prores_mov`] accepts.
+pub const PRORES_MOV_MAX_SIDE: u32 = 8192;
+
+/// Encode a stream of frames given as sRGB-encoded `R'G'B'` floats (`w * h * 3` values each, BT.709
+/// matrix) into a QuickTime ProRes `.mov` written to `out` as it goes: memory use does not grow
+/// with the number of frames. `profile` picks 4:2:2 (`Standard`, `Hq`, …) or 4:4:4 (`P4444`, …,
+/// no chroma subsampling, for data passes). Every frame is checked against `w × h`; an error from
+/// the iterator stops the encode and is returned. Returns `out` and the number of frames written.
+pub fn encode_prores_mov<W: std::io::Write + std::io::Seek>(
+    out: W,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    profile: craft_video::prores::Profile,
+    frames: impl IntoIterator<Item = Result<Vec<f32>>>,
+) -> Result<(W, u64)> {
+    use craft_video::prores::{ChromaFormat, Encoder, EncoderConfig, Frame};
+    use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, TrackConfig, WriteSample, WriterOptions};
+
+    if w == 0 || h == 0 || w > PRORES_MOV_MAX_SIDE || h > PRORES_MOV_MAX_SIDE {
+        return Err(ExportError::Unsupported(format!("invalid ProRes frame size {w}x{h}")));
+    }
+    let (Ok(timescale), Ok(sample_dur)) = (u32::try_from(rate.num), u32::try_from(rate.den)) else {
+        return Err(ExportError::Unsupported(format!("unsupported frame rate {}/{}", rate.num, rate.den)));
+    };
+    if timescale == 0 || sample_dur == 0 {
+        return Err(ExportError::Unsupported(format!("unsupported frame rate {}/{}", rate.num, rate.den)));
+    }
+    let (wu, hu) = (w as usize, h as usize);
+    let expected = wu.saturating_mul(hu).saturating_mul(3);
+    let chroma = profile.chroma();
+    let mut enc = Encoder::with_config(EncoderConfig::new(profile, w, h));
+    // the size check above keeps both sides within u16
+    let mut entry = SampleEntry::prores(FourCc(profile.fourcc()), w as u16, h as u16);
+    ColorSignal::default().apply_to(&mut entry, true);
+
+    let mut mux = Mp4Writer::new(out, WriterOptions::new(Brand::Mov)).map_err(|e| ExportError::Io(e.to_string()))?;
+    let vt = mux.add_track(TrackConfig::new(entry, timescale)).map_err(|e| ExportError::Io(e.to_string()))?;
+
+    let mut fr = Frame::new(w, h, chroma, 10, false).map_err(|e| ExportError::Encode(e.to_string()))?;
+    let matrix = Matrix::new(0.2126, 0.0722);
+    let mut written = 0u64;
+    for rgb in frames {
+        let rgb = rgb?;
+        if rgb.len() != expected {
+            return Err(ExportError::Encode(format!("frame {written} has {} values, expected {expected} for {w}x{h}", rgb.len())));
+        }
+        match chroma {
+            ChromaFormat::Yuv444 => to_yuv444_10(&[], Some(&rgb), wu, hu, matrix, Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: None }),
+            ChromaFormat::Yuv422 => rgbf_to_yuv422_10(&rgb, wu, hu, matrix, &mut fr.y, &mut fr.cb, &mut fr.cr),
+        }
+        let data = enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        mux.write_sample(vt, WriteSample { data: &data, duration: sample_dur, composition_offset: 0, is_sync: true })
+            .map_err(|e| ExportError::Io(e.to_string()))?;
+        written += 1;
+    }
+    let out = mux.finish().map_err(|e| ExportError::Io(e.to_string()))?;
+    Ok((out, written))
+}
