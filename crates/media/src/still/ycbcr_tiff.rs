@@ -59,7 +59,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         .and_then(Orientation::from_exif)
         .unwrap_or(Orientation::NoTransforms);
     let img = image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| bad("pixel buffer does not match the image size"))?;
-    let img = orient(img, orientation).map_err(|e| bad(e))?;
+    let img = orient(img, orientation).map_err(bad)?;
     Ok(Raster { width: img.width(), height: img.height(), rgba: img.into_raw(), has_alpha: false })
 }
 
