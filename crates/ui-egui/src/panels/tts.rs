@@ -269,7 +269,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         label(ui, &t, "Language");
         let lang_name = filmcraft_tts::LANGUAGES.iter().find(|(id, _)| *id == d.language).map_or(d.language.as_str(), |(_, n)| n);
         let cb = craft_ui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
-            for (id, name) in filmcraft_tts::LANGUAGES {
+            // only languages this build can speak (French has natural voices only)
+            for (id, name) in filmcraft_tts::LANGUAGES.iter().filter(|(id, _)| voices.iter().any(|v| v.language == *id && (v.engine != "neural" || available)))
+            {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
                     d.language = id.to_string();
                     // keep the voice only if it speaks the new language

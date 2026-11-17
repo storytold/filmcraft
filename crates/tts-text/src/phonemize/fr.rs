@@ -435,14 +435,26 @@ fn ph(s: &str) -> &'static str {
 
 /// Pronounce one word (letters, maybe with an elision apostrophe).
 fn word_pron(word: &str) -> Pron {
-    let lower = word.to_lowercase().replace("oeu", "œu").replace("oeil", "œil");
+    word_pron_within(word, 0)
+}
+
+/// Elisions a word can chain (`jusqu'à l'…` is two); past this, apostrophes are dropped, so a
+/// hostile `a'a'a'…` word neither recurses deeply nor re-reads its tail once per apostrophe.
+const MAX_ELISIONS: usize = 4;
+
+fn word_pron_within(word: &str, depth: usize) -> Pron {
+    let mut lower = word.to_lowercase().replace("oeu", "œu").replace("oeil", "œil");
     if lower.is_empty() {
         return Pron::default();
     }
-    // spelled letters (acronyms come from the normalizer one letter at a time)
+    if depth >= MAX_ELISIONS {
+        lower.retain(|c| c != '\'');
+    }
+    // spelled letters (acronyms come from the normalizer one letter at a time); an accented
+    // capital (À demain, État) is a word, not a letter name
     let mut chars = word.chars();
     if let (Some(c), None) = (chars.next(), chars.next())
-        && c.is_uppercase()
+        && c.is_ascii_uppercase()
     {
         return Pron { phones: phones_of(letter_name(c)), unstressed: false };
     }
@@ -452,13 +464,13 @@ fn word_pron(word: &str) -> Pron {
     // elision: l'homme, qu'il, jusqu'à
     if let Some((head, tail)) = lower.split_once('\'') {
         if let Some((_, said)) = ELISIONS.iter().find(|(h, _)| *h == head) {
-            let mut p = word_pron(tail);
+            let mut p = word_pron_within(tail, depth + 1);
             let mut phones = phones_of(said);
             phones.append(&mut p.phones);
             return Pron { phones, unstressed: p.unstressed };
         }
-        let mut p = word_pron(head);
-        p.phones.append(&mut word_pron(tail).phones);
+        let mut p = word_pron_within(head, depth + 1);
+        p.phones.append(&mut word_pron_within(tail, depth + 1).phones);
         return p;
     }
     let letters: Vec<char> = lower.chars().filter(|c| c.is_alphabetic()).collect();

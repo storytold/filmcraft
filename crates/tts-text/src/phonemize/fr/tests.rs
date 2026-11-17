@@ -98,6 +98,21 @@ fn liaisons() {
     assert_eq!(said("six enfants"), "sˈiz ɑ̃fˈɑ̃");
 }
 
+/// No liaison across kept punctuation; an accented capital is read as a word, not a letter
+/// name; a hostile word full of apostrophes is read without deep recursion.
+#[test]
+fn review_cases() {
+    assert_eq!(said("Chez nous, on mange."), "ʃˈe nu, ɔ̃ mˈɑ̃ʒ.");
+    assert_eq!(said("les amis"), "lez amˈi");
+    assert_eq!(said("À demain."), "a dəmˈɛ̃.");
+    assert_eq!(said("État"), "etˈa");
+    let hostile = "a'".repeat(200_000) + "a";
+    let r = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || said(&hostile).len()).unwrap().join();
+    assert!(r.is_ok_and(|n| n > 0), "a word of 200 000 apostrophes is read on a small stack");
+    assert_eq!(word("jusqu'à"), "ʒyska");
+    assert_eq!(word("aujourd'hui"), "oʒuʁdɥˈi");
+}
+
 /// French counting and the other number forms.
 #[test]
 fn numbers() {
