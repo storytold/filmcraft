@@ -22,6 +22,19 @@ fn set(s: &mut Session, key: &str, value: Value) {
     s.execute("prefs.set", json!({"key": key, "value": value})).unwrap_or_else(|e| panic!("{key}: {e}"));
 }
 
+/// Tamil is stored as `ta`, not a locale tag, and persists like the other interface languages.
+#[test]
+fn tamil_interface_language_is_stored_as_ta() {
+    let dir = tmp_dir("interface-language-tamil");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    for value in [json!("ta-IN"), json!("ta-LK"), json!("TA")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err());
+    }
+    set(&mut s, "general.interfaceLanguage", json!("ta"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "ta");
+}
+
 #[test]
 fn interface_language_persists_and_rejects_hostile_values() {
     let dir = tmp_dir("interface-language");

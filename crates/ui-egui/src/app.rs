@@ -208,9 +208,12 @@ impl FilmcraftApp {
             theme::install(ctx, &self.tokens);
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
-            // (likewise Chinese without a Chinese face, Korean without a Hangul one)
+            // (likewise Chinese without a Chinese face, Korean without a Hangul one, Tamil without a
+            // Tamil one; the Tamil font, like the Japanese one, is added back here)
             let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
+            let tamil_missing = self.ui.language == i18n::Language::Ta && !i18n::install_tamil_font(ctx);
             if japanese_missing
+                || tamil_missing
                 || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
             {
