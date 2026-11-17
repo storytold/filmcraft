@@ -202,6 +202,9 @@ struct SettledFrames {
     keys: Vec<FrameKey>,
     /// Keys were let go of unread (more than [`MAX_SETTLED`] waited).
     overflowed: bool,
+    /// A frame was announced while still in a cache (tests: the order of [`drop_provisional`]).
+    #[cfg(test)]
+    announced_cached: bool,
 }
 
 /// Most settled frames kept for the app to read.
@@ -896,10 +899,11 @@ impl FrameServer {
         if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
         {
-            // back on a frame shown unstabilised: its analyses are the ones wanted now
-            let keys = (prio == 0).then(|| self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned()).flatten();
-            if let Some(keys) = keys {
-                wanted_now(&self.shared, keys);
+            // back on a frame shown unstabilised: its analyses are the ones wanted now (none for
+            // a final one)
+            if prio == 0 && !prefetch && self.shared.live_analysis {
+                let keys = self.shared.provisional.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned();
+                wanted_now(&self.shared, &key, keys.unwrap_or_default());
             }
             hit();
             return;
@@ -1300,6 +1304,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let cancelled = job.cancel.load(Ordering::Relaxed);
     if !waiting.is_empty() && !cancelled && !loading {
         provisional(sh, job, waiting);
+    } else if sh.live_analysis && !cancelled && !loading && job.prio == 0 && !job.prefetch {
+        // the frame on screen is final: what the last one wanted isn't wanted now
+        wanted_now(sh, &job.key, Vec::new());
     }
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
     if job.prefetch {
@@ -1400,10 +1407,19 @@ fn provisional(sh: &Shared, job: &Job, keys: Vec<u64>) {
     drop_provisional(sh);
 }
 
-/// The frame on screen needs the analyses `keys` (it is a provisional one shown again).
-fn wanted_now(sh: &Shared, keys: Vec<u64>) {
+/// The frame on screen, `frame`, needs the analyses `keys` (a provisional one shown again; none
+/// for a final one). Only a frame of the view counts once the app shows one (its revision and
+/// sequence): the eyedropper's frames or another monitor's don't speak for the playhead.
+fn wanted_now(sh: &Shared, frame: &FrameKey, keys: Vec<u64>) {
     let mut a = sh.analyses.lock().unwrap_or_else(PoisonError::into_inner);
     if a.current == keys {
+        return;
+    }
+    let sequence = match frame.target {
+        Target::Sequence(s) | Target::SequencePlan(s, _) | Target::SequenceLive(s) => Some(s),
+        _ => None,
+    };
+    if a.background && !a.view.as_ref().is_some_and(|v| v.revision == frame.revision && v.sequence.is_some() && v.sequence == sequence) {
         return;
     }
     a.current = keys;
@@ -1452,7 +1468,17 @@ fn drop_provisional(sh: &Shared) -> bool {
 
 /// Tell the app the frames `keys` are rendered again with settled analyses.
 fn announce_settled(sh: &Shared, keys: Vec<FrameKey>) {
+    #[cfg(test)]
+    let cached = {
+        let done = sh.done.lock().unwrap_or_else(PoisonError::into_inner);
+        let plans = sh.plans.lock().unwrap_or_else(PoisonError::into_inner);
+        keys.iter().any(|k| done.map.contains_key(k) || plans.map.contains_key(k))
+    };
     let mut s = sh.settled_frames.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(test)]
+    {
+        s.announced_cached |= cached;
+    }
     s.number = s.number.wrapping_add(1);
     s.keys.extend(keys);
     // the app reads them every frame: a backlog means it didn't, and it redraws everything
@@ -2438,13 +2464,17 @@ mod tests {
         let frame = super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: 3, size: 100, revision: 1, draft: false };
         super::provisional(&b.server.shared, &job(frame, &b.p), vec![key]);
         b.server.shared.done.lock().unwrap().insert(frame, Arc::new(super::Rgba { w: 1, h: 1, px: vec![0; 4] }));
+        let plan = filmcraft_render::plan::FramePlan::Layers { width: 1, height: 1, layers: Vec::new() };
+        let prepared = filmcraft_gpu::prepare(&plan);
+        b.server.shared.plans.lock().unwrap().insert(frame, super::GpuPlan { plan, prepared });
         let (seen, none, _) = b.server.settled_frames(0);
         assert!(none.is_empty());
         b.server.shared.analyses.lock().unwrap().settled.insert(key);
         assert!(super::drop_provisional(&b.server.shared));
         let (seen2, keys, overflowed) = b.server.settled_frames(seen);
         assert_eq!((keys, overflowed), (vec![frame], false));
-        assert!(b.server.get(&frame).is_none(), "out of the cache by the time it is announced");
+        assert!(b.server.get(&frame).is_none() && b.server.get_plan(&frame).is_none(), "out of both caches");
+        assert!(!b.server.shared.settled_frames.lock().unwrap().announced_cached, "and out of them when it was announced");
         assert_eq!(b.server.settled_frames(seen2).1, Vec::<super::FrameKey>::new(), "once");
         // more than are kept for the app to read: it hears that some were let go of
         let many: Vec<super::FrameKey> = (0..super::MAX_SETTLED as i64 + 10).map(|f| super::FrameKey { frame: f, ..frame }).collect();
@@ -2476,5 +2506,40 @@ mod tests {
         assert!(a.hidden(0xAB), "all its clips hidden");
         assert!(a.foreground().is_empty());
         assert!(!a.hidden(0xCD), "a key no clip uses isn't hidden");
+    }
+
+    /// A final frame on screen releases what the frame before it wanted: the clip it left is a
+    /// background analysis again (it waits for quiet monitors and gives way), not the view's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_final_frame_releases_what_the_last_one_wanted() {
+        let _turn = one_at_a_time();
+        let b = background(&["s"], &[(0, 0, 0, 12), (0, 24, 40, 12)], None);
+        let (left, here) = (b.key(b.clips[0]), b.key(b.clips[1]));
+        let provider = b.session.media.provider(b.p.clone(), b.session.services.clone());
+        let clips = filmcraft_render::vfx::stabilizer_clips(&b.p, None);
+        filmcraft_render::vfx::analyse_stabilizer(&b.p, clips.iter().find(|c| c.key == here).unwrap(), &provider);
+        // the view, playing so nothing runs meanwhile; then a frame of the first clip shown unstabilised
+        let r = filmcraft_time::FrameRate::FPS_24;
+        b.server.set_view(&b.p, 1, Some(b.seqs[0]), r.tick_of(100), true);
+        let frame = |f: i64| super::FrameKey { target: Target::Sequence(b.seqs[0]), frame: f, size: 1000, revision: 1, draft: false };
+        b.server.shared.done.lock().unwrap().insert(frame(3), Arc::new(super::Rgba { w: 1, h: 1, px: vec![0; 4] }));
+        super::provisional(&b.server.shared, &job(frame(3), &b.p), vec![left]);
+        assert_eq!(b.server.shared.analyses.lock().unwrap().foreground(), vec![left]);
+        // the playhead on the second clip, analysed: its frame is final
+        super::run_job(&b.server.shared, &job(frame(30), &b.p), &b.server.pool, &b.server.services, &b.server.previews);
+        assert!(!b.server.is_provisional(&frame(30)));
+        assert!(b.server.shared.analyses.lock().unwrap().foreground().is_empty(), "the first clip's analysis is no longer the view's");
+        // back on the first clip's cached frame: wanted again; then on the final one: released
+        b.server.request(frame(3), r.tick_of(3), 1.0, &b.p, 0);
+        assert_eq!(b.server.shared.analyses.lock().unwrap().current, vec![left]);
+        b.server.request(frame(30), r.tick_of(30), 1.0, &b.p, 0);
+        assert!(b.server.shared.analyses.lock().unwrap().current.is_empty());
+        // an auxiliary frame (another revision) changes nothing
+        super::provisional(&b.server.shared, &job(frame(3), &b.p), vec![left]);
+        let aux = super::FrameKey { revision: 99, ..frame(30) };
+        b.server.shared.done.lock().unwrap().insert(aux, Arc::new(super::Rgba { w: 1, h: 1, px: vec![0; 4] }));
+        b.server.request(aux, r.tick_of(30), 1.0, &b.p, 0);
+        assert_eq!(b.server.shared.analyses.lock().unwrap().current, vec![left], "not the view's frame");
     }
 }
