@@ -206,10 +206,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   EXIF Orientation on DNG stills and on the export image
   overlay (`load_overlay` in `crates/export/src/pipeline.rs`); JPEG, PNG, WebP and other TIFF stills
   apply it since #1583, except a WebP or PNG whose EXIF chunk starts with an `Exif\0\0` prefix
-  (decoded unturned). Projects saved before #1583 keep the stored size of a portrait still: one
-  already placed in a sequence shows upright but scaled up by the photo's aspect ratio (4/3 for a
-  4:3 shot) and off-centre (turned twice if it was rotated by hand); reset the clip's Motion or
-  place it again.
+  (decoded unturned). Projects saved before #1583 kept the stored size of a portrait still, so
+  one already placed in a sequence showed upright but scaled up by the photo's aspect ratio
+  (4/3 for a 4:3 shot) and off-centre; opening such a project now swaps the stored size to the
+  oriented one and turns the placed clips' Motion anchor points with it (#4613). A still that
+  was rotated by hand back then is still turned twice; reset its Motion.
 - **Estimate:** 120–200 h (camera RAW alone 60–100 h, and some SDKs have licences we cannot use:
   clean-room from public specs only where specs exist). Docs: [codec-parity.md](codec-parity.md),
   [file-format-parity.md](file-format-parity.md).
