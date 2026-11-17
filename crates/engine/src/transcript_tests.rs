@@ -128,6 +128,25 @@ fn remove_fillers_pauses_and_create_captions() {
     q.check().unwrap();
 }
 
+/// Captions made from a French transcript are a French caption track (subtitle files and video
+/// platforms read the track's language); they used to be marked English whatever was spoken.
+#[test]
+fn captions_take_the_language_of_the_transcript() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    let mut t = (*s.project.transcripts[&item]).clone();
+    t.language = "fr".into();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": t})).unwrap();
+    s.execute("transcript.createCaptions", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].language, "fr");
+    // a language tag that is not one leaves the default
+    let mut t = (*s.project.transcripts[&item]).clone();
+    t.language = "fr\n<script>".into();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": t})).unwrap();
+    s.execute("transcript.createCaptions", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].language, "en");
+}
+
 #[test]
 fn set_delete_and_models() {
     let (mut s, item, _) = session();

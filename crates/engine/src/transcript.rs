@@ -405,6 +405,23 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
+/// The language most of `words` were recognised in (each transcript's `language`), when it is a
+/// plausible language tag ("fr", "pt-BR"); None otherwise.
+fn spoken_language(s: &Session, words: &[SeqWord]) -> Option<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for w in words {
+        let Some(l) = s.project.transcripts.get(&w.item).map(|t| t.language.as_str()) else { continue };
+        if l.is_empty() || l.len() > 16 || !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            continue;
+        }
+        match counts.iter_mut().find(|(k, _)| *k == l) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((l, 1)),
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(l, _)| l.to_string())
+}
+
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
     let d = CaptionRules::default();
@@ -419,10 +436,16 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
+    let language = spoken_language(s, &words);
     let n = blocks.len();
     let tid = s.edit_sequence("Create Captions", |q, ctx, st| {
         let tid = TrackId(ctx.alloc());
         let mut t = CaptionTrack::new(tid, name, format);
+        // the track says what language it is in (subtitle files and platforms read it), as the
+        // words were recognised; a new track is English otherwise
+        if let Some(l) = language {
+            t.language = l;
+        }
         t.captions = tx::blocks_to_captions(&blocks, ctx);
         q.caption_tracks.insert(0, t);
         st.caption_selection.clear();
