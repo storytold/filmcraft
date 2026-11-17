@@ -58,7 +58,7 @@ only). "Tested" names the evidence.
 | **OpenEXR** | read + write | stills and sequences: scan-line, none / RLE / ZIPS / ZIP / PXR24, half / float / uint, RGB(A) or Y, kept as linear float (#828); no PIZ, B44, DWA, tiled, multi-part or deep | sequences (half float, linear RGB / premultiplied RGBA; uncompressed, RLE, ZIPS or ZIP; #806, #874) | 70% |
 | **DPX** | read + write | yes: luma / RGB / RGBA, 8–16-bit, filled 10/12-bit, either byte order (#821); packed 10/12-bit, Y'CbCr 4:2:2 / 4:4:4 with or without alpha (#841); no RLE | sequences (10-bit RGB, BT.709; #779) | 90% |
 | Targa | read + write | yes: every image type, RLE, colour maps, 15–32-bit (#821) | sequences (24-bit, 32-bit with alpha; #779) | 95% |
-| HEIF / HEIC | read | no | — | 0% |
+| HEIF / HEIC | read | **yes** (stills: single and grid-tiled pictures, 8–16 bit, alpha, `irot` / `imir` / `clap`; via `craft-heif`, pure Rust) | — | 80% |
 | **Radiance HDR** | read | yes: RGBE, flat, old and new run-length scan lines, every axis order, kept as linear float (#1407); no XYZE, EXPOSURE / PRIMARIES lines ignored | — | 70% |
 | AI / EPS, ICO, PTL | read | no | — | 0% |
 
@@ -98,3 +98,4 @@ validation in Avid and Pro Tools, DVD / Blu-ray / DCP / broadcast MXF delivery.
 | 2026-10-21 | minor | PSD stills: 8/16-bit grayscale and RGB import of the flattened composite, merged transparency unblended from white (#2116) |
 | 2026-10-26 | minor | GIF exports preserve binary transparency when requested; synthetic decode tests cover alpha threshold and animation disposal (#3396); estimates unchanged |
 | 2026-11-09 | minor | Stills: uncompressed and PackBits YCbCr TIFF apply their Orientation tag; DNG not yet |
+| 2026-11-17 | minor | HEIF / HEIC stills: row changed from "read: no" to read via craft-heif (#4952); percentage estimated, dimension figure not re-measured |

@@ -516,3 +516,38 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
+
+/// A HEIF / HEIC photo starts with an `ftyp` box like an MP4. The MP4 byte and reader openers
+/// leave it alone, so the app's open paths (from bytes, and from a file reader) reach the still
+/// decoder instead of failing as a broken MP4.
+#[test]
+fn heif_photos_open_as_stills_not_as_mp4() {
+    use craft_heif::testdata::{Prop, Spec, build};
+    let ramp = |x: u32, y: u32| [(16 + x + y) as u16, 128, 128];
+    let mut spec = Spec::new(32, 24, &ramp);
+    spec.props.push(Prop::Nclx(1, 13, 1, true));
+    let bytes: Arc<[u8]> = build(&spec).into();
+    assert!(!sniff(&bytes));
+    assert!(opener("photo.heic", bytes.clone()).is_none());
+    let reader: filmcraft_media::SharedReader = Arc::new(filmcraft_media::reader::MemReader(bytes.clone()));
+    assert!(reader_opener("photo.heic", &bytes[..<[u8]>::len(&bytes).min(256)], &reader).is_none());
+    let check = |src: filmcraft_media::SharedSource| {
+        let info = src.info();
+        assert_eq!(info.kind, filmcraft_media::MediaKind::Still);
+        let v = info.video.as_ref().expect("a picture");
+        assert_eq!((v.width, v.height), (32, 24));
+    };
+    check(crate::open_bytes("photo.heic", bytes.clone()).expect("opens from bytes"));
+    check(filmcraft_media::reader::open_reader("photo.heic", reader, &crate::reader_openers(), &crate::openers()).expect("opens from a reader"));
+    // an image sequence (major brand msf1, still brands compatible) with a valid primary picture
+    // is not opened as a still
+    let mut seq = bytes.to_vec();
+    seq[8..12].copy_from_slice(b"msf1");
+    assert!(!filmcraft_media::still::heif::sniff(&seq));
+    let seq: Arc<[u8]> = seq.into();
+    if let Ok(src) = crate::open_bytes("burst.heics", seq) {
+        assert_ne!(src.info().kind, filmcraft_media::MediaKind::Still, "an image sequence is not a still");
+    }
+    // a real MP4 header is still an MP4
+    assert!(sniff(b"   ftypisom    isommp41"));
+}
