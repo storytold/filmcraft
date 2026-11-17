@@ -1,177 +1,93 @@
-//! Uncompressed and PackBits YCbCr TIFFs (TIFF 6.0 §21), as ffmpeg writes from YUV sources. The
-//! image crate reads YCbCr only inside JPEG compression, so these are decoded here: 8-bit chunky
-//! data units of any subsampling (1, 2 or 4 each way), converted to RGB with the file's
-//! YCbCrCoefficients and ReferenceBlackWhite (§20), chroma repeated across each data unit.
-//!
-//! Every number comes from the file: sizes, strip offsets and counts are checked before use, the
-//! picture is capped at [`MAX_PIXELS`], and PackBits output stops at the bytes the image needs.
-
-use filmcraft_dng::tiff::{Tiff, tags};
-
+//! YCbCr TIFF still adapter. Codec/colour conversion lives in craft-tiff; FilmCraft
+//! retains its classic-TIFF compatibility and upright-image policy.
 use super::Raster;
 use crate::{MediaError, Result};
+use craft_tiff::classic::{Tiff, Type, tags};
+use craft_tiff::{Entry, Ifd, Value};
+use craft_tiff_ycbcr as craft_tiff;
+use image::metadata::Orientation;
 
-/// Largest picture decoded (1 GiB of RGBA), as for animated images.
 const MAX_PIXELS: u64 = 1 << 28;
 
-const PHOTOMETRIC_YCBCR: u64 = 6;
-const COMPRESSION_NONE: u64 = 1;
-const COMPRESSION_PACKBITS: u64 = 32773;
-const YCBCR_COEFFICIENTS: u16 = 529;
-const YCBCR_SUBSAMPLING: u16 = 530;
-const REFERENCE_BLACK_WHITE: u16 = 532;
-
-/// Whether `bytes` is a TIFF whose first image is uncompressed or PackBits YCbCr (the ones this
-/// module decodes instead of the image crate).
+/// Recognize the classic uncompressed/PackBits YCbCr route.
 pub fn sniff(bytes: &[u8]) -> bool {
     let Ok((t, first)) = Tiff::new(bytes) else { return false };
     let Ok((ifd, _)) = t.read_ifd(first, 0) else { return false };
     let num = |tag| ifd.get(tag).and_then(|e| t.uint(e).ok());
-    num(tags::PHOTOMETRIC) == Some(PHOTOMETRIC_YCBCR) && matches!(num(tags::COMPRESSION).unwrap_or(COMPRESSION_NONE), COMPRESSION_NONE | COMPRESSION_PACKBITS)
+    num(tags::PHOTOMETRIC) == Some(6) && matches!(num(tags::COMPRESSION).unwrap_or(1), 1 | 32773)
 }
 
-/// Decode the first image of a YCbCr TIFF (see [`sniff`]) to RGBA.
+/// Decode with the shared codec and retain the app's colour and orientation policy.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     let bad = |what: &str| MediaError::Decode(format!("{name}: YCbCr TIFF: {what}"));
-    let unsupported = |what: &str| MediaError::Unsupported(format!("{name}: YCbCr TIFF with {what}"));
     let (t, first) = Tiff::new(bytes).map_err(|_| bad("not a TIFF"))?;
     let (ifd, _) = t.read_ifd(first, 0).map_err(|_| bad("unreadable image directory"))?;
-    let uints = |tag: u16| -> Result<Option<Vec<u64>>> { ifd.get(tag).map(|e| t.uints(e).map_err(|_| bad("unreadable field"))).transpose() };
-    let one = |tag: u16| -> Result<Option<u64>> { Ok(uints(tag)?.and_then(|v| v.first().copied())) };
-
-    let width = one(tags::IMAGE_WIDTH)?.ok_or_else(|| bad("no ImageWidth"))?;
-    let height = one(tags::IMAGE_LENGTH)?.ok_or_else(|| bad("no ImageLength"))?;
-    if width == 0 || height == 0 {
-        return Err(bad("empty image"));
-    }
-    if width.saturating_mul(height) > MAX_PIXELS {
-        return Err(unsupported("more than 268 million pixels"));
-    }
-    if one(tags::SAMPLES_PER_PIXEL)?.unwrap_or(1) != 3 {
-        return Err(unsupported("other than three samples per pixel"));
-    }
-    if uints(tags::BITS_PER_SAMPLE)?.unwrap_or_else(|| vec![1]).iter().any(|&b| b != 8) {
-        return Err(unsupported("other than 8 bits per sample"));
-    }
-    if one(tags::PLANAR_CONFIGURATION)?.unwrap_or(1) != 1 {
-        return Err(unsupported("separate planes"));
+    // Keep the existing lazy first-directory policy: unrelated or damaged metadata is
+    // not traversed, and only the unsigned/colour fields the codec needs are decoded.
+    let mut image = Ifd::default();
+    for tag in [256, 257, 258, 259, 262, 273, 277, 279, 284, 530] {
+        if let Some(e) = ifd.get(tag) {
+            image.entries.push(Entry { tag, value: Value::Long8(t.uints(e).map_err(|_| bad("unreadable field"))?), offset: 0 });
+        }
     }
     if ifd.get(tags::TILE_OFFSETS).is_some() {
-        return Err(unsupported("tiles"));
+        image.entries.push(Entry { tag: tags::TILE_OFFSETS, value: Value::Long(vec![]), offset: 0 });
     }
-    let compression = one(tags::COMPRESSION)?.unwrap_or(COMPRESSION_NONE);
-    let sub = uints(YCBCR_SUBSAMPLING)?.unwrap_or_else(|| vec![2, 2]);
-    let (sh, sv) = match sub.as_slice() {
-        [h, v, ..] if [1, 2, 4].contains(h) && [1, 2, 4].contains(v) => (*h, *v),
-        _ => return Err(bad("invalid YCbCrSubSampling")),
-    };
-    // §21: the data units cover the image rounded up to whole units.
-    let (units_x, units_y) = (width.div_ceil(sh), height.div_ceil(sv));
-    let unit_len = sh * sv + 2;
-    let need = usize::try_from(units_x.saturating_mul(units_y).saturating_mul(unit_len)).map_err(|_| bad("too large"))?;
-
-    if !file_can_hold(bytes.len(), compression != COMPRESSION_NONE, need) {
-        return Err(bad("image data shorter than the image"));
-    }
-    let offsets = uints(tags::STRIP_OFFSETS)?.ok_or_else(|| bad("no StripOffsets"))?;
-    let counts = uints(tags::STRIP_BYTE_COUNTS)?.ok_or_else(|| bad("no StripByteCounts"))?;
-    // fallible: `need` can be hundreds of MiB for a small PackBits file, and a refused reservation must be an error, not an abort
-    let mut units: Vec<u8> = Vec::new();
-    units.try_reserve_exact(need).map_err(|_| bad("image too large to decode"))?;
-    let mut strip_bytes = 0usize;
-    for (&off, &len) in offsets.iter().zip(&counts) {
-        if units.len() >= need {
-            break;
-        }
-        let strip = usize::try_from(off)
-            .ok()
-            .zip(usize::try_from(len).ok())
-            .and_then(|(o, l)| bytes.get(o..o.checked_add(l)?))
-            .ok_or_else(|| bad("strip outside the file"))?;
-        // strips of one image do not overlap, so together they cannot exceed the file
-        strip_bytes = strip_bytes.saturating_add(strip.len());
-        if strip_bytes > bytes.len() {
-            return Err(bad("strips overlap"));
-        }
-        match compression {
-            COMPRESSION_NONE => units.extend_from_slice(strip.get(..need - units.len()).unwrap_or(strip)),
-            _ => unpackbits(strip, &mut units, need),
+    for tag in [529, 532] {
+        if let Some(e) = ifd.get(tag) {
+            image.entries.push(Entry { tag, value: Value::Double(t.floats(e).map_err(|_| bad("unreadable colour field"))?), offset: 0 });
         }
     }
-    if units.len() < need {
-        return Err(bad("image data shorter than the image"));
-    }
+    image.entries.sort_by_key(|e| e.tag);
+    let width = image.u32(tags::IMAGE_WIDTH).ok_or_else(|| bad("no ImageWidth"))?;
+    let height = image.u32(tags::IMAGE_LENGTH).ok_or_else(|| bad("no ImageLength"))?;
+    let rgba = craft_tiff::ycbcr::decode_rgba8(bytes, &image, MAX_PIXELS, craft_tiff::ycbcr::ColorPolicy::TiffEquation).map_err(|e| match e {
+        craft_tiff::TiffError::Limit("pixel count") => MediaError::Unsupported(format!("{name}: YCbCr TIFF with more than 268 million pixels")),
+        craft_tiff::TiffError::Invalid(ref why) if why.starts_with("unsupported YCbCr image with ") => {
+            let detail = why.strip_prefix("unsupported YCbCr image with ").unwrap_or(why);
+            MediaError::Unsupported(format!("{name}: YCbCr TIFF with {detail}"))
+        }
+        other => bad(&other.to_string()),
+    })?;
+    // Preserve #4608: only a single SHORT Orientation is meaningful. Damaged values
+    // remain unread, rather than allocating according to their declared count.
+    let orientation = ifd
+        .get(274)
+        .filter(|e| e.ty == Type::Short && e.count == 1)
+        .and_then(|e| t.uint(e).ok())
+        .and_then(|v| u8::try_from(v).ok())
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms);
+    let img = image::RgbaImage::from_raw(width, height, rgba).ok_or_else(|| bad("pixel buffer does not match the image size"))?;
+    let img = orient(img, orientation).map_err(bad)?;
+    Ok(Raster { width: img.width(), height: img.height(), rgba: img.into_raw(), has_alpha: false })
+}
 
-    let coeffs = match ifd.get(YCBCR_COEFFICIENTS) {
-        Some(e) => t.floats(e).map_err(|_| bad("unreadable YCbCrCoefficients"))?,
-        None => vec![0.299, 0.587, 0.114],
-    };
-    let [lr, lg, lb] = coeffs.get(..3).and_then(|c| <[f64; 3]>::try_from(c).ok()).ok_or_else(|| bad("invalid YCbCrCoefficients"))?;
-    if lg.abs() < 1e-6 {
-        return Err(bad("invalid YCbCrCoefficients"));
-    }
-    let rbw = match ifd.get(REFERENCE_BLACK_WHITE) {
-        Some(e) => t.floats(e).map_err(|_| bad("unreadable ReferenceBlackWhite"))?,
-        None => vec![0.0, 255.0, 128.0, 255.0, 128.0, 255.0],
-    };
-    let [yb, yw, cbb, cbw, crb, crw] = rbw.get(..6).and_then(|c| <[f64; 6]>::try_from(c).ok()).ok_or_else(|| bad("invalid ReferenceBlackWhite"))?;
-    if (yw - yb).abs() < 1e-6 || (cbw - cbb).abs() < 1e-6 || (crw - crb).abs() < 1e-6 {
-        return Err(bad("invalid ReferenceBlackWhite"));
-    }
-    // §20: luma to 0–255, chroma to ±127 about its reference black; §21: back to R'G'B'.
-    let to_rgb = |y: u8, cb: u8, cr: u8| -> [u8; 3] {
-        let y = (f64::from(y) - yb) * 255.0 / (yw - yb);
-        let cb = (f64::from(cb) - cbb) * 127.0 / (cbw - cbb);
-        let cr = (f64::from(cr) - crb) * 127.0 / (crw - crb);
-        let r = cr * (2.0 - 2.0 * lr) + y;
-        let b = cb * (2.0 - 2.0 * lb) + y;
-        let g = (y - lb * b - lr * r) / lg;
-        [r, g, b].map(|v| v.round().clamp(0.0, 255.0) as u8)
-    };
-
-    let (w, h) = (width as usize, height as usize);
-    let (sh, sv, units_x) = (sh as usize, sv as usize, units_x as usize);
-    let mut rgba = vec![255u8; w * h * 4];
-    for (i, unit) in units.chunks_exact(sh * sv + 2).take(need / (sh * sv + 2)).enumerate() {
-        let (ux, uy) = (i % units_x, i / units_x);
-        let (cb, cr) = (unit[sh * sv], unit[sh * sv + 1]);
-        for (k, &y) in unit[..sh * sv].iter().enumerate() {
-            let (x, row) = (ux * sh + k % sh, uy * sv + k / sh);
-            if x < w && row < h {
-                let at = (row * w + x) * 4;
-                rgba[at..at + 3].copy_from_slice(&to_rgb(y, cb, cr));
+// Unlike DynamicImage::apply_orientation, the copying rotations reserve fallibly.
+fn orient(mut img: image::RgbaImage, orientation: Orientation) -> std::result::Result<image::RgbaImage, &'static str> {
+    use image::imageops;
+    match orientation {
+        Orientation::NoTransforms => {}
+        Orientation::Rotate180 => imageops::rotate180_in_place(&mut img),
+        Orientation::FlipHorizontal => imageops::flip_horizontal_in_place(&mut img),
+        Orientation::FlipVertical => imageops::flip_vertical_in_place(&mut img),
+        Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH => {
+            let mut storage = Vec::new();
+            storage.try_reserve_exact(img.as_raw().len()).map_err(|_| "image too large to orient")?;
+            storage.resize(img.as_raw().len(), 0);
+            let mut dst = image::RgbaImage::from_raw(img.height(), img.width(), storage).ok_or("invalid rotated image size")?;
+            if matches!(orientation, Orientation::Rotate90 | Orientation::Rotate90FlipH) {
+                imageops::rotate90_in(&img, &mut dst).map_err(|_| "invalid rotated image size")?;
+            } else {
+                imageops::rotate270_in(&img, &mut dst).map_err(|_| "invalid rotated image size")?;
             }
+            if matches!(orientation, Orientation::Rotate90FlipH | Orientation::Rotate270FlipH) {
+                imageops::flip_horizontal_in_place(&mut dst);
+            }
+            img = dst;
         }
     }
-    Ok(Raster { width: width as u32, height: height as u32, rgba, has_alpha: false })
-}
-
-/// Whether a file of `file_len` bytes can hold `need` bytes of data units: uncompressed they are
-/// the file's bytes, PackBits expands at most 64 to 1 (a two-byte run of 128).
-fn file_can_hold(file_len: usize, packbits: bool, need: usize) -> bool {
-    need <= file_len.saturating_mul(if packbits { 64 } else { 1 })
-}
-
-/// PackBits (TIFF 6.0 §9) from `src` appended to `out`, stopping at `limit` bytes of output or at
-/// a run that the data ends inside.
-fn unpackbits(src: &[u8], out: &mut Vec<u8>, limit: usize) {
-    let mut p = 0;
-    while out.len() < limit {
-        let Some(&n) = src.get(p) else { return };
-        let n = n as i8;
-        p += 1;
-        if n >= 0 {
-            let len = n as usize + 1;
-            let Some(lit) = src.get(p..p + len) else { return };
-            out.extend_from_slice(&lit[..len.min(limit - out.len())]);
-            p += len;
-        } else if n != -128 {
-            let Some(&b) = src.get(p) else { return };
-            let len = (1 - n as isize) as usize;
-            out.extend(std::iter::repeat_n(b, len.min(limit - out.len())));
-            p += 1;
-        }
-    }
+    Ok(img)
 }
 
 #[cfg(test)]
@@ -179,21 +95,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_small_file_cannot_claim_a_large_image() {
-        assert!(file_can_hold(100, false, 100));
-        assert!(!file_can_hold(100, false, 101));
-        assert!(file_can_hold(100, true, 6400));
-        assert!(!file_can_hold(100, true, 6401));
-    }
-
-    #[test]
-    fn packbits_runs_literals_and_noops() {
-        let mut out = Vec::new();
-        // literal 2, a no-op, a run of 3, then a literal cut short by the end of the data
-        unpackbits(&[1, 10, 11, 0x80, 0xFE, 7, 4, 1], &mut out, 100);
-        assert_eq!(out, [10, 11, 7, 7, 7]);
-        let mut capped = Vec::new();
-        unpackbits(&[0xFE, 7, 0xFE, 8], &mut capped, 4);
-        assert_eq!(capped, [7, 7, 7, 8]);
+    fn fallible_orientation_matches_image_for_all_eight_values() {
+        let pixels: Vec<u8> = (0..24).collect();
+        let source = image::RgbaImage::from_raw(3, 2, pixels).unwrap();
+        for value in 1..=8 {
+            let orientation = Orientation::from_exif(value).unwrap();
+            let mut expected = image::DynamicImage::ImageRgba8(source.clone());
+            expected.apply_orientation(orientation);
+            let got = orient(source.clone(), orientation).unwrap();
+            assert_eq!(got, expected.into_rgba8(), "orientation {value}");
+        }
     }
 }
