@@ -28,8 +28,9 @@ pub fn sniff(b: &[u8]) -> bool {
     let brands = b.get(8..end).unwrap_or(&[]);
     // major brand, then (after the minor version) the compatible brands, four bytes each
     let major = brands.get(..4).unwrap_or(&[]);
-    // AVIF (major brand avif / avis) is not ours, even when it lists mif1 as compatible
-    if major == b"avif" || major == b"avis" {
+    // AVIF (major brand avif / avis) and image sequences (msf1, hevc / avcs) are not ours, even
+    // when they list mif1 or heic as compatible brands
+    if matches!(major, b"avif" | b"avis" | b"msf1" | b"hevc" | b"hevx" | b"avcs") {
         return false;
     }
     let mut found = BRANDS.iter().any(|x| &x[..] == major);
@@ -203,6 +204,8 @@ mod tests {
         }
         // an MP4 and an AVIF are not HEIF stills (also an AVIF whose major brand alone says so)
         assert!(!sniff(b"\0\0\0\x18ftypavif\0\0\0\0mif1miaf"));
+        // an image sequence that lists the still brands is not a still either
+        assert!(!sniff(b"\0\0\0\x1cftypmsf1\0\0\0\0mif1heicmsf1"));
         assert!(!sniff(b"\0\0\0\x18ftypisom\0\0\0\0isommp41"));
         assert!(!sniff(b"\0\0\0\x1cftypavif\0\0\0\0mif1avifmiaf"));
         assert!(!sniff(b"\0\0\0\x18ftypmif1\0\0\0\0mif1avif"));

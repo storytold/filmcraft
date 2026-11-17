@@ -539,6 +539,15 @@ fn heif_photos_open_as_stills_not_as_mp4() {
     };
     check(crate::open_bytes("photo.heic", bytes.clone()).expect("opens from bytes"));
     check(filmcraft_media::reader::open_reader("photo.heic", reader, &crate::reader_openers(), &crate::openers()).expect("opens from a reader"));
+    // an image sequence (major brand msf1, still brands compatible) with a valid primary picture
+    // is not opened as a still
+    let mut seq = bytes.to_vec();
+    seq[8..12].copy_from_slice(b"msf1");
+    assert!(!filmcraft_media::still::heif::sniff(&seq));
+    let seq: Arc<[u8]> = seq.into();
+    if let Ok(src) = crate::open_bytes("burst.heics", seq) {
+        assert_ne!(src.info().kind, filmcraft_media::MediaKind::Still, "an image sequence is not a still");
+    }
     // a real MP4 header is still an MP4
     assert!(sniff(b"   ftypisom    isommp41"));
 }
