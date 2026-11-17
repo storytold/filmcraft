@@ -4,8 +4,8 @@
 //! pointing to its `MasterClip`. A subclip's master clip has a media source whose `Content` holds
 //! `StartBoundary`/`EndBoundary` in media ticks. Original work, MIT OR Apache-2.0.
 use super::markers::MasterMarkers;
+use super::xml::{child, child_text};
 use super::{ProjectEntry, SourceBin, SubclipRange, SyntheticMedia, error, generator, media_path, reference, referred, spend, synthetic_code, warning};
-use crate::xml::{child, child_text};
 use crate::{Report, Result};
 use filmcraft_time::Tick;
 use roxmltree::{Node, NodeId};

@@ -2,8 +2,8 @@
 //! Existing PR #1694 informed matching effects to FilmCraft's registry, but its
 //! optional-control-type/name matching cannot map these files. Stable IDs avoid
 //! duplicate labels and work when ParameterControlType is omitted. Original work.
+use super::xml::child_text;
 use super::{error, referred, spend, static_parameter_value, value, warning};
-use crate::xml::child_text;
 use crate::{Report, Result};
 use filmcraft_project::{EffectInstance, Keyframe, Param, ParamKind, ParamValue, find_effect};
 use filmcraft_time::Tick;

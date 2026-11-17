@@ -731,6 +731,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: import,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: HASH_COMMAND,
@@ -741,6 +742,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: hash_media,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

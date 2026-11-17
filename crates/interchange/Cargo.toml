@@ -25,8 +25,5 @@ thiserror = { workspace = true }
 roxmltree = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 base64 = "0.22"
-
-[dev-dependencies]
-roxmltree = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }

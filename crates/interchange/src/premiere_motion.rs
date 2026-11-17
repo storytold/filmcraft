@@ -1,7 +1,7 @@
 //! Bounded native Motion animation controls, observed in contributor-owned XML.
 //! Exact source-time control points; spatial/temporal easing remains approximate.
+use super::xml::child_text;
 use super::{error, static_parameter_value, warning};
-use crate::xml::child_text;
 use crate::{Report, Result};
 use filmcraft_geom::Vec2;
 use filmcraft_project::{Interpolation, Keyframe, Param, ParamValue};

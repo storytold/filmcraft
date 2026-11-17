@@ -7,7 +7,9 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus reliable Premiere `.prproj` interchange ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (Premiere import: bins and markers available; ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+
+> **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -175,6 +177,9 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 | Date | Change | Summary |
 |---|---|---|
 | 2026-11-08 | minor | Upcoming #2: Premiere import now covers bins and markers; remaining gaps restated. |
+| 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
+| 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
+| 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
 | 2026-10-17 | minor | Bounded Premiere import available; keep alpha stage and historical readiness estimates, with fidelity/bin/marker gaps explicit. |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |

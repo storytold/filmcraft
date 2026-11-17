@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-15 · **Change:** minor (Premiere import: web-link marker URLs available; bins and markers available; remaining gaps restated; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-15 · **Change:** minor (Premiere import: web-link marker URLs available; bins and markers available; remaining gaps restated; G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -367,5 +367,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-17 | minor | G2: bounded native Premiere import with source provenance; document remaining fidelity/bin/export gaps. Readiness scores and effort totals not re-measured. |
+| 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
+| 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
+| 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-08 | minor | G2: bins and markers now import; remaining gaps are smart bins, marker URLs, effect fidelity, reverse/time-remapped clips and export. Readiness scores and effort totals not re-measured. |
 | 2026-11-15 | minor | G2: Premiere web-link marker URLs now import; removed from the missing list. Readiness scores and effort totals not re-measured. |
+| 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
