@@ -702,6 +702,96 @@ impl FlowEstimator {
     }
 }
 
+/// Draws optical-flow overlay frames on a GPU: the counterpart of [`encode_flow_viz_cpu`]
+/// ([`render_flow_viz`] then [`image_to_encoded_rgb_f32`] in one step), registered by the app from
+/// `filmcraft-gpu`.
+pub trait FlowVizRenderer: Send {
+    /// Backend name for messages (e.g. `"GPU (NVIDIA GeForce …)"`).
+    fn backend(&self) -> &str;
+
+    /// The encoded `R'G'B'` floats (3 per pixel, `curr.w × curr.h`) of `field` drawn in `mode`.
+    fn encode(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> Result<Vec<f32>, String>;
+}
+
+/// Factory registered by the app to open a [`FlowVizRenderer`].
+pub type FlowVizFactory = fn() -> Result<Box<dyn FlowVizRenderer>, String>;
+
+fn viz_factory_slot() -> &'static RwLock<Option<FlowVizFactory>> {
+    static SLOT: OnceLock<RwLock<Option<FlowVizFactory>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Register the GPU overlay drawing factory (the app calls this at startup with `filmcraft-gpu`'s).
+pub fn register_flow_viz(factory: FlowVizFactory) {
+    *viz_factory_slot().write().unwrap_or_else(PoisonError::into_inner) = Some(factory);
+}
+
+/// Name [`FlowVizEncoder::backend`] reports when the CPU draws the overlay.
+pub const CPU_VIZ_BACKEND: &str = "CPU";
+
+/// The encoded `R'G'B'` floats of an overlay frame drawn on the CPU: the reference the GPU path
+/// is tested against.
+pub fn encode_flow_viz_cpu(curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> Vec<f32> {
+    image_to_encoded_rgb_f32(&render_flow_viz(curr, field, mode, max_motion_px))
+}
+
+/// Draws overlay frames on the registered GPU renderer and falls back to [`encode_flow_viz_cpu`]
+/// when there is none, it cannot open, or it fails on a frame (that frame and every later one are
+/// then drawn on the CPU).
+pub struct FlowVizEncoder {
+    gpu: Option<Box<dyn FlowVizRenderer>>,
+    /// Why a registered GPU renderer is not (or no longer) used.
+    fallback_reason: Option<String>,
+}
+
+impl FlowVizEncoder {
+    /// Open the registered GPU renderer, if there is one.
+    pub fn new() -> Self {
+        let factory = *viz_factory_slot().read().unwrap_or_else(PoisonError::into_inner);
+        let (gpu, fallback_reason) = match factory.map(|f| f()) {
+            None => (None, None),
+            Some(Ok(r)) => (Some(r), None),
+            Some(Err(e)) => (None, Some(e)),
+        };
+        Self { gpu, fallback_reason }
+    }
+
+    /// Whether frames are drawn on the GPU.
+    pub fn is_gpu(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    /// The active backend's name ([`CPU_VIZ_BACKEND`] on the CPU).
+    pub fn backend(&self) -> String {
+        self.gpu.as_ref().map_or_else(|| CPU_VIZ_BACKEND.to_string(), |g| g.backend().to_string())
+    }
+
+    /// Why a registered GPU renderer is not used, if it is not.
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.fallback_reason.as_deref()
+    }
+
+    /// The encoded `R'G'B'` floats of one overlay frame, and whether the GPU drew it.
+    pub fn encode(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> (Vec<f32>, bool) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            let want = curr.w.saturating_mul(curr.h).saturating_mul(3);
+            match gpu.encode(curr, field, mode, max_motion_px) {
+                Ok(v) if v.len() == want => return (v, true),
+                Ok(v) => self.fallback_reason = Some(format!("{} returned {} values for a {}x{} frame", gpu.backend(), v.len(), curr.w, curr.h)),
+                Err(why) => self.fallback_reason = Some(format!("{} failed: {why}", gpu.backend())),
+            }
+            self.gpu = None;
+        }
+        (encode_flow_viz_cpu(curr, field, mode, max_motion_px), false)
+    }
+}
+
+impl Default for FlowVizEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Visual representation mode for an optical-flow overlay track.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1125,5 +1215,66 @@ mod tests {
         let glow = render_flow_viz(&b, &move_field, FlowVizMode::KineticGlow, 16.0);
         let gp = glow.get(48, 32);
         assert!(gp[0] + gp[1] + gp[2] > 0.02, "kinetic glow should illuminate moving region: {gp:?}");
+    }
+
+    /// A GPU overlay renderer that answers with `FAKE_VIZ_REPLY` (or fails when it is empty) and
+    /// counts its calls.
+    struct FakeViz;
+    static FAKE_VIZ_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static FAKE_VIZ_REPLY: std::sync::Mutex<Option<Vec<f32>>> = std::sync::Mutex::new(None);
+
+    impl FlowVizRenderer for FakeViz {
+        fn backend(&self) -> &str {
+            "fake GPU"
+        }
+
+        fn encode(&mut self, _: &Image, _: &FlowField, _: FlowVizMode, _: f32) -> Result<Vec<f32>, String> {
+            FAKE_VIZ_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            FAKE_VIZ_REPLY.lock().unwrap().clone().ok_or_else(|| "device lost".to_string())
+        }
+    }
+
+    /// One test for every case: the factory slot is global to this test binary.
+    #[test]
+    fn overlay_drawing_uses_the_gpu_and_falls_back_to_the_cpu() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (img, field) =
+            (texture(12, 8, 0.0, 0.0), FlowField { w: 3, h: 2, frame_w: 12, frame_h: 8, uv: vec![[3.0, -1.0]; 6], cost: vec![20; 6], hardware: false });
+        let cpu = encode_flow_viz_cpu(&img, &field, FlowVizMode::HsvWheel, 16.0);
+
+        // nothing registered: the CPU, with no reason to report
+        let mut none = FlowVizEncoder::new();
+        assert!(!none.is_gpu() && none.fallback_reason().is_none());
+        assert_eq!(none.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu.clone(), false));
+
+        register_flow_viz(|| Ok(Box::new(FakeViz)));
+        let gpu_answer = vec![0.25f32; 12 * 8 * 3];
+        *FAKE_VIZ_REPLY.lock().unwrap() = Some(gpu_answer.clone());
+        let mut enc = FlowVizEncoder::new();
+        assert!(enc.is_gpu());
+        assert_eq!(enc.backend(), "fake GPU");
+        assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (gpu_answer, true));
+
+        // a reply of the wrong size is not passed on: the CPU draws that frame and the rest
+        *FAKE_VIZ_REPLY.lock().unwrap() = Some(vec![0.0; 5]);
+        assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu.clone(), false));
+        assert!(enc.fallback_reason().is_some_and(|r| r.contains("5 values")), "{:?}", enc.fallback_reason());
+        let calls = FAKE_VIZ_CALLS.load(SeqCst);
+        assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu.clone(), false));
+        assert_eq!(FAKE_VIZ_CALLS.load(SeqCst), calls, "a failed GPU renderer is not asked again");
+        assert_eq!(enc.backend(), CPU_VIZ_BACKEND);
+
+        // a GPU error: the same
+        *FAKE_VIZ_REPLY.lock().unwrap() = None;
+        let mut enc = FlowVizEncoder::new();
+        assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu.clone(), false));
+        assert!(enc.fallback_reason().is_some_and(|r| r.contains("device lost")));
+
+        // a GPU that cannot open
+        register_flow_viz(|| Err("no usable GPU".into()));
+        let mut enc = FlowVizEncoder::new();
+        assert!(!enc.is_gpu());
+        assert_eq!(enc.fallback_reason(), Some("no usable GPU"));
+        assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu, false));
     }
 }

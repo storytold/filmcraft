@@ -5,8 +5,10 @@
 //! (with progress and Cancel in the status bar; `wait: true` runs it in place, as on hosts without
 //! threads). Each selected video clip is evaluated frame by frame at the sequence's frame rate through
 //! [`filmcraft_render::flow::FlowEstimator`] (NVIDIA's hardware NVOFA engine when
-//! `filmcraft-platform` registered it, otherwise the pure-Rust CPU Lucas–Kanade pyramid) and
-//! streamed into a QuickTime ProRes `.mov` on disk: ProRes 422 for the visual looks, ProRes 4444
+//! `filmcraft-platform` registered it, otherwise the pure-Rust CPU Lucas–Kanade pyramid), drawn
+//! and colour-encoded through [`filmcraft_render::flow::FlowVizEncoder`] (a WGSL compute pass when
+//! the app registered `filmcraft-gpu`'s, otherwise the CPU) and streamed into a QuickTime ProRes
+//! `.mov` on disk: ProRes 422 for the visual looks, ProRes 4444
 //! (no chroma subsampling) for the Motion Vectors data pass. Memory use does not grow with the
 //! clip's length.
 //!
@@ -22,7 +24,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_project::{ClipId, ItemId, ParamValue, Project, TrackId, TrackKind};
-use filmcraft_render::flow::{CPU_FLOW_BACKEND, FlowEstimator, FlowVizMode, image_to_encoded_rgb_f32, render_flow_viz};
+use filmcraft_render::flow::{CPU_FLOW_BACKEND, FlowEstimator, FlowVizEncoder, FlowVizMode};
 use filmcraft_render::{Blend, Image, RenderOptions, render_sequence_track};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
@@ -173,6 +175,12 @@ struct Outcome {
     cpu_frames: u64,
     /// Why the hardware engine was not (or not always) used.
     fallback: Option<String>,
+    /// Overlay frames drawn on the GPU and on the CPU, the GPU's name, and why it was not (or not
+    /// always) used.
+    viz_gpu_frames: u64,
+    viz_cpu_frames: u64,
+    viz_gpu_name: Option<String>,
+    viz_fallback: Option<String>,
 }
 
 impl Outcome {
@@ -183,6 +191,16 @@ impl Outcome {
             (0, _) => CPU_FLOW_BACKEND.to_string(),
             (_, 0) => hw_name.to_string(),
             (h, c) => format!("{hw_name} ({h} frames), then {CPU_FLOW_BACKEND} ({c} frames)"),
+        }
+    }
+
+    /// Where the overlay frames were drawn, in the same form.
+    fn viz_backend(&self) -> String {
+        let gpu = self.viz_gpu_name.as_deref().unwrap_or("GPU");
+        match (self.viz_gpu_frames, self.viz_cpu_frames) {
+            (0, _) => "CPU".to_string(),
+            (_, 0) => gpu.to_string(),
+            (g, c) => format!("{gpu} ({g} frames), then CPU ({c} frames)"),
         }
     }
 }
@@ -319,7 +337,7 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
         let done = prog.done.load(Ordering::Relaxed);
         let r = match r {
             Ok(o) => {
-                *lock(&prog.status) = format!("Rendered {done} frame(s) via {} ({secs:.1}s)", o.backend(&lock(&name)));
+                *lock(&prog.status) = format!("Rendered {done} frame(s): flow via {}, drawn on {} ({secs:.1}s)", o.backend(&lock(&name)), o.viz_backend());
                 *lock(&out) = Some(o);
                 Ok(filmcraft_export::Report { frames: done, seconds: secs, render_fps: done as f64 / secs.max(1e-6), ..Default::default() })
             }
@@ -393,6 +411,12 @@ impl JobCtx {
         if est.is_hardware() {
             *lock(hw_name) = est.backend().to_string();
         }
+        // the overlay is drawn and colour-encoded on the GPU when the app registered one
+        let mut viz = FlowVizEncoder::new();
+        if viz.is_gpu() {
+            out.viz_gpu_name = Some(viz.backend());
+        }
+        let (mut viz_gpu, mut viz_cpu) = (0u64, 0u64);
         let look = self.look;
         let name = std::path::Path::new(&w.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (mut prev, mut ahead): (Option<Image>, Option<Image>) = (None, None);
@@ -423,11 +447,16 @@ impl JobCtx {
             } else {
                 cpu += 1;
             }
-            let viz = render_flow_viz(&curr, &field, look.mode, look.max_motion);
+            let (encoded, on_gpu) = viz.encode(&curr, &field, look.mode, look.max_motion);
+            if on_gpu {
+                viz_gpu += 1;
+            } else {
+                viz_cpu += 1;
+            }
             prev = Some(curr);
             prog.done.fetch_add(1, Ordering::Relaxed);
             *lock(&prog.status) = format!("{name}: frame {} of {}", fi + 1, w.frames);
-            Ok(image_to_encoded_rgb_f32(&viz))
+            Ok(encoded)
         });
         // ProRes 4444 keeps the UV pass's channels apart (no chroma subsampling); 422 is plenty for
         // the visual looks.
@@ -453,6 +482,13 @@ impl JobCtx {
             && out.fallback.is_none()
         {
             out.fallback = Some(why.to_string());
+        }
+        out.viz_gpu_frames += viz_gpu;
+        out.viz_cpu_frames += viz_cpu;
+        if let Some(why) = viz.fallback_reason()
+            && out.viz_fallback.is_none()
+        {
+            out.viz_fallback = Some(why.to_string());
         }
         Ok(Rendered { clip: w.clip, start: w.start, dur: w.dur, path: w.path.clone(), bytes })
     }
@@ -512,6 +548,9 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
             if let Some(why) = &out.fallback {
                 log::warn!("optical flow fell back to {CPU_FLOW_BACKEND}: {why}");
             }
+            if let Some(why) = &out.viz_fallback {
+                log::warn!("optical-flow overlay drawn on the CPU: {why}");
+            }
             if s.state.active_sequence == Some(pj.seq) {
                 s.state.selection = created.iter().map(|(c, _)| *c).collect();
             }
@@ -523,6 +562,10 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
                 "hardwareFrames": out.hardware_frames,
                 "cpuFrames": out.cpu_frames,
                 "fallbackReason": out.fallback,
+                "overlayBackend": out.viz_backend(),
+                "overlayGpuFrames": out.viz_gpu_frames,
+                "overlayCpuFrames": out.viz_cpu_frames,
+                "overlayFallbackReason": out.viz_fallback,
                 "clips": created.iter().map(|(c, _)| c.0).collect::<Vec<_>>(),
                 "items": created.iter().map(|(_, i)| i.0).collect::<Vec<_>>(),
                 "paths": out.clips.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),

@@ -35,6 +35,8 @@ fn overlay_is_aligned_above_the_clip_and_undoes_in_one_step() {
 
     assert_eq!(res["mode"], "hsvWheel");
     assert_eq!(res["cpuFrames"], 4, "{res}");
+    // no GPU overlay renderer is registered in engine tests: every frame is drawn on the CPU
+    assert_eq!((res["overlayBackend"].as_str(), res["overlayCpuFrames"].as_u64(), res["overlayGpuFrames"].as_u64()), (Some("CPU"), Some(4), Some(0)), "{res}");
     let new_clip = ClipId(res["clips"][0].as_u64().unwrap());
     assert_eq!(s.history.undo.len(), undo_before + 1, "must collapse into one undo step");
     let path = res["paths"][0].as_str().unwrap().to_string();
