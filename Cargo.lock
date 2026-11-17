@@ -1325,6 +1325,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-psd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=06496f5bf20988123d319f83f9a51523218c2173#06496f5bf20988123d319f83f9a51523218c2173"
+dependencies = [
+ "encoding_rs",
+ "flate2",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-raw"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=bea91b1861eea3889bec9d26338076f2ff31c4ac#bea91b1861eea3889bec9d26338076f2ff31c4ac"
@@ -2608,6 +2619,7 @@ dependencies = [
  "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-dpx",
  "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
+ "craft-psd",
  "craft-tga",
  "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=cca00b22bfae6e8aafdb47e122efc5137fee269a)",
  "filmcraft-color",
