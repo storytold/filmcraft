@@ -95,6 +95,14 @@ fn sequence_inspect_reads_only_the_window_it_is_given() {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     let rate = s.sequence_rate();
+    // a transition on the window's clip and one on the last clip of V1
+    let (on_middle, on_last) = {
+        let v1 = &s.active_sequence().unwrap().video_tracks[0].items;
+        (v1[1].id.0, v1.last().unwrap().id.0)
+    };
+    for clip in [on_middle, on_last] {
+        s.execute("sequence.applyVideoTransition", json!({"clip": clip, "edge": "out", "frames": 10})).unwrap();
+    }
     let q = s.active_sequence().unwrap().clone();
     let middle = &q.video_tracks[0].items[1];
     let (from, to) = (middle.start, middle.end());
@@ -118,6 +126,25 @@ fn sequence_inspect_reads_only_the_window_it_is_given() {
     assert!(!clips(&js).contains(&q.video_tracks[0].items[0].id.0), "the clip that ends where the window starts is left out");
     assert_eq!(js["window"], json!({"from": from.0, "to": to.0}));
     assert_eq!(js["video"].as_array().unwrap().len(), q.video_tracks.len(), "every track stays listed");
+    let transitions = |js: &serde_json::Value| -> Vec<u64> {
+        ["video", "audio"]
+            .iter()
+            .flat_map(|k| js[*k].as_array().unwrap().iter())
+            .flat_map(|t| t["transitions"].as_array().unwrap().iter())
+            .map(|x| x["id"].as_u64().unwrap())
+            .collect()
+    };
+    let all_transitions: Vec<u64> = q.video_tracks.iter().chain(&q.audio_tracks).flat_map(|t| &t.transitions).map(|x| x.id.0).collect();
+    let touching_transitions: Vec<u64> = q
+        .video_tracks
+        .iter()
+        .chain(&q.audio_tracks)
+        .flat_map(|t| &t.transitions)
+        .filter(|x| x.start < to && x.start + x.duration > from)
+        .map(|x| x.id.0)
+        .collect();
+    assert!(!touching_transitions.is_empty() && touching_transitions.len() < all_transitions.len(), "one transition in the window, one outside");
+    assert_eq!(transitions(&js), touching_transitions, "{js}");
     let markers: Vec<_> = js["markers"].as_array().unwrap().iter().map(|m| m["id"].clone()).collect();
     assert_eq!(markers, vec![inside.clone()], "a marker at `to` is outside: {js}");
 
@@ -132,6 +159,7 @@ fn sequence_inspect_reads_only_the_window_it_is_given() {
     // without a window nothing changes
     let whole = s.execute("sequence.inspect", json!({})).unwrap();
     assert_eq!(clips(&whole), all);
+    assert_eq!(transitions(&whole), all_transitions);
     assert!(whole["window"].is_null());
 
     for bad in [json!({"from": to.0, "to": from.0}), json!({"from": from.0, "to": from.0}), json!({"from": "soon"})] {
