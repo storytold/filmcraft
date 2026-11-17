@@ -211,3 +211,14 @@ fn caption_languages_are_well_formed_tags() {
         assert!(!ok(bad), "{bad:?}");
     }
 }
+
+/// Tags that differ only in case are one language: three "fr" and three "FR" words outvote four
+/// "en" ones.
+#[test]
+fn caption_language_counts_tags_case_insensitively() {
+    use crate::transcript::majority_language;
+    let tags = ["fr", "fr", "fr", "FR", "FR", "FR", "en", "en", "en", "en"];
+    assert_eq!(majority_language(tags.into_iter()).as_deref(), Some("fr"));
+    assert_eq!(majority_language(["en", "x!"].into_iter()).as_deref(), Some("en"));
+    assert_eq!(majority_language(std::iter::empty()), None);
+}

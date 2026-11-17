@@ -445,13 +445,15 @@ pub(crate) fn valid_language_tag(tag: &str) -> bool {
 /// The language most of `words` were recognised in (each transcript's `language`), when it is a
 /// well-formed language tag ("fr", "pt-BR"); None otherwise.
 fn spoken_language(s: &Session, words: &[SeqWord]) -> Option<String> {
+    majority_language(words.iter().filter_map(|w| s.project.transcripts.get(&w.item).map(|t| t.language.as_str())))
+}
+
+/// The most frequent well-formed tag among `tags`. Tags differing only in case are one language
+/// (BCP 47 compares them case-insensitively) and count together, under the first spelling seen.
+pub(crate) fn majority_language<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
     let mut counts: Vec<(&str, usize)> = Vec::new();
-    for w in words {
-        let Some(l) = s.project.transcripts.get(&w.item).map(|t| t.language.as_str()) else { continue };
-        if !valid_language_tag(l) {
-            continue;
-        }
-        match counts.iter_mut().find(|(k, _)| *k == l) {
+    for l in tags.filter(|l| valid_language_tag(l)) {
+        match counts.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(l)) {
             Some((_, n)) => *n += 1,
             None => counts.push((l, 1)),
         }
