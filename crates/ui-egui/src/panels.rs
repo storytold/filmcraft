@@ -396,9 +396,13 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                             let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
                             close = true;
                         }
-                    } else if ui.button(tl!("Close Panel")).clicked() {
-                        let _ = crate::menus::invoke(app, ui.ctx(), "window.closePanel", serde_json::json!({"panel": p.id()}));
-                        close = true;
+                    } else {
+                        let r = ui.button(tl!("Close Panel"));
+                        app.auto.add_response(&format!("panel.menu.{}.close", p.id()), &r, "Close Panel");
+                        if r.clicked() {
+                            let _ = crate::menus::invoke(app, ui.ctx(), "window.closePanel", serde_json::json!({"panel": p.id()}));
+                            close = true;
+                        }
                     }
                     let undock = ui.button(tl!("Undock Panel"));
                     app.auto.add_response(&format!("panel.menu.{}.undock", p.id()), &undock, "Undock Panel");
@@ -406,18 +410,7 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                         let _ = crate::menus::invoke(app, ui.ctx(), "window.floatPanel", serde_json::json!({"panel": p.id()}));
                         close = true;
                     }
-                    let maximized = app.ui.keys.maximized.is_some_and(|q| crate::dock::LayoutExt::is_docked(&app.ui.dock, q));
-                    let r = ui.button(if maximized { tl!("Restore Frame") } else { tl!("Maximize Frame") });
-                    app.auto.add(&format!("panel.menu.{}.maximize", p.id()), r.rect, if maximized { "Restore Frame" } else { "Maximize Frame" });
-                    if r.clicked() {
-                        keyboard::toggle_maximize(app, p);
-                        close = true;
-                    }
-                    if ui.button(tl!("Restore Workspace")).clicked() {
-                        let w = app.ui.workspace.clone();
-                        app.set_workspace(&w);
-                        close = true;
-                    }
+                    close |= group_items(app, ui, p);
                     close |= panel_items(app, ui, p);
                 });
             app.auto.add("panel.menu.scroll", scroll.inner_rect, "Panel menu");
@@ -430,6 +423,52 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id));
     }
     app.auto.viewport = outer;
+}
+
+/// The ≡ menu's items for the panel's whole group, after Close Panel and Undock Panel: Close
+/// Other Panels in Group, then the Panel Group Settings submenu (Close Panel Group, Undock Panel
+/// Group, Maximize or Restore Frame). Each runs an existing docking command. True when an item
+/// asks the menu to close.
+fn group_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind) -> bool {
+    use crate::dock::LayoutExt as _;
+    let mut close = false;
+    let others = crate::dock_ui::group_of(&app.ui.dock, p).len() > 1;
+    let r = ui.add_enabled(others, egui::Button::new(tl!("Close Other Panels in Group")));
+    app.auto.add_response(&format!("panel.menu.{}.closeOthersInGroup", p.id()), &r, "Close Other Panels in Group");
+    if r.clicked() {
+        app.run_layout_action(ui.ctx(), craft_ui::docking::Action::CloseOthers { panel: p });
+        close = true;
+    }
+    let docked = app.ui.dock.is_docked(p);
+    let settings = ui.menu_button(tl!("Panel Group Settings"), |ui| {
+        let r = ui.button(tl!("Close Panel Group"));
+        app.auto.add_response(&format!("panel.menu.{}.closeGroup", p.id()), &r, "Close Panel Group");
+        if r.clicked() {
+            app.run_layout_action(ui.ctx(), craft_ui::docking::Action::CloseGroup { panel: p });
+            close = true;
+        }
+        let r = ui.add_enabled(docked, egui::Button::new(tl!("Undock Panel Group")));
+        app.auto.add_response(&format!("panel.menu.{}.undockGroup", p.id()), &r, "Undock Panel Group");
+        if r.clicked() {
+            if let Err(e) = crate::menus::invoke(app, ui.ctx(), "window.panel.float", serde_json::json!({"panel": p.id(), "group": true})) {
+                app.ui.status = e.to_string();
+            }
+            close = true;
+        }
+        let maximized = app.ui.keys.maximized.is_some_and(|q| app.ui.dock.is_docked(q));
+        let (text, label) = if maximized { (tl!("Restore Frame"), "Restore Frame") } else { (tl!("Maximize Frame"), "Maximize Frame") };
+        let r = ui.add_enabled(docked || maximized, egui::Button::new(text));
+        app.auto.add_response(&format!("panel.menu.{}.maximize", p.id()), &r, label);
+        if r.clicked() {
+            keyboard::toggle_maximize(app, p);
+            close = true;
+        }
+        if close {
+            ui.close();
+        }
+    });
+    app.auto.add_response(&format!("panel.menu.{}.groupSettings", p.id()), &settings.response, "Panel Group Settings");
+    close
 }
 
 /// The panel's own items, each section after a separator: the Timeline's sequence and track

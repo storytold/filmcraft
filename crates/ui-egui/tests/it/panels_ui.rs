@@ -202,11 +202,13 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     let mut d = Driver::demo();
     let layout = d.app().ui.dock.clone();
     d.click("panel.menu.Program");
+    d.click("panel.menu.Program.groupSettings");
     assert_eq!(d.label("panel.menu.Program.maximize"), "Maximize Frame");
     d.click("panel.menu.Program.maximize");
     assert_eq!(d.app().ui.keys.maximized, Some(PanelKind::Program));
     assert!(!d.has("panel.Timeline"), "only the maximized panel is shown");
     d.click("panel.menu.Program");
+    d.click("panel.menu.Program.groupSettings");
     assert_eq!(d.label("panel.menu.Program.maximize"), "Restore Frame");
     d.click("panel.menu.Program.maximize");
     assert_eq!(d.app().ui.keys.maximized, None);
@@ -1051,4 +1053,128 @@ fn opening_a_clip_in_source_clears_another_panels_maximize() {
     d.frames(3);
     assert_eq!(d.app().ui.keys.maximized, None, "the maximize is cleared so Source is visible");
     assert_eq!(d.app().ui.focused, PanelKind::Source);
+}
+
+/// The panels of the docked tab group holding `panel`, in tab order, and the shown one.
+fn tab_group_of(d: &mut Driver, panel: filmcraft_ui_egui::dock::PanelKind) -> (Vec<filmcraft_ui_egui::dock::PanelKind>, filmcraft_ui_egui::dock::PanelKind) {
+    use craft_ui::docking::Node;
+    use filmcraft_ui_egui::dock::PanelKind;
+    fn find(node: &Node<PanelKind>, panel: PanelKind) -> Option<(Vec<PanelKind>, PanelKind)> {
+        match node {
+            Node::Tabs { panels, active } => panels.contains(&panel).then(|| (panels.clone(), panels[*active])),
+            Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
+            _ => None,
+        }
+    }
+    find(d.app().ui.dock.root.as_ref().unwrap(), panel).expect("the panel is in a docked tab group")
+}
+
+/// Each group's shown tab carries its ≡, next to its name; the other tabs have none. Its menu
+/// opens with the group items (Close Panel, Undock Panel, Close Other Panels in Group, Panel
+/// Group Settings) before the panel's own items.
+#[test]
+fn the_shown_tab_carries_the_panel_menu_and_its_group_items_come_first() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::demo();
+    let (panels, _) = tab_group_of(&mut d, PanelKind::Project);
+    assert!(panels.len() > 1, "the Project panel shares its group: {panels:?}");
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.activate", "params": {"panel": "Project"}}));
+    d.frames(2);
+    let rects: std::collections::HashMap<String, egui::Rect> = d.rects("panel.").into_iter().collect();
+    let tab = rects["panel.tab.Project"];
+    let menu = rects["panel.menu.Project"];
+    assert!(tab.contains_rect(menu), "the ≡ {menu:?} is on the Project tab {tab:?}");
+    for other in panels.iter().filter(|p| **p != PanelKind::Project) {
+        assert!(!rects.contains_key(&format!("panel.menu.{}", other.id())), "{other:?} is behind Project and has no ≡");
+    }
+    d.click("panel.menu.Project");
+    let order: Vec<f32> = ["close", "undock", "closeOthersInGroup", "groupSettings"]
+        .iter()
+        .map(|item| {
+            let id = format!("panel.menu.Project.{item}");
+            d.rects(&id).into_iter().find(|(i, _)| *i == id).unwrap_or_else(|| panic!("{id} is in the menu")).1.top()
+        })
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "the group items come first, in order: {order:?}");
+    let new_bin = d.rects("project.menu.newBin")[0].1.top();
+    assert!(new_bin > order[3], "the Project panel's own items (New Bin) follow the group items");
+    assert_eq!(d.label("panel.menu.Project.closeOthersInGroup"), "Close Other Panels in Group");
+    d.click("panel.menu.Project.groupSettings");
+    for item in ["closeGroup", "undockGroup", "maximize"] {
+        assert!(d.has(&format!("panel.menu.Project.{item}")), "Panel Group Settings holds {item}");
+    }
+}
+
+/// Close Other Panels in Group leaves the panel alone in its group.
+#[test]
+fn close_other_panels_in_group_keeps_only_the_panel() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.activate", "params": {"panel": "Project"}}));
+    d.frames(2);
+    let (before, _) = tab_group_of(&mut d, PanelKind::Project);
+    assert!(before.len() > 1);
+    d.click("panel.menu.Project");
+    d.click("panel.menu.Project.closeOthersInGroup");
+    assert_eq!(tab_group_of(&mut d, PanelKind::Project).0, vec![PanelKind::Project]);
+    assert!(!d.has("panel.menu.Project.close"), "the menu closes");
+    d.click("panel.menu.Project");
+    assert_eq!(d.ok("ui.elements", json!({"prefix": "panel.menu.Project.closeOthersInGroup"}))[0]["enabled"], json!(false), "nothing else to close");
+}
+
+/// Panel Group Settings ▸ Undock Panel Group floats the whole group; Close Panel Group closes it.
+#[test]
+fn panel_group_settings_undock_and_close_the_whole_group() {
+    use craft_ui::docking::Layout;
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.activate", "params": {"panel": "Project"}}));
+    d.frames(2);
+    let (group, _) = tab_group_of(&mut d, PanelKind::Project);
+    d.click("panel.menu.Project");
+    d.click("panel.menu.Project.groupSettings");
+    d.click("panel.menu.Project.undockGroup");
+    d.frames(2);
+    let docked = |d: &mut Driver, p: PanelKind| Layout { root: d.app().ui.dock.root.clone(), floating: vec![] }.contains(&p);
+    for p in &group {
+        assert!(!docked(&mut d, *p) && d.app().ui.dock.contains(p), "{p:?} floats with its group");
+    }
+    d.click("panel.menu.Project");
+    d.click("panel.menu.Project.groupSettings");
+    d.click("panel.menu.Project.closeGroup");
+    d.frames(2);
+    for p in &group {
+        assert!(!d.app().ui.dock.contains(p), "{p:?} closed with its group");
+    }
+}
+
+/// A group whose tabs do not fit shows » at the right end of its strip. It lists every tab of the
+/// group, the shown one ticked, and choosing one shows it. With room, there is no ».
+#[test]
+fn the_overflow_chevron_lists_every_tab_and_shows_the_one_chosen() {
+    use craft_ui::docking::PanelState;
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.activate", "params": {"panel": "Project"}}));
+    d.frames(2);
+    assert!(!d.has("panel.tabs.all.Project"), "every tab fits at 1600 points");
+    d.harness.set_size(egui::vec2(900.0, 980.0));
+    d.frames(4);
+    let (panels, _) = tab_group_of(&mut d, PanelKind::Project);
+    let chevron = d.rects("panel.tabs.all.Project");
+    assert_eq!(chevron.len(), 1, "the squeezed group shows »");
+    let strip = d.rects("panel.Project")[0].1;
+    assert!((chevron[0].1.center().x - strip.right()).abs() < 24.0, "» sits at the strip's right end: {:?} in {strip:?}", chevron[0].1);
+    d.click("panel.tabs.all.Project");
+    let listed: Vec<String> = d.ids("panel.tabs.list.");
+    let expected: Vec<String> = panels.iter().map(|p| format!("panel.tabs.list.{}", p.id())).collect();
+    assert_eq!(listed, expected, "every tab of the group, in order");
+    assert!(d.label("panel.tabs.list.Project").starts_with('✓'));
+    let last = *panels.last().unwrap();
+    assert!(!d.label(&format!("panel.tabs.list.{}", last.id())).starts_with('✓'));
+    d.click(&format!("panel.tabs.list.{}", last.id()));
+    d.frames(2);
+    assert_eq!(d.app().ui.dock.panel_state(&last), PanelState::Front, "the chosen tab is shown");
+    assert_eq!(d.app().ui.focused, last);
+    assert!(d.ids("panel.tabs.list.").is_empty(), "the list closes");
 }
