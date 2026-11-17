@@ -84,6 +84,9 @@ impl FilmcraftApp {
         ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
         if self.ui.status != self.status_seen.0 {
+            // engine toasts and errors arrive in English: shown in the interface language
+            // (translated once, when the message changes)
+            self.ui.status = crate::i18n::tr_message(&self.ui.status);
             self.status_seen = (self.ui.status.clone(), now);
         } else if !self.ui.status.is_empty() {
             if now - self.status_seen.1 > 8.0 {
@@ -149,6 +152,8 @@ impl FilmcraftApp {
     }
 
     /// The running job for drawing only; polling/play-after-render stays in logic.
+    ///
+    /// (see [`job_verb`] for what the status bar calls it)
     fn running_job(&self) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
         self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
@@ -171,7 +176,7 @@ impl FilmcraftApp {
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let verb = job_verb(&job.label);
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
@@ -263,12 +268,32 @@ impl FilmcraftApp {
     }
 }
 
+/// What the status bar calls a running job: "Exporting" for the exports (`Export …`, `Quick
+/// Export …`, `Queue: …`), else the job's own label in the interface language. Every other job
+/// (transcription, model download, proxies, scene detection…) used to read "Exporting".
+fn job_verb(label: &str) -> String {
+    if ["Export", "Quick Export", "Queue: "].iter().any(|p| label.starts_with(p)) { tl!("Exporting").to_string() } else { i18n::tr_message(label) }
+}
+
 #[cfg(test)]
 mod job_status_tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use super::*;
+
+    /// Only exports read "Exporting"; a transcription or a download says what it is, translated.
+    #[test]
+    fn the_job_text_names_what_the_job_does() {
+        assert_eq!(job_verb("Export movie.mp4"), "Exporting");
+        assert_eq!(job_verb("Queue: Main Edit → a.mp4"), "Exporting");
+        assert_eq!(job_verb("Transcribing 1 clip"), "Transcribing 1 clip");
+        let before = i18n::current();
+        i18n::set_current(i18n::Language::Fr);
+        assert_eq!(job_verb("Transcribing 3 clips"), "Transcription de 3 clips");
+        assert_eq!(job_verb("Downloading Whisper base (multilingual)"), "Téléchargement de Whisper base (multilingual)");
+        i18n::set_current(before);
+    }
 
     /// The status bar's export text changed on every frame, and right-aligned against the bar, so
     /// "Exporting… 46%" jumped sideways whenever the time left gained or lost a digit or its hour.

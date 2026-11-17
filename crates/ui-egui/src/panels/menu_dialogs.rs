@@ -797,7 +797,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 );
             }
             "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                let mut langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                if let Some(auto) = langs.first_mut() {
+                    auto.1 = tl!("Automatic").into();
+                }
                 combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
                 let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
                 tracks.extend(

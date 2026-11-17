@@ -256,7 +256,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
                     ui.vertical(|ui| {
                         if let Some(sp) = &c.speaker {
-                            ui.label(egui::RichText::new(sp).size(11.0).color(t.text_dim).strong());
+                            ui.label(egui::RichText::new(crate::i18n::speaker_name(sp)).size(11.0).color(t.text_dim).strong());
                         }
                         let key = egui::Id::unique(("cap-text", c.id.0));
                         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
@@ -648,7 +648,8 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.set_width(list.width() - 16.0);
         for (pi, pr) in paras.iter().enumerate() {
             let w0 = &words[pr.start];
-            let head = format!("{}  {}", w0.speaker.as_deref().unwrap_or(tl!("Speaker")), format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
+            let speaker = w0.speaker.as_deref().map(crate::i18n::speaker_name).unwrap_or(tl!("Speaker").into());
+            let head = format!("{speaker}  {}", format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
             let hr = ui.label(egui::RichText::new(head).size(11.0).color(t.text_dim).strong());
             app.auto.add(&format!("text.transcript.paragraph.{pi}"), hr.rect, "Paragraph");
             ui.horizontal_wrapped(|ui| {
