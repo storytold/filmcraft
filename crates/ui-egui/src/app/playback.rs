@@ -15,7 +15,19 @@ impl FilmcraftApp {
         }
     }
 
+    /// Export cannot run the editing transports: it has no playback controls or frame prefetch.
+    pub(crate) fn require_edit_transport(&self) -> Result<(), String> {
+        if self.ui.mode == crate::state::Mode::Export {
+            return Err("Playback is paused in Export; switch to Edit to play".into());
+        }
+        Ok(())
+    }
+
     pub fn play(&mut self, speed: f64) {
+        if let Err(error) = self.require_edit_transport() {
+            self.ui.status = error;
+            return;
+        }
         self.stop_source();
         if self.session.active_sequence().is_none() {
             return;
@@ -70,6 +82,7 @@ impl FilmcraftApp {
     /// Play the last Text to Speech preview (`Session::tts_preview`) on the audio output, stopping
     /// timeline playback first. Starting playback again takes the output back.
     pub fn play_tts_preview(&mut self) -> Result<f64, String> {
+        self.require_edit_transport()?;
         let audio = self.session.tts_preview.clone().ok_or("nothing to preview")?;
         if self.playback.playing {
             self.stop();

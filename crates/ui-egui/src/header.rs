@@ -39,7 +39,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
     if hresp.clicked() {
-        app.ui.mode = Mode::Import;
+        app.set_mode(Mode::Import);
     }
     x = home.max.x + 16.0;
     // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
@@ -56,7 +56,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             p.line_segment([pos2(x, rect.min.y + 29.0), pos2(x + gw, rect.min.y + 29.0)], Stroke::new(2.0, t.tab_text_active));
         }
         if resp.clicked() {
-            app.ui.mode = m;
+            app.set_mode(m);
         }
         x += gw + 24.0;
     }
@@ -97,7 +97,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.show_panel(crate::dock::PanelKind::Effects);
     }
     if btn(ui, Icon::Bell, "notifications", tl!("Progress"), app).clicked() {
-        app.ui.mode = Mode::Export;
+        app.set_mode(Mode::Export);
     }
     // Quick Export: a popup with File Name & Location, a preset list and Export (Premiere 26)
     let qx = rect.max.x - 14.0 - 4.0 * 38.0; // the fifth button from the right

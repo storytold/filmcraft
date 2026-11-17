@@ -208,6 +208,27 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
 
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Check before the range/trim/recording routes can seek or start capture, not just in play().
+    if matches!(
+        id,
+        "playback.toggle"
+            | "playback.forward"
+            | "playback.reverse"
+            | "playback.slowForward"
+            | "playback.slowReverse"
+            | "playback.inToOut"
+            | "playback.inToOutPreroll"
+            | "playback.toOut"
+            | "playback.playAround"
+            | "source.playback.play"
+            | "source.playback.toggle"
+            | "trim.shuttle"
+            | "trim.playAround"
+            | "audio.voiceover.start"
+    ) || (id == "voiceover.recordToggle" && !app.session.voiceover.recording())
+    {
+        app.require_edit_transport()?;
+    }
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -495,15 +516,15 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(json!({"zoom": zoom}));
         }
         "mode.import" => {
-            app.ui.mode = Mode::Import;
+            app.set_mode(Mode::Import);
             return Ok(Value::Null);
         }
         "mode.edit" => {
-            app.ui.mode = Mode::Edit;
+            app.set_mode(Mode::Edit);
             return Ok(Value::Null);
         }
         "mode.export" => {
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(Value::Null);
         }
         "app.checkForUpdates" => {
@@ -538,7 +559,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.

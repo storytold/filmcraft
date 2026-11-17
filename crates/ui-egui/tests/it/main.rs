@@ -23,6 +23,7 @@ mod engine_toast_ui;
 mod escape_drag_ui;
 mod essential_sound_ui;
 mod export_menu_ui;
+mod export_pause_ui;
 mod export_ui;
 mod frame_export_ui;
 mod graphics_handles_ui;

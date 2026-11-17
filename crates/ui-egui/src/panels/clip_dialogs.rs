@@ -829,7 +829,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
 /// Edit, as it does when no prompt was needed.
 fn edit_after_open(app: &mut FilmcraftApp, prompt: &ClipDialogDraft) {
     if prompt.info["editAfterOpen"].as_bool() == Some(true) {
-        app.ui.mode = crate::state::Mode::Edit;
+        app.set_mode(crate::state::Mode::Edit);
     }
 }
 
