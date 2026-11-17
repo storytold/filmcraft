@@ -7,6 +7,7 @@ use super::{
     Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, hit_secondary, json, marker_at,
     marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
+use crate::tool_cursor::{self, ToolCursor};
 
 pub(super) fn preview_drag(
     app: &FilmcraftApp,
@@ -303,6 +304,19 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     let rate = seq.settings.frame_rate;
     let roll_ripple = app.session.prefs.trim.selection_tool_roll_ripple;
     // ---- cursor feedback: what a press here would grab (#259)
+    // during a drag the tool keeps its cursor, unless the frame already chose one (the Copy
+    // cursor of an Option-drag, painted with the clips before this); the drag may still set a
+    // more specific one after this
+    // only drags the tool itself does (Track Select and Selection moves, Slip, Slide, Hand pan):
+    // a ruler scrub, a Volume line, a marquee or a trim keep their own cursor
+    if matches!(app.tl.drag, Some(Drag::Move { .. } | Drag::Slip { .. } | Drag::Slide { .. } | Drag::Pan { .. }))
+        && let Some(p) = pos
+        && ctx.output(|o| o.cursor_icon) == CursorIcon::Default
+    {
+        // a pan grabs whichever tool started it (the Hand, or a middle-button drag)
+        let cursor = if matches!(app.tl.drag, Some(Drag::Pan { .. })) { ToolCursor::System(CursorIcon::Grabbing) } else { tool_cursor::dragging(tool, mods) };
+        tool_cursor::set(&ctx, cursor, p);
+    }
     if app.tl.drag.is_none()
         && let Some(p) = pos
         && area.contains(p)
@@ -322,25 +336,22 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 }
                 _ => false,
             };
+        let sys = ToolCursor::System;
         let cur = if blocked {
-            CursorIcon::NotAllowed
+            sys(CursorIcon::NotAllowed)
         } else {
             match (tool, g) {
-                (_, Grab::Edge { .. }) => CursorIcon::ResizeColumn,
-                (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => CursorIcon::ResizeColumn,
-                (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => CursorIcon::Grab,
-                (_, Grab::Other(Hit::WorkArea { edge: Some(_) })) => CursorIcon::ResizeColumn,
-                (_, Grab::Other(Hit::WorkArea { edge: None })) => CursorIcon::Grab,
-                (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => CursorIcon::Crosshair,
-                (_, Grab::Volume { .. }) => CursorIcon::ResizeVertical,
-                (Tool::Razor, Grab::Other(Hit::Clip { .. })) => CursorIcon::Crosshair,
-                (Tool::Slip | Tool::Slide, Grab::Other(Hit::Clip { .. })) => CursorIcon::ResizeHorizontal,
-                (Tool::Hand, _) => CursorIcon::Grab,
-                (Tool::Zoom, _) => CursorIcon::ZoomIn,
-                _ => CursorIcon::Default,
+                (_, Grab::Edge { kind, .. }) => tool_cursor::edge(kind),
+                (Tool::Selection, Grab::Other(Hit::Transition { edge: Some(_), .. })) => sys(CursorIcon::ResizeColumn),
+                (Tool::Selection, Grab::Other(Hit::Transition { edge: None, .. })) => sys(CursorIcon::Grab),
+                (_, Grab::Other(Hit::WorkArea { edge: Some(_) })) => sys(CursorIcon::ResizeColumn),
+                (_, Grab::Other(Hit::WorkArea { edge: None })) => sys(CursorIcon::Grab),
+                (_, Grab::Volume { .. }) if tool == Tool::Pen || mods.command => sys(CursorIcon::Crosshair),
+                (_, Grab::Volume { .. }) => sys(CursorIcon::ResizeVertical),
+                _ => tool_cursor::base(tool, mods),
             }
         };
-        ctx.set_cursor_icon(cur);
+        tool_cursor::set(&ctx, cur, p);
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
@@ -801,11 +812,17 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
         });
         // the trim cursor stays for the whole drag of an edge: the hover feedback above stops once
         // a drag is in progress (#1780)
-        if matches!(
-            app.tl.drag,
-            Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
-        ) {
-            ctx.set_cursor_icon(CursorIcon::ResizeColumn);
+        // the same cursor the edge showed on hover (`tool_cursor::edge`)
+        let trim = match app.tl.drag {
+            Some(Drag::Trim { mode: filmcraft_edit::TrimMode::Ripple, .. }) => Some(tool_cursor::edge(EdgeKind::Ripple)),
+            Some(Drag::Trim { .. } | Drag::Transition { edge: Some(_), .. }) => Some(tool_cursor::edge(EdgeKind::Trim)),
+            Some(Drag::Roll { left, right, .. }) => Some(tool_cursor::edge(EdgeKind::Roll { left, right })),
+            Some(Drag::Stretch { .. }) => Some(tool_cursor::edge(EdgeKind::Stretch)),
+            Some(Drag::Remix { .. }) => Some(tool_cursor::edge(EdgeKind::Remix)),
+            _ => None,
+        };
+        if let Some(cursor) = trim {
+            tool_cursor::set(&ctx, cursor, p);
         }
         // auto-scroll when dragging near the edges
         if !matches!(app.tl.drag, Some(Drag::Pan { .. }) | Some(Drag::ZoomBar { .. }) | Some(Drag::Volume(_))) {
