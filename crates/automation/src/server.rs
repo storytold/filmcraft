@@ -51,6 +51,13 @@ pub struct ListParams {
     pub enabled_only: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct SequenceInspectParams {
+    /// Item id of the sequence to inspect (default: the active sequence). Inspecting a sequence does not open it.
+    #[serde(default)]
+    pub item: Option<u64>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RunParams {
     /// Command id, e.g. `sequence.addEdit`, `timeline.trim`, `effects.apply`, `file.import`.
@@ -165,6 +172,11 @@ fn media_import_params(p: MediaImportParams) -> Value {
         params["imageSequence"] = json!(seq);
     }
     params
+}
+
+/// `sequence.inspect` params for a `sequence_inspect` call.
+fn sequence_inspect_params(p: &SequenceInspectParams) -> Value {
+    p.item.map_or_else(|| json!({}), |item| json!({"item": item}))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -378,11 +390,11 @@ impl FilmcraftMcp {
 
     #[tool(
         title = "Inspect the active sequence",
-        description = "The active sequence as JSON: settings, tracks, clips (ids, start/duration in ticks and frames, effects), transitions, markers, in/out, playhead, selection. 254016000000 ticks = 1 second.",
+        description = "The active sequence, or the sequence `item`, as JSON: settings, tracks, clips (ids, start/duration in ticks and frames, effects), transitions, markers, in/out, playhead, selection. 254016000000 ticks = 1 second.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn sequence_inspect(&self) -> Result<CallToolResult, McpError> {
-        wrap(self.run("sequence.inspect", json!({})).await)
+    async fn sequence_inspect(&self, Parameters(p): Parameters<SequenceInspectParams>) -> Result<CallToolResult, McpError> {
+        wrap(self.run("sequence.inspect", sequence_inspect_params(&p)).await)
     }
 
     #[tool(

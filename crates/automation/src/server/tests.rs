@@ -502,3 +502,25 @@ async fn failed_output_stops_the_reader() {
     let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
     assert!(ended.is_ok(), "the server kept reading after its output failed");
 }
+
+/// `sequence_inspect` reads a sequence that is not the active one through `item`, as
+/// `sequence.inspect` does, without opening it; with no arguments it still reads the active one.
+#[tokio::test(flavor = "multi_thread")]
+async fn sequence_inspect_reads_the_sequence_named_by_item() {
+    let mut s = demo();
+    let demo_seq = s.execute("project.inspect", json!({})).unwrap()["activeSequence"].as_u64().unwrap();
+    let other = s.execute("file.newSequence", json!({"name": "Other", "video": 1, "audio": 1})).unwrap()["sequence"].as_u64().unwrap();
+    assert_ne!(demo_seq, other);
+    let mut c = Client::start(s);
+    c.init().await;
+    let read = |r: Value| -> Value { serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{r}"))).unwrap() };
+    let named = read(c.call(1, "sequence_inspect", json!({"item": demo_seq})).await);
+    assert_eq!(named["id"].as_u64(), Some(demo_seq), "{named}");
+    assert!(named["video"][0]["items"].as_array().is_some_and(|a| !a.is_empty()), "the demo sequence's clips: {named}");
+    let active = read(c.call(2, "sequence_inspect", json!({})).await);
+    assert_eq!(active["id"].as_u64(), Some(other), "{active}");
+    let project = read(c.call(3, "project_inspect", json!({})).await);
+    assert_eq!(project["activeSequence"].as_u64(), Some(other), "inspecting a sequence does not open it: {project}");
+    let r = c.call(4, "sequence_inspect", json!({"item": 999_999})).await;
+    assert_eq!(r["result"]["isError"], true, "an id that is not a sequence is an error: {r}");
+}
