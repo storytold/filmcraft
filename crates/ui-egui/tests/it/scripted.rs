@@ -701,6 +701,19 @@ fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
         assert_eq!(after["ui"], before["ui"], "{id}: the UI changed (answer was {v})");
         assert!(v.get("ok").is_some(), "{id}: no answer: {v}");
     }
+    // Voice-Over Record Settings keeps its draft in egui memory, outside `ui`: its window's
+    // elements show whether it opened
+    let vo = |d: &mut Driver| d.ok("ui.elements", json!({"prefix": "voiceover."})).as_array().map_or(0, Vec::len);
+    let r = d.exec("voiceover.settingsDialog", json!({}));
+    assert!(r.is_object(), "the voice-over settings, not a dialog: {r}");
+    d.frames(4);
+    assert_eq!(vo(&mut d), 0, "no Voice-Over Record Settings window");
+    d.ok("ui.menu.invoke", json!({"id": "voiceover.settingsDialog"}));
+    d.frames(4);
+    assert!(vo(&mut d) > 0, "the menu form opens it");
+    d.ok("ui.click", json!({"id": "voiceover.cancel"}));
+    d.frames(2);
+    assert_eq!(vo(&mut d), 0, "Cancel closes it");
     // the menu form of one of them still opens its dialog
     let r = d.ok("ui.menu.invoke", json!({"id": "edit.find"}));
     assert_eq!(r["dialog"], json!("find"), "{r}");

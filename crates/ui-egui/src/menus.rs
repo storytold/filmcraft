@@ -355,7 +355,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
     }
     // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
