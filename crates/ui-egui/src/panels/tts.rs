@@ -60,7 +60,7 @@ impl Default for TtsDraft {
         TtsDraft {
             text: String::new(),
             language: "en-US".into(),
-            voice: if natural_installed() { "kokoro-heart".into() } else { filmcraft_tts::default_voice_id().into() },
+            voice: default_voice(natural_voices_available(), natural_installed()).into(),
             pitch: VocalPitch::Default,
             pace: 1.0,
             advanced_open: true,
@@ -86,6 +86,14 @@ fn natural_installed() -> bool {
 /// This build can download and run the natural voices (`neural-voices` on the engine).
 fn natural_voices_available() -> bool {
     filmcraft_engine::narration::natural_voices_available()
+}
+
+/// The voice a new script starts with: a natural voice only when this build can run it and its
+/// package is installed. The models folder is shared between builds, so a build without
+/// `neural-voices` on a computer where another build downloaded the voices used to pick one it
+/// cannot speak with ("natural voices are not available in this build").
+fn default_voice(available: bool, installed: bool) -> &'static str {
+    if available && installed { "kokoro-heart" } else { filmcraft_tts::default_voice_id() }
 }
 
 /// The panel offers the download only when this build includes the feature and the package is not installed.
@@ -506,6 +514,16 @@ mod tests {
 
     fn has_id(app: &FilmcraftApp, id: &str) -> bool {
         app.auto.elements.iter().any(|w| w.id == id)
+    }
+
+    /// A natural voice is the default only where it can speak: downloaded voices alone (by another
+    /// build, in the shared models folder) are not enough.
+    #[test]
+    fn the_default_voice_is_one_this_build_can_use() {
+        assert_eq!(default_voice(true, true), "kokoro-heart");
+        assert_eq!(default_voice(false, true), filmcraft_tts::default_voice_id());
+        assert_eq!(default_voice(true, false), filmcraft_tts::default_voice_id());
+        assert_eq!(default_voice(false, false), filmcraft_tts::default_voice_id());
     }
 
     #[test]
