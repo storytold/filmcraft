@@ -1045,6 +1045,12 @@ pub fn commands() -> Vec<CommandSpec> {
                 let size = f64_p(p, "size").unwrap_or(100.0);
                 let vertical = p.get("vertical").and_then(Value::as_bool) == Some(true);
                 let mut layer = if vertical { graphic::new_vertical_text_layer(&text, pos, size) } else { new_text_layer(&text, pos, size) };
+                // a title made without a place (menu, Cmd+T) is centred on the frame: anchored by
+                // its left end at the centre it ran off to the right, and an export cropped to
+                // 9:16 cut it ("Vacan…"); text placed with the Type tool keeps its alignment
+                if !vertical && vec2_p(p, "position").is_none() && vec2_p(p, "box").is_none() {
+                    layer.params.insert("align".into(), Param::new(ParamValue::Choice(1)));
+                }
                 if let Some(b) = vec2_p(p, "box").filter(|_| !vertical) {
                     for (id, v) in [("box_width", b.x), ("box_height", b.y)] {
                         layer.params.insert(id.into(), Param::new(ParamValue::Float(v.clamp(1.0, 100_000.0))));

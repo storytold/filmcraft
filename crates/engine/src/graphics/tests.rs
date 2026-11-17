@@ -992,3 +992,20 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     }
     check(s, clip, "video clip");
 }
+
+/// Recette (usage): a title made from the menu or Cmd+T is centred on the frame, so it reads
+/// centred and survives a 9:16 export crop; a title placed at a point keeps left alignment.
+#[test]
+fn a_title_without_a_place_is_centred() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let align = |s: &Session, clip: u64| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        it.effects.iter().find(|e| e.effect == "graphic_text").and_then(|e| e.params.get("align")).map(|p| p.value.clone())
+    };
+    let r = s.execute("graphics.newText", json!({"text": "Vacances 2026"})).unwrap();
+    assert_eq!(align(&s, r["clip"].as_u64().unwrap()), Some(filmcraft_project::ParamValue::Choice(1)));
+    let r = s.execute("graphics.newText", json!({"text": "Ici", "position": [100.0, 200.0], "newClip": true})).unwrap();
+    assert_ne!(align(&s, r["clip"].as_u64().unwrap()), Some(filmcraft_project::ParamValue::Choice(1)), "placed text keeps its alignment");
+}
