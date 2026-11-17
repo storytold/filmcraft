@@ -254,6 +254,7 @@ fn effect_costs() {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "00:00:00:00",
             clip_name: "x",

@@ -5,7 +5,7 @@
 # string table or product UI was consulted or copied; add entries the same way. Commands use the
 # base verb ("Simpan Sebagai…", "Tambah Penanda"), messages address the user as "Anda", and menu
 # labels keep the title case of the English source. Product, format and technology names
-# (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
+# (FilmCraft, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
 # of the trade (render, preset, mixer, gain, ripple, roll, slip, slide, snap, scrub, offline) stay
 # as they are. Decimal fractions in descriptions use a comma (29,97 fps). This catalog has the same
 # entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English until
@@ -206,8 +206,8 @@
 	Refresh Changed Media	Segarkan Media yang Berubah
 	Linked Selection	Pilihan Tertaut
 	Lock Guides	Kunci Garis Bantu
-	Lumetri Color	Lumetri Color
-	Lumetri Scopes	Lumetri Scopes
+	Color Grading	Gradasi Warna
+	Video Scopes	Skop Video
 	Magnification	Pembesaran
 	Make Offline…	Jadikan Offline…
 	Make Subclip…	Buat Subklip…
@@ -902,7 +902,7 @@
 	Clip Volume	Volume Klip
 	(no clip selected)	(tidak ada klip yang dipilih)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Tambahkan Lumetri Color ke klip
+	Add Color Grading to clip	Tambahkan Gradasi Warna ke klip
 	Input LUT	LUT Input
 	Color	Warna
 	Temperature	Suhu
@@ -1681,7 +1681,7 @@
 	Elliptical	Eliptis
 	Emboss	Emboss
 	Enable HSL Secondary	Aktifkan HSL Sekunder
-	Enable Mercury Transmit	Aktifkan Mercury Transmit
+	Enable External Video Output	Aktifkan Output Video Eksternal
 	Enable ProRes hardware accelerated encoding, if available	Aktifkan enkode ProRes dengan akselerasi perangkat keras, jika tersedia
 	Enable clip and XMP metadata linking	Aktifkan penautan metadata klip dan XMP
 	Enable developer mode	Aktifkan mode pengembang
@@ -1749,7 +1749,7 @@
 	Focus Size	Ukuran Fokus
 	Fold Motion	Gerak Lipat
 	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Lumetri Color.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Gradasi Warna.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Empat Skop (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Empat Skop (YUV, float, tanpa pembatasan)
@@ -2018,7 +2018,7 @@
 	Luma Key	Key Luma
 	Luma Source	Sumber Luma
 	Luma and Chroma	Luma dan Kroma
-	Lumetri Presets	Preset Lumetri
+	Color Grading Presets	Preset Gradasi Warna
 	Luminance	Luminans
 	Luminance Threshold	Ambang Luminans
 	Luminosity	Luminositas
@@ -3133,7 +3133,6 @@
 	Left align text	Rata kiri teks
 	Looping GIF, 640×360 at 15 fps	GIF berulang, 640×360 pada 15 fps
 	Lower First	Bawah Dulu
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3680,3 +3679,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) pada ukuran sekuens, kualitas konstan CRF 16, AAC 320 kbps; master 10-bit
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, setiap bingkai adalah bingkai kunci), CRF 12, AAC 320 kbps; intermediate yang mudah disunting
+	List Color Grading Presets	Daftar Preset Gradasi Warna
+	Apply Color Grading Preset	Terapkan Preset Gradasi Warna
+	Color Grading Preset Thumbnails	Gambar Mini Preset Gradasi Warna
+	Toggle Color Grading Section	Aktifkan/Nonaktifkan Bagian Gradasi Warna
+	Color Grading Section	Bagian Gradasi Warna
+	Read Video Scopes	Baca Skop Video
