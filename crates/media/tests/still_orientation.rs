@@ -91,20 +91,38 @@ fn jpeg(exif: Option<Vec<u8>>) -> Vec<u8> {
     out
 }
 
+/// A PNG of the stored picture with Orientation `o` in a plain eXIf chunk (TIFF data only).
 fn png(o: u16) -> Vec<u8> {
+    png_with_exif(orientation_exif(o))
+}
+
+/// A PNG of the stored picture whose eXIf chunk holds `exif` byte for byte.
+fn png_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::png::PngEncoder::new(&mut out);
-    enc.set_exif_metadata(orientation_exif(o)).unwrap();
+    enc.set_exif_metadata(exif).unwrap();
     enc.write_image(&picture(1), W, H, image::ExtendedColorType::Rgb8).unwrap();
     out
 }
 
+/// A lossless WebP of the stored picture with Orientation `o` in a plain EXIF chunk (TIFF data only).
 fn webp(o: u16) -> Vec<u8> {
+    webp_with_exif(orientation_exif(o))
+}
+
+/// A lossless WebP of the stored picture whose EXIF chunk holds `exif` byte for byte.
+fn webp_with_exif(exif: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::new();
     let mut enc = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
-    enc.set_exif_metadata(orientation_exif(o)).unwrap();
+    enc.set_exif_metadata(exif).unwrap();
     enc.write_image(&picture(1), W, H, image::ExtendedColorType::Rgb8).unwrap();
     out
+}
+
+/// EXIF with only an Orientation tag of value `o`, behind the `Exif\0\0` header a JPEG APP1
+/// carries. Some writers copy that header into a PNG eXIf or WebP EXIF chunk too.
+fn prefixed_orientation_exif(o: u16) -> Vec<u8> {
+    [&b"Exif\0\0"[..], &orientation_exif(o)].concat()
 }
 
 /// An uncompressed, single-strip, little-endian TIFF of `width` × `height`, 8 bits × 3 samples,
@@ -190,10 +208,23 @@ fn png_exif_chunk_orientation_is_applied() {
     }
 }
 
+/// A WebP's EXIF chunk Orientation 1–8 turns the picture upright.
 #[test]
 fn webp_exif_chunk_orientation_is_applied() {
     for o in 1..=8 {
         assert_oriented(&decode_raster("shot.webp", &webp(o)).unwrap(), o, 1, 0, &format!("WebP orientation {o}"));
+    }
+}
+
+/// A PNG eXIf or WebP EXIF chunk that starts with the `Exif  ` header of a JPEG APP1 is still
+/// read: Orientation 1–8 behind the header turns the picture upright.
+#[test]
+fn png_and_webp_exif_with_an_exif_header_is_applied() {
+    for o in 1..=8 {
+        let png = png_with_exif(prefixed_orientation_exif(o));
+        assert_oriented(&decode_raster("shot.png", &png).unwrap(), o, 1, 0, &format!("PNG Exif-prefixed orientation {o}"));
+        let webp = webp_with_exif(prefixed_orientation_exif(o));
+        assert_oriented(&decode_raster("shot.webp", &webp).unwrap(), o, 1, 0, &format!("WebP Exif-prefixed orientation {o}"));
     }
 }
 
@@ -246,6 +277,8 @@ fn sequence_frames_with_different_orientations_each_decode_upright() {
     }
 }
 
+/// No EXIF, Orientation 1, out-of-range values and damaged EXIF leave the picture as stored,
+/// and never fail the decode.
 #[test]
 fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     let six = orientation_exif(6);
@@ -269,6 +302,9 @@ fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     }
     for (what, o) in [("PNG orientation 0", 0), ("PNG orientation 9", 9)] {
         assert_oriented(&decode_raster("shot.png", &png(o)).unwrap(), 1, 1, 0, what);
+    }
+    for (what, e) in [("PNG with only an Exif header", b"Exif\0\0".to_vec()), ("PNG Exif-prefixed orientation 9", prefixed_orientation_exif(9))] {
+        assert_oriented(&decode_raster("shot.png", &png_with_exif(e)).unwrap(), 1, 1, 0, what);
     }
     for (what, o) in [("TIFF orientation 0", 0), ("TIFF orientation 9", 9), ("TIFF orientation 255", 255)] {
         assert_oriented(&decode_raster("scan.tiff", &rgb_tiff(o)).unwrap(), 1, 1, 0, what);
