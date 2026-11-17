@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 craft-audio = { workspace = true }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "937ac93c5cf3cd4b6a81e195b078fe161eb081b9" }
 craft-exr = { workspace = true }
 craft-tga = { workspace = true }
 craft-dpx = { workspace = true }

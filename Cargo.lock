@@ -2479,6 +2479,7 @@ dependencies = [
  "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-dpx",
  "craft-exr",
+ "craft-jpeg",
  "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-tga",
  "craft-video",
