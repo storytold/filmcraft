@@ -135,10 +135,66 @@ pub fn available() -> bool {
     Session::open().is_ok()
 }
 
+/// How long a failed probe is remembered before it is tried again.
+///
+/// A probe that fails is often failing for a moment rather than for ever: the driver may still be
+/// starting, or the encoder may have been held by another API at the time. A failure cached for the
+/// rest of the process hides the format for the rest of the session - and on an NVIDIA driver,
+/// where Media Foundation's encoder and NVENC are the same GPU encoder behind two APIs, a
+/// transient failure is exactly what that looks like.
+const PROBE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The answer to a hardware-encoder probe, and when it was given.
+///
+/// A "yes" is kept for good: the encoder is there. A "no" is kept only for [`PROBE_RETRY`] from
+/// the moment it was given, so a transient failure does not hide the format for the rest of the
+/// process. One probe at a time: a
+/// caller that asks while another is probing waits for the same answer, as it did with the
+/// `OnceLock` this replaces.
+struct ProbeAnswer {
+    answer: std::sync::Mutex<Option<(bool, std::time::Instant)>>,
+    /// How long a failure is remembered.
+    retry: std::time::Duration,
+}
+
+impl ProbeAnswer {
+    const fn new() -> Self {
+        Self { answer: std::sync::Mutex::new(None), retry: PROBE_RETRY }
+    }
+
+    /// A probe that remembers a failure for no time at all, for the tests.
+    #[cfg(test)]
+    const fn with_no_retry() -> Self {
+        Self { answer: std::sync::Mutex::new(None), retry: std::time::Duration::ZERO }
+    }
+
+    /// The answer, asking `probe` when there is none to give or the last one has gone stale.
+    fn get(&self, probe: impl FnOnce() -> bool) -> bool {
+        let mut g = self.answer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if let Some((yes, at)) = *g
+            && (yes || now.duration_since(at) < self.retry)
+        {
+            return yes;
+        }
+        let answer = probe();
+        // The window starts when the probe ANSWERED, not when it was asked. A probe that took
+        // longer than the window is then remembered for a full window after it was given, instead
+        // of being stale the moment it is written.
+        *g = Some((answer, std::time::Instant::now()));
+        answer
+    }
+
+    /// Whether an answer has been given (diagnostics and tests).
+    fn answered(&self) -> bool {
+        self.answer.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+    }
+}
+
 /// Whether this system's NVENC can encode HEVC: a session opened and an HEVC encoder created for a
 /// small picture, once (the answer is kept). What makes the H.265 export format available.
 pub fn hevc_available() -> bool {
-    *HEVC_AVAILABLE.get_or_init(|| {
+    HEVC_AVAILABLE.get(|| {
         let probe = Config {
             width: 640,
             height: 360,
@@ -161,7 +217,7 @@ pub fn hevc_available() -> bool {
 }
 
 /// The answer of [`hevc_available`], once asked.
-static HEVC_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static HEVC_AVAILABLE: ProbeAnswer = ProbeAnswer::new();
 
 /// Ask [`hevc_available`] on a thread of its own (once, however often this is called), so the
 /// first draw of Export's format list does not wait for the probe session. Whoever asks while it
@@ -188,7 +244,7 @@ pub fn warm_hevc_probe() {
 /// opened for a small picture, once (the answer is kept). What makes HDR H.265 exports possible:
 /// `filmcraft_export::hdr_available(Format::Hevc)`.
 pub fn hevc_hdr_available() -> bool {
-    *HEVC_HDR_AVAILABLE.get_or_init(|| {
+    HEVC_HDR_AVAILABLE.get(|| {
         if !hevc_available() {
             return false;
         }
@@ -214,16 +270,16 @@ pub fn hevc_hdr_available() -> bool {
 }
 
 /// The answer of [`hevc_hdr_available`], once asked.
-static HEVC_HDR_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static HEVC_HDR_AVAILABLE: ProbeAnswer = ProbeAnswer::new();
 
 /// Whether [`hevc_hdr_available`] has its answer yet (diagnostics and tests).
 pub fn hevc_hdr_probed() -> bool {
-    HEVC_HDR_AVAILABLE.get().is_some()
+    HEVC_HDR_AVAILABLE.answered()
 }
 
 /// Whether [`hevc_available`] has its answer yet (diagnostics and tests).
 pub fn hevc_probed() -> bool {
-    HEVC_AVAILABLE.get().is_some()
+    HEVC_AVAILABLE.answered()
 }
 
 impl Nvenc {
@@ -840,5 +896,113 @@ mod tests {
         for p in [Profile::Baseline, Profile::Main, Profile::High] {
             assert_eq!(p.codec(), Codec::H264);
         }
+    }
+
+    /// The retry window starts when the probe ANSWERED, not when it was asked: a probe that took
+    /// longer than the window is remembered for a full window after it was given, instead of
+    /// being stale the moment it is written.
+    ///
+    /// The check compares the timestamps rather than the clock: the probe says when it was asked
+    /// and when it had answered, and the answer must be remembered from the second of those.
+    #[test]
+    fn the_retry_window_starts_when_the_probe_answered() {
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_secs(60) };
+        let mut asked_at = None;
+        let mut answered_at = None;
+        assert!(!answer.get(|| {
+            let asked = std::time::Instant::now();
+            asked_at = Some(asked);
+            // The probe runs long enough that the clock has certainly ticked by the time it
+            // answers, so "asked at" and "answered at" are certainly two different instants.
+            // Without that the two can be the same instant, and the check below would pass
+            // even with the old stamp - the assertion would be testing the clock rather than
+            // the rule, which is what this test exists to prevent.
+            let mut answered = asked;
+            while answered == asked {
+                answered = std::time::Instant::now();
+            }
+            answered_at = Some(answered);
+            false
+        }));
+        let asked = asked_at.expect("the probe ran");
+        let answered = answered_at.expect("the probe ran");
+        let stored = answer.answer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = stored.expect("the failure is remembered").1;
+        assert!(
+            at >= answered,
+            "the window starts when the probe answered, not when it was asked: the answer is remembered from {at:?}, \
+             but the probe only answered at {answered:?} (it was asked at {asked:?})"
+        );
+    }
+
+    /// A probe that succeeded is not asked again; one that failed is, so that a transient failure
+    /// does not hide the format for the rest of the process.
+    #[test]
+    fn a_successful_probe_is_kept_and_a_failed_one_is_tried_again() {
+        let answer = ProbeAnswer::with_no_retry();
+        let mut calls = 0;
+        assert!(answer.get(|| {
+            calls += 1;
+            true
+        }));
+        assert!(answer.get(|| {
+            calls += 1;
+            true
+        }));
+        assert_eq!(calls, 1, "a successful probe is not asked again");
+        assert!(answer.answered());
+
+        let answer = ProbeAnswer::with_no_retry();
+        let mut calls = 0;
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert_eq!(calls, 2, "a failed probe is tried again");
+    }
+
+    /// The same, with the window the production code uses rather than none: a failure is asked
+    /// again once the window has passed. The test above uses a zero window, so it cannot see this.
+    ///
+    /// Neither half of this depends on the wall clock. The "inside the window" half uses the
+    /// window the production code uses (60 s), which no scheduling delay can cross, and the "after
+    /// the window" half starts from an answer that is already stale. A window short enough for a
+    /// thread preemption to cross - or a sleep to reach it - would test the clock rather than the
+    /// rule, and would pass on an idle machine and fail on a loaded one.
+    #[test]
+    fn a_failed_probe_is_asked_again_after_the_window() {
+        // Inside the window the failure is remembered, and the probe is not asked again.
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_secs(60) };
+        let mut calls = 0;
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert_eq!(calls, 1, "a failure is remembered for the window");
+
+        // After the window the probe is asked again. The answer is already older than the
+        // window, so this does not depend on how long the machine takes to get here.
+        let now = std::time::Instant::now();
+        let (at, retry) = match now.checked_sub(std::time::Duration::from_secs(61)) {
+            Some(old) => (old, std::time::Duration::from_secs(60)),
+            // The clock has less than a minute of history - a machine that booted seconds ago.
+            // A zero window makes any answer stale, which is the same case.
+            None => (now, std::time::Duration::ZERO),
+        };
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(Some((false, at))), retry };
+        let mut calls = 0;
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert_eq!(calls, 1, "a failed probe is asked again after the window");
     }
 }
