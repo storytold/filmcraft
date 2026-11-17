@@ -2414,7 +2414,7 @@
 	Slide (Legacy)	Coulissement (ancien)
 	Slope	Pente
 	Slow	Lent
-	Slower Motion	Ralenti accentué
+	Slower Motion	Mouvement plus lent
 	Small Room	Petite pièce
 	Smart Limit	Limitation intelligente
 	Smart Tools	Outils intelligents
@@ -3745,3 +3745,10 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+	Auto Reframe Sequence	Recadrage automatique de la séquence
+	Auto Reframe Sequence…	Recadrage automatique de la séquence…
+	Create	Créer
+	Aspect:	Format :
+	Motion Preset:	Préréglage de mouvement :
+	A copy of the sequence in the new shape: every video clip follows its subject. The original stays as it is.	Une copie de la séquence au nouveau format : chaque clip vidéo suit son sujet. L'original reste inchangé.
+	the sequence has no video clips	la séquence n'a aucun clip vidéo

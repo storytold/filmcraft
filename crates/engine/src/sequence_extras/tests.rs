@@ -313,3 +313,47 @@ fn cmd_d_on_an_adjustment_layer_fades_its_effects_in_and_out() {
         assert!((0.25..0.75).contains(&k), "halfway through the dissolve the grade is about half on: {k:.3}");
     }
 }
+
+/// Auto Reframe Sequence (#1564): a 9:16 copy of a 16:9 edit whose picture clips follow their
+/// subject; the original is untouched and one undo removes the copy.
+#[test]
+fn auto_reframe_sequence_makes_a_vertical_copy() {
+    let mut s = demo();
+    let orig = s.state.active_sequence.unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    let n_items = s.project.items.len();
+    let r = s.execute("sequence.autoReframe", json!({})).unwrap();
+    assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(1080), Some(1920)), "{r}");
+    let copy = s.state.active_sequence.unwrap();
+    assert_ne!(copy, orig, "the copy opens");
+    let q = s.active_sequence().unwrap();
+    let pictures: Vec<_> = q
+        .video_tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .filter(|it| s.project.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Sequence(_))))
+        .collect();
+    assert!(!pictures.is_empty());
+    assert!(pictures.iter().all(|it| it.effects.iter().filter(|e| e.effect == "auto_reframe").count() == 1));
+    assert_eq!(r["reframed"].as_u64(), Some(pictures.len() as u64));
+    q.check().unwrap();
+    // the original is as it was
+    let ItemKind::Sequence(o) = &s.project.item(orig).unwrap().kind else { panic!() };
+    assert_eq!(**o, before);
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.items.len(), n_items);
+    // other aspects and the short side
+    assert_eq!(crate::sequence_extras::reframe_size(1920, 1080, "1:1"), Some((1080, 1080)));
+    assert_eq!(crate::sequence_extras::reframe_size(1920, 1080, "4:5"), Some((1080, 1350)));
+    assert_eq!(crate::sequence_extras::reframe_size(1080, 1920, "16:9"), Some((1920, 1080)));
+    // hostile sizes stay even and bounded
+    for (w, h) in [(0, 0), (1, 3), (u32::MAX, u32::MAX), (7, 100_000)] {
+        for a in ["9:16", "1:1", "4:5", "16:9"] {
+            let (nw, nh) = crate::sequence_extras::reframe_size(w, h, a).unwrap();
+            assert!(nw % 2 == 0 && nh % 2 == 0 && (2..=16384).contains(&nw) && (2..=16384).contains(&nh), "{w}×{h} {a}");
+        }
+    }
+    assert!(s.execute("sequence.autoReframe", json!({"aspect": "3:2"})).is_err());
+    assert!(s.execute("sequence.autoReframe", json!({"preset": "warp"})).is_err());
+}

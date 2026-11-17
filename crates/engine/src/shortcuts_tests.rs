@@ -355,6 +355,7 @@ fn commands_that_open_dialogs_can_be_bound() {
         "clip.sceneEditDetection",
         "sequence.normalizeMixTrack",
         "sequence.simplify",
+        "sequence.autoReframe",
         "sequence.transcribe",
         "file.saveAsTemplate",
         "markers.addFlashCue",

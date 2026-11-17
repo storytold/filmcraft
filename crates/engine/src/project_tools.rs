@@ -251,7 +251,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
         ),
         (At::After("sequence.applyAudioTransition"), vec!["trim.applyDefaultTransition"]),
         (At::After("sequence.showThroughEdits"), vec!["sequence.normalizeMixTrack"]),
-        (At::After("sequence.makeSubsequence"), vec!["sequence.transcribe", "sequence.simplify"]),
+        (At::After("sequence.makeSubsequence"), vec!["sequence.transcribe", "sequence.simplify", "sequence.autoReframe"]),
         (At::After("captions.showAll"), vec!["captions.showActiveOnly"]),
         (At::After("markers.addChapter"), vec!["markers.addFlashCue"]),
         (At::Before("file.close"), vec!["file.open"]),
@@ -278,7 +278,7 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
 }
 
 /// The Sequence menu in Premiere's order (submenu items where their submenu goes).
-const SEQUENCE_MENU: [&str; 34] = [
+const SEQUENCE_MENU: [&str; 35] = [
     "sequence.settings",
     "sequence.renderEffectsInToOut",
     "sequence.renderInToOut",
@@ -309,6 +309,7 @@ const SEQUENCE_MENU: [&str; 34] = [
     "sequence.makeSubsequence",
     "sequence.transcribe",
     "sequence.simplify",
+    "sequence.autoReframe",
     "sequence.addTracks",
     "sequence.deleteTracks",
     "sequence.colorSettings",
