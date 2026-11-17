@@ -418,8 +418,9 @@ mod legacy {
 
 /// The width of the Tools panel in the built-in workspaces, in points.
 const TOOLS_WIDTH: f32 = 64.0;
-/// The width of the Audio Meters in the built-in workspaces, in points.
-const METERS_WIDTH: f32 = 116.0;
+/// The width of the Audio Meters in the built-in workspaces, in points: room for the scale, the
+/// loudness readout and the tab's name (at 116 the French tab "Vumètres" was cut to "Vu…").
+const METERS_WIDTH: f32 = 148.0;
 
 /// The default layout of a named workspace.
 pub fn workspace(name: &str) -> Layout {
