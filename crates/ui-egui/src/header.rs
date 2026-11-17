@@ -13,6 +13,56 @@ use crate::theme::Tokens;
 /// Height of the header bar. With `integrated_titlebar` it sits in the macOS title-bar strip.
 pub const HEIGHT: f32 = 38.0;
 
+/// How much of the header the menu bar may use and what the right cluster gives up for
+/// it (#4891). The cluster's left edge sits 270 pt plus the workspace name and the
+/// Discord button left of the header's right edge (seven quick actions at a 38 pt
+/// pitch, then the name, then Discord, each with its gap). The bar's usual allocation
+/// is 520 pt from the end of the mode tabs; when that would come within 12 pt of the
+/// cluster, the Discord button drops its label, and when the bar would still be under
+/// 240 pt the workspace name drops its space. Without an in-window menu bar nothing
+/// gives anything up.
+struct MenuSpace {
+    /// The menu bar's right edge.
+    right: f32,
+    /// The Discord button's width this frame.
+    discord_w: f32,
+    discord_icon_only: bool,
+    hide_ws_name: bool,
+}
+
+fn menu_space(show_menu_bar: bool, tabs_end: f32, header_right: f32, name_w: f32, discord_w: f32) -> MenuSpace {
+    let mut space = MenuSpace { right: tabs_end + 520.0, discord_w, discord_icon_only: false, hide_ws_name: false };
+    if !show_menu_bar {
+        return space;
+    }
+    let mut name_w = name_w;
+    if tabs_end + 532.0 > header_right - 284.0 - name_w - space.discord_w {
+        space.discord_icon_only = true;
+        space.discord_w = 28.0;
+    }
+    if tabs_end + 246.0 > header_right - 296.0 - name_w - space.discord_w {
+        space.hide_ws_name = true;
+        name_w = 0.0;
+    }
+    space.right = (header_right - 296.0 - name_w - space.discord_w).min(tabs_end + 520.0);
+    space
+}
+
+/// The Discord button in `r`: the chat icon and, unless the header is tight (#4891),
+/// the label beside it.
+fn discord_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon_only: bool, dg: std::sync::Arc<egui::Galley>, t: Tokens) -> egui::Response {
+    let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
+    app.auto.add("header.discord", r, "Join the ArtCraft Discord");
+    ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
+    if icon_only {
+        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
+    } else {
+        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
+        ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - dg.size().y / 2.0), dg, Color32::WHITE);
+    }
+    resp
+}
+
 /// Draws the header bar in `rect` and handles its clicks: Home, the mode tabs, the workspace name
 /// and its menu (the workspaces, then Reset to Saved Layout, Save Changes to this Workspace, Save as
 /// New Workspace… and Edit Workspaces…), Discord and the quick actions.
@@ -61,9 +111,25 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         x += gw + 24.0;
     }
     let mut left_end = x;
+    // The right cluster's extent is known before anything there is drawn: seven quick
+    // actions at a 38 pt pitch, the workspace name, then the Discord button. The menu bar
+    // gets what is left of the header, never the cluster's space (#4891): on a narrow
+    // window the fixed 520 pt allocation used to run underneath the cluster, and the
+    // menus and the buttons painted over each other. When the full allocation does not
+    // fit, the Discord button gives up its label first, then the workspace name gives up
+    // its space; the bar itself overflows in menus::menu_bar.
+    let ws = crate::i18n::to_uppercase(crate::i18n::t(&app.ui.workspace));
+    let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
+    let dg = p.layout_no_wrap("Discord".to_string(), Tokens::ui(12.0), Color32::WHITE);
+    let space = menu_space(app.ui.show_menu_bar, x, rect.max.x, wg.size().x, dg.size().x + 34.0);
+    let discord_w = space.discord_w;
+    let discord_icon_only = space.discord_icon_only;
+    let hide_ws_name = space.hide_ws_name;
+    let name_w = if hide_ws_name { 0.0 } else { wg.size().x };
+    let menu_right = space.right;
     // In-window menus when there is no native menu bar.
     if app.ui.show_menu_bar {
-        let menu_rect = Rect::from_min_max(pos2(x + 6.0, rect.min.y + 7.0), pos2(x + 520.0, rect.max.y - 7.0));
+        let menu_rect = Rect::from_min_max(pos2(x + 6.0, rect.min.y + 7.0), pos2(menu_right, rect.max.y - 7.0));
         let mut mu = ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         mu.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
         mu.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
@@ -119,24 +185,27 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::panels::settings::cycle_appearance(app, ui.ctx());
     }
     let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
-    // workspace name (caps)
-    let ws = crate::i18n::to_uppercase(crate::i18n::t(&app.ui.workspace));
-    let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
-    let wr = Rect::from_min_size(pos2(rx - wg.size().x + 10.0, rect.center().y - 10.0), vec2(wg.size().x + 8.0, 20.0));
-    let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
-    app.auto.add("header.workspaceName", wr, &ws);
-    p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
-    // Community: a labelled Discord button, always one click away.
+    // workspace name (caps); on a narrow window it gives up its space to the menu bar
+    // (#4891) and only the Workspaces button remains
+    let wr = Rect::from_min_size(pos2(rx - name_w + 10.0, rect.center().y - 10.0), vec2(name_w + 8.0, 20.0));
+    let wresp = if hide_ws_name {
+        None
+    } else {
+        let resp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
+        app.auto.add("header.workspaceName", wr, &ws);
+        p.galley_with_override_text_color(
+            pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0),
+            wg.clone(),
+            if resp.hovered() { t.text } else { t.text_dim },
+        );
+        Some(resp)
+    };
+    let wresp_clicked = wresp.as_ref().is_some_and(|r| r.clicked());
+    // Community: a labelled Discord button, always one click away; icon only when the
+    // header is tight (#4891)
     {
-        let label = "Discord";
-        let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), Color32::WHITE);
-        let w = g.size().x + 34.0;
-        let r = Rect::from_min_size(pos2(wr.min.x - w - 14.0, rect.center().y - 12.0), vec2(w, 24.0));
-        let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
-        app.auto.add("header.discord", r, "Join the ArtCraft Discord");
-        ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
-        ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
+        let r = Rect::from_min_size(pos2(wr.min.x - discord_w - 14.0, rect.center().y - 12.0), vec2(discord_w, 24.0));
+        let resp = discord_button(app, ui, r, discord_icon_only, dg.clone(), t);
         // Localized menus and user titles can be wider than English. Use the actual gap.
         let left = left_end + 12.0;
         let right = r.min.x - 12.0;
@@ -159,7 +228,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
     let popup_id = egui::Id::unique("workspaces-popup");
-    if ws_resp.clicked() || wresp.clicked() {
+    if ws_resp.clicked() || wresp_clicked {
         ui.ctx().data_mut(|d| d.insert_temp(popup_id, true));
     }
     let open = ui.ctx().data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
@@ -198,7 +267,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 });
             });
         });
-        if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
+        if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp_clicked) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
     }
