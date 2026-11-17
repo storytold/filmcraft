@@ -207,21 +207,7 @@ fn caption_languages_are_well_formed_tags() {
     for good in ["fr", "en", "pt-BR", "zh-Hant-TW", "fr-Latn-FR-x-test", "es-419", "de-CH-1996", "fr-x-a", "en-a-bbb-x-a-ccc"] {
         assert!(ok(good), "{good}");
     }
-    for bad in [
-        "",
-        "f",
-        "123",
-        "fr-x",
-        "fr--FR",
-        "fr-",
-        "-fr",
-        "fr_FR",
-        "fr-a-b",
-        "fr\n<script>",
-        "abcdefghi",
-        "fr-abcdefghi",
-        &"a-".repeat(40),
-    ] {
+    for bad in ["", "f", "123", "fr-x", "fr--FR", "fr-", "-fr", "fr_FR", "fr-a-b", "fr\n<script>", "abcdefghi", "fr-abcdefghi", &"a-".repeat(40)] {
         assert!(!ok(bad), "{bad:?}");
     }
 }
