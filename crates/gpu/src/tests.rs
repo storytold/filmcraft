@@ -939,4 +939,5 @@ fn a_batch_of_transitions_over_the_memory_budget_goes_to_the_cpu() {
     assert_eq!(c.cpu_fallback_frames, 1, "the frame over the budget goes whole to the CPU");
     assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "and no canvas is made for it");
     assert_eq!(c.hybrid_off_until, None, "which is not a failed read-back");
+    assert_eq!(c.uploads.len(), 0, "and the CPU image of the fallback is not kept in the upload cache");
 }

@@ -994,7 +994,14 @@ impl GpuCompositor {
     ) -> (wgpu::TextureView, (u32, u32)) {
         let cpu = |c: &mut Self| {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            c.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None)
+            let image = FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan));
+            // The image is made for this frame and never drawn again, so its upload is dropped
+            // once drawn instead of filling the cache (a full-frame f32 copy and a texture each)
+            // and pushing the textures of live sources out.
+            let before: Vec<_> = c.uploads.keys().copied().collect();
+            let out = c.composite_prepared(&image, None);
+            c.uploads.retain(|key, _| before.contains(key));
+            out
         };
         // plan_frame makes Adjust steps only for this device's caps, so the monitor and the export
         // never get here; a plan made for another device still gets the right picture
