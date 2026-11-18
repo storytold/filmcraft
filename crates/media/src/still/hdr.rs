@@ -18,6 +18,9 @@ use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
 
 /// Largest picture we decode (each pixel takes 16 bytes as RGBA floats).
 const MAX_PIXELS: u64 = 1 << 26;
+/// Widest or tallest picture we decode: validation expands one scan line into a scratch buffer
+/// of that many pixels before the whole picture is checked.
+const MAX_AXIS: usize = 1 << 15;
 /// Longest header we read (real ones are a few hundred bytes).
 const MAX_HEADER: usize = 64 << 10;
 
@@ -191,7 +194,8 @@ pub fn decode(name: &str, b: &[u8]) -> Result<VideoFrame> {
     let n1: usize = n1.parse().map_err(|_| err(name, "bad resolution line"))?;
     let n2: usize = n2.parse().map_err(|_| err(name, "bad resolution line"))?;
     let (w, h) = if x1 { (n1, n2) } else { (n2, n1) };
-    if w == 0 || h == 0 || (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
+    // each axis is bounded as well: the scan-line scratch below is one axis wide
+    if w == 0 || h == 0 || w > MAX_AXIS || h > MAX_AXIS || (w as u64).saturating_mul(h as u64) > MAX_PIXELS {
         return Err(err(name, "picture size out of range"));
     }
     // a scan line takes at least a few bits of file, so a header cannot ask for more than the data has
