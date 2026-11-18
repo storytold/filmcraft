@@ -87,7 +87,15 @@ fn request(src: &dyn MediaSource) -> Vec<Vec<f32>> {
 }
 
 fn differing(a: &[Vec<f32>], b: &[Vec<f32>]) -> usize {
-    a.iter().zip(b).map(|(x, y)| x.iter().zip(y).filter(|(p, q)| p.to_bits() != q.to_bits()).count()).sum()
+    assert_eq!(a.len(), b.len(), "channel counts differ: {} vs {}", a.len(), b.len());
+    a.iter()
+        .zip(b)
+        .enumerate()
+        .map(|(ch, (x, y))| {
+            assert_eq!(x.len(), y.len(), "channel {ch} sample counts differ: {} vs {}", x.len(), y.len());
+            x.iter().zip(y).filter(|(p, q)| p.to_bits() != q.to_bits()).count()
+        })
+        .sum()
 }
 
 fn check(container: &str, bytes: Arc<[u8]>, units: &[Vec<u8>], open: impl Fn(Arc<dyn ByteReader>) -> Box<dyn MediaSource>) {
@@ -116,4 +124,10 @@ fn failed_preroll_read_is_retried_not_cached() {
     let (asc, units) = aac();
     check("mp4", mp4(&asc, &units), &units, |r| Box::new(Mp4Source::open_reader("tone.mp4", r).unwrap()));
     check("mkv", mkv(&asc, &units), &units, |r| Box::new(MkvSource::open_reader("tone.mkv", r).unwrap()));
+}
+
+#[test]
+fn differing_rejects_mismatched_channel_and_sample_counts() {
+    assert!(std::panic::catch_unwind(|| differing(&[], &[vec![1.0]])).is_err());
+    assert!(std::panic::catch_unwind(|| differing(&[vec![]], &[vec![1.0]])).is_err());
 }
