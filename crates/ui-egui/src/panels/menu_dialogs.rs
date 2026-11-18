@@ -67,6 +67,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "clip.sceneEditDetection" => (tl!("Scene Edit Detection"), "sceneDetect", tl!("Analyze")),
         "sequence.normalizeMixTrack" => (tl!("Normalize Mix Track"), "normalizeMix", tl!("OK")),
         "sequence.simplify" => (tl!("Simplify Sequence"), "simplify", tl!("Simplify")),
+        "sequence.removeSilence" => (tl!("Remove Silence"), "removeSilence", tl!("Remove")),
         "sequence.transcribe" => (tl!("Transcribe Sequence"), "transcribe", tl!("Transcribe")),
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
@@ -91,6 +92,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "clip.sceneEditDetection" => "clip.sceneEditDetection",
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
         "sequence.simplify" => "sequence.simplify",
+        "sequence.removeSilence" => "sequence.removeSilence",
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
@@ -385,6 +387,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str, bin: Option<Option<u64>
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
             (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
         }
+        "sequence.removeSilence" => (json!({"minSeconds": 1.0, "keepSeconds": 0.15, "noiseDb": -45.0, "autoThreshold": true}), Value::Null),
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
         "file.newColorMatte" => {
@@ -812,6 +815,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
                 check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
             }
+            "sequence.removeSilence" => {
+                check(ui, &mut elems, pre, p, "autoThreshold", tl!("Auto threshold (from each clip's noise floor and speech level)"));
+                number(ui, &mut elems, pre, p, "minSeconds", tl!("Minimum pause:"), NumberOptions { range: 0.2..=10.0, suffix: " s" });
+                number(ui, &mut elems, pre, p, "keepSeconds", tl!("Keep before and after:"), NumberOptions { range: 0.0..=2.0, suffix: " s" });
+                if !p["autoThreshold"].as_bool().unwrap_or(true) {
+                    number(ui, &mut elems, pre, p, "noiseDb", tl!("Noise threshold:"), NumberOptions { range: -96.0..=0.0, suffix: " dB" });
+                }
+            }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
             "file.newColorMatte" => {
                 color(ui, &mut elems, pre, p, "color", tl!("Color:"));
@@ -950,6 +961,18 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
         "clip.sceneEditDetection" => {
             s.execute(&d.command, p.clone()).map_err(|e| e.to_string())?;
             app.ui.status = tl!("Scene Edit Detection: analysing in the background (see Progress)").into();
+            Ok(None)
+        }
+        "sequence.removeSilence" => {
+            let auto = p["autoThreshold"].as_bool().unwrap_or(true);
+            let mut q = p.clone();
+            if let Some(o) = q.as_object_mut() {
+                o.remove("autoThreshold");
+                if auto {
+                    o.remove("noiseDb");
+                }
+            }
+            s.execute("sequence.removeSilence", q).map_err(|e| e.to_string())?;
             Ok(None)
         }
         cmd => {
