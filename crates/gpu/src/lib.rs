@@ -100,6 +100,8 @@ pub struct GpuCompositor {
     /// GPU does not draw itself go whole to the CPU: a wedged device would otherwise make every
     /// such frame wait for it first.
     hybrid_off_until: Option<std::time::Instant>,
+    /// Uploads the cache may hold above its limit for the draw in progress (see [`Self::draw_once`]).
+    upload_slack: usize,
     /// Test hook: make the next read-backs of transition canvases fail.
     #[cfg(test)]
     pub(crate) fail_readback: bool,
@@ -450,6 +452,7 @@ impl GpuCompositor {
             transition_inputs: Vec::new(),
             slot_readback: Vec::new(),
             hybrid_off_until: None,
+            upload_slack: 0,
             #[cfg(test)]
             fail_readback: false,
             gpu_transitions: 0,
@@ -608,7 +611,7 @@ impl GpuCompositor {
         };
         self.uploads.insert(key, up);
         // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
+        if self.uploads.len() > 24 + self.upload_slack {
             let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
             v.sort_unstable();
             for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
@@ -998,10 +1001,7 @@ impl GpuCompositor {
             // The image is made for this frame and never drawn again, so its upload is dropped
             // once drawn instead of filling the cache (a full-frame f32 copy and a texture each)
             // and pushing the textures of live sources out.
-            let before: Vec<_> = c.uploads.keys().copied().collect();
-            let out = c.composite_prepared(&image, None);
-            c.uploads.retain(|key, _| before.contains(key));
-            out
+            c.draw_once(|c| c.composite_prepared(&image, None))
         };
         // plan_frame makes Adjust steps only for this device's caps, so the monitor and the export
         // never get here; a plan made for another device still gets the right picture
@@ -1291,15 +1291,20 @@ impl GpuCompositor {
     fn draw_transient_image(&mut self, img: filmcraft_render::Image) {
         let (w, h) = (img.w, img.h);
         let frame = Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, img.px));
-        let key = match &frame.data {
-            PixelData::RgbaF32(d) => Some((Arc::as_ptr(d) as *const u8 as usize, frame.width, frame.height)),
-            _ => None,
-        };
         let layer = PlanLayer::new(frame, filmcraft_geom::Affine::IDENTITY, 1.0, Blend::Normal);
-        self.render_plan(&FramePlan::Layers { width: w, height: h, layers: vec![layer] }, None, false, false);
-        if let Some(key) = key {
-            self.uploads.remove(&key);
-        }
+        self.draw_once(|c| c.render_plan(&FramePlan::Layers { width: w, height: h, layers: vec![layer] }, None, false, false));
+    }
+
+    /// Run a draw of images made for this frame alone and drop what it uploaded afterwards. The
+    /// cache may hold the one upload above its limit meanwhile, so it does not push the textures of
+    /// reusable sources out to make room for an image that is never drawn again.
+    fn draw_once<T>(&mut self, draw: impl FnOnce(&mut Self) -> T) -> T {
+        let before: Vec<_> = self.uploads.keys().copied().collect();
+        self.upload_slack = 1;
+        let out = draw(self);
+        self.upload_slack = 0;
+        self.uploads.retain(|key, _| before.contains(key));
+        out
     }
 
     /// Free the canvases and staging buffers of transitions: the frame being composited has none.

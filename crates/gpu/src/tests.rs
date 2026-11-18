@@ -941,3 +941,55 @@ fn a_batch_of_transitions_over_the_memory_budget_goes_to_the_cpu() {
     assert_eq!(c.hybrid_off_until, None, "which is not a failed read-back");
     assert_eq!(c.uploads.len(), 0, "and the CPU image of the fallback is not kept in the upload cache");
 }
+
+/// The image of a CPU-mixed transition frame, and the CPU image of a frame that goes whole to the
+/// CPU, are drawn once: with the upload cache full (24 entries) they must not push a reusable
+/// source out of it.
+#[test]
+fn one_use_images_do_not_evict_reusable_uploads() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let frames: Vec<_> = (0..24).map(|i| Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, vec![i as f32 / 30.0; w * h * 4]))).collect();
+    let layer = |i: usize| PlanLayer::new(frames[i].clone(), Affine::IDENTITY, 1.0, Blend::Normal);
+    // 24 distinct sources fill the cache
+    for i in 0..24 {
+        c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![layer(i)] });
+    }
+    let sources: Vec<_> = c.uploads.keys().copied().collect();
+    assert_eq!(sources.len(), 24);
+    let wipe = |w: usize, h: usize, a: PlanLayer, b: PlanLayer| FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Transition {
+            inputs: [vec![a], vec![b]],
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+            progress: 0.5,
+            scale: 1.0,
+        }],
+    };
+    // a transition mixed on the CPU from the GPU's clips
+    // (the clips are sources the cache already holds: only the mixed image is new)
+    c.composite(&wipe(w, h, layer(3), layer(17)));
+    assert_eq!(c.cpu_transitions, 1, "the mix ran");
+    assert!(sources.iter().all(|k| c.uploads.contains_key(k)), "a CPU-mixed transition frame evicted a reusable upload");
+    assert_eq!(c.uploads.len(), 24, "and left nothing of its own");
+    // a frame over the memory budget, which goes whole to the CPU
+    let (bw, bh) = (3840usize, 2160usize);
+    let big = |v: f32| PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, vec![v; 4])), Affine::scale(bw as f64, bh as f64), 1.0, Blend::Normal);
+    let steps = (0..3)
+        .map(|_| PlanStep::Transition {
+            inputs: [vec![big(0.9)], vec![big(0.1)]],
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+            progress: 0.5,
+            scale: 1.0,
+        })
+        .collect();
+    c.composite(&FramePlan::Composite { width: bw, height: bh, steps });
+    assert_eq!(c.cpu_fallback_frames, 1, "the frame went whole to the CPU");
+    assert!(sources.iter().all(|k| c.uploads.contains_key(k)), "a whole-frame CPU fallback evicted a reusable upload");
+    assert_eq!(c.uploads.len(), 24);
+}
