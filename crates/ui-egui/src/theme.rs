@@ -176,7 +176,9 @@ impl Tokens {
             separator: Color32::from_rgb(0x30, 0x30, 0x30),
             row_alt: Color32::from_rgb(0x21, 0x21, 0x21),
             row_selected: Color32::from_rgb(0x33, 0x33, 0x33),
-            hot_text: Color32::from_rgb(0x40, 0x96, 0xf3),
+            // a shade lighter than the timecode blue: 4.5:1 on a selected row too (the transcript's
+            // current word)
+            hot_text: Color32::from_rgb(0x4e, 0x9e, 0xf4),
             pill_active_bg: Color32::from_rgb(0x3a, 0x3a, 0x3a),
             clip_bar_bg: Color32::from_rgb(58, 58, 70),
             control_surface: Color32::from_rgb(0x24, 0x24, 0x24),
@@ -261,7 +263,7 @@ impl Tokens {
                 // 4.5:1 on the lighter grey panels
                 text_faint: Color32::from_rgb(0x9b, 0x9b, 0x9b),
                 // the dark theme's blue reads at 4.2:1 on this grey
-                hot_text: Color32::from_rgb(0x5a, 0xa6, 0xf6),
+                hot_text: Color32::from_rgb(0x6c, 0xb0, 0xf7),
                 timecode: Color32::from_rgb(0x5a, 0xa6, 0xf6),
                 ..dark
             },
@@ -277,7 +279,7 @@ impl Tokens {
                 // 4.5:1 on the light panels and headers (was 140: 2.7:1)
                 text_faint: Color32::from_rgb(92, 92, 92),
                 // the dark theme's blue read at 2.5:1 on light grey: links and timecodes darker
-                hot_text: Color32::from_rgb(0x0f, 0x58, 0xbf),
+                hot_text: Color32::from_rgb(0x0d, 0x4e, 0xaa),
                 timecode: Color32::from_rgb(0x0f, 0x58, 0xbf),
                 icon: Color32::from_rgb(60, 60, 60),
                 hover: Color32::from_rgb(210, 210, 210),
@@ -765,6 +767,11 @@ mod contrast_tests {
                         let r = ratio(fg, bg);
                         assert!(r >= 4.5, "{kind:?} accessible={accessible}: {name} on {bg_name} is {r:.2}:1");
                     }
+                }
+                // the transcript's current word (hot_text) on a selected or hovered row
+                for (bg_name, bg) in [("row_selected", t.row_selected), ("hover", t.hover)] {
+                    let r = ratio(t.hot_text, bg);
+                    assert!(r >= 4.5, "{kind:?} accessible={accessible}: hot_text on {bg_name} is {r:.2}:1");
                 }
                 assert!(ratio(Color32::WHITE, t.accent) >= 4.5, "{kind:?}: white on the accent");
             }
