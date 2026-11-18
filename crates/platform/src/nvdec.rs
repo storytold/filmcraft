@@ -1,10 +1,16 @@
-//! Hardware decoding through NVDEC (Linux, NVIDIA's proprietary driver).
+//! Hardware decoding through NVDEC (NVIDIA's driver on Linux and 64-bit Windows).
 //!
 //! Unlike VA-API, NVDEC brings its own stream parser (`libnvcuvid`): [`cuvid::Session`] is fed
 //! Annex B access units and returns pictures in presentation order, read back from the GPU through
 //! the CUDA driver. Both libraries are loaded at run time; without them there is no NVDEC decoder,
 //! never a failure to start. H.264 8-bit and HEVC 8- / 10-bit, 4:2:0 progressive; everything else
-//! stays with VA-API or in software.
+//! stays with VA-API (Linux), Media Foundation (Windows) or in software.
+//!
+//! The libraries: `libnvcuvid.so.1` and `libcuda.so.1` on Linux, `nvcuvid.dll` and `nvcuda.dll` on
+//! Windows. On Windows NVDEC needs no Store codec (Media Foundation's HEVC decoder comes with the
+//! HEVC Video Extensions; without them HEVC was decoded in software). Two NVDEC structures hold C
+//! `unsigned long` fields, 64-bit on Linux and 32-bit on Windows: `ffi` declares them as
+//! `c_ulong`, and `abi_tests` checks both layouts.
 //!
 //! The FFI is in [`ffi`] (declarations) and [`cuvid`] (calls); the rest of this module is safe code.
 

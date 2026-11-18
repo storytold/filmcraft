@@ -78,15 +78,23 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
   ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
   NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
-- **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
-  8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
-  run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
+- **Linux and 64-bit Windows: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's driver (`nvdec/`): H.264
+  8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` (Linux) or
+  `nvcuvid.dll` and `nvcuda.dll` (Windows, part of the display driver) are loaded at run time;
+  without them (or without a device) nothing is registered. On Windows the factory goes in front
+  of Media Foundation's: Media Foundation's HEVC decoder exists only with the Microsoft Store's HEVC
+  Video Extensions, and without them HEVC was decoded in software (4K 59.94 fps DJI footage: about
+  25 ms a picture, nearly every frame dropped). Two NVDEC structures hold C `unsigned long`
+  fields, 64-bit on Linux and 32-bit on Windows: `ffi` declares them as `c_ulong` and `abi_tests`
+  checks both layouts. NVIDIA's own parser takes the
   stream as Annex B access units, so there is no host-side DPB: `cuvid::Session` creates the decoder
   in the parser's sequence callback, decodes in its picture callback, and reads each displayed
   picture back (NV12 / P016) through the CUDA driver into the same planes as the other backends.
-  The factory goes in front of VA-API's: what NVDEC declines still reaches VA-API (another GPU),
-  then the software decoders. With both registered, `perf.stats` names NVDEC as the hardware
-  backend, also for the streams VA-API decodes. The callback state is a `Box::into_raw` allocation
+  The factory goes in front of VA-API's (Linux) or Media Foundation's (Windows): what NVDEC
+  declines still reaches that backend (another GPU), then the software decoders. With both
+  registered, `perf.stats` names NVDEC as the hardware backend, also for the streams the other one
+  decodes. `FILMCRAFT_NVDEC_CLIPS=<paths>` runs the bit-exactness test of `tests/nvdec.rs` on real
+  camera files (first two GOPs and a reseek; skipped when unset). The callback state is a `Box::into_raw` allocation
   the parser and `Session` reach through the same pointer, freed in `Drop`. After a start at a CRA picture its RASL pictures are not fed (no
   decoder outputs them, and the parser would otherwise show the CRA picture with the last one's
   timestamp). A seek recreates the parser and keeps the decoder.

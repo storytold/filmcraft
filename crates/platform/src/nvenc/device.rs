@@ -64,8 +64,10 @@ mod directx {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod cuda {
+/// The CUDA driver API's primary context: NVENC's device on Linux, and NVDEC's on Linux and
+/// 64-bit Windows (`libcuda.so.1` / `nvcuda.dll`, both part of NVIDIA's display driver).
+#[cfg(any(target_os = "linux", all(target_os = "windows", target_pointer_width = "64")))]
+pub(crate) mod cuda {
     use super::c_void;
     use std::marker::PhantomData;
     use std::rc::Rc;
@@ -76,6 +78,12 @@ mod cuda {
     type Push = unsafe extern "C" fn(*mut c_void) -> i32;
     type Pop = unsafe extern "C" fn(*mut *mut c_void) -> i32;
     type CopyToHost = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
+
+    /// The CUDA driver library NVIDIA's display driver installs.
+    #[cfg(target_os = "linux")]
+    const LIBRARY: &str = "libcuda.so.1";
+    #[cfg(target_os = "windows")]
+    const LIBRARY: &str = "nvcuda.dll";
 
     /// A thread-local context stack entry; it cannot move to another thread.
     pub struct Current<'a> {
@@ -94,12 +102,13 @@ mod cuda {
     }
 
     impl Device {
+        #[cfg(target_os = "linux")]
         pub const KIND: u32 = super::super::ffi::NV_ENC_DEVICE_TYPE_CUDA;
         pub fn new() -> Result<Self, String> {
             // SAFETY: CUDA driver API signatures from NVIDIA's public Driver API reference.
             // Resolve all symbols before retaining; keep the library alive until after release.
             unsafe {
-                let library = libloading::Library::new("libcuda.so.1").map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
+                let library = libloading::Library::new(LIBRARY).map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
                 let init: libloading::Symbol<Init> = library.get(b"cuInit\0").map_err(|e| e.to_string())?;
                 let get: libloading::Symbol<GetDevice> = library.get(b"cuDeviceGet\0").map_err(|e| e.to_string())?;
                 let retain: libloading::Symbol<Retain> = library.get(b"cuDevicePrimaryCtxRetain\0").map_err(|e| e.to_string())?;
@@ -125,6 +134,8 @@ mod cuda {
                 Ok(Self { context, ordinal, release, _library: library })
             }
         }
+        /// The context handle NVENC's session is opened with (Linux; on Windows NVENC uses Direct3D).
+        #[cfg(target_os = "linux")]
         pub fn as_raw(&self) -> *mut c_void {
             self.context
         }

@@ -65,6 +65,23 @@ integrated GPU's memory is system memory, the discrete GPU's readback crosses PC
 
 Revisit once decoded surfaces go to the renderer without the readback.
 
+### NVDEC on Windows (DJI 4K 59.94 fps HEVC)
+
+Media Foundation's HEVC decoder exists only with the Microsoft Store's HEVC Video Extensions.
+Without them FilmCraft decoded HEVC in software. NVDEC (`nvcuvid.dll`, part of NVIDIA's driver) now
+goes in front of Media Foundation on 64-bit Windows. Same laptop, `DJI_0958.MP4` (3840 × 2160,
+59.94 fps, HEVC Main 8-bit, 123 Mbps), about 8 s of playback per run:
+
+| | Before (software HEVC) | NVDEC |
+|---|---|---|
+| frames shown / dropped | 9–32 / 439–477 (4 runs) | 458–475 / 0–1 (3 runs) |
+| pictures decoded hardware / software | 0 / 256–285 | 471–487 / 0 |
+| decoder ms per picture | 24.4–25.8 | 12.2–12.5 |
+| frame-job source fetch p50 (ms) | 95–101 | 12.8–13.3 |
+
+The pictures are bit-exact with the software decoder (`FILMCRAFT_NVDEC_CLIPS` test, two DJI clips
+and a 4K H.264 clip, including after a reseek).
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and
