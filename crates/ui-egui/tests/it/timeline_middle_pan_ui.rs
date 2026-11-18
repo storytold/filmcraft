@@ -164,3 +164,60 @@ fn a_middle_button_drag_moves_the_audio_tracks_over_the_audio_tracks() {
     assert!(a1 > a0 + 20.0, "dragging up over the audio tracks scrolls them: {a0} -> {a1}");
     assert_eq!(v1, v0, "the video tracks stay where they were");
 }
+
+/// With the Hand tool, a primary-button drag that starts over the audio tracks moves the audio
+/// tracks and leaves the video tracks alone — the same half-aware panning as the middle button
+/// (#2536).
+#[test]
+fn a_hand_tool_drag_over_the_audio_tracks_moves_only_the_audio_tracks() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"tool": "Hand"}));
+    d.setup();
+    // tall audio tracks, so there is somewhere to scroll them
+    d.app().ui.timeline.audio_track_h = 160.0;
+    d.frames(4);
+    let tracks = d.rect("timeline.tracks");
+    let from = egui::pos2(tracks.center().x, tracks.min.y + tracks.height() * 0.75);
+    let (v0, a0) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    d.send(egui::Event::PointerMoved(from));
+    d.send(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    for k in 1..=8 {
+        d.send(egui::Event::PointerMoved(from - egui::vec2(0.0, 60.0 * k as f32 / 8.0)));
+    }
+    d.send(egui::Event::PointerButton {
+        pos: from - egui::vec2(0.0, 60.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(2);
+    let (v1, a1) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    assert!(a1 > a0 + 20.0, "the Hand tool scrolls the audio half from the audio half: {a0} -> {a1}");
+    assert_eq!(v1, v0, "the video tracks stay where they were");
+}
+
+/// Escape in the middle of a pan puts the audio scroll back exactly where the drag began (#580
+/// applied to the half-aware pan of #2536): the release commits nothing.
+#[test]
+fn cancelling_a_pan_drag_restores_the_scroll_it_moved() {
+    let mut d = Driver::demo();
+    d.setup();
+    d.app().ui.timeline.audio_track_h = 160.0;
+    d.frames(4);
+    let tracks = d.rect("timeline.tracks");
+    let from = egui::pos2(tracks.center().x, tracks.min.y + tracks.height() * 0.75);
+    let (v0, a0) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    // press and drag, but do not release
+    d.send(egui::Event::PointerMoved(from));
+    d.middle(from, true);
+    for k in 1..=8 {
+        d.send(egui::Event::PointerMoved(from - egui::vec2(0.0, 60.0 * k as f32 / 8.0)));
+    }
+    let a_mid = d.app().ui.timeline.a_scroll;
+    assert!(a_mid > a0 + 20.0, "the drag scrolled the audio tracks first: {a0} -> {a_mid}");
+    d.send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    d.frames(2);
+    let (v2, a2) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    assert_eq!(a2, a0, "Escape restores the audio scroll: {a0} -> {a_mid} -> {a2}");
+    assert_eq!(v2, v0, "the video scroll was never moved and stays put");
+}
