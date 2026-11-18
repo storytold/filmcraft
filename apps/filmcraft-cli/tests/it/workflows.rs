@@ -218,18 +218,17 @@ fn pcm(ffmpeg: &Path, input: &str, stream: usize) -> Vec<f32> {
     raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
 }
 
-/// Times (s) where the signal rises above a quarter of its peak, at least 0.2 s apart.
-fn onsets(x: &[f32]) -> Vec<f64> {
-    let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
+/// Sample indices where the 48 kHz signal crosses a quarter of its peak after more than 0.2 s of quiet.
+fn onsets(x: &[f32]) -> Vec<usize> {
+    let threshold = x.iter().fold(0f32, |m, v| m.max(v.abs())) / 4.0;
     let mut out = Vec::new();
-    let mut last = f64::NEG_INFINITY;
-    for (i, block) in x.chunks(48).enumerate() {
-        let t = i as f64 * 48.0 / 48_000.0;
-        if block.iter().any(|v| v.abs() > peak / 4.0) && t - last > 0.2 {
-            out.push(t);
-        }
-        if block.iter().any(|v| v.abs() > peak / 4.0) {
-            last = t;
+    let mut last = None;
+    for (sample, value) in x.iter().enumerate() {
+        if value.abs() > threshold {
+            if last.is_none_or(|previous| sample - previous > 9_600) {
+                out.push(sample);
+            }
+            last = Some(sample);
         }
     }
     out
@@ -367,7 +366,8 @@ fn verify_phone_export(ffmpeg: &Path, ffprobe: &Path, src: &str, out: &str) {
     let got_pcm = pcm(ffmpeg, out, 0);
     let beeps = onsets(&got_pcm);
     assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
-    for (beep, flash) in beeps.iter().zip([1.0, 59.0 / 30.0]) {
+    for (&beep_sample, flash) in beeps.iter().zip([1.0, 59.0 / 30.0]) {
+        let beep = beep_sample as f64 / 48_000.0;
         assert!((beep - flash).abs() <= 1.0 / 30.0, "beep at {beep:.3} s, flash at {flash:.3} s");
     }
     let change = db(rms(&got_pcm, 1.01, 1.09) / rms(&src_pcm, 1.01, 1.09));
@@ -503,16 +503,26 @@ fn presentation_frames(ffprobe: &Path, path: &str, stream: &str) -> Vec<Value> {
 }
 
 /// Map a position in the decoded 48 kHz PCM to the timestamp of its audio frame.
-fn audio_presentation_time(frames: &[Value], decoded_seconds: f64) -> f64 {
-    let mut sample = (decoded_seconds * 48_000.0).round() as u64;
+fn audio_presentation_time(frames: &[Value], decoded_sample: usize) -> f64 {
+    let mut sample = decoded_sample;
     for frame in frames {
-        let count = frame["nb_samples"].as_u64().unwrap();
+        let count = usize::try_from(frame["nb_samples"].as_u64().unwrap()).unwrap();
         if sample < count {
             return num(&frame["pts_time"]) + sample as f64 / 48_000.0;
         }
         sample -= count;
     }
-    panic!("beep at PCM offset {decoded_seconds:.3} s is outside the probed audio frames");
+    panic!("beep at PCM sample {decoded_sample} is outside the probed audio frames");
+}
+
+#[test]
+fn onset_at_a_frame_boundary_uses_the_crossing_sample() {
+    let mut samples = vec![0.0; 2048];
+    samples[1025] = 1.0;
+    let frame_info = [serde_json::json!({"nb_samples": 1024, "pts_time": "0.000000"}), serde_json::json!({"nb_samples": 1024, "pts_time": "0.100000"})];
+    let beeps = onsets(&samples);
+    assert_eq!(beeps, [1025]);
+    assert!((audio_presentation_time(&frame_info, beeps[0]) - (0.1 + 1.0 / 48_000.0)).abs() < 1e-9);
 }
 
 /// One bad file in a batch must not block editing and exporting the good clip.
