@@ -1655,10 +1655,7 @@ mod tests {
 
         let no_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
         let items = menu_items(&no_cloud);
-        assert!(
-            items.iter().all(|it| !matches!(it.id.as_str(), "file.cloudOpen" | "file.cloudSaveAs")),
-            "cloud entries must be absent without a backend"
-        );
+        assert!(items.iter().all(|it| !matches!(it.id.as_str(), "file.cloudOpen" | "file.cloudSaveAs")), "cloud entries must be absent without a backend");
 
         let mut with_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
         with_cloud.cloud.connect(Noop);
