@@ -64,3 +64,16 @@ fn damaged_adts_files_fail_without_panicking() {
         assert!(r.is_ok(), "case {i} panicked");
     }
 }
+
+/// A stream cut mid-frame must fail, not import the surviving prefix (#2598): a partial file
+/// landing on the timeline a few frames short of its true length is a silent wrong answer.
+#[test]
+fn a_truncated_adts_stream_is_rejected() {
+    let good = adts_tone(1, 1);
+    // whole frames plus a fragment of the last one
+    let cut = good[..good.len() - 5].to_vec();
+    let r = filmcraft_codecs::open_bytes("cut.aac", Arc::from(cut));
+    assert!(r.is_err(), "a stream cut mid-frame must not import as a short success");
+    // the intact stream still imports
+    assert!(filmcraft_codecs::open_bytes("tone.aac", Arc::from(good)).is_ok());
+}
