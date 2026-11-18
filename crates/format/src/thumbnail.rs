@@ -210,7 +210,18 @@ fn span(i: usize, out: usize, len: usize) -> (usize, usize) {
 /// are not a FilmCraft project, have no thumbnail there, or it cannot be read; never an error.
 /// `bytes` may be cut off anywhere after the thumbnail.
 pub fn scan_thumbnail(bytes: &[u8]) -> Option<Thumbnail> {
-    struct Finder<'a>(&'a mut Option<ThumbnailJson>);
+    find(bytes, false)
+}
+
+/// The thumbnail of a whole project file, wherever its key is: [`scan_thumbnail`], but a file
+/// whose thumbnail follows `project` (rewritten by another tool) keeps it too. The project is
+/// skipped, not built.
+pub(crate) fn find_thumbnail(bytes: &[u8]) -> Option<Thumbnail> {
+    find(bytes, true)
+}
+
+fn find(bytes: &[u8], past_project: bool) -> Option<Thumbnail> {
+    struct Finder<'a>(&'a mut Option<ThumbnailJson>, bool);
     impl<'de> Visitor<'de> for Finder<'_> {
         type Value = ();
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -229,8 +240,8 @@ pub fn scan_thumbnail(bytes: &[u8]) -> Option<Thumbnail> {
                             return Ok(());
                         }
                     }
-                    // the project (megabytes) and what follows it are not read
-                    "project" => return Ok(()),
+                    // scanning the start of a file: the project (megabytes) and what follows it are not read
+                    "project" if !self.1 => return Ok(()),
                     _ => {
                         map.next_value::<IgnoredAny>()?;
                     }
@@ -243,7 +254,7 @@ pub fn scan_thumbnail(bytes: &[u8]) -> Option<Thumbnail> {
     let mut de = serde_json::Deserializer::from_slice(bytes);
     // Stopping early leaves the rest of the document unread, which serde_json reports as an
     // error: what was found before it is what counts.
-    let _ = serde::Deserializer::deserialize_map(&mut de, Finder(&mut found));
+    let _ = serde::Deserializer::deserialize_map(&mut de, Finder(&mut found, past_project));
     found.and_then(Thumbnail::from_json)
 }
 

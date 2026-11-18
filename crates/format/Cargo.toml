@@ -11,9 +11,11 @@ workspace = true
 
 [dependencies]
 base64 = "0.23"
+craft-fcproj-format = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-media = { workspace = true }
 log = { workspace = true }
+# the thumbnail's JSON shape and its error type (the rest of the file grammar is craft-fcproj-format's)
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
