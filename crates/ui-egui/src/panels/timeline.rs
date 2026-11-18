@@ -23,9 +23,7 @@ use crate::icons::{self, Icon};
 use crate::state::{ThumbnailMode, TimelineView, Tool};
 use crate::theme::Tokens;
 
-use super::timeline_hit::{
-    EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, hit_secondary, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect,
-};
+use super::timeline_hit::{EDGE_PX, EdgeKind, Grab, edge_geometry, grab_at, marker_at, marker_range_rect, marker_rect, marker_under_pointer, work_area_rect};
 pub use super::timeline_hit::{Hit, ROLL_PX, hit, selection_trim_kind};
 
 mod clips;
@@ -48,12 +46,13 @@ use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
-use layout::video_row_tops;
-pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
+use layout::{track_scroll_max, video_row_tops};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
+pub use scrollbars::{controls_listening, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden, sync_slider_bindings, zoombar_cursor_watchdog};
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
 pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};
@@ -64,6 +63,11 @@ use waveforms::{source_peaks, waveform_display_gain, waveform_zone_height};
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
+/// The side track sliders' column: 30 % narrower than the zoom bar's band.
+const TRACK_SLIDER_W: f32 = 12.0;
+/// Clear space around the side track sliders -- clear of the tracks on the left and of the
+/// window's right edge on the right, so neither cap can clip into either.
+const TRACK_SLIDER_GAP: f32 = 2.5;
 const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).
@@ -109,9 +113,59 @@ pub struct TlState {
     /// Source peak of each cached peak list (keyed by the list's address), for the waveform
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<PeakKey, (usize, f32)>,
-    zoom_anchor: Option<(f64, f32)>,
+    pub(crate) zoom_anchor: Option<(f64, f32)>,
     /// The zoom (points a second) the video thumbnails are laid out at while the view is zooming (#1094).
     thumb_pps: Option<f64>,
+    /// While a zoom-bar Shift drag has the OS cursor pinned: the exact position where Shift went
+    /// down. Every frame the cursor is warped back there (invisible, confined to the window), so
+    /// it can never hit any edge and reappears on release at the very same pixel. `None` also when
+    /// no drag has it.
+    pub zoombar_cursor_lock: Option<Pos2>,
+    pub zoombar_track_control: bool,
+    /// One frame after a zoom-bar Shift drag releases the pinned cursor: the unlock warp settles
+    /// as egui pointer motion in that frame, so movement is skipped once to keep it from showing
+    /// up as a bogus reverse nudge on the slider.
+    pub zoombar_unlock_catchup: bool,
+    /// A side track slider is mid-drag this frame: its Shift cursor pin is legitimate (the
+    /// watchdog otherwise only trusts the zoom bar's own drags).
+    pub track_slider_dragging: bool,
+    /// Track slider motion targets for Smooth Animations: `[video height, video scroll, audio
+    /// height, audio scroll]`. The double-click moves land on the OTHER slider and ease there;
+    /// a drag writes straight through and cancels the targets.
+    pub track_anim: Option<[f32; 4]>,
+    /// Scroll applied by playback auto-follow in the last Timeline draw. The next view sync can
+    /// persist it without treating it as a user edit.
+    pub playback_auto_scroll: Option<(ItemId, f64)>,
+    /// The track sliders' end-circle ring width, eased between its states while Smooth Animations
+    /// is on (the zoom bar's [`Self::zoombar_ring_w`] on its end) -- one per slider, so the video
+    /// and audio sliders can never fight over one shared number.
+    pub track_ring_w: [f32; 2],
+    /// Playhead Centering is holding the view: a zoom via the zoom bar's edges has brought the
+    /// playhead into view. The center is then pulled toward the playhead GRADUALLY as the view
+    /// keeps collapsing (nothing happens the moment it enters), fully centered after roughly the
+    /// first halving of the visible range. Dragging the slider's middle clears it — that is the
+    /// way out.
+    pub playhead_captured: bool,
+    /// The visible seconds when Playhead Centering caught the playhead: the pull toward it ramps
+    /// in as the view collapses below this. 0.0 when nothing is captured.
+    pub playhead_capture_vis: f64,
+    /// Where in the visible range the playhead sat when it was caught (0 = left edge, 1 = right):
+    /// gravity eases that fraction toward 1/2 as the view collapses.
+    pub playhead_capture_u: f64,
+    /// The pointer is on one of the zoom bar's end circles this frame: the cursor points like a
+    /// link there. Overrides the tracks' grab cursors (which run later in the frame).
+    pub zoombar_point_cursor: bool,
+    /// The confirmation dialog asking to keep the zoom scroll bar hidden is open.
+    pub zoombar_hide_dialog_open: bool,
+    /// The same "how to bring it back" dialog, for the side track sliders.
+    pub track_hide_dialog_open: bool,
+    /// The track sliders' settings popup: where it sits, or None while closed.
+    pub track_slider_settings_pos: Option<Pos2>,
+    /// The zoom-bar settings popup opened from the Timeline's menu ("Timeline Slider Settings",
+    /// shown only while the bar is hidden): where it sits, or None while closed.
+    pub zoombar_settings_pos: Option<Pos2>,
+    /// Animated ring width of the zoom bar's two end circles (1.5 at rest).
+    pub zoombar_ring_w: f32,
     /// Show Duplicate Frame Markers: the markers of a sequence, with the session revision, the
     /// sequence and the project they were worked out for.
     duplicates: Option<(DuplicatesKey, DuplicateMarkers)>,
@@ -284,9 +338,21 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
 
 /// Draw the Timeline and run its interaction. A missing or damaged active sequence shows the empty state; `stable_dt` is capped, and a project snapshot is kept
 /// while commands mutate the session.
+// one draw pass in visual order (rows, backgrounds, bars, interaction); splitting it would
+// duplicate the layout every helper needs
+#[allow(clippy::cognitive_complexity)]
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
+    if !app.session.state.timeline_ui.track_slider_decouple && app.session.state.timeline_ui.track_slider_snap {
+        app.session.state.timeline_ui.track_slider_snap = false;
+        app.session.project_view_changed();
+    }
+    // the Hide Slider window: a dialog of its own, shown even after the bar itself is gone
+    scrollbars::zoombar_hide_dialog(app, &ctx);
+    // and the sliders' settings, reachable from the Timeline's own menu while they are hidden
+    scrollbars::zoombar_settings_popup(app, ui);
+    scrollbars::track_slider_settings_popup(app, ui);
     let Some(seq_id) = app.session.state.active_sequence else {
         empty_state(app, ui, rect);
         return;
@@ -301,15 +367,57 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     };
     let rate = seq.settings.frame_rate;
     let header_w = app.ui.timeline.header_w;
-    let content = Rect::from_min_max(pos2(rect.min.x + header_w, rect.min.y + TOP_H), pos2(rect.max.x - SCROLLBAR_H, rect.max.y - SCROLLBAR_H));
-    let ruler = Rect::from_min_max(pos2(content.min.x, rect.min.y + TOP_H - RULER_H), pos2(content.max.x, rect.min.y + TOP_H));
+    // Hide Slider / Alternate Slider Position: normally the bar is a band at the bottom edge and
+    // the tracks stop above it; Alternate Slider Position moves the same band to the top edge,
+    // just above the ruler, and everything under it (timecode, toolbar and ruler included) moves
+    // down by its height; hidden the band is gone and the rest fills the whole panel.
+    let bar_hidden = app.session.state.timeline_ui.zoom_bar_hidden;
+    let tracks_hidden = app.session.state.timeline_ui.track_slider_hidden;
+    let bar_top = !bar_hidden && app.session.state.timeline_ui.alternate_slider_position;
+    let top_off = if bar_top { SCROLLBAR_H } else { 0.0 };
+    let bottom_off = if !bar_hidden && !bar_top { SCROLLBAR_H } else { 0.0 };
+    // the side track sliders' column: hidden, the tracks fill its 17 pt. Alternate Slider
+    // Position (their own setting) moves the column to the LEFT edge of the Timeline, in front
+    // of the track headers -- everything else shifts right by it.
+    let side_off = if tracks_hidden { 0.0 } else { TRACK_SLIDER_W + 2.0 * TRACK_SLIDER_GAP };
+    let side_left = !tracks_hidden && app.session.state.timeline_ui.track_slider_alternate_position;
+    // `full` is the whole panel (backgrounds, the A/V divider and the zoom band span it);
+    // `rect` below is the body everything else lays out in, shifted when the sliders are left
+    let full = rect;
+    let rect = if side_left { Rect::from_min_max(pos2(rect.min.x + side_off, rect.min.y), rect.max) } else { rect };
+    let content = Rect::from_min_max(
+        pos2(rect.min.x + header_w, rect.min.y + top_off + TOP_H),
+        pos2(rect.max.x - if side_left { 0.0 } else { side_off }, rect.max.y - bottom_off),
+    );
+    let ruler = Rect::from_min_max(pos2(content.min.x, content.min.y - RULER_H), pos2(content.max.x, content.min.y));
     app.last_timeline_width = content.width();
+    app.last_timeline_center_x = content.center().x;
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, 0.0, t.panel_bg);
+    painter.rect_filled(full, 0.0, t.panel_bg);
 
     // ---- sequence tabs strip (top-left header block)
     // ---- animated zoom / scroll
+    let early_zoom = ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-extra-action")));
+    if matches!(early_zoom, Some(8..=10)) && app.session.state.timeline_ui.playhead_centering {
+        let slot = early_zoom.unwrap_or(8);
+        ctx.data_mut(|d| d.remove_temp::<usize>(egui::Id::unique("tl-controls-zoom-extra-action")));
+        let ph = app.session.playhead().seconds();
+        let view_w = content.width();
+        let v = &mut app.ui.timeline;
+        let visible = ph >= v.scroll && ph <= v.scroll + f64::from(view_w) / v.pps.max(1e-6);
+        v.scroll = (ph - f64::from(view_w) / (2.0 * v.pps.max(1e-6))).max(0.0);
+        v.target_scroll = v.scroll;
+        let factor = if slot == 10 { 1.0 / 1.6 } else { 1.6 };
+        layout::zoom_about(v, factor, ph, view_w, app.session.state.timeline_ui.max_zoom_secs());
+        v.target_scroll = (ph - f64::from(view_w) / (2.0 * v.target_pps.max(1e-6))).max(0.0);
+        if !visible {
+            v.pps = v.target_pps;
+            v.scroll = v.target_scroll;
+        }
+        app.tl.zoom_anchor = Some((ph, content.center().x));
+    }
     animate_view(app, &ctx, content, seq_id, seq);
+    animate_track_sliders(app, &ctx);
     let pps = app.ui.timeline.pps;
     let scroll = app.ui.timeline.scroll;
 
@@ -319,21 +427,31 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let caption_area = Rect::from_min_max(pos2(rect.min.x, content.min.y), pos2(content.max.x, content.min.y + cap_n as f32 * super::timeline_captions::ROW_H));
     let cap_h = if cap_n > 0 { caption_area.height() + DIVIDER_H } else { 0.0 };
     let tracks_area = Rect::from_min_max(pos2(content.min.x, content.min.y + cap_h), content.max);
-    let split_y = tracks_area.min.y + (tracks_area.height() - DIVIDER_H) * app.ui.timeline.split;
+    let split_y = tracks_area.min.y + (tracks_area.height() - DIVIDER_H - MASTER_H).max(0.0) * app.ui.timeline.split;
     let video_area = Rect::from_min_max(pos2(rect.min.x, tracks_area.min.y), pos2(content.max.x, split_y));
     let audio_area = Rect::from_min_max(pos2(rect.min.x, split_y + DIVIDER_H), pos2(content.max.x, tracks_area.max.y - MASTER_H));
+    let nv = seq.video_tracks.len();
+    let na = seq.audio_tracks.len();
+    let min_v = scrollbars::track_min_height(video_area.height(), nv as f32 + 1.0 / 3.0);
+    let min_a = scrollbars::track_min_height(audio_area.height(), na as f32 + 1.0 / 3.0);
+    app.ui.timeline.video_track_h = app.ui.timeline.video_track_h.max(min_v);
+    app.ui.timeline.audio_track_h = app.ui.timeline.audio_track_h.max(min_a);
     let vh = app.ui.timeline.video_track_h;
     let ah = app.ui.timeline.audio_track_h;
     let mut rows = Vec::new();
-    let nv = seq.video_tracks.len();
-    let (video_tops, max_vs) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
+    let (video_tops, _) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
+    let target_vh = app.tl.track_anim.map_or(vh, |target| target[0].max(min_v));
+    let max_vs = track_scroll_max(nv as f32 + 1.0 / 3.0, target_vh, video_area.height());
     for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
     }
-    let na = seq.audio_tracks.len();
-    let max_as = (na as f32 * ah - audio_area.height()).max(0.0);
-    app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, max_as);
+    // a third of a track's height of empty space below the last audio track (space for a new
+    // track), the same reveal the video side keeps above its topmost row
+    let current_max_as = track_scroll_max(na as f32 + 1.0 / 3.0, ah, audio_area.height());
+    app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, current_max_as);
+    let target_ah = app.tl.track_anim.map_or(ah, |target| target[2].max(min_a));
+    let max_as = track_scroll_max(na as f32 + 1.0 / 3.0, target_ah, audio_area.height());
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
@@ -359,10 +477,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if let Some(l) = seq.track(r.track).and_then(|tr| tr.label) {
             painter.rect_filled(row, 0.0, label_color(app, l).gamma_multiply(TRACK_LANE_TINT));
         }
-        painter.line_segment([pos2(row.min.x, r.rect.max.y - 0.5), pos2(row.max.x, r.rect.max.y - 0.5)], Stroke::new(1.0, t.separator));
+        painter.with_clip_rect(clip).line_segment([pos2(row.min.x, r.rect.max.y - 0.5), pos2(row.max.x, r.rect.max.y - 0.5)], Stroke::new(1.0, t.separator));
         // the top video track also gets a line above it
         if r.kind == TrackKind::Video && r.index + 1 == nv {
-            painter.line_segment([pos2(row.min.x, r.rect.min.y + 0.5), pos2(row.max.x, r.rect.min.y + 0.5)], Stroke::new(1.0, t.separator));
+            painter
+                .with_clip_rect(clip)
+                .line_segment([pos2(row.min.x, r.rect.min.y + 0.5), pos2(row.max.x, r.rect.min.y + 0.5)], Stroke::new(1.0, t.separator));
         }
     }
     // in/out shading across tracks
@@ -399,15 +519,26 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- track headers
     draw_headers(app, ui, seq, &rows, rect, vclip, aclip, &t);
     // divider between video and audio
-    let div = Rect::from_min_max(pos2(rect.min.x, split_y), pos2(content.max.x, split_y + DIVIDER_H));
+    // the divider runs the whole width of the panel, so it passes between the side sliders too
+    let div = Rect::from_min_max(pos2(full.min.x, split_y), pos2(full.max.x, split_y + DIVIDER_H));
     painter.rect_filled(div, 0.0, t.app_bg);
-    let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::drag());
+    let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::click_and_drag());
     if div_resp.hovered() || div_resp.dragged() {
         ctx.set_cursor_icon(CursorIcon::ResizeVertical);
     }
+    // a triple click puts the divider back where it started
+    if div_resp.triple_clicked() {
+        app.ui.timeline.split = 0.5;
+        ctx.request_repaint();
+    }
     if div_resp.dragged() {
-        let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H).max(1.0);
-        app.ui.timeline.split = f.clamp(0.1, 0.9);
+        let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H - MASTER_H).max(1.0);
+        // neither side may collapse (the side sliders live on these areas) AND the travel up and
+        // down is equal: the same pad (the Mix row plus the minimum area) on both sides of the
+        // middle. pad <= 0.5, so lo <= 0.5 <= hi always.
+        let th = (tracks_area.height() - DIVIDER_H - MASTER_H).max(1.0);
+        let pad = (30.0 / th).min(0.5);
+        app.ui.timeline.split = f.max(pad).min(1.0 - pad);
     }
     // master track
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
@@ -421,8 +552,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         super::timeline_captions::paint(app, ui, seq, caption_area, &layout, &t);
     }
 
-    // ---- top block: timecode + toggles, ruler
-    draw_top(app, ui, rect, seq, &layout, &t, seq_id);
+    // ---- top block: timecode + toggles, ruler. It stays where it is even when the track
+    // sliders take the left edge (only the headers and tracks move over for them)
+    draw_top(app, ui, Rect::from_min_max(pos2(rect.min.x, rect.min.y + top_off), rect.max), seq, &layout, &t, seq_id);
 
     // ---- playhead
     let ph = app.shown_playhead();
@@ -445,32 +577,308 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
     }
 
-    // ---- scroll bars
-    zoom_scrollbar(
-        app,
-        ui,
-        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
-        seq.duration().seconds(),
-        &t,
-    );
-    vertical_scrollbar(
-        ui,
-        Rect::from_min_max(pos2(content.max.x, video_area.min.y), pos2(rect.max.x, video_area.max.y)),
-        &mut app.ui.timeline.v_scroll,
-        max_vs,
-        true,
-        &t,
-        "vs",
-    );
-    vertical_scrollbar(
-        ui,
-        Rect::from_min_max(pos2(content.max.x, audio_area.min.y), pos2(rect.max.x, audio_area.max.y)),
-        &mut app.ui.timeline.a_scroll,
-        max_as,
-        false,
-        &t,
-        "as",
-    );
+    // ---- scroll bars (the zoom bar is not even called while hidden: nothing of it may run)
+    app.tl.zoombar_point_cursor = false;
+    app.tl.track_slider_dragging = false;
+    if !bar_hidden {
+        let bar = if bar_top {
+            // Alternate Slider Position: the same full-width band at the top edge
+            Rect::from_min_max(pos2(full.min.x + 7.0, full.min.y + 2.0), pos2(full.max.x - 7.0, full.min.y + SCROLLBAR_H - 2.0))
+        } else {
+            Rect::from_min_max(pos2(full.min.x + 7.0, full.max.y - SCROLLBAR_H + 2.0), pos2(full.max.x - 7.0, full.max.y - 2.0))
+        };
+        zoom_scrollbar(app, ui, bar, content.width(), seq, seq.settings.frame_rate.frame_duration().seconds(), &t);
+    }
+    if let Some(dy) = ui.data_mut(|d| d.remove_temp::<f32>(egui::Id::unique("timeline-control-tracks-dy"))) {
+        let outer = if bar_top { 5.0 } else { 2.0 };
+        scrollbars::resize_tracks_from_timeline(
+            &mut app.ui.timeline.video_track_h,
+            &mut app.ui.timeline.v_scroll,
+            video_area.height(),
+            nv as f32 + 1.0 / 3.0,
+            (video_area.height() - outer - 3.0).max(1.0),
+            dy,
+        );
+        scrollbars::resize_tracks_from_timeline(
+            &mut app.ui.timeline.audio_track_h,
+            &mut app.ui.timeline.a_scroll,
+            audio_area.height(),
+            na as f32 + 1.0 / 3.0,
+            (audio_area.max.y - outer - split_y - DIVIDER_H - 3.0).max(1.0),
+            dy,
+        );
+        app.tl.track_anim = None;
+        ctx.request_repaint();
+    }
+    if let Some(slot) = ui.ctx().data_mut(|d| d.remove_temp::<usize>(egui::Id::unique("tl-controls-zoom-extra-action"))) {
+        let view_w = content.width();
+        let wheel_delta = ui.ctx().data_mut(|d| d.remove_temp::<f32>(egui::Id::unique("timeline-controls-wheel-delta"))).unwrap_or(0.0);
+        match slot {
+            4 => {
+                let p = ctx.pointer_hover_pos().unwrap_or(content.center());
+                let video = p.y < split_y;
+                let (height, scroll, window, slots) = if video {
+                    (&mut app.ui.timeline.video_track_h, &mut app.ui.timeline.v_scroll, video_area.height(), nv as f32 + 1.0 / 3.0)
+                } else {
+                    (&mut app.ui.timeline.audio_track_h, &mut app.ui.timeline.a_scroll, audio_area.height(), na as f32 + 1.0 / 3.0)
+                };
+                let min = scrollbars::track_min_height(window, slots);
+                let max = 220.0f32.max(min * 2.0);
+                let factor = (wheel_delta / 600.0).clamp(-0.3, 0.3);
+                if factor != 0.0 {
+                    let old_max = (slots * *height - window).max(0.0);
+                    let fraction = if old_max > 0.0 { (*scroll / old_max).clamp(0.0, 1.0) } else { 0.0 };
+                    *height = (*height * (1.0 + factor)).clamp(min, max);
+                    let new_max = (slots * *height - window).max(0.0);
+                    *scroll = fraction * new_max;
+                }
+            }
+            5 => {
+                if wheel_delta != 0.0 {
+                    let sign = if app.session.state.timeline_ui.inverted_controls { 1.0 } else { -1.0 };
+                    app.ui.timeline.target_scroll =
+                        (app.ui.timeline.target_scroll + sign * f64::from(wheel_delta * 10.0) / app.ui.timeline.target_pps.max(1e-6)).max(0.0);
+                    app.ui.timeline.scroll = app.ui.timeline.target_scroll;
+                }
+            }
+            6 => {
+                if wheel_delta != 0.0 {
+                    if ctx.pointer_hover_pos().is_some_and(|p| p.y < split_y) {
+                        app.ui.timeline.v_scroll += wheel_delta;
+                    } else {
+                        app.ui.timeline.a_scroll -= wheel_delta;
+                    }
+                }
+            }
+            7 => {
+                if wheel_delta != 0.0 {
+                    let p = ctx.pointer_hover_pos().unwrap_or(content.center());
+                    let anchor = app.ui.timeline.target_scroll + f64::from(p.x - content.min.x) / app.ui.timeline.target_pps.max(1e-6);
+                    let factor = (1.0 + f64::from(wheel_delta) * 0.01).clamp(0.5, 2.0);
+                    layout::zoom_about(&mut app.ui.timeline, factor, anchor, view_w, app.session.state.timeline_ui.max_zoom_secs());
+                }
+            }
+            8..=10 => {
+                let factor = if slot == 10 { 1.0 / 1.6 } else { 1.6 };
+                let ph = app.session.playhead().seconds();
+                let anchor = if app.session.state.timeline_ui.playhead_centering {
+                    ph
+                } else {
+                    app.ui.timeline.target_scroll + view_w as f64 / (2.0 * app.ui.timeline.target_pps.max(1e-6))
+                };
+                let was_visible = ph >= app.ui.timeline.scroll && ph <= app.ui.timeline.scroll + f64::from(view_w) / app.ui.timeline.pps.max(1e-6);
+                if app.session.state.timeline_ui.playhead_centering {
+                    app.ui.timeline.scroll = (ph - f64::from(view_w) / (2.0 * app.ui.timeline.pps.max(1e-6))).max(0.0);
+                    app.ui.timeline.target_scroll = app.ui.timeline.scroll;
+                }
+                app.tl.zoom_anchor = Some((anchor, content.center().x));
+                layout::zoom_about(&mut app.ui.timeline, factor, anchor, view_w, app.session.state.timeline_ui.max_zoom_secs());
+                if app.session.state.timeline_ui.playhead_centering {
+                    app.ui.timeline.target_scroll = (ph - view_w as f64 / (2.0 * app.ui.timeline.target_pps.max(1e-6))).max(0.0);
+                    if !was_visible {
+                        app.ui.timeline.pps = app.ui.timeline.target_pps;
+                        app.ui.timeline.scroll = app.ui.timeline.target_scroll;
+                    }
+                }
+            }
+            11 | 12 => {
+                app.tl.zoom_anchor = None;
+                let duration = timeline_extent(seq.duration().seconds());
+                app.ui.timeline.target_pps =
+                    (view_w.max(1.0) as f64 / duration.max(1e-9)).min(layout::max_pps(view_w, app.session.state.timeline_ui.max_zoom_secs()));
+                app.ui.timeline.target_scroll = 0.0;
+            }
+            13 => app.ui.tool = Tool::Zoom,
+            14 => {
+                app.ui.timeline.video_track_h = app.ui.timeline.video_track_h.max(min_v * 1.5).max(120.0);
+                app.ui.timeline.audio_track_h = app.ui.timeline.audio_track_h.max(min_a * 1.5).max(120.0);
+            }
+            15 => {
+                app.ui.timeline.video_track_h = min_v;
+                app.ui.timeline.audio_track_h = min_a;
+                app.ui.timeline.v_scroll = 0.0;
+                app.ui.timeline.a_scroll = 0.0;
+            }
+            16 => app.ui.timeline.audio_track_h = (app.ui.timeline.audio_track_h * 1.25).clamp(min_a, 10000.0),
+            17 => app.ui.timeline.audio_track_h = (app.ui.timeline.audio_track_h / 1.25).clamp(min_a, 10000.0),
+            _ => {}
+        }
+    }
+    let mut on_side = false;
+    if !tracks_hidden {
+        let smooth = app.session.state.timeline_ui.track_slider_smooth;
+        let inverted = app.session.state.timeline_ui.inverted_controls;
+        let decouple = app.session.state.timeline_ui.track_slider_decouple;
+        let shift_speed = app.session.state.timeline_ui.track_slider_shift_drag_speed as f32;
+        // a few points clear of the A/V divider's black band at each end, so the line never
+        // clips over the sliders' rounded caps; the column sits against the body's edge --
+        // right normally, left (in front of the headers) with Alternate Slider Position
+        let (sx0, sx1) = if side_left {
+            (rect.min.x - TRACK_SLIDER_GAP - TRACK_SLIDER_W, rect.min.x - TRACK_SLIDER_GAP)
+        } else {
+            (rect.max.x - TRACK_SLIDER_GAP - TRACK_SLIDER_W, rect.max.x - TRACK_SLIDER_GAP)
+        };
+        // the video slider spans its space (top of the tracks down to the divider); the audio
+        // one reaches all the way to the bottom of the tracks column, Mix row included. Both are
+        // inset at their OUTER end -- 2 pt normally, 5 pt with Alternate Slider Position (where
+        // the audio slider's bottom would otherwise crowd the window's edge; 3 more points there).
+        // The same inset on both keeps the two sliders the same length at the default split and
+        // the A/V divider centered between their outer ends.
+        let outer = if bar_top { 5.0 } else { 2.0 };
+        let snap_setting = app.session.state.timeline_ui.track_slider_snap && app.session.state.timeline_ui.track_slider_decouple;
+        let track_bindings = {
+            let s = &app.session.state.timeline_ui;
+            [s.track_control_mirror.clone(), s.track_control_explode.clone(), s.track_control_alternate_drag_speed.clone(), s.track_control_settings.clone()]
+        };
+        // Extend both sliders outward by half the Mix strip height. The pair stays centered
+        // around the A/V divider, and the audio slider reaches through the Mix/master row.
+        let outer_extension = MASTER_H;
+        let vbar = Rect::from_min_max(pos2(sx0, video_area.min.y + outer - outer_extension), pos2(sx1, split_y - 3.0));
+        let abar = Rect::from_min_max(pos2(sx0, split_y + DIVIDER_H + 3.0), pos2(sx1, tracks_area.max.y - outer));
+        app.auto.add("timeline.trackSlider.video.track", vbar, "Video track slider track");
+        app.auto.add("timeline.trackSlider.audio.track", abar, "Audio track slider track");
+        let (on_vs, vthumb, vclicks) = vertical_scrollbar(
+            ui,
+            &mut app.tl,
+            vbar,
+            &mut app.ui.timeline.v_scroll,
+            max_vs,
+            video_area.height(),
+            nv as f32 + 1.0 / 3.0,
+            &mut app.ui.timeline.video_track_h,
+            true,
+            smooth,
+            inverted,
+            decouple,
+            shift_speed,
+            snap_setting,
+            &track_bindings,
+            &t,
+            "vs",
+        );
+        let (on_as, athumb, aclicks) = vertical_scrollbar(
+            ui,
+            &mut app.tl,
+            abar,
+            &mut app.ui.timeline.a_scroll,
+            max_as,
+            audio_area.height(),
+            na as f32 + 1.0 / 3.0,
+            &mut app.ui.timeline.audio_track_h,
+            false,
+            smooth,
+            inverted,
+            decouple,
+            shift_speed,
+            snap_setting,
+            &track_bindings,
+            &t,
+            "as",
+        );
+        on_side |= on_vs || on_as;
+        // A Controls binding named in this frame's settings flyout fires its action once, so the
+        // new input does what the in-built gesture would have done the moment it is complete
+        // (Mirror Slider = the plain move, Explode Slider = both sliders fit their tracks,
+        // Settings = the settings popup at the slider; Alternate Drag Speed is a drag modifier
+        // and does not fire).
+        let (vclicks, aclicks) = match ui.ctx().data_mut(|d| d.remove_temp::<usize>(egui::Id::unique("tl-controls-track-trigger"))) {
+            Some(0) => (1u8, 0u8),
+            // The Explode Slider shortcut fits the slider under the pointer only. A binding
+            // fired from the controls flyout has no pointer target, so use the video slider.
+            Some(1) => (2u8, 0u8),
+            Some(3) => {
+                app.tl.zoombar_settings_pos = None;
+                scrollbars::close_zoombar_popup(ui.ctx());
+                scrollbars::track_slider_state_reset(ui.ctx());
+                app.tl.track_slider_settings_pos = Some(vthumb.min);
+                (0u8, 0u8)
+            }
+            _ => (vclicks, aclicks),
+        };
+        // double-click copies this thumb's length and position to the other slider; Shift+
+        // double-click fits every track of this slider only. Either way the OTHER slider is the
+        // one that moves, and with Smooth Animations on it eases there -- targets, not jumps.
+        if vclicks != 0 || aclicks != 0 {
+            let video = vclicks != 0;
+            let clicks = if video { vclicks } else { aclicks };
+            let val_s = if video { app.ui.timeline.v_scroll } else { app.ui.timeline.a_scroll };
+            let mut tg = [app.ui.timeline.video_track_h, app.ui.timeline.v_scroll, app.ui.timeline.audio_track_h, app.ui.timeline.a_scroll];
+            if clicks == 3 {
+                // Ctrl+Shift+double-click: BOTH sliders fit every track of their own kind --
+                // the fit is the meter's full extent (22 pt tracks: everything fits, the thumb
+                // spans the whole bar), so it lands exactly there on both sliders
+                tg = [min_v, 0.0, min_a, 0.0];
+            } else if clicks == 2 {
+                // Shift+double-click: THIS slider fits every track -- again the meter's full
+                // extent, so the thumb comes all the way up (it used to stop just short of it
+                // whenever the window's own fit height landed a hair over 22 pt)
+                if video {
+                    tg[0] = min_v;
+                    tg[1] = 0.0;
+                } else {
+                    tg[2] = min_a;
+                    tg[3] = 0.0;
+                }
+            } else {
+                // the thumb's length is the track-height meter, so copying the length copies
+                // the height itself; the visible track position is reflected across the divider
+                let source_h = if video { app.ui.timeline.video_track_h } else { app.ui.timeline.audio_track_h };
+                let win_o = if video { audio_area.height() } else { video_area.height() };
+                let slots = if video { na as f32 + 1.0 / 3.0 } else { nv as f32 + 1.0 / 3.0 };
+                let source_min = if video { min_v } else { min_a };
+                let target_min = if video { min_a } else { min_v };
+                let h_new = if source_h <= source_min + 0.05 { target_min } else { source_h.max(target_min) };
+                let max_new = (slots * h_new - win_o).max(0.0);
+                // Mirror the visible track index, not the scroll fraction: the two sections
+                // have different viewport heights (Audio excludes Mix), so equal fractions
+                // consistently show unequal track positions.
+                // The video pane's row order is bottom-up, while audio is top-down. Mirror the
+                // scroll distance at the divider, scaling it by the new row height; pane viewport
+                // sizes must not shift the corresponding track by half a row.
+                let mirrored_scroll = val_s / source_h.max(1e-6) * h_new;
+                let v_new = mirrored_scroll.clamp(0.0, max_new);
+                // A plain mirror gesture changes only the opposite slider. Keep the clicked
+                // slider's height and scroll exactly as they were, even when the destination
+                // has fewer tracks and its mirrored scroll must be clamped.
+                if video {
+                    tg[0] = app.ui.timeline.video_track_h;
+                    tg[1] = app.ui.timeline.v_scroll;
+                    tg[2] = h_new;
+                    tg[3] = v_new;
+                } else {
+                    tg[0] = h_new;
+                    tg[1] = v_new;
+                    tg[2] = app.ui.timeline.audio_track_h;
+                    tg[3] = app.ui.timeline.a_scroll;
+                }
+            }
+            if app.session.state.timeline_ui.track_slider_smooth {
+                app.tl.track_anim = Some(tg);
+                ctx.request_repaint();
+            } else {
+                app.ui.timeline.video_track_h = tg[0];
+                app.ui.timeline.v_scroll = tg[1];
+                app.ui.timeline.audio_track_h = tg[2];
+                app.ui.timeline.a_scroll = tg[3];
+            }
+        }
+        for (name, thumb) in [("video", vthumb), ("audio", athumb)] {
+            let cw = thumb.width();
+            app.auto.add(&format!("timeline.trackSlider.{name}"), thumb, "Track slider");
+            app.auto.add(
+                &format!("timeline.trackSlider.{name}.topCircle"),
+                Rect::from_center_size(pos2(thumb.center().x, thumb.min.y + cw / 2.0), egui::vec2(14.0, 14.0)),
+                "Zoom the tracks taller",
+            );
+            app.auto.add(
+                &format!("timeline.trackSlider.{name}.bottomCircle"),
+                Rect::from_center_size(pos2(thumb.center().x, thumb.max.y - cw / 2.0), egui::vec2(14.0, 14.0)),
+                "Zoom the tracks taller",
+            );
+        }
+    }
+    app.tl.zoombar_point_cursor |= on_side;
+    scrollbars::promote_slider_dialogs(app, &ctx);
 
     // ---- interaction
     interact(app, ui, seq, &layout, rect);
@@ -483,13 +891,48 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let _ = TICKS_PER_SECOND;
 }
 
+/// Smooth Animations for the track sliders: ease the heights and scrolls toward the targets a
+/// double-click move set (that move lands on the OTHER slider, so it must animate too). With the
+/// setting off the targets are taken in one step. A drag cancels them (it writes through).
+fn animate_track_sliders(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(tg) = app.tl.track_anim else {
+        return;
+    };
+    let smooth = app.session.state.timeline_ui.track_slider_smooth;
+    let v = &mut app.ui.timeline;
+    if smooth {
+        let dt = ctx.input(|i| i.stable_dt).min(0.05);
+        let k = (1.0 - (-f64::from(dt) * 20.0).exp()) as f32;
+        v.video_track_h += (tg[0] - v.video_track_h) * k;
+        v.v_scroll += (tg[1] - v.v_scroll) * k;
+        v.audio_track_h += (tg[2] - v.audio_track_h) * k;
+        v.a_scroll += (tg[3] - v.a_scroll) * k;
+    } else {
+        v.video_track_h = tg[0];
+        v.v_scroll = tg[1];
+        v.audio_track_h = tg[2];
+        v.a_scroll = tg[3];
+    }
+    if !smooth || ((tg[0] - v.video_track_h).abs() + (tg[1] - v.v_scroll).abs() + (tg[2] - v.audio_track_h).abs() + (tg[3] - v.a_scroll).abs()) < 0.05 {
+        v.video_track_h = tg[0];
+        v.v_scroll = tg[1];
+        v.audio_track_h = tg[2];
+        v.a_scroll = tg[3];
+        app.tl.track_anim = None;
+    } else {
+        ctx.request_repaint();
+    }
+}
+
 /// The timeline view's animated state: eases zoom and scroll toward their targets (or jumps
 /// with animations off, #2325), follows the playhead while playing, brings it into view after a
 /// jump while stopped, and keeps the view inside the sequence's extent.
 fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_id: ItemId, seq: &Sequence) {
+    app.tl.playback_auto_scroll = None;
     let dt = ctx.input(|i| i.stable_dt).min(0.05) as f64;
     let empty = seq.duration().seconds() <= 0.0;
     let dur_s = seq.duration().seconds().max(1.0);
+    let min_zoom_view = app.session.state.timeline_ui.max_zoom_secs();
     {
         let v = &mut app.ui.timeline;
         if let Some(p) = v.fit_empty
@@ -499,15 +942,21 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
             v.fit_empty = None;
         }
         if v.fit_pending && content.width() > 50.0 {
-            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(min_pps(seq.duration().seconds(), content.width()), 24_000.0);
+            // the fit floor is the sequence-dependent one (the whole Timeline in view): a fixed
+            // 0.05 floor stopped a long sequence from ever fitting
+            let ceiling = max_pps(content.width(), min_zoom_view);
+            let fit_floor = min_pps(seq.duration().seconds(), content.width()).min(ceiling);
+            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(fit_floor, ceiling);
             v.target_scroll = 0.0;
             v.fit_pending = false;
             v.fit_empty = empty.then_some(v.target_pps);
         }
-        // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the extent
+        // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the
+        // extent and zooming in stops at the Maximum Zoom Level setting
         let floor = min_pps(seq.duration().seconds(), content.width());
-        v.target_pps = v.target_pps.max(floor);
-        v.pps = v.pps.max(floor);
+        let ceiling = max_pps(content.width(), min_zoom_view);
+        v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
+        v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
         let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
@@ -539,6 +988,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
     let auto_scroll = app.session.prefs.timeline.auto_scroll.clone();
     if app.playback.playing && app.ui.timeline.follow && auto_scroll != "noScroll" {
         let v = &mut app.ui.timeline;
+        let before = v.target_scroll;
         let ph = app.session.playhead().seconds();
         let w = content.width() as f64;
         let px = (ph - v.scroll) * v.pps;
@@ -551,6 +1001,9 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         } else if px > w * 0.95 || px < 0.0 {
             v.target_scroll = (ph - w * 0.05 / v.pps).max(0.0);
             v.scroll = v.target_scroll;
+        }
+        if v.target_scroll != before {
+            app.tl.playback_auto_scroll = Some((seq_id, v.target_scroll));
         }
     }
     // A jump while stopped (Home, End, edit points, markers) brings the playhead into view.
@@ -1176,7 +1629,8 @@ mod new_track_tests {
     use filmcraft_project::{Project, SequenceSettings};
 
     /// #483: a drop above the top video track adds a video track, one below the last audio track an
-    /// audio track; over a track, between the areas or on the Mix row it adds none.
+    /// audio track -- anywhere in those regions (the Mix row included: the visible gap is small),
+    /// but over a track or between the areas it adds none.
     #[test]
     fn empty_space_past_the_tracks_adds_a_track() {
         let mut p = Project::new("t");
@@ -1203,7 +1657,14 @@ mod new_track_tests {
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
         assert_eq!(at(300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
-        for y in [160.0, 202.0, 230.0, 480.0] {
+        // the Mix row counts as "below the last audio track" now, with the same band
+        assert_eq!(at(480.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        // anywhere above the video rows -- over the ruler, or past the Timeline's own rect --
+        // wants a new video track; anywhere below the audio rows a new audio one
+        assert_eq!(at(-20.0).map(|(k, _)| k), Some(TrackKind::Video), "over the ruler");
+        assert_eq!(at(-400.0).map(|(k, _)| k), Some(TrackKind::Video), "far above the window");
+        assert_eq!(at(900.0).map(|(k, _)| k), Some(TrackKind::Audio), "far below the window");
+        for y in [160.0, 202.0, 230.0] {
             assert_eq!(at(y), None, "y = {y}");
         }
     }
@@ -1246,8 +1707,9 @@ mod new_track_tests {
         assert_eq!(at(470.0), None, "the Mix row is no track");
     }
 
-    /// #1522: when the video tracks fill the video area, scrolling all the way up still leaves a
-    /// track's height of empty space above the top one, so a drop there can add a fourth track.
+    /// #1522 (cut down to what is usable): when the video tracks fill the video area, scrolling all
+    /// the way up reveals a THIRD of a track's height of empty space above the top one -- just
+    /// enough to drop a clip there and to add a fourth track.
     #[test]
     fn a_full_video_area_scrolls_to_space_for_a_new_track() {
         let mut p = Project::new("t");
@@ -1256,7 +1718,9 @@ mod new_track_tests {
         // video area 0..150 holds V1..V3 exactly; scrolled up as far as it goes
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
         let mut v_scroll = f32::MAX;
-        let (tops, _) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        let (tops, max_vs) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        assert!((max_vs - 50.0 / 3.0).abs() < 0.01, "the reveal is a third of a track: {max_vs}");
+        assert!((tops[2] - 50.0 / 3.0).abs() < 0.01, "the topmost row leaves a third of a track above it: {:?}", tops);
         let rows = seq
             .video_tracks
             .iter()
@@ -1280,7 +1744,10 @@ mod new_track_tests {
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
-        assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
+        let (kind, band) = new_track_at(&seq, &layout, 10.0, 50.0, 50.0).expect("a drop in the third of a track adds a video track");
+        assert_eq!(kind, TrackKind::Video);
+        assert!((band.min.y).abs() < 0.01, "{band:?}");
+        assert!((band.max.y - 50.0 / 3.0).abs() < 0.01, "the band is the visible third, never a whole track: {band:?}");
         // scrolled to the bottom, V1..V3 fill the area as before
         let mut v_scroll = 0.0;
         assert_eq!(video_row_tops(area, 3, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
