@@ -332,6 +332,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 }
             }),
         );
+        // FILMCRAFT_DECODE_ADAPTER=renderer: hardware decoding on the GPU the window renders with
+        // (Windows; off by default, see filmcraft_platform::set_decode_adapter). Set before a
+        // project opens and its first decoder is made.
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let info = rs.adapter.get_info();
+            filmcraft_platform::set_decode_adapter(info.vendor, info.device);
+        }
         let mut session = Session::default();
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);

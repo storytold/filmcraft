@@ -138,6 +138,19 @@ pub fn register() -> Availability {
     }
 }
 
+/// Tell the hardware decoders which GPU the app renders on (its PCI vendor and device ids, as
+/// wgpu reports them). Windows, with `FILMCRAFT_DECODE_ADAPTER=renderer`: the Media Foundation
+/// decoders' Direct3D 11 device is made on that adapter instead of the system default (on a
+/// hybrid-graphics laptop, the integrated GPU). Off by default: while pictures are read back to
+/// system memory, the integrated GPU's readback is the faster one (measured, docs/performance.md).
+/// Elsewhere: no effect. Decoders already open keep their device.
+pub fn set_decode_adapter(vendor: u32, device: u32) {
+    #[cfg(target_os = "windows")]
+    media_foundation::set_preferred_adapter(vendor, device);
+    #[cfg(not(target_os = "windows"))]
+    let _ = (vendor, device);
+}
+
 /// Whether [`register`] has put a hardware decoder factory in front of our decoders.
 pub fn registered() -> bool {
     #[cfg(target_os = "macos")]

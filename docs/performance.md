@@ -47,6 +47,24 @@ GPUs), demo project, 5 s of playback, two alternating runs each:
 | process CPU (one core = 100 %) | 476–485 % | 380–420 % |
 | dropped frames | 0 | 0 |
 
+### Which GPU decodes (Windows hybrid graphics)
+
+Media Foundation decodes on Windows' default adapter, the integrated GPU on a hybrid laptop, even
+when FilmCraft renders on the discrete one. `FILMCRAFT_DECODE_ADAPTER=renderer` makes the decoders'
+Direct3D 11 device on the renderer's GPU instead. It stays off by default because it measured slower
+while every decoded picture is still read back to system memory (zero-copy is not done): the
+integrated GPU's memory is system memory, the discrete GPU's readback crosses PCIe. Same laptop,
+10 s 4K H.264 High 23.976 fps 53 Mbps clip, 5 s of playback, two alternating runs each:
+
+| | Intel (default) | RTX (`renderer`) |
+|---|---|---|
+| decoder ms per sample | 8.48 / 8.55 | 10.30 / 7.56 |
+| frame-job source fetch p50 (ms) | 9.6 / 8.4 | 13.5 / 20.0 |
+| dropped frames | 0 / 0 | 0 / 11 |
+| video-decode engine load | Intel 28 % | RTX 10–32 % |
+
+Revisit once decoded surfaces go to the renderer without the readback.
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and
