@@ -13,7 +13,6 @@
 # add entries the same way. Product, technology and format names (FilmCraft, ArtCraft,
 # ProRes, LUFS, H.264…) keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Commands are imperatives addressed with "tu"; decimals use a comma (29,97 fps).
-
 	About FilmCraft	Informazioni su FilmCraft
 	Add Audio Submix Track	Aggiungi traccia submix audio
 	Add Caption at Playhead	Aggiungi sottotitolo all'indicatore di riproduzione
@@ -3621,10 +3620,8 @@
 	Show Audio Names	Mostra nomi audio
 	Video Names	Nomi video
 	Audio Names	Nomi audio
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Il server di controllo è disattivato: FILMCRAFT_CONTROL_TOKEN deve contenere 64 caratteri esadecimali casuali (vedi docs/control-protocol.md)
-
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	Modifica marcatore…
 	In:	Attacco:
@@ -3696,7 +3693,6 @@
 	Previous	Precedente
 	Next	Successivo
 	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	Colore a 10 bit
@@ -3712,3 +3708,112 @@
 	Toggle Color Grading Section	Attiva/disattiva sezione di gradazione colore
 	Color Grading Section	Sezione di gradazione colore
 	Read Video Scopes	Leggi oscilloscopi video
+
+	Alternate Drag Speed:	Velocità di trascinamento alternativa:
+	Center on Playhead:	Centra sulla testina:
+	Controls	Comandi
+	Enter Shortcut	Inserisci scorciatoia
+	Explode Slider:	Espandi lo slider:
+	Invert Scrolling	Inverti scorrimento
+	Playhead Centering Range	Intervallo di centraggio della testina
+	Snap to Tracks	Aggancia alle tracce
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
+	Hide Slider	Nascondi cursore
+	Unhide Slider	Mostra cursore
+	Maximum Zoom Level	Livello di zoom massimo
+	Alternate Drag Speed (Shift + Drag)	Velocità di trascinamento alternativa (Maiusc + trascinamento)
+	Playhead Centering Range (Double Click)	Intervallo di centratura della testina (doppio clic)
+	Alternate Drag Speed	Velocità di trascinamento alternativa
+	Value:	Valore:
+	Closest	Più vicino
+	Very Slow	Molto lenta
+	Far	Lontano
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Colore indicatore di posizione:
+	Video Indicator Color:	Colore indicatore video:
+	Audio Indicator Color:	Colore indicatore audio:
+	Offline Indicator Color:	Colore indicatore contenuto offline:
+	Timeline Slider Settings	Impostazioni cursore linea temporale
+	Track Slider Settings	Impostazioni cursore tracce
+	Unhide Timeline Slider	Mostra cursore linea temporale
+	Unhide Track Slider	Mostra cursore tracce
+	Inverted Controls	Controlli invertiti
+	Slider Minimap	Minimappa del cursore
+	Show Whole Timeline	Mostra tutta la linea temporale
+	Prioritise Audio	Dai priorità all'audio
+	Position Indicator	Indicatore di posizione
+	Fill Clips	Riempi clip
+	Decouple Edges	Scollega estremi
+	Alternate Slider Position	Posizione alternativa del cursore
+	Playhead Centering	Centratura della testina
+	Smooth Animations	Animazioni fluide
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Puoi ripristinarlo in qualsiasi momento facendo clic destro sulla linea temporale e selezionando "{row}" in fondo all'elenco.
+	Maximum zoom level in seconds	Livello di zoom massimo in secondi
+	Alternate drag speed multiplier	Moltiplicatore della velocità di trascinamento alternativa
+	Playhead centering range in seconds	Intervallo di centratura della testina in secondi
+	Alternate drag speed for the track sliders	Velocità di trascinamento alternativa per i cursori delle tracce
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	Quando è attivo, i bordi dei cursori, il centraggio sulla testina e la specchiatura del cursore hanno animazioni fluide.
+	Reverses timeline scrolling and zooming when holding the center of the slider.	Inverte lo scorrimento e lo zoom della timeline quando si tiene premuto il centro del cursore.
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	Trascina verticalmente il cursore della timeline per ridimensionare entrambe le sezioni delle tracce. Consigliato quando i cursori delle tracce sono nascosti.
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	Quando la testina entra nella parte visibile della timeline, lo zoom avvicina la vista alla testina.
+	Moves the timeline slider to the top.	Sposta il cursore della timeline in alto.
+	Sets the maximum amount you can zoom in.	Imposta il livello massimo di ingrandimento.
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Riproduce la funzione di Blender. Un moltiplicatore elevato può renderla più veloce del trascinamento normale.
+	Sets how much of the timeline is visible on each side of the playhead.	Imposta quanta timeline è visibile ai lati della testina.
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	Inverte lo zoom quando si tiene premuto il centro di un cursore e si scorre verticalmente sulla timeline.
+	Use Alternate Drag Speed for fine adjustments when enabled.	Quando è attiva, usa la velocità di trascinamento alternativa per regolazioni precise.
+	Keeps the opposite slider edge fixed while resizing.	Mantiene fisso il bordo opposto del cursore durante il ridimensionamento.
+	Moves the track sliders to the left side.	Sposta i cursori delle tracce a sinistra.
+	Adjust Track Height:	Regola altezza traccia:
+	Fast Timeline Scroll:	Scorrimento rapido della timeline:
+	Mirror Sliders:	Specchia cursori:
+	Scroll Track Rows:	Scorri righe delle tracce:
+	Timeline Slider: Alternate Drag Speed	Cursore timeline: velocità di trascinamento alternativa
+	Timeline Slider: Center on Playhead	Cursore timeline: centra sulla testina
+	Timeline Slider: Explode	Cursore timeline: espandi
+	Timeline: Fast Scroll	Timeline: scorrimento rapido
+	Timeline: Zoom	Timeline: zoom
+	Track Sliders: Adjust Track Height	Cursori tracce: regola altezza traccia
+	Track Sliders: Alternate Drag Speed	Cursori tracce: velocità di trascinamento alternativa
+	Track Sliders: Explode	Cursori tracce: espandi
+	Track Sliders: Mirror	Cursori tracce: specchia
+	Track Sliders: Scroll Track Rows	Cursori tracce: scorri righe delle tracce
+	Zoom In:	Ingrandisci:
+	Zoom Out:	Riduci:
+	Zoom Timeline:	Zoom timeline:
+	Shortcut unavailable	Scorciatoia non disponibile
+	Left click is reserved for controlling the application and cannot be assigned.	Il clic sinistro è riservato al controllo dell’applicazione e non può essere assegnato.
+	Right click is reserved for opening slider settings and cannot be assigned.	Il clic destro è riservato all’apertura delle impostazioni del cursore e non può essere assegnato.
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	Attiva Separa bordi per usare Aggancia alle tracce; i bordi collegati non possono agganciarsi indipendentemente.
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	Questa scorciatoia è già assegnata. Apri Scorciatoie da tastiera per controllarla.
+	Copy of the project saved to {path}	Copia del progetto salvata in {path}
+	From preset file:	Dal file di predefiniti:
+	Imported {n} preset(s)	{n} predefiniti importati
+	Imported {n} preset(s); {skipped} skipped	{n} predefiniti importati; {skipped} ignorati
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} predefiniti importati; {warnings} con parametri non supportati
+	Imported {n} preset(s); not imported: {error}	{n} predefiniti importati; non importato: {error}
+	No presets folder: the app has no data directory	Nessuna cartella dei predefiniti: l’app non dispone di una directory dati
+	Open Presets Folder	Apri cartella dei predefiniti
+	Preset library is up to date	La libreria dei predefiniti è aggiornata
+	Preset library updated	Libreria dei predefiniti aggiornata
+	Preset library updated: {imported} loaded, {removed} removed	Libreria dei predefiniti aggiornata: {imported} caricati, {removed} rimossi
+	Project saved to {path}	Progetto salvato in {path}
+	Scan Presets Folder	Analizza cartella dei predefiniti
+	Ticked attributes are removed from the selected clips.	Gli attributi selezionati vengono rimossi dalle clip selezionate.
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} predefiniti importati; {skipped} ignorati, {warnings} con parametri non supportati
+	No bin {id}	Nessun raccoglitore {id}
+	Unbound	Non assegnato
+	Track Control Angle:	Angolo di controllo traccia:
+	to	a
+	Control Track Sliders	Controlla cursori tracce
+	Full Screen Program Monitor	Monitor programma a schermo intero
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 verticale 9:16, scalato per riempire, VBR a 1 passata, 10 Mbps, volume normalizzato a −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 verticale 9:16, scalato per riempire, VBR a 1 passata, 12 Mbps, volume normalizzato a −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 verticale 9:16, scalato per riempire, VBR a 1 passata, 8 Mbps, volume normalizzato a −14 LUFS
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	Elimina alte luci
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920

@@ -17,7 +17,6 @@
 # slip / slide = deslizar conteúdo / deslizar clipe, overwrite = sobrescrever, wipe = cortina,
 # dissolve = dissolução, scopes = escopos, highlights = realces, offline = offline, legacy = legado,
 # preferences (also the native macOS Settings menu) = Preferências, settings = configurações.
-
 	About FilmCraft	Sobre o FilmCraft
 	Add Audio Submix Track	Adicionar faixa de submixagem de áudio
 	Add Caption at Playhead	Adicionar legenda no cursor de reprodução
@@ -3552,7 +3551,6 @@
 	tracks	faixas
 	Clear Transition	Limpar transição
 	Set Transition Duration	Definir duração da transição
-
 # System appearance modes and theme cards.
 	Active	Ativo
 	Appearance Mode	Modo de aparência
@@ -3574,17 +3572,13 @@
 	Text to Speech	Texto para fala
 	Edit Narration	Editar narração
 	Project Notes	Notas do projeto
-
 	Appearance Settings…	Configurações de aparência…
-
 	Add to favorites	Adicionar aos favoritos
-
 	Remove from favorites	Remover dos favoritos
 	Get Project Notes	Obter notas do projeto
 	Edit Project Notes	Editar notas do projeto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas deste projeto: tarefas, instruções, números de quadro… Salvas com o projeto.
 	Use Effect Shutter Angle	Usar o ângulo do obturador do efeito
-
 # The native macOS application menu (Settings…).
 	Settings	Preferências
 # View > Reset Interface Zoom (#2253).
@@ -3598,10 +3592,8 @@
 	Show Audio Names	Mostrar nomes de áudio
 	Video Names	Nomes de vídeo
 	Audio Names	Nomes de áudio
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	O servidor de controle está desativado: FILMCRAFT_CONTROL_TOKEN deve conter 64 caracteres hexadecimais aleatórios (veja docs/control-protocol.md)
-
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	Editar marcador…
 	In:	Entrada:
@@ -3672,7 +3664,6 @@
 	Previous	Anterior
 	Next	Próximo
 	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	Cor de 10 bits
@@ -3688,3 +3679,113 @@
 	Toggle Color Grading Section	Alternar seção de gradação de cor
 	Color Grading Section	Seção de gradação de cor
 	Read Video Scopes	Ler escopos de vídeo
+
+	Alternate Drag Speed:	Velocidade de arrasto alternativa:
+	Center on Playhead:	Centralizar no cabeçote:
+	Controls	Controles
+	Enter Shortcut	Inserir atalho
+	Explode Slider:	Expandir o controle deslizante:
+	Invert Scrolling	Inverter rolagem
+	Playhead Centering Range	Intervalo de centralização do cabeçote
+	Snap to Tracks	Ajustar às faixas
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Adicione mídia ao projeto. Solte arquivos em qualquer lugar da janela ou escolha uma origem abaixo.
+	Hide Slider	Ocultar controle deslizante
+	Unhide Slider	Mostrar controle deslizante
+	Maximum Zoom Level	Nível máximo de zoom
+	Alternate Drag Speed (Shift + Drag)	Velocidade de arrasto alternativa (Shift + arrastar)
+	Playhead Centering Range (Double Click)	Intervalo de centralização do cursor (clique duplo)
+	Alternate Drag Speed	Velocidade de arrasto alternativa
+	Value:	Valor:
+	Closest	Mais próximo
+	Very Slow	Muito lenta
+	Far	Longe
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Cor do indicador de posição:
+	Video Indicator Color:	Cor do indicador de vídeo:
+	Audio Indicator Color:	Cor do indicador de áudio:
+	Offline Indicator Color:	Cor do indicador de mídia offline:
+	Timeline Slider Settings	Configurações do controle deslizante da linha do tempo
+	Track Slider Settings	Configurações do controle deslizante de faixas
+	Unhide Timeline Slider	Mostrar controle deslizante da linha do tempo
+	Unhide Track Slider	Mostrar controle deslizante de faixas
+	Inverted Controls	Controles invertidos
+	Slider Minimap	Minimapa do controle deslizante
+	Show Whole Timeline	Mostrar toda a linha do tempo
+	Prioritise Audio	Priorizar áudio
+	Position Indicator	Indicador de posição
+	Fill Clips	Preencher clipes
+	Decouple Edges	Desacoplar extremidades
+	Alternate Slider Position	Posição alternativa do controle deslizante
+	Playhead Centering	Centralização do cursor
+	Smooth Animations	Animações suaves
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Você pode trazê-lo de volta a qualquer momento clicando com o botão direito na linha do tempo e selecionando "{row}" na parte inferior da lista.
+	Maximum zoom level in seconds	Nível máximo de zoom em segundos
+	Alternate drag speed multiplier	Multiplicador da velocidade de arrasto alternativa
+	Playhead centering range in seconds	Intervalo de centralização do cursor em segundos
+	Alternate drag speed for the track sliders	Velocidade de arrasto alternativa dos controles deslizantes de faixas
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	Quando ativado, as bordas dos controles deslizantes, Centralizar no indicador de reprodução e Espelhar controle têm animações suaves.
+	Reverses timeline scrolling and zooming when holding the center of the slider.	Inverte a rolagem e o zoom da linha do tempo ao segurar o centro do controle deslizante.
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	Arraste o controle da linha do tempo verticalmente para redimensionar as duas seções de faixas. Recomendado quando os controles de faixa estiverem ocultos.
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	Quando o indicador de reprodução entra na área visível da linha do tempo, ampliar aproxima a visualização dele.
+	Moves the timeline slider to the top.	Move o controle da linha do tempo para cima.
+	Sets the maximum amount you can zoom in.	Define o nível máximo de ampliação.
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Imita o recurso do Blender. Um multiplicador alto pode torná-lo mais rápido que o arrasto normal.
+	Sets how much of the timeline is visible on each side of the playhead.	Define quanto da linha do tempo fica visível em cada lado do indicador de reprodução.
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	Inverte o zoom ao segurar o centro de um controle e rolar verticalmente na linha do tempo.
+	Use Alternate Drag Speed for fine adjustments when enabled.	Use a velocidade alternativa de arrasto para ajustes precisos quando ativada.
+	Keeps the opposite slider edge fixed while resizing.	Mantém fixa a borda oposta do controle ao redimensionar.
+	Moves the track sliders to the left side.	Move os controles de faixa para a esquerda.
+	Adjust Track Height:	Ajustar altura da faixa:
+	Fast Timeline Scroll:	Rolagem rápida da linha do tempo:
+	Mirror Sliders:	Espelhar controles:
+	Scroll Track Rows:	Rolar linhas de faixas:
+	Timeline Slider: Alternate Drag Speed	Controle da linha do tempo: velocidade alternativa de arrasto
+	Timeline Slider: Center on Playhead	Controle da linha do tempo: centralizar no indicador de reprodução
+	Timeline Slider: Explode	Controle da linha do tempo: expandir
+	Timeline: Fast Scroll	Linha do tempo: rolagem rápida
+	Timeline: Zoom	Linha do tempo: zoom
+	Track Sliders: Adjust Track Height	Controles de faixa: ajustar altura da faixa
+	Track Sliders: Alternate Drag Speed	Controles de faixa: velocidade alternativa de arrasto
+	Track Sliders: Explode	Controles de faixa: expandir
+	Track Sliders: Mirror	Controles de faixa: espelhar
+	Track Sliders: Scroll Track Rows	Controles de faixa: rolar linhas de faixas
+	Zoom In:	Ampliar:
+	Zoom Out:	Reduzir:
+	Zoom Timeline:	Zoom da linha do tempo:
+	Shortcut unavailable	Atalho indisponível
+	Left click is reserved for controlling the application and cannot be assigned.	O clique esquerdo é reservado para controlar o aplicativo e não pode ser atribuído.
+	Right click is reserved for opening slider settings and cannot be assigned.	O clique direito é reservado para abrir as configurações do controle e não pode ser atribuído.
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	Ative Desvincular bordas para usar Ajustar às faixas; bordas vinculadas não podem ser ajustadas independentemente.
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	Este atalho já está atribuído. Abra Atalhos de teclado para verificá-lo.
+	Copy of the project saved to {path}	Cópia do projeto salva em {path}
+	From preset file:	Do arquivo de predefinição:
+	Imported {n} preset(s)	{n} predefinição(ões) importada(s)
+	Imported {n} preset(s); {skipped} skipped	{n} predefinição(ões) importada(s); {skipped} ignorada(s)
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} predefinição(ões) importada(s); {warnings} com parâmetros não suportados
+	Imported {n} preset(s); not imported: {error}	{n} predefinição(ões) importada(s); não importado: {error}
+	No presets folder: the app has no data directory	Sem pasta de predefinições: o aplicativo não tem diretório de dados
+	Open Presets Folder	Abrir pasta de predefinições
+	Preset library is up to date	A biblioteca de predefinições está atualizada
+	Preset library updated	Biblioteca de predefinições atualizada
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de predefinições atualizada: {imported} carregadas, {removed} removidas
+	Project saved to {path}	Projeto salvo em {path}
+	Scan Presets Folder	Verificar pasta de predefinições
+	Ticked attributes are removed from the selected clips.	Os atributos marcados são removidos dos clipes selecionados.
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} predefinição(ões) importada(s); {skipped} ignorada(s), {warnings} com parâmetros não suportados
+	No bin {id}	A bandeja {id} não existe
+	Unbound	Não atribuído
+	Track Control Angle:	Ângulo de controle da faixa:
+	to	a
+	Control Track Sliders	Controlar controles de faixa
+	Full Screen Program Monitor	Monitor de programa em tela cheia
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, dimensionado para preencher, VBR de 1 passagem, 10 Mbps, sonoridade normalizada para −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, dimensionado para preencher, VBR de 1 passagem, 12 Mbps, sonoridade normalizada para −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, dimensionado para preencher, VBR de 1 passagem, 8 Mbps, sonoridade normalizada para −14 LUFS
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	Remover áreas claras
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	Compression	Compressão

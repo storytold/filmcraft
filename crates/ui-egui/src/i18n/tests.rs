@@ -65,6 +65,26 @@ fn feature_labels_do_not_repeat_another_label() {
 }
 
 #[test]
+fn slider_warning_dialogs_have_merge_language_translations() {
+    for language in [Language::Es, Language::Fr, Language::Id, Language::It, Language::Ja, Language::Ko, Language::PtBr, Language::ZhCn] {
+        for text in [
+            "Shortcut unavailable",
+            "Left click is reserved for controlling the application and cannot be assigned.",
+            "Right click is reserved for opening slider settings and cannot be assigned.",
+            "Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.",
+            "Snap to Tracks",
+            "Hide Slider",
+            "You can bring it back anytime by right clicking the timeline and selecting \"{row}\" at the bottom of the list.",
+            "This shortcut is already assigned. Open Keyboard Shortcuts to review it.",
+            "Control Track Sliders",
+            "Track Control Angle:",
+            "Unbound",
+        ] {
+            assert!(language.has(text), "{}: missing {text}", language.code());
+        }
+    }
+}
+#[test]
 fn unknown_strings_pass_through_and_languages_round_trip() {
     for l in Language::ALL {
         for text in ["An untranslated label", "mi video.mp4", "日本語の文書.pdf", "Größe ändern.mp4", "Montage d'été.mp4"] {

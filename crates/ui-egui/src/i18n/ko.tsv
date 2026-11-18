@@ -7,7 +7,6 @@
 # the same way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. Hangul is drawn with an installed system font (Malgun Gothic, Apple SD Gothic Neo, Noto
 # Sans CJK KR…, see cjk.rs); native-speaker review welcome.
-
 	   Angle	   각도
 	   Blur	   흐림
 	   Corner Radius	   모서리 반경
@@ -3616,10 +3615,8 @@
 	Show Audio Names	오디오 이름 표시
 	Video Names	비디오 이름
 	Audio Names	오디오 이름
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	제어 서버가 비활성화되었습니다: FILMCRAFT_CONTROL_TOKEN에는 64자리 무작위 16진수 문자가 필요합니다(docs/control-protocol.md 참조)
-
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	마커 편집…
 	In:	시작:
@@ -3691,7 +3688,6 @@
 	Previous	이전
 	Next	다음
 	Enter a valid HH:MM:SS:FF timecode	올바른 HH:MM:SS:FF 타임코드를 입력하세요
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	10비트 색상
@@ -3707,3 +3703,112 @@
 	Toggle Color Grading Section	색 보정 섹션 전환
 	Color Grading Section	색 보정 섹션
 	Read Video Scopes	비디오 스코프 읽기
+
+	Alternate Drag Speed:	대체 드래그 속도:
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	프로젝트에 미디어를 추가합니다. 창 아무 곳에나 파일을 놓거나 아래에서 소스를 선택하세요.
+	Center on Playhead:	재생 헤드 중앙 맞춤:
+	Controls	컨트롤
+	Enter Shortcut	단축키 입력
+	Explode Slider:	슬라이더 펼치기:
+	Invert Scrolling	스크롤 반전
+	Playhead Centering Range	재생 헤드 중앙 맞춤 범위
+	Snap to Tracks	트랙에 스냅
+	Hide Slider	슬라이더 숨기기
+	Unhide Slider	슬라이더 표시
+	Maximum Zoom Level	최대 확대/축소 수준
+	Alternate Drag Speed (Shift + Drag)	드래그 속도 변경 (Shift + 드래그)
+	Playhead Centering Range (Double Click)	재생 헤드 가운데 정렬 범위 (더불 클릭)
+	Alternate Drag Speed	드래그 속도 변경
+	Value:	값:
+	Closest	가장 가깝게
+	Very Slow	매우 느리게
+	Far	멀리
+	3s	3초
+	5s	5초
+	10s	10초
+	30s	30초
+	Position Indicator Color:	위치 표시기 색상:
+	Video Indicator Color:	비디오 표시기 색상:
+	Audio Indicator Color:	오디오 표시기 색상:
+	Offline Indicator Color:	오프라인 표시기 색상:
+	Timeline Slider Settings	타임라인 슬라이더 설정
+	Track Slider Settings	트랙 슬라이더 설정
+	Unhide Timeline Slider	타임라인 슬라이더 표시
+	Unhide Track Slider	트랙 슬라이더 표시
+	Inverted Controls	컨트롤 반전
+	Slider Minimap	슬라이더 미니맵
+	Show Whole Timeline	전체 타임라인 보기
+	Prioritise Audio	오디오 우선
+	Position Indicator	위치 표시기
+	Fill Clips	클립 채우기
+	Decouple Edges	양끝 분리
+	Alternate Slider Position	슬라이더 위치 변경
+	Playhead Centering	재생 헤드 가운데 정렬
+	Smooth Animations	부드러운 애니메이션
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	언제든지 타임라인을 마우스 오른쪽 버튼으로 클릭하고 목록 아래쪽의 "{row}"을 선택하면 다시 표시할 수 있습니다.
+	Maximum zoom level in seconds	최대 확대/축소 수준(초)
+	Alternate drag speed multiplier	드래그 속도 변경 배율
+	Playhead centering range in seconds	재생 헤드 가운데 정렬 범위(초)
+	Alternate drag speed for the track sliders	트랙 슬라이더의 드래그 속도 변경
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	활성화하면 슬라이더 가장자리, 재생 헤드 중앙 정렬 및 슬라이더 미러링이 부드럽게 움직입니다.
+	Reverses timeline scrolling and zooming when holding the center of the slider.	슬라이더 중앙을 누른 상태에서 타임라인 스크롤과 확대 방향을 반대로 바꿉니다.
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	타임라인 슬라이더를 세로로 드래그하여 두 트랙 영역의 크기를 조정합니다. 트랙 슬라이더가 숨겨져 있을 때 권장합니다.
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	재생 헤드가 보이는 타임라인에 들어오면 확대할 때 화면이 재생 헤드 쪽으로 이동합니다.
+	Moves the timeline slider to the top.	타임라인 슬라이더를 위쪽으로 이동합니다.
+	Sets the maximum amount you can zoom in.	최대 확대 수준을 설정합니다.
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Blender의 기능을 모방합니다. 배율이 높으면 일반 드래그보다 빨라질 수 있습니다.
+	Sets how much of the timeline is visible on each side of the playhead.	재생 헤드 양쪽에 표시할 타임라인의 범위를 설정합니다.
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	슬라이더 중앙을 누른 채 타임라인을 세로로 스크롤할 때 확대 방향을 반대로 바꿉니다.
+	Use Alternate Drag Speed for fine adjustments when enabled.	활성화하면 미세 조정에 대체 드래그 속도를 사용합니다.
+	Keeps the opposite slider edge fixed while resizing.	크기를 조정하는 동안 슬라이더의 반대쪽 가장자리를 고정합니다.
+	Moves the track sliders to the left side.	트랙 슬라이더를 왼쪽으로 이동합니다.
+	Adjust Track Height:	트랙 높이 조정:
+	Fast Timeline Scroll:	타임라인 빠른 스크롤:
+	Mirror Sliders:	슬라이더 미러링:
+	Scroll Track Rows:	트랙 행 스크롤:
+	Timeline Slider: Alternate Drag Speed	타임라인 슬라이더: 대체 드래그 속도
+	Timeline Slider: Center on Playhead	타임라인 슬라이더: 재생 헤드 중앙 정렬
+	Timeline Slider: Explode	타임라인 슬라이더: 확장
+	Timeline: Fast Scroll	타임라인: 빠른 스크롤
+	Timeline: Zoom	타임라인: 확대/축소
+	Track Sliders: Adjust Track Height	트랙 슬라이더: 트랙 높이 조정
+	Track Sliders: Alternate Drag Speed	트랙 슬라이더: 대체 드래그 속도
+	Track Sliders: Explode	트랙 슬라이더: 확장
+	Track Sliders: Mirror	트랙 슬라이더: 미러링
+	Track Sliders: Scroll Track Rows	트랙 슬라이더: 트랙 행 스크롤
+	Zoom In:	확대:
+	Zoom Out:	축소:
+	Zoom Timeline:	타임라인 확대/축소:
+	Shortcut unavailable	단축키를 사용할 수 없음
+	Left click is reserved for controlling the application and cannot be assigned.	왼쪽 클릭은 애플리케이션 조작에 사용되므로 할당할 수 없습니다.
+	Right click is reserved for opening slider settings and cannot be assigned.	오른쪽 클릭은 슬라이더 설정을 여는 데 사용되므로 할당할 수 없습니다.
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	트랙에 스냅하려면 가장자리 분리를 켜세요. 연결된 가장자리는 개별적으로 스냅할 수 없습니다.
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	이 단축키는 이미 할당되어 있습니다. 키보드 단축키를 열어 확인하세요.
+	Copy of the project saved to {path}	프로젝트 사본을 {path}에 저장했습니다
+	From preset file:	사전 설정 파일에서:
+	Imported {n} preset(s)	사전 설정 {n}개 가져옴
+	Imported {n} preset(s); {skipped} skipped	사전 설정 {n}개 가져옴; {skipped}개 건너뜀
+	Imported {n} preset(s); {warnings} with unsupported parameters	사전 설정 {n}개 가져옴; {warnings}개에 지원되지 않는 매개변수 포함
+	Imported {n} preset(s); not imported: {error}	사전 설정 {n}개 가져옴; 가져오지 못함: {error}
+	No presets folder: the app has no data directory	사전 설정 폴더가 없습니다: 앱에 데이터 디렉터리가 없습니다
+	Open Presets Folder	사전 설정 폴더 열기
+	Preset library is up to date	사전 설정 라이브러리가 최신 상태입니다
+	Preset library updated	사전 설정 라이브러리 업데이트됨
+	Preset library updated: {imported} loaded, {removed} removed	사전 설정 라이브러리 업데이트됨: {imported}개 로드, {removed}개 제거
+	Project saved to {path}	프로젝트를 {path}에 저장했습니다
+	Scan Presets Folder	사전 설정 폴더 검색
+	Ticked attributes are removed from the selected clips.	선택한 클립에서 체크한 속성이 제거됩니다.
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	사전 설정 {n}개 가져옴; {skipped}개 건너뜀, {warnings}개에 지원되지 않는 매개변수 포함
+	No bin {id}	빈 {id}이(가) 없습니다
+	Unbound	할당되지 않음
+	Track Control Angle:	트랙 제어 각도:
+	to	~
+	Control Track Sliders	트랙 슬라이더 제어
+	Full Screen Program Monitor	프로그램 모니터 전체 화면
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 세로 9:16, 화면에 맞게 채우기, VBR 1패스, 10 Mbps, 음량을 −14 LUFS로 정규화
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 세로 9:16, 화면에 맞게 채우기, VBR 1패스, 12 Mbps, 음량을 −14 LUFS로 정규화
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 세로 9:16, 화면에 맞게 채우기, VBR 1패스, 8 Mbps, 음량을 −14 LUFS로 정규화
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	밝은 영역 키 제거
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920

@@ -15,7 +15,6 @@
 #   - The long vowel mark is kept (フォルダー, モニター). Terms: 既定 (not デフォルト), リセット, エフェクト
 #     (not 効果), ぼかし, 音量, ビデオ, 再生ヘッド, イン点/アウト点.
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
-
 	About FilmCraft	FilmCraft について
 	Check for Updates…	アップデートを確認…
 	Checking for updates…	アップデートを確認中…
@@ -3513,7 +3512,6 @@
 	Select All Project Items	すべてのプロジェクト項目を選択
 	Username	ユーザー名
 	Vertical Type Tool	縦書き文字ツール
-
 # System appearance modes and theme cards.
 	Active	使用中
 	Appearance Mode	外観モード
@@ -3589,16 +3587,12 @@
 	Edit Project Notes	プロジェクトメモを編集
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	このプロジェクトのメモ: やること、指示、フレーム番号など… プロジェクトと一緒に保存されます。
 	GPU acceleration is unavailable; preview renders on the CPU	GPU アクセラレーションを利用できません。プレビューは CPU でレンダリングされます
-
 	Appearance Settings…	外観設定…
-
 	Add to favorites	お気に入りに追加
-
 	Remove from favorites	お気に入りから削除
 	Compression	圧縮
 	ZIP (1 scan line)	ZIP（1 スキャンライン）
 	ZIP (16 scan lines)	ZIP（16 スキャンライン）
-
 	Caption Tracks	キャプショントラック
 	Delete Caption Track	キャプショントラックを削除
 	Delete Caption Tracks	キャプショントラックを削除
@@ -3662,12 +3656,9 @@
 	Show Audio Names	オーディオ名を表示
 	Video Names	ビデオ名
 	Audio Names	オーディオ名
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	コントロールサーバーが無効です: FILMCRAFT_CONTROL_TOKEN には 64 文字のランダムな 16 進数文字が必要です (docs/control-protocol.md を参照)
-
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
-
 # Clip Mismatch Warning dialog.
 	Clip Mismatch Warning	クリップの不一致警告
 	This clip does not match the sequence settings.	このクリップはシーケンス設定と一致しません。
@@ -3747,7 +3738,6 @@
 	Preset library updated: {imported} loaded, {removed} removed	プリセットライブラリを更新しました：{imported} 個読み込み、{removed} 個削除
 	Preset library updated	プリセットライブラリを更新しました
 	Preset library is up to date	プリセットライブラリは最新です
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	10 ビットカラー
@@ -3763,3 +3753,99 @@
 	Toggle Color Grading Section	カラーグレーディングのセクションを切り替え
 	Color Grading Section	カラーグレーディングのセクション
 	Read Video Scopes	ビデオスコープを読み取る
+
+	Alternate Drag Speed:	代替ドラッグ速度:
+	Center on Playhead:	再生ヘッドに中央合わせ:
+	Controls	操作
+	Enter Shortcut	ショートカットを入力
+	Explode Slider:	スライダーを展開:
+	Invert Scrolling	スクロール反転
+	Playhead Centering Range	再生ヘッド中央合わせ範囲
+	Snap to Tracks	トラックにスナップ
+	Smooth Animations	πé╣πâáπâ╝πé║πéóπâïπâíπâ╝πé╖πâºπâ│
+	Playhead Centering	σåìτöƒπâÿπââπâëπéÆΣ╕¡σñ«πü½µÅâπüêπéï
+	Hide Slider	スライダーを非表示
+	Unhide Slider	スライダーを表示
+	Maximum Zoom Level	最大ズームレベル
+	Alternate Drag Speed (Shift + Drag)	ドラッグ速度の変更（Shift + ドラッグ）
+	Playhead Centering Range (Double Click)	再生ヘッド中央寄せ範囲（トリプルクリック）
+	Alternate Drag Speed	ドラッグ速度の変更
+	Value:	値：
+	Closest	最も近く
+	Very Slow	非常に遅い
+	Far	遠く
+	3s	3秒
+	5s	5秒
+	10s	10秒
+	30s	30秒
+	Position Indicator Color:	位置インジケーターの色：
+	Video Indicator Color:	ビデオインジケーターの色：
+	Audio Indicator Color:	オーディオインジケーターの色：
+	Offline Indicator Color:	オフラインインジケーターの色：
+	Timeline Slider Settings	タイムラインスライダーの設定
+	Track Slider Settings	トラックスライダーの設定
+	Unhide Timeline Slider	タイムラインスライダーを表示
+	Unhide Track Slider	トラックスライダーを表示
+	Inverted Controls	操作を反転
+	Slider Minimap	スライダーのミニマップ
+	Show Whole Timeline	タイムライン全体を表示
+	Prioritise Audio	オーディオを優先
+	Position Indicator	位置インジケーター
+	Fill Clips	クリップを塗りつぶす
+	Decouple Edges	端を独立させる
+	Alternate Slider Position	スライダーの位置を変更
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	いつでもタイムラインを右クリックしてリストの最後の「{row}」を選択すると元に戻せます。
+	Maximum zoom level in seconds	最大ズームレベル（秒）
+	Alternate drag speed multiplier	ドラッグ速度の変更倍率
+	Playhead centering range in seconds	再生ヘッド中央寄せ範囲（秒）
+	Alternate drag speed for the track sliders	トラックスライダーのドラッグ速度の変更
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	有効にすると、スライダーの端、再生ヘッドへの中央揃え、スライダーの反転が滑らかに動きます。
+	Reverses timeline scrolling and zooming when holding the center of the slider.	スライダーの中央を押したまま操作するときのタイムラインのスクロールとズームの方向を反転します。
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	タイムラインのスライダーを縦にドラッグして、両方のトラック領域のサイズを変更します。トラックスライダーを非表示にしている場合に推奨します。
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	再生ヘッドがタイムラインの表示範囲に入ると、拡大時に表示が再生ヘッドに向かって移動します。
+	Moves the timeline slider to the top.	タイムラインのスライダーを上部に移動します。
+	Sets the maximum amount you can zoom in.	最大拡大率を設定します。
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Blender の機能を模倣します。倍率を高くすると、通常のドラッグより速くなる場合があります。
+	Sets how much of the timeline is visible on each side of the playhead.	再生ヘッドの左右に表示するタイムラインの範囲を設定します。
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	スライダーの中央を押したままタイムラインを縦にスクロールするときのズーム方向を反転します。
+	Use Alternate Drag Speed for fine adjustments when enabled.	有効な場合、細かい調整には代替ドラッグ速度を使用します。
+	Keeps the opposite slider edge fixed while resizing.	サイズ変更中、スライダーの反対側の端を固定します。
+	Moves the track sliders to the left side.	トラックスライダーを左側に移動します。
+	Adjust Track Height:	トラックの高さを調整:
+	Fast Timeline Scroll:	タイムラインの高速スクロール:
+	Mirror Sliders:	スライダーを反転:
+	Scroll Track Rows:	トラック行をスクロール:
+	Timeline Slider: Alternate Drag Speed	タイムラインスライダー: 代替ドラッグ速度
+	Timeline Slider: Center on Playhead	タイムラインスライダー: 再生ヘッドを中央に配置
+	Timeline Slider: Explode	タイムラインスライダー: 展開
+	Timeline: Fast Scroll	タイムライン: 高速スクロール
+	Timeline: Zoom	タイムライン: ズーム
+	Track Sliders: Adjust Track Height	トラックスライダー: トラックの高さを調整
+	Track Sliders: Alternate Drag Speed	トラックスライダー: 代替ドラッグ速度
+	Track Sliders: Explode	トラックスライダー: 展開
+	Track Sliders: Mirror	トラックスライダー: 反転
+	Track Sliders: Scroll Track Rows	トラックスライダー: トラック行をスクロール
+	Zoom In:	拡大:
+	Zoom Out:	縮小:
+	Zoom Timeline:	タイムラインをズーム:
+	Shortcut unavailable	ショートカットを割り当てられません
+	Left click is reserved for controlling the application and cannot be assigned.	左クリックはアプリケーションの操作用に予約されているため、割り当てられません。
+	Right click is reserved for opening slider settings and cannot be assigned.	右クリックはスライダー設定を開くために予約されているため、割り当てられません。
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	トラックにスナップするには、エッジの連動解除を有効にしてください。連動したエッジは個別にスナップできません。
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	このショートカットは既に割り当てられています。キーボードショートカットを開いて確認してください。
+	Copy of the project saved to {path}	プロジェクトのコピーを {path} に保存しました
+	Project saved to {path}	プロジェクトを {path} に保存しました
+	Ticked attributes are removed from the selected clips.	チェックした属性が選択したクリップから削除されます。
+	No bin {id}	ビン {id} がありません
+	Unbound	未割り当て
+	Track Control Angle:	トラック制御角度:
+	to	～
+	Control Track Sliders	トラックスライダーを操作
+	Full Screen Program Monitor	プログラムモニターを全画面表示
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 縦向き 9:16、画面を埋めるように拡大縮小、VBR 1 パス、10 Mbps、ラウドネスを −14 LUFS に正規化
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 縦向き 9:16、画面を埋めるように拡大縮小、VBR 1 パス、12 Mbps、ラウドネスを −14 LUFS に正規化
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 縦向き 9:16、画面を埋めるように拡大縮小、VBR 1 パス、8 Mbps、ラウドネスを −14 LUFS に正規化
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	明部をキーアウト
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
