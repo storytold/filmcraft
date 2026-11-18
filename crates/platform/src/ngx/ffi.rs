@@ -23,14 +23,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-//! NVIDIA NGX Direct3D 11 interface declarations as called by NVIDIA's MIT-licensed Streamline
-//! `sl.common` and `sl.dlss` plugins against the driver's `_nvngx.dll`.
-//!
-//! FFI module (docs/adr/0001-platform-ffi.md): plain `repr(C)` data, no logic.
+//! NGX public SDK types and C entry points for FilmCraft's optional local DLAA build.
+//! Layouts and function signatures use NVIDIA/DLSS include/nvsdk_ngx{,_defs,_params}.h.
 
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code, clippy::upper_case_acronyms)]
 
-use std::ffi::{c_char, c_double, c_float, c_int, c_uint, c_ulonglong, c_void};
+use std::ffi::{c_char, c_float, c_int, c_uint, c_void};
 
 pub type NVSDK_NGX_Result = u32;
 pub const NVSDK_NGX_Result_Success: NVSDK_NGX_Result = 0x1;
@@ -100,51 +98,41 @@ pub struct NVSDK_NGX_FeatureCommonInfo {
     pub LoggingInfo: NVSDK_NGX_LoggingInfo,
 }
 
-/// MSVC x64 C++ vtable of `NVSDK_NGX_Parameter` (overloaded `Set` and `Get` methods are laid out in
-/// reverse declaration order within each overload group).
+/// Opaque parameter block accessed through the SDK's C setters.
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct NVSDK_NGX_Parameter_Vtable {
-    pub SetVoidPointer: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, *mut c_void)>,
-    pub SetD3d12Resource: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, *mut c_void)>,
-    pub SetD3d11Resource: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, *mut c_void)>,
-    pub SetI: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, c_int)>,
-    pub SetUI: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, c_uint)>,
-    pub SetD: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, c_double)>,
-    pub SetF: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, c_float)>,
-    pub SetULL: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter, *const c_char, c_ulonglong)>,
-    pub GetVoidPointer: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut *mut c_void) -> NVSDK_NGX_Result>,
-    pub GetD3d12Resource: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut *mut c_void) -> NVSDK_NGX_Result>,
-    pub GetD3d11Resource: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut *mut c_void) -> NVSDK_NGX_Result>,
-    pub GetI: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut c_int) -> NVSDK_NGX_Result>,
-    pub GetUI: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut c_uint) -> NVSDK_NGX_Result>,
-    pub GetD: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut c_double) -> NVSDK_NGX_Result>,
-    pub GetF: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut c_float) -> NVSDK_NGX_Result>,
-    pub GetULL: Option<unsafe extern "C" fn(*const NVSDK_NGX_Parameter, *const c_char, *mut c_ulonglong) -> NVSDK_NGX_Result>,
-    pub Reset: Option<unsafe extern "C" fn(*mut NVSDK_NGX_Parameter)>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub struct NVSDK_NGX_Parameter {
-    pub vtable: *const NVSDK_NGX_Parameter_Vtable,
+    _opaque: [u8; 0],
 }
 
-pub type PfnNgxD3D11InitProjectId = unsafe extern "C" fn(
-    *const c_char,
-    NVSDK_NGX_EngineType,
-    *const c_char,
-    *const u16,
-    *mut c_void,
-    u32,
-    *const NVSDK_NGX_FeatureCommonInfo,
-) -> NVSDK_NGX_Result;
-
-pub type PfnNgxD3D11Shutdown1 = unsafe extern "C" fn(*mut c_void) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11GetCapabilityParameters = unsafe extern "C" fn(*mut *mut NVSDK_NGX_Parameter) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11AllocateParameters = unsafe extern "C" fn(*mut *mut NVSDK_NGX_Parameter) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11DestroyParameters = unsafe extern "C" fn(*mut NVSDK_NGX_Parameter) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11CreateFeature =
-    unsafe extern "C" fn(*mut c_void, NVSDK_NGX_Feature, *const NVSDK_NGX_Parameter, *mut *mut NVSDK_NGX_Handle) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11EvaluateFeature = unsafe extern "C" fn(*mut c_void, *const NVSDK_NGX_Handle, *const NVSDK_NGX_Parameter, *const c_void) -> NVSDK_NGX_Result;
-pub type PfnNgxD3D11ReleaseFeature = unsafe extern "C" fn(*mut NVSDK_NGX_Handle) -> NVSDK_NGX_Result;
+// Public C ABI from NVIDIA/DLSS include/nvsdk_ngx.h and nvsdk_ngx_params.h.
+unsafe extern "C" {
+    pub fn NVSDK_NGX_D3D11_Init_with_ProjectID(
+        project: *const c_char,
+        engine: NVSDK_NGX_EngineType,
+        version: *const c_char,
+        app_data: *const u16,
+        device: *mut c_void,
+        info: *const NVSDK_NGX_FeatureCommonInfo,
+        sdk: u32,
+    ) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_Shutdown1(device: *mut c_void) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_GetCapabilityParameters(out: *mut *mut NVSDK_NGX_Parameter) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_DestroyParameters(params: *mut NVSDK_NGX_Parameter) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_CreateFeature(
+        context: *mut c_void,
+        feature: NVSDK_NGX_Feature,
+        params: *const NVSDK_NGX_Parameter,
+        out: *mut *mut NVSDK_NGX_Handle,
+    ) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_EvaluateFeature(
+        context: *mut c_void,
+        handle: *const NVSDK_NGX_Handle,
+        params: *const NVSDK_NGX_Parameter,
+        callback: *const c_void,
+    ) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_D3D11_ReleaseFeature(handle: *mut NVSDK_NGX_Handle) -> NVSDK_NGX_Result;
+    pub fn NVSDK_NGX_Parameter_SetUI(params: *mut NVSDK_NGX_Parameter, name: *const c_char, value: c_uint);
+    pub fn NVSDK_NGX_Parameter_SetI(params: *mut NVSDK_NGX_Parameter, name: *const c_char, value: c_int);
+    pub fn NVSDK_NGX_Parameter_SetF(params: *mut NVSDK_NGX_Parameter, name: *const c_char, value: c_float);
+    pub fn NVSDK_NGX_Parameter_SetD3d11Resource(params: *mut NVSDK_NGX_Parameter, name: *const c_char, value: *mut c_void);
+}

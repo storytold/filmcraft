@@ -62,3 +62,29 @@ fn hostile_sizes_and_rates_are_rejected() {
         assert!(matches!(r, Err(ExportError::Unsupported(_))), "{num}/{den}");
     }
 }
+
+#[test]
+fn hdr_4444_preserves_highlights_signal_and_partial_alpha_in_the_file() {
+    use crate::{ColorSignal, ProResMovFormat, ProResMovFrame, encode_prores_mov_frames};
+    use filmcraft_color::{ColorPipeline, OutputTransform, WorkingSpace};
+    for (working, signal) in [(WorkingSpace::Rec2100Pq, ColorSignal::PQ), (WorkingSpace::Rec2100Hlg, ColorSignal::HLG)] {
+        let pipe = ColorPipeline { working, ..ColorPipeline::REC709 };
+        let transform = OutputTransform::new(&pipe, working.output_space());
+        let peak = transform.encode([3.0; 3])[0];
+        let white = transform.encode([1.0; 3])[0];
+        let format = ProResMovFormat { profile: Profile::P4444, signal, alpha: true };
+        let frame = ProResMovFrame { rgb: grey(48, 32, peak), alpha: Some(vec![512; 48 * 32]) };
+        let (writer, _) = encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, [Ok(frame)]).unwrap();
+        let bytes = writer.into_inner();
+        let mov = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
+        let vt = mov.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let sample = mov.read_sample(bytes.as_slice(), vt, 0).unwrap();
+        let frame = craft_video::prores::decode_frame(&sample).unwrap();
+        let shift = frame.bit_depth.saturating_sub(10);
+        let y = f32::from(frame.y[0] >> shift);
+        assert!((y - (64.0 + 876.0 * peak)).abs() < 2.0 && y > 64.0 + 876.0 * white);
+        let a = frame.alpha.unwrap()[0] >> shift;
+        assert!(a.abs_diff(512) <= 1, "decoded alpha at 10 bits: {a}");
+        assert_eq!(frame.color.transfer, signal.transfer);
+    }
+}

@@ -566,6 +566,32 @@ pub fn encode_prores_mov<W: std::io::Write + std::io::Seek>(
     profile: craft_video::prores::Profile,
     frames: impl IntoIterator<Item = Result<Vec<f32>>>,
 ) -> Result<(W, u64)> {
+    let format = ProResMovFormat { profile, signal: ColorSignal::default(), alpha: false };
+    let frames = frames.into_iter().map(|f| f.map(|rgb| ProResMovFrame { rgb, alpha: None }));
+    encode_prores_mov_frames(out, w, h, rate, format, frames)
+}
+
+pub struct ProResMovFormat {
+    pub profile: craft_video::prores::Profile,
+    pub signal: ColorSignal,
+    pub alpha: bool,
+}
+
+/// Straight, transfer-encoded RGB and an optional full-resolution 10-bit alpha plane.
+pub struct ProResMovFrame {
+    pub rgb: Vec<f32>,
+    pub alpha: Option<Vec<u16>>,
+}
+
+pub fn encode_prores_mov_frames<W: std::io::Write + std::io::Seek>(
+    out: W,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    format: ProResMovFormat,
+    frames: impl IntoIterator<Item = Result<ProResMovFrame>>,
+) -> Result<(W, u64)> {
+    let ProResMovFormat { profile, signal, alpha } = format;
     use craft_video::prores::{ChromaFormat, Encoder, EncoderConfig, Frame};
     use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, TrackConfig, WriteSample, WriterOptions};
 
@@ -581,19 +607,31 @@ pub fn encode_prores_mov<W: std::io::Write + std::io::Seek>(
     let (wu, hu) = (w as usize, h as usize);
     let expected = wu.saturating_mul(hu).saturating_mul(3);
     let chroma = profile.chroma();
-    let mut enc = Encoder::with_config(EncoderConfig::new(profile, w, h));
+    if alpha && chroma != ChromaFormat::Yuv444 {
+        return Err(ExportError::Unsupported("ProRes alpha requires a 4444 profile".into()));
+    }
+    let mut cfg = EncoderConfig::new(profile, w, h);
+    cfg.encode_alpha = alpha;
+    cfg.color = craft_video::prores::ColorInfo { primaries: signal.primaries, transfer: signal.transfer, matrix: signal.matrix };
+    let mut enc = Encoder::with_config(cfg);
     // the size check above keeps both sides within u16
     let mut entry = SampleEntry::prores(FourCc(profile.fourcc()), w as u16, h as u16);
-    ColorSignal::default().apply_to(&mut entry, true);
+    signal.apply_to(&mut entry, true);
 
     let mut mux = Mp4Writer::new(out, WriterOptions::new(Brand::Mov)).map_err(|e| ExportError::Io(e.to_string()))?;
     let vt = mux.add_track(TrackConfig::new(entry, timescale)).map_err(|e| ExportError::Io(e.to_string()))?;
 
-    let mut fr = Frame::new(w, h, chroma, 10, false).map_err(|e| ExportError::Encode(e.to_string()))?;
-    let matrix = Matrix::new(0.2126, 0.0722);
+    let mut fr = Frame::new(w, h, chroma, 10, alpha).map_err(|e| ExportError::Encode(e.to_string()))?;
+    let (kr, kb) = signal.kr_kb();
+    let matrix = Matrix::new(kr, kb);
     let mut written = 0u64;
-    for rgb in frames {
-        let rgb = rgb?;
+    for frame in frames {
+        let ProResMovFrame { rgb, alpha } = frame?;
+        match (fr.alpha.as_deref_mut(), alpha.as_deref()) {
+            (Some(dst), Some(src)) if dst.len() == src.len() && src.iter().all(|&a| a <= 1023) => dst.copy_from_slice(src),
+            (None, None) => {}
+            _ => return Err(ExportError::Encode(format!("frame {written} has invalid ProRes alpha"))),
+        }
         if rgb.len() != expected {
             return Err(ExportError::Encode(format!("frame {written} has {} values, expected {expected} for {w}x{h}", rgb.len())));
         }

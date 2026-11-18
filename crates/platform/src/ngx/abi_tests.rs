@@ -4,12 +4,12 @@ use std::mem::{align_of, offset_of, size_of};
 
 use super::ffi::{
     NVSDK_NGX_DLSS_Feature_Flags_AutoExposure, NVSDK_NGX_DLSS_Feature_Flags_IsHDR, NVSDK_NGX_DLSS_Feature_Flags_MVLowRes, NVSDK_NGX_DLSS_Hint_Render_Preset_K,
-    NVSDK_NGX_Feature_SuperSampling, NVSDK_NGX_FeatureCommonInfo, NVSDK_NGX_Handle, NVSDK_NGX_LoggingInfo, NVSDK_NGX_Parameter, NVSDK_NGX_Parameter_Vtable,
-    NVSDK_NGX_PathListInfo, NVSDK_NGX_PerfQuality_Value_DLAA, NVSDK_NGX_Result_Fail, NVSDK_NGX_Result_Success, NVSDK_NGX_VERSION_API,
+    NVSDK_NGX_Feature_SuperSampling, NVSDK_NGX_FeatureCommonInfo, NVSDK_NGX_Handle, NVSDK_NGX_LoggingInfo, NVSDK_NGX_PathListInfo,
+    NVSDK_NGX_PerfQuality_Value_DLAA, NVSDK_NGX_Result_Fail, NVSDK_NGX_Result_Success, NVSDK_NGX_VERSION_API,
 };
 
 #[test]
-fn ngx_struct_layouts_match_x64_abi() {
+fn ngx_info_struct_layouts_match_x64_abi() {
     assert_eq!(size_of::<NVSDK_NGX_Handle>(), 4);
     assert_eq!(align_of::<NVSDK_NGX_Handle>(), 4);
 
@@ -29,19 +29,10 @@ fn ngx_struct_layouts_match_x64_abi() {
     assert_eq!(offset_of!(NVSDK_NGX_FeatureCommonInfo, PathListInfo), 0);
     assert_eq!(offset_of!(NVSDK_NGX_FeatureCommonInfo, InternalData), 16);
     assert_eq!(offset_of!(NVSDK_NGX_FeatureCommonInfo, LoggingInfo), 24);
+}
 
-    assert_eq!(size_of::<NVSDK_NGX_Parameter_Vtable>(), 17 * 8);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, SetVoidPointer), 0);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, SetD3d11Resource), 16);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, SetI), 24);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, SetUI), 32);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, SetF), 48);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, GetI), 88);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, GetUI), 96);
-    assert_eq!(offset_of!(NVSDK_NGX_Parameter_Vtable, Reset), 16 * 8);
-
-    assert_eq!(size_of::<NVSDK_NGX_Parameter>(), 8);
-
+#[test]
+fn ngx_constants_match_streamline() {
     assert_eq!(NVSDK_NGX_Result_Success, 1);
     assert_eq!(NVSDK_NGX_Result_Fail, 0xBAD0_0000);
     assert_eq!(NVSDK_NGX_VERSION_API, 0x15);

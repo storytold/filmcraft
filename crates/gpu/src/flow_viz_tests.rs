@@ -118,3 +118,16 @@ fn a_frame_beyond_the_gpu_limits_is_an_error_not_a_crash() {
     let (img, f) = (frame(32, 32), field(32, 32, 4));
     assert!(gpu.encode(&img, &f, FlowVizMode::HsvWheel, 16.0).is_ok());
 }
+
+#[test]
+fn linear_detail_keeps_hdr_before_encoding() {
+    let Some((dev, q)) = device() else { return };
+    let mut gpu = GpuFlowViz::with_device(&dev, &q, "test".into()).unwrap();
+    let img = Image::filled(32, 16, [4.0, 2.0, 0.5, 0.5]);
+    let rgb = gpu.linear_detail(&img, &field(32, 16, 4), 16.0).unwrap();
+    for p in rgb.as_chunks::<3>().0 {
+        for (value, expected) in p.iter().zip([4.0, 2.0, 0.5]) {
+            assert!((value - expected).abs() < TOLERANCE);
+        }
+    }
+}

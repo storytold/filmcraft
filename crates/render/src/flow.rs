@@ -711,6 +711,11 @@ pub trait FlowVizRenderer: Send {
 
     /// The encoded `R'G'B'` floats (3 per pixel, `curr.w × curr.h`) of `field` drawn in `mode`.
     fn encode(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> Result<Vec<f32>, String>;
+
+    /// Premultiplied linear RGB before the track's output colour transform.
+    fn linear_detail(&mut self, _: &Image, _: &FlowField, _: f32) -> Result<Vec<f32>, String> {
+        Err("linear detail output unavailable".into())
+    }
 }
 
 /// Factory registered by the app to open a [`FlowVizRenderer`].
@@ -773,16 +778,32 @@ impl FlowVizEncoder {
 
     /// The encoded `R'G'B'` floats of one overlay frame, and whether the GPU drew it.
     pub fn encode(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> (Vec<f32>, bool) {
+        if let Some(rgb) = self.draw_on_gpu(curr, |gpu| gpu.encode(curr, field, mode, max_motion_px)) {
+            return (rgb, true);
+        }
+        (encode_flow_viz_cpu(curr, field, mode, max_motion_px), false)
+    }
+
+    /// Draw temporal detail in working light, preserving highlights for PQ / HLG output.
+    pub fn linear_detail(&mut self, curr: &Image, field: &FlowField, max_motion_px: f32) -> (Vec<f32>, bool) {
+        if let Some(rgb) = self.draw_on_gpu(curr, |gpu| gpu.linear_detail(curr, field, max_motion_px)) {
+            return (rgb, true);
+        }
+        let frame = render_flow_viz(curr, field, FlowVizMode::DlssEnhance, max_motion_px);
+        (frame.px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(), false)
+    }
+
+    fn draw_on_gpu(&mut self, curr: &Image, draw: impl FnOnce(&mut dyn FlowVizRenderer) -> Result<Vec<f32>, String>) -> Option<Vec<f32>> {
         if let Some(gpu) = self.gpu.as_mut() {
             let want = curr.w.saturating_mul(curr.h).saturating_mul(3);
-            match gpu.encode(curr, field, mode, max_motion_px) {
-                Ok(v) if v.len() == want => return (v, true),
+            match draw(gpu.as_mut()) {
+                Ok(v) if v.len() == want => return Some(v),
                 Ok(v) => self.fallback_reason = Some(format!("{} returned {} values for a {}x{} frame", gpu.backend(), v.len(), curr.w, curr.h)),
                 Err(why) => self.fallback_reason = Some(format!("{} failed: {why}", gpu.backend())),
             }
             self.gpu = None;
         }
-        (encode_flow_viz_cpu(curr, field, mode, max_motion_px), false)
+        None
     }
 }
 
@@ -939,7 +960,7 @@ pub enum FlowVizMode {
     MotionVectors,
     /// Kinetic edge & motion aura: illuminates moving parts of the source frame with directional neon energy.
     KineticGlow,
-    /// DLSS 5 / NGX temporal neural reconstruction + edge-preserving local structure enhancement.
+    /// Temporal reconstruction followed by edge-preserving local contrast enhancement.
     DlssEnhance,
 }
 
@@ -968,7 +989,7 @@ impl FlowVizMode {
             Self::HsvWheel => "HSV Neon Flow Wheel",
             Self::MotionVectors => "Motion Vectors (UV Pass)",
             Self::KineticGlow => "Kinetic Motion Glow",
-            Self::DlssEnhance => "DLSS Neural Enhance",
+            Self::DlssEnhance => "Temporal Detail Enhancement",
         }
     }
 }
@@ -993,7 +1014,7 @@ fn src_rgb_clamped(img: &Image, x: isize, y: isize) -> [f32; 3] {
 /// Edge-preserving bilateral local structure & micro-contrast enhancement for `FlowVizMode::DlssEnhance`
 /// (reproduced step for step in `flow_viz.wgsl`).
 #[inline]
-fn dlss_enhance_pixel(curr: &Image, x: isize, y: isize, conf: f32, active: f32) -> [f32; 3] {
+fn local_contrast_rgb(curr: &Image, x: isize, y: isize, conf: f32, active: f32) -> [f32; 3] {
     let c = src_rgb_clamped(curr, x, y);
     let luma_c = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let mut sum = [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25];
@@ -1016,11 +1037,7 @@ fn dlss_enhance_pixel(curr: &Image, x: isize, y: isize, conf: f32, active: f32) 
     }
     let inv = 1.0 / w_sum;
     let clarity = 0.45 + 0.40 * conf * (1.0 - 0.35 * active);
-    [
-        (c[0] + (c[0] - sum[0] * inv) * clarity).clamp(0.0, 1.0),
-        (c[1] + (c[1] - sum[1] * inv) * clarity).clamp(0.0, 1.0),
-        (c[2] + (c[2] - sum[2] * inv) * clarity).clamp(0.0, 1.0),
-    ]
+    [(c[0] + (c[0] - sum[0] * inv) * clarity).max(0.0), (c[1] + (c[1] - sum[1] * inv) * clarity).max(0.0), (c[2] + (c[2] - sum[2] * inv) * clarity).max(0.0)]
 }
 
 /// Convert HSV (`h` in radians `-π..π`, `s` in `0..1`, `v` in `0..1`) to linear RGB.
@@ -1136,8 +1153,11 @@ pub fn render_flow_viz(curr: &Image, field: &FlowField, mode: FlowVizMode, max_m
                     }
                 }
                 FlowVizMode::DlssEnhance => {
-                    let rgb = dlss_enhance_pixel(curr, x as isize, y as isize, conf, active);
-                    *dst = [rgb[0], rgb[1], rgb[2], 1.0];
+                    let rgb = local_contrast_rgb(curr, x as isize, y as isize, conf, active);
+                    let alpha = curr.px.get((y * w + x) * 4 + 3).copied().filter(|a| a.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0);
+                    if alpha > 0.0 {
+                        *dst = [rgb[0], rgb[1], rgb[2], alpha];
+                    }
                 }
             }
         }
@@ -1470,6 +1490,17 @@ mod tests {
         assert!(!enc.is_gpu());
         assert_eq!(enc.fallback_reason(), Some("no usable GPU"));
         assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu, false));
+    }
+
+    #[test]
+    fn temporal_detail_keeps_linear_highlights_and_coverage() {
+        let color = [3.0, 1.5, 0.75, 0.5];
+        let image = Image::filled(3, 3, color);
+        let field = FlowField { w: 1, h: 1, frame_w: 3, frame_h: 3, uv: vec![[0.0; 2]], cost: vec![0], hardware: false };
+        let result = render_flow_viz(&image, &field, FlowVizMode::DlssEnhance, 16.0);
+        for (actual, expected) in result.get(1, 1).into_iter().zip(color) {
+            assert!((actual - expected).abs() < 0.0001, "{actual} vs {expected}");
+        }
     }
 
     #[test]

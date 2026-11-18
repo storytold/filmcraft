@@ -261,6 +261,11 @@ fn dlss_enhance_mode_places_normal_blend_full_opacity_clip_above() {
     let dir = tempfile::tempdir().unwrap();
     let res = s.execute("clip.opticalFlowOverlay.dlssEnhance", json!({"clips": [clip.0], "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
     assert_eq!(res["mode"], "dlssEnhance");
+    assert_eq!(res["reconstructionBackend"], filmcraft_render::flow::CPU_NEURAL_BACKEND);
+    assert_eq!(res["reconstructionCpuFrames"], 3);
+    assert_eq!(res["overlayCpuFrames"], 3);
+    assert_eq!(res["reconstructionHardwareFrames"], 0);
+    assert_eq!(res["overlayGpuFrames"], 0);
     let new_clip = ClipId(res["clips"][0].as_u64().unwrap());
     let (ti, it) = overlay_of(&s, seq_id, new_clip);
     assert!(ti > 0);

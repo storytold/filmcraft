@@ -208,20 +208,27 @@ impl FlowVizRenderer for GpuFlowViz {
     }
 
     fn encode(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> Result<Vec<f32>, String> {
+        self.draw(curr, field, mode, max_motion_px, false)
+    }
+
+    fn linear_detail(&mut self, curr: &Image, field: &FlowField, max_motion_px: f32) -> Result<Vec<f32>, String> {
+        self.draw(curr, field, FlowVizMode::DlssEnhance, max_motion_px, true)
+    }
+}
+
+impl GpuFlowViz {
+    fn draw(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32, linear: bool) -> Result<Vec<f32>, String> {
         // a frame the device rejects is this renderer's error (the overlay goes on on the CPU),
         // not one for the device's callback, which would turn GPU export off for the session
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let r = self.encode_frame(curr, field, mode, max_motion_px);
+        let r = self.encode_frame(curr, field, mode, max_motion_px, linear);
         match (crate::poll_now(scope.pop()), r) {
             (Some(None), r) => r,
             (Some(Some(e)), _) => Err(format!("GPU error: {e}")),
             (None, _) => Err("the GPU did not answer".into()),
         }
     }
-}
-
-impl GpuFlowViz {
-    fn encode_frame(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32) -> Result<Vec<f32>, String> {
+    fn encode_frame(&mut self, curr: &Image, field: &FlowField, mode: FlowVizMode, max_motion_px: f32, linear: bool) -> Result<Vec<f32>, String> {
         if device_failed() {
             return Err("the GPU device failed".into());
         }
@@ -249,7 +256,7 @@ impl GpuFlowViz {
         for v in [fw, fh] {
             params.extend_from_slice(&v.to_le_bytes());
         }
-        for v in [mode_id, 0] {
+        for v in [mode_id, u32::from(linear)] {
             params.extend_from_slice(&v.to_le_bytes());
         }
         for v in [scale, DEADZONE, 0.0, 0.0] {

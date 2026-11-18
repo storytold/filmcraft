@@ -9,7 +9,7 @@
 //! and colour-encoded through [`filmcraft_render::flow::FlowVizEncoder`] (a WGSL compute pass when
 //! the app registered `filmcraft-gpu`'s, otherwise the CPU) and streamed into a QuickTime ProRes
 //! `.mov` on disk: ProRes 422 for the visual looks, ProRes 4444
-//! (no chroma subsampling) for the Motion Vectors data pass. Memory use does not grow with the
+//! for the Motion Vectors data pass and Temporal Detail Enhancement (with alpha). Memory use does not grow with the
 //! clip's length.
 //!
 //! When the job finishes, [`poll`] imports the files and places each one on the first free unlocked
@@ -84,7 +84,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         ),
         spec(
             "clip.opticalFlowOverlay.dlssEnhance",
-            "DLSS Neural Enhance",
+            FlowVizMode::DlssEnhance.label(),
             &["Clip", "Video Options", "Optical Flow Track"],
             r#"{"clips":[id]?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
             |s, p| run_overlay(s, p, Some(FlowVizMode::DlssEnhance)),
@@ -182,8 +182,11 @@ struct Outcome {
     cpu_frames: u64,
     /// Why the hardware engine was not (or not always) used.
     fallback: Option<String>,
-    /// Overlay frames drawn on the GPU and on the CPU, the GPU's name, and why it was not (or not
-    /// always) used.
+    /// Temporal reconstruction is optional and counted independently of drawing the overlay.
+    reconstruction_hw: u64,
+    reconstruction_cpu: u64,
+    reconstruction_hw_name: Option<&'static str>,
+    reconstruction_fallback: Option<String>,
     viz_gpu_frames: u64,
     viz_cpu_frames: u64,
     viz_gpu_name: Option<String>,
@@ -201,13 +204,24 @@ impl Outcome {
         }
     }
 
+    fn reconstruction_backend(&self) -> Option<String> {
+        let cpu = filmcraft_render::flow::CPU_NEURAL_BACKEND;
+        let hw = self.reconstruction_hw_name.unwrap_or("hardware");
+        match (self.reconstruction_hw, self.reconstruction_cpu) {
+            (0, 0) => None,
+            (0, _) => Some(cpu.into()),
+            (_, 0) => Some(hw.into()),
+            (h, c) => Some(format!("{hw} ({h} frames), {cpu} ({c} frames)")),
+        }
+    }
+
     /// Where the overlay frames were drawn, in the same form.
     fn viz_backend(&self) -> String {
         let gpu = self.viz_gpu_name.as_deref().unwrap_or("GPU");
         match (self.viz_gpu_frames, self.viz_cpu_frames) {
             (0, _) => "CPU".to_string(),
             (_, 0) => gpu.to_string(),
-            (g, c) => format!("{gpu} ({g} frames), then CPU ({c} frames)"),
+            (g, c) => format!("{gpu} ({g} frames), CPU ({c} frames)"),
         }
     }
 }
@@ -423,9 +437,7 @@ impl JobCtx {
         // the overlay is drawn and colour-encoded on the GPU when the app registered one
         let mut viz = FlowVizEncoder::new();
         let mut neural = (self.look.mode == FlowVizMode::DlssEnhance).then(|| NeuralEnhancer::new(fw, fh));
-        if let Some(ne) = neural.as_ref().filter(|n| n.is_hardware()) {
-            out.viz_gpu_name = Some(if viz.is_gpu() { format!("{} + {}", ne.backend(), viz.backend()) } else { ne.backend().to_string() });
-        } else if viz.is_gpu() {
+        if viz.is_gpu() {
             out.viz_gpu_name = Some(viz.backend());
         }
         let (mut viz_gpu, mut viz_cpu) = (0u64, 0u64);
@@ -433,7 +445,9 @@ impl JobCtx {
         let name = std::path::Path::new(&w.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (mut prev, mut ahead): (Option<Image>, Option<Image>) = (None, None);
         let (mut hw, mut cpu) = (0u64, 0u64);
-        let frames = (0..w.frames).map(|fi| -> filmcraft_export::Result<Vec<f32>> {
+        let pipe = self.project.sequence(self.seq).ok_or("optical-flow sequence is missing")?.settings.color;
+        let transform = filmcraft_color::OutputTransform::new(&pipe, pipe.working.output_space());
+        let frames = (0..w.frames).map(|fi| -> filmcraft_export::Result<filmcraft_export::ProResMovFrame> {
             if prog.cancel.load(Ordering::Relaxed) {
                 return Err(filmcraft_export::ExportError::Cancelled);
             }
@@ -459,12 +473,33 @@ impl JobCtx {
             } else {
                 cpu += 1;
             }
-            let (viz_src, on_neural_hw) = match neural.as_mut() {
-                Some(ne) => ne.enhance(prev.as_ref(), &curr, &field),
-                None => (curr.clone(), false),
+            let enhanced = neural.as_mut().map(|ne| {
+                let (image, hardware) = ne.enhance(prev.as_ref(), &curr, &field);
+                if hardware {
+                    out.reconstruction_hw += 1;
+                    out.reconstruction_hw_name = Some(ne.backend());
+                } else {
+                    out.reconstruction_cpu += 1;
+                }
+                image
+            });
+            let (frame, on_gpu) = if let Some(src) = enhanced.as_ref() {
+                let (mut rgb, gpu) = viz.linear_detail(src, &field, look.max_motion);
+                let mut alpha = Vec::with_capacity(src.px.len() / 4);
+                for (channels, px) in rgb.as_chunks_mut::<3>().0.iter_mut().zip(src.px.as_chunks::<4>().0) {
+                    if !px[3].is_finite() {
+                        return Err(filmcraft_export::ExportError::Encode("temporal detail frame has non-finite alpha".into()));
+                    }
+                    let a = px[3].clamp(0.0, 1.0);
+                    *channels = transform.encode(Image::unpremul([channels[0], channels[1], channels[2], a]));
+                    alpha.push((a * 1023.0).round() as u16);
+                }
+                (filmcraft_export::ProResMovFrame { rgb, alpha: Some(alpha) }, gpu)
+            } else {
+                let (rgb, gpu) = viz.encode(&curr, &field, look.mode, look.max_motion);
+                (filmcraft_export::ProResMovFrame { rgb, alpha: None }, gpu)
             };
-            let (encoded, on_gpu) = viz.encode(&viz_src, &field, look.mode, look.max_motion);
-            if on_gpu || on_neural_hw {
+            if on_gpu {
                 viz_gpu += 1;
             } else {
                 viz_cpu += 1;
@@ -472,15 +507,21 @@ impl JobCtx {
             prev = Some(curr);
             prog.done.fetch_add(1, Ordering::Relaxed);
             *lock(&prog.status) = format!("{name}: frame {} of {}", fi + 1, w.frames);
-            Ok(encoded)
+            Ok(frame)
         });
-        // ProRes 4444 keeps the UV pass's channels apart (no chroma subsampling); 422 is plenty for
-        // the visual looks.
-        let profile = filmcraft_export::prores_profile(if look.mode == FlowVizMode::MotionVectors { "4444" } else { "standard" });
+        // 4444 keeps the UV channels independent and carries source alpha on enhanced clips.
+        let detail = look.mode == FlowVizMode::DlssEnhance;
+        let profile = filmcraft_export::prores_profile(if detail || look.mode == FlowVizMode::MotionVectors { "4444" } else { "standard" });
+        let signal = match (detail, pipe.working) {
+            (true, filmcraft_color::WorkingSpace::Rec2100Pq) => filmcraft_export::ColorSignal::PQ,
+            (true, filmcraft_color::WorkingSpace::Rec2100Hlg) => filmcraft_export::ColorSignal::HLG,
+            _ => filmcraft_export::ColorSignal::default(),
+        };
+        let format = filmcraft_export::ProResMovFormat { profile, signal, alpha: detail };
         let (w32, h32) = (u32::try_from(fw).map_err(|e| e.to_string())?, u32::try_from(fh).map_err(|e| e.to_string())?);
         let bytes = if self.in_memory || cfg!(target_arch = "wasm32") {
             let (cur, _) =
-                filmcraft_export::encode_prores_mov(std::io::Cursor::new(Vec::new()), w32, h32, self.rate, profile, frames).map_err(|e| e.to_string())?;
+                filmcraft_export::encode_prores_mov_frames(std::io::Cursor::new(Vec::new()), w32, h32, self.rate, format, frames).map_err(|e| e.to_string())?;
             let data = cur.into_inner();
             self.services.write_file(&w.path, &data).map_err(|e| format!("{}: {e}", w.path))?;
             Some(Arc::<[u8]>::from(data))
@@ -488,7 +529,7 @@ impl JobCtx {
             // a new file only: the name was checked to be free, and nothing else may be overwritten
             let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&w.path).map_err(|e| format!("{}: {e}", w.path))?;
             let (buf, _) =
-                filmcraft_export::encode_prores_mov(std::io::BufWriter::new(file), w32, h32, self.rate, profile, frames).map_err(|e| e.to_string())?;
+                filmcraft_export::encode_prores_mov_frames(std::io::BufWriter::new(file), w32, h32, self.rate, format, frames).map_err(|e| e.to_string())?;
             buf.into_inner().map_err(|e| format!("{}: {}", w.path, e.error()))?.sync_all().map_err(|e| format!("{}: {e}", w.path))?;
             None
         };
@@ -501,7 +542,10 @@ impl JobCtx {
         }
         out.viz_gpu_frames += viz_gpu;
         out.viz_cpu_frames += viz_cpu;
-        if let Some(why) = viz.fallback_reason().or_else(|| neural.as_ref().and_then(NeuralEnhancer::fallback_reason))
+        if let Some(why) = neural.as_ref().and_then(NeuralEnhancer::fallback_reason) {
+            out.reconstruction_fallback.get_or_insert_with(|| why.to_owned());
+        }
+        if let Some(why) = viz.fallback_reason()
             && out.viz_fallback.is_none()
         {
             out.viz_fallback = Some(why.to_string());
@@ -570,7 +614,8 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
             if s.state.active_sequence == Some(pj.seq) {
                 s.state.selection = created.iter().map(|(c, _)| *c).collect();
             }
-            s.toast(format!("Generated {} track via {backend}", pj.look.mode.label()));
+            let display_backend = out.reconstruction_backend().unwrap_or_else(|| backend.clone());
+            s.toast(format!("Generated {} track via {display_backend}", pj.look.mode.label()));
             Ok(json!({
                 "mode": pj.look.mode.id(),
                 "backend": backend,
@@ -578,6 +623,10 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
                 "hardwareFrames": out.hardware_frames,
                 "cpuFrames": out.cpu_frames,
                 "fallbackReason": out.fallback,
+                "reconstructionBackend": out.reconstruction_backend(),
+                "reconstructionHardwareFrames": out.reconstruction_hw,
+                "reconstructionCpuFrames": out.reconstruction_cpu,
+                "reconstructionFallbackReason": out.reconstruction_fallback,
                 "overlayBackend": out.viz_backend(),
                 "overlayGpuFrames": out.viz_gpu_frames,
                 "overlayCpuFrames": out.viz_cpu_frames,

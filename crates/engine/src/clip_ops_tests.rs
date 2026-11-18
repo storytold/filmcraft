@@ -77,7 +77,8 @@ fn menus_and_shortcuts_follow_premiere() {
             // FilmCraft's own Optical Flow Track submenu, after Premiere's items
             "HSV Neon Flow Wheel",
             "Motion Vectors (UV Pass)",
-            "Kinetic Motion Glow"
+            "Kinetic Motion Glow",
+            "Temporal Detail Enhancement"
         ]
     );
     let sc = |id: &str| crate::commands::find(id).unwrap().shortcut;

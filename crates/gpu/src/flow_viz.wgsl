@@ -12,7 +12,7 @@ struct Params {
     frame_h: f32,
     // 0 HSV wheel, 1 motion vectors, 2 kinetic glow
     mode: u32,
-    _pad0: u32,
+    linear_output: u32,
     scale: f32,
     deadzone: f32,
     _pad1: f32,
@@ -98,8 +98,8 @@ fn src_rgb_clamped(x: i32, y: i32) -> vec3<f32> {
     return textureLoad(src, vec2<i32>(cx, cy), 0).rgb;
 }
 
-// `dlss_enhance_pixel`
-fn dlss_enhance_pixel(x: i32, y: i32, conf: f32, act: f32) -> vec3<f32> {
+// `local_contrast_rgb`
+fn local_contrast_rgb(x: i32, y: i32, conf: f32, act: f32) -> vec3<f32> {
     let c = src_rgb_clamped(x, y);
     let luma_c = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
     var sum = c * 0.25;
@@ -120,7 +120,7 @@ fn dlss_enhance_pixel(x: i32, y: i32, conf: f32, act: f32) -> vec3<f32> {
     }
     let inv = 1.0 / w_sum;
     let clarity = 0.45 + 0.40 * conf * (1.0 - 0.35 * act);
-    return clamp(c + (c - sum * inv) * clarity, vec3<f32>(0.0), vec3<f32>(1.0));
+    return max(c + (c - sum * inv) * clarity, vec3<f32>(0.0));
 }
 
 @compute @workgroup_size(16, 16)
@@ -147,7 +147,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         rgb = vec3<f32>(u, v, b);
         encoded = true;
     } else if p.mode == 3u {
-        rgb = dlss_enhance_pixel(i32(id.x), i32(id.y), conf, act);
+        if textureLoad(src, vec2<i32>(id.xy), 0).a > 0.0 {
+            rgb = local_contrast_rgb(i32(id.x), i32(id.y), conf, act);
+        }
     } else if act > 0.0 {
         let angle = atan2(dy, dx);
         if p.mode == 0u {
@@ -162,7 +164,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     let i = (id.y * p.out_w + id.x) * 3u;
-    if encoded {
+    if encoded || p.linear_output != 0u {
         outp[i] = rgb.r;
         outp[i + 1u] = rgb.g;
         outp[i + 2u] = rgb.b;

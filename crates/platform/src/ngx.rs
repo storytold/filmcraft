@@ -1,26 +1,39 @@
-//! NVIDIA NGX Direct3D 11 (`_nvngx.dll` + OTA `nvngx_dlss.dll` Preset K Transformer) hardware
-//! neural reconstruction backend on Windows.
-//!
-//! Plugs into [`filmcraft_render::flow::register_neural_enhancer`]. When no NVIDIA RTX GPU, NGX
-//! driver runtime, or signed DLSS model binary is present, or when a frame size is outside the
-//! engine's bounds, [`factory`] declines and [`filmcraft_render::flow::NeuralEnhancer`]
-//! transparently falls back to the pure-Rust motion-compensated temporal reconstruction path.
-//!
-//! `unsafe` is confined to `session` (driver loading, D3D11 textures, and NGX evaluation); `ffi`
-//! is plain `repr(C)` data transcribed from NVIDIA's MIT-licensed Streamline SDK, and this module
-//! is safe code.
+//! Optional NVIDIA NGX DLAA backend for temporal detail enhancement on Windows.
+//! The SDK build uses its public C interface on a Direct3D 11 device. The render crate
+//! retains its motion-compensated CPU path when this factory declines or evaluation fails.
 
+#[cfg(filmcraft_ngx_sdk)]
+#[allow(unsafe_code)]
 mod ffi;
+#[cfg(filmcraft_ngx_sdk)]
 #[allow(unsafe_code)]
 mod session;
 
-#[cfg(test)]
+#[cfg(all(test, filmcraft_ngx_sdk))]
 mod abi_tests;
 
 use filmcraft_render::Image;
 use filmcraft_render::flow::{FlowField, NeuralSession};
 
+#[cfg(filmcraft_ngx_sdk)]
 pub use self::session::Session;
+
+/// NGX is optional. Builds without the SDK retain the same factory and CPU fallback.
+#[cfg(not(filmcraft_ngx_sdk))]
+pub struct Session(std::convert::Infallible);
+
+#[cfg(not(filmcraft_ngx_sdk))]
+impl Session {
+    pub fn new(_: u32, _: u32) -> Result<Self, String> {
+        Err("FilmCraft was built without the optional NVIDIA NGX SDK".into())
+    }
+    pub fn probe() -> Result<(), String> {
+        Self::new(64, 64).map(drop)
+    }
+    pub fn enhance(&mut self, _: &Image, _: &FlowField, _: bool) -> Result<Image, String> {
+        match self.0 {}
+    }
+}
 
 /// Adapter implementing [`filmcraft_render::flow::NeuralSession`] over an NGX DLSS [`Session`].
 pub struct NgxNeuralSession {
@@ -99,9 +112,69 @@ mod tests {
         assert_eq!(hw2, has_ngx);
 
         let viz = render_flow_viz(&r2, &f2, FlowVizMode::DlssEnhance, 16.0);
-        let center = viz.get(160, 96);
-        let ref_center = c.get(160, 96);
-        eprintln!("DLSS Preset K center={center:?} vs source={ref_center:?} (r1 center={:?})", r1.get(160, 96));
-        assert!((center[0] - ref_center[0]).abs() < 0.25 && center[3] == 1.0);
+        for (output, reference) in [(&r0, &a), (&r1, &b), (&r2, &c), (&viz, &c)] {
+            let error = rgb_rmse(output, reference);
+            assert!(error < 0.05, "clean translating texture RMSE {error}");
+        }
+        drop(neural);
+        if has_ngx {
+            Session::new(w as u32, h as u32).expect("reopen after last feature and NGX shutdown");
+        }
+    }
+
+    fn rgb_rmse(actual: &Image, reference: &Image) -> f64 {
+        assert_eq!((actual.w, actual.h, actual.px.len()), (reference.w, reference.h, reference.px.len()));
+        let sum: f64 = actual
+            .px
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(reference.px.as_chunks::<4>().0)
+            .map(|(a, b)| (0..3).map(|k| f64::from(a[k] - b[k]).powi(2)).sum::<f64>())
+            .sum();
+        (sum / (actual.w * actual.h * 3) as f64).sqrt()
+    }
+
+    #[test]
+    #[cfg(filmcraft_ngx_sdk)]
+    #[ignore = "requires an installed NGX DLSS runtime and an RTX GPU"]
+    fn compare_dlaa_and_cpu_on_noisy_translation() {
+        use filmcraft_render::flow::fuse_temporal_cpu;
+        let (w, h) = (320, 192);
+        register_optical_flow(crate::nvof::factory);
+        let mut flow = FlowEstimator::new(w, h);
+        let mut dlaa = Session::new(w as u32, h as u32).unwrap();
+        let mut prev = None;
+        let mut seed = 1147u32;
+        let mut errors = [0.0f64; 3];
+        for i in 0..8 {
+            let clean = textured_frame(w, h, i as f32 * 3.0, -(i as f32));
+            let mut noisy = clean.clone();
+            for px in noisy.px.as_chunks_mut::<4>().0 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let noise = ((seed >> 8) as f32 / 16777216.0 - 0.5) * 0.08;
+                for c in &mut px[..3] {
+                    *c += noise;
+                }
+            }
+            let field = flow.estimate(prev.as_ref().unwrap_or(&noisy), &noisy);
+            let hw = dlaa.enhance(&noisy, &field, prev.is_some()).unwrap();
+            let cpu = fuse_temporal_cpu(prev.as_ref(), &noisy, &field);
+            if i > 0 {
+                let hw = render_flow_viz(&hw, &field, FlowVizMode::DlssEnhance, 16.0);
+                let cpu = render_flow_viz(&cpu, &field, FlowVizMode::DlssEnhance, 16.0);
+                for (sum, img) in errors.iter_mut().zip([&noisy, &cpu, &hw]) {
+                    let rmse = rgb_rmse(img, &clean);
+                    assert!(rmse < 0.08, "frame {i}: {rmse}");
+                    *sum += rmse;
+                }
+            }
+            prev = Some(noisy);
+        }
+        let [input, cpu, hw] = errors.map(|v| v / 7.0);
+        eprintln!(
+            "320x192 translating texture, mean linear RGB RMSE over frames 2-8: input {input:.5}, CPU + detail {cpu:.5}, DLAA + detail {hw:.5}; flow {}",
+            flow.backend()
+        );
     }
 }
