@@ -48,9 +48,22 @@ fn close_others_keeps_one_tab_and_shows_it() {
 }
 
 #[test]
+fn no_op_tab_commands_do_not_mark_the_saved_view_changed() {
+    let (mut s, [_, _, c]) = three_tabs();
+    s.execute("sequence.closeOthers", json!({"item": c.0})).unwrap();
+    let before = s.view_epoch;
+    s.execute("sequence.open", json!({"item": c.0})).unwrap();
+    s.execute("sequence.close", json!({"item": ItemId(u64::MAX)})).unwrap();
+    s.execute("sequence.closeOthers", json!({"item": c.0})).unwrap();
+    s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
+    assert_eq!(s.view_epoch, before);
+}
+
+#[test]
 fn a_tab_moves_to_another_place_among_the_tabs() {
     let (mut s, [main, b, c]) = three_tabs();
     let (revision, steps) = (s.revision, s.history.undo.len());
+    let dirty = s.is_dirty();
     s.execute("sequence.moveTab", json!({"item": c.0, "index": 0})).unwrap();
     assert_eq!(s.state.open_sequences, [c, main, b]);
     assert_eq!(s.state.active_sequence, Some(c), "moving a tab does not change which is shown");
@@ -59,8 +72,11 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step, not an edit
-    assert_eq!((s.revision, s.history.undo.len()), (revision, steps));
+    // not an undo step and not an edit: the revision may move (it is a view change, and that is
+    // what carries the new tab order into the autosave journal) but a clean project stays clean
+    let _ = revision;
+    assert_eq!(s.history.undo.len(), steps);
+    assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();
     assert!(s.execute("sequence.moveTab", json!({"item": b.0, "index": 0})).is_err());
     assert!(s.execute("sequence.moveTab", json!({"item": c.0})).is_err());
@@ -104,6 +120,25 @@ fn a_saved_project_reopens_with_its_tabs_and_their_views() {
     w.execute("file.open", json!({"path": path})).unwrap();
     assert_eq!((w.state.open_sequences.clone(), w.state.active_sequence), (vec![main], Some(main)));
     assert_eq!(w.state.timeline_views.get(&b), Some(&view(400.0, 0.25)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_playhead_edits_are_journaled_but_playback_motion_is_not() {
+    let (mut s, _) = three_tabs();
+    let dir = temp_dir("playhead-dirty");
+    let path = dir.join("playhead.fcproj").to_string_lossy().to_string();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let start_epoch = s.view_epoch;
+    let next = s.sequence_rate().tick_of(48);
+    s.set_playhead(next);
+    assert_eq!(s.view_epoch, start_epoch + 1);
+    assert!(s.has_unsaved_changes());
+
+    let saved_view_epoch = s.view_epoch;
+    s.set_playhead_from_playback(s.sequence_rate().tick_of(72));
+    assert_eq!(s.view_epoch, saved_view_epoch, "playback motion alone does not make the view user-dirty");
+    assert_eq!(s.playhead(), s.sequence_rate().tick_of(72));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
