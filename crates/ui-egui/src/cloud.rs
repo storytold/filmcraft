@@ -1,148 +1,238 @@
 //! FilmCraft's half of Open and Save against cloud storage.
 //!
-//! The contract types here ([`CloudBackend`], [`Job`], [`Post`], [`Event`], [`Fault`],
-//! [`Account`]) are kept in the same shape as `crates/ui/src/cloud/backend.rs` on
-//! wdunn001/craft-libs, which is where storytold/craft-libs#160 is adding the same contract to
-//! `craft-ui` itself. They are not pulled from that crate directly: craft-ui's own `cloud`
-//! feature exists today only on that fork, pinned to an egui release older than the one this
-//! workspace already builds against (`craft-update`, merged on main since this branch diverged,
-//! needs the newer one). Once #160 merges, craft-ui carries this contract at the egui release
-//! this workspace uses, and this module is replaced by `pub use craft_ui::cloud::{...}` in one
-//! commit alongside the `craft-ui` / `craft-cloud` pin bump in the workspace `Cargo.toml`.
+//! The pages themselves are `craft_ui::cloud`. Every Craft app offers the same ones. What is
+//! here is what only FilmCraft can answer: which extensions a project has, how bytes become a
+//! project and how an open project is encoded back.
 //!
-//! FilmCraft holds no provider credential and speaks no provider protocol. A [`CloudBackend`] is
-//! the one thing a host application supplies (see `apps/filmcraft` / `apps/filmcraft-web`); this
-//! crate never learns what it reaches. Nothing here opens a socket, so the pages stay buildable
-//! for the web and testable with no service running.
+//! FilmCraft holds no provider credential and speaks no provider protocol. A [`CloudBackend`]
+//! is the one thing a host application supplies; this crate never learns what it reaches.
+//! Nothing in this file opens a socket, so Open and Save stay buildable for the web and
+//! testable with no service running.
 //!
-//! With no backend connected, [`available`] is `false` and the cloud menu items, the Open/Save
-//! pages and the account badge are not drawn anywhere in this crate (see `menus.rs::cloud_menu`
-//! and `header.rs`).
+//! No backend is connected anywhere in this app yet. With none connected, [`available`] is
+//! `false` and the cloud menu items, the Open/Save pages, the account badge and the share
+//! dialog are not drawn (see `menus.rs::cloud_menu` and `header.rs::draw_cloud_badge`).
 //!
-//! # Projects vs media
-//!
-//! Only the project archive (`.fcproj`) round-trips through the cloud here. FilmCraft projects
-//! are whole-file archives that carry metadata and settings but not the raw media; uploading one
-//! transfers the metadata only, never raw media bytes.
+//! Only the project archive (`.fcproj`) round-trips through Open and Save here. FilmCraft
+//! projects are whole-file archives that carry metadata and settings but not the raw media;
+//! saving one to the cloud transfers the metadata only, never raw media bytes.
 
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::collections::HashMap;
 
+// Re-exported so a host application, and a test, can name these types without depending on the
+// crates they come from.
 pub use craft_cloud::{Capability, Entry, EntryKind};
+pub use craft_ui::cloud::{
+    Account, Busy, CloudApp, CloudBackend, CloudFiles, Conflict, CopyFormat, Destination, DocumentKind, Event, Fault, Folder, Job, Link, Origin, Post,
+    Source, UNAVAILABLE, available, browse, can_converse, cancel_save_as, conflict_modal, destination_name, has_target, link, load_shared, open_entry,
+    open_page, origin, parent_of, prefers_cloud, progress, pump, reload_active, save, save_as, save_page, share_button, shares, sign_in, sign_out, start,
+    who, work_together,
+};
+use egui::{Color32, Painter, Rect, Ui};
+use serde_json::Value as Json;
 
 use crate::FilmcraftApp;
+use crate::icons::{self, Icon};
 
-/// Work for a host's worker. Each one answers with one [`Event`].
-pub enum Job {
-    /// Who is signed in, and what the provider behind the service can do.
-    Account,
-    /// One folder's contents. An empty path is the user's root.
-    List(String),
-    /// A document's bytes.
-    Read { entry: Entry },
-    /// Save under a new name in `folder`.
-    Create { folder: String, name: String, bytes: Vec<u8> },
-}
+/// Project archive extensions for File ▸ Open from cloud… / Save as to cloud….
+const PROJECT_EXTS: [&str; 1] = ["fcproj"];
+const PROJECT_MIMES: [&str; 2] = ["application/x-filmcraft-project", "application/octet-stream"];
 
-/// What a worker reports back.
-pub enum Event {
-    Account(Result<Account, Fault>),
-    Listed { path: String, entries: Result<Vec<Entry>, Fault> },
-    Read { entry: Entry, bytes: Result<Vec<u8>, Fault> },
-    Created(Result<Entry, Fault>),
-}
+/// What a FilmCraft project archive is in the cloud file list.
+pub const PROJECT: DocumentKind = DocumentKind { extensions: &PROJECT_EXTS, mimes: &PROJECT_MIMES, noun: "project", default_extension: "fcproj" };
 
-/// Where a worker's answers go. Handed to [`CloudBackend::submit`] with the job it belongs to.
-pub struct Post {
-    tx: Sender<Event>,
-}
-
-impl Post {
-    fn new(tx: Sender<Event>) -> Post {
-        Post { tx }
-    }
-
-    pub fn send(&self, event: Event) {
-        let _ = self.tx.send(event);
-    }
-}
-
-/// Somewhere a [`Job`] can run without blocking a frame.
+/// The Save a Copy formats available in the Share menu.
 ///
-/// `submit` must return immediately. The answer arrives through `post` whenever it is ready, or
-/// never; the pages survive either.
-pub trait CloudBackend: Send + Sync {
-    fn submit(&self, job: Job, post: Post);
+/// FilmCraft projects are not losslessly round-trippable to other formats at the project level,
+/// so "Save a Copy" here offers the interchange formats the engine can export to: Final Cut
+/// XML and AAF/OMF. These are interop exports, not full fidelity.
+const COPIES: [(&str, &str); 2] = [("fcpxml", "Save a Copy as Final Cut Pro XML (.fcpxml)\u{2026}"), ("aaf", "Export as AAF\u{2026}")];
+
+/// What each save in flight encoded: keyed by document uid so a concurrent save and export
+/// do not confuse each other's dirty-flag updates.
+pub type Sent = HashMap<u64, u64>;
+
+/// Whether FilmCraft can open this cloud entry as a project.
+pub fn opens(entry: &Entry) -> bool {
+    craft_ui::cloud::opens(entry, PROJECT)
 }
 
-/// What the service said about the signed-in user.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Account {
-    pub display: String,
-    pub capabilities: Vec<Capability>,
+/// A typed name as a project file name. Folder separators are dropped; a missing or unknown
+/// extension becomes `.fcproj`.
+pub fn project_name(typed: &str) -> String {
+    craft_ui::cloud::document_name(typed, PROJECT)
 }
 
-/// A call that did not succeed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Fault {
-    Unreachable(String),
-    Refused(String),
+/// The whole of the cloud state, for the control channel and for tests.
+pub fn status(app: &FilmcraftApp) -> Json {
+    craft_ui::cloud::report(app)
 }
 
-impl Fault {
-    /// One sentence for a person to read.
-    pub fn text(&self) -> String {
-        match self {
-            Fault::Unreachable(detail) => format!("The cloud service could not be reached. {detail}"),
-            Fault::Refused(detail) => detail.clone(),
+/// The Share menu's export half, as the control it is drawn in wants it.
+pub fn copies() -> Vec<CopyFormat> {
+    COPIES.iter().map(|(id, label)| CopyFormat::new(*id, *label)).collect()
+}
+
+/// The host part of the service address, for the account badge's first line.
+///
+/// Read from the environment and compiled in nowhere, because the service is
+/// deployment-specific. Somebody with accounts on two deployments needs to know which one a
+/// project is about to land in.
+fn service_host() -> String {
+    ["FILMCRAFT_CLOUD_URL", "CRAFT_CLOUD_URL"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .find(|value| !value.is_empty())
+        .map(|value| value.trim_start_matches("https://").trim_start_matches("http://").to_owned())
+        .unwrap_or_default()
+}
+
+/// Determine the write format from the destination.
+///
+/// A cloud round-trip to a `.fcproj` always stays `.fcproj`. Interop exports (FCPXML, AAF)
+/// are only produced through explicit "Save a Copy" actions, never as a side-effect of Save.
+/// A destination whose extension this application does not write is refused with a clear error.
+fn format_for(into: Destination<'_>) -> Result<&'static str, String> {
+    let ext = into.extension();
+    match ext.as_str() {
+        "fcproj" | "" => Ok("fcproj"),
+        "fcpxml" => Ok("fcpxml"),
+        "aaf" => Ok("aaf"),
+        other => Err(format!("FilmCraft cannot write `.{other}`. Use File \u{203a} Export for other formats, or type a name ending in `.fcproj`.")),
+    }
+}
+
+impl CloudApp for FilmcraftApp {
+    fn cloud(&self) -> &CloudFiles {
+        &self.cloud
+    }
+
+    fn cloud_mut(&mut self) -> &mut CloudFiles {
+        &mut self.cloud
+    }
+
+    fn kind(&self) -> DocumentKind {
+        PROJECT
+    }
+
+    fn active(&self) -> Option<u64> {
+        // One project per window. Addressable for cloud Save / Save As whether the project lives
+        // on disk or was opened from the cloud (open_bytes leaves session.path at None, so the
+        // title shows the cloud name instead of a local one).
+        Some(1u64)
+    }
+
+    fn title(&self, _uid: u64) -> String {
+        self.session.project.name.clone()
+    }
+
+    fn open_bytes(&mut self, _name: &str, bytes: Vec<u8>) -> Result<Option<u64>, String> {
+        // Decoded directly from memory, with no disk path: a cloud Open must not adopt a local
+        // temp path as the project's path, and must not add one to Recent Projects.
+        filmcraft_engine::commands::open_project_bytes(&mut self.session, &bytes).map_err(|e| e.to_string())?;
+        self.cloud_page = None;
+        Ok(Some(1u64))
+    }
+
+    fn encode(&mut self, uid: u64, into: Destination<'_>) -> Result<Vec<u8>, String> {
+        let fmt = format_for(into)?;
+        if fmt == "fcproj" {
+            let revision = self.session.revision;
+            self.cloud_sent.insert(uid, revision);
+            return Ok(filmcraft_engine::commands::project_bytes(&self.session));
+        }
+        // FCPXML / AAF: export through the host VFS (desktop disk or wasm in-memory), never std::fs.
+        let stamp = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = filmcraft_engine::temp_dir().join(format!("filmcraft-cloud-save-{stamp}.{fmt}")).to_string_lossy().to_string();
+        let cmd = match fmt {
+            "fcpxml" => "file.exportFcpxml",
+            "aaf" => "file.exportAaf",
+            _ => "file.saveCopy",
+        };
+        self.session.execute(cmd, serde_json::json!({"path": path})).map_err(|e| e.to_string())?;
+        self.session.services.read_file(&path).map_err(|e| format!("could not read the encoded project: {e}"))
+    }
+
+    fn close(&mut self, _uid: u64) {
+        // FilmCraft holds one project per window. Closing a cloud-opened project that a reload
+        // replaced means the window already shows the new one; nothing to do here.
+    }
+
+    fn mark_saved(&mut self, uid: u64) {
+        let Some(revision) = self.cloud_sent.remove(&uid) else { return };
+        if self.session.revision == revision {
+            self.session.saved_revision = revision;
         }
     }
-}
 
-/// One folder's contents, as last fetched.
-#[derive(Clone, Default)]
-pub struct Folder {
-    pub path: String,
-    pub entries: Vec<Entry>,
-    pub loading: bool,
-    pub loaded: bool,
-    pub error: Option<Fault>,
-}
-
-/// Open and Save against cloud storage. Inert until the host connects a backend.
-pub struct CloudState {
-    backend: Option<Arc<dyn CloudBackend>>,
-    tx: Sender<Event>,
-    rx: Receiver<Event>,
-    pub account: Option<Result<Account, Fault>>,
-    pub mine: Folder,
-    /// The name typed into the Save As page.
-    pub save_name: String,
-}
-
-impl Default for CloudState {
-    fn default() -> CloudState {
-        let (tx, rx) = std::sync::mpsc::channel();
-        CloudState { backend: None, tx, rx, account: None, mine: Folder::default(), save_name: String::new() }
+    fn drop_pending(&mut self, uid: u64) {
+        self.cloud_sent.remove(&uid);
     }
-}
 
-impl CloudState {
-    pub fn connect(&mut self, backend: impl CloudBackend + 'static) {
-        self.backend = Some(Arc::new(backend));
+    fn sharing(&mut self) -> &mut craft_ui::share::ShareDialog {
+        &mut self.share
     }
-}
 
-pub const UNAVAILABLE: &str = "No cloud service is configured.";
+    fn presence(&mut self) -> &mut craft_ui::presence::PresenceBar {
+        &mut self.presence
+    }
 
-/// Whether a backend is connected at all.
-pub fn available(app: &FilmcraftApp) -> bool {
-    app.cloud.backend.is_some()
-}
+    fn paint_icon(&self, painter: &Painter, rect: Rect, kind: EntryKind, colour: Color32) {
+        let icon = if kind == EntryKind::Folder { Icon::Folder } else { Icon::Film };
+        icons::paint(painter, rect, icon, colour);
+    }
 
-fn submit(app: &FilmcraftApp, job: Job) {
-    if let Some(backend) = &app.cloud.backend {
-        backend.submit(job, Post::new(app.cloud.tx.clone()));
+    fn open_url(&self, url: &str) {
+        // `open_url` takes `&self`: `hooks.open_url` is an `FnMut` and needs `&mut self` to call,
+        // so this goes through the egui context instead, kept for exactly this (see `app.rs`,
+        // where `ui_ctx` is refreshed every frame). `ctx.open_url` only does something on the
+        // web; native hosts that want a real browser reach it from `links::open` instead, which
+        // this path (conversation / share links opened from inert, disconnected UI) never does.
+        self.ui_ctx.open_url(egui::OpenUrl::new_tab(url));
+    }
+
+    fn say(&mut self, text: String) {
+        self.ui.status = text;
+    }
+
+    fn toast(&mut self, text: String) {
+        self.session.toast(text);
+    }
+
+    fn go_to_save_as(&mut self) {
+        self.cloud_page = Some(CloudPage::SaveAs);
+    }
+
+    fn app_name(&self) -> &str {
+        "FilmCraft"
+    }
+
+    fn tr(&self, text: &str) -> String {
+        crate::i18n::t(text).to_owned()
+    }
+
+    fn service(&self) -> String {
+        service_host()
+    }
+
+    fn save_note(&self) -> Option<String> {
+        Some(self.tr("The project is saved as a FilmCraft project archive (.fcproj). \
+             Media files are not uploaded; they must remain accessible by path."))
+    }
+
+    fn style(&self, _ui: &Ui) -> craft_ui::cloud::CloudStyle {
+        let t = &self.tokens;
+        craft_ui::cloud::CloudStyle {
+            surface: t.header_bg,
+            border: Color32::BLACK,
+            text: t.text,
+            dim: t.text_dim,
+            hover: t.hover,
+            soft: t.field_bg,
+            family: egui::FontFamily::Proportional,
+            bold: egui::FontFamily::Name("semibold".into()),
+        }
     }
 }
 
@@ -155,127 +245,42 @@ pub enum CloudPage {
     SaveAs,
 }
 
-/// Ensures the account and the current folder are loaded.
-pub fn start(app: &mut FilmcraftApp) {
-    if !available(app) {
-        return;
-    }
-    if app.cloud.account.is_none() {
-        submit(app, Job::Account);
-    }
-    if !app.cloud.mine.loaded && !app.cloud.mine.loading {
-        let path = app.cloud.mine.path.clone();
-        browse(app, &path);
-    }
-}
-
-/// List a folder.
-pub fn browse(app: &mut FilmcraftApp, path: &str) {
-    if !available(app) {
-        return;
-    }
-    app.cloud.mine.path = path.to_owned();
-    app.cloud.mine.loading = true;
-    app.cloud.mine.loaded = false;
-    app.cloud.mine.error = None;
-    submit(app, Job::List(path.to_owned()));
-}
-
-/// Open or browse into a cloud entry, from the Open page.
-fn open_entry(app: &mut FilmcraftApp, entry: Entry) {
-    if entry.kind == EntryKind::Folder {
-        let path = entry.path.clone();
-        browse(app, &path);
-        return;
-    }
-    submit(app, Job::Read { entry });
-}
-
-/// Save the current project under `name` in `folder`.
-pub fn save_as(app: &mut FilmcraftApp, folder: &str, name: &str) -> Result<(), String> {
-    if !available(app) {
-        return Err(UNAVAILABLE.to_owned());
-    }
-    let bytes = filmcraft_engine::commands::project_bytes(&app.session);
-    let name = project_name(name);
-    submit(app, Job::Create { folder: folder.to_owned(), name, bytes });
-    Ok(())
-}
-
-/// A typed name as a project file name: folder separators dropped, `.fcproj` appended if missing.
-fn project_name(typed: &str) -> String {
-    let leaf = typed.rsplit(['/', '\\']).next().unwrap_or(typed).trim();
-    let leaf = if leaf.is_empty() { "project" } else { leaf };
-    if leaf.to_ascii_lowercase().ends_with(".fcproj") { leaf.to_owned() } else { format!("{leaf}.fcproj") }
-}
-
-/// Open project bytes fetched from the cloud, through the same staging path local recovery uses.
-fn open_bytes(app: &mut FilmcraftApp, name: &str, bytes: Vec<u8>) -> Result<(), String> {
-    let stamp = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let leaf = std::path::Path::new(name).file_name().and_then(|n| n.to_str()).filter(|n| !n.is_empty()).unwrap_or("cloud.fcproj");
-    let stage = if cfg!(target_arch = "wasm32") {
-        format!("/opfs/cloud-open/{leaf}")
-    } else {
-        filmcraft_engine::temp_dir().join(format!("filmcraft-cloud-open-{stamp}-{leaf}")).to_string_lossy().into_owned()
-    };
-    app.session.services.write_file(&stage, &bytes).map_err(|e| format!("could not stage the project: {e}"))?;
-    app.session.execute("file.open", serde_json::json!({"path": stage})).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Drain the backend's answers and apply them. Called once a frame.
-pub fn pump(app: &mut FilmcraftApp) {
-    let events: Vec<Event> = app.cloud.rx.try_iter().collect();
-    for event in events {
-        match event {
-            Event::Account(answer) => app.cloud.account = Some(answer),
-            Event::Listed { path, entries } => {
-                if path != app.cloud.mine.path {
-                    continue;
-                }
-                app.cloud.mine.loading = false;
-                match entries {
-                    Ok(entries) => {
-                        app.cloud.mine.entries = entries;
-                        app.cloud.mine.loaded = true;
-                    }
-                    Err(fault) => app.cloud.mine.error = Some(fault),
-                }
+/// Drive the Share dialog every frame (capability poll + modal) and finish saves it asked for.
+///
+/// `ShareDialog::show` must run every frame regardless of whether the dialog is open: it is
+/// where the dialog's own backend answers are collected. Skipping it while closed would leave
+/// those answers queued forever. Call after [`pump`].
+pub fn pump_share(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    // A share-initiated Create that just finished: hand the new cloud id back to the dialog.
+    if app.cloud.sharing_save && app.cloud.busy.is_none() {
+        let prior = app.share_save_prior_etag.take();
+        // Entry.etag is Option; flatten so we compare String to String.
+        let now = origin(app).and_then(|o| o.entry.etag.clone());
+        let changed = match (&prior, &now) {
+            (Some(None), Some(_)) => true,              // first cloud save
+            (Some(Some(a)), Some(b)) if a != b => true, // new version
+            _ => false,
+        };
+        if changed {
+            if let Some(o) = origin(app).cloned() {
+                app.share.saved(o.entry.id, o.entry.name);
             }
-            Event::Read { entry, bytes } => match bytes {
-                Ok(bytes) => {
-                    if let Err(e) = open_bytes(app, &entry.name, bytes) {
-                        app.ui.status = format!("could not open \"{}\" from the cloud: {e}", entry.name);
-                    } else {
-                        app.cloud_page = None;
-                    }
-                }
-                Err(fault) => app.ui.status = format!("could not read \"{}\" from the cloud: {}", entry.name, fault.text()),
-            },
-            Event::Created(answer) => match answer {
-                Ok(entry) => {
-                    app.ui.status = format!("Saved \"{}\" to the cloud", entry.name);
-                    app.cloud_page = None;
-                }
-                Err(fault) => app.ui.status = format!("could not save to the cloud: {}", fault.text()),
-            },
+        } else {
+            app.share.save_failed(app.tr("The project was not saved to the cloud."));
         }
+        app.cloud.sharing_save = false;
     }
-}
-
-/// The account badge: display name once known, a spinner while the first account check is in
-/// flight. Hidden entirely by the caller (`header.rs`) when [`available`] is `false`.
-pub fn who(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    start(app);
-    match &app.cloud.account {
-        None => {
-            ui.add(egui::Spinner::new().size(14.0));
-        }
-        Some(Ok(account)) => {
-            ui.label(egui::RichText::new(&account.display).size(12.5));
-        }
-        Some(Err(fault)) => {
-            ui.label(egui::RichText::new(fault.text()).size(11.0));
+    app.share.show(ctx);
+    if let Some(req) = app.share.take_save_request() {
+        // The share dialog's destination id is "cloud"; write into the current cloud folder
+        // (root if empty).
+        let folder = app.cloud.mine.path.clone();
+        app.share_save_prior_etag = Some(origin(app).and_then(|o| o.entry.etag.clone()));
+        app.cloud.sharing_save = true;
+        if let Err(e) = save_as(app, &folder, &req.name) {
+            app.cloud.sharing_save = false;
+            app.share_save_prior_etag = None;
+            app.share.save_failed(e);
         }
     }
 }
@@ -283,62 +288,26 @@ pub fn who(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
 /// Cloud Open / Save As as a modal over the editor.
 pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(page) = app.cloud_page else { return };
-    start(app);
     let title = match page {
         CloudPage::Open => tl!("Open from cloud"),
         CloudPage::SaveAs => tl!("Save as to cloud"),
     };
     let mut close = false;
     egui::Modal::new(egui::Id::unique("filmcraft_cloud_page")).show(ctx, |ui| {
-        ui.set_min_width(360.0);
-        ui.set_max_width(520.0);
+        let margin = egui::Frame::popup(ui.style()).total_margin().sum();
+        let room = (ctx.content_rect().size() - margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
+        let width = 680.0_f32.min(room.x);
+        ui.set_min_width(360.0_f32.min(width));
+        ui.set_max_width(width);
         ui.label(egui::RichText::new(title).strong().size(16.0));
         ui.add_space(10.0);
-        let folder = app.cloud.mine.clone();
-        let here = if folder.path.is_empty() { tl!("Cloud storage").to_owned() } else { folder.path.clone() };
-        ui.label(egui::RichText::new(here).size(12.0));
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            if folder.loading {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    ui.label(tl!("Loading…"));
-                });
-                return;
-            }
-            if let Some(fault) = &folder.error {
-                ui.label(fault.text());
-                return;
-            }
-            let mut chosen: Option<Entry> = None;
-            for entry in &folder.entries {
-                let label = if entry.kind == EntryKind::Folder { format!("\u{1f4c1} {}", entry.name) } else { entry.name.clone() };
-                if ui.selectable_label(false, label).clicked() {
-                    chosen = Some(entry.clone());
-                }
-            }
-            if let Some(entry) = chosen {
-                match page {
-                    CloudPage::Open => open_entry(app, entry),
-                    CloudPage::SaveAs if entry.kind == EntryKind::Folder => browse(app, &entry.path),
-                    CloudPage::SaveAs => {}
-                }
+        let body = (room.y - ui.min_size().y - 48.0).max(1.0);
+        egui::ScrollArea::vertical().id_salt(("filmcraft_cloud_page", page as u8)).max_height(body).show(ui, |ui| match page {
+            CloudPage::Open => open_page(app, ui),
+            CloudPage::SaveAs => {
+                close = save_page(app, ui);
             }
         });
-        if page == CloudPage::SaveAs {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tl!("Name:"));
-                ui.text_edit_singleline(&mut app.cloud.save_name);
-                if ui.button(tl!("Save")).clicked() {
-                    let folder = app.cloud.mine.path.clone();
-                    let name = app.cloud.save_name.clone();
-                    if let Err(e) = save_as(app, &folder, &name) {
-                        app.ui.status = e;
-                    }
-                }
-            });
-        }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -349,6 +318,13 @@ pub fn modal(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
     });
     if close {
+        // Leaving the page without having started a save (the ordinary Close/Escape path; a
+        // save that did start already cleared `app.cloud_page` above and arrives here with
+        // `close` unset) discards any conflict-copy target and suggested name a dismissed
+        // conflict modal may have left behind.
+        if page == CloudPage::SaveAs {
+            cancel_save_as(app);
+        }
         app.cloud_page = None;
     }
 }
@@ -363,59 +339,30 @@ mod tests {
     }
 
     #[test]
+    fn go_to_save_as_opens_the_cloud_save_page() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.cloud.connect(Noop);
+        CloudApp::go_to_save_as(&mut app);
+        assert_eq!(app.cloud_page, Some(CloudPage::SaveAs));
+    }
+
+    #[test]
+    fn active_is_addressable_without_a_disk_path() {
+        let app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        assert!(app.session.path.is_none());
+        assert_eq!(CloudApp::active(&app), Some(1));
+    }
+
+    #[test]
     fn unavailable_without_a_connected_backend() {
         let app = FilmcraftApp::new(filmcraft_engine::Session::default());
         assert!(!available(&app));
     }
 
-    #[test]
-    fn available_once_connected() {
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.cloud.connect(Noop);
-        assert!(available(&app));
-    }
-
-    #[test]
-    fn save_as_requires_a_connected_backend() {
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
-        assert_eq!(save_as(&mut app, "", "demo"), Err(UNAVAILABLE.to_owned()));
-    }
-
-    #[test]
-    fn project_name_appends_the_extension_and_drops_folders() {
-        assert_eq!(project_name("demo"), "demo.fcproj");
-        assert_eq!(project_name("demo.fcproj"), "demo.fcproj");
-        assert_eq!(project_name("folder/demo"), "demo.fcproj");
-        assert_eq!(project_name(""), "project.fcproj");
-    }
-
-    /// An in-process mock [`CloudBackend`]: answers `Job::List` with a fixed entry list, so the
-    /// Open page's listing and selection logic is exercised with no cloud service running.
+    /// An in-process mock [`CloudBackend`]: answers `Job::List` and `Job::Account` so the Open
+    /// page's listing logic runs with no cloud service running.
     struct MockBackend {
         entries: Vec<Entry>,
-    }
-
-    impl CloudBackend for MockBackend {
-        fn submit(&self, job: Job, post: Post) {
-            match job {
-                Job::Account => post.send(Event::Account(Ok(Account { display: "mock@example.test".into(), capabilities: vec![] }))),
-                Job::List(path) => post.send(Event::Listed { path, entries: Ok(self.entries.clone()) }),
-                Job::Read { entry } => post.send(Event::Read { entry, bytes: Ok(b"not a real project".to_vec()) }),
-                Job::Create { name, .. } => post.send(Event::Created(Ok(Entry {
-                    id: "mock-id".into(),
-                    room: "mock-room".into(),
-                    name,
-                    path: String::new(),
-                    kind: EntryKind::File,
-                    size: Some(0),
-                    modified: None,
-                    mime: None,
-                    etag: Some("1".into()),
-                    writable: true,
-                    shared_by: None,
-                }))),
-            }
-        }
     }
 
     fn mock_entry(name: &str) -> Entry {
@@ -434,26 +381,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mock_backend_lists_and_updates_the_folder() {
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.cloud.connect(MockBackend { entries: vec![mock_entry("demo.fcproj")] });
-        start(&mut app);
-        pump(&mut app);
-        assert!(app.cloud.mine.loaded, "the folder should be loaded after one pump");
-        assert_eq!(app.cloud.mine.entries.len(), 1);
-        assert_eq!(app.cloud.mine.entries[0].name, "demo.fcproj");
-        assert!(matches!(&app.cloud.account, Some(Ok(a)) if a.display == "mock@example.test"));
+    impl CloudBackend for MockBackend {
+        fn submit(&self, job: Job, post: Post) {
+            match job {
+                Job::Account => post.send(Event::Account(Ok(Account { display: "mock@example.test".into(), ..Default::default() }))),
+                Job::List(path) => post.send(Event::Listed { path, entries: Ok(self.entries.clone()) }),
+                Job::Read { entry, into } => post.send(Event::Read { entry, into, bytes: Err(Fault::Refused("mock has no project bytes".into())) }),
+                _ => {}
+            }
+        }
     }
 
     #[test]
-    fn mock_backend_save_as_reports_success_and_closes_the_page() {
+    fn mock_backend_lists_the_root_folder() {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.cloud.connect(MockBackend { entries: vec![] });
-        app.cloud_page = Some(CloudPage::SaveAs);
-        save_as(&mut app, "", "demo").expect("a connected backend accepts the save");
-        pump(&mut app);
-        assert!(app.cloud_page.is_none(), "a successful save closes the page");
-        assert!(app.ui.status.contains("demo.fcproj"));
+        app.cloud.connect(MockBackend { entries: vec![mock_entry("demo.fcproj")] });
+        start(&mut app);
+        pump(&mut app, &egui::Context::default());
+        assert!(app.cloud.mine.loaded, "the folder should be loaded after one pump");
+        assert_eq!(app.cloud.mine.entries.len(), 1);
+        assert_eq!(app.cloud.mine.entries[0].name, "demo.fcproj");
+        assert!(matches!(&app.cloud.account, Some(a) if a.display == "mock@example.test"));
     }
 }

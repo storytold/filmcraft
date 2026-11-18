@@ -147,9 +147,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
-    // Cloud storage, behind the CloudBackend trait (crate::cloud). Commands exist for
+    // Cloud storage, behind craft_ui::cloud's CloudApp/CloudBackend contract. Commands exist for
     // invoke/control; File menu placement is injected by `cloud_menu` only when a backend is
-    // connected, which nothing does yet (storytold/craft-libs#160 is not merged).
+    // connected, which nothing does yet (also kept out of `external_commands`, below).
     uic!("file.cloudOpen", "Open from cloud…", [], None),
     uic!("file.cloudSaveAs", "Save as to cloud…", [], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
@@ -674,6 +674,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         if !crate::cloud::available(app) {
             return Err(crate::cloud::UNAVAILABLE.into());
         }
+        // Discard any conflict-copy target and suggested name an earlier, abandoned Save As
+        // left behind: this is an ordinary Save As, not the conflict modal's "Save as a copy".
+        crate::cloud::cancel_save_as(app);
         app.cloud_page = Some(crate::cloud::CloudPage::SaveAs);
         return Ok(json!({"page": "saveAs"}));
     }
@@ -1006,7 +1009,7 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
 
 /// File ▸ Open from cloud… / Save as to cloud… after Open Recent when a CloudBackend is
 /// connected. Absent (not dimmed) when no backend is set, matching the other Craft apps; no
-/// backend is wired up anywhere yet (storytold/craft-libs#160 is not merged).
+/// backend is wired up anywhere in this app yet.
 fn cloud_menu(items: &mut Vec<MenuItem>, app: &FilmcraftApp) {
     if !crate::cloud::available(app) {
         return;
@@ -1280,8 +1283,15 @@ fn shifted_key(k: egui::Key) -> Option<egui::Key> {
 /// rebound and resolved alongside engine commands (the `shortcuts.` commands).
 pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     use filmcraft_engine::shortcuts::CommandInfo;
-    let mut v: Vec<CommandInfo> =
-        UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
+    // No build of this app connects a CloudBackend yet, so these two are never reachable; a
+    // bindable shortcut (or an entry in the Keyboard Shortcuts editor) for a command that always
+    // answers UNAVAILABLE is worse than no entry.
+    let mut v: Vec<CommandInfo> = UI_COMMANDS
+        .iter()
+        .filter(|c| !matches!(c.id, "file.cloudOpen" | "file.cloudSaveAs"))
+        .chain(crate::panels::keyboard::COMMANDS)
+        .map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut))
+        .collect();
     for p in PanelKind::ALL {
         v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }

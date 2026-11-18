@@ -77,6 +77,8 @@ impl FilmcraftApp {
         panels::file_dialogs::show_overwrite(self, &ctx);
         updates_ui::show(self, &ctx);
         crate::cloud::modal(self, &ctx);
+        craft_ui::cloud::conflict_modal(self, &ctx);
+        crate::cloud::pump_share(self, &ctx);
         if !self.ui.show_status_bar {
             return;
         }

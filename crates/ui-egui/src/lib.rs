@@ -398,11 +398,26 @@ pub struct FilmcraftApp {
     pub workspaces: dock::WorkspacePrefs,
     /// Workspace names and the current one, as last handed to the native menu.
     menu_workspaces: (Vec<String>, String),
-    /// Open and Save against cloud storage. Inert until a host connects a [`cloud::CloudBackend`]
-    /// (none does yet; see `crates/ui-egui/src/cloud.rs`).
-    pub cloud: cloud::CloudState,
+    /// Open and Save against cloud storage. Inert until a host connects a
+    /// [`craft_ui::cloud::CloudBackend`] (none does yet; see `crates/ui-egui/src/cloud.rs`).
+    pub cloud: craft_ui::cloud::CloudFiles,
     /// Cloud Open / Save As page from the File menu, if any.
     pub cloud_page: Option<cloud::CloudPage>,
+    /// The share dialog. Inert until a host connects a [`craft_ui::share::ShareBackend`].
+    pub share: craft_ui::share::ShareDialog,
+    /// Collaborator presence, drawn beside the account badge by `craft_ui::cloud::who`. Never
+    /// populated: there is no live collaboration session in this app yet.
+    pub presence: craft_ui::presence::PresenceBar,
+    /// What each cloud save in flight encoded, keyed by document uid
+    /// ([`CloudApp::encode`](craft_ui::cloud::CloudApp::encode) /
+    /// [`CloudApp::mark_saved`](craft_ui::cloud::CloudApp::mark_saved)).
+    pub(crate) cloud_sent: cloud::Sent,
+    /// Etag of the cloud origin before a Share-dialog save, used to detect success.
+    pub(crate) share_save_prior_etag: Option<Option<String>>,
+    /// The egui context as of the last `logic()` call, kept so cloud callbacks
+    /// ([`CloudApp::open_url`](craft_ui::cloud::CloudApp::open_url)) can reach `ctx.open_url`
+    /// with no `&mut self`. Default (a context with nothing attached) until the first frame.
+    pub(crate) ui_ctx: egui::Context,
 }
 
 pub struct GpuState {

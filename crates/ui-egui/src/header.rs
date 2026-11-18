@@ -208,24 +208,40 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
-/// The cloud account badge, between Discord and the document title. Nothing is drawn when no
-/// cloud service is configured (storytold/craft-libs#160 is what lets an app connect one).
-/// Returns the left edge the document title should stop short of: `discord_left` unchanged when
-/// nothing drew, or the badge's left edge when it did.
+/// The cloud account badge and Share button, between Discord and the document title. Nothing
+/// is drawn when no cloud service is configured. Returns the left edge the document title
+/// should stop short of: `discord_left` unchanged when nothing drew, or the cluster's left edge
+/// when it did. The 8 px gap this cluster would otherwise reserve is not charged against the
+/// title on a build with no backend connected.
 fn draw_cloud_badge(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, discord_left: f32, left_end: f32) -> f32 {
-    // ~8 px gap left of Discord.
-    let mut cloud_right = discord_left - 8.0;
-    if crate::cloud::available(app) {
-        let cloud_w: f32 = 150.0;
-        let cloud_left = (cloud_right - cloud_w).max(left_end + 4.0);
-        let cloud_rect = Rect::from_min_max(pos2(cloud_left, rect.min.y + 4.0), pos2(cloud_right, rect.max.y - 4.0));
-        if cloud_rect.width() > 32.0 {
-            let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cloud_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
-            crate::cloud::who(app, &mut cu);
-            cloud_right = cloud_left;
+    if !crate::cloud::available(app) {
+        return discord_left;
+    }
+    let cloud_right = discord_left - 8.0;
+    let cloud_w: f32 = 220.0;
+    let cloud_left = (cloud_right - cloud_w).max(left_end + 4.0);
+    let cloud_rect = Rect::from_min_max(pos2(cloud_left, rect.min.y + 4.0), pos2(cloud_right, rect.max.y - 4.0));
+    if cloud_rect.width() <= 32.0 {
+        return discord_left;
+    }
+    let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cloud_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    crate::cloud::who(app, &mut cu);
+    if crate::cloud::shares(app) {
+        cu.add_space(6.0);
+        if let Some(fmt) = crate::cloud::share_button(app, &mut cu, &crate::cloud::copies()) {
+            // Chevron "Save a Copy" formats from the Share split button.
+            match fmt.as_str() {
+                "fcpxml" => {
+                    let _ = crate::menus::invoke(app, cu.ctx(), "file.exportFcpxml", serde_json::json!({}));
+                }
+                "aaf" => {
+                    let _ = crate::menus::invoke(app, cu.ctx(), "file.exportAaf", serde_json::json!({}));
+                }
+                _ => app.ui.status = format!("Unknown share copy format: {fmt}"),
+            }
         }
     }
-    cloud_right
+    cloud_left
 }
 
 #[cfg(test)]
