@@ -209,6 +209,15 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     }
     apply_nested_settings(&mut settings, p, cmd)?;
     apply_flat_overrides(&mut settings, p, cmd)?;
+    // A flat crf already selects CRF in apply_flat_overrides; only fill an implicit mode.
+    if preset.is_none()
+        && settings.format == Format::Av1
+        && f64_p(p, "crf").is_none()
+        && p.get("bitrateMode").is_none()
+        && p.get("settings").and_then(|v| v.get("bitrateMode")).is_none()
+    {
+        settings.bitrate_mode = filmcraft_export::default_av1_bitrate_mode();
+    }
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     Ok((preset, settings))
 }
@@ -293,7 +302,7 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.h264_intra_only = v;
     }
     if let Some(v) = str_p(p, "audioCodec") {
-        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
+        settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac | opus"))?;
     }
     if let Some(v) = u64_p(p, "flacLevel") {
         settings.audio.flac_level = v.min(8) as u8;

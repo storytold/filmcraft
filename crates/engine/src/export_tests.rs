@@ -1138,3 +1138,33 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+#[test]
+fn av1_prefers_nvenc_cq_and_preserves_explicit_svt_crf() {
+    filmcraft_export::register_av1_probe(filmcraft_export::BitrateMode::Vbr1Pass, || true);
+    let session = demo();
+    let settings = |p: Value| crate::export_tools::settings_from_params(&session, &p, "file.exportMedia").unwrap().1;
+    let implicit = settings(json!({"format":"av1", "path":"a.mkv"}));
+    assert_eq!(implicit.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    let nested = settings(json!({"path":"a.mkv", "settings":{"format":"av1"}}));
+    assert_eq!(nested.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    let software = settings(json!({"format":"av1", "path":"a.mp4", "settings":{"bitrateMode":"crf"}}));
+    assert_eq!(software.bitrate_mode, filmcraft_export::BitrateMode::Crf);
+    assert_eq!(software.av1_preset, 6);
+    assert_eq!(software.extension(), "mkv");
+    for crf in [60.0, 23.0] {
+        let explicit = settings(json!({"format":"av1", "path":"a.mkv", "crf":crf}));
+        assert_eq!(explicit.bitrate_mode, filmcraft_export::BitrateMode::Crf);
+        assert_eq!(explicit.crf, crf as f32);
+    }
+    let explicit_cq = settings(json!({"format":"av1", "path":"a.mkv", "bitrateMode":"vbr1Pass", "crf":31.5}));
+    assert_eq!(explicit_cq.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    assert_eq!(explicit_cq.crf, 31.5);
+    let hardware = settings(json!({"format":"av1", "path":"a.mp4", "settings":{"bitrateMode":"vbr1Pass", "crf":31.5, "audio":{"codec":"opus"}}}));
+    assert_eq!(hardware.bitrate_mode, filmcraft_export::BitrateMode::Vbr1Pass);
+    assert_eq!(hardware.audio_codec(), filmcraft_export::AudioCodec::Opus);
+    assert_eq!(hardware.crf, 31.5);
+    let audio = settings(json!({"format":"opus", "path":"a.opus"}));
+    assert!(!audio.has_video());
+    assert_eq!(audio.extension(), "opus");
+}

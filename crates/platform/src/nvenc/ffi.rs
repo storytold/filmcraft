@@ -143,11 +143,13 @@ pub const NV_ENC_CAPS_HEIGHT_MIN: u32 = 46;
 
 pub const NV_ENC_CODEC_H264_GUID: Guid = Guid::from_values(0x6bc82762, 0x4e63, 0x4ca4, [0xaa, 0x85, 0x1e, 0x50, 0xf3, 0x21, 0xf6, 0xbf]);
 pub const NV_ENC_CODEC_HEVC_GUID: Guid = Guid::from_values(0x790cdc88, 0x4522, 0x4d7b, [0x94, 0x25, 0xbd, 0xa9, 0x97, 0x5f, 0x76, 0x03]);
+pub const NV_ENC_CODEC_AV1_GUID: Guid = Guid::from_values(0x0a352289, 0x0aa7, 0x4759, [0x86, 0x2d, 0x5d, 0x15, 0xcd, 0x16, 0xd2, 0x54]);
 pub const NV_ENC_H264_PROFILE_BASELINE_GUID: Guid = Guid::from_values(0x0727bcaa, 0x78c4, 0x4c83, [0x8c, 0x2f, 0xef, 0x3d, 0xff, 0x26, 0x7c, 0x6a]);
 pub const NV_ENC_H264_PROFILE_MAIN_GUID: Guid = Guid::from_values(0x60b5c1d4, 0x67fe, 0x4790, [0x94, 0xd5, 0xc4, 0x72, 0x6d, 0x7b, 0x6e, 0x6d]);
 pub const NV_ENC_H264_PROFILE_HIGH_GUID: Guid = Guid::from_values(0xe7cbc309, 0x4f7a, 0x4b89, [0xaf, 0x2a, 0xd5, 0x37, 0xc9, 0x2b, 0xe3, 0x10]);
 pub const NV_ENC_HEVC_PROFILE_MAIN_GUID: Guid = Guid::from_values(0xb514c39a, 0xb55b, 0x40fa, [0x87, 0x8f, 0xf1, 0x25, 0x3b, 0x4d, 0xfd, 0xec]);
 pub const NV_ENC_HEVC_PROFILE_MAIN10_GUID: Guid = Guid::from_values(0xfa4d2b6c, 0x3a5b, 0x411a, [0x80, 0x18, 0x0a, 0x3f, 0x5e, 0x3c, 0x9b, 0xe5]);
+pub const NV_ENC_AV1_PROFILE_MAIN_GUID: Guid = Guid::from_values(0x5f2a39f5, 0xf14e, 0x4f95, [0x9a, 0x9e, 0xb7, 0x6d, 0x56, 0x8f, 0xcf, 0x97]);
 pub const NV_ENC_PRESET_P4_GUID: Guid = Guid::from_values(0x90a7b826, 0xdf06, 0x4862, [0xb9, 0xd2, 0xcd, 0x6d, 0x73, 0xa0, 0x86, 0x81]);
 pub const NV_ENC_PRESET_P5_GUID: Guid = Guid::from_values(0x21c6e6b4, 0x297a, 0x4cba, [0x99, 0x8f, 0xb6, 0xcb, 0xde, 0x72, 0xad, 0xe3]);
 
@@ -330,11 +332,53 @@ pub const HEVC_PIXEL_BIT_DEPTH_SHIFT: u32 = 11;
 pub const HEVC_PIXEL_BIT_DEPTH_MASK: u32 = 7 << HEVC_PIXEL_BIT_DEPTH_SHIFT;
 pub const HEVC_OUTPUT_RECOVERY_POINT_SEI: u32 = 1 << 18;
 
+/// NVIDIA `nvEncodeAPI.h`, API 12.1: AV1 codec configuration.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NV_ENC_CONFIG_AV1 {
+    pub level: u32,
+    pub tier: u32,
+    pub minPartSize: u32,
+    pub maxPartSize: u32,
+    pub flags: u32,
+    pub idrPeriod: u32,
+    pub intraRefreshPeriod: u32,
+    pub intraRefreshCnt: u32,
+    pub maxNumRefFramesInDPB: u32,
+    pub numTileColumns: u32,
+    pub numTileRows: u32,
+    pub tileWidths: *mut u32,
+    pub tileHeights: *mut u32,
+    pub maxTemporalLayersMinus1: u32,
+    pub colorPrimaries: u32,
+    pub transferCharacteristics: u32,
+    pub matrixCoefficients: u32,
+    pub colorRange: u32,
+    pub chromaSamplePosition: u32,
+    pub useBFramesAsRef: u32,
+    pub filmGrainParams: *mut c_void,
+    pub numFwdRefs: u32,
+    pub numBwdRefs: u32,
+    pub reserved1: [u32; 235],
+    pub reserved2: [*mut c_void; 62],
+}
+
+pub const AV1_OUTPUT_ANNEX_B: u32 = 1;
+pub const AV1_DISABLE_SEQ_HDR: u32 = 1 << 4;
+pub const AV1_REPEAT_SEQ_HDR: u32 = 1 << 5;
+pub const AV1_CHROMA_FORMAT_SHIFT: u32 = 7;
+pub const AV1_CHROMA_FORMAT_MASK: u32 = 3 << AV1_CHROMA_FORMAT_SHIFT;
+pub const AV1_INPUT_DEPTH_SHIFT: u32 = 12;
+pub const AV1_INPUT_DEPTH_MASK: u32 = 7 << AV1_INPUT_DEPTH_SHIFT;
+pub const AV1_OUTPUT_DEPTH_SHIFT: u32 = 15;
+pub const AV1_OUTPUT_DEPTH_MASK: u32 = 7 << AV1_OUTPUT_DEPTH_SHIFT;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union NV_ENC_CODEC_CONFIG {
     pub h264Config: NV_ENC_CONFIG_H264,
     pub hevcConfig: NV_ENC_CONFIG_HEVC,
+    pub av1Config: NV_ENC_CONFIG_AV1,
     pub reserved: [u32; 320],
     align: [*mut c_void; 0],
 }

@@ -18,8 +18,11 @@ use std::io::Write;
 mod aac_out;
 mod audio_out;
 mod job;
+mod mkv_out;
 mod mp3_out;
 mod mxf_out;
+mod ogg;
+mod opus_out;
 mod pace;
 mod pcm;
 mod pipeline;
@@ -67,9 +70,9 @@ pub(crate) use registry::build_frame_renderer;
 #[cfg(test)]
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
-    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
-    register_hdr_probe,
+    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder,
+    av1_encoder_available, available, default_av1_bitrate_mode, encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder,
+    register_av1_probe, register_encoder, register_format_probe, register_frame_renderer, register_hdr_probe,
 };
 use registry::{audio_factories, video_factories};
 #[cfg(test)]
