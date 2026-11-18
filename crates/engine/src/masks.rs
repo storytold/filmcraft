@@ -619,7 +619,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let src = s.source(it.item).ok_or_else(|| EngineError::Other("the clip has no media to track".into()))?;
     let size = filmcraft_render::source_size(&s.project, it.item).ok_or_else(|| bad("masks.track", "the clip has no picture"))?;
     let scale = (TRACK_MAX_WIDTH / size.0.max(1) as f64).min(1.0) as f32;
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let label = format!("Track {} ({})", mask.name, if backward { "backward" } else { "forward" });
     let job = crate::Job { id, label: label.clone(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(steps as u64, std::sync::atomic::Ordering::Relaxed);

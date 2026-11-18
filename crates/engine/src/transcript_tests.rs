@@ -207,7 +207,8 @@ fn pauses_and_fillers_are_found_and_deleted_one_or_all() {
     let sec = |x: f64| start + Tick::from_seconds_f64(x);
     // pause length 0.15 s (the default): 0.9→… no: gaps are 0.8–0.9 (0.1), 1.1–1.2 (0.1),
     // 1.5–2.1 (0.6), 2.4–2.55 (0.15); plus the clip's head before "so" and its tail after "now"
-    let r = s.execute("transcript.find", json!({"filter": "pauses"})).unwrap();
+    let pp = json!({"filter": "pauses", "minSeconds": 0.15, "keepAfterSeconds": 0.03, "keepBeforeSeconds": 0.035});
+    let r = s.execute("transcript.find", pp.clone()).unwrap();
     let hits = r["hits"].as_array().unwrap();
     let inner: Vec<(i64, i64)> = hits.iter().map(|h| (h["start"].as_i64().unwrap(), h["end"].as_i64().unwrap())).filter(|(a, _)| *a > sec(0.0).0).collect();
     assert!(inner.contains(&(sec(1.5).0, sec(2.1).0)), "{r}");
@@ -231,7 +232,7 @@ fn pauses_and_fillers_are_found_and_deleted_one_or_all() {
     let before = s.active_sequence().unwrap().duration();
     let i = hits.iter().position(|h| h["start"] == sec(1.5).0).unwrap();
     let cut = &hits[i]["cut"];
-    let r = s.execute("transcript.deleteHits", json!({"filter": "pauses", "hit": i})).unwrap();
+    let r = s.execute("transcript.deleteHits", json!({"filter": "pauses", "hit": i, "minSeconds": 0.15, "keepAfterSeconds": 0.03, "keepBeforeSeconds": 0.035})).unwrap();
     assert_eq!(r["removed"], 1, "{r}");
     let gone = cut["end"].as_i64().unwrap() - cut["start"].as_i64().unwrap();
     // 30 ms after "but" and 35 ms before "then" are kept, rounded inward to frames

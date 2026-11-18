@@ -437,7 +437,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         let _ = std::fs::create_dir_all(dir);
     }
     write_sidecar(s, &project, seq, &settings)?;
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone());

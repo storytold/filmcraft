@@ -365,8 +365,8 @@ pub fn sequence_voice(seq: &Sequence, transcripts: &Transcripts) -> SeqVoice {
     // an empty stretch of the timeline (no clip on any track) between two transcribed ranges is
     // silence too: it joins the silence around it, so Delete closes it with the pause
     let covered = merge_ranges(covered);
-    let mut used: Vec<TimeRange> = seq.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
-    used.sort_by_key(|r| r.start);
+    // merged: sorted and non-overlapping, so ends are monotonic and partition_point is valid
+    let used = merge_ranges(seq.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect());
     let mut gaps = Vec::new();
     for w in covered.windows(2) {
         let g = TimeRange::from_bounds(w[0].end(), w[1].start);

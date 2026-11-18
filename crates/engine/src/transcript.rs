@@ -55,7 +55,7 @@ pub fn model_status(s: &Session) -> Option<ModelStatus> {
     if !speech_available() {
         return None;
     }
-    let m = filmcraft_speech::models::find(&s.prefs.media_analysis.speech_model)
+    let m = filmcraft_speech::models::find(&s.prefs.media_analysis.whisper_model)
         .or_else(|| filmcraft_speech::models::find(filmcraft_speech::models::DEFAULT_MODEL))?;
     let dir = models_dir();
     let installed = dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m));
@@ -219,7 +219,7 @@ fn recogniser(s: &Session, p: &Value) -> Result<Recogniser> {
         return Ok(Recogniser::Installed(t.clone()));
     }
     // Settings ▸ Media Analysis & Transcription ▸ Speech model
-    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.speech_model).to_string();
+    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model).to_string();
     let m = filmcraft_speech::models::find(&model).ok_or_else(|| speech_err(SpeechError::UnknownModel(model.clone())))?;
     if !filmcraft_speech::available() {
         return Err(EngineError::Other(NO_SPEECH.into()));

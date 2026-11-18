@@ -135,7 +135,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("none of the selected clips is a video clip with media to analyse".into()));
     }
     let total: usize = work.iter().map(|w| w.frames.len()).sum();
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let label = format!("Scene Edit Detection ({} clip{})", work.len(), if work.len() == 1 { "" } else { "s" });
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     job.progress.total.store(total as u64, std::sync::atomic::Ordering::Relaxed);

@@ -377,7 +377,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn new_job(s: &mut Session, label: String) -> crate::Job {
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     crate::Job { id, label, progress: Default::default(), result: Default::default() }
 }
 
