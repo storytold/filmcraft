@@ -88,7 +88,7 @@ impl BridgeClient {
                 None => self.connect().await?,
             };
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let line = format!("{}\n", json!({"id": id, "token": self.token, "method": method, "params": params}));
+            let line = craft_control_protocol::request_line(id, self.token.as_deref(), method, &params);
             let res: Result<Value, AutomationError> = async {
                 conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
                 let mut buf = String::new();
@@ -106,11 +106,7 @@ impl BridgeClient {
                         idle.push(conn);
                     }
                     drop(idle);
-                    return if v.get("ok").and_then(Value::as_bool) == Some(true) {
-                        Ok(v.get("result").cloned().unwrap_or(Value::Null))
-                    } else {
-                        Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()))
-                    };
+                    return craft_control_protocol::reply_result(&v).map_err(AutomationError::App);
                 }
                 Err(_) if attempt == 0 => {}
                 Err(e) => return Err(e),
