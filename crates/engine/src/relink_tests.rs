@@ -305,7 +305,7 @@ fn auto_relink_reports_script_review_without_blocking_other_sources() {
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(
             s.project.item(items[1]).unwrap().as_media().unwrap().media,
-            filmcraft_project::MediaRef::File { path: root.join("Media/b.mov").to_string_lossy().into_owned() }
+            filmcraft_project::MediaRef::File { path: root.join("Media").join("b.mov").to_string_lossy().into_owned() }
         );
         s.execute("edit.redo", json!({})).unwrap();
         assert_eq!(
