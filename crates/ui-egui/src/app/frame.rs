@@ -84,9 +84,6 @@ impl FilmcraftApp {
         ui.painter().rect_filled(sb, 0.0, t.header_bg);
         let now = ui.input(|i| i.time);
         if self.ui.status != self.status_seen.0 {
-            // engine toasts and errors arrive in English: shown in the interface language
-            // (translated once, when the message changes)
-            self.ui.status = crate::i18n::tr_message(&self.ui.status);
             self.status_seen = (self.ui.status.clone(), now);
         } else if !self.ui.status.is_empty() {
             if now - self.status_seen.1 > 8.0 {
@@ -110,7 +107,9 @@ impl FilmcraftApp {
                 }
             }
         }
-        let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
+        // engine toasts and errors arrive in English: shown in the interface language, which may
+        // change while the message is up (the message itself, and when it arrived, stay as they are)
+        let hint = if !self.ui.status.is_empty() { self.status_text.get(&self.ui.status, crate::i18n::current()).to_string() } else { self.hint_text() };
         // the bar goes under the text and the job's controls, so they get their own clicks
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {

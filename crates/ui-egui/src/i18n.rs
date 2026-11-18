@@ -417,6 +417,28 @@ pub fn speaker_name(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// The status bar's text: the message as it arrived (engine toasts and errors are English) shown
+/// in the interface language. It is translated again when either the message or the language
+/// changes, and only then, so the template search does not run on every frame.
+#[derive(Debug, Default)]
+pub struct StatusText {
+    source: String,
+    lang: Option<Language>,
+    shown: String,
+}
+
+impl StatusText {
+    /// `source` in `lang`.
+    pub fn get(&mut self, source: &str, lang: Language) -> &str {
+        if self.source != source || self.lang != Some(lang) {
+            self.shown = lang.tr_message(source);
+            self.source = source.to_string();
+            self.lang = Some(lang);
+        }
+        &self.shown
+    }
+}
+
 /// Fill `{name}` placeholders. Unknown placeholders are left as written.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::new();

@@ -137,6 +137,18 @@ fn default_speaker_names_are_translated() {
     set_current(before);
 }
 
+/// The status bar keeps the message as it arrived and shows it in the current language, again
+/// when the language changes while it is up.
+#[test]
+fn status_text_follows_a_language_change() {
+    let mut st = StatusText::default();
+    let msg = "Transcription finished: 42 words";
+    assert_eq!(st.get(msg, Language::En), msg);
+    assert_eq!(st.get(msg, Language::Fr), "Transcription terminée : 42 mots");
+    assert_eq!(st.get(msg, Language::En), msg);
+    assert_eq!(st.get("", Language::Fr), "");
+}
+
 /// Engine toasts and errors are built in English at run time; the status bar shows them in the
 /// interface language through the catalog's templates, nested messages included, and leaves
 /// unknown ones (and English) as they are.
