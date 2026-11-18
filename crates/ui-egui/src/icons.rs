@@ -255,16 +255,14 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(4.5, 4.5), (2.0, 7.0), (4.5, 9.5)]);
         }
         Ripple => {
-            // a ripple trim moves the edge and later material shifts to follow it, so the arrow
-            // runs from the trimmed edge to the mark for the clip behind it
+            // a ripple moves the edge; later material follows it
             pen.rect_fill(1.5, 3.0, 3.0, 13.0);
             pen.rect_fill(3.0, 7.3, 9.5, 8.7);
             pen.fill(&[(12.0, 8.0), (9.5, 5.7), (9.5, 10.3)]);
             pen.rect_fill(13.0, 3.0, 14.5, 13.0);
         }
         Rolling => {
-            // a roll: the shared edge between two clips moves and the clips trade frames, so the
-            // arrows leave the edge from both sides
+            // a roll moves the shared edge; both clips trade frames
             pen.rect_fill(7.25, 2.5, 8.75, 13.5);
             for y in [5.2, 10.8] {
                 pen.fill(&[(1.0, y), (4.6, y - 1.5), (4.6, y + 1.5)]);
@@ -274,14 +272,11 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             }
         }
         RateStretch => {
-            // a speed ramp: the clip's rate climbs from one trim edge to the other
-            pen.fill(&[(1.5, 4.0), (4.6, 2.4), (4.6, 5.6)]);
-            pen.rect_fill(4.6, 3.4, 7.0, 4.6);
-            pen.line(&[(7.3, 5.4), (8.1, 6.9)]);
-            pen.line(&[(8.5, 7.7), (9.3, 9.2)]);
-            pen.line(&[(9.7, 10.0), (10.5, 11.5)]);
-            pen.fill(&[(14.5, 12.0), (11.4, 10.4), (11.4, 13.6)]);
-            pen.rect_fill(9.0, 11.4, 11.4, 12.6);
+            // one new speed for the whole clip
+            pen.rect(1.5, 3.0, 14.5, 13.0);
+            pen.fill(&[(3.6, 8.0), (5.8, 6.3), (5.8, 9.7)]);
+            pen.rect_fill(5.6, 7.35, 10.4, 8.65);
+            pen.fill(&[(12.4, 8.0), (10.2, 6.3), (10.2, 9.7)]);
         }
         Remix => {
             // original: a waveform cut in three blocks that swap places (two arrows over a gap)
@@ -295,12 +290,10 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(3.5, 13.5), (5.5, 12.0), (5.5, 14.8)]);
         }
         Razor => {
-            // a blade held across the clip on the cut. The slot and teeth of the source drawing
-            // are finer than a 16 px grid can hold, so the silhouette carries the shape.
+            // the blade alone: its slot and teeth are finer than a 16 px grid
             pen.fill(&[(1.59, 11.59), (11.19, 1.99), (14.01, 4.81), (4.41, 14.41)]);
         }
         Slip => {
-            // the clip's content slips under fixed edges: arrows between two pinned frames
             pen.rect_fill(1.0, 3.0, 2.5, 13.0);
             pen.rect_fill(13.5, 3.0, 15.0, 13.0);
             pen.fill(&[(4.4, 8.0), (7.0, 6.2), (7.0, 9.8)]);
@@ -308,7 +301,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect_fill(6.6, 7.3, 9.4, 8.7);
         }
         Slide => {
-            // the clip slides as a whole between its neighbours
             pen.fill(&[(1.5, 8.0), (4.5, 6.2), (4.5, 9.8)]);
             pen.rect_fill(4.5, 7.3, 7.0, 8.7);
             pen.fill(&[(14.5, 8.0), (11.5, 6.2), (11.5, 9.8)]);
@@ -381,7 +373,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(3.0, 3.5), (10.0, 8.0), (3.0, 12.5)]);
         }
         PrevEdit => {
-            // the cut sits under the I-beam; the arrow jumps to the previous edit point
             pen.rect_fill(1.5, 2.0, 3.5, 14.0);
             pen.fill(&[(3.5, 8.0), (8.0, 4.2), (8.0, 11.8)]);
             pen.rect_fill(7.6, 7.1, 14.5, 8.9);
@@ -392,19 +383,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect_fill(1.5, 7.1, 8.4, 8.9);
         }
         MarkIn => {
-            // the in point: a full-height mark at the cut, its flag over the clip it opens
-            pen.rect_fill(2.0, 2.6, 7.0, 4.4);
+            pen.rect_fill(2.0, 2.6, 9.6, 4.4);
             pen.rect_fill(9.6, 1.5, 11.6, 14.5);
             pen.fill(&[(9.6, 8.0), (7.0, 5.9), (7.0, 10.1)]);
         }
         MarkOut => {
-            pen.rect_fill(9.0, 2.6, 14.0, 4.4);
+            pen.rect_fill(6.4, 2.6, 14.0, 4.4);
             pen.rect_fill(4.4, 1.5, 6.4, 14.5);
             pen.fill(&[(6.4, 8.0), (9.0, 5.9), (9.0, 10.1)]);
         }
         Marker => pen.fill(&[(4.0, 2.5), (12.0, 2.5), (12.0, 9.5), (8.0, 13.5), (4.0, 9.5)]),
         Insert => {
-            // the clip drops onto the track and pushes the rest of it along
             pen.rect(1.5, 8.0, 11.5, 13.5);
             pen.rect(4.0, 3.0, 9.0, 8.0);
             pen.fill(&[(5.8, 4.8), (7.2, 4.8), (6.5, 6.4)]);
@@ -417,17 +406,18 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(3.0, 11.5), (13.0, 11.5)]);
         }
         Lift => {
-            // the clip leaves and the track keeps the hole it sat in
+            // the clip leaves; the track keeps the hole
             pen.closed(&[(1.5, 8.0), (14.5, 8.0), (14.5, 13.5), (9.5, 13.5), (9.5, 11.0), (6.5, 11.0), (6.5, 13.5), (1.5, 13.5)]);
             pen.rect(4.5, 3.0, 11.0, 8.0);
             pen.fill(&[(6.9, 6.4), (8.5, 6.4), (7.7, 4.8)]);
         }
         Extract => {
+            // an extract closes the gap: material outside it moves in
             pen.rect(3.5, 8.0, 12.5, 13.5);
             pen.rect(5.5, 3.0, 10.5, 8.0);
             pen.fill(&[(7.2, 6.4), (8.8, 6.4), (8.0, 4.8)]);
-            pen.fill(&[(1.5, 10.75), (3.8, 8.9), (3.8, 12.6)]);
-            pen.fill(&[(14.5, 10.75), (12.2, 8.9), (12.2, 12.6)]);
+            pen.fill(&[(3.8, 10.75), (1.5, 8.9), (1.5, 12.6)]);
+            pen.fill(&[(12.2, 10.75), (14.5, 8.9), (14.5, 12.6)]);
         }
         Camera => {
             pen.closed(&[(2.0, 5.0), (5.0, 5.0), (6.0, 3.5), (10.0, 3.5), (11.0, 5.0), (14.0, 5.0), (14.0, 12.5), (2.0, 12.5)]);
@@ -438,9 +428,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(1.8, 5.5), (5.2, 5.5), (3.2, 8.5)]);
         }
         Wrench => {
-            // an open-end jaw on a thick handle. The jaw is an annulus sector, whose mouth faces up
-            // and left; it is filled as adjacent convex trapezoids, one per arc segment, because
-            // Pen16::fill goes to PathShape::convex_polygon and must not be given a concave path.
+            // jaw filled as convex trapezoids: Pen16::fill must not get a concave path
             let (cx, cy, outer, inner) = (4.8, 4.8, 3.5, 1.3);
             let (a0, sweep, n) = (275.0f32, 280.0f32, 12);
             let at = |deg: f32, r: f32| -> (f32, f32) {
@@ -541,7 +529,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect(10.0, 2.0, 14.0, 6.0);
         }
         NewItem => {
-            // a fresh page, its corner still folded
             pen.closed(&[(2.5, 1.5), (13.5, 1.5), (13.5, 13.5), (5.5, 13.5), (2.5, 10.5)]);
             pen.line(&[(2.5, 10.5), (5.5, 10.5), (5.5, 13.5)]);
         }
@@ -556,7 +543,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(6.5, 14.0), (6.5, 10.0), (9.5, 10.0), (9.5, 14.0)]);
         }
         Workspaces => {
-            // the panel list beside the layouts it switches between
             pen.rect(1.5, 2.5, 14.5, 13.5);
             pen.rect(3.0, 4.0, 5.8, 12.0);
             for y in [5.6, 8.0, 10.4] {
@@ -637,8 +623,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.dot(8.0, 4.8, 0.9);
         }
         Captions => {
-            // a caption box carrying the closed-caption mark. The two Cs are small enough, and far
-            // enough apart, that Pen16::crisp cannot snap their facing tips onto one pixel at 1x.
+            // sized and spaced so the two Cs stay apart at 1x
             pen.rect(1.5, 3.0, 14.5, 13.0);
             pen.arc(5.7, 8.0, 1.9, 45.0, 315.0);
             pen.arc(10.3, 8.0, 1.9, 45.0, 315.0);
