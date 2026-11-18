@@ -68,6 +68,7 @@ impl FilmcraftApp {
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,
+            window_geometry: Default::default(),
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
             ui_requests: Vec::new(),
@@ -441,6 +442,9 @@ impl eframe::App for FilmcraftApp {
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
+        if let Some(info) = raw_input.viewports.get(&egui::ViewportId::ROOT) {
+            self.window_geometry.observe(info);
+        }
         capture::note_raw_geometry(self, ctx, raw_input);
         #[cfg(target_os = "macos")]
         if !self.control_input_only {
@@ -505,6 +509,16 @@ impl eframe::App for FilmcraftApp {
     /// storage, and egui's memory (open menus, scroll offsets, …) starts fresh.
     fn persist_egui_memory(&self) -> bool {
         false
+    }
+
+    /// Soon after the window is moved or resized, so its geometry is recorded before a maximize
+    /// keeps the old one (see [`crate::window_geometry`]); eframe's 30 s otherwise.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        self.window_geometry.interval()
+    }
+
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        self.window_geometry.saved();
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset

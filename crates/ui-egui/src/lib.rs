@@ -97,6 +97,7 @@ mod audio;
 mod gpu;
 mod hooks;
 mod raw_input;
+mod window_geometry;
 
 use audio::shuttle_mix_rate;
 pub use audio::{AUDIO_RETRY_S, AUDIO_STALL_S, playback_mix};
@@ -260,6 +261,8 @@ pub struct FilmcraftApp {
     pub(crate) control_input_only: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
+    /// The main window's normal geometry, so a change to it is saved soon (#1994).
+    window_geometry: window_geometry::Tracker,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
     synthetic_modifiers: egui::Modifiers,
     /// Requests waiting for the UI to show an element: (request, give-up time).
