@@ -27,6 +27,26 @@ Code: `crates/ui-egui/src/frame_timing.rs`, `filmcraft_codecs::gop::trace`,
 `filmcraft_gpu::CompositeTiming`. GPU execution time is not measured directly; it surfaces as `gap`.
 Each `pass` line also lists `causes=[file:line …]`, egui's record of what asked for that refresh.
 
+### Refresh rate while playing
+
+While playing, the window refreshes 60 times a second, or twice the rate frames come at when that is
+faster (60 fps footage: 120; fast shuttle: more), plus once per finished frame job, instead of at
+every display refresh. The Audio Meters and Track Mixer meters ask for 60 Hz too; their ballistics
+are in dB per second, so only smoothness depends on it. `FILMCRAFT_PLAYBACK_MAX_HZ=<hz>` changes the
+floor; `0` refreshes the playback clock at every display refresh as before (for comparisons).
+
+Measured 2026-11-17 on a Core Ultra 9 laptop with an RTX 5070 Ti and a 2560 × 1600 240 Hz panel
+driven by the integrated GPU (FilmCraft renders on the RTX, so every refresh is copied across
+GPUs), demo project, 5 s of playback, two alternating runs each:
+
+| | Before (`MAX_HZ=0`) | After |
+|---|---|---|
+| UI refreshes / s | 218–225 | 86–93 |
+| GPU 3D engine | 13.3–13.9 % | 5.2–5.3 % |
+| GPU copy engine | 14.5–15.0 % | 6.5–6.7 % |
+| process CPU (one core = 100 %) | 476–485 % | 380–420 % |
+| dropped frames | 0 | 0 |
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and

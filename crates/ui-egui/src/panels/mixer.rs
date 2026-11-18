@@ -133,11 +133,16 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     // After Stop, levels and peak holds still fall. Keep animating without pointer input until
     // both reach the floor, then let the idle window sleep (#1062).
     if live || st.values().flatten().any(|meter| meter.iter().any(|db| db.is_finite() && *db > -90.0)) {
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(METER_REFRESH);
     }
     ui.data_mut(|d| d.insert_temp(id, (frame, st.clone())));
     st
 }
+
+/// How often animated meters ask for a refresh. Their ballistics are in dB per second, so the rate
+/// changes only smoothness; asking at every pass redrew the whole window at the display's rate
+/// (240 times a second on a 240 Hz panel) for as long as audio played.
+pub(crate) const METER_REFRESH: std::time::Duration = std::time::Duration::from_micros(16_667);
 
 /// One bar per channel (level, peak hold) with a clip light on top; 5.1 meters carry channel names.
 fn draw_meters(ui: &egui::Ui, r: Rect, m: &[[f32; 2]], channels: usize, t: &Tokens) {
