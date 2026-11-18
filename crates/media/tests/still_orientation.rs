@@ -15,6 +15,7 @@ use filmcraft_media::still::{Raster, decode_raster};
 use filmcraft_media::{FrameRequest, MediaSource, open_bytes};
 use filmcraft_time::{FrameRate, Tick};
 use image::ImageEncoder;
+use image::metadata::Orientation;
 
 const W: u32 = 3;
 const H: u32 = 2;
@@ -45,6 +46,7 @@ fn oriented(o: u16, x: u32, y: u32) -> (u32, u32) {
 fn assert_oriented(r: &Raster, o: u16, block: u32, tol: u8, what: &str) {
     let (w, h) = if (5..=8).contains(&o) { (H, W) } else { (W, H) };
     assert_eq!((r.width, r.height, r.rgba.len()), (w * block, h * block, (w * h * block * block * 4) as usize), "{what}: size");
+    assert_eq!(r.orientation, Orientation::from_exif(u8::try_from(o).unwrap_or(0)).unwrap_or(Orientation::NoTransforms), "{what}: orientation");
     for y in 0..H {
         for x in 0..W {
             let (ox, oy) = oriented(o, x, y);
@@ -212,7 +214,13 @@ fn opened_still_reports_the_upright_size() {
     let f = s.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
     assert_eq!((f.width, f.height), (v.width, v.height));
     let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-    assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, 6, 8, 8, "opened JPEG");
+    assert_oriented(
+        &Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false, orientation: Orientation::Rotate90 },
+        6,
+        8,
+        8,
+        "opened JPEG",
+    );
 }
 
 #[test]
@@ -225,7 +233,13 @@ fn image_sequence_frames_are_upright() {
     for i in 0..2 {
         let f = s.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
         let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-        assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, 8, 1, 0, &format!("sequence frame {i}"));
+        assert_oriented(
+            &Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false, orientation: Orientation::Rotate270 },
+            8,
+            1,
+            0,
+            &format!("sequence frame {i}"),
+        );
     }
 }
 
@@ -242,7 +256,19 @@ fn sequence_frames_with_different_orientations_each_decode_upright() {
     for (i, o) in [(0, 1), (1, 6)] {
         let f = s.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
         let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-        assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, o, 1, 0, &format!("sequence frame {i}"));
+        assert_oriented(
+            &Raster {
+                width: f.width,
+                height: f.height,
+                rgba: p.to_vec(),
+                has_alpha: false,
+                orientation: Orientation::from_exif(u8::try_from(o).unwrap_or(0)).unwrap_or(Orientation::NoTransforms),
+            },
+            o,
+            1,
+            0,
+            &format!("sequence frame {i}"),
+        );
     }
 }
 

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
 use crate::{MediaError, MediaInfo, MediaKind, Result, VideoStreamInfo};
@@ -80,7 +81,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillSource { info, frame: Arc::new(d.frame), orientation: Orientation::NoTransforms })
 }
 
 /// The frame rate and start time code (in frames at that rate) of a CinemaDNG sequence whose first

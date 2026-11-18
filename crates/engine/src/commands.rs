@@ -1438,6 +1438,10 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
         ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        // A subclip shows its parent media's picture, so its anchor resolves
+        // against the parent's size: without this a clip placed from a subclip
+        // baked its anchor from the sequence frame instead (#4613 follow-up).
+        ItemKind::Subclip { .. } => s.project.source_size(item),
         _ => None,
     }
     .unwrap_or((1920, 1080));

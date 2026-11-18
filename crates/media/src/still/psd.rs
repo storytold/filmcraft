@@ -11,6 +11,8 @@ use craft_psd::merged::{EncodedRows, Merged};
 use craft_psd::resources::ids;
 use craft_psd::{ColorMode, Header, Version};
 
+use image::metadata::Orientation;
+
 use super::Raster;
 use crate::{MediaError, Result};
 
@@ -160,7 +162,7 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
     // supports at most MAX_SIDE 16-bit samples per row; the shared view allocates no planes.
     let rows = merged.encoded_rows(used, MAX_SIDE as usize * 2).map_err(|e| err(name, &e.to_string()))?;
     let (rgba, has_alpha) = rows_to_rgba8(name, &rows, h, colours, alpha)?;
-    Ok(Raster { width: h.width, height: h.height, rgba, has_alpha })
+    Ok(Raster { width: h.width, height: h.height, rgba, has_alpha, orientation: Orientation::NoTransforms })
 }
 
 #[cfg(test)]

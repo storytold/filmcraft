@@ -596,6 +596,11 @@ impl MediaSource for UnsupportedAsSlate {
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio(start, frames, sample_rate)
     }
+    /// The inner source's orientation: the wrapper only changes what a failed frame
+    /// shows, never the picture's own geometry.
+    fn still_orientation(&self) -> image::metadata::Orientation {
+        self.inner.still_orientation()
+    }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
     }
@@ -655,6 +660,11 @@ impl MediaSource for DamagedAsSlate {
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio(start, frames, sample_rate)
+    }
+    /// The inner source's orientation: the wrapper only changes what a failed frame
+    /// shows, never the picture's own geometry.
+    fn still_orientation(&self) -> image::metadata::Orientation {
+        self.inner.still_orientation()
     }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)

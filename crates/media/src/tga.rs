@@ -1,4 +1,6 @@
 //! Targa decoding through shared craft-tga; Film retains the media error/raster adapter.
+use image::metadata::Orientation;
+
 use crate::{MediaError, Result, still::Raster};
 
 pub fn sniff(name: &str, bytes: &[u8]) -> bool {
@@ -10,7 +12,7 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
         craft_tga::Error::Unsupported(kind) => MediaError::Unsupported(format!("{name}: Targa image type {kind}")),
         other => MediaError::Decode(format!("{name}: {other}")),
     })?;
-    Ok(Raster { width: image.width, height: image.height, rgba: image.rgba, has_alpha: image.has_alpha })
+    Ok(Raster { width: image.width, height: image.height, rgba: image.rgba, has_alpha: image.has_alpha, orientation: Orientation::NoTransforms })
 }
 
 /// Film's Targa ceiling is the 2^28-pixel limit alone, as with its previous decoder: the shared

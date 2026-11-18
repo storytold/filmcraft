@@ -17,6 +17,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 use rayon::prelude::*;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
@@ -82,7 +83,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillSource { info, frame: Arc::new(d.frame), orientation: Orientation::NoTransforms })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

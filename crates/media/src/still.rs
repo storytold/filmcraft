@@ -47,6 +47,10 @@ pub struct Raster {
     pub rgba: Vec<u8>,
     /// Whether any pixel is not fully opaque.
     pub has_alpha: bool,
+    /// The EXIF Orientation the decoder applied to turn the stored picture upright
+    /// (`NoTransforms` when the format ignores it or none was present): the mapping
+    /// from stored pixel coordinates to these pixels.
+    pub orientation: Orientation,
 }
 
 /// Decode a still image file (`name` picks Targa, which has no magic number; the content picks
@@ -71,7 +75,7 @@ pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
-    Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha })
+    Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha, orientation })
 }
 
 /// Most pixels a decoded still may have: 1 GiB of RGBA, as the other raster decoders allow. The
@@ -98,6 +102,8 @@ fn exif_orientation(bytes: &[u8]) -> Orientation {
 pub struct StillSource {
     info: MediaInfo,
     frame: Arc<VideoFrame>,
+    /// The EXIF Orientation the decoder applied to this picture (see [`Raster::orientation`]).
+    orientation: Orientation,
 }
 
 impl StillSource {
@@ -110,7 +116,14 @@ impl StillSource {
             return hdr::still(name, bytes);
         }
         let r = decode_raster(name, bytes)?;
-        Ok(Self::from_rgba(name, r.width, r.height, r.rgba, r.has_alpha, bytes.len() as u64))
+        Ok(Self::from_rgba(name, r.width, r.height, r.rgba, r.has_alpha, bytes.len() as u64).with_orientation(r.orientation))
+    }
+
+    /// Record the orientation the decoder applied; `from_rgba` pictures are already
+    /// upright, so they keep `NoTransforms`.
+    fn with_orientation(mut self, orientation: Orientation) -> Self {
+        self.orientation = orientation;
+        self
     }
 
     pub fn from_rgba(name: &str, w: u32, h: u32, rgba: Vec<u8>, has_alpha: bool, file_size: u64) -> Self {
@@ -137,13 +150,16 @@ impl StillSource {
             start_timecode: None,
             file_size: Some(file_size),
         };
-        Self { info, frame: Arc::new(VideoFrame::rgba8(w, h, rgba)) }
+        Self { info, frame: Arc::new(VideoFrame::rgba8(w, h, rgba)), orientation: Orientation::NoTransforms }
     }
 }
 
 impl MediaSource for StillSource {
     fn info(&self) -> &MediaInfo {
         &self.info
+    }
+    fn still_orientation(&self) -> Orientation {
+        self.orientation
     }
     fn video_frame(&self, _req: FrameRequest) -> Result<Arc<VideoFrame>> {
         Ok(self.frame.clone())
