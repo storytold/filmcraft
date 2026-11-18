@@ -615,7 +615,12 @@ fn read_wav(path: &str) -> Res<Vec<f32>> {
         let body = o + 8;
         let size = size as usize;
         match id {
-            b"fmt " => fmt = Some((u16_at(body), u16_at(body + 2), u32_at(body + 4), u16_at(body + 14))),
+            b"fmt " => {
+                let tag = u16_at(body);
+                // WAVE_FORMAT_EXTENSIBLE: the real format is the first two bytes of SubFormat
+                let tag = if tag == Some(0xFFFE) { u16_at(body + 24) } else { tag };
+                fmt = Some((tag, u16_at(body + 2), u32_at(body + 4), u16_at(body + 14)));
+            }
             b"data" => data = Some(b.get(body..(body + size).min(b.len())).unwrap_or(&[])),
             _ => {}
         }
@@ -629,8 +634,8 @@ fn read_wav(path: &str) -> Res<Vec<f32>> {
     }
     let ch = usize::from(ch.max(1));
     let samples: Vec<f32> = match (tag, bits) {
-        (1 | 0xFFFE, 16) => data.chunks_exact(2).map(|s| f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0).collect(),
-        (3 | 0xFFFE, 32) => data.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect(),
+        (1, 16) => data.chunks_exact(2).map(|s| f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0).collect(),
+        (3, 32) => data.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect(),
         _ => return Err(format!("{path}: unsupported WAV format {tag} / {bits} bits")),
     };
     Ok(samples.chunks_exact(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect())

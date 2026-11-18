@@ -13,6 +13,8 @@ workspace = true
 default = []
 # Speech-to-text with Whisper (candle, CPU). Off by default and in wasm builds.
 whisper = ["filmcraft-speech/whisper"]
+# Run Whisper on the Apple GPU through candle's Metal backend.
+metal = ["filmcraft-speech/metal"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
