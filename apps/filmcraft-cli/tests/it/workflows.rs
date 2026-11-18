@@ -366,8 +366,12 @@ fn verify_phone_export(ffmpeg: &Path, ffprobe: &Path, src: &str, out: &str) {
     let got_pcm = pcm(ffmpeg, out, 0);
     let beeps = onsets(&got_pcm);
     assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
-    for (&beep_sample, flash) in beeps.iter().zip([1.0, 59.0 / 30.0]) {
-        let beep = beep_sample as f64 / 48_000.0;
+    let audio_frames = presentation_frames(ffprobe, out, "a:0");
+    let video_frames = presentation_frames(ffprobe, out, "v:0");
+    assert_eq!(video_frames.len(), got.len());
+    for (&beep_sample, flash_frame) in beeps.iter().zip([30, 59]) {
+        let beep = audio_presentation_time(&audio_frames, beep_sample);
+        let flash = num(&video_frames[flash_frame]["pts_time"]);
         assert!((beep - flash).abs() <= 1.0 / 30.0, "beep at {beep:.3} s, flash at {flash:.3} s");
     }
     let change = db(rms(&got_pcm, 1.01, 1.09) / rms(&src_pcm, 1.01, 1.09));
