@@ -244,6 +244,7 @@ pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let cx2 = FxCtx {
             t,
             px_scale: cx.px_scale,
+            mask_scale: cx.mask_scale,
             seconds: cx.seconds + k * span,
             timecode: cx.timecode,
             clip_name: cx.clip_name,

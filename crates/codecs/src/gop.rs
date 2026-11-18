@@ -120,7 +120,45 @@ pub trait VideoSamples: Sync {
     /// The sample presented at `t` (track units), if any.
     fn sample_at(&self, t: i64) -> Option<usize>;
     fn read(&self, i: usize) -> crate::Result<Vec<u8>>;
+    /// Bytes sample `i` holds, from the index and without reading it. Implementations that know
+    /// it should say so: the random-access search checks a candidate against its byte budget
+    /// before [`read`](VideoSamples::read) allocates it. `None`: not known (read, then count).
+    fn sample_size(&self, _i: usize) -> Option<u64> {
+        None
+    }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
+}
+
+/// The track time (units of `num / den` s) to look up the frame shown at `t` by, for a track whose
+/// nominal rate is `rate`. `snap`: move the request back to the start of its frame first, see
+/// [`snap_coarse_units`].
+///
+/// Rounded to the nearest unit (#73): muxers round frame times to the timescale (Matroska usually
+/// to 1 ms), so a stamp can sit up to half a unit after the true time, and flooring missed every
+/// frame stamped late.
+pub(crate) fn lookup_time(t: filmcraft_time::Tick, num: i64, den: i64, rate: filmcraft_time::FrameRate, snap: bool) -> i64 {
+    (if snap { rate.snap(t) } else { t }).to_rational_round(num, den)
+}
+
+/// Whether to look frames up by first moving the request back to the start of its frame (nominal
+/// rate `rate`), for a track whose samples are stamped `stamps` (units of `num / den` s).
+///
+/// #73's tolerance of half a unit is only harmless while a unit is short against a frame. With a
+/// unit of half a frame or more (an MP4 whose timescale is its frame rate, one unit per frame),
+/// half a unit is a quarter of a frame or more, and from its middle on every frame was looked up
+/// as the next one. Such a track can't place frames between its units anyway, so the request
+/// first moves back to the start of its frame, which then rounds onto that frame's own stamp.
+///
+/// Only when every stamp is where that lookup lands for its nearest nominal frame: a coarse unit
+/// is no constant rate. A variable-rate track with samples 2, 1, 2 units long at two units a frame
+/// has a stamp between two nominal frames, and snapping would move a request at it onto the
+/// frame before. Such a track keeps #73's lookup by the nearest unit.
+pub(crate) fn snap_coarse_units(stamps: impl IntoIterator<Item = i64>, num: i64, den: i64, rate: filmcraft_time::FrameRate) -> bool {
+    let unit = filmcraft_time::Tick::from_rational(1, num, den);
+    if unit.0.saturating_mul(2) < rate.frame_duration().0 {
+        return false;
+    }
+    stamps.into_iter().all(|p| lookup_time(rate.snap_nearest(filmcraft_time::Tick::from_rational(p, num, den)), num, den, rate, true) == p)
 }
 
 /// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
@@ -164,6 +202,9 @@ struct State {
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     /// The cached frames that were decoded in draft mode: served to draft requests only.
     drafts: std::collections::BTreeSet<i64>,
+    /// The cached frames still waiting for [`GopCache::finish`]'s crop and rotation: the request
+    /// that takes one does it off the lock (#3467).
+    raw: std::collections::BTreeSet<i64>,
     bytes: usize,
     /// When a frame was last asked of this cache.
     last_used: Instant,
@@ -195,6 +236,7 @@ impl State {
         while more() {
             let Some((pts, f)) = self.frames.pop_first() else { break };
             self.drafts.remove(&pts);
+            self.raw.remove(&pts);
             self.bytes = self.bytes.saturating_sub(f.byte_size());
             pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
@@ -208,9 +250,20 @@ impl State {
     }
 
     /// The nearest usable frame at or before `pts` (robust to decoder pts quirks).
-    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
-        self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
+    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Taken> {
+        let (pts, frame) = match self.cached(pts, draft_ok) {
+            Some(f) => (pts, f),
+            None => self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(p, f)| (*p, f))?,
+        };
+        Some(Taken { pts, frame: frame.clone(), raw: self.raw.contains(&pts) })
     }
+}
+
+/// A cached frame handed to a request, `raw` while it still waits for [`GopCache::finish`].
+struct Taken {
+    pts: i64,
+    frame: Arc<VideoFrame>,
+    raw: bool,
 }
 
 thread_local! {
@@ -405,6 +458,21 @@ impl Pool {
         released
     }
 
+    /// Empty every cache whose lock is free (see [`release_idle`]). Decoders are dropped with no
+    /// cache lock held, as for [`Self::trim_decoders`].
+    fn release_idle(&self) {
+        let all: Vec<Arc<Shared>> = self.caches.lock().unwrap_or_else(PoisonError::into_inner).iter().filter_map(Weak::upgrade).collect();
+        let mut released = Vec::new();
+        for c in &all {
+            // try-locked: a cache another thread holds is decoding, so it is in use
+            if let Some(mut st) = try_state(c) {
+                st.release_frames(self, || true);
+                released.extend(st.release_decoder(self));
+            }
+        }
+        drop(released);
+    }
+
     /// Evict the frames of caches idle for [`RECENT`], least recently used first, down to the
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
@@ -422,6 +490,17 @@ impl Pool {
             }
         }
     }
+}
+
+/// Free the decoded frames and the decoders of every cache that nobody is using right now,
+/// process-wide. The frame budget only trims caches that were idle for [`RECENT`] while another
+/// cache is asking for frames, so after a long job (an export) every source keeps up to
+/// [`FRAME_CACHE_CEILING`] of frames and its decoders until the session ends. Whoever finishes
+/// such a job calls this. A cache a thread is decoding on (its lock is held) is skipped, so
+/// concurrent users lose nothing; a cache emptied here only re-decodes from a sync sample when
+/// asked again.
+pub fn release_idle() {
+    Pool::global().release_idle();
 }
 
 /// Caches that hold a decoder right now, process-wide (`perf.stats`).
@@ -509,6 +588,49 @@ fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Resu
     job()
 }
 
+/// Most sync candidates, and bytes read from them, one search for a random-access sample may try.
+// 65 536 probes is 18 minutes of an unkeyed 60 fps stream: far past any real GOP, yet each hostile probe stays bounded by the byte budget
+const MAX_RANDOM_ACCESS_PROBES: usize = 65_536;
+const MAX_RANDOM_ACCESS_PROBE_BYTES: usize = 512 << 20;
+
+/// The container's sync flags may be wrong for the codec (an MP4 without `stss` marks every
+/// sample): step back from sync sample `key` to one the decoder can start from (`is_ra` says, with
+/// None meaning "cannot tell", which is taken as yes). A file whose index aliases many claimed
+/// keyframes onto one large non-random-access sample would otherwise read it once per claim, so
+/// the search is bounded in probes and bytes, and stops when the request is cancelled.
+fn random_access_at_or_before(s: &dyn VideoSamples, mut key: usize, mut is_ra: impl FnMut(&[u8]) -> Option<bool>) -> crate::Result<usize> {
+    let (mut probes, mut bytes) = (0usize, 0usize);
+    // polled before the sample-zero exit too: a cancelled request must not go on to decode from there
+    if filmcraft_media::cancel::cancelled() {
+        return Err(CodecError::Cancelled);
+    }
+    while key > 0 {
+        if filmcraft_media::cancel::cancelled() {
+            return Err(CodecError::Cancelled);
+        }
+        // refused before the read: a claimed keyframe that is one huge sample must not be loaded
+        if s.sample_size(key).is_some_and(|n| n > (MAX_RANDOM_ACCESS_PROBE_BYTES - bytes) as u64) {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        let data = s.read(key)?;
+        // a container that cannot say a sample's size (see `sample_size`) is checked after the read:
+        // the initial read of an unknown size is allowed, but one sample past the budget ends the search
+        if data.len() > MAX_RANDOM_ACCESS_PROBE_BYTES - bytes {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        if is_ra(&data) != Some(false) {
+            break;
+        }
+        probes += 1;
+        bytes = bytes.saturating_add(data.len());
+        if probes >= MAX_RANDOM_ACCESS_PROBES || bytes > MAX_RANDOM_ACCESS_PROBE_BYTES {
+            return Err(CodecError::Decode("no random-access picture found before the requested frame".into()));
+        }
+        key = s.sync_before(key - 1);
+    }
+    Ok(key)
+}
+
 impl GopCache {
     pub fn new(explicit_color: Option<ColorInfo>) -> Self {
         // unit tests count decoder restarts: each of their caches gets a pool of its own
@@ -516,6 +638,7 @@ impl GopCache {
         Self::in_pool(explicit_color, pool)
     }
 
+    /// An empty cache whose decoders and frame memory count against `pool`.
     fn in_pool(explicit_color: Option<ColorInfo>, pool: Arc<Pool>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -527,6 +650,7 @@ impl GopCache {
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
+                raw: Default::default(),
                 bytes: 0,
                 last_used: Instant::now(),
                 pin: i64::MIN,
@@ -554,20 +678,59 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
-        if let Some(c) = self.explicit_color
-            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
-        {
-            f.color = c;
-        }
+    fn finish(&self, f: VideoFrame) -> VideoFrame {
+        let mut f = self.colored(f);
         if let Some(r) = self.crop {
             f = f.cropped(r);
         }
         if self.rotation != 0 { f.rotated(self.rotation) } else { f }
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+    /// `f` with the container's colour, which costs nothing (raw frames carry it too).
+    fn colored(&self, mut f: VideoFrame) -> VideoFrame {
+        if let Some(c) = self.explicit_color
+            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
+        {
+            f.color = c;
+        }
+        f
+    }
+
+    /// Cache decoder output. Cropping and rotating a 4K frame takes longer than decoding it: with
+    /// the lock held, every frame worker and the decoder itself would wait for it, and a rotated
+    /// phone clip played at 2 fps (#3467). The frame is cached raw instead and [`Self::finished`]
+    /// does that work off the lock, for the frames requests actually take.
+    /// Returns the stored picture as a request would take it, which the caller keeps even when
+    /// the cache evicts it again to meet the budget.
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> Taken {
+        if self.crop.is_none() && self.rotation == 0 {
+            let frame = self.store_finished(st, pts, self.finish(f), draft);
+            return Taken { pts, frame, raw: false };
+        }
+        let frame = self.store_finished(st, pts, self.colored(f), draft);
+        // an evicted frame leaves no entry to mark
+        if st.frames.contains_key(&pts) {
+            st.raw.insert(pts);
+        }
+        Taken { pts, frame, raw: true }
+    }
+
+    /// `t`'s frame with [`Self::finish`] applied, which must run without the cache's lock. The
+    /// finished frame replaces the raw one in the cache unless that was evicted or replaced meanwhile.
+    fn finished(&self, t: Taken) -> Arc<VideoFrame> {
+        if !t.raw {
+            return t.frame;
+        }
+        let done = Arc::new(self.finish(VideoFrame::clone(&t.frame)));
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if st.frames.get(&t.pts).is_some_and(|f| Arc::ptr_eq(f, &t.frame)) {
+            let draft = st.drafts.contains(&t.pts);
+            self.store_finished(&mut st, t.pts, done.clone(), draft);
+        }
+        drop(st);
+        // the raw planes serve the next decoded pictures once nothing else holds them
+        filmcraft_frame::pool::recycle(t.frame);
+        done
     }
 
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
@@ -576,8 +739,10 @@ impl GopCache {
         self.budget.min(FRAME_CACHE_CEILING).max(reserve)
     }
 
-    /// Cache a frame [`Self::finish`] has been applied to.
-    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+    /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).
+    /// Returns the stored picture, which the caller keeps even when the cache evicts it again.
+    fn store_finished(&self, st: &mut State, pts: i64, f: impl Into<Arc<VideoFrame>>, draft: bool) -> Arc<VideoFrame> {
+        let f = f.into();
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -588,7 +753,8 @@ impl GopCache {
         let budget = self.cache_budget(f.byte_size());
         let before = st.bytes;
         st.bytes += f.byte_size();
-        if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
+        st.raw.remove(&pts);
+        if let Some(old) = st.frames.insert(pts, f.clone()) {
             st.bytes -= old.byte_size();
             filmcraft_frame::pool::recycle(old);
         }
@@ -596,17 +762,30 @@ impl GopCache {
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
         // wanted picture and walk the GOP again.
         let pivot = if st.pin != i64::MIN { st.pin } else { pts };
-        while st.bytes > budget && st.frames.len() > 2 {
+        while st.bytes > budget && st.frames.len() > 1 {
             let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
             let mut victim = if pivot - first > last - pivot { first } else { last };
             if victim == pivot || victim == pts {
                 victim = if victim == first { last } else { first };
                 if victim == pivot || victim == pts {
-                    break;
+                    // both ends are the request and the new decode: an interior frame goes,
+                    // or a reordered batch would stay cached far above the budget
+                    // (the ends are `pivot` and `pts`, so the interior frame farthest from `pivot` is the one next to the other end)
+                    let mut interior = st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last)));
+                    let k = if pivot == first { interior.next_back() } else { interior.next() };
+                    if let Some((&k, _)) = k {
+                        victim = k;
+                    } else if pts != pivot {
+                        // only the request and the new decode remain: the new decode goes, the request stays
+                        victim = pts;
+                    } else {
+                        break;
+                    }
                 }
             }
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
+                st.raw.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
                 // its planes serve the next decoded pictures instead of going back to the allocator
@@ -620,15 +799,23 @@ impl GopCache {
             pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
         }
         pool.trim_frames(&self.shared);
+        f
     }
 
-    /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    /// Store decoder output (in presentation order) and advance `out_max`. Returns the stored
+    /// frame nearest at or before `want_pts`, which the caller keeps even when the cache evicts it.
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>, want_pts: i64) -> Option<Taken> {
         count_frames(&out);
+        let mut nearest: Option<Taken> = None;
         for d in out {
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
+            let pts = d.pts;
+            let t = self.store(st, pts, d.frame, d.draft);
+            if pts <= want_pts && nearest.as_ref().is_none_or(|n| pts > n.pts) {
+                nearest = Some(t);
+            }
         }
+        nearest
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -650,22 +837,42 @@ impl GopCache {
     /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
     /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
-        let r = self.frame_late_locked(s, target, late_before);
-        if filmcraft_media::cancel::background() {
-            // Outside the cache's lock (see `release_background`). A thumbnail leaves the decoders
-            // of earlier thumbnails no reason to stay: each costs hundreds of MB at 4K.
-            drop(self.shared.pool.release_background(&self.shared));
-        }
+        let r = self.frame_late_locked(s, target, late_before).map(|t| self.finished(t));
+        self.after_request();
         r
     }
 
-    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
+    /// Run once a request is answered, outside the cache's lock (see `release_background`). A
+    /// thumbnail leaves the decoders of earlier thumbnails no reason to stay: each costs hundreds
+    /// of MB at 4K.
+    fn after_request(&self) {
+        if filmcraft_media::cancel::background() {
+            drop(self.shared.pool.release_background(&self.shared));
+        }
+    }
+
+    /// [`Self::frame_late`] leaving the display rotation to the caller: the frame comes with the
+    /// clockwise quarter turns still to apply (0 when it is already upright). The GPU compositor
+    /// folds them into the layer's placement for free, where turning a 4K frame on the CPU at
+    /// every frame of playback is too slow (#3467).
+    pub fn frame_late_unturned(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<(Arc<VideoFrame>, u8)> {
+        let r = self.frame_late_locked(s, target, late_before).map(|t| {
+            // shortcut: a clean aperture is still cut and turned on the CPU; rare outside camera files
+            if !t.raw || self.crop.is_some() { (self.finished(t), 0) } else { (t.frame, self.rotation) }
+        });
+        self.after_request();
+        r
+    }
+
+    /// The cached or decoded frame for [`Self::frame_late`] and [`Self::frame_late_unturned`], raw
+    /// when it still waits for [`Self::finish`]. The cache's lock is released when this returns.
+    fn frame_late_locked(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Taken> {
         let n = s.count();
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
         let want_pts = s.pts(i);
         let me = self as *const Self as usize;
         if DecodingGuard::active(me) {
-            return self.private_frame(s, i, want_pts, n);
+            return Ok(Taken { pts: want_pts, frame: self.private_frame(s, i, want_pts, n)?, raw: false });
         }
         let draft = filmcraft_media::cancel::draft();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
@@ -677,11 +884,11 @@ impl GopCache {
         st.last_used = Instant::now();
         st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
-        if let Some(f) = st.cached(want_pts, draft).cloned() {
+        if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
             st.background &= background;
-            return Ok(f);
+            return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
         if !background {
@@ -715,15 +922,7 @@ impl GopCache {
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
-    fn decode_until(
-        &self,
-        st: &mut State,
-        s: &dyn VideoSamples,
-        i: usize,
-        want_pts: i64,
-        late_before: Option<i64>,
-        draft: bool,
-    ) -> crate::Result<Arc<VideoFrame>> {
+    fn decode_until(&self, st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>, draft: bool) -> crate::Result<Taken> {
         let n = s.count();
         let mut key = decode_start(s, i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
@@ -738,15 +937,7 @@ impl GopCache {
         let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
-            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
-            // every sample): step back to a sample the decoder can start from.
-            while key > 0 {
-                let data = s.read(key)?;
-                if st.decoder.as_ref().and_then(|d| d.is_random_access(&data)) != Some(false) {
-                    break;
-                }
-                key = s.sync_before(key - 1);
-            }
+            key = random_access_at_or_before(s, key, |data| st.decoder.as_ref().and_then(|d| d.is_random_access(data)))?;
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
             }
@@ -760,6 +951,15 @@ impl GopCache {
             return Err(CodecError::Decode("no video decoder".into()));
         };
         decoder.set_draft(draft);
+        // what this decode produced, kept apart from the cache: eviction may drop the only eligible fallback
+        let mut mine: Option<Taken> = None;
+        let keep = |mine: &mut Option<Taken>, t: Option<Taken>| {
+            if let Some(t) = t
+                && mine.as_ref().is_none_or(|m| t.pts > m.pts)
+            {
+                *mine = Some(t);
+            }
+        };
         while st.next < limit {
             if filmcraft_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
@@ -778,18 +978,24 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            keep(&mut mine, self.store_output(st, out, want_pts));
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            keep(&mut mine, self.store_output(st, out, want_pts));
             st.next = usize::MAX;
         }
-        // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
-        st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks); a closer
+        // frame of this decode beats an older cached one, and covers the cache having evicted it
+        match (st.at_or_before(want_pts, draft), mine) {
+            (Some(c), Some(m)) if m.pts > c.pts => Ok(m),
+            (Some(c), _) => Ok(c),
+            (None, Some(m)) => Ok(m),
+            (None, None) => Err(CodecError::Decode("frame not produced".into())),
+        }
     }
 
     /// A nested request (see [`Self::frame`]): decode from the sync sample with a fresh decoder,
@@ -820,15 +1026,7 @@ impl GopCache {
         // Continue the running decoder when the wanted sample is ahead within this GOP run.
         let continuing = *next != usize::MAX && *next > key && *next <= i + 16 && *next <= n;
         if !continuing {
-            // The container's sync flags may be wrong for the codec (an MP4 without `stss` marks
-            // every sample): step back to a sample the decoder can start from.
-            while key > 0 {
-                let data = s.read(key)?;
-                if d.is_random_access(&data) != Some(false) {
-                    break;
-                }
-                key = s.sync_before(key - 1);
-            }
+            key = random_access_at_or_before(s, key, |data| d.is_random_access(data))?;
             d.reset();
             *next = key;
         }
@@ -858,7 +1056,7 @@ impl GopCache {
 
     /// Intra-only streams: decode the one sample outside the lock, so several frame workers
     /// decode different frames of the same source at once.
-    fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Arc<VideoFrame>> {
+    fn intra_frame(&self, st: std::sync::MutexGuard<'_, State>, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<Taken> {
         let mut st = st;
         let spare = st.spare.pop();
         drop(st);
@@ -870,19 +1068,29 @@ impl GopCache {
             DECODED.fetch_add(1, Ordering::Relaxed);
             timed(|| dec.decode(&data, want_pts))
         });
-        // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
-            count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
-        });
+        let res = res.inspect(|out| count_frames(out));
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        for (pts, frame, draft) in res? {
-            self.store_finished(&mut st, pts, frame, draft);
+        // cached raw: the request that takes a frame crops and turns it off the lock, or leaves
+        // the turn to the GPU (`frame_late_unturned`)
+        // what this decode produced, kept apart from the cache: a concurrent request can move the pin and
+        // have the cache evict this frame before it is read back
+        let mut mine: Option<Taken> = None;
+        for d in res? {
+            let t = self.store(&mut st, d.pts, d.frame, d.draft);
+            if d.pts <= want_pts && mine.as_ref().is_none_or(|m| d.pts > m.pts) {
+                mine = Some(t);
+            }
         }
-        st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        match (st.at_or_before(want_pts, true), mine) {
+            // a closer frame of this decode beats an older cached one
+            (Some(c), Some(m)) if m.pts > c.pts => Ok(m),
+            (Some(c), _) => Ok(c),
+            (None, Some(m)) => Ok(m),
+            (None, None) => Err(CodecError::Decode("frame not produced".into())),
+        }
     }
 }
 

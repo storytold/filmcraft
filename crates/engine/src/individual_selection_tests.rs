@@ -125,3 +125,85 @@ fn explicit_clear_and_ripple_targets_keep_the_linked_selection_setting() {
         }
     }
 }
+
+/// Grouped clips select (and so drag) together; Alt-click still picks one member.
+#[test]
+fn grouped_clips_select_together() {
+    let (mut s, [(v0, a0), (v1, a1)]) = paired_sequence();
+    s.execute("timeline.select", json!({"clips": [v0.0, v1.0], "linked": false})).unwrap();
+    s.execute("clip.group", json!({})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+    for c in [v0, a0, v1, a1] {
+        assert!(s.state.selection.contains(&c), "group member {c:?} is selected");
+    }
+    // the linked partner of a grouped clip brings the group along
+    s.execute("timeline.select", json!({"clips": [a0.0]})).unwrap();
+    for c in [v0, a0, v1, a1] {
+        assert!(s.state.selection.contains(&c), "{c:?} is selected from the partner");
+    }
+    s.execute("timeline.select", json!({"clips": [v0.0], "linked": false})).unwrap();
+    assert_eq!(s.state.selection, vec![v0], "Alt-click selects one member");
+    s.execute("timeline.select", json!({"clips": [v0.0, v1.0], "linked": false})).unwrap();
+    s.execute("clip.ungroup", json!({})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+    assert!(!s.state.selection.contains(&v1), "ungrouped clips select alone");
+}
+
+/// Copies of a group (Option-drag, copy and paste) form a group of their own: selecting a copy
+/// leaves the originals alone, so the next drag moves or copies only what was clicked.
+#[test]
+fn copies_of_a_group_do_not_join_the_original_group() {
+    for how in ["drag", "paste"] {
+        let (mut s, [(v0, a0), (v1, a1)]) = paired_sequence();
+        let originals = [v0, a0, v1, a1];
+        s.execute("timeline.select", json!({"clips": [v0.0, a0.0, v1.0, a1.0], "linked": false})).unwrap();
+        s.execute("clip.group", json!({})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+        let end = s.active_sequence().unwrap().duration();
+        if how == "drag" {
+            let q = s.active_sequence().unwrap();
+            let moves: Vec<_> = originals
+                .iter()
+                .map(|c| {
+                    let (t, i) = q.find_item(*c).unwrap();
+                    json!({"clip": c.0, "track": t.0, "time": (i.start + end).0})
+                })
+                .collect();
+            s.execute("timeline.move", json!({"moves": moves, "copy": true, "linked": false})).unwrap();
+        } else {
+            s.execute("edit.copy", json!({})).unwrap();
+            s.set_playhead(end);
+            s.execute("edit.paste", json!({})).unwrap();
+        }
+        let q = s.active_sequence().unwrap();
+        let copies: Vec<_> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| !originals.contains(&i.id)).map(|i| i.id).collect();
+        assert_eq!(copies.len(), 4, "{how}: the whole group was copied");
+        let g = |c| q.find_item(c).unwrap().1.group;
+        assert!(g(copies[0]).is_some() && copies.iter().all(|c| g(*c) == g(copies[0])), "{how}: the copies are one group");
+        assert_ne!(g(copies[0]), g(v0), "{how}: not the originals' group");
+        s.execute("timeline.select", json!({"clips": [copies[0].0]})).unwrap();
+        assert_eq!(s.state.selection.len(), 4, "{how}: a copy selects its own group");
+        assert!(originals.iter().all(|c| !s.state.selection.contains(c)), "{how}: the originals stay unselected");
+        s.execute("timeline.select", json!({"clips": [v0.0]})).unwrap();
+        assert!(copies.iter().all(|c| !s.state.selection.contains(c)), "{how}: an original does not select the copies");
+    }
+}
+
+/// Toggling a partly selected group flips the whole group one way: the requested clip decides
+/// add or remove once, instead of each member flipping its own state.
+#[test]
+fn toggling_a_partly_selected_group_flips_it_as_a_whole() {
+    let (mut s, [(v0, a0), (v1, a1)]) = paired_sequence();
+    let group = [v0, a0, v1, a1];
+    s.execute("timeline.select", json!({"clips": [v0.0, v1.0], "linked": false})).unwrap();
+    s.execute("clip.group", json!({})).unwrap();
+    // only v1 selected: toggling the unselected v0 adds the whole group
+    s.execute("timeline.select", json!({"clips": [v1.0], "linked": false})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v0.0], "toggle": true})).unwrap();
+    assert!(group.iter().all(|c| s.state.selection.contains(c)), "the whole group is selected: {:?}", s.state.selection);
+    assert_eq!(s.state.selection.len(), 4, "no member is listed twice");
+    // only v0 selected: toggling the selected v0 removes the whole group
+    s.execute("timeline.select", json!({"clips": [v0.0], "linked": false})).unwrap();
+    s.execute("timeline.select", json!({"clips": [v0.0], "toggle": true})).unwrap();
+    assert!(s.state.selection.is_empty(), "the whole group is deselected: {:?}", s.state.selection);
+}

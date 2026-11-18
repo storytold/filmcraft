@@ -55,6 +55,22 @@ const CACHE_FRAMES: usize = 40;
 const MAX_QUEUE: u32 = 24;
 /// A session that delivered nothing for this long may be restarted by another request.
 const STALE_MS: f64 = 2000.0;
+/// Largest compressed sample handed to the decoder. An 8K intra frame at a high bit rate is a few
+/// megabytes; a larger `stsz` entry is damage, not a picture, and must not drive the allocation.
+const MAX_SAMPLE_BYTES: u64 = 64 << 20;
+
+/// Bytes of the sample at `offset`..`offset + size` in a source of `len` bytes: refused before any
+/// buffer is allocated when the sample lies outside the source or exceeds [`MAX_SAMPLE_BYTES`].
+fn sample_len(offset: u64, size: u32, len: u64) -> std::io::Result<usize> {
+    let size = u64::from(size);
+    if size > MAX_SAMPLE_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "MP4 sample larger than any picture"));
+    }
+    if offset.checked_add(size).is_none_or(|end| end > len) {
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "MP4 sample runs past the end of the file"));
+    }
+    usize::try_from(size).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "MP4 sample too large"))
+}
 
 thread_local! {
     /// Codec families the browser decodes ("avc", "hevc", "vp9", "av1").
@@ -448,6 +464,8 @@ pub struct WcSource {
 enum Drive {
     /// Work is under way (or bytes are loading): retry later.
     Waiting,
+    /// Missing source bytes cannot be repaired by switching decoders.
+    ReadError(std::io::Error),
     /// The decoder failed: use our own.
     Failed,
 }
@@ -507,12 +525,17 @@ impl WcSource {
             let upto = (i + LOOKAHEAD).min(n - 1);
             while s.next <= upto && s.queue().saturating_add(s.copying.get()) < MAX_QUEUE {
                 let smp = &t.samples[s.next];
-                let mut data = vec![0u8; smp.size as usize];
+                // the sample table is the file's claim: check it against the bytes that exist first
+                let size = match sample_len(smp.offset, smp.size, self.reader.len()) {
+                    Ok(n) => n,
+                    Err(e) => return Drive::ReadError(e),
+                };
+                let mut data = vec![0u8; size];
                 match self.reader.read_at(smp.offset, &mut data) {
                     Ok(()) => {}
                     // the bytes are being fetched (pending is marked): feed on the next try
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Drive::Waiting,
-                    Err(_) => return Drive::Failed,
+                    Err(e) => return Drive::ReadError(e),
                 }
                 let Some(chunk_ctor) = ctor("EncodedVideoChunk") else { return Drive::Failed };
                 let init = obj(&[
@@ -604,6 +627,7 @@ impl MediaSource for WcSource {
             return Ok(f.clone());
         }
         match self.drive(i, want) {
+            Drive::ReadError(e) => Err(MediaError::Io(format!("{}: {e}", self.info.name))),
             Drive::Waiting => {
                 self.collect(&mut c, want);
                 if let Some(f) = c.frames.get(&want) {

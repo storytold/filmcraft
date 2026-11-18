@@ -20,6 +20,11 @@ impl FilmcraftApp {
             for it in items.iter_mut().filter(|it| menus::edits_text(&it.id)) {
                 it.enabled = true;
             }
+        } else if self.ui.gfx_edit.is_some() {
+            // a graphic's text: its Copy, Cut, Paste and Select All, whatever the project allows (#1953)
+            for it in items.iter_mut().filter(|it| menus::edits_graphic_text(&it.id)) {
+                it.enabled = true;
+            }
         }
         if items == self.menu_sent {
             return;
@@ -87,5 +92,26 @@ mod native_menu_tests {
         app.sync_native_menu(&ctx);
         assert_eq!(last(&sent, "edit.undo"), Some(false));
         assert_eq!(last(&sent, "edit.redo"), Some(true), "the undone edit can be redone");
+    }
+
+    /// #1953: AppKit does not send a disabled item's command, so while a graphic's text is edited
+    /// its Copy, Cut, Paste and Select All stay enabled with no clip selected or copied; Undo stays
+    /// the project's.
+    #[test]
+    fn native_edit_items_stay_enabled_while_a_graphic_text_is_edited() {
+        let sent: Rc<RefCell<Vec<Vec<menus::MenuItem>>>> = Rc::default();
+        let mut app = FilmcraftApp::new(Session::default());
+        let sink = sent.clone();
+        app.hooks.menu_changed = Some(Box::new(move |items: &[menus::MenuItem]| sink.borrow_mut().push(items.to_vec())));
+        let ctx = egui::Context::default();
+        let last = |sent: &Rc<RefCell<Vec<Vec<menus::MenuItem>>>>, id: &str| sent.borrow().last().and_then(|items| enabled(items, id));
+        app.sync_native_menu(&ctx);
+        assert_eq!(last(&sent, "edit.copy"), Some(false), "nothing selected to copy");
+        app.ui.gfx_edit = Some(crate::state::GfxEdit::default());
+        app.sync_native_menu(&ctx);
+        for id in ["edit.copy", "edit.cut", "edit.paste", "edit.selectAll"] {
+            assert_eq!(last(&sent, id), Some(true), "{id} while a graphic's text is edited");
+        }
+        assert_eq!(last(&sent, "edit.undo"), Some(false), "Undo stays the project's");
     }
 }

@@ -14,7 +14,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().text(
         rect.min + vec2(24.0, 58.0),
         Align2::LEFT_CENTER,
-        tl!("Add media to your project. Drop files anywhere in the window, or choose a source below."),
+        tl!("Add media to your project. Drop files or folders anywhere in the window, or choose a source below."),
         Tokens::ui(13.0),
         t.text_dim,
     );
@@ -109,7 +109,13 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
     }
     if let Some(path) = open {
         let ctx = ui.ctx().clone();
-        if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
+        // unsaved changes: Save / Don't Save / Cancel first, asked over the project they were made in;
+        // Home switches to Edit once the chosen project opens, and stays after Cancel
+        if crate::panels::clip_dialogs::ask_before_open(app, &path).is_some() {
+            if let Some(info) = app.ui.clip_dialog.as_mut().and_then(|d| d.info.as_object_mut()) {
+                info.insert("editAfterOpen".into(), json!(true));
+            }
+        } else if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
             app.ui.mode = crate::state::Mode::Edit;
         }
     }

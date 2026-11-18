@@ -13,14 +13,16 @@ use crate::theme::Tokens;
 /// Height of the header bar. With `integrated_titlebar` it sits in the macOS title-bar strip.
 pub const HEIGHT: f32 = 38.0;
 
-/// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
+/// Draws the header bar in `rect` and handles its clicks: Home, the mode tabs, the workspace name
+/// and its menu (the workspaces, then Reset to Saved Layout, Save Changes to this Workspace, Save as
+/// New Workspace… and Edit Workspaces…), Discord and the quick actions.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.header_bg);
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
     let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
-    if drag.drag_started() {
+    if drag.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     if drag.double_clicked() {
@@ -118,7 +120,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let ws_resp = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app);
     // workspace name (caps)
-    let ws = crate::i18n::t(&app.ui.workspace).to_uppercase();
+    let ws = crate::i18n::to_uppercase(crate::i18n::t(&app.ui.workspace));
     let wg = p.layout_no_wrap(ws.clone(), Tokens::ui(11.0), t.text_dim);
     let wr = Rect::from_min_size(pos2(rx - wg.size().x + 10.0, rect.center().y - 10.0), vec2(wg.size().x + 8.0, 20.0));
     let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
@@ -165,24 +167,51 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let anchor = pos2(wr.min.x, rect.max.y + 4.0);
         let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(anchor).show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(220.0);
-                for w in crate::dock::names(&app.workspaces) {
-                    let sel = app.ui.workspace == w;
-                    if ui.selectable_label(sel, crate::i18n::t(&w)).clicked() {
-                        app.set_workspace(&w);
-                        ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                    ui.set_min_width(220.0);
+                    for w in crate::dock::names(&app.workspaces) {
+                        let sel = app.ui.workspace == w;
+                        if ui.selectable_label(sel, crate::i18n::t(&w)).clicked() {
+                            app.set_workspace(&w);
+                            ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                        }
                     }
-                }
-                ui.separator();
-                if ui.button(tl!("Reset to Saved Layout")).clicked() {
-                    let n = app.ui.workspace.clone();
-                    app.set_workspace(&n);
-                    ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
-                }
+                    ui.separator();
+                    // the actions of Window ▸ Workspaces, as in Premiere's workspace menu
+                    let actions = [
+                        ("reset", tl!("Reset to Saved Layout")),
+                        ("saveChanges", tl!("Save Changes to this Workspace")),
+                        ("saveAs", tl!("Save as New Workspace…")),
+                        ("edit", tl!("Edit Workspaces…")),
+                    ];
+                    for (action, label) in actions {
+                        let resp = ui.button(label);
+                        app.auto.add(&format!("header.workspaces.{action}"), resp.rect, label);
+                        if resp.clicked() {
+                            ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
+                            let ctx = ui.ctx().clone();
+                            if let Err(e) = crate::menus::invoke(app, &ctx, &format!("window.workspace.{action}"), serde_json::json!({})) {
+                                app.ui.status = e;
+                            }
+                        }
+                    }
+                });
             });
         });
         if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn workspace_name_uppercasing_is_turkish_aware() {
+        crate::i18n::set_current(crate::i18n::Language::Tr);
+        assert_eq!(crate::i18n::to_uppercase("Birleştirme"), "BİRLEŞTİRME");
+        assert_eq!(crate::i18n::to_uppercase("Altyazılar ve Grafikler"), "ALTYAZILAR VE GRAFİKLER");
+        crate::i18n::set_current(crate::i18n::Language::En);
+        assert_eq!(crate::i18n::to_uppercase("Birleştirme"), "BIRLEŞTIRME");
     }
 }

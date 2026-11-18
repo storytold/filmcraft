@@ -94,8 +94,8 @@ impl PanelKind {
             PanelKind::Tools => "Tools",
             PanelKind::AudioMeters => "Audio Meters",
             PanelKind::AudioTrackMixer => "Audio Track Mixer",
-            PanelKind::LumetriColor => "Lumetri Color",
-            PanelKind::LumetriScopes => "Lumetri Scopes",
+            PanelKind::LumetriColor => "Color Grading",
+            PanelKind::LumetriScopes => "Video Scopes",
             PanelKind::EssentialGraphics => "Essential Graphics",
             PanelKind::EssentialSound => "Essential Sound",
             PanelKind::TextToSpeech => "Text to Speech",
@@ -114,6 +114,12 @@ impl PanelKind {
     }
     pub fn from_name(s: &str) -> Option<PanelKind> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        if n == "colorgrade" || n == "lumetricolor" {
+            return Some(PanelKind::LumetriColor);
+        }
+        if n == "videoscopes" || n == "lumetriscopes" {
+            return Some(PanelKind::LumetriScopes);
+        }
         Self::ALL.iter().copied().find(|p| format!("{p:?}").to_ascii_lowercase() == n || p.title().to_ascii_lowercase().replace(' ', "") == n)
     }
     /// Window-menu shortcut (Premiere: Shift+1..9).
@@ -148,7 +154,8 @@ fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<Panel
     Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 10] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Script", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 11] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Script", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -160,6 +167,11 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
+    /// The layout in use when the app last closed (`name` is the workspace it belongs to): panel
+    /// changes made without Save Changes to this Workspace come back at the next launch, as in
+    /// Premiere (#2421). Reset to Saved Layout still returns to the saved layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<SavedWorkspace>,
 }
 
 /// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable
@@ -244,16 +256,19 @@ pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
 /// A workspace as saved: the user's saved version, else the built-in default. An entry that
 /// does not read or validate falls back to the default and stays in the file untouched.
 pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
-    let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
-        let workspace = if saved.workspace.is_null() {
-            Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
-        } else {
-            serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
-        };
-        workspace.validate().ok()?;
-        Some(workspace)
-    });
-    saved.unwrap_or_else(|| Workspace::new(workspace(name)))
+    prefs.saved.iter().find(|saved| saved.name == name).and_then(read_saved).unwrap_or_else(|| Workspace::new(workspace(name)))
+}
+
+/// A saved entry's workspace, or `None` when it does not read back or validate (an entry a newer
+/// version wrote, or a damaged file): the caller falls back.
+pub fn read_saved(saved: &SavedWorkspace) -> Option<Workspace> {
+    let workspace = if saved.workspace.is_null() {
+        Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
+    } else {
+        serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
+    };
+    workspace.validate().ok()?;
+    Some(workspace)
 }
 
 /// The saved layout of a workspace (see [`saved_workspace`]).
@@ -485,6 +500,21 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             hsplit(Ratio(0.67), tabs(&[Script], 0), vsplit(Ratio(0.58), tabs(&[Source, Program, Text], 0), tabs(&[Project, MediaBrowser], 0))),
             bottom_editing(),
         ),
+        // Vertical (9:16 editing, #1822): the Program monitor runs the full height on the right, beside
+        // the source and project panels and the timeline
+        "Vertical" => hsplit(
+            Ratio(0.78),
+            vsplit(
+                Ratio(0.5),
+                hsplit(
+                    Ratio(0.5),
+                    tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0),
+                    tabs(&[Project, MediaBrowser, Effects, Info, Markers, History], 0),
+                ),
+                bottom_editing(),
+            ),
+            tabs(&[Program], 0),
+        ),
         "All Panels" => vsplit(
             Ratio(0.5),
             hsplit(
@@ -696,12 +726,12 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         });
         paint_widget_focus(&painter, &resp, t);
         seq_rects.push((*id, tab_rect));
-        if resp.dragged() {
+        if resp.dragged_by(egui::PointerButton::Primary) {
             dragged = Some(*id);
         }
         // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
         let home = egui::Id::unique(("tab-seq-home", *id));
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             ui.data_mut(|d| d.insert_temp(home, i));
         }
         if resp.drag_stopped()
@@ -733,7 +763,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             let uy = strip.max.y - 2.0;
             painter.line_segment([pos2(label_x, uy), pos2(label_x + label_w, uy)], Stroke::new(1.0, t.tab_text_active));
         }
-        if (resp.clicked() || resp.drag_started()) && !closed && !is_active {
+        if (resp.clicked() || resp.drag_started_by(egui::PointerButton::Primary)) && !closed && !is_active {
             actions.push(SeqAction::Open(*id));
         }
         if resp.middle_clicked() {
@@ -808,6 +838,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vertical_workspace_gives_program_the_full_height() {
+        // #1822: Program alone on the right of the root split, spanning the window's height
+        let Some(Node::Split { axis: SplitAxis::Horizontal, second, .. }) = workspace("Vertical").root else { panic!("a side-by-side root split") };
+        assert!(matches!(*second, Node::Tabs { ref panels, .. } if panels == &[PanelKind::Program]), "{second:?}");
+    }
+
+    #[test]
     fn workspaces_contain_core_panels() {
         for w in WORKSPACES {
             let d = workspace(w);
@@ -851,7 +888,7 @@ mod tests {
             "floating": [{"root": {"Split": {"axis": "Vertical", "size": {"FixedFirst": 100.0},
                 "first": {"Tabs": {"panels": ["Info"], "active": 0}}, "second": {"Tabs": {"panels": ["Effects"], "active": 0}}}},
                 "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
-        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into() };
+        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into(), last: None };
         let loaded = saved_docking(&prefs, "Mine");
         assert!(loaded.is_docked(PanelKind::Tools) && loaded.is_visible(PanelKind::Info) && loaded.is_visible(PanelKind::Effects), "{loaded:?}");
         let root = loaded.root.as_ref().unwrap();
@@ -898,7 +935,7 @@ mod tests {
         assert_eq!(*size, SplitSize::FixedFirst(300.0));
         assert_eq!(saved_docking(&prefs, "Broken"), workspace("Broken"));
         let saved = SavedWorkspace { name: "Mine".into(), workspace: serde_json::to_value(Workspace::new(mine.clone())).unwrap(), ..Default::default() };
-        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into() };
+        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into(), last: None };
         let text = serde_json::to_string(&prefs).unwrap();
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
@@ -941,7 +978,7 @@ mod tests {
             saved: Vec<OldSaved>,
         }
         let read = |layout: &Layout| {
-            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into() };
+            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into(), last: None };
             let text = serde_json::to_string(&prefs).unwrap();
             assert_eq!(saved_docking(&serde_json::from_str(&text).unwrap(), "Mine"), *layout, "{text}");
             let old: OldPrefs = serde_json::from_str(&text).unwrap();
@@ -981,5 +1018,27 @@ mod tests {
             second: Box::new(effects.root),
         };
         assert_eq!(read(&split), (None, vec![]));
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::PanelKind;
+
+    #[test]
+    fn grading_panel_names_keep_old_aliases_and_serialization() {
+        for name in ["Lumetri Color", "Color Grade", "Color Grading", "LumetriColor"] {
+            assert_eq!(PanelKind::from_name(name), Some(PanelKind::LumetriColor));
+        }
+        for name in ["Lumetri Scopes", "Video Scopes", "LumetriScopes"] {
+            assert_eq!(PanelKind::from_name(name), Some(PanelKind::LumetriScopes));
+        }
+        assert_eq!(PanelKind::LumetriColor.title(), "Color Grading");
+        assert_eq!(PanelKind::LumetriScopes.title(), "Video Scopes");
+        for panel in [PanelKind::LumetriColor, PanelKind::LumetriScopes] {
+            let saved = serde_json::to_value(panel).unwrap();
+            let loaded: PanelKind = serde_json::from_value(saved).unwrap();
+            assert_eq!(loaded, panel);
+        }
     }
 }

@@ -5,7 +5,7 @@
 # string table or product UI was consulted or copied; add entries the same way. Commands use the
 # base verb ("Simpan Sebagai…", "Tambah Penanda"), messages address the user as "Anda", and menu
 # labels keep the title case of the English source. Product, format and technology names
-# (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
+# (FilmCraft, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
 # of the trade (render, preset, mixer, gain, ripple, roll, slip, slide, snap, scrub, offline) stay
 # as they are. Decimal fractions in descriptions use a comma (29,97 fps). This catalog has the same
 # entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English until
@@ -76,6 +76,10 @@
 	Captions and Graphics	Takarir dan Grafis
 	Captions…	Takarir…
 	Caribbean	Karibia
+	Center at Cut	Tengah di Titik Potong
+	Start at Cut	Mulai di Titik Potong
+	End at Cut	Akhir di Titik Potong
+	Custom Start	Awal Kustom
 	Center Horizontally	Tengahkan Secara Horizontal
 	Center Vertically	Tengahkan Secara Vertikal
 	Cerulean	Biru Langit
@@ -202,8 +206,8 @@
 	Refresh Changed Media	Segarkan Media yang Berubah
 	Linked Selection	Pilihan Tertaut
 	Lock Guides	Kunci Garis Bantu
-	Lumetri Color	Lumetri Color
-	Lumetri Scopes	Lumetri Scopes
+	Color Grading	Gradasi Warna
+	Video Scopes	Skop Video
 	Magnification	Pembesaran
 	Make Offline…	Jadikan Offline…
 	Make Subclip…	Buat Subklip…
@@ -455,9 +459,12 @@
 	Recover	Pulihkan
 	Not Now	Jangan Sekarang
 	Are you sure you want to discard your changes to '{file}'?	Yakin ingin membuang perubahan Anda pada '{file}'?
+	Replace File	Ganti Berkas
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” sudah ada di “{folder}”. Ingin menggantinya?
+	Replace	Ganti
 	Yes	Ya
 	No	Tidak
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas atau folder di mana saja di jendela, atau pilih sumber di bawah.
 	Browse files…	Telusuri berkas…
 	Movies, audio and stills from disk	Film, audio, dan gambar diam dari disk
 	Demo footage	Rekaman demo
@@ -895,7 +902,7 @@
 	Clip Volume	Volume Klip
 	(no clip selected)	(tidak ada klip yang dipilih)
 	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Tambahkan Lumetri Color ke klip
+	Add Color Grading to clip	Tambahkan Gradasi Warna ke klip
 	Input LUT	LUT Input
 	Color	Warna
 	Temperature	Suhu
@@ -996,7 +1003,6 @@
 	Eyedropper (pick a color from the Program monitor)	Pipet (ambil warna dari monitor Program)
 	Eyedropper: no picture to sample	Pipet: tidak ada gambar untuk diambil sampelnya
 	Add/Remove Keyframe	Tambah/Hapus Bingkai Kunci
-	Temporal Interpolation	Interpolasi Temporal
 	Linear	Linier
 	Bezier	Bezier
 	Auto Bezier	Bezier Otomatis
@@ -1045,6 +1051,7 @@
 	All Caps	Semua Kapital
 	Small Caps	Kapital Kecil
 	Underline	Garis Bawah
+	Strikethrough	Coret
 	OpenType	OpenType
 	Kerning	Kerning
 	Ligatures	Ligatur
@@ -1185,7 +1192,7 @@
 	New Bin	Bin Baru
 	Find	Cari
 	Automate to Sequence	Otomatiskan ke Sekuens
-	Select items to clear	Pilih item yang akan dihapus
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Pilih satu klip (atau klip yang ditautkan) di Linimasa, atau satu item di panel Proyek, untuk mengganti namanya
 	User Order	Urutan Pengguna
 	Descending	Menurun
 	Refresh Project	Segarkan Proyek
@@ -1674,7 +1681,7 @@
 	Elliptical	Eliptis
 	Emboss	Emboss
 	Enable HSL Secondary	Aktifkan HSL Sekunder
-	Enable Mercury Transmit	Aktifkan Mercury Transmit
+	Enable External Video Output	Aktifkan Output Video Eksternal
 	Enable ProRes hardware accelerated encoding, if available	Aktifkan enkode ProRes dengan akselerasi perangkat keras, jika tersedia
 	Enable clip and XMP metadata linking	Aktifkan penautan metadata klip dan XMP
 	Enable developer mode	Aktifkan mode pengembang
@@ -1742,7 +1749,7 @@
 	Focus Size	Ukuran Fokus
 	Fold Motion	Gerak Lipat
 	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Lumetri Color.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Untuk parameter manajemen warna, buka tab Pengaturan di panel Gradasi Warna.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Empat Skop (RGB, 8 bit)
 	Four Scopes (YUV, float, no clamp)	Empat Skop (YUV, float, tanpa pembatasan)
@@ -2011,7 +2018,7 @@
 	Luma Key	Key Luma
 	Luma Source	Sumber Luma
 	Luma and Chroma	Luma dan Kroma
-	Lumetri Presets	Preset Lumetri
+	Color Grading Presets	Preset Gradasi Warna
 	Luminance	Luminans
 	Luminance Threshold	Ambang Luminans
 	Luminosity	Luminositas
@@ -3126,7 +3133,6 @@
 	Left align text	Rata kiri teks
 	Looping GIF, 640×360 at 15 fps	GIF berulang, 640×360 pada 15 fps
 	Lower First	Bawah Dulu
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3460,6 +3466,7 @@
 	Clip Speed / Duration	Kecepatan / Durasi Klip
 	Speed:	Kecepatan:
 	Reverse Speed	Balik Kecepatan
+	Maintain Audio Pitch	Pertahankan Nada Audio
 	Ripple Edit, Shifting Trailing Clips	Edit Ripple, Geser Klip Berikutnya
 	About	Tentang
 	Contributors	Kontributor
@@ -3583,3 +3590,98 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Enter a positive duration within the supported speed range.	Masukkan durasi positif dalam rentang kecepatan yang didukung.
+	Show Video Names	Tampilkan Nama Video
+	Show Audio Names	Tampilkan Nama Audio
+	Video Names	Nama Video
+	Audio Names	Nama Audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Edit Penanda…
+	In:	Masuk:
+	Marker Color:	Warna Penanda:
+	Options:	Opsi:
+	Comment Marker	Penanda Komentar
+	Chapter Marker	Penanda Bab
+	Segmentation Marker	Penanda Segmentasi
+	Web Link	Tautan Web
+	Flash Cue Point	Titik Isyarat Flash
+	Invalid duration: {error}	Durasi tidak valid: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolasi Temporal
+	Select items to clear	Pilih item yang akan dihapus
+	A range marker needs a positive duration	Penanda rentang memerlukan durasi positif
+	Add Custom Color	Tambah Warna Kustom
+	Add and apply	Tambah dan terapkan
+	Add color	Tambah warna
+	Add custom color	Tambah warna kustom
+	Add custom color…	Tambah warna kustom…
+	Author	Pembuat
+	Chapter	Bab
+	Choose Color…	Pilih Warna…
+	Choose color with system picker	Pilih warna dengan pemilih sistem
+	Color picker	Pemilih warna
+	Color selected markers	Ubah warna penanda terpilih
+	Custom Color…	Warna Kustom…
+	Delete Marker	Hapus Penanda
+	Delete selected markers	Hapus penanda terpilih
+	Edit Custom Color	Edit Warna Kustom
+	Edit Marker	Edit Penanda
+	Edit color	Edit warna
+	Editing or removing a swatch leaves assigned colors unchanged.	Mengedit atau menghapus contoh warna tidak mengubah warna yang sudah diterapkan.
+	Enter six hex digits, for example FF80C0.	Masukkan enam digit heksadesimal, misalnya FF80C0.
+	Hex	Heksadesimal
+	Hex color	Warna heksadesimal
+	Manage Colors	Kelola Warna
+	Manage Colors…	Kelola Warna…
+	Marker owner is unavailable	Pemilik penanda tidak tersedia
+	No markers	Tidak ada penanda
+	No matching markers	Tidak ada penanda yang cocok
+	No saved colors	Tidak ada warna tersimpan
+	No sequence open	Tidak ada sekuens yang terbuka
+	No source clip open	Tidak ada klip sumber yang terbuka
+	Notes	Catatan
+	Project Colors	Warna Proyek
+	Range marker	Penanda rentang
+	Remove saved color	Hapus warna tersimpan
+	Save color	Simpan warna
+	Search markers	Cari penanda
+	Search name, notes, author	Cari nama, catatan, pembuat
+	Select all	Pilih semua
+	Select all visible markers	Pilih semua penanda yang terlihat
+	Sequence: {name}	Sekuens: {name}
+	Source: {name}	Sumber: {name}
+	Source: {name} (shared source markers)	Sumber: {name} (penanda sumber bersama)
+	System color picker unavailable: {error}	Pemilih warna sistem tidak tersedia: {error}
+	Time is outside the supported range	Waktu di luar rentang yang didukung
+	{count} selected	{count} dipilih
+	Remove Custom Color	Hapus Warna Kustom
+	Edit Markers	Edit Penanda
+	Delete Markers	Hapus Penanda
+	Marker changed or was removed. Reopen it to continue.	Penanda telah diubah atau dihapus. Buka kembali untuk melanjutkan.
+	URL	URL
+	Open Link	Buka Tautan
+	Opens this address in your web browser	Membuka alamat ini di peramban web
+	Enter a valid HTTP or HTTPS URL without credentials	Masukkan URL HTTP atau HTTPS yang valid tanpa kredensial
+	Previous	Sebelumnya
+	Next	Berikutnya
+	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Warna 10-bit
+	All Intra	Semua intra
+	Every frame a keyframe (edit-friendly, larger files)	Setiap bingkai adalah bingkai kunci (mudah disunting, file lebih besar)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) pada ukuran sekuens, kualitas konstan CRF 16, AAC 320 kbps; master 10-bit
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, setiap bingkai adalah bingkai kunci), CRF 12, AAC 320 kbps; intermediate yang mudah disunting
+	List Color Grading Presets	Daftar Preset Gradasi Warna
+	Apply Color Grading Preset	Terapkan Preset Gradasi Warna
+	Color Grading Preset Thumbnails	Gambar Mini Preset Gradasi Warna
+	Toggle Color Grading Section	Aktifkan/Nonaktifkan Bagian Gradasi Warna
+	Color Grading Section	Bagian Gradasi Warna
+	Read Video Scopes	Baca Skop Video

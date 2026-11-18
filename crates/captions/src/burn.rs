@@ -1,7 +1,7 @@
 //! Caption layout and burn-in.
 //!
 //! [`overlay`] lays out the caption showing on a track at a time with the track's
-//! [`CaptionStyle`] (size relative to a 1080-line frame, colour, background box, outline,
+//! [`CaptionStyle`] (font style, size relative to a 1080-line frame, colour, background box, outline,
 //! alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
 //! and rasterises it into a small premultiplied linear-light RGBA [`Overlay`] positioned in the
 //! frame. Renderers composite overlays over the finished picture.
@@ -55,10 +55,12 @@ impl Overlay {
     }
 }
 
-/// The caption face: the track's font family (Inter when empty or not installed) in SemiBold at `px`.
-fn caption_style(font: &str, px: f32) -> TextStyle {
+/// The caption face: the track's font family (Inter when empty or not installed) in the track's
+/// font style (SemiBold when empty) at `px`.
+fn caption_style(font: &str, font_style: &str, px: f32) -> TextStyle {
     let family = if font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { font.trim() };
-    TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() }
+    let style = if font_style.trim().is_empty() { "SemiBold" } else { font_style.trim() };
+    TextStyle { family: family.into(), style: style.into(), size: px, ..Default::default() }
 }
 
 fn lin(c: [u8; 4]) -> [f32; 4] {
@@ -118,7 +120,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let scale = h as f32 / 1080.0;
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
     let max_w = w as f32 * 0.9;
-    let ts = caption_style(&style.font, px);
+    let ts = caption_style(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
     for l in c.plain_lines() {
@@ -216,8 +218,13 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
 }
 
-/// Max-filter a coverage mask with a disc of radius `r`.
-fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+/// Upper bound on outline work for one caption: covered source pixels times disc offsets.
+/// Typical captions stay far below it (1080p text with a 3 px outline is a few million); a
+/// huge outline over a frame-sized block of text gets a thinner outline instead of stalling.
+const MAX_OUTLINE_WORK: usize = 1 << 28;
+
+/// The disc of radius `r`: `(dx, dy, weight)` with anti-aliased weights at the rim.
+fn disc(r: f32) -> Vec<(i32, i32, f32)> {
     let ri = r.ceil() as i32;
     let mut offs = Vec::new();
     for dy in -ri..=ri {
@@ -228,17 +235,36 @@ fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
             }
         }
     }
+    offs
+}
+
+/// Max-filter a coverage mask with a disc of radius `r`.
+///
+/// Only covered pixels contribute (the disc is symmetric, so spreading each covered pixel over
+/// it gives the same maximum as gathering it at every output pixel), and the radius shrinks
+/// until covered pixels times disc offsets fit [`MAX_OUTLINE_WORK`].
+fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+    let covered = m.iter().filter(|&&v| v > 0.0).count();
+    let mut r = r;
+    let mut offs = disc(r);
+    while r > 0.0 && covered.saturating_mul(offs.len()) > MAX_OUTLINE_WORK {
+        r = (r - 1.0).max(0.0);
+        offs = disc(r);
+    }
     let mut out = vec![0.0f32; w * h];
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let mut v = 0.0f32;
+    for sy in 0..h as i32 {
+        for sx in 0..w as i32 {
+            let v = m[sy as usize * w + sx as usize];
+            if v <= 0.0 {
+                continue;
+            }
             for &(dx, dy, wgt) in &offs {
-                let (sx, sy) = (x + dx, y + dy);
-                if sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 {
-                    v = v.max(m[sy as usize * w + sx as usize] * wgt);
+                let (x, y) = (sx + dx, sy + dy);
+                if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
+                    let o = &mut out[y as usize * w + x as usize];
+                    *o = o.max(v * wgt);
                 }
             }
-            out[y as usize * w + x as usize] = v;
         }
     }
     out
@@ -349,6 +375,61 @@ mod tests {
         assert!(o.w <= 640 && o.h <= 360, "{}x{}", o.w, o.h);
     }
 
+    /// The disc max-filter `dilate` used to be: every output pixel gathers every disc offset.
+    fn reference_dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+        let offs = disc(r);
+        let mut out = vec![0.0f32; w * h];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let mut v = 0.0f32;
+                for &(dx, dy, wgt) in &offs {
+                    let (sx, sy) = (x + dx, y + dy);
+                    if sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 {
+                        v = v.max(m[sy as usize * w + sx as usize] * wgt);
+                    }
+                }
+                out[y as usize * w + x as usize] = v;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn dilate_matches_the_gathering_max_filter() {
+        let (w, h) = (37, 23);
+        let m: Vec<f32> = (0..w * h).map(|i| if (i * 7919) % 11 < 3 { ((i % 5) as f32 + 1.0) / 5.0 } else { 0.0 }).collect();
+        for r in [0.5, 1.0, 2.3, 4.0, 9.7] {
+            assert_eq!(dilate(&m, w, h, r), reference_dilate(&m, w, h, r), "radius {r}");
+        }
+    }
+
+    #[test]
+    fn outline_work_is_bounded() {
+        // A fully covered 4K-sized mask with the largest radius would be ~10^11 disc visits.
+        let (w, h) = (3840, 2160);
+        let m = vec![1.0f32; w * h];
+        let started = std::time::Instant::now();
+        let out = dilate(&m, w, h, MAX_OUTLINE_RADIUS);
+        assert!(out.iter().all(|&v| v == 1.0));
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn outline_work_reduces_radius_for_a_mixed_mask() {
+        // 55,536 covered pixels times the r=64 disc exceeds the work cap, so the radius shrinks
+        // to roughly 39: the hole's center (50 px from its edge) stays clear, its rim does not.
+        let (w, h) = (256, 256);
+        let mut m = vec![1.0f32; w * h];
+        for y in 78..178 {
+            for x in 78..178 {
+                m[y * w + x] = 0.0;
+            }
+        }
+        let out = dilate(&m, w, h, MAX_OUTLINE_RADIUS);
+        assert_eq!(out[128 * w + 128], 0.0);
+        assert!(out[128 * w + 108] > 0.0);
+    }
+
     #[test]
     fn outline_draws_around_text() {
         let st = CaptionStyle { background: false, outline: 4.0, outline_color: [255, 0, 0, 255], ..Default::default() };
@@ -375,6 +456,165 @@ mod tests {
             let st = CaptionStyle { font: font.into(), ..Default::default() };
             assert_eq!(render_caption(&cap("Hello"), &st, 1280, 720), Some(inter.clone()), "font {font:?}");
         }
+    }
+
+    /// `render_caption` as it was before the caption box settings (#3354-#3358), kept verbatim
+    /// (with the SemiBold face inlined) so every new style field can prove its default leaves
+    /// existing projects pixel-identical.
+    #[allow(clippy::needless_range_loop)]
+    fn reference_render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let scale = h as f32 / 1080.0;
+        let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
+        let max_w = w as f32 * 0.9;
+        let family = if style.font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { style.font.trim() };
+        let ts = TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() };
+        let mut lines: Vec<String> = Vec::new();
+        // (speaker names are metadata; like Premiere, they are not burned in)
+        for l in c.plain_lines() {
+            lines.extend(wrap(l.trim(), &ts, max_w));
+        }
+        lines.retain(|l| !l.is_empty());
+        if lines.is_empty() {
+            return None;
+        }
+        let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
+        let (asc, desc) = (vm.ascent, vm.descent);
+        let lh = px * style.line_spacing.clamp(0.8, 4.0);
+        let pad_x = (px * 0.3).round();
+        let block_h = lh * lines.len() as f32;
+        let (line_override, align_override) = vtt_overrides(&c.settings);
+        let align = align_override.unwrap_or(style.align);
+        let margin = style.margin.clamp(0.0, 0.45) * h as f32;
+        let top = match (line_override, style.anchor) {
+            (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
+            (None, CaptionAnchor::Top) => margin,
+            (None, CaptionAnchor::Middle) => (h as f32 - block_h) / 2.0,
+            (None, CaptionAnchor::Bottom) => h as f32 - margin - block_h,
+        }
+        .max(0.0)
+        .round();
+        let side = w as f32 * 0.05;
+        let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
+        let xs: Vec<f32> = widths
+            .iter()
+            .map(|&lw| match align {
+                CaptionAlign::Left => side + pad_x,
+                CaptionAlign::Right => w as f32 - side - pad_x - lw,
+                CaptionAlign::Center => (w as f32 - lw) / 2.0,
+            })
+            .collect();
+        let outline = (style.outline * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+        let grow = outline.ceil() + 1.0;
+        let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
+        let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
+        let by0 = (top - grow).floor();
+        let by1 = (top + block_h + grow).ceil();
+        // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
+        // only the visible intersection; `draw` receives the original coordinates and clips into it.
+        let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
+        let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
+        if right <= left || bottom <= top {
+            return None;
+        }
+        let (ox, oy) = (left as i32, top as i32);
+        let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+        if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
+            return None;
+        }
+        let mut cover = vec![0.0f32; ow * oh];
+        let mut bg = vec![0.0f32; ow * oh];
+        for (i, line) in lines.iter().enumerate() {
+            let lt = top + lh * i as f32;
+            if style.background && style.background_color[3] > 0 {
+                let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
+                let (y0, y1) = (lt, lt + lh);
+                for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
+                    let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
+                    for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
+                        let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+                        let j = (y - oy) as usize * ow + (x - ox) as usize;
+                        bg[j] = (bg[j] + fx * fy).min(1.0);
+                    }
+                }
+            }
+            let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
+            let l = layout(line, &ts, &ParagraphStyle::default());
+            let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
+            render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
+            cover = m.a;
+        }
+        let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
+        let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+        let mut out = vec![0.0f32; ow * oh * 4];
+        for j in 0..ow * oh {
+            let mut p = [0.0f32; 4];
+            let over = |p: &mut [f32; 4], c: [f32; 4], a: f32| {
+                if a > 0.0 {
+                    for k in 0..4 {
+                        p[k] = c[k] * a + p[k] * (1.0 - c[3] * a);
+                    }
+                }
+            };
+            over(&mut p, bc, bg[j]);
+            if !stroke.is_empty() {
+                over(&mut p, oc, stroke[j]);
+            }
+            over(&mut p, tc, cover[j]);
+            out[j * 4..j * 4 + 4].copy_from_slice(&p);
+        }
+        Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
+    }
+
+    /// Styles and captions existing projects use, at the frame sizes they are drawn at.
+    fn reference_cases() -> Vec<(Caption, CaptionStyle, usize, usize)> {
+        let (long, unbroken) = ("word ".repeat(40), "x".repeat(300));
+        let texts = ["Hello world", "Two\nlines here", long.as_str(), unbroken.as_str(), "<i>Styled</i> &amp; done"];
+        let styles = [
+            CaptionStyle::default(),
+            CaptionStyle { anchor: CaptionAnchor::Top, align: CaptionAlign::Left, size: 40.0, ..Default::default() },
+            CaptionStyle { anchor: CaptionAnchor::Middle, align: CaptionAlign::Right, line_spacing: 1.6, ..Default::default() },
+            CaptionStyle { outline: 3.0, background_color: [20, 40, 200, 128], margin: 0.31, ..Default::default() },
+            CaptionStyle { background: false, font: "Noto Serif".into(), ..Default::default() },
+            CaptionStyle { size: 200.0, margin: 0.0, anchor: CaptionAnchor::Top, ..Default::default() },
+        ];
+        let mut out = Vec::new();
+        for (w, h) in [(1920, 1080), (1280, 720), (1080, 1920), (640, 360)] {
+            for st in &styles {
+                for t in texts {
+                    let mut c = cap(t);
+                    out.push((c.clone(), st.clone(), w, h));
+                    c.settings = "line:30% align:end".into();
+                    out.push((c, st.clone(), w, h));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn default_style_renders_like_the_reference() {
+        for (c, st, w, h) in reference_cases() {
+            assert_eq!(render_caption(&c, &st, w, h), reference_render_caption(&c, &st, w, h), "{:?} {w}x{h} {st:?}", c.text);
+        }
+    }
+
+    #[test]
+    fn font_style_is_used() {
+        // two styles of one family differ; an empty style is the default SemiBold
+        let semi = render_caption(&cap("Hello world"), &CaptionStyle::default(), 1920, 1080).unwrap();
+        for style in ["Regular", "Bold"] {
+            let st = CaptionStyle { font_style: style.into(), ..Default::default() };
+            let o = render_caption(&cap("Hello world"), &st, 1920, 1080).unwrap();
+            assert_ne!((o.w, &o.px), (semi.w, &semi.px), "{style} renders like SemiBold");
+        }
+        let empty = CaptionStyle { font_style: " ".into(), ..Default::default() };
+        assert_eq!(render_caption(&cap("Hello world"), &empty, 1920, 1080), Some(semi.clone()));
+        // a style the family lacks falls back to the nearest weight, like graphic text
+        let missing = CaptionStyle { font_style: "No Such Style".into(), ..Default::default() };
+        assert!(render_caption(&cap("Hello world"), &missing, 1920, 1080).is_some());
     }
 
     #[test]

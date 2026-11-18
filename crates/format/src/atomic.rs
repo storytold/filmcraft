@@ -7,11 +7,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Most bytes of the target's file name kept in a temp name; the rest of the 255-byte limit is
+/// left for the leading dot, pid, counter and `.tmp`.
+const MAX_STEM_BYTES: usize = 200;
+
 /// The temp file a save of `path` goes through (same directory, so the rename never crosses file
 /// systems). Hidden, and unique per process and call.
 fn temp_path(path: &Path) -> PathBuf {
     let dir = parent_dir(path);
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+    // Keep the whole temp name under the 255-byte file name limit, cutting at a char boundary.
+    let mut end = name.len().min(MAX_STEM_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let name = &name[..end];
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     dir.join(format!(".{name}.{}-{n}.tmp", std::process::id()))
 }
@@ -103,6 +113,18 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn long_file_name_still_saves() {
+        let d = tmpdir("longname");
+        let p = d.join(format!("{}.fcproj", "a".repeat(245)));
+        fs::write(&p, b"old").unwrap();
+        atomic_write(&p, b"new").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"new");
+        let multi = d.join(format!("{}.fcproj", "é".repeat(120)));
+        assert!(temp_path(&multi).file_name().unwrap().len() <= 255);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

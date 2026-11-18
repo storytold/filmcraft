@@ -36,6 +36,9 @@ pub enum NormalizeError {
     /// The script exceeds the 1 MiB input limit.
     #[error("the script exceeds the 1 MiB normalization limit")]
     TooLong,
+    /// The script, with its respellings and dictionary pronunciations, expands past the phoneme budget.
+    #[error("the script expands to more than 16 MiB of phonemes")]
+    TooManyPhonemes,
 }
 
 /// Maximum accepted input size (1 MiB).
@@ -87,7 +90,9 @@ pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
                     out.push(Token::Punct(c));
                 }
             },
-            '-' if peek(rest, 1).is_some_and(|c| c.is_ascii_digit()) => {
+            '-' if peek(rest, 1).is_some_and(|c| c.is_ascii_digit())
+                && text.get(..pos).and_then(|before| before.chars().next_back()).is_none_or(starts_negative_number) =>
+            {
                 pos += 1;
                 if let Some((tokens, used)) = parse_number_cluster(rest.get(1..).unwrap_or(""), lang) {
                     pos += used;
@@ -196,6 +201,13 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || c == '\'' || c == '’'
 }
 
+/// Whether a '-' right after `prev` and before a digit is a negative sign. Right after a
+/// letter or digit ("COVID-19", "F-16") the hyphen joins a name to a number; anywhere else
+/// (after whitespace, brackets, '=', quotes, commas, colons) it is a minus.
+fn starts_negative_number(prev: char) -> bool {
+    !prev.is_alphanumeric()
+}
+
 /// The char at byte offset `i` in `s`, if `i` is a char boundary inside `s`.
 fn peek(s: &str, i: usize) -> Option<char> {
     s.get(i..).and_then(|r| r.chars().next())
@@ -297,15 +309,45 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
         return Some((words, used + skip));
     }
     let (unit, sub) = money_units(symbol, lang);
-    let mut words = english_cardinal(value);
-    push_unit(&mut words, unit, value == 1);
+    if let Some((scale, scale_len)) = scale_word_after(rest.get(skip + used..)?) {
+        // "$2.5 billion" is 2.5 billion dollars, not two dollars fifty.
+        let mut words = english_cardinal(value);
+        if had_minor {
+            let amount = rest.get(skip..skip + used)?;
+            let frac = amount.split_once('.').map_or("", |(_, f)| f);
+            words.push("point".into());
+            words.extend(digit_run_as_words(frac).0);
+        }
+        words.push(scale.into());
+        words.push(unit.into());
+        return Some((words, skip + used + scale_len));
+    }
+    let sub_unit_only = value == 0 && had_minor && minor > 0;
+    let mut words = Vec::new();
+    if !sub_unit_only {
+        words = english_cardinal(value);
+        push_unit(&mut words, unit, value == 1);
+    }
     if had_minor && minor > 0 {
-        words.push("and".into());
+        if !sub_unit_only {
+            words.push("and".into());
+        }
         let mut cents = english_cardinal(u64::from(minor));
         push_unit(&mut cents, sub, minor == 1);
         words.extend(cents);
     }
     Some((words, used + skip))
+}
+
+/// A scale word (`thousand`, `million`, `billion`, `trillion`, any case) after optional
+/// whitespace, as a whole word. Returns it lowercased and the bytes consumed.
+fn scale_word_after(after: &str) -> Option<(&'static str, usize)> {
+    let word_start = after.len() - after.trim_start().len();
+    let tail = after.get(word_start..)?;
+    let word_len = tail.find(|c: char| !c.is_alphabetic()).unwrap_or(tail.len());
+    let word = tail.get(..word_len)?.to_lowercase();
+    let scale = ["thousand", "million", "billion", "trillion"].into_iter().find(|s| *s == word)?;
+    Some((scale, word_start + word_len))
 }
 
 fn money_units(symbol: char, lang: Lang) -> (&'static str, &'static str) {
@@ -348,11 +390,12 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
                 if frac_digits.len() < 9 {
                     frac_digits.push(ch);
                 }
-            } else if int_digits.len() > MAX_CARDINAL_DIGITS {
-                break;
-            } else {
+            } else if int_digits.len() <= MAX_CARDINAL_DIGITS {
                 int_digits.push(ch);
             }
+            // Past the cap the digit is not collected, but the run is still consumed: `used`
+            // must cover all of it, or the caller reads only the collected digits and speaks
+            // the rest of the amount as a separate number.
             used = i + 1;
         } else if ch == ',' && !int_digits.is_empty() && !after_decimal {
             if !grouping_followed_by_3(rest, i) {
@@ -548,8 +591,8 @@ fn english_month(month: u64) -> Option<&'static str> {
 
 const MAX_FRACTION_DIGITS: usize = 3;
 
-/// `1/2` → "one half"; other small denominators read "N ordinal(s)", anything
-/// bigger reads "N over M".
+/// `1/2` → "one half"; other small denominators read "N ordinal(s)", 1 and anything
+/// bigger read "N over M".
 fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
     // Operands of up to three digits: a longer run (a year, as in the `7/2026` left after an
     // impossible date's `13/`) is not a fraction.
@@ -562,8 +605,8 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
         return None;
     }
     let mut words = english_cardinal(n);
-    if d > 12 {
-        // "7/32" → "seven over thirty-two".
+    if d > 12 || d == 1 {
+        // "7/32" → "seven over thirty-two"; "5/1" → "five over one".
         words.push("over".into());
         words.extend(english_cardinal(d));
         return Some((words.into_iter().map(Token::Word).collect(), d_end));
@@ -587,16 +630,11 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
 fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     let mut digits = String::new();
     let mut used = 0usize;
-    let mut overflowed = false;
     let mut grouped = false;
     for (i, ch) in rest.char_indices() {
         if ch.is_ascii_digit() {
             digits.push(ch);
             used = i + 1;
-            if digits.len() > 19 {
-                overflowed = true;
-                break;
-            }
         } else if ch == ',' && !digits.is_empty() {
             if grouping_followed_by_3(rest, i) {
                 // Grouping is visual only; drop the mark.
@@ -612,7 +650,7 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if digits.is_empty() {
         return None;
     }
-    if overflowed || digits.len() > MAX_CARDINAL_DIGITS {
+    if digits.len() > MAX_CARDINAL_DIGITS {
         let words: Vec<Token> = digits.chars().map(|c| Token::Word(english_digit_word(c).into())).collect();
         return Some((words, used));
     }
@@ -628,7 +666,29 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if !grouped && digits.len() == 4 && (1100..=2099).contains(&value) && year_is_standalone(rest, used) {
         return Some((year_words(value, lang), used));
     }
+    // A decade such as "1990s" reads as a plural year: "nineteen nineties".
+    if !grouped
+        && digits.len() == 4
+        && (1100..=2099).contains(&value)
+        && value.is_multiple_of(10)
+        && matches!(peek(rest, used), Some('s'))
+        && !peek(rest, used + 1).is_some_and(char::is_alphanumeric)
+    {
+        let mut words = year_words(value, lang);
+        if let Some(Token::Word(last)) = words.last_mut() {
+            *last = pluralize_decade(last);
+        }
+        return Some((words, used + 1));
+    }
     Some((english_cardinal(value).into_iter().map(Token::Word).collect(), used))
+}
+
+/// Plural of the last word of a round year: ninety → nineties, hundred → hundreds.
+fn pluralize_decade(word: &str) -> String {
+    match word.strip_suffix('y') {
+        Some(stem) => format!("{stem}ies"),
+        None => format!("{word}s"),
+    }
 }
 
 fn has_leading_zero_str(digits: &str) -> bool {

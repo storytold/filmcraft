@@ -116,6 +116,7 @@ const LAYOUT_PARAMS: &[&str] = &[
     "faux_italic",
     "caps",
     "underline",
+    "strikethrough",
     "box_width",
     "box_height",
     "vertical",
@@ -245,6 +246,7 @@ fn layout_fingerprint(effect: &EffectInstance, t: Tick) -> u64 {
             hash_option(&mut h, run.style.faux_bold, |h, v| hash_bytes(h, &[u8::from(v)]));
             hash_option(&mut h, run.style.faux_italic, |h, v| hash_bytes(h, &[u8::from(v)]));
             hash_option(&mut h, run.style.underline, |h, v| hash_bytes(h, &[u8::from(v)]));
+            hash_option(&mut h, run.style.strikethrough, |h, v| hash_bytes(h, &[u8::from(v)]));
             hash_option(&mut h, run.style.tracking, hash_f32);
             hash_option(&mut h, run.style.baseline_shift, hash_f32);
             hash_option(&mut h, run.style.caps, |h, v| hash_bytes(h, &u64::from(v).to_le_bytes()));

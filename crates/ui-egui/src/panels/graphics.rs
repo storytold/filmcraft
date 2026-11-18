@@ -227,6 +227,7 @@ mod ime_byte_delete_tests {
             faux_italic: false,
             caps: 0,
             underline: false,
+            strikethrough: false,
             box_width: 0.0,
             box_height: 0.0,
             vertical: false,

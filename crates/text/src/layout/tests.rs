@@ -189,6 +189,50 @@ fn vertical_underline_runs_down_the_column() {
 }
 
 #[test]
+fn strikethrough_crosses_the_glyphs() {
+    let s = TextStyle { strikethrough: true, ..st(60.0) };
+    let l = layout("Hx", &s, &ParagraphStyle::default());
+    assert_eq!(l.underlines.len(), 1);
+    let [x0, y0, x1, y1] = l.underlines[0];
+    let line = &l.lines[0];
+    assert!((x0 - line.x).abs() < 0.01 && (x1 - line.x - line.width).abs() < 0.01, "spans the line");
+    // above the baseline (y down) and below the x-height
+    let xh = fonts::face(fonts::resolve(&s.family, &s.style).face).metrics(60.0).x_height;
+    assert!(y1 < line.baseline && y0 > line.baseline - xh, "{y0} {y1} baseline {} x-height {xh}", line.baseline);
+    assert!(y1 - y0 > 0.5, "has a thickness");
+    // with underline: two strips, the underline below the baseline
+    let both = layout("Hx", &TextStyle { underline: true, ..s.clone() }, &ParagraphStyle::default());
+    assert_eq!(both.underlines.len(), 2);
+    assert!(both.underlines[0][1] > line.baseline && both.underlines[1][3] < line.baseline);
+    // vertical: a tall strip through the middle of the cell
+    let v = layout("A", &s, &ParagraphStyle { vertical: true, ..Default::default() });
+    let [vx0, vy0, vx1, vy1] = v.underlines[0];
+    let vl = &v.lines[0];
+    assert!(vy1 - vy0 > vx1 - vx0, "vertical strikethrough is a tall strip");
+    assert!(((vx0 + vx1) / 2.0 - (vl.x + vl.width / 2.0)).abs() < 0.5, "centred on the cell");
+}
+
+#[test]
+fn style_runs_strike_through_only_their_range() {
+    let base = st(40.0);
+    let runs = [StyleRun { range: 3..5, style: TextStyle { strikethrough: true, ..base.clone() } }];
+    let l = layout_rich("ab cd ef", &base, &runs, &ParagraphStyle::default());
+    assert_eq!(l.underlines.len(), 1, "only the struck-through run");
+    assert_eq!(l.underline_runs, vec![1]);
+    let u = l.underlines[0];
+    assert!(u[0] >= l.caret(3).0 - 0.01 && u[2] <= l.caret(5).0 + 0.01, "{u:?}");
+    assert!(u[3] < l.lines[0].baseline, "above the baseline");
+    let v = layout_rich(
+        "ab",
+        &base,
+        &[StyleRun { range: 0..1, style: TextStyle { strikethrough: true, ..base.clone() } }],
+        &ParagraphStyle { vertical: true, ..Default::default() },
+    );
+    assert_eq!(v.underlines.len(), 1);
+    assert_eq!(v.underline_runs, vec![1]);
+}
+
+#[test]
 fn vertical_cells_keep_combining_marks_with_their_base() {
     let style = st(32.0);
     let para = ParagraphStyle { vertical: true, ..Default::default() };

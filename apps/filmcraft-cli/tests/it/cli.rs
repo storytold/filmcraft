@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 use serde_json::{Value, json};
 
 fn cli(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).output().expect("spawn filmcraft-cli")
+    crate::filmcraft_command().args(args).output().expect("spawn filmcraft-cli")
 }
 
 fn json_out(o: &Output) -> Value {
@@ -97,22 +97,173 @@ fn exec_inspect_and_describe() {
     assert_eq!(bad.status.code(), Some(1));
 }
 
+/// A new folder only this user can enter, never one that already existed in the shared temp dir.
+fn private_dir(prefix: &str) -> std::path::PathBuf {
+    let mut b = tempfile::Builder::new();
+    b.prefix(prefix);
+    // tempfile creates with 0777 before the umask, so ask for owner-only
+    #[cfg(unix)]
+    b.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    b.tempdir().unwrap().keep()
+}
+
+/// A project in a new folder of its own.
+fn lock_test_project(tag: &str) -> (std::path::PathBuf, String) {
+    let dir = private_dir(&format!("fc-cli-lock-{tag}"));
+    let proj = dir.join("p.fcproj").to_str().unwrap().to_string();
+    json_out(&cli(&["--demo", "--save-as", &proj, "exec", "file.newBin", "name=start"]));
+    (dir, proj)
+}
+
+/// The lock of the project file `name`, held by this process.
+fn hold_lock(dir: &std::path::Path, name: &str) -> std::fs::File {
+    let lock = std::fs::File::options().create(true).truncate(false).read(true).write(true).open(dir.join(format!(".{name}.lock"))).unwrap();
+    lock.lock().unwrap();
+    lock
+}
+
+/// Start a run that has to wait for a lock this process holds; returns once it says it is waiting.
+fn start_waiting_run(args: &[&str]) -> std::process::Child {
+    use std::io::BufRead;
+    let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
+    assert!(line.contains("waiting for another run saving"), "{args:?}: {line}");
+    assert!(child.try_wait().unwrap().is_none(), "{args:?} did not wait");
+    child
+}
+
+#[test]
+fn parallel_saves_keep_every_edit() {
+    let (dir, proj) = lock_test_project("parallel");
+    let names = |writer: usize| (0..300).map(move |i| format!("edit-{writer}-{i}"));
+    let mut writers: Vec<_> = (0..4)
+        .map(|_| {
+            crate::filmcraft_command()
+                .args(["--project", &proj, "--save", "run", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    // Each writer reads its whole script before it opens the project, so closing the stdins together
+    // starts all the edits at once, and long scripts keep each read-to-save span over the others.
+    for (n, writer) in writers.iter_mut().enumerate() {
+        let script: String = names(n).map(|name| format!("{}\n", json!({"id": "file.newBin", "params": {"name": name}}))).collect();
+        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    }
+    for mut writer in writers {
+        assert!(writer.wait().unwrap().success());
+    }
+    let tree = json_out(&cli(&["--project", &proj, "inspect", "project"])).to_string();
+    let lost: Vec<String> = (0..4).flat_map(names).filter(|name| !tree.contains(&format!("\"{name}\""))).collect();
+    assert!(lost.is_empty(), "lost {} edits: {lost:?}", lost.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_save_in_place_waits_for_the_lock_then_edits_the_latest_project() {
+    let (dir, proj) = lock_test_project("wait");
+    for save in [&["--save"][..], &["--save-as", proj.as_str()]] {
+        let held = hold_lock(&dir, "p.fcproj");
+        let before = std::fs::read(&proj).unwrap();
+        let name = format!("name=waited-{}", save.len());
+        let args = [&["--project", proj.as_str()][..], save, &["exec", "file.newBin", &name]].concat();
+        let mut child = start_waiting_run(&args);
+        assert_eq!(std::fs::read(&proj).unwrap(), before, "{save:?} wrote while another run held the lock");
+        // an edit made meanwhile by the holder must survive: the waiter reads only after the lock is free
+        json_out(&cli(&["--project", &proj, "--save-as", &format!("{proj}.tmp"), "exec", "file.newBin", &format!("name=held-{}", save.len())]));
+        std::fs::rename(format!("{proj}.tmp"), &proj).unwrap();
+        drop(held);
+        assert!(child.wait().unwrap().success(), "{save:?}");
+        let tree = json_out(&cli(&["--project", &proj, "inspect", "project"])).to_string();
+        for want in [format!("waited-{}", save.len()), format!("held-{}", save.len())] {
+            assert!(tree.contains(&want), "{save:?} lost {want}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A save through a symlink replaces the link. The runs before and after that must share one lock,
+/// or a run still waiting on the old one could overwrite a later run's save.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_project_keeps_its_lock_after_a_save() {
+    let (dir, proj) = lock_test_project("symlink");
+    let link = dir.join("link.fcproj");
+    std::os::unix::fs::symlink(&proj, &link).unwrap();
+    for name in ["name=first", "name=second"] {
+        let held = hold_lock(&dir, "link.fcproj");
+        let mut child = start_waiting_run(&["--project", link.to_str().unwrap(), "--save", "exec", "file.newBin", name]);
+        drop(held);
+        assert!(child.wait().unwrap().success(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn runs_that_do_not_save_in_place_ignore_the_lock() {
+    let (dir, proj) = lock_test_project("ignore");
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    let _held = hold_lock(&dir, "p.fcproj");
+    let cases: [&[&str]; 3] = [
+        &["--project", &proj, "inspect", "project"],
+        &["--project", &proj, "exec", "file.newBin", "name=copy-only"],
+        &["--project", &proj, "--save-as", &other, "exec", "file.newBin", "name=copy-only"],
+    ];
+    for args in cases {
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("{args:?} is waiting for a lock it doesn't need");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(status.success(), "{args:?}");
+    }
+    assert!(!std::fs::read_to_string(&proj).unwrap().contains("\"copy-only\""));
+    assert!(std::fs::read_to_string(&other).unwrap().contains("\"copy-only\""));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
+    let (dir, _) = lock_test_project("missing");
+    let gone = dir.join("gone.fcproj").to_str().unwrap().to_string();
+    let plain = cli(&["--project", &gone, "inspect", "project"]);
+    assert_eq!(plain.status.code(), Some(1));
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    // saving in place, saving elsewhere, or not saving: the error is the one opening gives
+    for save in [&["--save"][..], &["--save-as", gone.as_str()], &["--save-as", other.as_str()], &[]] {
+        let args = [&["--project", gone.as_str()][..], save, &["exec", "file.newBin", "name=copy-only"]].concat();
+        let o = cli(&args);
+        assert_eq!(o.status.code(), Some(1), "{save:?}");
+        assert_eq!(String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&plain.stderr), "{save:?}");
+    }
+    assert!(!dir.join(".gone.fcproj.lock").exists());
+    assert!(!dir.join("other.fcproj").exists());
+    // --project with --bridge stays a usage error.
+    assert_eq!(cli(&["--bridge", "127.0.0.1:1", "--project", &gone, "--save", "exec", "file.newBin", "name=copy-only"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn exec_save_as_then_reopen() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli");
     let proj = dir.join("p.fcproj");
     let p = proj.to_str().unwrap();
     json_out(&cli(&["--demo", "exec", "file.newBin", "name=CLI Selects", "--save-as", p]));
     let tree = json_out(&cli(&["--project", p, "inspect", "project"]));
     assert!(tree.to_string().contains("CLI Selects"), "{tree}");
     // `run` from stdin, editing and saving back in place.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-        .args(["--project", p, "--save", "run", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::filmcraft_command().args(["--project", p, "--save", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"# comment\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Second\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
@@ -124,12 +275,7 @@ fn exec_save_as_then_reopen() {
 
 #[test]
 fn run_keep_going_reports_failures() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-        .args(["--demo", "--keep-going", "run", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "--keep-going", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"{\"id\":\"no.such\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -141,8 +287,7 @@ fn run_keep_going_reports_failures() {
 
 #[test]
 fn export_wav_waits_for_job() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-x-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-x");
     let out = dir.join("still.wav");
     let o = cli(&["--demo", "export", out.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -153,13 +298,11 @@ fn export_wav_waits_for_job() {
 #[test]
 fn run_waits_for_an_export_on_its_last_line() {
     // #2342: `file.exportMedia` as the last line of a script is written before `run` exits
-    let dir = std::env::temp_dir().join(format!("fc-cli-run-x-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-run-x");
     let out = dir.join("last.wav");
     // `"wait": null` waits too: only an explicit `false` doesn't
     let script = json!({"id": "file.exportMedia", "params": {"path": out.to_str().unwrap(), "format": "wav", "wait": null}}).to_string();
-    let mut child =
-        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(["--demo", "run", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(format!("{script}\n").as_bytes()).unwrap();
     let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
@@ -169,6 +312,74 @@ fn run_waits_for_an_export_on_its_last_line() {
 
 /// `export --preset`: a built-in preset by name (dash or en dash), a custom range, a user preset
 /// from `--data-dir`, `--list-presets`, `--queue`, and a clean failure for an unknown preset.
+#[test]
+fn single_frame_in_out_export_warns_in_json_and_stderr() {
+    let dir = private_dir("fc-cli-single-frame");
+    let project = dir.join("marked.fcproj");
+    let script = dir.join("marks.jsonl");
+    std::fs::write(&script, "{\"id\":\"markers.markIn\",\"params\":{\"frame\":12}}\n{\"id\":\"markers.markOut\",\"params\":{\"frame\":12}}\n").unwrap();
+    let setup = cli(&["--demo", "--save-as", project.to_str().unwrap(), "run", script.to_str().unwrap()]);
+    assert!(setup.status.success(), "{}", String::from_utf8_lossy(&setup.stderr));
+    for (name, bounds, warned) in [
+        ("marked.wav", vec![], true),
+        ("explicit.wav", vec!["--start", "0", "--end", "0.04"], false),
+        ("queued.wav", vec!["--queue"], true),
+        ("queued-explicit.wav", vec!["--queue", "--start", "0", "--end", "0.04"], false),
+    ] {
+        let path = dir.join(name);
+        let mut args = vec!["--project", project.to_str().unwrap(), "export", path.to_str().unwrap()];
+        args.extend(bounds);
+        let output = cli(&args);
+        let v = json_out(&output);
+        assert_eq!(v["warnings"].as_array().unwrap().len(), usize::from(warned));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.contains("In/Out range is 1 frame"), warned, "{stderr}");
+        if warned {
+            assert!(stderr.contains("--range entire"), "{stderr}");
+        }
+        assert!(path.exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// #3952: an H.264 export that asks for hardware encoding and gets the software encoder says so, in
+/// its report and on stderr, whether it runs now or through the queue. No hardware encoder takes a
+/// two-pass export, so this holds on every machine. With hardware encoding Off there is nothing to say.
+#[test]
+fn export_says_when_the_software_encoder_ran_instead_of_hardware() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-hw-fallback-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let auto = r#"{"hardwareEncoding":"auto","bitrateMode":"vbr2Pass"}"#;
+    let off = r#"{"bitrateMode":"vbr2Pass"}"#;
+    for (name, queued, settings, report, warned) in [
+        ("direct.mp4", false, auto, "/result", true),
+        ("queued.mp4", true, auto, "/items/0/result", true),
+        ("direct-off.mp4", false, off, "/result", false),
+        ("queued-off.mp4", true, off, "/items/0/result", false),
+    ] {
+        let path = dir.join(name);
+        let mut args = vec!["--demo", "export", path.to_str().unwrap(), "--format", "h264", "--start", "0", "--end", "0.1", "--scale", "0.25", "--no-audio"];
+        args.extend(["--settings", settings]);
+        if queued {
+            args.push("--queue");
+        }
+        let o = cli(&args);
+        let v = json_out(&o);
+        let r = v.pointer(report).unwrap_or_else(|| panic!("{name}: no report in {v}"));
+        assert_eq!(r["encoder"], "software", "{name}: {v}");
+        let warnings: Vec<&str> = r["warnings"].as_array().map(|w| w.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), usize::from(warned), "{name}: {v}");
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        for w in warnings {
+            assert!(w.contains("software") && w.ends_with("encoder ran"), "{name}: {w}");
+            assert!(stderr.contains(&format!("filmcraft-cli: warning: {w}")), "{name}: {stderr}");
+        }
+        assert_eq!(stderr.contains("encoder ran"), warned, "{name}: {stderr}");
+        assert!(path.exists(), "{name}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn export_with_presets() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/export-tests").join(format!("cli-{}", std::process::id()));
@@ -255,6 +466,29 @@ fn export_with_presets() {
     let written = v["items"][0]["path"].as_str().unwrap().to_string();
     assert!(written.ends_with("queued-apv.mp4.mov"), "{v}");
     assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("exported {written} in ")), "{}", String::from_utf8_lossy(&o.stderr));
+    // an image sequence writes numbered stills: the result and the message name the first and
+    // the last, not the path given (#4009)
+    let stills = dir.join("a.png");
+    let o = cli(&[
+        "--demo",
+        "--data-dir",
+        data_s,
+        "export",
+        stills.to_str().unwrap(),
+        "--format",
+        "png",
+        "--start",
+        "0",
+        "--end",
+        "0.05",
+        "--no-audio",
+        "--scale",
+        "0.125",
+    ]);
+    let v = json_out(&o);
+    let (first, last) = (v["path"].as_str().unwrap().to_string(), v["lastPath"].as_str().unwrap().to_string());
+    assert!(first.ends_with("a000.png") && std::path::Path::new(&first).exists() && std::path::Path::new(&last).exists() && !stills.exists(), "{v}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("exported {first} to {last} in ")), "{}", String::from_utf8_lossy(&o.stderr));
     // unknown preset: exit status 1 and a message naming it
     let bad = cli(&["--demo", "--data-dir", data_s, "export", dir.join("x.mp4").to_str().unwrap(), "--preset", "No Such Preset"]);
     assert_eq!(bad.status.code(), Some(1));
@@ -268,7 +502,7 @@ fn export_with_presets() {
 fn closed_stdout_ends_quietly() {
     use std::io::Read;
     for args in [&["commands"][..], &["help"], &["--demo", "commands", "--json"]] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = crate::filmcraft_command().args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let mut first = [0u8; 10];
         child.stdout.as_mut().unwrap().read_exact(&mut first).unwrap();
         drop(child.stdout.take());
@@ -282,8 +516,7 @@ fn closed_stdout_ends_quietly() {
 /// first write fails for sure. The rest of the script and the save still happen, and the exit status
 /// still reports a failing command.
 fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
-    let mut child =
-        Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut child = crate::filmcraft_command().args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     drop(child.stdout.take());
     child.stdin.take().unwrap().write_all(script).unwrap();
     child.wait_with_output().unwrap()
@@ -291,8 +524,7 @@ fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
 
 #[test]
 fn closed_stdout_still_runs_the_script_and_saves() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-pipe-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-pipe");
     let proj = dir.join("p.fcproj");
     let p = proj.to_str().unwrap();
     let script = b"{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped One\"}}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"Piped Two\"}}\n";
@@ -316,9 +548,7 @@ fn closed_stdout_still_runs_the_script_and_saves() {
 /// writes nothing, instead of silently rendering frame 0 at full scale.
 #[test]
 fn render_rejects_bad_numbers() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-render-nan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-render-nan");
     let still = dir.join("s.png").to_str().unwrap().to_string();
     for (opt, bad) in
         [("--seconds", "1s"), ("--seconds", "1,5"), ("--seconds", "abc"), ("--seconds", "NaN"), ("--seconds", "inf"), ("--scale", "xyz"), ("--scale", "NaN")]
@@ -338,9 +568,7 @@ fn render_rejects_bad_numbers() {
 /// placeholder frames; then it still warns.
 #[test]
 fn export_with_missing_media_fails_unless_allowed() {
-    let dir = std::env::temp_dir().join(format!("fc-cli-1054-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = private_dir("fc-cli-1054");
     let f = |n: &str| dir.join(n).to_str().unwrap().to_string();
     let (still, proj) = (f("still.png"), f("p.fcproj"));
     let o = cli(&["--demo", "render", "--seconds", "1", "--scale", "0.1", "--out", &still]);

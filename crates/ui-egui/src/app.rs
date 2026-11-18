@@ -39,6 +39,9 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub_out: None,
+            scrub_rate: None,
+            scrub_sequence: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
@@ -46,6 +49,7 @@ impl FilmcraftApp {
             updates_rt: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,
+            overwrite_prompt: None,
             auto: Default::default(),
             ime_replacement_epoch: 0,
             ime_composition: None,
@@ -60,6 +64,7 @@ impl FilmcraftApp {
             textures: HashMap::new(),
             thumb_used: HashMap::new(),
             control_rx: None,
+            control_notice: None,
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,
@@ -100,6 +105,7 @@ impl FilmcraftApp {
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
+            clip_mismatch: None,
             file_drag_hover: None,
             window_files: Vec::new(),
             timeline_view_last: None,
@@ -109,7 +115,6 @@ impl FilmcraftApp {
             bindings_rev: 0,
             menu_sent: Vec::new(),
             shortcut_editor: Default::default(),
-            toast: None,
             graphics_notice: None,
             tl: Default::default(),
             transcript_cache: Default::default(),
@@ -118,9 +123,12 @@ impl FilmcraftApp {
             stale_clipboard_media: None,
             gpu: None,
             watched_render: None,
+            job_text: None,
+            steady_texts: Default::default(),
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,
+            engine_call: false,
             workspaces,
             menu_workspaces: Default::default(),
         }
@@ -136,6 +144,13 @@ impl FilmcraftApp {
     pub fn with_control_input_only(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_input_only = true;
         self.with_control(rx)
+    }
+
+    /// `--control` was given but the control server is not serving: keep the reason available to
+    /// the status bar (drawn whenever it is idle), where a user or an agent can see it (#3436).
+    pub fn with_control_notice(mut self, notice: crate::ControlNotice) -> Self {
+        self.control_notice = Some(notice);
+        self
     }
 
     pub fn services(&self) -> Arc<dyn Services> {
@@ -262,13 +277,16 @@ impl FilmcraftApp {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         self.sync_pool();
+        // a frame server rebuilt by sync_pool (another project opened) gets its wake-up now: no
+        // poll asks for the next frame, so its finished frames would wait for the mouse (#2438 review)
+        self.frames.set_context(ctx);
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
     }
 
     /// Apply engine events that change the active sequence/view, IME target, toast or project.
-    fn logic_session_events(&mut self, now: f64) {
+    fn logic_session_events(&mut self) {
         for ev in self.session.drain_events() {
             match ev {
                 filmcraft_engine::Event::OpenSequence(_) => {
@@ -280,11 +298,21 @@ impl FilmcraftApp {
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
-                filmcraft_engine::Event::OpenSource(_) => {
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
+                filmcraft_engine::Event::OpenSource(_) | filmcraft_engine::Event::CueSource(_) => {
+                    let cue = matches!(ev, filmcraft_engine::Event::CueSource(_));
+                    let focused = self.ui.focused;
+                    // a closed Source panel reopens, and another panel's maximize would hide it
+                    if !cue && self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
+                        self.ui.keys.maximized = None;
+                    }
+                    self.show_panel(PanelKind::Source);
+                    if cue {
+                        let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: focused });
+                        self.ui.focused = focused;
+                    }
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
-                filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
+                filmcraft_engine::Event::Toast { message, .. } => self.status(message),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
             }
         }
@@ -303,7 +331,7 @@ impl FilmcraftApp {
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);
         self.logic_background(ctx, now);
-        self.logic_session_events(now);
+        self.logic_session_events();
         self.logic_command_inbox(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
@@ -357,6 +385,7 @@ impl FilmcraftApp {
             self.auto.begin_frame();
             self.apply_prefs(&ctx);
             self.sync_timeline_view();
+            self.ui.script.sync_project(&self.session.project_instance);
             panels::metadata::follow_selection(self);
             self.handle_drops(&ctx);
             panels::script::finish_edit_on_click_away(self, &ctx);
@@ -388,7 +417,10 @@ impl FilmcraftApp {
         if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             ctx.request_repaint();
         }
-        if self.frames.queue_len() > 0 {
+        // Only the web renders queued frames in the UI pass (`pump`): poll for them there. Native
+        // workers wake the UI when a frame is done, so a backlog (thumbnails after launch, slow
+        // effects) doesn't run empty passes at 60 Hz beside them (#1142, #1606).
+        if cfg!(target_arch = "wasm32") && self.frames.queue_len() > 0 {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         if !ctx.will_discard() {
@@ -478,8 +510,10 @@ impl eframe::App for FilmcraftApp {
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
-    /// state, and shut the session down so its recovery journal is flushed or removed.
+    /// state, shut the session down so its recovery journal is flushed or removed, and start an
+    /// update that waits for the exit.
     fn on_exit(&mut self) {
+        self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {
@@ -488,6 +522,8 @@ impl eframe::App for FilmcraftApp {
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
+        // An update waiting for the exit starts its install helper now.
+        crate::updates_ui::exiting(self);
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no

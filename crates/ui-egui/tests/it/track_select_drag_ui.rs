@@ -99,6 +99,93 @@ fn a_drag_with_track_select_forward_moves_every_clip_after_the_pointer() {
     assert_moved_from(&before, &after, from);
 }
 
+impl Driver {
+    fn exec(&mut self, command: &str, params: Value) -> Value {
+        self.ok("engine.execute", json!({"command": command, "params": params}))
+    }
+    fn add_caption(&mut self, seconds: f64, text: &str) -> u64 {
+        self.exec("captions.add", json!({"seconds": seconds, "durationSeconds": 1.0, "text": text}))["caption"].as_u64().expect("caption id")
+    }
+    /// Every caption on C1 as (text, start).
+    fn caption_starts(&mut self) -> Vec<(String, Tick)> {
+        let r = self.exec("captions.list", json!({}));
+        let caps = r["tracks"][0]["captions"].as_array().expect("captions");
+        caps.iter().map(|c| (c["text"].as_str().expect("text").to_string(), Tick(c["start"].as_i64().expect("start")))).collect()
+    }
+}
+
+/// #3388: the captions after the pointer are selected with the clips and move by the same amount,
+/// so the subtitles stay on the dialogue they belong to; those before it stay; one undo restores both.
+#[test]
+fn a_drag_with_track_select_forward_moves_the_captions_after_the_pointer_with_the_clips() {
+    let mut d = Driver::demo();
+    let (x, y, from) = second_v1_clip(&mut d);
+    let clip_end = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[1].end().seconds();
+    assert!(from.seconds() > 0.75, "room for a caption before the second clip");
+    d.add_caption(from.seconds() - 0.75, "before");
+    d.add_caption(clip_end + 0.5, "after one");
+    d.add_caption(clip_end + 2.5, "after two");
+    let clips_before = d.spans();
+    let caps_before = d.caption_starts();
+    let undo_before = d.harness.state().session.history.undo.len();
+
+    d.ok("ui.set", json!({"tool": "TrackSelectForward"}));
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 240.0, "y": y}, "steps": 12}));
+    d.frames(3);
+
+    let clips_after = d.spans();
+    assert_moved_from(&clips_before, &clips_after, from);
+    let offset = clips_after.iter().filter(|(id, _)| clips_before[id].0 >= from).map(|(id, a)| a.0 - clips_before[id].0).next().expect("a moved clip");
+    let caps_after = d.caption_starts();
+    assert_eq!(caps_after.len(), caps_before.len());
+    for ((text, was), (text_after, now)) in caps_before.iter().zip(&caps_after) {
+        assert_eq!(text, text_after);
+        let expected = if text == "before" { *was } else { *was + offset };
+        assert_eq!(*now, expected, "caption `{text}` moved with the clips");
+    }
+    assert_eq!(d.harness.state().session.history.undo.len(), undo_before + 1, "clips and captions move in one undo step");
+
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.spans(), clips_before, "undo puts the clips back");
+    assert_eq!(d.caption_starts(), caps_before, "and the captions");
+}
+
+/// Backward selects the captions that start before the pointer, Forward those that end after it,
+/// Shift keeps to the clicked track (no caption track), and a locked caption track is left out.
+#[test]
+fn track_select_picks_the_captions_on_its_side_of_the_pointer() {
+    let mut d = Driver::demo();
+    let (x, y, from) = second_v1_clip(&mut d);
+    let clip_end = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[1].end().seconds();
+    assert!(from.seconds() > 0.75, "room for a caption before the second clip");
+    let before = d.add_caption(from.seconds() - 0.75, "before");
+    let after = d.add_caption(clip_end + 0.5, "after");
+    let picked = |d: &mut Driver| -> Vec<u64> {
+        let mut ids: Vec<u64> = d.harness.state().session.state.caption_selection.iter().map(|c| c.0).collect();
+        ids.sort_unstable();
+        ids
+    };
+
+    d.ok("ui.set", json!({"tool": "TrackSelectBackward"}));
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.frames(2);
+    assert_eq!(picked(&mut d), vec![before], "Backward: the caption before the pointer");
+
+    d.ok("ui.set", json!({"tool": "TrackSelectForward"}));
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.frames(2);
+    assert_eq!(picked(&mut d), vec![after], "Forward: the caption after the pointer");
+
+    d.ok("ui.click", json!({"x": x, "y": y, "modifiers": {"shift": true}}));
+    d.frames(2);
+    assert!(picked(&mut d).is_empty(), "Shift: only the clicked track, which has no captions");
+
+    d.exec("captions.setTrack", json!({"track": "C1", "locked": true}));
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.frames(2);
+    assert!(picked(&mut d).is_empty(), "a locked caption track is left alone");
+}
+
 #[test]
 fn clips_selected_with_track_select_forward_move_with_the_selection_tool() {
     let mut d = Driver::demo();
@@ -112,5 +199,25 @@ fn clips_selected_with_track_select_forward_move_with_the_selection_tool() {
     d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 240.0, "y": y}, "steps": 12}));
     d.frames(3);
     let after = d.spans();
+    assert_moved_from(&before, &after, from);
+}
+
+#[test]
+fn track_select_forward_skips_a_locked_music_track_and_still_moves_the_rest() {
+    let mut d = Driver::demo();
+    let (x, y, from) = second_v1_clip(&mut d);
+    let q = d.harness.state().session.active_sequence().unwrap().clone();
+    // the music on A2 runs under the whole edit; locking it keeps it in place (Premiere)
+    let music: Vec<u64> = q.audio_tracks[1].items.iter().map(|i| i.id.0).collect();
+    assert!(!music.is_empty(), "the demo project has music on A2");
+    d.exec("timeline.setTrack", json!({"track": "A2", "locked": true}));
+    let before = d.spans();
+    d.ok("ui.set", json!({"tool": "TrackSelectForward"}));
+    d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 240.0, "y": y}, "steps": 12}));
+    d.frames(3);
+    let after = d.spans();
+    for id in &music {
+        assert_eq!(before[id], after[id], "the music on the locked track stayed");
+    }
     assert_moved_from(&before, &after, from);
 }

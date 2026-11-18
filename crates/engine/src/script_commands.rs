@@ -10,13 +10,13 @@ use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad};
+use crate::commands::{CommandSpec, NamedKeys, always, bad};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, run: Run, journal: bool) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled: always, run, journal, named: NamedKeys::NONE }
 }
 
 fn id(p: &Value, key: &str, cmd: &str) -> Result<u64> {
@@ -39,11 +39,14 @@ fn source_identity(project: &Project, source: ItemId) -> Option<MediaIdentity> {
     project.resolve_media(source).and_then(|(_, clip, _)| clip.identity)
 }
 
-fn allowed_source(project: &Project, source: ItemId) -> Result<(String, Option<MediaIdentity>)> {
-    let Some(it) = project.item(source) else { return Err(bad("script.addTake", "source item does not exist")) };
-    let valid = matches!(it.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }) || matches!(&it.kind, ItemKind::Sequence(seq) if seq.multicam.is_some());
-    if !valid {
-        return Err(bad("script.addTake", "source must be a media clip, subclip, or multicamera source sequence"));
+fn allowed_source(project: &Project, source: ItemId, cmd: &str) -> Result<(String, Option<MediaIdentity>)> {
+    let Some(it) = project.item(source) else { return Err(bad(cmd, "source item does not exist")) };
+    match &it.kind {
+        ItemKind::Media(_) => {}
+        ItemKind::Subclip { .. } if project.resolve_media(source).is_some() => {}
+        ItemKind::Subclip { .. } => return Err(bad(cmd, "subclip source cannot be resolved")),
+        ItemKind::Sequence(seq) if seq.multicam.is_some() => {}
+        _ => return Err(bad(cmd, "source must be a media clip, subclip, or multicamera source sequence")),
     }
     Ok((it.name.clone(), source_identity(project, source)))
 }
@@ -177,7 +180,7 @@ fn paste_section(s: &mut Session, p: &Value) -> Result<Value> {
                 take.id = ScriptTakeId(draft.alloc_id().map_err(|error| bad(cmd, error))?);
                 take.start_line = *line_ids.get(&take.start_line).ok_or_else(|| bad(cmd, "take start is missing"))?;
                 take.end_line = *line_ids.get(&take.end_line).ok_or_else(|| bad(cmd, "take end is missing"))?;
-                if take.source.is_some_and(|source| allowed_source(project, source).is_err()) {
+                if take.source.is_some_and(|source| allowed_source(project, source, cmd).is_err()) {
                     take.source = None;
                 }
                 for mark in &mut take.marks {
@@ -626,7 +629,7 @@ fn add_take(s: &mut Session, p: &Value) -> Result<Value> {
     if existing_slate.is_some() && x.is_some() {
         return Err(bad(cmd, "x places a new setup; omit it when adding a take to an existing setup"));
     }
-    let (source_name, identity) = allowed_source(&s.project, source)?;
+    let (source_name, identity) = allowed_source(&s.project, source, cmd)?;
     let (slate, take) = s.edit("Add Script Take", |project, _| {
         let doc = script_mut(project, item, cmd)?;
         let take_count = doc.slates.iter().try_fold(0usize, |sum, slate| sum.checked_add(slate.takes.len())).ok_or_else(|| bad(cmd, "take count overflow"))?;
@@ -673,7 +676,7 @@ fn rebind_take(s: &mut Session, p: &Value) -> Result<Value> {
     let take_id = ScriptTakeId(id(p, "take", cmd)?);
     let source = ItemId(id(p, "source", cmd)?);
     let discard = p.get("discardMarks").and_then(Value::as_bool).unwrap_or(false);
-    let (source_name, identity) = allowed_source(&s.project, source)?;
+    let (source_name, identity) = allowed_source(&s.project, source, cmd)?;
     let stable_without_fingerprint = match s.project.item(source).map(|item| &item.kind) {
         Some(ItemKind::Sequence(sequence)) => sequence.multicam.is_some(),
         Some(ItemKind::Media(media)) => matches!(media.media, MediaRef::Generator(_)),
@@ -973,7 +976,8 @@ fn cue_mark(s: &mut Session, p: &Value) -> Result<Value> {
     if at < view.start || at >= view.end {
         return Err(bad(cmd, "mark is outside the linked source's visible span after relink; review the footage or rebind the take"));
     }
-    s.execute("source.open", json!({"item":source.0}))?;
+    let focus = p.get("focus").and_then(Value::as_bool).unwrap_or(true);
+    s.execute("source.open", json!({"item":source.0,"focus":focus}))?;
     s.execute("source.setPlayhead", json!({"time":at.0}))?;
     Ok(json!({"item":source.0,"time":s.state.source_playhead.0}))
 }
@@ -1063,7 +1067,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("script.setMarkTime", "Set Script Mark Time", r#"{"item":id,"take":id,"mark":id,"sourceTime":ticks}"#, set_mark_time, true),
         spec("script.moveMark", "Move Script Mark", r#"{"item":id,"take":id,"mark":id,"line":id}"#, move_mark, true),
         spec("script.deleteMark", "Delete Script Mark", r#"{"item":id,"take":id,"mark":id}"#, delete_mark, true),
-        spec("script.cueMark", "Cue Script Mark", r#"{"item":id,"take":id,"mark":id}"#, cue_mark, false),
+        spec("script.cueMark", "Cue Script Mark", r#"{"item":id,"take":id,"mark":id,"focus":bool?}"#, cue_mark, false),
         spec("script.cueLine", "Cue Script Take Row", r#"{"item":id,"take":id,"line":id}"#, cue_line, false),
     ]
 }

@@ -1,5 +1,5 @@
-//! A standalone export gives back the float images it left on the frame pool
-//! (`filmcraft_frame::pool`) when it ends, however it ends; one part of a batch keeps them. One test in this file on purpose: the pool is shared by every test of a binary,
+//! A standalone export gives back the float images and plane buffers it left on the frame
+//! pool (`filmcraft_frame::pool`) when it ends, however it ends; one part of a batch keeps them. One test in this file on purpose: the pool is shared by every test of a binary,
 //! and its numbers mean something only while nothing else renders.
 
 use std::sync::Arc;
@@ -54,9 +54,14 @@ fn the_float_shelf_is_empty_when_a_standalone_export_ends_however_it_ended() {
     // themselves do too: the checks below fail without the trim)
     let leave_something = || {
         pool::recycle_f32(vec![0.0; 100_000]);
+        // and a decoded picture's plane for the 8-bit shelf (the sources' caches hand those back)
+        pool::recycle(Arc::new(filmcraft_frame::VideoFrame::rgba8(200, 100, vec![0u8; 80_000])));
         assert!(pool::stats().f32_idle_bytes > 0);
     };
-    let check = |what: &str| assert_eq!(pool::stats().f32_idle_bytes, 0, "after {what}: {:.1} MB idle", idle_mb());
+    let check = |what: &str| {
+        assert_eq!(pool::stats().f32_idle_bytes, 0, "after {what}: {:.1} MB idle", idle_mb());
+        assert_eq!(pool::stats().idle_bytes, 0, "after {what}: plane shelves not empty");
+    };
 
     // images, which run in `export` itself
     leave_something();
@@ -97,6 +102,7 @@ fn the_float_shelf_is_empty_when_a_standalone_export_ends_however_it_ended() {
     export(&p, seq, &part, &sources, &Progress::default()).unwrap();
     assert!(pool::stats().f32_idle_bytes > 0, "a part of a batch keeps the float images");
     pool::trim_f32();
+    pool::trim_planes();
 
     let _ = std::fs::remove_dir_all(&dir);
 }

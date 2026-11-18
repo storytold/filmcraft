@@ -45,6 +45,8 @@ use selection::{current_line, select_line, selected_range, take_by_id};
 pub struct ScriptUi {
     pub item: Option<u64>,
     #[serde(skip)]
+    project: Option<Arc<()>>,
+    #[serde(skip)]
     pub(crate) text_paste_revision: Option<u64>,
     /// Two stable line IDs, inclusive; order records the anchor and extension direction.
     pub selected_lines: Option<(u64, u64)>,
@@ -177,7 +179,7 @@ pub(crate) fn add_mark_at_selection(app: &mut FilmcraftApp) -> Result<Value, Str
     let take_id = take.id.0;
     let line_id = line.id.0;
     if app.session.state.source_item != Some(source) {
-        app.session.execute("source.open", json!({"item":source.0})).map_err(|error| error.to_string())?;
+        app.session.execute("source.open", json!({"item":source.0,"focus":false})).map_err(|error| error.to_string())?;
     }
     let time = app.session.state.source_playhead.0;
     let (command, params) = if let Some(mark) = selected_mark {
@@ -470,12 +472,7 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<Action>) {
                 }
             }
             Action::CueMark { take, mark, focus_source } => {
-                if command(app, "script.cueMark", json!({"item": app.ui.script.item, "take": take, "mark": mark})).is_some() {
-                    app.show_panel(PanelKind::Source);
-                    if !focus_source {
-                        app.ui.focused = PanelKind::Script;
-                    }
-                }
+                command(app, "script.cueMark", json!({"item": app.ui.script.item, "take": take, "mark": mark, "focus": focus_source}));
             }
             Action::CueLine { take, line } => {
                 if command(app, "script.cueLine", json!({"item": app.ui.script.item, "take": take, "line": line})).is_some() {

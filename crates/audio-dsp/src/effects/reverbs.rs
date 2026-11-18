@@ -82,6 +82,12 @@ pub struct ConvolutionReverb {
     /// Partition spectra (B+1 bins, re/im interleaved per partition): `h[ch][p * 2(B+1) ..]`.
     h: [Vec<f32>; 2],
     parts: usize,
+    /// The previous partition set, still audible until the next block crossfades from it to `h`.
+    h_prev: [Vec<f32>; 2],
+    parts_prev: usize,
+    xfade: bool,
+    /// A block has been convolved since construction or reset, so an impulse change can click.
+    primed: bool,
     /// Frequency-domain delay line of input spectra (same layout), ring of `max_parts`.
     fdl: Vec<f32>,
     head: usize,
@@ -96,6 +102,8 @@ pub struct ConvolutionReverb {
     pre: DelayLine,
     dry_delay: Vec<DelayLine>,
     key: (usize, f32, f32, f32),
+    /// Impulse, size or damping changed since the last rebuild; rebuilt at the next `process`.
+    dirty: bool,
     mix: Smoothed,
     gain: Smoothed,
     width: Smoothed,
@@ -126,6 +134,10 @@ impl ConvolutionReverb {
             base_len: 0,
             h: [vec![0.0; max_parts * bins2], vec![0.0; max_parts * bins2]],
             parts: 0,
+            h_prev: [vec![0.0; max_parts * bins2], vec![0.0; max_parts * bins2]],
+            parts_prev: 0,
+            xfade: false,
+            primed: false,
             fdl: vec![0.0; max_parts * bins2],
             head: 0,
             max_parts,
@@ -138,6 +150,7 @@ impl ConvolutionReverb {
             pre: DelayLine::new((0.5 * sample_rate) as usize + 2),
             dry_delay: vec![DelayLine::new(PART + 2); channels.max(1)],
             key: (usize::MAX, 0.0, 0.0, 0.0),
+            dirty: false,
             mix: Smoothed::with_ms(0.0, sample_rate, 20.0),
             gain: Smoothed::with_ms(1.0, sample_rate, 20.0),
             width: Smoothed::with_ms(1.0, sample_rate, 20.0),
@@ -147,11 +160,17 @@ impl ConvolutionReverb {
         s
     }
 
-    /// Rebuild the partition spectra (only when the impulse, size or damping changed).
+    /// Rebuild the partition spectra (only when the impulse, size or damping changed). Once audio
+    /// has run, the audible set is kept in `h_prev` and the next block crossfades to the new one.
     fn rebuild(&mut self) {
         let key = (self.pv.idx("impulse"), self.pv.v("room_size"), self.pv.v("damping_lf"), self.pv.v("damping_hf"));
         if key == self.key {
             return;
+        }
+        if self.primed && !self.xfade {
+            std::mem::swap(&mut self.h, &mut self.h_prev);
+            self.parts_prev = self.parts;
+            self.xfade = true;
         }
         if key.0 != self.key.0 {
             let len = ir_len(&IR_SPECS[key.0.min(IR_SPECS.len() - 1)], self.sr).min(self.base[0].len());
@@ -205,7 +224,11 @@ impl ConvolutionReverb {
     }
 
     fn apply_params(&mut self, snap: bool) {
-        self.rebuild();
+        if snap {
+            self.rebuild();
+        } else {
+            self.dirty = true;
+        }
         self.mix.set(self.pv.v("mix") / 100.0);
         self.gain.set(db_to_gain(self.pv.v("gain")));
         self.width.set(self.pv.v("width") / 100.0);
@@ -218,9 +241,11 @@ impl ConvolutionReverb {
         }
     }
 
-    /// Convolve the collected block (`inbuf`) and fill `out`.
+    /// Convolve the collected block (`inbuf`) and fill `out`, crossfading linearly over the block
+    /// from the previous partition set when the impulse changed.
     fn block(&mut self) {
         let bins2 = 2 * (PART + 1);
+        self.primed = true;
         self.hist.copy_within(PART.., 0);
         self.hist[PART..].copy_from_slice(&self.inbuf);
         self.re.copy_from_slice(&self.hist);
@@ -234,41 +259,64 @@ impl ConvolutionReverb {
                 slot[2 * k + 1] = self.im[k];
             }
         }
-        // Accumulate Y_L and Y_R (half spectra) then pack Z = Y_L + j·Y_R for one inverse FFT.
-        let mut yl = [0.0f32; 2 * (PART + 1)];
-        let mut yr = [0.0f32; 2 * (PART + 1)];
-        for p in 0..self.parts {
-            let xi = ((self.head + p) % self.max_parts) * bins2;
-            let x = &self.fdl[xi..xi + bins2];
-            let hl = &self.h[0][p * bins2..(p + 1) * bins2];
-            let hr = &self.h[1][p * bins2..(p + 1) * bins2];
-            for k in 0..=PART {
-                let (xr, xim) = (x[2 * k], x[2 * k + 1]);
-                yl[2 * k] += xr * hl[2 * k] - xim * hl[2 * k + 1];
-                yl[2 * k + 1] += xr * hl[2 * k + 1] + xim * hl[2 * k];
-                yr[2 * k] += xr * hr[2 * k] - xim * hr[2 * k + 1];
-                yr[2 * k + 1] += xr * hr[2 * k + 1] + xim * hr[2 * k];
+        if std::mem::take(&mut self.xfade) {
+            let mut prev = [[0.0f32; PART]; 2];
+            convolve(&self.fft, &self.fdl, self.head, self.max_parts, &self.h_prev, self.parts_prev, &mut self.re, &mut self.im);
+            for k in 0..PART {
+                prev[0][k] = self.re[PART + k];
+                prev[1][k] = self.im[PART + k];
             }
+            convolve(&self.fft, &self.fdl, self.head, self.max_parts, &self.h, self.parts, &mut self.re, &mut self.im);
+            for k in 0..PART {
+                let g = (k + 1) as f32 / PART as f32;
+                self.re[PART + k] = prev[0][k] + g * (self.re[PART + k] - prev[0][k]);
+                self.im[PART + k] = prev[1][k] + g * (self.im[PART + k] - prev[1][k]);
+            }
+        } else {
+            convolve(&self.fft, &self.fdl, self.head, self.max_parts, &self.h, self.parts, &mut self.re, &mut self.im);
         }
-        let n = 2 * PART;
-        for k in 0..n {
-            let (lr, li, rr, ri) = if k <= PART {
-                (yl[2 * k], yl[2 * k + 1], yr[2 * k], yr[2 * k + 1])
-            } else {
-                let m = n - k;
-                (yl[2 * m], -yl[2 * m + 1], yr[2 * m], -yr[2 * m + 1])
-            };
-            // Z = Y_L + j·Y_R
-            self.re[k] = lr - ri;
-            self.im[k] = li + rr;
-        }
-        self.fft.inverse(&mut self.re, &mut self.im);
-        let s = 1.0 / n as f32;
+        let s = 1.0 / (2 * PART) as f32;
         for k in 0..PART {
             self.out[0][k] = self.re[PART + k] * s;
             self.out[1][k] = self.im[PART + k] * s;
         }
     }
+}
+
+/// Multiply the input spectra in the delay line with the first `parts` partitions of `h`; the
+/// unscaled left and right outputs land in `re[PART..]` and `im[PART..]`.
+#[allow(clippy::too_many_arguments)]
+fn convolve(fft: &Fft, fdl: &[f32], head: usize, max_parts: usize, h: &[Vec<f32>; 2], parts: usize, re: &mut [f32], im: &mut [f32]) {
+    let bins2 = 2 * (PART + 1);
+    // Accumulate Y_L and Y_R (half spectra) then pack Z = Y_L + j·Y_R for one inverse FFT.
+    let mut yl = [0.0f32; 2 * (PART + 1)];
+    let mut yr = [0.0f32; 2 * (PART + 1)];
+    for p in 0..parts {
+        let xi = ((head + p) % max_parts) * bins2;
+        let x = &fdl[xi..xi + bins2];
+        let hl = &h[0][p * bins2..(p + 1) * bins2];
+        let hr = &h[1][p * bins2..(p + 1) * bins2];
+        for k in 0..=PART {
+            let (xr, xim) = (x[2 * k], x[2 * k + 1]);
+            yl[2 * k] += xr * hl[2 * k] - xim * hl[2 * k + 1];
+            yl[2 * k + 1] += xr * hl[2 * k + 1] + xim * hl[2 * k];
+            yr[2 * k] += xr * hr[2 * k] - xim * hr[2 * k + 1];
+            yr[2 * k + 1] += xr * hr[2 * k + 1] + xim * hr[2 * k];
+        }
+    }
+    let n = 2 * PART;
+    for k in 0..n {
+        let (lr, li, rr, ri) = if k <= PART {
+            (yl[2 * k], yl[2 * k + 1], yr[2 * k], yr[2 * k + 1])
+        } else {
+            let m = n - k;
+            (yl[2 * m], -yl[2 * m + 1], yr[2 * m], -yr[2 * m + 1])
+        };
+        // Z = Y_L + j·Y_R
+        re[k] = lr - ri;
+        im[k] = li + rr;
+    }
+    fft.inverse(re, im);
 }
 
 impl AudioEffect for ConvolutionReverb {
@@ -283,6 +331,8 @@ impl AudioEffect for ConvolutionReverb {
         self.out.iter_mut().for_each(|o| o.iter_mut().for_each(|v| *v = 0.0));
         self.head = 0;
         self.pos = 0;
+        self.primed = false;
+        self.xfade = false;
         self.pre.reset();
         self.dry_delay.iter_mut().for_each(DelayLine::reset);
         self.mix.snap();
@@ -295,6 +345,10 @@ impl AudioEffect for ConvolutionReverb {
         let nch = channels.len().min(self.dry_delay.len());
         if nch == 0 {
             return;
+        }
+        if self.dirty {
+            self.dirty = false;
+            self.rebuild();
         }
         for i in 0..n {
             let (mix, gain, width, pd) = (self.mix.tick(), self.gain.tick(), self.width.tick(), self.predelay.tick());
@@ -470,5 +524,173 @@ impl AudioEffect for SurroundReverb {
             }
             start += len;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::Rng;
+
+    #[test]
+    fn set_param_defers_the_impulse_rebuild_to_process() {
+        let mut fx = ConvolutionReverb::new(48_000.0, 2);
+        let key = fx.key;
+        fx.set_param("damping_hf", 8000.0);
+        fx.set_param("room_size", 60.0);
+        assert_eq!(fx.key, key, "set_param rebuilt the impulse");
+        fx.process(&mut [&mut [0.0; 16][..], &mut [0.0; 16][..]]);
+        assert_eq!(fx.key, (key.0, 60.0, key.2, 8000.0));
+        assert!(!fx.dirty);
+    }
+
+    #[test]
+    fn deferred_rebuild_output_is_identical() {
+        let changes: &[&[(&str, f32)]] = &[
+            &[("room_size", 70.0)],
+            &[],
+            &[("damping_lf", 200.0), ("damping_hf", 6000.0)],
+            &[("impulse", 2.0), ("mix", 80.0)],
+            &[("room_size", 30.0), ("room_size", 90.0)],
+            &[("impulse", 4.0), ("damping_hf", 20_000.0), ("damping_lf", 10.0)],
+        ];
+        let mut eager = ConvolutionReverb::new(48_000.0, 2);
+        let mut deferred = ConvolutionReverb::new(48_000.0, 2);
+        let mut rng = Rng::new(5);
+        for (block, set) in changes.iter().cycle().take(24).enumerate() {
+            for &(id, v) in *set {
+                eager.set_param(id, v);
+                eager.rebuild();
+                deferred.set_param(id, v);
+            }
+            let n = 300 + 37 * block;
+            let l: Vec<f32> = (0..n).map(|_| rng.uniform()).collect();
+            let r: Vec<f32> = (0..n).map(|_| rng.uniform()).collect();
+            let (mut l1, mut r1, mut l2, mut r2) = (l.clone(), r.clone(), l, r);
+            eager.process(&mut [&mut l1, &mut r1]);
+            deferred.process(&mut [&mut l2, &mut r2]);
+            for (a, b) in l1.iter().chain(&r1).zip(l2.iter().chain(&r2)) {
+                assert_eq!(a.to_bits(), b.to_bits(), "block {block}");
+            }
+        }
+    }
+
+    /// Run `fx` over `l`/`r` in calls of `step` samples, applying `set` before the call that
+    /// starts at sample `at`; returns the left output.
+    fn run(fx: &mut ConvolutionReverb, l: &[f32], r: &[f32], step: usize, set: &mut dyn FnMut(&mut ConvolutionReverb, usize)) -> Vec<f32> {
+        let (mut l, mut r) = (l.to_vec(), r.to_vec());
+        let mut at = 0;
+        for (a, b) in l.chunks_mut(step).zip(r.chunks_mut(step)) {
+            set(fx, at);
+            at += a.len();
+            fx.process(&mut [a, b]);
+        }
+        l
+    }
+
+    fn sine(n: usize) -> Vec<f32> {
+        (0..n).map(|i| 0.5 * (std::f32::consts::TAU * 200.0 * i as f32 / 48_000.0).sin()).collect()
+    }
+
+    fn wet() -> ConvolutionReverb {
+        let mut fx = ConvolutionReverb::new(48_000.0, 2);
+        fx.set_param("mix", 100.0);
+        fx
+    }
+
+    /// Apply `changes` at once without a crossfade (the old instant swap).
+    fn snap(fx: &mut ConvolutionReverb, changes: &[(&str, f32)]) {
+        for &(id, v) in changes {
+            fx.set_param(id, v);
+        }
+        fx.primed = false;
+        fx.rebuild();
+        fx.primed = true;
+    }
+
+    fn max_jump(y: &[f32]) -> f32 {
+        y.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn impulse_change_crossfades_within_one_partition() {
+        let n = 48_000 * 5 / 2;
+        let at = 188 * 512;
+        let x = sine(n);
+        for change in [("impulse", 3.0), ("damping_lf", 800.0), ("room_size", 40.0)] {
+            let faded = run(&mut wet(), &x, &x, 512, &mut |fx, i| {
+                if i == at {
+                    fx.set_param(change.0, change.1);
+                }
+            });
+            let instant = run(&mut wet(), &x, &x, 512, &mut |fx, i| {
+                if i == at {
+                    snap(fx, &[change]);
+                }
+            });
+            // The latency is unchanged and the new impulse is fully in after one partition.
+            let (fade_from, fade_to) = (at + PART, at + 2 * PART);
+            for (i, (a, b)) in faded.iter().zip(&instant).enumerate() {
+                if !(fade_from..fade_to).contains(&i) {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{change:?}: sample {i}");
+                }
+            }
+            assert!(faded[fade_from..fade_to].iter().zip(&instant[fade_from..fade_to]).any(|(a, b)| a != b));
+            let steady = max_jump(&faded[at - 4096..at]);
+            let around = at - PART..at + 4 * PART;
+            let (jf, ji) = (max_jump(&faded[around.clone()]), max_jump(&instant[around]));
+            assert!(jf < 1.5 * steady, "{change:?}: jump {jf} vs steady {steady}");
+            assert!(ji > 4.0 * jf, "{change:?}: instant jump {ji} vs faded {jf}");
+        }
+    }
+
+    #[test]
+    fn repeated_changes_before_the_crossfade_fade_from_the_audible_impulse() {
+        let n = 48_000 * 2;
+        let at = 256 * 300;
+        let x = sine(n);
+        let mut fx = wet();
+        let faded = run(&mut fx, &x, &x, 64, &mut |fx, i| {
+            if i == at {
+                fx.set_param("impulse", 3.0);
+            }
+            if i == at + 64 {
+                assert!(fx.xfade);
+                fx.set_param("damping_lf", 800.0);
+            }
+            if i == at + 128 {
+                fx.set_param("room_size", 50.0);
+            }
+        });
+        assert_eq!(fx.key, (3, 50.0, 800.0, 20_000.0));
+        assert!(!fx.xfade);
+        let instant = run(&mut wet(), &x, &x, 64, &mut |fx, i| {
+            if i == at {
+                snap(fx, &[("impulse", 3.0), ("damping_lf", 800.0), ("room_size", 50.0)]);
+            }
+        });
+        let (fade_from, fade_to) = (at + PART, at + 2 * PART);
+        for (i, (a, b)) in faded.iter().zip(&instant).enumerate() {
+            if !(fade_from..fade_to).contains(&i) {
+                assert_eq!(a.to_bits(), b.to_bits(), "sample {i}");
+            }
+        }
+        let steady = max_jump(&faded[at - 4096..at]);
+        let jf = max_jump(&faded[at - PART..at + 4 * PART]);
+        assert!(jf < 1.5 * steady, "jump {jf} vs steady {steady}");
+    }
+
+    #[test]
+    fn unchanged_impulse_does_not_crossfade() {
+        let mut rng = Rng::new(9);
+        let x: Vec<f32> = (0..48_000).map(|_| rng.uniform()).collect();
+        let plain = run(&mut ConvolutionReverb::new(48_000.0, 2), &x, &x, 512, &mut |_, _| {});
+        let touched = run(&mut ConvolutionReverb::new(48_000.0, 2), &x, &x, 512, &mut |fx, i| {
+            fx.set_param("room_size", 100.0);
+            fx.set_param("damping_hf", 20_000.0);
+            fx.set_param("mix", 30.0);
+            assert!(!fx.xfade, "sample {i}");
+        });
+        assert!(plain.iter().zip(&touched).all(|(a, b)| a.to_bits() == b.to_bits()));
     }
 }

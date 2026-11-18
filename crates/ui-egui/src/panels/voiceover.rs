@@ -161,8 +161,10 @@ pub fn mix_cues(buf: &mut [f32], ch: usize, cursor: i64, cues: &(Vec<i64>, Vec<f
     }
 }
 
-/// UI commands `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
-pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Option<Result<Value, String>> {
+/// UI commands `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`. The settings
+/// dialog opens only for the menu (`dialogs`); from `engine.execute` (#1540) the command answers
+/// the voice-over settings instead, as `audio.voiceover.settings` does.
+pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value, dialogs: bool) -> Option<Result<Value, String>> {
     match id {
         "voiceover.recordToggle" => {
             let track = match p.get("track") {
@@ -177,6 +179,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value) -
             };
             Some(toggle(app, track))
         }
+        "voiceover.settingsDialog" if !dialogs => Some(app.session.execute("audio.voiceover.settings", json!({})).map_err(|e| e.to_string())),
         "voiceover.settingsDialog" => {
             open_settings(app, ctx);
             Some(Ok(Value::Null))
@@ -199,6 +202,13 @@ fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     settings_dialog(app, ctx);
     let Some(rec) = app.session.voiceover.rec.clone() else { return };
+    let input_error = app.session.voiceover.input.as_ref().and_then(|input| input.error());
+    if input_error.is_some() {
+        // The engine's stop command discards the failed take and reports the device error. Stop
+        // playback too, so the overlay cannot keep claiming that voice-over is recording.
+        app.stop();
+        return;
+    }
     if !app.playback.playing {
         return;
     }
