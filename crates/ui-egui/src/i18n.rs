@@ -378,7 +378,8 @@ pub fn tr_ctx<'a>(context: &str, text: &'a str) -> &'a str {
 /// language (French: Ko, Mo, Go). Anything else comes back as it is.
 pub fn byte_units(size: &str) -> String {
     for unit in ["KB", "MB", "GB"] {
-        if let Some(n) = size.strip_suffix(unit).and_then(|n| n.strip_suffix(' ')) {
+        // only a number before the unit: "junk MB" stays as it is
+        if let Some(n) = size.strip_suffix(unit).and_then(|n| n.strip_suffix(' ')).filter(|n| n.parse::<f64>().is_ok_and(f64::is_finite)) {
             return format!("{n} {}", t(unit));
         }
     }

@@ -475,7 +475,7 @@ fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, label: &str, current: &
         });
     // The accessible name is the field's label, while the automation label stays the selected
     // value so `ui.elements` reports what the dropdown shows.
-    let response = crate::widgets::accessible_name(r.response, crate::i18n::t(label));
+    let response = crate::widgets::accessible_name(r.response, platform_keys(crate::i18n::t(label), cfg!(target_os = "macos")));
     app.auto.add(&format!("settings.{key}"), response.rect, &shown);
     for (id, rect, l) in items {
         app.auto.add(&id, rect, &l);

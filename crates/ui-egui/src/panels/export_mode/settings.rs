@@ -480,7 +480,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     row(ui, t, tl!("Aspect"), |ui| {
         let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, _)| l.to_string()).unwrap_or_else(|| tl!("Custom").into());
         let labels: Vec<(String, bool)> = PARS.iter().map(|(l, _)| (l.to_string(), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, 220.0) {
+        // the column may be narrower than the wider label column plus 220: never past its edge
+        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, (ui.available_width() - 4.0).clamp(40.0, 220.0)) {
             s.pixel_aspect = PARS[i].1;
         }
     });
