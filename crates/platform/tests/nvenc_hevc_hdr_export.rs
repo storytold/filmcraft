@@ -36,7 +36,7 @@ fn project(working: WorkingSpace) -> (Arc<Project>, filmcraft_project::ItemId, S
     let clip = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -46,7 +46,7 @@ fn project(working: WorkingSpace) -> (Arc<Project>, filmcraft_project::ItemId, S
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let color = ColorPipeline { working, ..ColorPipeline::REC709 };
@@ -345,11 +345,14 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     }
     packets += ten.flush().unwrap().len();
     assert_eq!(packets, 4);
-    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR
+    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR:
+    // a BT.709 limited-range colr (every SDR export is tagged since #2142) and no mdcv / clli
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));
-    assert!(eight.sample_entry().video.as_ref().unwrap().color.is_none());
+    let v8 = eight.sample_entry().video.unwrap();
+    assert!(matches!(v8.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false })));
+    assert!(v8.mastering_display.is_none() && v8.content_light.is_none());
     // HLG: colr only
     let Some(Ok(hlg)) = factory(Format::Hevc, w, h, rate, &ExportSettings { signal: ColorSignal::HLG, ..sdr_settings.clone() }) else {
         panic!("an HLG encoder")

@@ -130,7 +130,19 @@ pub fn stroke(m: &Mask, width: f32, kind: StrokeKind) -> Mask {
     Mask { w: m.w, h: m.h, a }
 }
 
-fn box_pass(src: &[f32], dst: &mut [f32], n: usize, stride: usize, count: usize, lanes: usize, lane_stride: usize, r: usize) {
+/// How a box-filter pass walks a mask: `lanes` independent lines of `count` samples, `stride`
+/// apart within a line and `lane_stride` apart between lines.
+#[derive(Clone, Copy)]
+struct Lines {
+    stride: usize,
+    count: usize,
+    lanes: usize,
+    lane_stride: usize,
+}
+
+/// One running-sum box filter of radius `r` along every line of `src` into `dst`.
+fn box_pass(src: &[f32], dst: &mut [f32], lines: Lines, r: usize) {
+    let Lines { stride, count, lanes, lane_stride } = lines;
     let norm = 1.0 / (2 * r + 1) as f32;
     for l in 0..lanes {
         let base = l * lane_stride;
@@ -144,7 +156,6 @@ fn box_pass(src: &[f32], dst: &mut [f32], n: usize, stride: usize, count: usize,
             acc += at(i as isize + r as isize + 1) - at(i as isize - r as isize);
         }
     }
-    let _ = n;
 }
 
 /// Blur a mask with three box passes per axis (≈ Gaussian of standard deviation `sigma`).
@@ -157,9 +168,9 @@ pub fn blur(m: &Mask, sigma: f32) -> Mask {
     let mut a = m.a.clone();
     let mut b = vec![0.0f32; a.len()];
     for _ in 0..3 {
-        box_pass(&a, &mut b, 0, 1, m.w, m.h, m.w, r);
+        box_pass(&a, &mut b, Lines { stride: 1, count: m.w, lanes: m.h, lane_stride: m.w }, r);
         std::mem::swap(&mut a, &mut b);
-        box_pass(&a, &mut b, 0, m.w, m.h, m.w, 1, r);
+        box_pass(&a, &mut b, Lines { stride: m.w, count: m.h, lanes: m.w, lane_stride: 1 }, r);
         std::mem::swap(&mut a, &mut b);
     }
     Mask { w: m.w, h: m.h, a }

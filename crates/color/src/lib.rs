@@ -132,6 +132,23 @@ impl HdrMetadata {
     }
 }
 
+/// Which values of a stream's [`ColorInfo`] FilmCraft assumed, because none of the tags it reads
+/// them from (a container colour box, the colour description of the codec configuration) gives
+/// one it knows: the matrix is then the default for the frame size, and the transfer and
+/// primaries are BT.709. Range is not listed: the bitstreams define a range they don't signal as
+/// limited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ColorAssumed {
+    pub matrix: bool,
+    pub transfer: bool,
+    pub primaries: bool,
+}
+
+impl ColorAssumed {
+    /// Nothing read from the file.
+    pub const ALL: ColorAssumed = ColorAssumed { matrix: true, transfer: true, primaries: true };
+}
+
 impl ColorInfo {
     pub const SRGB_FULL: ColorInfo = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Srgb, primaries: Primaries::Bt709, range: Range::Full };
     pub const REC709: ColorInfo = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
@@ -243,8 +260,21 @@ pub fn linear_to_srgb_u8_table() -> &'static [u8; 4096] {
 
 #[inline]
 pub fn linear_to_srgb_u8(v: f32) -> u8 {
-    let i = (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize;
-    linear_to_srgb_u8_table()[i]
+    linear_to_srgb_u8_in(linear_to_srgb_u8_table(), v)
+}
+
+/// [`linear_to_srgb_u8`] through a table fetched once ([`linear_to_srgb_u8_table`]), for
+/// per-pixel loops.
+#[inline]
+pub fn linear_to_srgb_u8_in(table: &[u8; 4096], v: f32) -> u8 {
+    table[linear_to_srgb_index(v) as usize & 4095]
+}
+
+/// The [`linear_to_srgb_u8_table`] entry for `v` (0 for NaN). Free of branches and table reads,
+/// so a loop computing it for a run of values vectorises.
+#[inline]
+pub fn linear_to_srgb_index(v: f32) -> u16 {
+    (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as i32 as u16
 }
 
 /// Rec.709 luma of a linear or encoded RGB triple.
@@ -296,7 +326,11 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
 
 /// Parse `#rrggbb` / `#rrggbbaa` into 0..1 floats.
 pub fn parse_hex(s: &str) -> Option<[f32; 4]> {
-    let s = s.trim().trim_start_matches('#');
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let b = |i: usize| u8::from_str_radix(s.get(i..i + 2)?, 16).ok().map(|v| v as f32 / 255.0);
     match s.len() {
         6 => Some([b(0)?, b(2)?, b(4)?, 1.0]),
@@ -319,6 +353,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_hex_rejects_signs() {
+        assert_eq!(parse_hex("#+f+f+f"), None);
+        assert_eq!(parse_hex("#-f-f-f"), None);
+        assert_eq!(parse_hex("##0f0f0f"), None);
+        assert_eq!(parse_hex("#0f0f0"), None);
+        assert!(parse_hex("#0f0f0f").is_some());
+        assert!(parse_hex("0f0f0f80").is_some());
+    }
+
+    #[test]
     fn ycbcr_roundtrip() {
         for m in [Matrix::Bt601, Matrix::Bt709, Matrix::Bt2020Ncl] {
             let rgb = [0.8, 0.3, 0.1];
@@ -330,6 +374,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_srgb_index_is_the_table_position_clamped_and_rounded() {
+        let old = |v: f32| ((v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize).min(4095);
+        let mut v = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 2.0, -1.0, 1e-30];
+        v.extend((0..=8190).map(|k| k as f32 * 0.5 / 4095.0).flat_map(|b| [b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]));
+        for v in v {
+            assert_eq!(linear_to_srgb_index(v) as usize, old(v), "{v:e}");
+        }
+    }
     #[test]
     fn limited_range_levels() {
         assert_eq!(normalize_y(16, 8, Range::Limited), 0.0);

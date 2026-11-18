@@ -6,7 +6,10 @@
 //! our own where the reference does not pin them. Pixel implementations live in
 //! `filmcraft_render::vfx`.
 
-use super::*;
+use super::{
+    ADJUST, BLUR, COLOR_CORR, DISTORT, EffectDef, EffectKind, GENERATE, IMAGE_CONTROL, KEYING, PERSPECTIVE, ParamDef, ParamKind, ParamValue, STYLIZE,
+    TRANSFORM, VIDEO, ang, b, ch, col, f, fs, grp, pt, txt, video,
+};
 
 const IMMERSIVE: &[&str] = &["Video Effects", "Immersive Video"];
 pub(super) const LIGHTS: &[&str] = &["Video Effects", "Lights & Glows"];
@@ -68,6 +71,10 @@ pub fn auto_point(effect: &str, param: &str) -> Option<(f64, f64)> {
         ("checkerboard", "anchor") => (0.0, 0.0),
         ("write_on", "brush") => (0.5, 0.5),
         ("volumetric_rays", "center") => (0.5, 0.25),
+        ("four_color_gradient", "p1") => (0.25, 0.25),
+        ("four_color_gradient", "p2") => (0.75, 0.25),
+        ("four_color_gradient", "p3") => (0.25, 0.75),
+        ("four_color_gradient", "p4") => (0.75, 0.75),
         _ => return None,
     })
 }
@@ -793,6 +800,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
             VIDEO,
             vec![
                 ch("source", "Source", &["Sequence Timecode", "Media Timecode", "Clip Name", "File Name", "Frame Count", "Sequence Name"], 0),
+                ch("time_format", "Time Format", &["Timecode", "Feet + Frames 35mm", "Feet + Frames 16mm", "Frames"], 0),
                 pt("position", "Position", f64::NAN, f64::NAN),
                 ch("alignment", "Alignment", &["Bottom Center", "Bottom Left", "Bottom Right", "Top Center", "Top Left", "Top Right", "Custom"], 0),
                 fs("size", "Size", 6.0, (1.0, 100.0), (1.0, 30.0), "%", 1),
@@ -1163,6 +1171,8 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effect::find_effect_by_name;
+    use crate::{effect_defs, find_effect};
 
     /// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts).
     const CATALOGUE: &[(&str, &[&str])] = &[
@@ -1181,7 +1191,7 @@ mod tests {
                 "Unsharp Mask",
             ],
         ),
-        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
+        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Color Grading", "Tint", "Video Limiter", "Vignette"]),
         ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
         ("Generate", &["4-Color Gradient", "Gradient"]),
         ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),
@@ -1291,5 +1301,15 @@ mod tests {
         assert_eq!((v("upper_left").x, v("upper_left").y), (0.0, 0.0));
         assert_eq!((v("lower_right").x, v("lower_right").y), (1920.0, 1080.0));
         assert_eq!((v("upper_right").x, v("upper_right").y), (1920.0, 0.0));
+    }
+
+    #[test]
+    fn four_color_gradient_points_resolve_to_the_quarter_positions() {
+        let mut e = find_effect("four_color_gradient").unwrap().instance();
+        crate::resolve_auto_points(&mut e, (1920, 1080), (1920, 1080));
+        let v = |k: &str| e.param(k).unwrap().value.as_vec2().unwrap();
+        for (k, x, y) in [("p1", 480.0, 270.0), ("p2", 1440.0, 270.0), ("p3", 480.0, 810.0), ("p4", 1440.0, 810.0)] {
+            assert_eq!((v(k).x, v(k).y), (x, y), "{k}");
+        }
     }
 }

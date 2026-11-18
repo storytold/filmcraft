@@ -9,11 +9,17 @@
 //! is declined up front. Frame reordering (B-frames) is off, so compressed frames come out in
 //! presentation order with decode time = presentation time.
 //!
-//! Pictures go in as 8-bit 4:2:0 (NV12) pixel buffers filled from planar BT.709 limited-range
-//! Y'CbCr, the layout of `filmcraft_export::rgba_to_yuv420_8`, so the colours match the built-in
-//! encoder's. VideoToolbox encodes asynchronously; its output callback (on a VideoToolbox thread)
-//! copies each compressed frame (length-prefixed NAL units) into a queue that [`VtEncoder::encode`]
-//! and [`VtEncoder::flush`] drain.
+//! Pictures go in one of two ways ([`VtInput`]). On the RGB path ([`VtEncoder::with_rgba_input`],
+//! [`VtEncoder::encode_rgba`]) the export's straight sRGB RGBA8 picture is copied into a `32BGRA`
+//! pixel buffer tagged BT.709, and VideoToolbox converts it to the encoder's 4:2:0 itself, off the
+//! export's encode thread: there the CPU conversion competed with the render of the next frames for
+//! the thread pool and took longer than the hardware encode (20 ms a 1080p frame), leaving the
+//! encoder waiting. On the planar path ([`VtEncoder::new`], [`VtEncoder::encode`]) pictures go in as
+//! 8-bit 4:2:0 (NV12) pixel buffers filled from planar BT.709 limited-range Y'CbCr, the layout of
+//! `filmcraft_export::rgba_to_yuv420_8`, so the colours match the built-in encoder's; it is the
+//! fallback for a VideoToolbox that does not take RGB input. VideoToolbox encodes asynchronously;
+//! its output callback (on a VideoToolbox thread) copies each compressed frame (length-prefixed NAL
+//! units) into a queue that [`VtEncoder::encode_picture`] and [`VtEncoder::flush`] drain.
 //!
 //! The first frame is completed straight away: the parameter sets the container needs (SPS / PPS
 //! for H.264, VPS / SPS / PPS and VideoToolbox's own `hvcC` record for HEVC) come with the first
@@ -31,10 +37,11 @@ use objc2_core_media::{
     kCMVideoCodecType_HEVC,
 };
 use objc2_core_video::{
-    CVImageBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress,
-    kCVImageBufferColorPrimaries_ITU_R_709_2, kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVPixelBufferHeightKey,
-    kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
+    CVAttachmentMode, CVImageBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRow,
+    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane,
+    CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferPool, CVPixelBufferUnlockBaseAddress, kCVImageBufferColorPrimaries_ITU_R_709_2,
+    kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunction_ITU_R_709_2, kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+    kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
 };
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionCopyProperty, VTSessionSetProperty, kVTCompressionPropertyKey_AllowFrameReordering,
@@ -46,8 +53,10 @@ use objc2_video_toolbox::{
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 
-/// The pixel format of the buffers we hand over: biplanar Y + interleaved CbCr, video range.
+/// The pixel format of the planar input path: biplanar Y + interleaved CbCr, video range.
 const NV12_VIDEO: u32 = u32::from_be_bytes(*b"420v");
+/// The pixel format of the RGB input path: 8-bit B, G, R, A bytes (`kCVPixelFormatType_32BGRA`).
+const BGRA_8: u32 = u32::from_be_bytes(*b"BGRA");
 /// Largest compressed frame accepted from the callback (a sanity cap on a size we do not control).
 const MAX_FRAME_BYTES: usize = 256 << 20;
 /// Largest picture the hardware encoder is asked for.
@@ -86,6 +95,16 @@ pub enum VtRate {
     Cbr { kbps: u32 },
     /// Average bitrate with a ceiling over one second.
     Vbr { target_kbps: u32, max_kbps: u32 },
+}
+
+/// The pixel format a session takes its pictures in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VtInput {
+    /// Biplanar 8-bit 4:2:0 (NV12), filled from planar Y'CbCr by [`VtEncoder::encode`].
+    Nv12,
+    /// 8-bit BGRA, filled from the export's straight RGBA8 picture by [`VtEncoder::encode_rgba`];
+    /// VideoToolbox converts it to 4:2:0.
+    Bgra,
 }
 
 /// What to encode and how. Times are in a timescale of `timescale` units per second, one frame
@@ -400,11 +419,42 @@ fn fill(pb: &CVImageBuffer, w: usize, h: usize, y: &[u8], u: &[u8], v: &[u8]) ->
     Ok(())
 }
 
+/// Copy a straight RGBA8 picture (`w`×`h`, tightly packed) into a BGRA buffer, swapping R and B.
+fn fill_bgra(pb: &CVImageBuffer, w: usize, h: usize, rgba: &[u8]) -> Result<(), String> {
+    let row_bytes = w.checked_mul(4).ok_or("picture width overflows")?;
+    if rgba.len() < row_bytes.checked_mul(h).ok_or("picture size overflows")? {
+        return Err("the RGBA picture is smaller than its size".into());
+    }
+    // SAFETY: `pb` is a valid pixel buffer (the caller holds it retained).
+    if unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(0)) } != 0 {
+        return Err("cannot lock the input buffer".into());
+    }
+    let lock = Locked(pb);
+    let base = CVPixelBufferGetBaseAddress(pb) as *mut u8;
+    let stride = CVPixelBufferGetBytesPerRow(pb);
+    if base.is_null() || stride < row_bytes || CVPixelBufferGetWidth(pb) < w || CVPixelBufferGetHeight(pb) < h {
+        return Err("the input buffer is smaller than the picture".into());
+    }
+    let len = stride.checked_mul(h).ok_or("buffer size overflows")?;
+    // SAFETY: the buffer's base address is locked for writing while `lock` lives and the slice is
+    // only used before it is dropped; CoreVideo maps `bytes_per_row * height` bytes from the base,
+    // of which `len` covers the `h` rows written.
+    let dst = unsafe { std::slice::from_raw_parts_mut(base, len) };
+    for (row, src) in dst.chunks_mut(stride).zip(rgba.chunks_exact(row_bytes)).take(h) {
+        for (d, s) in row[..row_bytes].as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
+            *d = [s[2], s[1], s[0], s[3]];
+        }
+    }
+    drop(lock);
+    Ok(())
+}
+
 /// A hardware H.264 or HEVC encoder: feed pictures, collect compressed frames (in presentation
 /// order, which is decoding order since nothing is reordered).
 pub struct VtEncoder {
     session: Session,
     config: VtConfig,
+    input: VtInput,
     pool: Option<CFRetained<CVPixelBufferPool>>,
     attrs: CFRetained<CFDictionary<CFString, CFType>>,
     /// Pictures submitted so far.
@@ -454,8 +504,21 @@ fn require(status: i32, what: &str) -> Result<(), String> {
 }
 
 impl VtEncoder {
-    /// Create the session, or say why hardware encoding is not used for this configuration.
+    /// Create a session that takes planar Y'CbCr pictures ([`VtEncoder::encode`]), or say why
+    /// hardware encoding is not used for this configuration.
     pub fn new(config: VtConfig) -> Result<VtEncoder, String> {
+        Self::with_input(config, VtInput::Nv12)
+    }
+
+    /// Create a session that takes the export's RGBA pictures as they are ([`VtEncoder::encode_rgba`]):
+    /// VideoToolbox converts them to 4:2:0 itself, so the export's encode thread only copies. Whether
+    /// this VideoToolbox converts RGB is known from the first picture, not from creating the session:
+    /// `hardware_encode` replaces a session that refuses it with a planar one ([`VtEncoder::new`]).
+    pub fn with_rgba_input(config: VtConfig) -> Result<VtEncoder, String> {
+        Self::with_input(config, VtInput::Bgra)
+    }
+
+    fn with_input(config: VtConfig, input: VtInput) -> Result<VtEncoder, String> {
         let (w, h) = (config.width, config.height);
         if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
             return Err(format!("picture size {w}x{h}"));
@@ -474,7 +537,11 @@ impl VtEncoder {
         let require_key: &CFString = unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder };
         let spec = CFDictionary::<CFString, CFType>::from_slices(&[require_key], &[CFBoolean::new(true).as_ref()]);
 
-        let (pf, cw, ch) = (CFNumber::new_i32(NV12_VIDEO as i32), CFNumber::new_i32(w as i32), CFNumber::new_i32(h as i32));
+        let pixel_format = match input {
+            VtInput::Nv12 => NV12_VIDEO,
+            VtInput::Bgra => BGRA_8,
+        };
+        let (pf, cw, ch) = (CFNumber::new_i32(pixel_format as i32), CFNumber::new_i32(w as i32), CFNumber::new_i32(h as i32));
         let io = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
         // SAFETY: reading immutable framework constants.
         let (pf_key, w_key, h_key, io_key): (&CFString, &CFString, &CFString, &CFString) =
@@ -511,7 +578,7 @@ impl VtEncoder {
         require(unsafe { session.session.prepare_to_encode_frames() }, "to prepare the encoder")?;
         // SAFETY: the session is valid; the pool (if any) is returned retained.
         let pool = unsafe { session.session.pixel_buffer_pool() };
-        Ok(VtEncoder { session, config, pool, attrs, submitted: 0 })
+        Ok(VtEncoder { session, config, input, pool, attrs, submitted: 0 })
     }
 
     fn configure(session: &VTCompressionSession, c: &VtConfig) -> Result<(), String> {
@@ -614,6 +681,7 @@ impl VtEncoder {
         self.session.shared.params.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    /// An input buffer in the session's pixel format (from its pool when it has one).
     fn new_buffer(&self) -> Result<CFRetained<CVImageBuffer>, String> {
         let mut raw: *mut CVImageBuffer = std::ptr::null_mut();
         let status = match &self.pool {
@@ -625,7 +693,10 @@ impl VtEncoder {
                     None,
                     self.config.width as usize,
                     self.config.height as usize,
-                    NV12_VIDEO,
+                    match self.input {
+                        VtInput::Nv12 => NV12_VIDEO,
+                        VtInput::Bgra => BGRA_8,
+                    },
                     Some(self.attrs.as_ref()),
                     NonNull::from(&mut raw),
                 )
@@ -636,16 +707,68 @@ impl VtEncoder {
         Ok(unsafe { CFRetained::from_raw(raw) })
     }
 
-    /// Submit picture number `index` (planar BT.709 limited-range Y'CbCr, tightly packed) and return
-    /// the compressed frames that came out meanwhile.
+    /// Submit picture number `index` (planar BT.709 limited-range Y'CbCr, tightly packed) to a
+    /// planar session ([`VtEncoder::new`]) and return the compressed frames that came out meanwhile.
     pub fn encode(&mut self, index: u64, y: &[u8], u: &[u8], v: &[u8]) -> Result<Vec<VtPacket>, String> {
+        if self.input != VtInput::Nv12 {
+            return Err("this session takes RGBA pictures, not Y'CbCr planes".into());
+        }
         let buffer = self.new_buffer()?;
         fill(&buffer, self.config.width as usize, self.config.height as usize, y, u, v)?;
+        self.encode_picture(index, &buffer)
+    }
+
+    /// Submit picture number `index` (the export's straight RGBA8 picture, `width × height × 4`
+    /// bytes, tightly packed) to an RGB session ([`VtEncoder::with_rgba_input`]) and return the
+    /// compressed frames that came out meanwhile, with the time the copy into the input buffer
+    /// took (the CPU's whole share of the conversion; VideoToolbox does the rest). The buffer is
+    /// tagged BT.709 primaries and transfer, like the stream, so VideoToolbox applies no transfer
+    /// conversion: only the session's BT.709 matrix to limited-range 4:2:0, as the planar path does
+    /// on the CPU.
+    pub fn encode_rgba(&mut self, index: u64, rgba: &[u8]) -> Result<(Vec<VtPacket>, std::time::Duration), String> {
+        if self.input != VtInput::Bgra {
+            return Err("this session takes Y'CbCr planes, not RGBA pictures".into());
+        }
+        let t = std::time::Instant::now();
+        let buffer = self.new_buffer()?;
+        fill_bgra(&buffer, self.config.width as usize, self.config.height as usize, rgba)?;
+        // SAFETY: reading immutable framework constants.
+        let (primaries_key, transfer_key, primaries, transfer): (&CFString, &CFString, &CFString, &CFString) = unsafe {
+            (
+                kCVImageBufferColorPrimariesKey,
+                kCVImageBufferTransferFunctionKey,
+                kCVImageBufferColorPrimaries_ITU_R_709_2,
+                kCVImageBufferTransferFunction_ITU_R_709_2,
+            )
+        };
+        // SAFETY: `buffer` is a valid pixel buffer we hold retained; the keys are framework
+        // constants and the values the CFStrings CoreVideo documents for them.
+        unsafe {
+            buffer.set_attachment(primaries_key, primaries.as_ref(), CVAttachmentMode::ShouldPropagate);
+            buffer.set_attachment(transfer_key, transfer.as_ref(), CVAttachmentMode::ShouldPropagate);
+        }
+        let copied = t.elapsed();
+        Ok((self.encode_picture(index, &buffer)?, copied))
+    }
+
+    /// The format pictures go in as.
+    pub fn input(&self) -> VtInput {
+        self.input
+    }
+
+    /// Pictures submitted so far.
+    pub fn submitted(&self) -> u64 {
+        self.submitted
+    }
+
+    /// Submit a filled input buffer as picture number `index` and return the compressed frames
+    /// that came out meanwhile.
+    fn encode_picture(&mut self, index: u64, buffer: &CVImageBuffer) -> Result<Vec<VtPacket>, String> {
         let value = i64::try_from(index).ok().and_then(|i| i.checked_mul(i64::from(self.config.frame_duration))).ok_or("frame index out of range")?;
         let (pts, duration) = (cm_time(value, self.config.timescale), cm_time(i64::from(self.config.frame_duration), self.config.timescale));
         // SAFETY: the session and buffer are valid (VideoToolbox retains the buffer as long as it
         // needs it); no frame properties, refcon or info-flags out-pointer.
-        let status = unsafe { self.session.session.encode_frame(&buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
+        let status = unsafe { self.session.session.encode_frame(buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
         if status != 0 {
             return Err(format!("VTCompressionSessionEncodeFrame failed ({status})"));
         }

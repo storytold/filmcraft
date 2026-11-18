@@ -4,16 +4,19 @@
 //! header itself is not in this repository. To regenerate, compile a program printing `sizeof` /
 //! `offsetof` of the structures of `src/vaapi/ffi.rs`, the constants it uses, and the `value` word of
 //! each `seq_fields` / `pic_fields` bit-field set alone, against libva's MIT-licensed headers.
-#![allow(clippy::unreadable_literal)]
 
 use super::ffi::*;
 use std::mem::{align_of, offset_of, size_of};
 
 #[test]
-fn layouts_match_the_header() {
+fn vaconfigattrib_layout_matches_the_header() {
     assert_eq!((size_of::<VAConfigAttrib>(), align_of::<VAConfigAttrib>()), (8, 4), "VAConfigAttrib");
     assert_eq!(offset_of!(VAConfigAttrib, type_), 0, "VAConfigAttrib.type");
     assert_eq!(offset_of!(VAConfigAttrib, value), 4, "VAConfigAttrib.value");
+}
+
+#[test]
+fn vapictureh264_layout_matches_the_header() {
     assert_eq!((size_of::<VAPictureH264>(), align_of::<VAPictureH264>()), (36, 4), "VAPictureH264");
     assert_eq!(offset_of!(VAPictureH264, picture_id), 0, "VAPictureH264.picture_id");
     assert_eq!(offset_of!(VAPictureH264, frame_idx), 4, "VAPictureH264.frame_idx");
@@ -21,6 +24,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VAPictureH264, TopFieldOrderCnt), 12, "VAPictureH264.TopFieldOrderCnt");
     assert_eq!(offset_of!(VAPictureH264, BottomFieldOrderCnt), 16, "VAPictureH264.BottomFieldOrderCnt");
     assert_eq!(offset_of!(VAPictureH264, va_reserved), 20, "VAPictureH264.va_reserved");
+}
+
+#[test]
+fn vapictureparameterbufferh264_layout_matches_the_header() {
     assert_eq!((size_of::<VAPictureParameterBufferH264>(), align_of::<VAPictureParameterBufferH264>()), (672, 4), "VAPictureParameterBufferH264");
     assert_eq!(offset_of!(VAPictureParameterBufferH264, CurrPic), 0, "VAPictureParameterBufferH264.CurrPic");
     assert_eq!(offset_of!(VAPictureParameterBufferH264, ReferenceFrames), 36, "VAPictureParameterBufferH264.ReferenceFrames");
@@ -40,10 +47,18 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VAPictureParameterBufferH264, pic_fields), 632, "VAPictureParameterBufferH264.pic_fields");
     assert_eq!(offset_of!(VAPictureParameterBufferH264, frame_num), 636, "VAPictureParameterBufferH264.frame_num");
     assert_eq!(offset_of!(VAPictureParameterBufferH264, va_reserved), 640, "VAPictureParameterBufferH264.va_reserved");
+}
+
+#[test]
+fn vaiqmatrixbufferh264_layout_matches_the_header() {
     assert_eq!((size_of::<VAIQMatrixBufferH264>(), align_of::<VAIQMatrixBufferH264>()), (240, 4), "VAIQMatrixBufferH264");
     assert_eq!(offset_of!(VAIQMatrixBufferH264, ScalingList4x4), 0, "VAIQMatrixBufferH264.ScalingList4x4");
     assert_eq!(offset_of!(VAIQMatrixBufferH264, ScalingList8x8), 96, "VAIQMatrixBufferH264.ScalingList8x8");
     assert_eq!(offset_of!(VAIQMatrixBufferH264, va_reserved), 224, "VAIQMatrixBufferH264.va_reserved");
+}
+
+#[test]
+fn vasliceparameterbufferh264_layout_matches_the_header() {
     assert_eq!((size_of::<VASliceParameterBufferH264>(), align_of::<VASliceParameterBufferH264>()), (3128, 4), "VASliceParameterBufferH264");
     assert_eq!(offset_of!(VASliceParameterBufferH264, slice_data_size), 0, "VASliceParameterBufferH264.slice_data_size");
     assert_eq!(offset_of!(VASliceParameterBufferH264, slice_data_offset), 4, "VASliceParameterBufferH264.slice_data_offset");
@@ -59,6 +74,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferH264, disable_deblocking_filter_idc), 22, "VASliceParameterBufferH264.disable_deblocking_filter_idc");
     assert_eq!(offset_of!(VASliceParameterBufferH264, slice_alpha_c0_offset_div2), 23, "VASliceParameterBufferH264.slice_alpha_c0_offset_div2");
     assert_eq!(offset_of!(VASliceParameterBufferH264, slice_beta_offset_div2), 24, "VASliceParameterBufferH264.slice_beta_offset_div2");
+}
+
+#[test]
+fn va_h264_slice_reference_and_weight_layout_matches_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferH264, RefPicList0), 28, "VASliceParameterBufferH264.RefPicList0");
     assert_eq!(offset_of!(VASliceParameterBufferH264, RefPicList1), 1180, "VASliceParameterBufferH264.RefPicList1");
     assert_eq!(offset_of!(VASliceParameterBufferH264, luma_log2_weight_denom), 2332, "VASliceParameterBufferH264.luma_log2_weight_denom");
@@ -76,6 +95,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferH264, chroma_weight_l1), 2854, "VASliceParameterBufferH264.chroma_weight_l1");
     assert_eq!(offset_of!(VASliceParameterBufferH264, chroma_offset_l1), 2982, "VASliceParameterBufferH264.chroma_offset_l1");
     assert_eq!(offset_of!(VASliceParameterBufferH264, va_reserved), 3112, "VASliceParameterBufferH264.va_reserved");
+}
+
+#[test]
+fn vaimageformat_layout_matches_the_header() {
     assert_eq!((size_of::<VAImageFormat>(), align_of::<VAImageFormat>()), (48, 4), "VAImageFormat");
     assert_eq!(offset_of!(VAImageFormat, fourcc), 0, "VAImageFormat.fourcc");
     assert_eq!(offset_of!(VAImageFormat, byte_order), 4, "VAImageFormat.byte_order");
@@ -86,6 +109,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VAImageFormat, blue_mask), 24, "VAImageFormat.blue_mask");
     assert_eq!(offset_of!(VAImageFormat, alpha_mask), 28, "VAImageFormat.alpha_mask");
     assert_eq!(offset_of!(VAImageFormat, va_reserved), 32, "VAImageFormat.va_reserved");
+}
+
+#[test]
+fn vaimage_layout_matches_the_header() {
     assert_eq!((size_of::<VAImage>(), align_of::<VAImage>()), (120, 4), "VAImage");
     assert_eq!(offset_of!(VAImage, image_id), 0, "VAImage.image_id");
     assert_eq!(offset_of!(VAImage, format), 4, "VAImage.format");
@@ -100,11 +127,19 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VAImage, entry_bytes), 96, "VAImage.entry_bytes");
     assert_eq!(offset_of!(VAImage, component_order), 100, "VAImage.component_order");
     assert_eq!(offset_of!(VAImage, va_reserved), 104, "VAImage.va_reserved");
+}
+
+#[test]
+fn vapicturehevc_layout_matches_the_header() {
     assert_eq!((size_of::<VAPictureHEVC>(), align_of::<VAPictureHEVC>()), (28, 4), "VAPictureHEVC");
     assert_eq!(offset_of!(VAPictureHEVC, picture_id), 0, "VAPictureHEVC.picture_id");
     assert_eq!(offset_of!(VAPictureHEVC, pic_order_cnt), 4, "VAPictureHEVC.pic_order_cnt");
     assert_eq!(offset_of!(VAPictureHEVC, flags), 8, "VAPictureHEVC.flags");
     assert_eq!(offset_of!(VAPictureHEVC, va_reserved), 12, "VAPictureHEVC.va_reserved");
+}
+
+#[test]
+fn vapictureparameterbufferhevc_layout_matches_the_header() {
     assert_eq!((size_of::<VAPictureParameterBufferHEVC>(), align_of::<VAPictureParameterBufferHEVC>()), (604, 4), "VAPictureParameterBufferHEVC");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, CurrPic), 0, "VAPictureParameterBufferHEVC.CurrPic");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, ReferenceFrames), 28, "VAPictureParameterBufferHEVC.ReferenceFrames");
@@ -177,6 +212,10 @@ fn layouts_match_the_header() {
         473,
         "VAPictureParameterBufferHEVC.log2_parallel_merge_level_minus2"
     );
+}
+
+#[test]
+fn va_hevc_picture_tile_and_reference_layout_matches_the_header() {
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, num_tile_columns_minus1), 474, "VAPictureParameterBufferHEVC.num_tile_columns_minus1");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, num_tile_rows_minus1), 475, "VAPictureParameterBufferHEVC.num_tile_rows_minus1");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, column_width_minus1), 476, "VAPictureParameterBufferHEVC.column_width_minus1");
@@ -204,6 +243,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, num_extra_slice_header_bits), 567, "VAPictureParameterBufferHEVC.num_extra_slice_header_bits");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, st_rps_bits), 568, "VAPictureParameterBufferHEVC.st_rps_bits");
     assert_eq!(offset_of!(VAPictureParameterBufferHEVC, va_reserved), 572, "VAPictureParameterBufferHEVC.va_reserved");
+}
+
+#[test]
+fn vasliceparameterbufferhevc_layout_matches_the_header() {
     assert_eq!((size_of::<VASliceParameterBufferHEVC>(), align_of::<VASliceParameterBufferHEVC>()), (264, 4), "VASliceParameterBufferHEVC");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, slice_data_size), 0, "VASliceParameterBufferHEVC.slice_data_size");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, slice_data_offset), 4, "VASliceParameterBufferHEVC.slice_data_offset");
@@ -211,6 +254,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, slice_data_byte_offset), 12, "VASliceParameterBufferHEVC.slice_data_byte_offset");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, slice_segment_address), 16, "VASliceParameterBufferHEVC.slice_segment_address");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, RefPicList), 20, "VASliceParameterBufferHEVC.RefPicList");
+}
+
+#[test]
+fn va_hevc_slice_flags_and_weight_layout_matches_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, LongSliceFlags), 52, "VASliceParameterBufferHEVC.LongSliceFlags");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, collocated_ref_idx), 56, "VASliceParameterBufferHEVC.collocated_ref_idx");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, num_ref_idx_l0_active_minus1), 57, "VASliceParameterBufferHEVC.num_ref_idx_l0_active_minus1");
@@ -235,6 +282,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, entry_offset_to_subset_array), 250, "VASliceParameterBufferHEVC.entry_offset_to_subset_array");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, slice_data_num_emu_prevn_bytes), 252, "VASliceParameterBufferHEVC.slice_data_num_emu_prevn_bytes");
     assert_eq!(offset_of!(VASliceParameterBufferHEVC, va_reserved), 256, "VASliceParameterBufferHEVC.va_reserved");
+}
+
+#[test]
+fn vaiqmatrixbufferhevc_layout_matches_the_header() {
     assert_eq!((size_of::<VAIQMatrixBufferHEVC>(), align_of::<VAIQMatrixBufferHEVC>()), (1016, 4), "VAIQMatrixBufferHEVC");
     assert_eq!(offset_of!(VAIQMatrixBufferHEVC, ScalingList4x4), 0, "VAIQMatrixBufferHEVC.ScalingList4x4");
     assert_eq!(offset_of!(VAIQMatrixBufferHEVC, ScalingList8x8), 96, "VAIQMatrixBufferHEVC.ScalingList8x8");
@@ -255,6 +306,10 @@ fn constants_match_the_header() {
     assert_eq!(VA_STATUS_ERROR_DECODING_ERROR as i64, 23, "VA_STATUS_ERROR_DECODING_ERROR");
     assert_eq!(VA_INVALID_ID as i64, 4294967295, "VA_INVALID_ID");
     assert_eq!(VA_INVALID_SURFACE as i64, 4294967295, "VA_INVALID_SURFACE");
+}
+
+#[test]
+fn profiles_and_buffers_constants_match_the_header() {
     assert_eq!(VAProfileH264Main as i64, 6, "VAProfileH264Main");
     assert_eq!(VAProfileH264High as i64, 7, "VAProfileH264High");
     assert_eq!(VAProfileH264ConstrainedBaseline as i64, 13, "VAProfileH264ConstrainedBaseline");
@@ -272,6 +327,10 @@ fn constants_match_the_header() {
     assert_eq!(VA_PICTURE_H264_LONG_TERM_REFERENCE as i64, 16, "VA_PICTURE_H264_LONG_TERM_REFERENCE");
     assert_eq!(VA_FOURCC_NV12 as i64, 842094158, "VA_FOURCC_NV12");
     assert_eq!(VA_FOURCC_P010 as i64, 808530000, "VA_FOURCC_P010");
+}
+
+#[test]
+fn hevc_constants_match_the_header() {
     assert_eq!(VAProfileHEVCMain as i64, 17, "VAProfileHEVCMain");
     assert_eq!(VAProfileHEVCMain10 as i64, 18, "VAProfileHEVCMain10");
     assert_eq!(VA_RT_FORMAT_YUV420_10 as i64, 256, "VA_RT_FORMAT_YUV420_10");
@@ -298,6 +357,10 @@ fn bit_fields_match_the_header() {
     assert_eq!(3u32 << seq_bits::PIC_ORDER_CNT_TYPE, 0x3000, "seq_fields.pic_order_cnt_type");
     assert_eq!(15u32 << seq_bits::LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4, 0x3c000, "seq_fields.log2_max_pic_order_cnt_lsb_minus4");
     assert_eq!(1u32 << seq_bits::DELTA_PIC_ORDER_ALWAYS_ZERO, 0x40000, "seq_fields.delta_pic_order_always_zero_flag");
+}
+
+#[test]
+fn h264_picture_bit_fields_match_the_header() {
     assert_eq!(1u32 << pic_bits::ENTROPY_CODING_MODE, 0x1, "pic_fields.entropy_coding_mode_flag");
     assert_eq!(1u32 << pic_bits::WEIGHTED_PRED, 0x2, "pic_fields.weighted_pred_flag");
     assert_eq!(3u32 << pic_bits::WEIGHTED_BIPRED_IDC, 0xc, "pic_fields.weighted_bipred_idc");
@@ -308,6 +371,10 @@ fn bit_fields_match_the_header() {
     assert_eq!(1u32 << pic_bits::DEBLOCKING_FILTER_CONTROL_PRESENT, 0x100, "pic_fields.deblocking_filter_control_present_flag");
     assert_eq!(1u32 << pic_bits::REDUNDANT_PIC_CNT_PRESENT, 0x200, "pic_fields.redundant_pic_cnt_present_flag");
     assert_eq!(1u32 << pic_bits::REFERENCE_PIC, 0x400, "pic_fields.reference_pic_flag");
+}
+
+#[test]
+fn hevc_picture_bit_fields_match_the_header() {
     assert_eq!(3u32 << hevc_pic_bits::CHROMA_FORMAT_IDC, 0x3, "hevc pic_fields.chroma_format_idc");
     assert_eq!(1u32 << hevc_pic_bits::SEPARATE_COLOUR_PLANE, 0x4, "hevc pic_fields.separate_colour_plane_flag");
     assert_eq!(1u32 << hevc_pic_bits::PCM_ENABLED, 0x8, "hevc pic_fields.pcm_enabled_flag");
@@ -328,6 +395,10 @@ fn bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_pic_bits::PCM_LOOP_FILTER_DISABLED, 0x40000, "hevc pic_fields.pcm_loop_filter_disabled_flag");
     assert_eq!(1u32 << hevc_pic_bits::NO_PIC_REORDERING, 0x80000, "hevc pic_fields.NoPicReorderingFlag");
     assert_eq!(1u32 << hevc_pic_bits::NO_BI_PRED, 0x100000, "hevc pic_fields.NoBiPredFlag");
+}
+
+#[test]
+fn hevc_slice_parsing_bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_parsing_bits::LISTS_MODIFICATION_PRESENT, 0x1, "hevc slice_parsing_fields.lists_modification_present_flag");
     assert_eq!(1u32 << hevc_slice_parsing_bits::LONG_TERM_REF_PICS_PRESENT, 0x2, "hevc slice_parsing_fields.long_term_ref_pics_present_flag");
     assert_eq!(1u32 << hevc_slice_parsing_bits::SPS_TEMPORAL_MVP_ENABLED, 0x4, "hevc slice_parsing_fields.sps_temporal_mvp_enabled_flag");
@@ -350,6 +421,10 @@ fn bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_parsing_bits::RAP_PIC, 0x800, "hevc slice_parsing_fields.RapPicFlag");
     assert_eq!(1u32 << hevc_slice_parsing_bits::IDR_PIC, 0x1000, "hevc slice_parsing_fields.IdrPicFlag");
     assert_eq!(1u32 << hevc_slice_parsing_bits::INTRA_PIC, 0x2000, "hevc slice_parsing_fields.IntraPicFlag");
+}
+
+#[test]
+fn hevc_slice_bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_bits::LAST_SLICE_OF_PIC, 0x1, "LongSliceFlags.LastSliceOfPic");
     assert_eq!(1u32 << hevc_slice_bits::DEPENDENT_SLICE_SEGMENT, 0x2, "LongSliceFlags.dependent_slice_segment_flag");
     assert_eq!(3u32 << hevc_slice_bits::SLICE_TYPE, 0xc, "LongSliceFlags.slice_type");

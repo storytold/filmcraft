@@ -1,7 +1,8 @@
 //! Clip / Track Fx Editor windows: graphical editors for the audio effects that need one
 //! (Parametric Equalizer curve, Graphic Equalizer 10/20/30 bands, Multiband Compressor,
 //! Dynamics). Opened from Effect Controls ("Custom Setup ▸ Edit…") and from a track's effect
-//! slot in the Audio Track Mixer.
+//! slot in the Audio Track Mixer, where every other insert gets a generic editor with one control
+//! per parameter (`fxEditor.<fx>.choice.<param>` for choices).
 //!
 //! Curves are computed by the real DSP (`render::audio_fx::configured` →
 //! `AudioEffect::response_db` / `transfer_db`), so what is drawn is what is heard. Drags preview
@@ -37,6 +38,20 @@ pub fn has_editor(effect: &str) -> bool {
     matches!(effect, "parametric_eq" | "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" | "multiband_compressor" | "dynamics_rack")
 }
 
+/// Whether the Track Fx Editor can edit `effect` as a mixer insert: a graphical editor, or the
+/// generic one for any effect with parameters (inserts have no Effect Controls rows, #1758).
+pub fn can_edit_insert(effect: &str) -> bool {
+    has_editor(effect) || generic_params(effect).next().is_some()
+}
+
+/// The parameters the generic editor shows: numbers, switches and choices.
+fn generic_params(effect: &str) -> impl Iterator<Item = &'static filmcraft_project::ParamDef> {
+    filmcraft_project::find_effect(effect)
+        .into_iter()
+        .flat_map(|d| d.params.iter())
+        .filter(|p| matches!(p.kind, ParamKind::Float { .. } | ParamKind::Bool | ParamKind::Choice(_)))
+}
+
 /// Open (or raise) the editor for a target.
 pub fn open(app: &mut FilmcraftApp, target: FxTarget) {
     if !app.ui.audio_fx_editors.contains(&target) {
@@ -54,7 +69,7 @@ fn resolve(app: &FilmcraftApp, target: &FxTarget) -> Option<(EffectInstance, Tic
             let (tid, it) = seq.find_item(ClipId(*clip))?;
             let e = it.effects.get(*index)?.clone();
             let track = seq.track(tid).map(|t| t.name.clone()).unwrap_or_default();
-            let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+            let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
             Some((e, mt, format!("{track}, {}", it.name)))
         }
         FxTarget::Insert { strip, slot } => {
@@ -72,10 +87,13 @@ fn key(target: &FxTarget) -> String {
     }
 }
 
-/// Command that sets one parameter on the target.
-fn set_cmd(target: &FxTarget, pid: &str, v: Value) -> (String, Value) {
+/// Command that sets one parameter on the target. A number on an insert goes through its mixer
+/// lane (`fx.<slot>.<param>`), which writes a keyframe at the playhead when the lane is automated
+/// and read, and sets the value otherwise; switches and choices are plain settings.
+fn set_cmd(target: &FxTarget, pid: &str, v: Value, lane: bool) -> (String, Value) {
     match target {
         FxTarget::Clip { clip, index } => ("effects.setParam".into(), json!({"clip": clip, "effect": index, "param": pid, "value": v})),
+        FxTarget::Insert { strip, slot } if lane => ("mixer.setValue".into(), json!({"strip": strip, "lane": format!("fx.{slot}.{pid}"), "value": v})),
         FxTarget::Insert { strip, slot } => ("mixer.setInsert".into(), json!({"strip": strip, "slot": slot, "params": {pid: v}})),
     }
 }
@@ -107,9 +125,13 @@ impl Ed<'_> {
         }
     }
     fn commit(&mut self, pid: &str, v: f64) {
-        let is_bool = matches!(self.inst.def().and_then(|d| d.param(pid)).map(|p| &p.kind), Some(ParamKind::Bool));
-        let val = if is_bool { json!(v >= 0.5) } else { json!(v) };
-        self.acts.push(set_cmd(self.target, pid, val));
+        let kind = self.inst.def().and_then(|d| d.param(pid)).map(|p| &p.kind);
+        let (val, lane) = match kind {
+            Some(ParamKind::Bool) => (json!(v >= 0.5), false),
+            Some(ParamKind::Float { min, max, .. }) => (json!(v.clamp(*min, *max)), true),
+            _ => (json!(v), false),
+        };
+        self.acts.push(set_cmd(self.target, pid, val, lane));
         // keep showing the new value until the project catches up this frame
         self.drafts.insert(pid.to_string(), v);
     }
@@ -163,6 +185,27 @@ impl Ed<'_> {
             self.commit(pid, v);
         }
     }
+    /// [`Self::slider`] over the parameter's soft range (the useful part of a wide one, as Effect
+    /// Controls' sliders); a typed value may go up to the hard range.
+    fn soft_slider(&mut self, ui: &mut egui::Ui, pid: &str, label: &str) {
+        let (lo, hi) = match self.inst.def().and_then(|d| d.param(pid)).map(|p| &p.kind) {
+            Some(ParamKind::Float { soft_min, soft_max, .. }) => (*soft_min, *soft_max),
+            _ => (0.0, 1.0),
+        };
+        let unit = self.range(pid).2;
+        let mut v = self.v(pid);
+        let r =
+            ui.add(egui::Slider::new(&mut v, lo..=hi).clamping(egui::SliderClamping::Never).text(format!("{label} {unit}").trim().to_string()).max_decimals(2));
+        self.auto(format!("fxEditor.{}.param.{pid}", self.fx), r.rect, label);
+        if r.dragged() {
+            self.drafts.insert(pid.to_string(), v);
+        }
+        if r.drag_stopped() {
+            self.release(ui, &[pid]);
+        } else if r.changed() && !r.dragged() {
+            self.commit(pid, v);
+        }
+    }
     /// A toggle button for a Bool parameter.
     fn toggle(&mut self, ui: &mut egui::Ui, pid: &str, label: &str) {
         let on = self.on(pid);
@@ -183,7 +226,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             close.push(target);
             continue;
         };
-        if !has_editor(&inst.effect) {
+        let editable = match target {
+            FxTarget::Insert { .. } => can_edit_insert(&inst.effect),
+            FxTarget::Clip { .. } => has_editor(&inst.effect),
+        };
+        if !editable {
             close.push(target);
             continue;
         }
@@ -191,18 +238,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let kind = if matches!(target, FxTarget::Clip { .. }) { tl!("Clip Fx Editor") } else { tl!("Track Fx Editor") };
         let title = format!("{kind} - {name}: {place}");
         let k = key(&target);
-        let drafts_id = egui::Id::new(("fx-editor-drafts", &k));
+        let drafts_id = egui::Id::unique(("fx-editor-drafts", &k));
         let drafts: HashMap<String, f64> = ctx.data(|d| d.get_temp(drafts_id)).unwrap_or_default();
         let fx_id = inst.effect.clone();
         let mut ed = Ed { t: app.tokens, fx: &fx_id, target: &target, inst, mt, drafts, acts: Vec::new(), autos: Vec::new() };
         let mut open = true;
         let mut closed = false;
-        egui::Window::new(title).id(egui::Id::new(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(title).id(egui::Id::unique(("fx-editor", &k))).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             match ed.fx {
                 "parametric_eq" => parametric(ui, &mut ed),
                 "graphic_eq" | "graphic_eq_20" | "graphic_eq_30" => graphic(ui, &mut ed),
                 "multiband_compressor" => multiband(ui, &mut ed),
-                _ => dynamics(ui, &mut ed),
+                "dynamics_rack" => dynamics(ui, &mut ed),
+                _ => generic(ui, &mut ed),
             }
             ui.separator();
             ui.horizontal(|ui| {
@@ -221,6 +269,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 p.get("param")
                     .and_then(Value::as_str)
                     .map(str::to_string)
+                    .or_else(|| p.get("lane").and_then(Value::as_str).and_then(|l| l.splitn(3, '.').nth(2)).map(str::to_string))
                     .or_else(|| p.get("params").and_then(Value::as_object).and_then(|o| o.keys().next().cloned()))
             })
             .collect();
@@ -322,7 +371,7 @@ fn parametric(ui: &mut egui::Ui, ed: &mut Ed) {
         let g = if gain { ed.v(&g_id) } else { 0.0 };
         let c = pos2(x_of(f, r), y_of(g, r, range));
         let nr = Rect::from_center_size(c, vec2(16.0, 16.0));
-        let id = egui::Id::new(("peq-node", ed.target.clone(), pre));
+        let id = egui::Id::unique(("peq-node", ed.target.clone(), pre));
         let resp = ui.interact(nr, id, Sense::click_and_drag());
         let on = ed.on(&on_id);
         let col = if on { ed.t.eq_node } else { ed.t.eq_node_off };
@@ -390,7 +439,7 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
         let v = ed.v(&pid);
         let ky = track.center().y - (v / 24.0) as f32 * track.height() * 0.5;
         let knob = Rect::from_center_size(pos2(x, ky), vec2(colw.min(18.0), 8.0));
-        let id = egui::Id::new(("geq-band", ed.target.clone(), i));
+        let id = egui::Id::unique(("geq-band", ed.target.clone(), i));
         let resp = ui.interact(knob.union(track).expand(3.0), id, Sense::click_and_drag());
         ui.painter().rect_filled(knob, 2.0, if resp.hovered() || resp.dragged() { ed.t.eq_knob_active } else { ed.t.eq_knob });
         ui.painter().text(pos2(x, area.max.y - 22.0), Align2::CENTER_CENTER, format!("{v:+.0}"), Tokens::ui(8.5), ed.t.text_dim);
@@ -470,7 +519,7 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     for (k, pid) in ["xo1", "xo2", "xo3"].iter().enumerate() {
         let x = edges[k + 1];
         let hr = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
-        let resp = ui.interact(hr, egui::Id::new(("mb-xo", ed.target.clone(), k)), Sense::drag());
+        let resp = ui.interact(hr, egui::Id::unique(("mb-xo", ed.target.clone(), k)), Sense::drag());
         ui.painter()
             .line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], Stroke::new(if resp.hovered() || resp.dragged() { 2.5 } else { 1.5 }, ed.t.crossover_handle));
         ui.painter().text(pos2(x + 3.0, r.min.y + 2.0), Align2::LEFT_TOP, format!("{:.0} Hz", xo[k]), Tokens::ui(9.0), ed.t.text_dim);
@@ -517,6 +566,41 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
 }
 
 // ------------------------------------------------------------------------------- dynamics
+
+/// Any other effect: a row per parameter (slider, switch or choice).
+fn generic(ui: &mut egui::Ui, ed: &mut Ed) {
+    ui.set_min_width(360.0);
+    let fx = ed.fx.to_string();
+    for pd in generic_params(&fx) {
+        let label = crate::i18n::t(pd.label);
+        match &pd.kind {
+            ParamKind::Float { .. } => ed.soft_slider(ui, pd.id, label),
+            ParamKind::Bool => ed.toggle(ui, pd.id, label),
+            ParamKind::Choice(opts) => {
+                let cur = ed.v(pd.id).max(0.0) as usize;
+                let shown = opts.get(cur).map_or("", |o| crate::i18n::t(o));
+                let mut pick = None;
+                ui.horizontal(|ui| {
+                    let r = craft_ui::ComboBox::from_id_salt(("fx-choice", ed.target.clone(), pd.id)).selected_text(shown).show_ui(ui, |ui| {
+                        for (i, o) in opts.iter().enumerate() {
+                            let b = ui.selectable_label(i == cur, crate::i18n::t(o));
+                            ed.auto(format!("fxEditor.{}.choice.{}.{i}", ed.fx, pd.id), b.rect, o);
+                            if b.clicked() && i != cur {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+                    ui.label(label);
+                    ed.auto(format!("fxEditor.{}.choice.{}", ed.fx, pd.id), r.response.rect, label);
+                });
+                if let Some(i) = pick {
+                    ed.acts.push(set_cmd(ed.target, pd.id, json!(i), false));
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 fn dynamics(ui: &mut egui::Ui, ed: &mut Ed) {
     ui.horizontal_top(|ui| {

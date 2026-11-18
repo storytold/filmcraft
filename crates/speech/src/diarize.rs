@@ -46,6 +46,9 @@ impl Default for Params {
 const N_MELS: usize = 40;
 const N_MFCC: usize = 20;
 const FRAME_TICKS: i64 = TICKS_PER_SAMPLE * crate::mel::HOP as i64;
+/// Agglomerative linkage is cubic in the number of turns; beyond this, retain a safe single-speaker
+/// transcript instead of making a document-controlled amount of work.
+const MAX_CLUSTER_CHUNKS: usize = 256;
 
 /// Word index ranges of the chunks.
 pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
@@ -123,6 +126,9 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         1
     };
     if ch.len() < 2 {
+        return one(t);
+    }
+    if ch.len() > MAX_CLUSTER_CHUNKS {
         return one(t);
     }
     let (frames, energy, mfcc) = mfcc_frames(audio);
@@ -328,5 +334,13 @@ mod tests {
         let w = |a: f64, b: f64| Word::new("x", seconds_tick(a), seconds_tick(b));
         let t = Transcript { words: vec![w(0.0, 0.5), w(0.5, 1.0), w(2.0, 2.2), w(3.0, 3.6), w(3.6, 4.4)], ..Default::default() };
         assert_eq!(chunks(&t, &Params::default()), vec![0..3, 3..5]);
+    }
+
+    #[test]
+    fn excessive_turns_fall_back_without_clustering() {
+        let words = (0..=MAX_CLUSTER_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
+        let mut t = Transcript { words, ..Default::default() };
+        assert_eq!(diarize(&[], &mut t, &Params::default()), 1);
+        assert!(t.words.iter().all(|word| word.speaker == Some(0)));
     }
 }

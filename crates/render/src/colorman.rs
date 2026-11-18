@@ -91,14 +91,16 @@ pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pip
 
 /// Working space → monitor (SDR BT.709) for a non-plain pipeline; no-op otherwise.
 pub fn to_display(img: &mut Image, pipe: &ColorPipeline) {
-    if pipe.is_plain() {
+    if display_is_identity(pipe) {
         return;
     }
     let o = display_transform(pipe);
-    if o.is_identity() {
-        return;
-    }
     img.map_rgb(|c, _, _| o.apply(c));
+}
+
+/// Whether [`to_display`] leaves every picture as it is.
+pub fn display_is_identity(pipe: &ColorPipeline) -> bool {
+    pipe.is_plain() || display_transform(pipe).is_identity()
 }
 
 pub fn display_transform(pipe: &ColorPipeline) -> Arc<OutputTransform> {
@@ -145,7 +147,7 @@ mod tests {
                 proxy: None,
                 identity: None,
             };
-            let id = p.add_item("hdr", Label::Iris, ItemKind::Media(clip), None);
+            let id = p.add_item("hdr", Label::Iris, ItemKind::Media(Box::new(clip)), None);
             (p, id)
         };
         let out = |hdr: Option<HdrMetadata>, nits: f32| {

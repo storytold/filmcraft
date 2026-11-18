@@ -260,10 +260,9 @@ fn duplicated_fat_sector_chain_loop_fails_fast() {
     put_u32(&mut fat, 0, 0); // FAT[0] = 0: sector 0 is followed by itself
     b.extend_from_slice(&fat);
     b.resize(110 * ss, 0); // big enough for 109 FAT sectors to pass the size check
-    // The message names the bound the walk stopped at: 111, this file's 110 sectors + 1, not the
-    // 109 * 1024 = 111,616 entries of the inflated FAT that the old guard allowed (a 457 MB buffer).
-    let expect = format!("sector chain loops: more than 111 sectors in a {}-byte file", b.len());
-    assert_eq!(CompoundFile::open(&b).unwrap_err(), Error::Invalid(expect));
+    // The shared reader rejects the duplicated FAT sector before constructing the inflated
+    // table or walking the directory chain. This is earlier than the old app's loop bound.
+    assert_eq!(CompoundFile::open(&b).unwrap_err(), Error::Invalid("FAT sector 0 is listed twice".into()));
 }
 
 /// Positive control for the chain bound: the longest chains a file can hold still read back, in
@@ -290,4 +289,157 @@ fn chains_filling_the_file_still_read() {
         assert_eq!(b.len(), (1 + 64 + 2) * ss, "header, stream, directory, FAT");
         assert_eq!(CompoundFile::open(&b).unwrap().read_path("big").unwrap(), data);
     }
+}
+
+#[test]
+fn nul_in_a_name_is_rejected() {
+    assert!(validate_name("a\0b").is_err());
+    assert!(validate_name("\0").is_err());
+    let mut w = Writer::default();
+    assert!(matches!(w.stream(Writer::ROOT, "a\0b", vec![1]), Err(Error::BadName(_))));
+    assert!(matches!(w.storage(Writer::ROOT, "x\0", [0; 16]), Err(Error::BadName(_))));
+}
+
+/// The allocating comparison compare_names used before the iterator rewrite.
+fn compare_names_old(a: &str, b: &str) -> std::cmp::Ordering {
+    let ua: Vec<u16> = a.encode_utf16().collect();
+    let ub: Vec<u16> = b.encode_utf16().collect();
+    ua.len().cmp(&ub.len()).then_with(|| ua.iter().map(|&u| upper(u)).cmp(ub.iter().map(|&u| upper(u))))
+}
+
+#[test]
+fn compare_names_matches_the_allocating_version() {
+    let names = [
+        "",
+        "a",
+        "A",
+        "b",
+        "B",
+        "ab",
+        "AB",
+        "aB",
+        "abc",
+        "ABD",
+        "Abc",
+        "aBC",
+        "z",
+        "Z",
+        "{",
+        "_",
+        "ß",
+        "SS",
+        "ss",
+        "ü",
+        "Ü",
+        "é",
+        "É",
+        "ǆ",
+        "ǅ",
+        "Ǆ",
+        "ストリーム",
+        "ｓｔ",
+        "Ｓｔ",
+        "😀",
+        "😁",
+        "a😀",
+        "A😀",
+        "\u{ffff}",
+        "\u{10000}",
+        "Header-2",
+        "HEADER-2",
+        "header-2",
+        "Mobs-1901{a}",
+        "mobs-1901{A}",
+    ];
+    for a in names {
+        for b in names {
+            assert_eq!(compare_names(a, b), compare_names_old(a, b), "{a:?} vs {b:?}");
+        }
+    }
+    // every BMP scalar against a few fixed names
+    for c in (0u32..=0x10FFFF).filter_map(char::from_u32) {
+        let s = c.to_string();
+        for other in ["a", "Z", "ü", "ǆ"] {
+            assert_eq!(compare_names(&s, other), compare_names_old(&s, other));
+            assert_eq!(compare_names(other, &s), compare_names_old(other, &s));
+        }
+    }
+}
+
+/// Name lookups go through a sorted per-storage index: every child of a wide storage resolves
+/// (in any case), and a hostile file whose sibling tree is out of order still resolves by name,
+/// with the first child in tree order winning a duplicated name.
+#[test]
+fn child_lookup_uses_a_sorted_index() {
+    let mut w = Writer::default();
+    for i in 0..2000 {
+        w.stream(Writer::ROOT, &format!("m{i}"), vec![i as u8]).unwrap();
+    }
+    let b = w.finish();
+    let cf = CompoundFile::open(&b).unwrap();
+    for i in (0..2000).step_by(37) {
+        let id = cf.child(0, &format!("M{i}")).unwrap();
+        assert_eq!(cf.read(id).unwrap(), vec![i as u8]);
+    }
+    assert_eq!(cf.child(0, "m2000"), None);
+    assert_eq!(cf.child(12345, "m1"), None);
+
+    let mut w = Writer::default();
+    for name in ["aa", "bb", "cc"] {
+        w.stream(Writer::ROOT, name, name.as_bytes().to_vec()).unwrap();
+    }
+    let mut b = w.finish();
+    let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+    let at = |b: &[u8], s: &str| b.windows(4).position(|w| w == utf16(s)).unwrap();
+    // swap the names "aa" and "cc": the tree's in-order walk is now cc, bb, aa
+    let (a, c) = (at(&b, "aa"), at(&b, "cc"));
+    b[a..a + 4].copy_from_slice(&utf16("cc"));
+    b[c..c + 4].copy_from_slice(&utf16("aa"));
+    let cf = CompoundFile::open(&b).unwrap();
+    let names: Vec<&str> = cf.root().children.iter().map(|&c| cf.entries[c].name.as_str()).collect();
+    assert_eq!(names, ["cc", "bb", "aa"]);
+    assert_eq!(cf.read_path("AA").unwrap(), b"cc");
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+    assert_eq!(cf.read_path("bb").unwrap(), b"bb");
+    // a duplicated name resolves to the first child in tree order
+    let bb = at(&b, "bb");
+    b[bb..bb + 4].copy_from_slice(&utf16("cc"));
+    let cf = CompoundFile::open(&b).unwrap();
+    assert_eq!(cf.read_path("cc").unwrap(), b"aa");
+}
+
+// Reference implementation retained only for compatibility tests.
+fn upper(u: u16) -> u16 {
+    if (b'a' as u16..=b'z' as u16).contains(&u) {
+        return u - 32;
+    }
+    if u < 0x80 {
+        return u;
+    }
+    match char::from_u32(u as u32) {
+        Some(c) => {
+            let mut up = c.to_uppercase();
+            match (up.next(), up.next()) {
+                (Some(x), None) if (x as u32) <= 0xFFFF => x as u32 as u16,
+                _ => u,
+            }
+        }
+        None => u,
+    }
+}
+
+/// A non-duplicated FAT can still contain a cyclic directory chain; retain that guard too.
+#[test]
+fn directory_chain_loop_without_duplicate_fat_is_rejected() {
+    let mut b = bare_header(9);
+    put_u32(&mut b, 44, 1);
+    put_u32(&mut b, 76, 0); // exactly one FAT sector
+    put_u32(&mut b, 48, 1); // directory sector 1
+    let mut fat = vec![0xFF; 512];
+    put_u32(&mut fat, 0, FATSECT);
+    put_u32(&mut fat, 4, 1); // directory points to itself
+    b.extend_from_slice(&fat);
+    b.resize(3 * 512, 0);
+    let error = CompoundFile::open(&b).unwrap_err();
+    assert!(matches!(error, Error::Invalid(ref message) if message.contains("sector chain loops")), "{error:?}");
 }

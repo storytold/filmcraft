@@ -1,111 +1,32 @@
-//! Avid Log Exchange (`.ale`): a tab-delimited clip log (File ▸ Export ▸ Avid Log Exchange…).
+//! Avid Log Exchange (`.ale`) clip logs (File ▸ Export ▸ Avid Log Exchange…).
 //!
-//! Written from Avid's published description of the format: three sections introduced by a line
-//! holding only `Heading`, `Column` or `Data`, separated by blank lines.
-//!
-//! ```text
-//! Heading
-//! FIELD_DELIM  TABS
-//! VIDEO_FORMAT  1080
-//! AUDIO_FORMAT  48khz
-//! FPS  23.976
-//!
-//! Column
-//! (fields are separated by tab characters)
-//! Name  Tracks  Start  End  Tape  Source File  Description  …
-//!
-//! Data
-//! Beach  VA1A2  01:00:00:00  01:00:10:00  …
-//! ```
-//!
-//! `Tracks` lists the clip's tracks (`V`, `A1`…`A16`); `Start` and `End` are SMPTE timecode at the
-//! heading's `FPS`, `End` exclusive. Values never contain tabs or line breaks (they are replaced by
-//! spaces). Lines end with CR LF (Avid's own files); the reader accepts LF and CR too.
+//! The format itself (the document, its reader and writer, the heading and `Tracks` helpers) comes
+//! from [`craft_timeline::ale`] in craft-libs (craft-libs #778); this module keeps FilmCraft's
+//! mapping from project items to log rows.
 
-use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
-use filmcraft_time::{FrameRate, Tick, format_timecode_frames, parse_timecode};
-
-/// A parsed or to-be-written ALE file.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AleDoc {
-    /// Heading fields in order (`FIELD_DELIM`, `VIDEO_FORMAT`, `AUDIO_FORMAT`, `FPS`, …).
-    pub heading: Vec<(String, String)>,
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
-}
-
-impl AleDoc {
-    pub fn heading(&self, key: &str) -> Option<&str> {
-        self.heading.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
-    }
-    /// The value of `column` in row `row`.
-    pub fn get(&self, row: usize, column: &str) -> Option<&str> {
-        let c = self.columns.iter().position(|x| x.eq_ignore_ascii_case(column))?;
-        self.rows.get(row)?.get(c).map(String::as_str)
-    }
-    /// The heading's frame rate (`FPS`).
-    pub fn rate(&self) -> Option<FrameRate> {
-        self.heading("FPS").and_then(|f| f.trim().parse::<f64>().ok()).map(FrameRate::from_f64)
-    }
-}
-
-/// Metadata columns written after the standard ones (from the items' metadata fields).
-const EXTRA: [&str; 6] = ["Description", "Scene", "Take", "Shot", "Log Note", "Comment"];
-
-fn clean(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
-}
-
-/// `FPS` heading text for a rate.
-pub fn fps_text(r: FrameRate) -> String {
-    let f = r.as_f64();
-    if (f - f.round()).abs() < 1e-6 { format!("{}", f.round() as i64) } else { format!("{:.3}", f).trim_end_matches('0').to_string() }
-}
-
-/// `VIDEO_FORMAT` heading text for a frame height.
-fn video_format(height: u32) -> &'static str {
-    match height {
-        1080 => "1080",
-        720 => "720",
-        480 | 486 => "NTSC",
-        576 => "PAL",
-        _ => "CUSTOM",
-    }
-}
+pub use craft_timeline::ale::{AleDoc, fps_text, parse, row_range, write};
+use craft_timeline::ale::{EXTRA_COLUMNS, STANDARD_COLUMNS, clean, standard_heading, tracks_text};
+use filmcraft_project::{ItemId, MediaRef, Project};
+use filmcraft_time::{FrameRate, Tick, format_timecode_frames};
 
 /// Build the log of `items` (media clips and subclips; other items are skipped). The heading's
 /// frame rate is the first video item's (24 fps when there is none).
 pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
     let media_of = |id: ItemId| -> Option<(&filmcraft_project::MediaClip, Tick, Tick)> {
-        let it = p.item(id)?;
-        match &it.kind {
-            ItemKind::Media(m) => Some((m, Tick::ZERO, m.duration())),
-            ItemKind::Subclip { parent, range, .. } => p.item(*parent)?.as_media().map(|m| (m, range.start, range.duration)),
-            _ => None,
-        }
+        let (_, m, range) = p.resolve_media(id)?;
+        let (start, dur) = range.map_or((Tick::ZERO, m.duration()), |r| (r.start, r.duration));
+        Some((m, start, dur))
     };
     let rows_src: Vec<ItemId> = items.iter().copied().filter(|i| media_of(*i).is_some()).collect();
     let first_video = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.video.as_ref().map(|v| (v.frame_rate, v.height))));
     let (rate, height) = first_video.unwrap_or((FrameRate::FPS_24, 1080));
     let sr = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.audio().map(|a| a.sample_rate))).unwrap_or(48_000);
-    let heading = vec![
-        ("FIELD_DELIM".to_string(), "TABS".to_string()),
-        ("VIDEO_FORMAT".to_string(), video_format(height).to_string()),
-        ("AUDIO_FORMAT".to_string(), if sr == 44_100 { "44khz" } else { "48khz" }.to_string()),
-        ("FPS".to_string(), fps_text(rate)),
-    ];
-    let mut columns: Vec<String> = ["Name", "Tracks", "Start", "End", "Tape", "Source File"].iter().map(|s| s.to_string()).collect();
-    columns.extend(EXTRA.iter().map(|s| s.to_string()));
+    let heading = standard_heading(rate, height, sr);
+    let columns: Vec<String> = STANDARD_COLUMNS.iter().chain(EXTRA_COLUMNS.iter()).map(|s| s.to_string()).collect();
     let mut rows = Vec::new();
     for id in rows_src {
         let (Some(it), Some((m, start, dur))) = (p.item(id), media_of(id)) else { continue };
-        let mut tracks = String::new();
-        if m.info.video.is_some() {
-            tracks.push('V');
-        }
-        for c in 1..=m.info.audio().map_or(0, |a| a.channels.min(16)) {
-            tracks.push_str(&format!("A{c}"));
-        }
+        let tracks = tracks_text(m.info.video.is_some(), m.info.audio().map_or(0, |a| a.channels));
         // media start timecode (frames at the media's own rate) + the subclip offset
         let tc0 = m.info.start_timecode.map(|f| m.frame_rate().tick_of(f)).unwrap_or(Tick::ZERO);
         let a = rate.frame_at(tc0 + start);
@@ -123,88 +44,27 @@ pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
             meta("Tape Name"),
             clean(&path),
         ];
-        row.extend(EXTRA.iter().map(|k| meta(k)));
+        row.extend(EXTRA_COLUMNS.iter().map(|k| meta(k)));
         rows.push(row);
     }
     AleDoc { heading, columns, rows }
 }
 
-/// Serialise (CR LF line ends).
-pub fn write(doc: &AleDoc) -> String {
-    let mut out = String::from("Heading\r\n");
-    for (k, v) in &doc.heading {
-        out.push_str(&format!("{}\t{}\r\n", clean(k), clean(v)));
-    }
-    out.push_str("\r\nColumn\r\n");
-    out.push_str(&doc.columns.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t"));
-    out.push_str("\r\n\r\nData\r\n");
-    for r in &doc.rows {
-        out.push_str(&r.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t"));
-        out.push_str("\r\n");
-    }
-    out
-}
-
-/// Read an ALE file.
-pub fn parse(text: &str) -> Result<AleDoc, String> {
-    #[derive(PartialEq)]
-    enum Sec {
-        None,
-        Heading,
-        Column,
-        Data,
-    }
-    let mut doc = AleDoc::default();
-    let mut sec = Sec::None;
-    let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    for line in text.lines() {
-        match line.trim() {
-            "Heading" => {
-                sec = Sec::Heading;
-                continue;
-            }
-            "Column" => {
-                sec = Sec::Column;
-                continue;
-            }
-            "Data" => {
-                sec = Sec::Data;
-                continue;
-            }
-            "" => continue,
-            _ => {}
-        }
-        match sec {
-            Sec::None => return Err("not an ALE file (no Heading section)".into()),
-            Sec::Heading => {
-                let mut it = line.splitn(2, '\t');
-                let k = it.next().unwrap_or_default().trim().to_string();
-                doc.heading.push((k, it.next().unwrap_or_default().trim().to_string()));
-            }
-            Sec::Column => doc.columns.extend(line.split('\t').map(|c| c.trim().to_string())),
-            Sec::Data => doc.rows.push(line.split('\t').map(str::to_string).collect()),
-        }
-    }
-    if doc.columns.is_empty() {
-        return Err("the ALE file has no Column section".into());
-    }
-    Ok(doc)
-}
-
-/// Start and end (exclusive) of a data row, in ticks at the heading's rate.
-pub fn row_range(doc: &AleDoc, row: usize) -> Option<(Tick, Tick)> {
-    let rate = doc.rate()?;
-    let a = parse_timecode(doc.get(row, "Start")?, rate, false, 0).ok()?;
-    let b = parse_timecode(doc.get(row, "End")?, rate, false, 0).ok()?;
-    Some((rate.tick_of(a), rate.tick_of(b)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft_timeline::ale::video_format;
     use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind, VideoStreamInfo};
-    use filmcraft_project::{Label, MediaClip};
+    use filmcraft_project::{ItemKind, Label, MediaClip};
     use filmcraft_time::TimeRange;
+
+    #[test]
+    fn non_positive_or_non_finite_fps_is_rejected() {
+        for fps in ["0", "-24", "nan", "inf", "1e300", "0.0001"] {
+            let doc = parse(&format!("Heading\nFPS\t{fps}\n\nColumn\nName\tStart\tEnd\n\nData\nA\t01:00:00:00\t01:00:10:00\n")).unwrap();
+            assert!(doc.rate().is_none(), "FPS {fps} accepted as {:?}", doc.rate());
+        }
+    }
 
     fn media(p: &mut Project, name: &str, rate: FrameRate, seconds: i64, tc: Option<i64>, audio: u32) -> ItemId {
         let info = MediaInfo {
@@ -222,6 +82,7 @@ mod tests {
                 has_alpha: false,
                 bitrate: None,
                 hdr: None,
+                color_assumed: None,
             }),
             audio_streams: (audio > 0)
                 .then(|| AudioStreamInfo { sample_rate: 48_000, channels: audio, codec: "aac".into(), bits_per_sample: None })
@@ -242,7 +103,7 @@ mod tests {
             proxy: None,
             identity: None,
         };
-        p.add_item(name, Label::Iris, ItemKind::Media(clip), None)
+        p.add_item(name, Label::Iris, ItemKind::Media(Box::new(clip)), None)
     }
 
     #[test]
@@ -285,6 +146,8 @@ mod tests {
         // LF-only files read the same
         assert_eq!(parse(&text.replace("\r\n", "\n")).unwrap(), doc);
         assert!(parse("hello").is_err());
+        // a UTF-8 byte order mark before `Heading` is ignored
+        assert_eq!(parse(&format!("\u{feff}{text}")).unwrap(), doc);
     }
 
     #[test]
@@ -294,5 +157,29 @@ mod tests {
         assert_eq!(fps_text(FrameRate::FPS_59_94), "59.94");
         assert_eq!(video_format(576), "PAL");
         assert_eq!(video_format(2160), "CUSTOM");
+    }
+
+    #[test]
+    fn exports_chained_subclips_and_skips_cyclic_subclips_without_hanging() {
+        let mut p = Project::new("ALE");
+        let r = FrameRate::FPS_23_976;
+        let a = media(&mut p, "Clip.mp4", r, 10, Some(86_400), 2);
+        let sub1 =
+            p.add_item("Sub 1", Label::Iris, ItemKind::Subclip { parent: a, range: TimeRange::new(r.tick_of(24), r.tick_of(48)), restrict_trims: false }, None);
+        let sub2 = p.add_item(
+            "Sub 2",
+            Label::Iris,
+            ItemKind::Subclip { parent: sub1, range: TimeRange::new(r.tick_of(10), r.tick_of(20)), restrict_trims: false },
+            None,
+        );
+        // Cyclic subclip
+        let cycle = p.add_item("Cycle", Label::Iris, ItemKind::Subclip { parent: ItemId(999), range: TimeRange::default(), restrict_trims: false }, None);
+        p.item_mut(cycle).unwrap().kind = ItemKind::Subclip { parent: cycle, range: TimeRange::default(), restrict_trims: false };
+
+        let doc = export_items(&p, &[sub2, cycle]);
+        // Chained subclip succeeds, cyclic subclip is cleanly skipped
+        assert_eq!(doc.rows.len(), 1);
+        assert_eq!(doc.get(0, "Name"), Some("Sub 2"));
+        assert_eq!(doc.get(0, "Source File"), Some("/media/Clip.mp4"));
     }
 }

@@ -2,6 +2,8 @@
 //! frame, so agents can click/drag by id (`ui.click {id:"timeline.track.V1.lock"}`) and
 //! `ui.inspect` can report the full on-screen widget tree.
 
+use std::collections::HashMap;
+
 use egui::Rect;
 use serde::Serialize;
 
@@ -17,8 +19,14 @@ pub struct Element {
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focusable: Option<bool>,
+    /// The floating window (`n` in `panel.float.<n>`) when the element is drawn in that window's
+    /// own OS window; `rect` is then in that window's coordinates, not the main window's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<usize>,
     #[serde(skip)]
     pub(crate) response_id: Option<egui::Id>,
+    #[serde(skip)]
+    pub(crate) viewport: egui::ViewportId,
 }
 
 #[derive(Default)]
@@ -26,10 +34,19 @@ pub struct Registry {
     pub elements: Vec<Element>,
     /// Last frame's elements (for lookups from control handlers between frames).
     pub previous: Vec<Element>,
+    /// The viewport `add` registers into: a native floating window's while its panel draws.
+    pub(crate) viewport: egui::ViewportId,
+    /// The floating window index drawn in each native viewport.
+    pub(crate) windows: HashMap<egui::ViewportId, usize>,
 }
 
 impl Registry {
     pub fn add(&mut self, id: &str, rect: Rect, label: &str) {
+        self.add_in(self.viewport, id, rect, label);
+    }
+    /// Register an element drawn in `viewport`.
+    pub(crate) fn add_in(&mut self, viewport: egui::ViewportId, id: &str, rect: Rect, label: &str) {
+        let window = if viewport == egui::ViewportId::ROOT { None } else { self.windows.get(&viewport).copied() };
         self.elements.push(Element {
             id: id.to_string(),
             label: label.to_string(),
@@ -37,12 +54,17 @@ impl Registry {
             widget_id: None,
             enabled: None,
             focusable: None,
+            window,
             response_id: None,
+            viewport,
         });
     }
     /// Observe the widget without changing its accessibility role or input behavior.
     pub fn add_response(&mut self, id: &str, response: &egui::Response, label: &str) {
-        self.add(id, response.rect, label);
+        // The automation label is also the name a screen reader and kittest use. Keep an
+        // existing visible label/placeholder; this only fills a missing name.
+        crate::widgets::accessible_name(response.clone(), label);
+        self.add_in(response.ctx.viewport_id(), id, response.rect, label);
         if let Some(element) = self.elements.last_mut() {
             element.widget_id = Some(format!("{:016x}", response.id.value()));
             element.enabled = Some(response.enabled());
@@ -53,11 +75,78 @@ impl Registry {
     pub fn begin_frame(&mut self) {
         self.previous = std::mem::take(&mut self.elements);
     }
-    pub fn find(&self, id: &str) -> Option<&Element> {
-        self.previous.iter().chain(self.elements.iter()).find(|e| e.id == id)
+    /// The entries of the last accepted UI pass, or the pass before it while the current pass is
+    /// still being laid out (pass 0 clears `elements`; `drain_ui_requests` runs after the layout).
+    pub fn all(&self) -> &[Element] {
+        if self.elements.is_empty() { &self.previous } else { &self.elements }
     }
-    /// Elements whose id starts with a prefix.
+    /// A widget drawn in the current accepted pass. Unlike [`Self::find`] this never falls back to
+    /// the previous pass, for callers that need fresh geometry (e.g. a screenshot crop).
+    pub fn find_current(&self, id: &str) -> Option<&Element> {
+        self.elements.iter().find(|e| e.id == id)
+    }
+    /// Look up a widget, preferring the layout just drawn. The previous pass is only used before
+    /// this pass has registered anything (input handling runs before the panels draw).
+    pub fn find(&self, id: &str) -> Option<&Element> {
+        self.all().iter().find(|e| e.id == id)
+    }
+    /// Elements whose id starts with a prefix, from the current accepted pass when there is one.
     pub fn query(&self, prefix: &str) -> Vec<&Element> {
-        self.previous.iter().filter(|e| e.id.starts_with(prefix)).collect()
+        self.all().iter().filter(|e| e.id.starts_with(prefix)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Rect, pos2, vec2};
+
+    use super::Registry;
+
+    /// Test helper: a 10×10 rect at `x` for pass-order fixtures.
+    fn rect(x: f32) -> Rect {
+        Rect::from_min_size(pos2(x, 0.0), vec2(10.0, 10.0))
+    }
+
+    /// Lookups and prefix queries must resolve the pass just drawn, not stale geometry.
+    #[test]
+    fn lookups_prefer_the_current_accepted_pass() {
+        let mut registry = Registry::default();
+        registry.add("panel.project", rect(1.0), "old");
+        registry.begin_frame();
+        registry.add("panel.project", rect(200.0), "new");
+        assert_eq!(registry.find("panel.project").map(|e| e.rect[0]), Some(200.0));
+        assert_eq!(registry.query("panel.").iter().map(|e| e.rect[0]).collect::<Vec<_>>(), vec![200.0]);
+        assert_eq!(registry.find_current("panel.project").map(|e| e.rect[0]), Some(200.0));
+    }
+
+    /// Once the current pass registers an element, a removed id must not resolve from the previous pass.
+    #[test]
+    fn removed_elements_do_not_resolve_from_a_populated_current_pass() {
+        let mut registry = Registry::default();
+        registry.add("dialog.closed", rect(1.0), "old control");
+        registry.begin_frame();
+        assert!(registry.find("dialog.closed").is_some(), "before drawing, the previous pass remains usable");
+        registry.add("panel.current", rect(200.0), "current control");
+        assert!(registry.find("dialog.closed").is_none(), "a closed control cannot target stale coordinates");
+        assert_eq!(registry.find("panel.current").map(|e| e.rect[0]), Some(200.0));
+        assert!(registry.query("dialog.").is_empty());
+    }
+
+    /// The previous pass is usable only before the current pass draws; a discarded pass leaves exactly one entry.
+    #[test]
+    fn the_previous_pass_is_only_a_fallback_before_this_pass_draws() {
+        let mut registry = Registry::default();
+        registry.add("panel.project", rect(1.0), "old");
+        registry.begin_frame();
+        assert_eq!(registry.find("panel.project").map(|e| e.rect[0]), Some(1.0));
+        assert_eq!(registry.query("panel.").len(), 1);
+        assert!(registry.find_current("panel.project").is_none());
+
+        // A discarded pass is cleared and redrawn, so exactly one entry per widget remains.
+        registry.add("panel.project", rect(2.0), "discarded");
+        registry.elements.clear();
+        registry.add("panel.project", rect(3.0), "accepted");
+        assert_eq!(registry.elements.len(), 1);
+        assert_eq!(registry.find("panel.project").map(|e| e.rect[0]), Some(3.0));
     }
 }

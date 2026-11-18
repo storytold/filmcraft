@@ -11,10 +11,10 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/web"
 
-if [ "${1:-}" != "--skip-build" ]; then
+if [[ "${1:-}" != "--skip-build" ]]; then
   # CI (the shared release workflow installs only trunk): install the wasm-bindgen CLI at the
   # crate's exact version. Locally, `cargo xtask web` says which version to install.
-  if [ -n "${CI:-}" ]; then
+  if [[ -n "${CI:-}" ]]; then
     WASM_BINDGEN_VERSION="$(sed -n 's/^const WASM_BINDGEN: &str = "\(.*\)";$/\1/p' "$ROOT/xtask/src/main.rs")"
     if ! { command -v wasm-bindgen >/dev/null && wasm-bindgen --version | grep -qF "$WASM_BINDGEN_VERSION"; }; then
       cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
@@ -24,7 +24,7 @@ if [ "${1:-}" != "--skip-build" ]; then
 fi
 
 SITE="$CARGO_TARGET_DIR/web/dist"
-[ -f "$SITE/index.html" ] || { echo "error: $SITE/index.html missing; run without --skip-build" >&2; exit 1; }
+[[ -f "$SITE/index.html" ]] || { echo "error: $SITE/index.html missing; run without --skip-build" >&2; exit 1; }
 # Paths must be relative so the site works under any prefix.
 if grep -Eq '(src|href)="/[^/]' "$SITE/index.html"; then
   echo "error: $SITE/index.html has root-absolute URLs; it would break when served from a sub-path" >&2

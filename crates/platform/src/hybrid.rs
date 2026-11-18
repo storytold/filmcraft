@@ -21,6 +21,9 @@ const LOG_MAX_SAMPLES: usize = 600;
 const LOG_MAX_BYTES: usize = 256 << 20;
 /// Presentation times remembered as returned (older ones are forgotten first).
 const EMITTED_MAX: usize = 4096;
+/// Pictures held while software replays a hardware run.  The replay log is bounded by bytes and
+/// samples, but an invalid stream can still make one sample produce many decoded pictures.
+const REPLAY_OUTPUT_MAX: usize = 4096;
 
 /// A hardware decoder with a transparent software fallback.
 pub struct HybridDecoder {
@@ -99,6 +102,16 @@ impl HybridDecoder {
         }
     }
 
+    /// Retain software replay output without letting a corrupt access unit turn the bounded
+    /// sample replay into an unbounded frame queue.
+    fn retain_replay(frames: &mut Vec<DecodedFrame>, mut out: Vec<DecodedFrame>) -> Result<()> {
+        if frames.len().saturating_add(out.len()) > REPLAY_OUTPUT_MAX {
+            return Err(CodecError::Decode("software fallback replay produced too many frames".into()));
+        }
+        frames.append(&mut out);
+        Ok(())
+    }
+
     /// In-band parameter sets (sequence header, key frame format) that differ from the sample
     /// entry's (the hardware session was set up from those).
     fn parameter_sets_changed(&self, sample: &[u8]) -> bool {
@@ -157,7 +170,7 @@ impl HybridDecoder {
         for (i, (s, p)) in log.iter().enumerate() {
             let Some(sw) = self.sw.as_mut() else { break };
             match sw.decode(s, *p) {
-                Ok(out) => frames.extend(out),
+                Ok(out) => Self::retain_replay(&mut frames, out)?,
                 Err(e) if i == last => rejected = Some(e),
                 Err(e) => log::warn!("software replay after the hardware decoder failed: {e}"),
             }
@@ -248,5 +261,26 @@ impl VideoDecoder for HybridDecoder {
         if let Some(sw) = self.sw.as_mut() {
             sw.set_draft(on);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use filmcraft_frame::VideoFrame;
+
+    use super::*;
+
+    fn frame(pts: i64) -> DecodedFrame {
+        DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![0, 0, 0, 255]), draft: false }
+    }
+
+    #[test]
+    fn replay_output_has_a_hard_limit() {
+        let mut retained = Vec::new();
+        HybridDecoder::retain_replay(&mut retained, (0..REPLAY_OUTPUT_MAX as i64).map(frame).collect()).unwrap();
+
+        let err = HybridDecoder::retain_replay(&mut retained, vec![frame(REPLAY_OUTPUT_MAX as i64)]).unwrap_err();
+        assert!(err.to_string().contains("too many frames"));
+        assert_eq!(retained.len(), REPLAY_OUTPUT_MAX);
     }
 }
