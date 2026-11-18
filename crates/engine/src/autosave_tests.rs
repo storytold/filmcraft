@@ -45,7 +45,7 @@ fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
             let dir = d.join(id);
             std::fs::create_dir(&dir).unwrap();
             std::fs::write(dir.join("snapshot.fcproj"), b"retained snapshot").unwrap();
-            autosave::RecoveryCandidate { id: id.into(), dir, meta: Default::default() }
+            autosave::RecoveryCandidate { id: id.into(), snapshot_path: dir.join("snapshot.fcproj"), dir, meta: Default::default() }
         })
         .collect();
     s.persistence.as_mut().unwrap().candidates = candidates;
@@ -363,6 +363,16 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     assert_eq!(*t.project, *s.project);
     assert!(s.is_dirty(), "auto-save does not save the project itself by default");
     s.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    s.state
+        .timeline_views
+        .insert(seq, filmcraft_project::SequenceView { pps: 53.0, scroll: 2.0, v_scroll: 0.0, a_scroll: 0.0, video_track_h: 70.0, audio_track_h: 32.0 });
+    s.view_changed();
+    s.sync_persistence();
+    s.execute("file.autoSaveNow", json!({})).unwrap();
+    assert_eq!(s.saved_view_epoch, s.view_epoch, "auto-saving the current project also saves its Timeline view");
+    let saved_view = filmcraft_format::decode(&std::fs::read(&proj).unwrap()).unwrap().view.unwrap();
+    assert_eq!(saved_view.sequences.get(&seq).map(|v| (v.pps, v.scroll)), Some((53.0, 2.0)));
     s.execute("sequence.addEdit", json!({"seconds": 5.0})).unwrap();
     s.execute("file.autoSaveNow", json!({})).unwrap();
     wait_for("project saved", || {
@@ -510,7 +520,7 @@ fn project_captured_folder_outside_the_project_is_not_used() {
             Ok(())
         })
         .unwrap();
-        assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured").unwrap(), beside, "{dir}");
+        assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), beside, "{dir}");
         let paths = crate::project_tools::scratch_paths(&s);
         assert_eq!(paths["captured"]["path"], json!(beside), "{dir}");
         assert_eq!(paths["audioPreviews"]["path"], json!(beside), "{dir}");
@@ -521,7 +531,7 @@ fn project_captured_folder_outside_the_project_is_not_used() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured").unwrap(), inner);
+    assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), inner);
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
