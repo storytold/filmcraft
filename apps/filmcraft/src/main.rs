@@ -45,6 +45,10 @@ use chrono::TimeZone;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
 use filmcraft_ui_egui::FilmcraftApp;
+use filmcraft_ui_egui::window_state::{
+    DEFAULT_HEIGHT as DEFAULT_WINDOW_HEIGHT, DEFAULT_WIDTH as DEFAULT_WINDOW_WIDTH, FILE_NAME as WINDOW_STATE_FILE, MIN_HEIGHT as MIN_WINDOW_HEIGHT,
+    MIN_WIDTH as MIN_WINDOW_WIDTH, WindowState,
+};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,7 +93,7 @@ fn main() -> eframe::Result {
     // `--test-graphics-start <mode>`. It creates the device the window would, then exits.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let test_setup = |mode| {
-        let mut options = native_options(false);
+        let mut options = native_options(false, None);
         graphics::apply(&mut options, mode, eframe::wgpu::Backends::from_env());
         options.wgpu_options.wgpu_setup
     };
@@ -116,6 +120,10 @@ fn main() -> eframe::Result {
         }
     };
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    // Agent windows use the requested default geometry and never disturb the interactive user's
+    // saved rectangle. The normal app restores one authoritative FilmCraft-owned state file.
+    let window_state_path = if launch.control_port.is_none() { data_root.as_ref().map(|dir| dir.join(WINDOW_STATE_FILE)) } else { None };
+    let restored_window = window_state_path.as_deref().and_then(WindowState::load);
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -166,11 +174,11 @@ fn main() -> eframe::Result {
     // A panic in a FilmCraft started again for it saved the next mode for the next launch.
     let mut next_saved = false;
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some());
+        let mut options = native_options(launch.control_port.is_some(), restored_window);
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let creator = app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created));
+        let creator = app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), window_state_path.clone(), restored_window);
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eframe::run_native("FilmCraft", options, creator)));
         let app_created = app_created.load(Ordering::Relaxed);
         let result = match run {
@@ -282,12 +290,18 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
 }
 
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
-fn native_options(agent: bool) -> eframe::NativeOptions {
+///
+/// A valid saved rectangle replaces the safe default before eframe creates its hidden native
+/// window. Position is applied exactly once here: a second macOS move after creation would race
+/// external window managers and produce a visible jump (#1994).
+fn native_options(agent: bool, restored: Option<WindowState>) -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default().with_title("FilmCraft").with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT]);
+    if let Some(state) = restored {
+        viewport = state.apply_to(viewport);
+    }
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("FilmCraft")
-            .with_inner_size([1600.0, 980.0])
-            .with_min_inner_size([900.0, 560.0])
+        viewport: viewport
+            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT])
             .with_drag_and_drop(true)
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
@@ -304,7 +318,13 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+fn app_creator(
+    launch: Launch,
+    graphics: graphics::GraphicsStart,
+    created: Arc<AtomicBool>,
+    window_state_path: Option<std::path::PathBuf>,
+    restored_window: Option<WindowState>,
+) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
@@ -373,6 +393,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }
         }
         let mut app = FilmcraftApp::new(session);
+        if let Some(path) = window_state_path.clone() {
+            app = app.with_window_state(path, restored_window);
+        }
         app.set_startup_update_check(true);
         app.graphics_notice = notice;
         if recover == Some(false) {
@@ -680,6 +703,20 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// #1994: a saved rectangle replaces the default before native creation; agent windows keep
+    /// the default and therefore cannot fight with the interactive user's window manager.
+    #[test]
+    fn saved_window_state_is_applied_only_when_requested() {
+        let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: 80.0, y: 60.0 };
+        let restored = super::native_options(false, Some(state));
+        assert_eq!(restored.viewport.inner_size, Some(egui::vec2(1280.0, 720.0)));
+        assert_eq!(restored.viewport.position, Some(egui::pos2(80.0, 60.0)));
+
+        let agent = super::native_options(true, None);
+        assert_eq!(agent.viewport.inner_size, Some(egui::vec2(super::DEFAULT_WINDOW_WIDTH, super::DEFAULT_WINDOW_HEIGHT)));
+        assert_eq!(agent.viewport.position, None);
+    }
+
     /// The new start after a graphics panic keeps the arguments and picks the next mode, replacing a
     /// `--graphics` that was given (#2558).
     #[test]

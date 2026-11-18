@@ -68,6 +68,7 @@ impl FilmcraftApp {
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,
+            window_state: Default::default(),
             synthetic_modifiers: egui::Modifiers::NONE,
             deferred: Vec::new(),
             ui_requests: Vec::new(),
@@ -136,6 +137,12 @@ impl FilmcraftApp {
 
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
+        self
+    }
+
+    /// Persist the interactive desktop window's settled rectangle at `path`.
+    pub fn with_window_state(mut self, path: std::path::PathBuf, restored: Option<window_state::WindowState>) -> Self {
+        self.window_state = window_state::Tracker::new(path, restored);
         self
     }
 
@@ -442,6 +449,9 @@ impl eframe::App for FilmcraftApp {
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
+        if let Some(info) = raw_input.viewports.get(&egui::ViewportId::ROOT) {
+            self.window_state.observe(ctx, info);
+        }
         capture::note_raw_geometry(self, ctx, raw_input);
         #[cfg(target_os = "macos")]
         if !self.control_input_only {
@@ -506,6 +516,7 @@ impl eframe::App for FilmcraftApp {
     /// state, shut the session down so its recovery journal is flushed or removed, and start an
     /// update that waits for the exit.
     fn on_exit(&mut self) {
+        self.window_state.save_now();
         self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
