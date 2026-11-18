@@ -13,13 +13,12 @@
 //! `unsigned long`, the one C type whose size differs between the two (32 bits on Windows, 64 on
 //! Linux). The `flags` bit-fields are all `uint32_t` fields of one `uint32_t` word, which MSVC and
 //! GCC / Clang lay out the same way (from the least significant bit) on x86_64.
-#![allow(clippy::unreadable_literal)]
 
 use super::ffi::*;
 use std::mem::{align_of, offset_of, size_of};
 
 #[test]
-fn layouts_match_the_header() {
+fn nv_enc_open_encode_session_ex_params_layout_matches_the_header() {
     assert_eq!(
         (size_of::<NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS>(), align_of::<NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS>()),
         (1552, 8),
@@ -32,14 +31,26 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, apiVersion), 24, "NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS.apiVersion");
     assert_eq!(offset_of!(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, reserved1), 28, "NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS.reserved1");
     assert_eq!(offset_of!(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, reserved2), 1040, "NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS.reserved2");
+}
+
+#[test]
+fn nv_enc_caps_param_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CAPS_PARAM>(), align_of::<NV_ENC_CAPS_PARAM>()), (256, 4), "NV_ENC_CAPS_PARAM");
     assert_eq!(offset_of!(NV_ENC_CAPS_PARAM, version), 0, "NV_ENC_CAPS_PARAM.version");
     assert_eq!(offset_of!(NV_ENC_CAPS_PARAM, capsToQuery), 4, "NV_ENC_CAPS_PARAM.capsToQuery");
     assert_eq!(offset_of!(NV_ENC_CAPS_PARAM, reserved), 8, "NV_ENC_CAPS_PARAM.reserved");
+}
+
+#[test]
+fn nv_enc_qp_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_QP>(), align_of::<NV_ENC_QP>()), (12, 4), "NV_ENC_QP");
     assert_eq!(offset_of!(NV_ENC_QP, qpInterP), 0, "NV_ENC_QP.qpInterP");
     assert_eq!(offset_of!(NV_ENC_QP, qpInterB), 4, "NV_ENC_QP.qpInterB");
     assert_eq!(offset_of!(NV_ENC_QP, qpIntra), 8, "NV_ENC_QP.qpIntra");
+}
+
+#[test]
+fn nv_enc_rc_params_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_RC_PARAMS>(), align_of::<NV_ENC_RC_PARAMS>()), (128, 4), "NV_ENC_RC_PARAMS");
     assert_eq!(offset_of!(NV_ENC_RC_PARAMS, version), 0, "NV_ENC_RC_PARAMS.version");
     assert_eq!(offset_of!(NV_ENC_RC_PARAMS, rateControlMode), 4, "NV_ENC_RC_PARAMS.rateControlMode");
@@ -67,6 +78,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_RC_PARAMS, crQPIndexOffset), 109, "NV_ENC_RC_PARAMS.crQPIndexOffset");
     assert_eq!(offset_of!(NV_ENC_RC_PARAMS, reserved2), 110, "NV_ENC_RC_PARAMS.reserved2");
     assert_eq!(offset_of!(NV_ENC_RC_PARAMS, reserved), 112, "NV_ENC_RC_PARAMS.reserved");
+}
+
+#[test]
+fn nv_enc_config_h264_vui_parameters_layout_matches_the_header() {
     assert_eq!(
         (size_of::<NV_ENC_CONFIG_H264_VUI_PARAMETERS>(), align_of::<NV_ENC_CONFIG_H264_VUI_PARAMETERS>()),
         (112, 4),
@@ -93,6 +108,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264_VUI_PARAMETERS, numUnitInTicks), 56, "NV_ENC_CONFIG_H264_VUI_PARAMETERS.numUnitInTicks");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264_VUI_PARAMETERS, timeScale), 60, "NV_ENC_CONFIG_H264_VUI_PARAMETERS.timeScale");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264_VUI_PARAMETERS, reserved), 64, "NV_ENC_CONFIG_H264_VUI_PARAMETERS.reserved");
+}
+
+#[test]
+fn nv_enc_config_h264_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CONFIG_H264>(), align_of::<NV_ENC_CONFIG_H264>()), (1792, 8), "NV_ENC_CONFIG_H264");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264, level), 4, "NV_ENC_CONFIG_H264.level");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264, idrPeriod), 8, "NV_ENC_CONFIG_H264.idrPeriod");
@@ -121,6 +140,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264, numRefL1), 208, "NV_ENC_CONFIG_H264.numRefL1");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264, reserved1), 212, "NV_ENC_CONFIG_H264.reserved1");
     assert_eq!(offset_of!(NV_ENC_CONFIG_H264, reserved2), 1280, "NV_ENC_CONFIG_H264.reserved2");
+}
+
+#[test]
+fn nv_enc_config_hevc_vui_parameters_layout_matches_the_header() {
     assert_eq!(
         (size_of::<NV_ENC_CONFIG_HEVC_VUI_PARAMETERS>(), align_of::<NV_ENC_CONFIG_HEVC_VUI_PARAMETERS>()),
         (112, 4),
@@ -145,6 +168,10 @@ fn layouts_match_the_header() {
         assert_eq!(field, offset, "NV_ENC_CONFIG_HEVC_VUI_PARAMETERS.{name}");
         assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, hevcVUIParameters) + field, 64 + offset, "NV_ENC_CONFIG_HEVC.hevcVUIParameters.{name}");
     }
+}
+
+#[test]
+fn nv_enc_config_hevc_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CONFIG_HEVC>(), align_of::<NV_ENC_CONFIG_HEVC>()), (1560, 8), "NV_ENC_CONFIG_HEVC");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, level), 0, "NV_ENC_CONFIG_HEVC.level");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, tier), 4, "NV_ENC_CONFIG_HEVC.tier");
@@ -168,10 +195,18 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, numRefL1), 188, "NV_ENC_CONFIG_HEVC.numRefL1");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, reserved1), 192, "NV_ENC_CONFIG_HEVC.reserved1");
     assert_eq!(offset_of!(NV_ENC_CONFIG_HEVC, reserved2), 1048, "NV_ENC_CONFIG_HEVC.reserved2");
+}
+
+#[test]
+fn nv_enc_codec_config_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CODEC_CONFIG>(), align_of::<NV_ENC_CODEC_CONFIG>()), (1792, 8), "NV_ENC_CODEC_CONFIG");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, h264Config), 0, "NV_ENC_CODEC_CONFIG.h264Config");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, reserved), 0, "NV_ENC_CODEC_CONFIG.reserved");
     assert_eq!(offset_of!(NV_ENC_CODEC_CONFIG, hevcConfig), 0, "NV_ENC_CODEC_CONFIG.hevcConfig");
+}
+
+#[test]
+fn nv_enc_config_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CONFIG>(), align_of::<NV_ENC_CONFIG>()), (3584, 8), "NV_ENC_CONFIG");
     assert_eq!(offset_of!(NV_ENC_CONFIG, version), 0, "NV_ENC_CONFIG.version");
     assert_eq!(offset_of!(NV_ENC_CONFIG, profileGUID), 4, "NV_ENC_CONFIG.profileGUID");
@@ -184,17 +219,29 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CONFIG, encodeCodecConfig), 168, "NV_ENC_CONFIG.encodeCodecConfig");
     assert_eq!(offset_of!(NV_ENC_CONFIG, reserved), 1960, "NV_ENC_CONFIG.reserved");
     assert_eq!(offset_of!(NV_ENC_CONFIG, reserved2), 3072, "NV_ENC_CONFIG.reserved2");
+}
+
+#[test]
+fn nv_enc_preset_config_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_PRESET_CONFIG>(), align_of::<NV_ENC_PRESET_CONFIG>()), (5128, 8), "NV_ENC_PRESET_CONFIG");
     assert_eq!(offset_of!(NV_ENC_PRESET_CONFIG, version), 0, "NV_ENC_PRESET_CONFIG.version");
     assert_eq!(offset_of!(NV_ENC_PRESET_CONFIG, presetCfg), 8, "NV_ENC_PRESET_CONFIG.presetCfg");
     assert_eq!(offset_of!(NV_ENC_PRESET_CONFIG, reserved1), 3592, "NV_ENC_PRESET_CONFIG.reserved1");
     assert_eq!(offset_of!(NV_ENC_PRESET_CONFIG, reserved2), 4616, "NV_ENC_PRESET_CONFIG.reserved2");
+}
+
+#[test]
+fn nvenc_external_me_hint_counts_per_blocktype_layout_matches_the_header() {
     assert_eq!(
         (size_of::<NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE>(), align_of::<NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE>()),
         (16, 4),
         "NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE"
     );
     assert_eq!(offset_of!(NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE, reserved1), 4, "NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE.reserved1");
+}
+
+#[test]
+fn nv_enc_initialize_params_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_INITIALIZE_PARAMS>(), align_of::<NV_ENC_INITIALIZE_PARAMS>()), (1808, 8), "NV_ENC_INITIALIZE_PARAMS");
     assert_eq!(offset_of!(NV_ENC_INITIALIZE_PARAMS, version), 0, "NV_ENC_INITIALIZE_PARAMS.version");
     assert_eq!(offset_of!(NV_ENC_INITIALIZE_PARAMS, encodeGUID), 4, "NV_ENC_INITIALIZE_PARAMS.encodeGUID");
@@ -219,6 +266,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_INITIALIZE_PARAMS, outputStatsLevel), 148, "NV_ENC_INITIALIZE_PARAMS.outputStatsLevel");
     assert_eq!(offset_of!(NV_ENC_INITIALIZE_PARAMS, reserved), 152, "NV_ENC_INITIALIZE_PARAMS.reserved");
     assert_eq!(offset_of!(NV_ENC_INITIALIZE_PARAMS, reserved2), 1296, "NV_ENC_INITIALIZE_PARAMS.reserved2");
+}
+
+#[test]
+fn nv_enc_create_input_buffer_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CREATE_INPUT_BUFFER>(), align_of::<NV_ENC_CREATE_INPUT_BUFFER>()), (776, 8), "NV_ENC_CREATE_INPUT_BUFFER");
     assert_eq!(offset_of!(NV_ENC_CREATE_INPUT_BUFFER, version), 0, "NV_ENC_CREATE_INPUT_BUFFER.version");
     assert_eq!(offset_of!(NV_ENC_CREATE_INPUT_BUFFER, width), 4, "NV_ENC_CREATE_INPUT_BUFFER.width");
@@ -230,6 +281,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CREATE_INPUT_BUFFER, pSysMemBuffer), 32, "NV_ENC_CREATE_INPUT_BUFFER.pSysMemBuffer");
     assert_eq!(offset_of!(NV_ENC_CREATE_INPUT_BUFFER, reserved1), 40, "NV_ENC_CREATE_INPUT_BUFFER.reserved1");
     assert_eq!(offset_of!(NV_ENC_CREATE_INPUT_BUFFER, reserved2), 272, "NV_ENC_CREATE_INPUT_BUFFER.reserved2");
+}
+
+#[test]
+fn nv_enc_create_bitstream_buffer_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CREATE_BITSTREAM_BUFFER>(), align_of::<NV_ENC_CREATE_BITSTREAM_BUFFER>()), (776, 8), "NV_ENC_CREATE_BITSTREAM_BUFFER");
     assert_eq!(offset_of!(NV_ENC_CREATE_BITSTREAM_BUFFER, version), 0, "NV_ENC_CREATE_BITSTREAM_BUFFER.version");
     assert_eq!(offset_of!(NV_ENC_CREATE_BITSTREAM_BUFFER, size), 4, "NV_ENC_CREATE_BITSTREAM_BUFFER.size");
@@ -239,7 +294,17 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_CREATE_BITSTREAM_BUFFER, bitstreamBufferPtr), 24, "NV_ENC_CREATE_BITSTREAM_BUFFER.bitstreamBufferPtr");
     assert_eq!(offset_of!(NV_ENC_CREATE_BITSTREAM_BUFFER, reserved1), 32, "NV_ENC_CREATE_BITSTREAM_BUFFER.reserved1");
     assert_eq!(offset_of!(NV_ENC_CREATE_BITSTREAM_BUFFER, reserved2), 264, "NV_ENC_CREATE_BITSTREAM_BUFFER.reserved2");
+}
+
+#[test]
+fn nv_enc_codec_pic_params_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CODEC_PIC_PARAMS>(), align_of::<NV_ENC_CODEC_PIC_PARAMS>()), (1552, 8), "NV_ENC_CODEC_PIC_PARAMS");
+    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, hevcPicParams), 0, "NV_ENC_CODEC_PIC_PARAMS.hevcPicParams");
+    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, reserved), 0, "NV_ENC_CODEC_PIC_PARAMS.reserved");
+}
+
+#[test]
+fn nv_enc_pic_params_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_PIC_PARAMS>(), align_of::<NV_ENC_PIC_PARAMS>()), (3360, 8), "NV_ENC_PIC_PARAMS");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, version), 0, "NV_ENC_PIC_PARAMS.version");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, inputWidth), 4, "NV_ENC_PIC_PARAMS.inputWidth");
@@ -255,6 +320,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, bufferFmt), 64, "NV_ENC_PIC_PARAMS.bufferFmt");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, pictureStruct), 68, "NV_ENC_PIC_PARAMS.pictureStruct");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, pictureType), 72, "NV_ENC_PIC_PARAMS.pictureType");
+}
+
+#[test]
+fn nv_enc_pic_params_codec_and_motion_layout_matches_the_header() {
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, codecPicParams), 80, "NV_ENC_PIC_PARAMS.codecPicParams");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, meHintCountsPerBlock), 1632, "NV_ENC_PIC_PARAMS.meHintCountsPerBlock");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, meExternalHints), 1664, "NV_ENC_PIC_PARAMS.meExternalHints");
@@ -271,6 +340,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, outputReconBuffer), 1760, "NV_ENC_PIC_PARAMS.outputReconBuffer");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, reserved3), 1768, "NV_ENC_PIC_PARAMS.reserved3");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS, reserved4), 2904, "NV_ENC_PIC_PARAMS.reserved4");
+}
+
+#[test]
+fn nv_enc_lock_bitstream_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_LOCK_BITSTREAM>(), align_of::<NV_ENC_LOCK_BITSTREAM>()), (1552, 8), "NV_ENC_LOCK_BITSTREAM");
     assert_eq!(offset_of!(NV_ENC_LOCK_BITSTREAM, version), 0, "NV_ENC_LOCK_BITSTREAM.version");
     assert_eq!(offset_of!(NV_ENC_LOCK_BITSTREAM, outputBitstream), 8, "NV_ENC_LOCK_BITSTREAM.outputBitstream");
@@ -300,6 +373,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_LOCK_BITSTREAM, reserved1), 132, "NV_ENC_LOCK_BITSTREAM.reserved1");
     assert_eq!(offset_of!(NV_ENC_LOCK_BITSTREAM, reserved2), 1016, "NV_ENC_LOCK_BITSTREAM.reserved2");
     assert_eq!(offset_of!(NV_ENC_LOCK_BITSTREAM, reservedInternal), 1520, "NV_ENC_LOCK_BITSTREAM.reservedInternal");
+}
+
+#[test]
+fn nv_enc_lock_input_buffer_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_LOCK_INPUT_BUFFER>(), align_of::<NV_ENC_LOCK_INPUT_BUFFER>()), (1544, 8), "NV_ENC_LOCK_INPUT_BUFFER");
     assert_eq!(offset_of!(NV_ENC_LOCK_INPUT_BUFFER, version), 0, "NV_ENC_LOCK_INPUT_BUFFER.version");
     assert_eq!(offset_of!(NV_ENC_LOCK_INPUT_BUFFER, inputBuffer), 8, "NV_ENC_LOCK_INPUT_BUFFER.inputBuffer");
@@ -307,6 +384,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_LOCK_INPUT_BUFFER, pitch), 24, "NV_ENC_LOCK_INPUT_BUFFER.pitch");
     assert_eq!(offset_of!(NV_ENC_LOCK_INPUT_BUFFER, reserved1), 28, "NV_ENC_LOCK_INPUT_BUFFER.reserved1");
     assert_eq!(offset_of!(NV_ENC_LOCK_INPUT_BUFFER, reserved2), 1032, "NV_ENC_LOCK_INPUT_BUFFER.reserved2");
+}
+
+#[test]
+fn nv_enc_sequence_param_payload_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_SEQUENCE_PARAM_PAYLOAD>(), align_of::<NV_ENC_SEQUENCE_PARAM_PAYLOAD>()), (1544, 8), "NV_ENC_SEQUENCE_PARAM_PAYLOAD");
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, version), 0, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.version");
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, inBufferSize), 4, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.inBufferSize");
@@ -316,6 +397,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, outSPSPPSPayloadSize), 24, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.outSPSPPSPayloadSize");
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, reserved), 32, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.reserved");
     assert_eq!(offset_of!(NV_ENC_SEQUENCE_PARAM_PAYLOAD, reserved2), 1032, "NV_ENC_SEQUENCE_PARAM_PAYLOAD.reserved2");
+}
+
+#[test]
+fn nv_encode_api_function_list_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENCODE_API_FUNCTION_LIST>(), align_of::<NV_ENCODE_API_FUNCTION_LIST>()), (2552, 8), "NV_ENCODE_API_FUNCTION_LIST");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, version), 0, "NV_ENCODE_API_FUNCTION_LIST.version");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, reserved), 4, "NV_ENCODE_API_FUNCTION_LIST.reserved");
@@ -342,6 +427,10 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncUnlockInputBuffer), 168, "NV_ENCODE_API_FUNCTION_LIST.nvEncUnlockInputBuffer");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncGetEncodeStats), 176, "NV_ENCODE_API_FUNCTION_LIST.nvEncGetEncodeStats");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncGetSequenceParams), 184, "NV_ENCODE_API_FUNCTION_LIST.nvEncGetSequenceParams");
+}
+
+#[test]
+fn nv_encode_api_event_and_resource_functions_match_the_header() {
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncRegisterAsyncEvent), 192, "NV_ENCODE_API_FUNCTION_LIST.nvEncRegisterAsyncEvent");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncUnregisterAsyncEvent), 200, "NV_ENCODE_API_FUNCTION_LIST.nvEncUnregisterAsyncEvent");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncMapInputResource), 208, "NV_ENCODE_API_FUNCTION_LIST.nvEncMapInputResource");
@@ -363,15 +452,32 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncRestoreEncoderState), 336, "NV_ENCODE_API_FUNCTION_LIST.nvEncRestoreEncoderState");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, nvEncLookaheadPicture), 344, "NV_ENCODE_API_FUNCTION_LIST.nvEncLookaheadPicture");
     assert_eq!(offset_of!(NV_ENCODE_API_FUNCTION_LIST, reserved2), 352, "NV_ENCODE_API_FUNCTION_LIST.reserved2");
+}
+
+#[test]
+fn nv_enc_sei_payload_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_SEI_PAYLOAD>(), align_of::<NV_ENC_SEI_PAYLOAD>()), (16, 8), "NV_ENC_SEI_PAYLOAD");
     assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payloadSize), 0, "NV_ENC_SEI_PAYLOAD.payloadSize");
     assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payloadType), 4, "NV_ENC_SEI_PAYLOAD.payloadType");
     assert_eq!(offset_of!(NV_ENC_SEI_PAYLOAD, payload), 8, "NV_ENC_SEI_PAYLOAD.payload");
+}
+
+#[test]
+fn nv_enc_clock_timestamp_set_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_CLOCK_TIMESTAMP_SET>(), align_of::<NV_ENC_CLOCK_TIMESTAMP_SET>()), (8, 4), "NV_ENC_CLOCK_TIMESTAMP_SET");
     assert_eq!(offset_of!(NV_ENC_CLOCK_TIMESTAMP_SET, timeOffset), 4, "NV_ENC_CLOCK_TIMESTAMP_SET.timeOffset");
+    assert_eq!(offset_of!(NV_ENC_CLOCK_TIMESTAMP_SET, bits), 0, "NV_ENC_CLOCK_TIMESTAMP_SET.bits");
+}
+
+#[test]
+fn nv_enc_time_code_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_TIME_CODE>(), align_of::<NV_ENC_TIME_CODE>()), (28, 4), "NV_ENC_TIME_CODE");
     assert_eq!(offset_of!(NV_ENC_TIME_CODE, displayPicStruct), 0, "NV_ENC_TIME_CODE.displayPicStruct");
     assert_eq!(offset_of!(NV_ENC_TIME_CODE, clockTimestamp), 4, "NV_ENC_TIME_CODE.clockTimestamp");
+}
+
+#[test]
+fn nv_enc_pic_params_hevc_layout_matches_the_header() {
     assert_eq!((size_of::<NV_ENC_PIC_PARAMS_HEVC>(), align_of::<NV_ENC_PIC_PARAMS_HEVC>()), (1536, 8), "NV_ENC_PIC_PARAMS_HEVC");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, displayPOCSyntax), 0, "NV_ENC_PIC_PARAMS_HEVC.displayPOCSyntax");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, refPicFlag), 4, "NV_ENC_PIC_PARAMS_HEVC.refPicFlag");
@@ -390,9 +496,6 @@ fn layouts_match_the_header() {
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, timeCode), 72, "NV_ENC_PIC_PARAMS_HEVC.timeCode");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, reserved2), 100, "NV_ENC_PIC_PARAMS_HEVC.reserved2");
     assert_eq!(offset_of!(NV_ENC_PIC_PARAMS_HEVC, reserved3), 1048, "NV_ENC_PIC_PARAMS_HEVC.reserved3");
-    assert_eq!(offset_of!(NV_ENC_CLOCK_TIMESTAMP_SET, bits), 0, "NV_ENC_CLOCK_TIMESTAMP_SET.bits");
-    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, hevcPicParams), 0, "NV_ENC_CODEC_PIC_PARAMS.hevcPicParams");
-    assert_eq!(offset_of!(NV_ENC_CODEC_PIC_PARAMS, reserved), 0, "NV_ENC_CODEC_PIC_PARAMS.reserved");
     assert_eq!(
         offset_of!(NV_ENC_PIC_PARAMS_HEVC, flags),
         16,
@@ -426,6 +529,10 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_VUI_COLOR_PRIMARIES_BT709 as i64, 1, "NV_ENC_VUI_COLOR_PRIMARIES_BT709");
     assert_eq!(NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709 as i64, 1, "NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709");
     assert_eq!(NV_ENC_VUI_MATRIX_COEFFS_BT709 as i64, 1, "NV_ENC_VUI_MATRIX_COEFFS_BT709");
+}
+
+#[test]
+fn capabilities_constants_match_the_header() {
     assert_eq!(NV_ENC_CAPS_NUM_MAX_BFRAMES as i64, 0, "NV_ENC_CAPS_NUM_MAX_BFRAMES");
     assert_eq!(NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES as i64, 1, "NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES");
     assert_eq!(NV_ENC_CAPS_WIDTH_MAX as i64, 16, "NV_ENC_CAPS_WIDTH_MAX");
@@ -433,6 +540,10 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_CAPS_WIDTH_MIN as i64, 45, "NV_ENC_CAPS_WIDTH_MIN");
     assert_eq!(NV_ENC_CAPS_HEIGHT_MIN as i64, 46, "NV_ENC_CAPS_HEIGHT_MIN");
     assert_eq!(NV_ENC_ERR_NEED_MORE_INPUT as i64, 17, "NV_ENC_ERR_NEED_MORE_INPUT");
+}
+
+#[test]
+fn versions_constants_match_the_header() {
     assert_eq!(NV_ENCODE_API_FUNCTION_LIST_VER as i64, 1895956492, "NV_ENCODE_API_FUNCTION_LIST_VER");
     assert_eq!(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER as i64, 1895890956, "NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER");
     assert_eq!(NV_ENC_CAPS_PARAM_VER as i64, 1895890956, "NV_ENC_CAPS_PARAM_VER");
@@ -446,6 +557,10 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_LOCK_BITSTREAM_VER as i64, 4043374604, "NV_ENC_LOCK_BITSTREAM_VER");
     assert_eq!(NV_ENC_LOCK_INPUT_BUFFER_VER as i64, 1895890956, "NV_ENC_LOCK_INPUT_BUFFER_VER");
     assert_eq!(NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER as i64, 1895890956, "NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER");
+}
+
+#[test]
+fn hevc_constants_match_the_header() {
     assert_eq!(NV_ENC_TIER_HEVC_MAIN as i64, 0, "NV_ENC_TIER_HEVC_MAIN");
     assert_eq!(NV_ENC_HEVC_CUSIZE_AUTOSELECT as i64, 0, "NV_ENC_HEVC_CUSIZE_AUTOSELECT");
     assert_eq!(NV_ENC_LEVEL_HEVC_1 as i64, 30, "NV_ENC_LEVEL_HEVC_1");
@@ -461,6 +576,10 @@ fn constants_match_the_header() {
     assert_eq!(NV_ENC_LEVEL_HEVC_6 as i64, 180, "NV_ENC_LEVEL_HEVC_6");
     assert_eq!(NV_ENC_LEVEL_HEVC_61 as i64, 183, "NV_ENC_LEVEL_HEVC_61");
     assert_eq!(NV_ENC_LEVEL_HEVC_62 as i64, 186, "NV_ENC_LEVEL_HEVC_62");
+}
+
+#[test]
+fn hdr_constants_match_the_header() {
     assert_eq!(NVENCAPI_VERSION as i64, 16777228, "NVENCAPI_VERSION");
     assert_eq!(NV_ENC_BUFFER_FORMAT_YUV420_10BIT as i64, 65536, "NV_ENC_BUFFER_FORMAT_YUV420_10BIT");
     assert_eq!(NV_ENC_BUFFER_FORMAT_ABGR as i64, 268435456, "NV_ENC_BUFFER_FORMAT_ABGR");

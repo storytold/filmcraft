@@ -3,8 +3,8 @@
 //! (Bessel / Butterworth / Chebyshev / elliptic designs) and the FFT Filter (frequency-sampled
 //! gain curve applied by STFT overlap-add).
 
-use super::eq::{BandBank, MAX_BANDS};
-use super::stft::{Spectral, StftChannel, fft_size};
+use super::eq::{BandBank, BandSettings, MAX_BANDS};
+use super::stft::{Pairing, Plan, Spectral, StftChannel, fft_size, stream};
 use crate::biquad::{Biquad, FilterType};
 use crate::design::{self, Band, Family, MAX_SECTIONS, Prototype, Sections};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
@@ -182,7 +182,7 @@ impl<const N: usize> GraphicEq<N> {
         let q = Self::q();
         for (i, &f) in Self::freqs().iter().enumerate() {
             let g = self.pv.v(Self::PARAMS[i].id);
-            self.bank.set_band(i, true, FilterType::Peaking, f, g, q, snap);
+            self.bank.set_band(i, BandSettings::new(true, FilterType::Peaking, f, g, q, snap));
         }
         self.out.set(db_to_gain(self.pv.v("gain")));
         if snap {
@@ -310,12 +310,12 @@ impl FullParametricEq {
         }
         for slot in 0..4 {
             let (on, q) = pass(hp_on, hp_s, slot);
-            self.bank.set_band(slot, on, FilterType::HighPass, hp_f, 0.0, q, snap);
+            self.bank.set_band(slot, BandSettings::new(on, FilterType::HighPass, hp_f, 0.0, q, snap));
             let (on, q) = pass(lp_on, lp_s, slot);
-            self.bank.set_band(11 + slot, on, FilterType::LowPass, lp_f, 0.0, q, snap);
+            self.bank.set_band(11 + slot, BandSettings::new(on, FilterType::LowPass, lp_f, 0.0, q, snap));
         }
         for (i, (on, kind, f, g, q)) in bands.into_iter().enumerate() {
-            self.bank.set_band(4 + i, on, kind, f, g, q, snap);
+            self.bank.set_band(4 + i, BandSettings::new(on, kind, f, g, q, snap));
         }
         self.out.set(db_to_gain(self.pv.v("master_gain")));
         if snap {
@@ -387,7 +387,7 @@ impl NotchFilter {
     fn apply_params(&mut self, snap: bool) {
         let q = NOTCH_Q[self.pv.idx("width").min(2)];
         for (i, ids) in NOTCH_IDS.iter().enumerate() {
-            self.bank.set_band(i, self.pv.on(ids[0]), FilterType::Cut, self.pv.v(ids[1]), self.pv.v(ids[2]), q, snap);
+            self.bank.set_band(i, BandSettings::new(self.pv.on(ids[0]), FilterType::Cut, self.pv.v(ids[1]), self.pv.v(ids[2]), q, snap));
         }
         if snap {
             self.bank.update_coeffs(true);
@@ -671,32 +671,21 @@ impl AudioEffect for FftFilter {
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let len = block_len(channels);
-        let nch = channels.len().min(self.stft.len());
         let (n, hop) = (self.n, self.hop);
         let scale = 1.0 / (n as f32 * 2.0);
         let bins = n / 2 + 1;
-        for i in 0..len {
-            for ch in 0..nch {
-                let spec = &mut self.spec;
-                let gains = &mut self.gains;
-                let target = &self.target;
-                // Every channel frames at the same samples; the gains glide once per frame.
-                let first = ch == 0;
-                let mut frame = |input: &[f32], out: &mut [f32]| {
-                    if first {
-                        for k in 0..bins {
-                            gains[k] += (target[k] - gains[k]) * 0.5;
-                        }
-                    }
-                    spec.analyse(input);
-                    for k in 0..bins {
-                        spec.re[k] *= gains[k];
-                        spec.im[k] *= gains[k];
-                    }
-                    spec.synthesise_add(out, scale);
-                };
-                channels[ch][i] = self.stft[ch].tick(channels[ch][i], hop, &mut frame);
+        let (gains, target) = (&mut self.gains, &self.target);
+        stream(&mut self.stft, &mut self.spec, channels, len, Plan { hop, scale, pairing: Pairing::Full }, &mut |ch, _, re, im| {
+            // Every channel frames at the same samples; the gains glide once per frame.
+            if ch == 0 {
+                for k in 0..bins {
+                    gains[k] += (target[k] - gains[k]) * 0.5;
+                }
             }
-        }
+            for k in 0..bins {
+                re[k] *= gains[k];
+                im[k] *= gains[k];
+            }
+        });
     }
 }

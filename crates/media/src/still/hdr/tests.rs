@@ -112,6 +112,9 @@ fn hostile_input_is_an_error_not_a_panic() {
     }
     assert!(decode("a.hdr", &file("-Y 2 +X 2", &[0; 8])).is_err());
     assert!(decode("a.hdr", &file("-Y 99999999 +X 99999999", &[0; 16])).is_err());
+    // Pass the coarse compressed-size check but fail scanline validation. This must be rejected
+    // before a 1 GiB float image is initialized.
+    assert!(decode("a.hdr", &file("-Y 67108864 +X 1", &[0; 16_384])).is_err());
     assert!(decode("a.hdr", &file("-Y 0 +X 4", &[])).is_err());
     assert!(decode("a.hdr", &file("-Y 2 -Y 2", &[0; 16])).is_err());
     assert!(decode("a.hdr", &file("junk", &[0; 16])).is_err());
@@ -131,4 +134,12 @@ fn opens_as_a_float_still() {
     assert_eq!(info.video.as_ref().map(|v| (v.width, v.height, v.codec.as_str())), Some((2, 2, "HDR")));
     let src = crate::open_bytes("a.hdr", file("-Y 2 +X 2", &body).into(), &[]).unwrap();
     assert_eq!(src.info().kind, MediaKind::Still);
+}
+
+#[test]
+fn an_extreme_axis_is_rejected_before_the_scan_line_scratch_exists() {
+    // 2^26 x 1 is within the pixel limit, but would size a 256 MiB validation scan line
+    let f = file("-Y 1 +X 67108864", &vec![0u8; 1 << 16]);
+    let e = decode("a.hdr", &f).unwrap_err().to_string();
+    assert!(e.contains("picture size out of range"), "{e}");
 }

@@ -35,7 +35,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         })
         .inner;
     // each focus of the editor starts a new undo step; the edits while it keeps focus join it
-    let typing = egui::Id::new("project-notes-typing");
+    let typing = egui::Id::unique("project-notes-typing");
     if r.gained_focus() {
         ui.data_mut(|d| {
             let n = d.get_temp::<u64>(typing).unwrap_or(0).wrapping_add(1);

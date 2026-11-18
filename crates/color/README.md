@@ -38,6 +38,8 @@ for limited- and full-range files.
 | ARRI LogC4 | ARRI Wide Gamut 4 | ARRI, *ARRI LogC4 Logarithmic Color Space — Specification* (2022) | CV | a = (2¹⁸ − 16)/117.45, b = 928/1023, c = 95/1023, s = 7·ln2·2^(7 − 14c/b)/(a·b), t = (2^(6 − 14c/b) − 64)/a; y ≥ 0: x = (2^(14(y − c)/b + 6) − 64)/a; else x = y·s + t |
 | Apple Log | BT.2020 | Apple, *Apple Log Profile* white paper (2023) | IRE | R0 = −0.05641088, Rt = 0.01, c = 47.28711236, β = 0.00964052, γ = 0.08550479, δ = 0.69336945; P ≥ c(Rt − R0)²: x = 2^((P − δ)/γ) − β; else x = √(P/c) + R0 |
 | DJI D-Log | D-Gamut | DJI, *White Paper on D-Log and D-Gamut of DJI Cinema Color System* (2017) | CV | y ≤ 0.14: x = (y − 0.0929)/6.025; else x = (10^(3.89616y − 2.27752) − 0.0108)/0.9892 |
+| Fujifilm F-Log | F-Gamut (= BT.2020 primaries) | Fujifilm, *GFX ETERNA Technical Guide – White Paper* v1.01 (2026), F-Log conversion formula (same as the F-Log data sheet) | CV | y ≥ cut2: x = 10^((y − d)/c)/a − b/a; else x = (y − f)/e; a 0.555556, b 0.009468, c 0.344676, d 0.790453, e 8.735631, f 0.092864, cut1 0.00089, cut2 0.100537775223865 |
+| Fujifilm F-Log2 / F-Log2 C | F-Gamut / F-Gamut C (R 0.7347, 0.2653; G 0.0263, 0.9737; B 0.1173, −0.0224) | same document, F-Log2 C / F-Log2 conversion formula | CV | same form; a 5.555556, b 0.064829, c 0.245281, d 0.384316, e 8.799461, f 0.092864, cut1 0.000889, cut2 0.100686685370811 |
 
 The encoders are the exact inverses given in the same documents. DJI **D-Log M** is not
 implemented: DJI has not published its formula (only conversion LUTs), and we do not derive curves
@@ -87,7 +89,7 @@ on the sRGB curve).
 
 ## Grading signal (`grade`)
 
-Lumetri's controls work on a 0…1 signal. `GradeSpace` picks it from the working space:
+Color Grading's controls work on a 0…1 signal. `GradeSpace` picks it from the working space:
 
 | Working space | Signal of working-linear `c` (1.0 = 203 cd/m² in HDR) | 1.0 means |
 |---|---|---|
@@ -95,7 +97,7 @@ Lumetri's controls work on a 0…1 signal. `GradeSpace` picks it from the workin
 | Rec. 2100 PQ | `PQ⁻¹(c·203/10000) / PQ⁻¹(W/10000)` (SMPTE ST 2084) | HDR White `W` cd/m² |
 | Rec. 2100 HLG | `F = c·203/W`, `Y = BT.2020 luma(F)`, `E = F·Y^((1−γ)/γ)`, signal = HLG OETF(E), γ = 1.2 + 0.42·log10(W/1000) (BT.2100 inverse OOTF, note 5f) | display peak `W` |
 
-`W` is Lumetri's HDR White (Basic Correction) or HDR Range (Curves), default 1000 cd/m². HDR
+`W` is Color Grading's HDR White (Basic Correction) or HDR Range (Curves), default 1000 cd/m². HDR
 values above `W` are signals above 1 and are kept (PQ to 10 000 cd/m², HLG to signal 1.5). Checked
 values: PQ 100 / 203 / 1000 cd/m² = 0.508 / 0.581 / 0.752 of the plain PQ signal (BT.2408); HLG on
 a 1000 cd/m² display: 203 cd/m² = 0.75, 26 cd/m² (18 % grey) ≈ 0.38 (BT.2408).

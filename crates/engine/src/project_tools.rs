@@ -13,7 +13,7 @@
 //! | `file.mediaPropertiesFile` / `file.mediaProperties` | File ▸ Get Media File Properties for ▸ File… / Selection… (⇧⌘H) |
 //! | `file.projectSettings.general` / `.scratchDisks` | File ▸ Project Settings ▸ General… / Scratch Disks… |
 //! | `edit.find` / `edit.findNext` | Edit ▸ Find… (⌘F) / Find Next |
-//! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files |
+//! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files (regular files with a media extension only) |
 //! | `file.reveal` | Project panel ▸ Reveal in Finder / Show in Explorer: the frontend reveals the media file |
 //! | `clip.editOffline` | Clip ▸ Edit Offline… |
 //! | `clip.sourceSettings` | Clip ▸ Source Settings… |
@@ -45,7 +45,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 fn query(
@@ -57,7 +57,7 @@ fn query(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false }
+    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: false, named: crate::commands::NamedKeys::NONE }
 }
 
 const FIND_PARAMS: &str = r#"{"scope":"project|timeline"?,"column":str?,"operator":"contains|matches|beginsWith|endsWith|doesNotContain"?,"text":str?,"rows":[{"column":str,"operator":str,"text":str}]?,"matchAll":bool=true,"caseSensitive":bool=false,"in":"all|clips|markers"?}"#;
@@ -187,7 +187,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Automate to Sequence…",
             &["Clip"],
             None,
-            r#"{"items":[id]?,"ordering":"sort|selection","placement":"sequentially|unnumberedMarkers","method":"insert|overwrite","overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
+            r#"{"items":[id]?,"ordering":"sort|selection"?,"placement":"sequentially|unnumberedMarkers"?,"method":"insert|overwrite"?,"overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
             can_automate,
             automate_to_sequence,
         ),
@@ -669,7 +669,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         templates_dir(s).map(|d| d.join(format!("{}.fcproj", sanitize(t))).to_string_lossy().to_string()).unwrap_or_else(|| t.to_string())
     };
-    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(&path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
@@ -678,6 +678,8 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     proj.name = name.clone();
     proj.root.name = name;
     s.project = std::sync::Arc::new(proj);
+    s.project_instance = std::sync::Arc::new(());
+    s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = Session::default().state;
@@ -687,6 +689,8 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
         s.previews.reset_temp();
     }
     s.media.clear();
+    s.media.clear_stored();
+    s.media.add_stored(&s.project, Some(path.as_str()));
     s.revision += 1;
     s.saved_revision = s.revision;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
@@ -784,6 +788,8 @@ pub fn project_subset(p: &Project, keep: &BTreeSet<ItemId>) -> Project {
     prune(&mut out.root, keep);
     out.transcripts.retain(|id, _| keep.contains(id));
     out.narrations.retain(|id, _| keep.contains(id));
+    // a source graphic holds its item's text and metadata: it leaves with that item only
+    out.source_graphics.retain(|id, _| keep.contains(id));
     out.search_bins.clear();
     out
 }
@@ -953,33 +959,120 @@ pub fn scratch_paths(s: &Session) -> Value {
     let sc = &s.project.settings.scratch;
     let project_dir = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|d| d.to_string_lossy().to_string());
     let same = |o: &Option<String>| o.clone().or(project_dir.clone()).unwrap_or_else(|| "(data directory until the project is saved)".into());
+    let auto_save = match s.path.as_deref() {
+        Some(p) => trusted_scratch(sc.auto_save.as_deref(), Some(p), &s.prefs.auto_save.scratch_folders)
+            .unwrap_or_else(|| filmcraft_format::autosave::auto_save_dir(std::path::Path::new(p)))
+            .to_string_lossy()
+            .to_string(),
+        None => same(&None),
+    };
+    let scratch = |o: &Option<String>| {
+        trusted_scratch(o.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|| same(&None))
+    };
     json!({
-        "captured": {"setting": sc.captured, "path": same(&sc.captured)},
+        "captured": {"setting": sc.captured, "path": scratch(&sc.captured)},
         "videoPreviews": {"setting": sc.video_previews, "path": previews_dir(s).map(|d| d.to_string_lossy().to_string()).unwrap_or_else(|| same(&sc.video_previews))},
-        "audioPreviews": {"setting": sc.audio_previews, "path": same(&sc.audio_previews)},
-        "autoSave": {"setting": sc.auto_save, "path": sc.auto_save.clone().or_else(|| s.path.as_deref().map(|p| filmcraft_format::autosave::auto_save_dir(std::path::Path::new(p)).to_string_lossy().to_string())).unwrap_or_else(|| same(&None))},
+        "audioPreviews": {"setting": sc.audio_previews, "path": scratch(&sc.audio_previews)},
+        "autoSave": {"setting": sc.auto_save, "path": auto_save},
     })
 }
 
 /// Render previews folder of the open project: Scratch Disks ▸ Video Previews / `<project
 /// name>`, else `FilmCraft Previews/<project name>` next to the project (None while unsaved).
 pub fn previews_dir(s: &Session) -> Option<std::path::PathBuf> {
-    s.path.as_deref().map(|p| previews_dir_for(&s.project, p))
+    s.path.as_deref().map(|p| previews_dir_for(&s.project, p, &s.prefs.auto_save.scratch_folders))
 }
 
-/// [`previews_dir`] for `project` saved at `path`.
-pub fn previews_dir_for(project: &Project, path: &str) -> std::path::PathBuf {
-    match &project.settings.scratch.video_previews {
-        Some(d) if !d.is_empty() => {
+/// [`previews_dir`] for `project` saved at `path`; `chosen` as in [`trusted_scratch`].
+pub fn previews_dir_for(project: &Project, path: &str, chosen: &[String]) -> std::path::PathBuf {
+    match trusted_scratch(project.settings.scratch.video_previews.as_deref(), Some(path), chosen) {
+        Some(d) => {
             let stem = std::path::Path::new(path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
-            std::path::Path::new(d).join(stem)
+            d.join(stem)
         }
-        _ => crate::previews::dir_for_project(path),
+        None => crate::previews::dir_for_project(path),
     }
+}
+
+/// The Scratch Disks folder `dir` from the settings of the project saved at `project_path`, if
+/// FilmCraft may write there: a folder chosen in Project Settings ▸ Scratch Disks on this computer
+/// (`chosen`, kept in the preferences), or a folder inside the project's own folder. Other folders
+/// named in a project file, and paths [`crate::doc_path::resolve`] refuses (other computers,
+/// devices), give None: the default location.
+pub fn trusted_scratch(dir: Option<&str>, project_path: Option<&str>, chosen: &[String]) -> Option<std::path::PathBuf> {
+    let dir = dir.filter(|d| !d.is_empty())?;
+    let resolved = std::path::PathBuf::from(crate::doc_path::resolve(dir, project_path.map(std::path::Path::new)).ok()?);
+    if chosen.iter().any(|c| c == dir) {
+        return Some(resolved);
+    }
+    let project = std::path::absolute(project_path?).ok()?;
+    let root = project.parent().filter(|r| !r.as_os_str().is_empty())?;
+    inside(&resolved, root).then_some(resolved)
+}
+
+/// Whether `dir` lies inside `root`, also after following the links in the part that exists.
+fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
+    use std::path::Component;
+    if !dir.starts_with(root) || dir.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+        return false;
+    }
+    let mut existing = dir;
+    while existing.symlink_metadata().is_err() {
+        let Some(up) = existing.parent() else { return false };
+        existing = up;
+    }
+    match (std::fs::canonicalize(existing), std::fs::canonicalize(root)) {
+        (Ok(real), Ok(real_root)) => real.starts_with(real_root),
+        _ => false,
+    }
+}
+
+/// Remember the Scratch Disks folders chosen in this session, so projects naming them may use
+/// them later (see [`trusted_scratch`]).
+pub(crate) fn remember_scratch_folders(s: &mut Session, dirs: &[String]) {
+    const KEEP: usize = 64;
+    let mut prefs = s.prefs.clone();
+    let list = &mut prefs.auto_save.scratch_folders;
+    for d in dirs {
+        list.retain(|x| x != d);
+        list.push(d.clone());
+    }
+    let excess = list.len().saturating_sub(KEEP);
+    list.drain(..excess);
+    if prefs != s.prefs
+        && let Err(e) = s.set_prefs(prefs)
+    {
+        log::warn!("saving preferences: {e}");
+    }
+}
+
+/// Log and tell the user once when the project just opened names Scratch Disks folders that
+/// FilmCraft will not write to (see [`trusted_scratch`]).
+pub(crate) fn warn_untrusted_scratch(s: &mut Session) {
+    let sc = &s.project.settings.scratch;
+    let ignored: Vec<String> = [&sc.auto_save, &sc.video_previews, &sc.captured, &sc.audio_previews]
+        .into_iter()
+        .filter_map(|d| d.as_deref().filter(|d| !d.is_empty()))
+        .filter(|d| trusted_scratch(Some(d), s.path.as_deref(), &s.prefs.auto_save.scratch_folders).is_none())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if ignored.is_empty() {
+        return;
+    }
+    let list = ignored.join(", ");
+    log::warn!("project scratch disks outside the project folder not used: {list}");
+    s.toast(format!(
+        "Scratch Disks: not using {list} (outside the project folder and not chosen on this computer). Auto-saves, previews and captured media go to the default location; choose the folder in Project Settings > Scratch Disks to use it."
+    ));
 }
 
 fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
     let mut sc = s.project.settings.scratch.clone();
+    let mut chosen = Vec::new();
     for (k, slot) in
         [("captured", &mut sc.captured), ("videoPreviews", &mut sc.video_previews), ("audioPreviews", &mut sc.audio_previews), ("autoSave", &mut sc.auto_save)]
     {
@@ -987,10 +1080,17 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
             None => {}
             Some(Value::Null) => *slot = None,
             Some(Value::String(x)) if x.is_empty() || x.eq_ignore_ascii_case("same as project") => *slot = None,
-            Some(Value::String(x)) => *slot = Some(x.clone()),
+            Some(Value::String(x)) => {
+                if let Err(crate::doc_path::NotFollowed::Refused(why)) = crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)) {
+                    return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer: {why}")));
+                }
+                chosen.push(x.clone());
+                *slot = Some(x.clone());
+            }
             Some(_) => return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` is a folder path or null"))),
         }
     }
+    remember_scratch_folders(s, &chosen);
     if sc != s.project.settings.scratch {
         s.edit("Scratch Disks", |pr, _| {
             pr.settings.scratch = sc;
@@ -1005,6 +1105,21 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
 // Edit Original, clip items
 // ---------------------------------------------------------------------------------------------
 
+/// Whether Edit Original may hand `path` to the system's default app: a regular file (after
+/// following links) whose name, and the name it links to, have an extension the importer takes.
+/// Anything else (a folder or app bundle, a script, a shortcut, a launcher) is refused.
+pub(crate) fn openable_original(path: &str) -> std::result::Result<(), String> {
+    let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    let real = std::fs::canonicalize(path).map_err(|e| format!("can't open “{name}”: {e}"))?;
+    if !real.is_file() {
+        return Err(format!("“{name}” is not a file"));
+    }
+    if !filmcraft_media::is_importable(std::path::Path::new(path)) || !filmcraft_media::is_importable(&real) {
+        return Err(format!("Edit Original opens media files only; “{name}” is not one"));
+    }
+    Ok(())
+}
+
 fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
     let mut paths = Vec::new();
     for id in targets(s, p) {
@@ -1014,8 +1129,16 @@ fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
             paths.push(path.to_string());
         }
     }
+    // the files as media access resolves them: a stored path it refuses is not handed to the system
+    let paths = paths
+        .iter()
+        .map(|path| s.media.follow(path).map_err(|why| bad("edit.editOriginal", format!("{path} is not opened: {why}"))))
+        .collect::<Result<Vec<String>>>()?;
     if paths.is_empty() {
         return Err(EngineError::Other("select a clip with a media file".into()));
+    }
+    for path in &paths {
+        openable_original(path).map_err(|e| bad("edit.editOriginal", e))?;
     }
     Ok(json!({"paths": paths}))
 }
@@ -1094,7 +1217,15 @@ fn update_metadata(s: &mut Session, p: &Value) -> Result<Value> {
     for id in targets(s, p) {
         let Some(it) = s.project.item(id) else { continue };
         let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m)) else { continue };
-        let side = sidecar_path(path);
+        // the media file as media access resolves it: a refused stored path gets no sidecar written beside it
+        let file = match s.media.follow(path) {
+            Ok(file) => file,
+            Err(why) => {
+                skipped.push(json!({"item": id.0, "path": path, "reason": format!("{path} is not opened: {why}")}));
+                continue;
+            }
+        };
+        let side = sidecar_path(&file);
         if let Ok(old) = s.services.read_file(&side)
             && !String::from_utf8_lossy(&old).contains("xmp:CreatorTool=\"FilmCraft\"")
         {
@@ -1222,7 +1353,10 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
     let mut result: Result<()> = Ok(());
     for (k, ((id, r), at)) in plan.iter().zip(&starts).enumerate() {
         let insert = method == "insert" && placement == "unnumberedMarkers";
-        match crate::commands::place_item(s, *id, *r, *at, vdest, adest, insert, "Automate to Sequence", None) {
+        match crate::commands::place_item(
+            s,
+            crate::commands::ItemPlacement { item: *id, range: *r, at: *at, vdest, adest, insert, label: "Automate to Sequence", audio_split: None },
+        ) {
             Ok(ids) => placed.push((k, ids)),
             Err(e) => {
                 result = Err(e);
@@ -1299,5 +1433,4 @@ pub fn system_report() -> Value {
 }
 
 #[cfg(test)]
-#[path = "project_tools_tests.rs"]
 mod tests;

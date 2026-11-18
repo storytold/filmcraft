@@ -25,7 +25,7 @@ fn project() -> (Project, ItemId) {
     let a = p.add_item(
         "a.wav",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::File { path: "/m/a.wav".into() },
             info,
             interpret: Default::default(),
@@ -35,7 +35,7 @@ fn project() -> (Project, ItemId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let r = FrameRate::FPS_25;
@@ -88,7 +88,7 @@ fn written_files_have_the_required_structure() {
     let c = Container::open(&bytes).unwrap();
     let class = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").map(|v| String::from_utf8_lossy(&v).to_string());
     let mut by_class: HashMap<String, Vec<u32>> = HashMap::new();
-    for &o in c.objects.keys() {
+    for o in c.object_ids() {
         if let Some(k) = class(o) {
             by_class.entry(k).or_default().push(o);
         }

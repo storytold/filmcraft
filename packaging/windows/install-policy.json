@@ -1,0 +1,27 @@
+{
+  "id": "filmcraft",
+  "name": "FilmCraft",
+  "upgradeCode": "31E6FB14-9DBC-41DD-B24B-26B71FB31B62",
+  "sources": [
+    "filmcraft.wxs"
+  ],
+  "icon": "assets/app-icon/filmcraft.ico",
+  "localization": [],
+  "extensions": [
+    "UI"
+  ],
+  "payloads": [
+    "NOTICE",
+    "filmcraft-cli.exe",
+    "filmcraft.exe"
+  ],
+  "registry": [
+    [
+      "-1",
+      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\filmcraft.exe",
+      "",
+      "[#FilmcraftExe]"
+    ]
+  ],
+  "mode": "dualScope"
+}

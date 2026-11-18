@@ -12,7 +12,7 @@ fn main() {
     let rows = gens.len().div_ceil(cols);
     let mut sheet = image::RgbaImage::new(w * cols as u32, h * rows as u32);
     for (i, g) in gens.iter().enumerate() {
-        let px = render(g, w, h, 3.3, 79, FrameRate::FPS_23_976);
+        let px = render(g, w, h, 3.3, 79, FrameRate::FPS_23_976).unwrap();
         let img = image::RgbaImage::from_raw(w, h, px).unwrap();
         image::imageops::overlay(&mut sheet, &img, ((i % cols) as u32 * w) as i64, ((i / cols) as u32 * h) as i64);
     }

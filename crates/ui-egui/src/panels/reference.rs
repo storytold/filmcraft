@@ -1,6 +1,6 @@
 //! Reference Monitor: a second view of the active sequence for comparing shots while grading. It
 //! is either ganged to the Program monitor (follows the playhead) or parked on its own frame,
-//! and shows the picture (Composite Video) or Lumetri Scopes of that frame.
+//! and shows the picture (Composite Video) or Video Scopes of that frame.
 //!
 //! Automation ids: `reference.picture` (once a picture is shown), `reference.timecode`, `reference.stepBack`,
 //! `reference.stepForward`, `reference.matchPlayhead`, `reference.gang`, `reference.display`,
@@ -68,7 +68,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 None => crate::dock::placeholder(ui, area, &t, "…"),
             }
             elems.push(("reference.picture".into(), area, "reference scopes".into()));
-            let resp = ui.interact(area, egui::Id::new("reference-area"), Sense::click());
+            let resp = ui.interact(area, egui::Id::unique("reference-area"), Sense::click());
             egui::Popup::context_menu(&resp).show(|ui| {
                 for k in ScopeKind::ALL {
                     let on = st.scopes.contains(&k);
@@ -101,7 +101,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let w = if icon.is_some() { 24.0 } else { galley_w + 16.0 };
         let r = Rect::from_min_size(pos2(x, bar.center().y - 11.0), vec2(w, 22.0));
         x = r.max.x + 4.0;
-        let resp = ui.interact(r, egui::Id::new(("reference-btn", id.to_string())), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("reference-btn", id.to_string())), Sense::click());
         if on {
             ui.painter().rect_filled(r, 4.0, t.pressed);
         } else if resp.hovered() {
@@ -128,8 +128,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let dr = Rect::from_min_size(pos2(bar.max.x - 150.0, bar.center().y - 11.0), vec2(142.0, 22.0));
     let mut display = st.display;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(dr));
-    let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Lumetri Scopes") };
-    let cb = egui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
+    let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Video Scopes") };
+    let cb = craft_ui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
         for d in [RefDisplay::Composite, RefDisplay::Scopes] {
             let r = ui.selectable_value(&mut display, d, label(d));
             elems.push((format!("reference.display.{}", if d == RefDisplay::Composite { "composite" } else { "scopes" }), r.rect, label(d).into()));

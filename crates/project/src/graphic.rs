@@ -35,6 +35,47 @@ pub fn is_layer(e: &EffectInstance) -> bool {
     is_layer_id(&e.effect)
 }
 
+/// Give every graphic layer without a uid (or with a uid another layer already uses) a fresh one
+/// that is unique among `effects`; non-layer effects are left alone.
+///
+/// This is the project-format lazy upgrade: files written before layers had uids (or with a
+/// duplicate written by a hostile/buggy producer) get stable identities when they are opened, so
+/// reorder/delete/undo and the Program monitor's text editor keep addressing the same layer.
+/// The optional `layer.uid` field means the file schema does not change; a save simply writes the
+/// assigned uid. Returns whether anything changed.
+pub fn ensure_layer_uids(effects: &mut [EffectInstance]) -> bool {
+    let mut used: std::collections::BTreeSet<u64> =
+        effects.iter().filter(|e| is_layer(e)).filter_map(|e| e.layer.as_ref()).map(|x| x.uid).filter(|uid| *uid != 0).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut next = 1u64;
+    let mut changed = false;
+    for e in effects.iter_mut().filter(|e| is_layer(e)) {
+        let uid = e.layer.as_ref().map_or(0, |x| x.uid);
+        if uid != 0 && seen.insert(uid) {
+            continue;
+        }
+        // Zero means "not assigned yet"; a repeated uid must move to a free one so two identical
+        // layers can never share an identity.
+        while used.contains(&next) {
+            let Some(after) = next.checked_add(1) else {
+                // A hostile file used every uid; leave this layer without one rather than loop.
+                next = 0;
+                break;
+            };
+            next = after;
+        }
+        if next == 0 {
+            continue;
+        }
+        e.layer.get_or_insert_with(Default::default).uid = next;
+        used.insert(next);
+        seen.insert(next);
+        changed = true;
+        next = next.saturating_add(1);
+    }
+    changed
+}
+
 fn p(id: &'static str, label: &'static str, kind: ParamKind, default: ParamValue, animatable: bool, group: &'static str) -> ParamDef {
     ParamDef { id, label, kind, default, animatable, group: if group.is_empty() { None } else { Some(group) } }
 }
@@ -129,6 +170,7 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 bo("faux_italic", "Faux Italic", false, X),
                 chc("caps", "Capitalisation", CAPS_OPTS, 0, X),
                 bo("underline", "Underline", false, X),
+                bo("strikethrough", "Strikethrough", false, X),
                 fl("box_width", "Text Box Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", X),
                 fl("box_height", "Text Box Height", 0.0, (0.0, 100_000.0), (0.0, 2160.0), "", X),
                 bo("vertical", "Vertical Text", false, X),
@@ -165,11 +207,45 @@ pub struct Appearance {
     /// Set when Fill Type is Linear Gradient. Replaces the solid fill. A text run with its own
     /// fill colour stays solid; the other characters keep the ramp.
     pub gradient: Option<LinearGradient>,
-    /// (colour, width px, type: 0 outer, 1 centre, 2 inner), outermost last.
-    pub strokes: Vec<([f32; 4], f32, u32)>,
+    /// Enabled strokes, outermost last.
+    pub strokes: Vec<Stroke>,
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stroke {
+    pub style: StrokeStyle,
+    /// Resolved styles in the same order as `TextProps::runs`.
+    pub runs: Vec<StrokeStyle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokeStyle {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    /// Width in layer pixels.
+    pub width: f32,
+    /// 0 outer, 1 centre, 2 inner.
+    pub kind: u32,
+}
+
+impl StrokeStyle {
+    pub fn active(&self) -> bool {
+        self.enabled && self.width.is_finite() && self.width > 0.0
+    }
+
+    fn with_char_style(self, c: &crate::graphic_design::CharStyle, second: bool) -> Self {
+        let (enabled, color, width, kind) =
+            if second { (c.stroke2, c.stroke2_color, c.stroke2_width, c.stroke2_type) } else { (c.stroke, c.stroke_color, c.stroke_width, c.stroke_type) };
+        Self {
+            enabled: enabled.unwrap_or(self.enabled),
+            color: color.unwrap_or(self.color),
+            width: width.filter(|v| v.is_finite()).map_or(self.width, |v| v.clamp(0.0, 1000.0)),
+            kind: kind.filter(|v| *v <= 2).unwrap_or(self.kind),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,6 +286,7 @@ pub struct TextProps {
     /// 0 normal, 1 all caps, 2 small caps.
     pub caps: u32,
     pub underline: bool,
+    pub strikethrough: bool,
     /// Paragraph-text box width (0 = point text).
     pub box_width: f32,
     /// Paragraph-text box height: lines that do not fit are not shown (0 = as tall as the text).
@@ -282,6 +359,9 @@ fn vv(e: &EffectInstance, id: &str, t: Tick) -> Vec2 {
     val(e, id, t).as_vec2().unwrap_or_default()
 }
 
+/// Largest shadow distance, size or blur, in layer pixels (the parameters' range).
+const MAX_SHADOW_PX: f32 = 1000.0;
+
 /// Evaluate a layer at clip (media) time `t`. `frame` is the graphic's canvas size; a NaN position
 /// means the canvas centre.
 pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<LayerSpec> {
@@ -305,6 +385,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
                 faux_italic: bb(e, "faux_italic", t),
                 caps: ch(e, "caps", t),
                 underline: bb(e, "underline", t),
+                strikethrough: bb(e, "strikethrough", t),
                 box_width: ff(e, "box_width", t).max(0.0),
                 box_height: ff(e, "box_height", t).max(0.0),
                 vertical: bb(e, "vertical", t),
@@ -324,8 +405,13 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
     };
     let mut strokes = Vec::new();
     for (on, c, w, k) in [("stroke", "stroke_color", "stroke_width", "stroke_type"), ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type")] {
-        if bb(e, on, t) && ff(e, w, t) > 0.0 {
-            strokes.push((cc(e, c, t), ff(e, w, t), ch(e, k, t)));
+        let style = StrokeStyle { enabled: bb(e, on, t), color: cc(e, c, t), width: ff(e, w, t).clamp(0.0, 1000.0), kind: ch(e, k, t) };
+        let runs: Vec<_> = match &content {
+            LayerContent::Text(text) => text.runs.iter().map(|(_, s)| style.with_char_style(s, on == "stroke2")).collect(),
+            LayerContent::Shape(_) => Vec::new(),
+        };
+        if style.active() || runs.iter().any(StrokeStyle::active) {
+            strokes.push(Stroke { style, runs });
         }
     }
     let background = bb(e, "background", t).then(|| {
@@ -338,8 +424,13 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         c[3] *= (ff(e, "shadow_opacity", t) / 100.0).clamp(0.0, 1.0);
         // Premiere: 135° casts the shadow down and to the right.
         let a = (ff(e, "shadow_angle", t) - 90.0).to_radians();
-        let d = ff(e, "shadow_distance", t);
-        Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: ff(e, "shadow_size", t).max(0.0), blur: ff(e, "shadow_blur", t).max(0.0) }
+        // Distance, size and blur size the layer's raster (and its blur kernel): keep them within
+        // the parameters' own 0..1000 range, whatever a stored project or template says.
+        // clamped as stored (f64): converting first would turn a huge finite value into infinity
+        let d = val(e, "shadow_distance", t).as_f64().unwrap_or(0.0);
+        let d = if d.is_finite() { d.clamp(0.0, f64::from(MAX_SHADOW_PX)) as f32 } else { 0.0 };
+        let extent = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, MAX_SHADOW_PX) };
+        Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: extent(ff(e, "shadow_size", t)), blur: extent(ff(e, "shadow_blur", t)) }
     });
     let pos = vv(e, "position", t);
     let position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
@@ -497,6 +588,64 @@ mod tests {
         assert_eq!(g.angle, 90.0);
         assert!(is_layer(&e));
         assert_eq!(layer_display_name(&e, 0), "Hello");
+    }
+
+    #[test]
+    fn assigning_a_new_layer_uid_never_reuses_an_existing_layers_uid() {
+        let make = |uid| {
+            let mut layer = new_text_layer("text", Vec2::new(10.0, 20.0), 40.0);
+            layer.layer = Some(Box::new(crate::graphic_design::LayerExtra { uid, ..Default::default() }));
+            layer
+        };
+        for initial in [[1, 0, 2, 1], [0, 1, 2, 1], [1, 2, 0, 1]] {
+            let mut layers: Vec<_> = initial.into_iter().map(make).collect();
+            assert!(ensure_layer_uids(&mut layers));
+            let uids: Vec<_> = layers.iter().map(crate::gtemplate::layer_uid).collect();
+            assert_eq!(uids.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 4, "{uids:?}");
+            assert_eq!(uids[initial.iter().position(|uid| *uid == 1).unwrap()], 1);
+            assert_eq!(uids[initial.iter().position(|uid| *uid == 2).unwrap()], 2);
+            assert!(!ensure_layer_uids(&mut layers), "a second pass must preserve identity");
+        }
+    }
+
+    #[test]
+    fn layer_uids_are_unique_and_repair_legacy_or_duplicate_entries() {
+        let a = new_text_layer("one", Vec2::new(10.0, 20.0), 40.0);
+        let mut b = new_text_layer("two", Vec2::new(10.0, 20.0), 40.0);
+        let mut shape = crate::effect::find_effect(SHAPE_LAYER).unwrap().instance();
+        // Legacy file: no uids at all; one layer already carries a duplicate uid.
+        assert_eq!(crate::gtemplate::layer_uid(&a), 0);
+        b.layer = Some(Box::new(crate::graphic_design::LayerExtra { uid: 7, ..Default::default() }));
+        shape.layer = Some(Box::new(crate::graphic_design::LayerExtra { uid: 7, ..Default::default() }));
+        let mut effects = vec![a, b, shape];
+        assert!(ensure_layer_uids(&mut effects));
+        let uids: Vec<u64> = effects.iter().filter(|e| is_layer(e)).map(crate::gtemplate::layer_uid).collect();
+        assert!(uids.iter().all(|uid| *uid != 0));
+        let unique: std::collections::BTreeSet<u64> = uids.iter().copied().collect();
+        assert_eq!(unique.len(), uids.len(), "every layer keeps its own identity: {uids:?}");
+        // Idempotent: a second pass changes nothing.
+        assert!(!ensure_layer_uids(&mut effects));
+    }
+
+    #[test]
+    fn hostile_shadow_values_are_held_to_the_parameter_range() {
+        let mut e = crate::effect::find_effect(SHAPE_LAYER).unwrap().instance();
+        e.params.get_mut("shadow").unwrap().value = ParamValue::Bool(true);
+        for (name, v) in [("shadow_distance", 1e30), ("shadow_size", f64::INFINITY), ("shadow_blur", 1e9)] {
+            e.params.get_mut(name).unwrap().value = ParamValue::Float(v);
+        }
+        let sh = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap();
+        assert!(sh.offset.0.abs() <= MAX_SHADOW_PX && sh.offset.1.abs() <= MAX_SHADOW_PX);
+        assert_eq!((sh.size, sh.blur), (MAX_SHADOW_PX, MAX_SHADOW_PX));
+        // below the parameter's range the shadow must not flip to the opposite side of its angle
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(-50.0);
+        assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
+        // a finite value beyond f32 range is capped, not dropped
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::MAX);
+        let (ox, oy) = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset;
+        assert!((ox.hypot(oy) - MAX_SHADOW_PX).abs() < 0.01, "{ox} {oy}");
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::NAN);
+        assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
     }
 
     #[test]

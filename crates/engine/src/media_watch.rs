@@ -6,8 +6,10 @@
 //! Each file media item's file is compared by size and modification time with what it was when
 //! last seen. The desktop app takes the stamps every *Refresh growing files every* seconds and as
 //! soon as its window comes back to the front, on a worker thread so a file on a slow network share
-//! never holds up the interface ([`Session::start_media_scan`], [`Session::poll_media_scan`]);
-//! `media.refreshChanged` takes them on the spot (CLI, agents).
+//! never holds up the interface ([`Session::start_media_scan`], [`Session::poll_media_scan`]); the
+//! worker also lists the files, which in a project of thousands of clips is a few milliseconds the
+//! interface would otherwise spend on it. `media.refreshChanged` takes them on the spot (CLI,
+//! agents).
 //!
 //! Refreshing opens the file again: the item gets the file's new [`MediaInfo`] (a longer
 //! duration, another frame size) and identity (so relinking compares against the new file), the
@@ -18,13 +20,13 @@
 //!
 //! [`MediaInfo`]: filmcraft_media::MediaInfo
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
 use serde_json::{Value, json};
 
-use crate::{Result, Session};
+use crate::{MediaPool, Result, Session};
 
 /// A file's size and modification time (nanoseconds since 1970).
 pub type Stamp = (u64, u128);
@@ -44,13 +46,14 @@ fn stamp(_: &str) -> Option<Stamp> {
     None
 }
 
-/// The files of `p`'s file media items (made-offline ones aside).
-pub fn media_files(p: &Project) -> BTreeSet<String> {
+/// The files of `p`'s file media items (made-offline ones aside): each item's path → the file the
+/// media pool opens for it. Paths the pool does not follow ([`MediaPool::follow`]) are left out.
+pub fn media_files(p: &Project, pool: &MediaPool) -> BTreeMap<String, String> {
     p.items
         .values()
         .filter_map(|i| match &i.kind {
             ItemKind::Media(m) if !m.offline => match &m.media {
-                MediaRef::File { path } => Some(path.clone()),
+                MediaRef::File { path } => Some((path.clone(), pool.follow(path).ok()?)),
                 _ => None,
             },
             _ => None,
@@ -58,9 +61,15 @@ pub fn media_files(p: &Project) -> BTreeSet<String> {
         .collect()
 }
 
+/// Whether `p` has a file media item to watch (made-offline ones aside): the interface's check on
+/// every frame, which stops at the first one ([`media_files`] lists them all).
+pub fn has_media_files(p: &Project) -> bool {
+    p.items.values().any(|i| matches!(&i.kind, ItemKind::Media(m) if !m.offline && matches!(m.media, MediaRef::File { .. })))
+}
+
 /// `media.refreshChanged`: stamp the project's media files now and read the changed ones again.
 pub(crate) fn refresh_changed(s: &mut Session, _: &Value) -> Result<Value> {
-    let now = media_files(&s.project).into_iter().map(|p| (p.clone(), stamp(&p))).collect();
+    let now = media_files(&s.project, &s.media).into_iter().map(|(p, file)| (p, stamp(&file))).collect();
     s.apply_media_stamps(now)
 }
 
@@ -68,17 +77,14 @@ impl Session {
     /// Start stamping the project's media files on a worker thread, unless a look is still
     /// running (or the build has no files to look at: the web app).
     pub fn start_media_scan(&mut self) {
-        if self.media_scan.is_some() || cfg!(target_arch = "wasm32") {
+        if self.media_scan.is_some() || cfg!(target_arch = "wasm32") || !has_media_files(&self.project) {
             return;
         }
-        let files = media_files(&self.project);
-        if files.is_empty() {
-            return;
-        }
+        let (project, pool) = (self.project.clone(), self.media.clone());
         let slot: MediaScan = Arc::default();
         let out = slot.clone();
         let spawned = std::thread::Builder::new().name("media-watch".into()).spawn(move || {
-            let stamps = files.into_iter().map(|p| (p.clone(), stamp(&p))).collect();
+            let stamps = media_files(&project, &pool).into_iter().map(|(p, file)| (p, stamp(&file))).collect();
             *out.lock().unwrap_or_else(PoisonError::into_inner) = Some(stamps);
         });
         if spawned.is_ok() {
@@ -125,8 +131,9 @@ impl Session {
             if !changed.contains(path) || failed.contains(path) {
                 continue;
             }
+            let Ok(file) = self.media.follow(path) else { continue };
             // Opened the way import opens it, so the info is what a new import would get.
-            match self.media.open_file(path, &*self.services) {
+            match self.media.open_file(&file, &*self.services) {
                 Ok(src) => {
                     let mut info = src.info().clone();
                     if info.kind == filmcraft_media::MediaKind::Still
@@ -134,7 +141,7 @@ impl Session {
                     {
                         v.frame_rate = crate::settings::timebase_rate(&self.prefs.media.indeterminate_timebase);
                     }
-                    let identity = crate::relink::identity_of(&*self.services, path).ok();
+                    let identity = crate::relink::identity_of(&*self.services, &file).ok();
                     fresh.push((*id, path.clone(), info, identity, src));
                 }
                 Err(_) => {

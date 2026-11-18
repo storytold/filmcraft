@@ -137,7 +137,10 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     for id in ids {
         let Some(m) = proj.item(id).and_then(|i| i.as_media()).cloned() else { continue };
         let MediaRef::File { path } = &m.media else { continue };
-        let size = s.services.file_size(path).unwrap_or(0);
+        // Project files carry stored paths; use only the media pool's resolved, policy-approved
+        // pathname for filesystem I/O. Keep the stored path in the project itself.
+        let source_path = s.media.follow(path).map_err(|why| EngineError::Other(format!("{path} is not opened: {why}")))?;
+        let size = s.services.file_size(&source_path).unwrap_or(0);
         original_bytes += size;
         let file = Path::new(path);
         let stem = file.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("media-{}", id.0));
@@ -158,24 +161,27 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         };
         taken.push(out.clone());
         let proxy = match (&m.proxy, include_proxies) {
-            (Some(MediaRef::File { path: pp }), true) if s.services.file_size(pp).is_ok() => {
-                let pf = Path::new(pp);
-                let ps = pf.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let pe = pf.extension().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let o = unique_path(&dest_dir.join("Proxies"), &ps, "", &pe, &taken).to_string_lossy().into_owned();
-                taken.push(o.clone());
-                let b = s.services.file_size(pp).unwrap_or(0);
-                original_bytes += b;
-                result_bytes += b;
-                Some((pp.clone(), o))
-            }
+            (Some(MediaRef::File { path: pp }), true) => match s.media.follow(pp) {
+                Ok(resolved_proxy) if s.services.file_size(&resolved_proxy).is_ok() => {
+                    let pf = Path::new(&resolved_proxy);
+                    let ps = pf.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let pe = pf.extension().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let o = unique_path(&dest_dir.join("Proxies"), &ps, "", &pe, &taken).to_string_lossy().into_owned();
+                    taken.push(o.clone());
+                    let b = s.services.file_size(&resolved_proxy).unwrap_or(0);
+                    original_bytes += b;
+                    result_bytes += b;
+                    Some((resolved_proxy, o))
+                }
+                _ => None,
+            },
             _ => None,
         };
-        work.push(Work { item: id, src_path: path.clone(), out, range, proxy });
+        work.push(Work { item: id, src_path: source_path, out, range, proxy });
     }
     let previews = s.path.as_deref().map(crate::previews::dir_for_project).filter(|d| include_previews && d.is_dir());
     if let Some(d) = &previews {
-        let b = dir_size(d);
+        let b = dir_size(d).map_err(|e| EngineError::Other(format!("{}: {e}", d.display())))?;
         original_bytes += b;
         result_bytes += b;
     }
@@ -194,7 +200,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_p(p, "dryRun").unwrap_or(false) {
         return Ok(summary);
     }
-    if Path::new(&project_path).exists() && !bool_p(p, "overwrite").unwrap_or(false) {
+    if std::fs::symlink_metadata(&project_path).is_ok() && !bool_p(p, "overwrite").unwrap_or(false) {
         return Err(EngineError::Other(format!("{project_path} already exists")));
     }
     std::fs::create_dir_all(&dest_dir).map_err(|e| EngineError::Other(format!("{dest}: {e}")))?;
@@ -218,7 +224,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let services = s.services.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
-        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), &project_path, pr, &prog, &*services);
+        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), JobEnv { project_path: &project_path, pr, prog: &prog, services: &*services });
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
             path: project_path.clone(),
@@ -226,7 +232,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             seconds: secs,
             bytes,
             render_fps: 0.0,
-            extra_files: Vec::new(),
+            ..Default::default()
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
@@ -250,17 +256,22 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a consolidate job runs against, apart from the project and its work list.
+struct JobEnv<'a> {
+    project_path: &'a str,
+    pr: &'a Preset,
+    prog: &'a filmcraft_export::Progress,
+    services: &'a dyn crate::Services,
+}
+
 fn execute(
     mut proj: Project,
     work: Vec<Work>,
     sources: BTreeMap<ItemId, filmcraft_media::SharedSource>,
     previews: Option<(PathBuf, PathBuf)>,
-    project_path: &str,
-    pr: &Preset,
-    prog: &filmcraft_export::Progress,
-    services: &dyn crate::Services,
+    env: JobEnv<'_>,
 ) -> std::result::Result<u64, String> {
+    let JobEnv { project_path, pr, prog, services } = env;
     let mut bytes = 0;
     let openers = filmcraft_codecs::openers();
     for w in &work {
@@ -331,20 +342,57 @@ fn estimate_bytes(m: &filmcraft_project::MediaClip, dur: Tick, pr: &Preset) -> u
     (mbps * 1e6 / 8.0 * secs + audio) as u64
 }
 
-fn dir_size(d: &Path) -> u64 {
-    std::fs::read_dir(d)
-        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| if e.path().is_dir() { dir_size(&e.path()) } else { e.metadata().map_or(0, |m| m.len()) }).sum())
-        .unwrap_or(0)
+/// How deep the folder walks below go (a preview folder is one level, or a few).
+const MAX_DIR_DEPTH: u32 = 32;
+
+fn dir_size(d: &Path) -> std::io::Result<u64> {
+    dir_size_at(d, 0)
+}
+
+/// Bytes under `d`, not following symbolic links (a link back to an ancestor would otherwise
+/// repeat the walk over and over).
+fn dir_size_at(d: &Path, depth: u32) -> std::io::Result<u64> {
+    if depth > MAX_DIR_DEPTH {
+        // same limit as copy_dir, so a dry run reports what the job would fail on
+        return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
+    }
+    let Ok(rd) = std::fs::read_dir(d) else { return Ok(0) };
+    let mut n = 0;
+    for e in rd.filter_map(|e| e.ok()) {
+        n += match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size_at(&e.path(), depth + 1)?,
+            // links are not followed (copy_dir skips them): the tree is the project's own previews
+            Ok(t) if t.is_symlink() => 0,
+            _ => e.metadata().map_or(0, |m| m.len()),
+        };
+    }
+    Ok(n)
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<u64> {
+    copy_dir_at(from, to, 0)
+}
+
+/// Copy the files under `from`, following no symbolic links (to folders they could loop, to files they could read from anywhere).
+fn copy_dir_at(from: &Path, to: &Path, depth: u32) -> std::io::Result<u64> {
+    if depth > MAX_DIR_DEPTH {
+        return Err(std::io::Error::other("folder is nested too deeply to copy completely"));
+    }
+    // the root is not a link either: a link there would read some other folder into the project
+    if std::fs::symlink_metadata(from)?.file_type().is_symlink() {
+        return Ok(0);
+    }
     std::fs::create_dir_all(to)?;
     let mut n = 0;
     for e in std::fs::read_dir(from)? {
         let e = e?;
         let p = e.path();
-        if p.is_dir() {
-            n += copy_dir(&p, &to.join(e.file_name()))?;
+        let t = e.file_type()?;
+        if t.is_dir() {
+            n += copy_dir_at(&p, &to.join(e.file_name()), depth + 1)?;
+        } else if t.is_symlink() {
+            // previews are files this program wrote: a link was put there, and its target is not ours to copy
+            continue;
         } else {
             n += std::fs::copy(&p, to.join(e.file_name()))?;
         }
@@ -362,5 +410,70 @@ pub fn commands() -> Vec<CommandSpec> {
         enabled: |s| if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) },
         run,
         journal: false,
+        named: crate::commands::NamedKeys::NONE,
     }]
+}
+
+#[cfg(all(test, unix))]
+mod folder_walk_tests {
+    use super::*;
+
+    #[test]
+    fn links_back_to_an_ancestor_are_not_walked() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/f.bin"), [0u8; 10]).unwrap();
+        for i in 0..8 {
+            std::os::unix::fs::symlink(&dir, dir.join(format!("a/loop{i}"))).unwrap();
+            std::os::unix::fs::symlink(&dir, dir.join(format!("a/b/loop{i}"))).unwrap();
+        }
+        assert_eq!(dir_size(&dir).unwrap(), 10);
+        let out = dir.join("copy-out");
+        assert_eq!(copy_dir(&dir.join("a"), &out).unwrap(), 10);
+        assert!(out.join("b/f.bin").exists() && !out.join("loop0").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_links_are_skipped_and_a_too_deep_folder_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-walk2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::write(dir.join("f.bin"), [0u8; 10]).unwrap();
+        std::os::unix::fs::symlink(dir.join("f.bin"), dir.join("a/link.bin")).unwrap();
+        // a link to a file is not followed: it could name any file the user can read
+        assert_eq!(dir_size(&dir.join("a")).unwrap(), 0);
+        assert_eq!(copy_dir(&dir.join("a"), &dir.join("a-out")).unwrap(), 0);
+        assert!(!dir.join("a-out/link.bin").exists());
+        // nor is a link standing for the folder itself
+        std::os::unix::fs::symlink(&dir, dir.join("root-link")).unwrap();
+        assert_eq!(copy_dir(&dir.join("root-link"), &dir.join("root-out")).unwrap(), 0);
+        assert!(!dir.join("root-out").exists());
+        let mut deep = dir.join("deep");
+        for _ in 0..=MAX_DIR_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("f.bin"), [0u8; 1]).unwrap();
+        assert!(dir_size(&dir.join("deep")).is_err());
+        assert!(copy_dir(&dir.join("deep"), &dir.join("out")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod dangling_link_tests {
+    #[test]
+    fn a_dangling_link_in_the_destination_is_a_taken_name() {
+        let dir = std::env::temp_dir().join(format!("fc-pm-dangling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("elsewhere.mov");
+        std::os::unix::fs::symlink(&victim, dir.join("clip.mov")).unwrap();
+        let p = crate::proxies::unique_path(&dir, "clip", "", "mov", &[]);
+        assert_eq!(p, dir.join("clip 2.mov"), "the name behind a dangling link is not free");
+        assert!(!victim.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

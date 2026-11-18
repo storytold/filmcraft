@@ -420,3 +420,99 @@ fn contact_sheets() {
         sheet.save(std::path::Path::new(&dir).join(format!("{f}.png"))).unwrap();
     }
 }
+
+/// The disc blur as it was before #1871: offsets worked out for every pixel.
+fn disc_blur_per_pixel(img: &Image, x: f32, y: f32, r: f32, n: usize) -> [f32; 4] {
+    if r < 0.5 || n <= 1 {
+        return img.sample_bilinear_clamped(x, y);
+    }
+    let mut acc = [0.0; 4];
+    for i in 0..n {
+        let rr = r * ((i as f32 + 0.5) / n as f32).sqrt();
+        let a = i as f32 * 2.399_963;
+        let p = img.sample_bilinear_clamped(x + rr * a.cos(), y + rr * a.sin());
+        for k in 0..4 {
+            acc[k] += p[k];
+        }
+    }
+    scale4(acc, 1.0 / n as f32)
+}
+
+/// #1871: offsets worked out once per frame give exactly the pixels the per-pixel version gave.
+#[test]
+fn disc_blur_with_shared_offsets_is_bit_identical() {
+    let img = frame_b();
+    for (r, n) in [(0.0, 24), (0.4, 24), (3.0, 8), (30.0, 24), (75.5, 48), (200.0, 48), (12.0, 1)] {
+        let offsets = disc_offsets(r, n);
+        for y in (0..H).step_by(7) {
+            for x in (0..W).step_by(5) {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let a = disc_blur_per_pixel(&img, fx, fy, r, n);
+                let b = disc_blur_with(&img, fx, fy, &offsets);
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "r {r}, n {n}, at ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// `cargo test --release -p filmcraft-render --lib lens_blur_frame_time -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn lens_blur_frame_time() {
+    let (w, h) = (1920, 1080);
+    let img = paint(w, h, |x, y| [x / w as f32, y / h as f32, 0.5, 1.0]);
+    let (r, n) = (30.0, 24);
+    let time = |f: &dyn Fn() -> Image| {
+        let t = std::time::Instant::now();
+        let mut out = f();
+        for _ in 0..4 {
+            out = f();
+        }
+        (t.elapsed().as_secs_f64() * 1000.0 / 5.0, out)
+    };
+    let (before, a) = time(&|| paint(w, h, |x, y| disc_blur_per_pixel(&img, x, y, r, n)));
+    let offsets = disc_offsets(r, n);
+    let (after, b) = time(&|| paint(w, h, |x, y| disc_blur_with(&img, x, y, &offsets)));
+    assert_eq!(a.px, b.px);
+    eprintln!(
+        "1080p disc blur of one picture, radius {r}, {n} samples: {before:.1} ms per pixel offsets, {after:.1} ms shared offsets ({:.2}x)",
+        before / after
+    );
+}
+
+/// #3086: on a text layer the typewriter grid and caret follow the text, not the whole frame.
+#[test]
+fn typewriter_cursor_stays_on_the_text_block() {
+    let (x0, x1, y0, y1) = (40usize, 88usize, 30usize, 42usize);
+    let layer = paint(W, H, |x, y| {
+        let (xi, yi) = (x as usize, y as usize);
+        if (x0..x1).contains(&xi) && (y0..y1).contains(&yi) { [0.3, 0.3, 0.3, 1.0] } else { [0.0; 4] }
+    });
+    let def = transitions().find(|d| d.id == "typewriter").unwrap();
+    for rows in [1.0, 3.0] {
+        let mut e = def.instance();
+        e.params.get_mut("columns").unwrap().value = ParamValue::Float(8.0);
+        e.params.get_mut("rows").unwrap().value = ParamValue::Float(rows);
+        e.params.get_mut("cursor").unwrap().value = ParamValue::Bool(true);
+        for p in [0.3, 0.6] {
+            let m = apply(&e, &layer, &layer, p);
+            let (mut cx0, mut cx1, mut cy0, mut cy1) = (usize::MAX, 0, usize::MAX, 0);
+            for y in 0..H {
+                for x in 0..W {
+                    let i = (y * W + x) * 4;
+                    let (o, s) = (&m.px[i..i + 4], &layer.px[i..i + 4]);
+                    if s[3] == 0.0 {
+                        assert!(o[3] == 0.0, "rows={rows} p={p}: transparent pixel ({x}, {y}) painted");
+                    }
+                    if o.iter().zip(s).any(|(a, b)| (a - b).abs() > 1e-4) {
+                        (cx0, cx1, cy0, cy1) = (cx0.min(x), cx1.max(x + 1), cy0.min(y), cy1.max(y + 1));
+                    }
+                }
+            }
+            assert!(cx0 < cx1, "rows={rows} p={p}: no cursor visible");
+            assert!(cx0 >= x0 && cx1 <= x1 && cy0 >= y0 && cy1 <= y1, "rows={rows} p={p}: cursor x{cx0}..{cx1} y{cy0}..{cy1} outside block");
+            let max_h = ((y1 - y0) as f64 / rows).ceil() as usize;
+            assert!(cy1 - cy0 <= max_h, "rows={rows} p={p}: cursor {} px tall, row is {max_h}", cy1 - cy0);
+        }
+    }
+}

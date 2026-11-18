@@ -481,11 +481,24 @@ pub fn thin_points(points: &[(Tick, f64)], tolerance: f64, min_interval: Tick, h
     out
 }
 
+/// What [`write_lane`] writes: the range `[t0, t1]`, its thinned `points`, and the surrounding context.
+#[derive(Clone, Copy)]
+pub struct LaneWrite<'a> {
+    pub t0: Tick,
+    pub t1: Tick,
+    pub points: &'a [(Tick, f64)],
+    pub before: Option<f64>,
+    pub after: Option<f64>,
+    pub eps: Tick,
+    pub hold: bool,
+}
+
 /// Replace the keyframes of `param` within `[t0, t1]` by `points` (already thinned).
 ///
 /// `before`/`after` are the lane values just outside the written range: when given, a keyframe is
 /// placed one `eps` outside the range so the automation outside `[t0, t1]` is unchanged.
-pub fn write_lane(param: &mut Param, t0: Tick, t1: Tick, points: &[(Tick, f64)], before: Option<f64>, after: Option<f64>, eps: Tick, hold: bool) {
+pub fn write_lane(param: &mut Param, write: &LaneWrite) {
+    let LaneWrite { t0, t1, points, before, after, eps, hold } = *write;
     let interp = if hold { Interpolation::Hold } else { Interpolation::Linear };
     param.keyframes.retain(|k| k.time < t0 || k.time > t1);
     let mut add = |t: Tick, v: f64| {
@@ -550,7 +563,7 @@ mod tests {
         assert_eq!(th, vec![(Tick(0), 0.0), (Tick(500), 10.0), (Tick(1000), 0.0)]);
         // every original point within tolerance of the thinned curve
         let mut p = Param::new(ParamValue::Float(0.0));
-        write_lane(&mut p, Tick(0), Tick(1000), &th, None, None, Tick(1), false);
+        write_lane(&mut p, &LaneWrite { t0: Tick(0), t1: Tick(1000), points: &th, before: None, after: None, eps: Tick(1), hold: false });
         for (t, v) in pts {
             assert!((p.scalar_at(t) - v).abs() <= 0.01 + 1e-9);
         }
@@ -562,8 +575,22 @@ mod tests {
     #[test]
     fn write_lane_preserves_outside() {
         let mut p = Param::new(ParamValue::Float(0.0));
-        write_lane(&mut p, Tick(0), Tick(1000), &[(Tick(0), -3.0), (Tick(1000), -3.0)], None, None, Tick(1), false);
-        write_lane(&mut p, Tick(400), Tick(600), &[(Tick(400), -20.0), (Tick(600), -20.0)], Some(-3.0), Some(-3.0), Tick(1), false);
+        write_lane(
+            &mut p,
+            &LaneWrite { t0: Tick(0), t1: Tick(1000), points: &[(Tick(0), -3.0), (Tick(1000), -3.0)], before: None, after: None, eps: Tick(1), hold: false },
+        );
+        write_lane(
+            &mut p,
+            &LaneWrite {
+                t0: Tick(400),
+                t1: Tick(600),
+                points: &[(Tick(400), -20.0), (Tick(600), -20.0)],
+                before: Some(-3.0),
+                after: Some(-3.0),
+                eps: Tick(1),
+                hold: false,
+            },
+        );
         assert_eq!(p.scalar_at(Tick(200)), -3.0);
         assert_eq!(p.scalar_at(Tick(500)), -20.0);
         assert_eq!(p.scalar_at(Tick(800)), -3.0);

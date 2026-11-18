@@ -1,5 +1,5 @@
-//! Lumetri Color panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
-//! HSL Secondary, Vignette — editing the selected clip's Lumetri effect through engine commands.
+//! Color Grading panel: Basic Correction, Creative, Curves (RGB + hue curves), Color Wheels,
+//! HSL Secondary, Vignette — editing the selected clip's Color Grading effect through engine commands.
 //!
 //! In an HDR sequence (Rec. 2100 PQ / HLG working space) Basic Correction shows HDR White and
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
@@ -18,6 +18,7 @@ use crate::icons::{self, Icon};
 use crate::native_dialogs::FileDialog;
 use crate::state::{CurveAxis, Eyedropper};
 use crate::theme::Tokens;
+use crate::widgets::HotNumberOptions;
 
 type Actions = Vec<Value>;
 
@@ -40,7 +41,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(tlf!("Master · {name}", name = it.name)).color(t.text_dim));
         bui.add_space(8.0);
-        if bui.button(tl!("Add Lumetri Color to clip")).clicked() {
+        if bui.button(tl!("Add Color Grading to clip")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;
@@ -50,7 +51,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
     let mut auto_rows: Vec<(String, Rect, &'static str)> = Vec::new();
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Actions = Vec::new();
     // header: clip context + fx toggle
     // the fx toggle is laid out first so a long clip name is truncated instead of widening the panel
@@ -106,7 +107,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.horizontal(|ui| {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Look")).color(t.text_dim)));
                 let mut sel = look;
-                egui::ComboBox::from_id_salt("lumetri-look")
+                craft_ui::ComboBox::from_id_salt("lumetri-look")
                     .selected_text(opts.get(look).map_or(tl!("None"), |o| crate::i18n::t(o)))
                     .width((ui.available_width() - 40.0).max(60.0))
                     .show_ui(ui, |ui| {
@@ -128,7 +129,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if open_section(ui, app, &e, "Curves", "curves_on", "curves", &mut sections) {
             sub(ui, &t, tl!("RGB Curves"));
-            let key = egui::Id::new("lumetri-curve-channel");
+            let key = egui::Id::unique("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
             let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W / 2.0;
             let row = ui
@@ -156,7 +157,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("curve_blue", Color32::from_rgb(80, 130, 250)),
             ][ch];
             curve_eyedropper(ui, app, id, clip, idx, &t, pos2(scale_x, row.center().y));
-            curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
+            let r = curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
+            auto_rows.push((format!("lumetri.curve.{id}"), r, "Curve"));
             if hdr {
                 let r = slider(ui, &e, mt, "curves_hdr_range", tl!("HDR Range"), None, &t, &mut actions, clip, idx);
                 auto_rows.push(("lumetri.param.curves_hdr_range".into(), r, "HDR Range"));
@@ -172,7 +174,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W;
                 let row = ui.label(egui::RichText::new(label).color(t.text_dim)).rect;
                 curve_eyedropper(ui, app, id, clip, idx, &t, pos2(scale_x, row.center().y));
-                curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
+                let r = curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
+                auto_rows.push((format!("lumetri.curve.{id}"), r, label));
             }
         }
         if open_section(ui, app, &e, "Color Wheels & Match", "wheels_on", "wheels", &mut sections) {
@@ -211,7 +214,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Show Mask")).color(t.text_dim)));
                 let mut sel = mask;
                 let modes = [tl!("Off"), tl!("Color/Gray"), tl!("Color/Black"), tl!("White/Black")];
-                egui::ComboBox::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
+                craft_ui::ComboBox::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
                     for (i, o) in modes.iter().enumerate() {
                         if ui.selectable_value(&mut sel, i, *o).changed() {
                             set(&mut actions, "hsl_show_mask", json!(i));
@@ -297,6 +300,24 @@ fn open_section(
     open
 }
 
+/// The Color Grading panel's ≡ menu items: Export .cube… saves the grade of the clip the panel
+/// shows (also an Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id
+/// `panel.menu.LumetriColor.exportCube`). It is enabled only when that clip has an enabled
+/// Color Grading, and exports that clip even when another selected clip has one.
+/// True when the menu should close.
+pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let shown = selected(app).filter(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri")).map(|(c, _)| c);
+    let r = ui.add_enabled(shown.is_some(), egui::Button::new(tl!("Export .cube…")));
+    app.auto.add_response("panel.menu.LumetriColor.exportCube", &r, "Export .cube…");
+    if let (true, Some(clip)) = (r.clicked(), shown) {
+        if let Err(e) = crate::menus::invoke(app, ui.ctx(), "lumetri.exportCube", json!({"clip": clip.0})) {
+            app.ui.status = e;
+        }
+        return true;
+    }
+    false
+}
+
 /// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
 fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
@@ -305,7 +326,42 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
         _ => String::new(),
     };
     let cmd: &'static str = if input { "lumetri.setInputLut" } else { "lumetri.setLook" };
-    let shown = filmcraft_render::luts::label(Some(&app.session.project), &cur);
+    let mut rect = Rect::NOTHING;
+    ui.horizontal(|ui| {
+        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
+        let width = (ui.available_width() - 40.0).max(60.0);
+        let (r, pick) = lut_menu(ui, app, ("lumetri-lut", param), &cur, input, width, &format!("lumetri.{param}"));
+        match pick {
+            Some(LutPick::Lut(r)) => out.push((cmd, json!({"lut": r}))),
+            Some(LutPick::Browse) => out.push((cmd, json!({"browse": true}))),
+            None => {}
+        }
+        rect = r;
+    });
+    app.auto.add(&format!("lumetri.{param}"), rect, label);
+}
+
+/// What was chosen in a [`lut_menu`].
+pub(crate) enum LutPick {
+    /// A LUT reference (`builtin:<id>`, `lib:<id>`), or "" for None.
+    Lut(String),
+    /// Browse…: pick a .cube / .3dl file.
+    Browse,
+}
+
+/// The LUT combo box for the LUT reference `cur`: None, the built-in input LUTs (`input`) or looks,
+/// the project's LUT library, Browse…. Shared by the Color Grading panel and Effect Controls (#1123).
+/// The entries get automation ids `<auto_id>.lut.<reference>` (`.lut.none`) and `<auto_id>.browse`.
+pub(crate) fn lut_menu(
+    ui: &mut egui::Ui,
+    app: &mut FilmcraftApp,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    cur: &str,
+    input: bool,
+    width: f32,
+    auto_id: &str,
+) -> (Rect, Option<LutPick>) {
+    let shown = filmcraft_render::luts::label(Some(&app.session.project), cur);
     let mut entries: Vec<(String, String)> = vec![(String::new(), tl!("None").into())];
     let builtins: Vec<&filmcraft_render::luts::Builtin> = if input {
         filmcraft_render::luts::input_builtins().collect()
@@ -314,26 +370,23 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
     };
     entries.extend(builtins.into_iter().map(|b| (format!("builtin:{}", b.id), b.label.clone())));
     entries.extend(app.session.project.luts.iter().map(|l| (format!("lib:{}", l.id), l.name.clone())));
-    let mut rect = Rect::NOTHING;
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim)));
-        let r = egui::ComboBox::from_id_salt(("lumetri-lut", param)).selected_text(shown).truncate().width((ui.available_width() - 40.0).max(60.0)).show_ui(
-            ui,
-            |ui| {
-                for (r, name) in &entries {
-                    if ui.selectable_label(*r == cur, name).clicked() && *r != cur {
-                        out.push((cmd, json!({"lut": r})));
-                    }
-                }
-                ui.separator();
-                if ui.selectable_label(false, tl!("Browse…")).clicked() {
-                    out.push((cmd, json!({"browse": true})));
-                }
-            },
-        );
-        rect = r.response.rect;
+    let mut pick = None;
+    let r = craft_ui::ComboBox::from_id_salt(salt).selected_text(shown).truncate().width(width).show_ui(ui, |ui| {
+        for (r, name) in &entries {
+            let b = ui.selectable_label(r == cur, name);
+            app.auto.add(&format!("{auto_id}.lut.{}", if r.is_empty() { "none" } else { r }), b.rect, name);
+            if b.clicked() && r != cur {
+                pick = Some(LutPick::Lut(r.clone()));
+            }
+        }
+        ui.separator();
+        let b = ui.selectable_label(false, tl!("Browse…"));
+        app.auto.add(&format!("{auto_id}.browse"), b.rect, tl!("Browse…"));
+        if b.clicked() {
+            pick = Some(LutPick::Browse);
+        }
     });
-    app.auto.add(&format!("lumetri.{param}"), rect, label);
+    (r.response.rect, pick)
 }
 
 /// A section header; returns (expanded, switch clicked). `on` is the section's enable switch.
@@ -353,7 +406,7 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, on: bool) -> (
     ui.painter().text(pos2(r.min.x + 20.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::semibold(13.0), t.text);
     // enable switch (section bypass)
     let sw = Rect::from_center_size(pos2(r.max.x - 18.0, r.center().y), vec2(26.0, 14.0));
-    let sw_resp = ui.interact(sw.expand(3.0), egui::Id::new(("lumetri-switch", name)), Sense::click());
+    let sw_resp = ui.interact(sw.expand(3.0), egui::Id::unique(("lumetri-switch", name)), Sense::click());
     ui.painter().rect_filled(sw, 7.0, if on { t.accent } else { Color32::from_rgb(0x55, 0x55, 0x55) });
     ui.painter().circle_filled(pos2(if on { sw.max.x - 7.0 } else { sw.min.x + 7.0 }, sw.center().y), 5.0, Color32::WHITE);
     app.auto.add(&format!("lumetri.switch.{name}"), sw.expand(3.0), &format!("{name} on/off"));
@@ -429,7 +482,7 @@ fn slider(
     let f = ((v - soft_min) / (soft_max - soft_min)).clamp(0.0, 1.0) as f32;
     let kx = track.min.x + f * track.width();
     let hit = Rect::from_min_max(pos2(track.min.x - 6.0, row.min.y), pos2(track.max.x + 6.0, row.max.y));
-    let resp = ui.interact(hit, egui::Id::new(("lslider", clip.0, id)), Sense::click_and_drag());
+    let resp = ui.interact(hit, egui::Id::unique(("lslider", clip.0, id)), Sense::click_and_drag());
     ui.painter().circle_filled(pos2(kx, track.center().y), 5.0, t.panel_bg);
     ui.painter().circle_stroke(
         pos2(kx, track.center().y),
@@ -451,8 +504,13 @@ fn slider(
             .max_rect(Rect::from_min_max(pos2(row.max.x - 52.0, row.min.y + 3.0), pos2(row.max.x, row.max.y - 3.0)))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    let (_, nv) =
-        crate::widgets::hot_number(&mut vui, egui::Id::new(("lval", clip.0, id)), v, (soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t);
+    let (_, nv) = crate::widgets::hot_number(
+        &mut vui,
+        label,
+        egui::Id::unique(("lval", clip.0, id)),
+        v,
+        HotNumberOptions::new((soft_max - soft_min) / 300.0, (min, max), decimals as usize, "", t),
+    );
     if let Some(nv) = out.or(nv) {
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": (nv * 10f64.powi(decimals as i32)).round() / 10f64.powi(decimals as i32)}));
     }
@@ -482,7 +540,7 @@ const CURVE_WIDTH_FRAC: f32 = 0.95;
 
 /// Width of a curve plot in `ui`, leaving the scroll-bar gutter on the right.
 fn curve_width(ui: &egui::Ui) -> f32 {
-    ui.available_width() * CURVE_WIDTH_FRAC
+    (ui.available_width() * CURVE_WIDTH_FRAC).max(1.0)
 }
 
 /// Height of the horizontal hue strip drawn under the hue curves; the vertical scale stops above
@@ -527,22 +585,12 @@ fn curve_value_at(pts: &[[f32; 2]], x: f32, wrapping: bool) -> f32 {
     if pts.is_empty() {
         return if wrapping { 0.5 } else { x };
     }
-    let lut: Vec<f32> = if wrapping {
-        let mut ext = Vec::with_capacity(pts.len() * 3);
-        for off in [-1.0f32, 0.0, 1.0] {
-            for q in pts {
-                ext.push([(q[0] + off + 1.0) / 3.0, q[1]]);
-            }
-        }
-        let l = filmcraft_render::effects::curve_lut(&ext, 3 * 128);
-        l[128..256].to_vec()
-    } else {
-        filmcraft_render::effects::curve_lut(pts, 128)
-    };
+    let lut = if wrapping { filmcraft_render::effects::hue_lut(pts, 128) } else { filmcraft_render::effects::vs_sat_lut(pts, 128) }
+        .unwrap_or_else(|| filmcraft_render::effects::curve_lut(pts, 128));
     // linear interpolation between LUT samples, like the render's own curve sampling, so the
     // centre point lands exactly on the drawn curve (identity stays identity)
     let p = x * (lut.len() - 1) as f32;
-    let i = p as usize;
+    let i = (p as usize).min(lut.len().saturating_sub(1));
     let j = (i + 1).min(lut.len() - 1);
     lut[i] + (lut[j] - lut[i]) * (p - i as f32)
 }
@@ -586,7 +634,7 @@ fn curve_eyedropper(ui: &mut egui::Ui, app: &mut FilmcraftApp, id: &str, clip: C
     let target = Eyedropper { clip: clip.0, effect: idx, param: id.to_string(), mask: None, curve: Some(axis) };
     let armed = app.ui.eyedropper.as_ref() == Some(&target);
     let btn = Rect::from_center_size(center, vec2(CURVE_EYEDROPPER_BTN, CURVE_EYEDROPPER_BTN));
-    let br = ui.interact(btn, egui::Id::new(("curve-eyedropper", clip.0, id)), Sense::click());
+    let br = ui.interact(btn, egui::Id::unique(("curve-eyedropper", clip.0, id)), Sense::click());
     let p = ui.painter();
     if br.is_pointer_button_down_on() {
         p.rect_filled(btn, t.radius_sm, t.pressed);
@@ -609,10 +657,13 @@ fn curve_eyedropper(ui: &mut egui::Ui, app: &mut FilmcraftApp, id: &str, clip: C
 }
 
 /// Curve editor: drag points, click the curve to add, double-click a point to remove. On the right
-/// it draws the vertical colour scale of the curve's output axis.
+/// it draws the vertical colour scale of the curve's output axis. Returns its rectangle (its
+/// automation element, `lumetri.curve.<param>`).
 #[allow(clippy::too_many_arguments)]
-fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) {
+fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) -> Rect {
     let pts: Vec<[f32; 2]> = e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default();
+    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), the plot leaving the
+    // vertical colour scale's gutter on the right
     let w = curve_width(ui);
     let side = w.min(CURVE_MAX_SIZE);
     let h = if hue { side * 0.45 } else { side };
@@ -621,10 +672,10 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     // hue curves put a horizontal hue strip under the plot: the vertical scale stops above it so
     // they meet at the corner (an L) instead of overlapping
     let scale = Rect::from_min_max(pos2(plot.max.x, area.min.y), if hue { pos2(area.max.x, plot.max.y - CURVE_HUE_STRIP_H) } else { area.max });
-    let resp = ui.interact(plot, egui::Id::new(("curve-plot", clip.0, id)), Sense::click_and_drag());
+    let resp = ui.interact(plot, egui::Id::unique(("curve-plot", clip.0, id)), Sense::click_and_drag());
     // Hue vs Hue's gradient is centred on the hue under the cursor. The last value is kept in
     // memory so the scale does not jump back when the pointer leaves the plot.
-    let hue_key = egui::Id::new(("curve-scale-hue", clip.0, id));
+    let hue_key = egui::Id::unique(("curve-scale-hue", clip.0, id));
     let scale_hue = if id == "hue_vs_hue" {
         let x = resp
             .interact_pointer_pos()
@@ -679,21 +730,20 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     // curve polyline: the plotted value is the stored one, so Hue vs Hue is a flat middle line when
     // neutral, like the other curves, and its line is always continuous
     let draw_pts: Vec<[f32; 2]> = if hue && pts.is_empty() { vec![[0.0, 0.5], [1.0, 0.5]] } else { pts.clone() };
-    let lut = if hue && !pts.is_empty() {
-        let mut ext = Vec::new();
-        for off in [-1.0f32, 0.0, 1.0] {
-            for q in &pts {
-                ext.push([(q[0] + off + 1.0) / 3.0, q[1]]);
-            }
-        }
-        let l = filmcraft_render::effects::curve_lut(&ext, 3 * 128);
-        l[128..256].to_vec()
-    } else {
-        filmcraft_render::effects::curve_lut(&draw_pts, 128)
-    };
+    // the hue curves wrap around red; Luma vs Sat and Sat vs Sat do not (same LUTs as the render)
+    let lut = match (hue, id.starts_with("hue_vs_")) {
+        (true, true) => filmcraft_render::effects::hue_lut(&pts, 128),
+        (true, false) => filmcraft_render::effects::vs_sat_lut(&pts, 128),
+        _ => None,
+    }
+    .unwrap_or_else(|| filmcraft_render::effects::curve_lut(&draw_pts, 128));
     let line: Vec<Pos2> = lut.iter().enumerate().map(|(i, y)| to_screen([i as f32 / 127.0, y.clamp(0.0, 1.0)])).collect();
-    p.add(egui::Shape::line(line, Stroke::new(1.5, col)));
-    let drag_key = egui::Id::new(("curve-drag", clip.0, id));
+    p.add(egui::Shape::line(line.clone(), Stroke::new(1.5, col)));
+    // the point nearest `pos` within reach (drag and double-click pick the same one)
+    let nearest = |pos: Pos2| {
+        pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0)
+    };
+    let drag_key = egui::Id::unique(("curve-drag", clip.0, id));
     let mut dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
     let mut new_pts = pts.clone();
     let mut changed = false;
@@ -704,8 +754,7 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let near =
-            pts.iter().enumerate().map(|(i, q)| (i, to_screen(*q).distance(pos))).filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0);
+        let near = nearest(pos);
         dragging = near.or_else(|| {
             new_pts.push(from_screen(pos));
             changed = true;
@@ -722,13 +771,29 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     if resp.drag_stopped() {
         dragging = None;
     }
+    // A plain click on the curve places a point where it landed (#3431): before, only a drag
+    // created points, so the curve ignored the click the interaction promises. A click on a
+    // point selects it (as a drag start does); a click off the curve adds nothing, so the RGB
+    // double-click reset and the hue double-click remove keep working.
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        match nearest(pos) {
+            Some(i) => dragging = Some(i),
+            None if line.iter().any(|p| p.distance(pos) < 9.0) => {
+                dragging = None;
+                new_pts.push(from_screen(pos));
+                changed = true;
+            }
+            _ => dragging = None,
+        }
+    }
     if resp.double_clicked()
         && let Some(pos) = resp.interact_pointer_pos()
-        && let Some(i) = pts.iter().position(|q| to_screen(*q).distance(pos) < 9.0)
+        && let Some(i) = nearest(pos)
     {
-        let endpoint = !hue && (i == 0 || i == pts.len() - 1);
-        if !endpoint {
-            new_pts.remove(i);
+        if let Some(rest) = without_point(&pts, i, hue) {
+            new_pts = rest;
             changed = true;
         }
     } else if resp.double_clicked() && !hue {
@@ -747,6 +812,21 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
         actions.push(json!({"clip": clip.0, "effect": idx, "param": id, "value": v}));
     }
     ui.add_space(6.0);
+    area
+}
+
+/// `pts` without point `i` (double-click), or `None` for a point that stays: the leftmost and
+/// rightmost points of an RGB curve. Points are stored in the order they were added, not by x, so
+/// list position says nothing (the newest point could never be removed, #1658).
+fn without_point(pts: &[[f32; 2]], i: usize, hue: bool) -> Option<Vec<[f32; 2]>> {
+    let q = pts.get(i)?;
+    let (lo, hi) = pts.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+    if !hue && (q[0] <= lo || q[0] >= hi) {
+        return None;
+    }
+    let mut rest = pts.to_vec();
+    rest.remove(i);
+    Some(rest)
 }
 
 /// Colour wheel: hue ring, draggable puck (offset), lightness slider on the left.
@@ -795,7 +875,7 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
     p.rect_filled(track, 2.0, Color32::from_rgb(0x4b, 0x4b, 0x4b));
     let ky = track.center().y - l / 100.0 * track.height() / 2.0;
     p.circle_stroke(pos2(track.center().x, ky), 4.0, Stroke::new(1.5, Color32::from_rgb(0xb0, 0xb0, 0xb0)));
-    let lr = ui.interact(track.expand2(vec2(6.0, 0.0)), egui::Id::new(("wl", clip.0, lid)), Sense::click_and_drag());
+    let lr = ui.interact(track.expand2(vec2(6.0, 0.0)), egui::Id::unique(("wl", clip.0, lid)), Sense::click_and_drag());
     if (lr.dragged() || lr.clicked())
         && let Some(pos) = lr.interact_pointer_pos()
     {
@@ -810,8 +890,8 @@ fn color_wheel(ui: &mut egui::Ui, e: &EffectInstance, mt: Tick, id: &str, lid: &
 fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
     sub(ui, &t, tl!("Color Match"));
-    let key = egui::Id::new("lumetri-match-ref");
-    let fd_key = egui::Id::new("lumetri-match-face");
+    let key = egui::Id::unique("lumetri-match-ref");
+    let fd_key = egui::Id::unique("lumetri-match-face");
     let mut tc: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| "00:00:00:00".to_string());
     let mut face: bool = ui.data(|d| d.get_temp(fd_key)).unwrap_or(true);
     // Comparison View: the Program monitor shows the reference frame next to the current one, and
@@ -828,8 +908,9 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
     }
     ui.horizontal(|ui| {
         ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Reference")).color(t.text_dim)));
-        let r = ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0));
+        let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut tc).desired_width(96.0)), "Reference timecode");
         app.auto.add("lumetri.match.reference", r.rect, "Reference timecode");
+        crate::widgets::select_all_on_focus(ui, &r, &tc);
     });
     let r = ui.checkbox(&mut face, tl!("Face Detection (protect skin tones)"));
     app.auto.add("lumetri.match.faceDetection", r.rect, "Face Detection");
@@ -854,6 +935,18 @@ mod tests {
 
     fn close(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    #[test]
+    fn a_curve_point_is_removed_by_position_not_by_list_order() {
+        // #1658: added points are appended, so the newest one is last in the list
+        let pts = [[0.0, 0.0], [1.0, 1.0], [0.5, 0.7]];
+        assert_eq!(without_point(&pts, 2, false), Some(vec![[0.0, 0.0], [1.0, 1.0]]), "the newest point can go");
+        assert_eq!(without_point(&pts, 1, false), None, "the right end stays");
+        assert_eq!(without_point(&pts, 0, false), None, "the left end stays");
+        // hue curves wrap around: any point can go
+        assert_eq!(without_point(&pts, 0, true), Some(vec![[1.0, 1.0], [0.5, 0.7]]));
+        assert_eq!(without_point(&pts, 7, false), None);
     }
 
     #[test]
