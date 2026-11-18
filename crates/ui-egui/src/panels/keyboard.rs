@@ -352,9 +352,10 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
 
 fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
     let tv = &mut app.ui.timeline;
-    let target = if expand { 120.0 } else { MIN_TRACK_H };
-    let at_target = tv.video_track_h == target && tv.audio_track_h == target;
-    match (at_target, app.ui.keys.saved_heights) {
+    let saved = app.ui.keys.saved_heights;
+    let at_target =
+        saved.is_some_and(|[v, a]| if expand { tv.video_track_h > v && tv.audio_track_h > a } else { tv.video_track_h < v && tv.audio_track_h < a });
+    match (at_target, saved) {
         // pressing again restores the heights from before
         (true, Some([v, a])) => {
             tv.video_track_h = v;
@@ -363,8 +364,8 @@ fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
         }
         _ => {
             app.ui.keys.saved_heights = Some([tv.video_track_h, tv.audio_track_h]);
-            tv.video_track_h = target;
-            tv.audio_track_h = target;
+            tv.video_track_h = if expand { 120.0f32.max(tv.video_track_h * 1.5) } else { MIN_TRACK_H };
+            tv.audio_track_h = if expand { 120.0f32.max(tv.audio_track_h * 1.5) } else { MIN_TRACK_H };
         }
     }
     json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h})
