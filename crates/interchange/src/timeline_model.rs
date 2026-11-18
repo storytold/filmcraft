@@ -816,8 +816,57 @@ fn export_shared(
     result.map_err(convert_error)
 }
 
+/// Warn when a connected clip's `lane` is not an `i32`.
+///
+/// `craft-timeline` still does `attribute("lane").and_then(|l| l.parse::<i32>().ok())` and
+/// `continue`, so those clips vanish with a clean report. #2255 added the warning to FilmCraft's
+/// legacy parser, but `import()` goes through this wrapper, and the pin cannot pick up a
+/// craft-libs fix without jumping hundreds of commits. Scan the document here so the
+/// already-landed interchange test, and a lossy import, see the warning.
+fn report_unusable_fcpxml_lanes(text: &str, report: &mut crate::Report) {
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find("lane=") {
+        let attr_at = search_from + rel;
+        search_from = attr_at + 5;
+        let before = &text[..attr_at];
+        let Some(lt) = before.rfind('<') else { continue };
+        if before[lt + 1..].contains('>') {
+            continue;
+        }
+        // `plane="` / `foo-lane="` should not count as the `lane` attribute.
+        if attr_at > 0 {
+            let prev = text[..attr_at].chars().next_back();
+            if prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':') {
+                continue;
+            }
+        }
+        let tag_body = &before[lt + 1..];
+        if tag_body.starts_with('!') || tag_body.starts_with('?') || tag_body.starts_with('/') {
+            continue;
+        }
+        let tag = tag_body.split(|c: char| c.is_whitespace() || c == '>').next().unwrap_or("");
+        if tag.is_empty() {
+            continue;
+        }
+        let after = &text[search_from..];
+        let Some(&q) = after.as_bytes().first() else { continue };
+        if q != b'"' && q != b'\'' {
+            continue;
+        }
+        let Some(end) = after[1..].find(q as char) else { continue };
+        let lane_attr = &after[1..1 + end];
+        search_from += 1 + end + 1;
+        if lane_attr.parse::<i32>().is_ok() {
+            continue;
+        }
+        report.warn(format!("<{tag}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped"));
+    }
+}
+
 pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
-    import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)
+    let imported = import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?;
+    report_unusable_fcpxml_lanes(text, report);
+    Ok(imported)
 }
 pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
     let version = match opts.fcpxml_version {
@@ -838,6 +887,32 @@ pub(crate) fn export_fcp7(project: &film::Project, seq: film::ItemId, opts: &cra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unusable_fcpxml_lanes_are_reported() {
+        let mut report = crate::Report::default();
+        report_unusable_fcpxml_lanes(
+            r#"<asset-clip lane="1.5"/><ref-clip lane='99999999999'/><asset-clip lane="x"/><asset-clip lane="1"/><title plane="x"/>"#,
+            &mut report,
+        );
+        let msgs: Vec<_> = report.warnings().map(|w| w.message.as_str()).collect();
+        assert_eq!(
+            msgs,
+            [
+                r#"<asset-clip> has lane "1.5", which is not a lane a sequence can have; skipped"#,
+                r#"<ref-clip> has lane "99999999999", which is not a lane a sequence can have; skipped"#,
+                r#"<asset-clip> has lane "x", which is not a lane a sequence can have; skipped"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn lane_in_text_or_suffixed_attr_is_ignored() {
+        let mut report = crate::Report::default();
+        report_unusable_fcpxml_lanes(r#"<title name="lane=x"/><!-- lane="x" --><clip foo-lane="x"/>"#, &mut report);
+        assert!(!report.has_warnings(), "{report}");
+    }
+
     #[test]
     fn effect_keyframes_and_app_fields_roundtrip() {
         let mut effect = film::EffectInstance {
