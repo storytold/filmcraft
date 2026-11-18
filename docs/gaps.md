@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-18 · **Change:** minor (G6: WebM screen-recording workflow test) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -129,6 +129,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   trims, colour matte, cross dissolve), exports H.264 MP4, and saves a project that a new process
   exports as ProRes; ffprobe / ffmpeg check streams, frame count, duration, frame placement, A/V
   sync, title pixels, dissolve mix and audio levels. Skipped without ffmpeg.
+- **WebM workflow:** the same suite imports generated VP8 and Opus, extracts one second, and
+  exports H.264 and AAC. It checks the decoded frames and verifies that a flash and a beep stay
+  in sync after the edit.
 - **Missing:** a pinned corpus of phone, camera and screen recordings (variable frame rate,
   damaged files, long GOP, odd containers, multi-track audio), each with an import → edit → export
   round trip checked against an ffprobe / ffmpeg oracle; scripted MCP sessions that do real jobs
@@ -366,3 +369,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |
+| 2026-11-18 | minor | G6: an MCP workflow test checks picture, sound and sync when editing and exporting WebM |
