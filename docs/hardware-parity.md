@@ -87,5 +87,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | Accelerated effects (38 effect ids) and Keys rows: Color Key and Luma Key on the GPU |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Color Grading on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
