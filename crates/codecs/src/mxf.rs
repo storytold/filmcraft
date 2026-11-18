@@ -321,7 +321,17 @@ fn apply_mpeg2_bitstream_order(
 fn first_gop_closed(r: &dyn filmcraft_media::ByteReader, samples: &[craft_media::mxf::Sample]) -> Option<bool> {
     let key = samples.iter().find(|s| s.key)?;
     let head = filmcraft_media::reader::read_range(r, key.offset, (key.size as usize).min(MPEG2_ORDER_HEAD)).ok()?;
-    first_gop_closed_in(&head)
+    match first_gop_closed_in(&head) {
+        // The ordering pass retries with the long cap when a picture header
+        // lies past the short head; the GOP header in front of it can sit
+        // past it too (large sequence-level user data), so retry the same way.
+        Some(closed) => Some(closed),
+        None if (key.size as usize) <= MPEG2_ORDER_HEAD => None,
+        None => {
+            let head = filmcraft_media::reader::read_range(r, key.offset, (key.size as usize).min(MPEG2_ORDER_HEAD_MAX)).ok()?;
+            first_gop_closed_in(&head)
+        }
+    }
 }
 
 /// The closed-GOP flag in one access-unit head: `Some(true)` only for a clean
@@ -782,6 +792,20 @@ mod tests {
         assert_eq!(first_gop_closed(&Failing, &samples), None);
         let no_key: Vec<craft_media::mxf::Sample> = samples.iter().map(|s| craft_media::mxf::Sample { key: false, ..*s }).collect();
         assert_eq!(first_gop_closed(&reader, &no_key), None);
+    }
+
+    #[test]
+    fn closed_gop_flag_reads_past_the_short_head() {
+        // a closed GOP header behind more than MPEG2_ORDER_HEAD bytes of
+        // sequence-level user data: the short head alone sees no GOP header,
+        // so without the long-cap retry the flag reads as unknown and the
+        // closed GOP's leading B pictures would be floored
+        let mut bytes = vec![0u8; MPEG2_ORDER_HEAD + 1024];
+        bytes.extend_from_slice(&mpeg2_head(Some(true), 2, 1));
+        let size = bytes.len() as u32;
+        let reader = filmcraft_media::reader::MemReader(bytes.into());
+        let samples = [craft_media::mxf::Sample { offset: 0, size, pts: 0, key: true, b_picture: false }];
+        assert_eq!(first_gop_closed(&reader, &samples), Some(true));
     }
 
     #[test]
