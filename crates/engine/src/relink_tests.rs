@@ -302,16 +302,16 @@ fn auto_relink_reports_script_review_without_blocking_other_sources() {
         assert_eq!(result["failed"], json!([]));
         assert_eq!(result["remaining"], json!([items[0].0]));
         assert_eq!(s.project.item(ItemId(script)).unwrap().as_script().unwrap().take(take_id).unwrap(), &original);
+        let path_for = |session: &Session| {
+            let filmcraft_project::MediaRef::File { path } = &session.project.item(items[1]).unwrap().as_media().unwrap().media else {
+                panic!("relinked media must remain file-based");
+            };
+            std::path::PathBuf::from(path)
+        };
         s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(
-            s.project.item(items[1]).unwrap().as_media().unwrap().media,
-            filmcraft_project::MediaRef::File { path: root.join("Media").join("b.mov").to_string_lossy().into_owned() }
-        );
+        assert_eq!(path_for(&s), root.join("Media").join("b.mov"));
         s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(
-            s.project.item(items[1]).unwrap().as_media().unwrap().media,
-            filmcraft_project::MediaRef::File { path: moved.join("b.mov").to_string_lossy().into_owned() }
-        );
+        assert_eq!(path_for(&s), moved.join("b.mov"));
         drop(s);
         let _ = std::fs::remove_dir_all(root);
     }
