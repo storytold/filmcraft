@@ -885,3 +885,15 @@ fn accumulator_readback_retires_rejected_native_map() {
         "cleanup attempted to unmap an already rejected mapping"
     );
 }
+
+/// The staging buffer of a transition canvas: half-float RGBA with rows padded to 256 bytes, and
+/// too large for the default 256 MiB buffer limit at 8192x4320 (which `composite_steps` sends to
+/// the CPU without starting the read-back backoff).
+#[test]
+fn readback_staging_size_is_padded_and_overflow_safe() {
+    assert_eq!(readback_staging_bytes(1920, 1080), Some(15_360 * 1080));
+    assert_eq!(readback_staging_bytes(100, 10), Some(1024 * 10), "rows are padded to 256 bytes");
+    assert_eq!(readback_staging_bytes(8192, 4320), Some(283_115_520));
+    assert!(readback_staging_bytes(8192, 4320) > Some(256 * 1024 * 1024));
+    assert_eq!(readback_staging_bytes(usize::MAX, 2), None);
+}

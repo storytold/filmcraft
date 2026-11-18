@@ -1011,6 +1011,13 @@ impl GpuCompositor {
             self.cpu_fallback_frames += 1;
             return cpu(self);
         }
+        // A canvas that does not fit in one staging buffer (8192x4320 on the default 256 MiB limit)
+        // cannot be read back: this frame goes to the CPU before anything is drawn, and it is not a
+        // failed read-back, so smaller frames are not held off the GPU for it.
+        if cpu_mix && readback_staging_bytes(width, height).is_none_or(|bytes| bytes > self.device.limits().max_buffer_size) {
+            self.cpu_fallback_frames += 1;
+            return cpu(self);
+        }
         // one frame for the effect stage's pool: the adjustment steps' working textures stay
         // pooled with those of the layers between them
         if let Some(f) = self.fx.as_mut() {
@@ -1204,7 +1211,8 @@ impl GpuCompositor {
             }
             let row = w.checked_mul(8)?.div_ceil(256).checked_mul(256)?;
             let needed = u64::from(row) * u64::from(h);
-            // a canvas too large for one staging buffer is left to the CPU, not a validation error
+            // (a canvas too large for one staging buffer was sent to the CPU by `composite_steps`
+            // before anything was drawn; this keeps a validation error out if one gets here anyway)
             if needed > self.device.limits().max_buffer_size {
                 return None;
             }
@@ -1566,6 +1574,13 @@ const SLOT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// After a failed read-back of transition canvases, how long frames with a transition the GPU
 /// does not draw itself go whole to the CPU before the GPU is asked again.
 const HYBRID_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The size of the staging buffer that reads back one canvas of `width` x `height` (half-float
+/// RGBA, rows padded to 256 bytes); `None` when it does not fit in a `u64`.
+fn readback_staging_bytes(width: usize, height: usize) -> Option<u64> {
+    let row = u64::try_from(width).ok()?.checked_mul(8)?.div_ceil(256).checked_mul(256)?;
+    row.checked_mul(u64::try_from(height).ok()?)
+}
 
 /// Wait for the last submission and take its `map_async` callback, within a bound.
 ///
