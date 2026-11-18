@@ -411,7 +411,7 @@ pub fn commands() -> Vec<CommandSpec> {
                         Some(Value::String(v)) if v.eq_ignore_ascii_case("none") => y.highlight = None,
                         // only the documented "#rrggbb[aa]" string: an array would drop entries it
                         // cannot read and still pass
-                        Some(v @ Value::String(_)) => {
+                        Some(v @ Value::String(h)) if h.starts_with('#') => {
                             y.highlight = Some(parse_color(v).ok_or_else(|| bad("captions.setStyle", "`highlight` must be a colour (#rrggbb) or \"none\""))?)
                         }
                         Some(_) => return Err(bad("captions.setStyle", "`highlight` must be a colour (#rrggbb) or \"none\"")),

@@ -120,15 +120,41 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
 /// The word being spoken `progress` (0 … 1) of the way through a caption of `lines`: words are
 /// timed in proportion to their length (plus one for the space), as nothing finer is stored.
 /// Returns (line, byte range of the word in that line).
+/// Kana and CJK ideographs: scripts written without spaces between words.
+fn unspaced(c: char) -> bool {
+    matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}' | '\u{ff66}'..='\u{ff9f}')
+}
+
+/// The words of `line` as (byte range, character count). Any whitespace separates words (a
+/// tab is laid out as a space). Japanese and Chinese have no spaces between words and nothing
+/// finer is stored, so each kana or ideograph counts as one: the highlight then moves through
+/// such text a character at a time.
+fn word_ranges(line: &str) -> Vec<(std::ops::Range<usize>, usize)> {
+    let mut out = Vec::new();
+    let mut start: Option<(usize, usize)> = None; // (byte start, chars so far)
+    for (b, c) in line.char_indices() {
+        if c.is_whitespace() || unspaced(c) {
+            if let Some((s, n)) = start.take() {
+                out.push((s..b, n));
+            }
+            if unspaced(c) {
+                out.push((b..b + c.len_utf8(), 1));
+            }
+        } else {
+            start = Some(start.map_or((b, 1), |(s, n)| (s, n + 1)));
+        }
+    }
+    if let Some((s, n)) = start {
+        out.push((s..line.len(), n));
+    }
+    out
+}
+
 fn spoken_word(lines: &[String], progress: f32) -> Option<(usize, std::ops::Range<usize>)> {
     let mut words: Vec<(usize, std::ops::Range<usize>, f32)> = Vec::new();
     for (i, l) in lines.iter().enumerate() {
-        let mut at = 0;
-        for wd in l.split(' ') {
-            if !wd.is_empty() {
-                words.push((i, at..at + wd.len(), (wd.chars().count() + 1) as f32));
-            }
-            at += wd.len() + 1;
+        for (r, chars) in word_ranges(l) {
+            words.push((i, r, (chars + 1) as f32));
         }
     }
     let total: f32 = words.iter().map(|w| w.2).sum();
@@ -675,6 +701,20 @@ mod tests {
         // a style the family lacks falls back to the nearest weight, like graphic text
         let missing = CaptionStyle { font_style: "No Such Style".into(), ..Default::default() };
         assert!(render_caption(&cap("Hello world"), &missing, 1920, 1080).is_some());
+    }
+
+    /// Words are split on any whitespace (a tab too), and unspaced scripts a character at a time.
+    #[test]
+    fn words_split_on_whitespace_and_unspaced_scripts() {
+        let lines = |s: &str| vec![s.to_string()];
+        assert_eq!(spoken_word(&lines("one\ttwo"), 0.25), Some((0, 0..3)));
+        assert_eq!(spoken_word(&lines("one\ttwo"), 0.75), Some((0, 4..7)));
+        let ja = "\u{4eca}\u{65e5}\u{306f}";
+        assert_eq!(spoken_word(&lines(ja), 0.1), Some((0, 0..3)));
+        assert_eq!(spoken_word(&lines(ja), 0.9), Some((0, 6..9)));
+        assert_eq!(word_ranges("a  b\u{3000}c"), vec![(0..1, 1), (3..4, 1), (7..8, 1)]);
+        assert_eq!(word_ranges(""), vec![]);
+        assert_eq!(word_ranges(" \t "), vec![]);
     }
 
     /// A highlight in the text's own colour draws exactly what plain captions draw: the word's
