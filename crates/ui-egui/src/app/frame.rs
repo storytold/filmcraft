@@ -92,24 +92,24 @@ impl FilmcraftApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
-        // The control server's startup notice (#3436): a session that asked for `--control` must
-        // be able to see that it is not serving, whenever it looks. Any real status replaces it;
-        // it comes back once that clears. Each cause translates as a whole sentence, so the
-        // status bar reads in the interface language throughout.
-        if self.ui.status.is_empty()
-            && let Some(notice) = &self.control_notice
-        {
-            match notice {
-                crate::ControlNotice::Token => {
-                    self.ui.status =
-                        tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
-                            .into()
-                }
-            }
-        }
         // engine toasts and errors arrive in English: shown in the interface language, which may
         // change while the message is up (the message itself, and when it arrived, stay as they are)
-        let hint = if !self.ui.status.is_empty() { self.status_text.get(&self.ui.status, crate::i18n::current()).to_string() } else { self.hint_text() };
+        // The control server's startup notice (#3436): a session that asked for `--control` must
+        // be able to see that it is not serving, whenever it looks. Any real status goes first;
+        // the notice comes back once that clears. It is drawn from its translation key each frame,
+        // so it follows a change of interface language.
+        let hint = if !self.ui.status.is_empty() {
+            self.status_text.get(&self.ui.status, crate::i18n::current()).to_string()
+        } else if let Some(notice) = &self.control_notice {
+            match notice {
+                crate::ControlNotice::Token => {
+                    tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
+                        .to_string()
+                }
+            }
+        } else {
+            self.hint_text()
+        };
         // the bar goes under the text and the job's controls, so they get their own clicks
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
@@ -175,7 +175,8 @@ impl FilmcraftApp {
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = job_verb(&job.label);
+                // a long label (a file name, a model name) is cut: the bar keeps room for the status
+                let verb = clip_chars(&job_verb(&job.label), JOB_VERB_MAX);
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
@@ -187,6 +188,11 @@ impl FilmcraftApp {
         };
         let start = bar.min.x - 8.0 - shown.width;
         widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
+        let text_area = egui::Rect::from_min_max(egui::pos2(start, sb.min.y), egui::pos2(bar.min.x - 8.0, sb.max.y));
+        // the whole label on hover, built only then
+        ui.interact(text_area, egui::Id::unique(("job-text", job.id)), egui::Sense::hover()).on_hover_ui(|ui| {
+            ui.label(job_verb(&job.label));
+        });
         let left = shown.label.clone();
         self.job_text = Some(shown);
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
@@ -270,6 +276,17 @@ impl FilmcraftApp {
 /// What the status bar calls a running job: "Exporting" for the exports (`Export …`, `Quick
 /// Export …`, `Queue: …`), else the job's own label in the interface language. Every other job
 /// (transcription, model download, proxies, scene detection…) used to read "Exporting".
+/// The most characters of a job's label the status bar shows.
+const JOB_VERB_MAX: usize = 40;
+
+/// `s` cut to `max` characters, the cut marked with an ellipsis.
+fn clip_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((b, _)) => format!("{}…", s.get(..b).unwrap_or(s).trim_end()),
+        None => s.to_string(),
+    }
+}
+
 fn job_verb(label: &str) -> String {
     if ["Export", "Quick Export", "Queue: "].iter().any(|p| label.starts_with(p)) { tl!("Exporting").to_string() } else { i18n::tr_message(label) }
 }
@@ -280,6 +297,17 @@ mod job_status_tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// A long job label is cut to leave the status message its room; short ones are whole.
+    #[test]
+    fn long_job_labels_are_cut() {
+        assert_eq!(clip_chars("Transcribing 1 clip", JOB_VERB_MAX), "Transcribing 1 clip");
+        let long = "Downloading a model whose name goes on and on and on for ever";
+        let cut = clip_chars(long, JOB_VERB_MAX);
+        assert!(cut.ends_with('…') && cut.chars().count() <= JOB_VERB_MAX + 1, "{cut}");
+        assert_eq!(clip_chars("ééé", 2), "éé…");
+        assert_eq!(clip_chars("", 3), "");
+    }
 
     /// Only exports read "Exporting"; a transcription or a download says what it is, translated.
     #[test]
