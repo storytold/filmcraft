@@ -88,7 +88,7 @@ craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-
 # WebAssembly command plug-ins (RFC-0046): sandbox, manifest, permissions, store, catalogs and
 # GitHub installs (crates/engine/src/plugin.rs). Pinned to the fork commit the RFC's reference
 # implementation uses until the upstream pull request lands.
-craft-plugin = { version = "0.1.0", git = "https://github.com/Dasemu/craft-libs", rev = "93428fbe5d11b735365fa87068a9e1fc85fb3550" }
+craft-plugin = { version = "0.1.0", git = "https://github.com/Dasemu/craft-libs", rev = "b9821a27936e4f8a5ef3ad30a9559ecb897c5cc4" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
