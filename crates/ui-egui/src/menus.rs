@@ -1663,7 +1663,19 @@ mod tests {
         let open_at = items.iter().position(|it| it.id == "file.open").expect("Open Project");
         let cloud_open = items.iter().position(|it| it.id == "file.cloudOpen").expect("Open from cloud");
         let cloud_save = items.iter().position(|it| it.id == "file.cloudSaveAs").expect("Save as to cloud");
-        assert!(cloud_open > open_at && cloud_save > cloud_open);
+        assert_eq!(items[cloud_open].path, ["File"], "Open from cloud… belongs on the File menu");
+        assert_eq!(items[cloud_save].path, ["File"], "Save as to cloud… belongs on the File menu");
+        // Immediately after Open Recent (its items, then Clear Recent Files, when either is
+        // present on a session with no recents yet), with no other item between the two.
+        let expect_at = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.id.starts_with("file.openRecent.") || it.id == "file.clearRecent")
+            .map(|(i, _)| i)
+            .last()
+            .map_or(open_at + 1, |last_recent| last_recent + 1);
+        assert_eq!(cloud_open, expect_at, "Open from cloud… follows Open Recent with nothing between");
+        assert_eq!(cloud_save, cloud_open + 1, "Save as to cloud… immediately follows Open from cloud…");
     }
 
     #[test]
