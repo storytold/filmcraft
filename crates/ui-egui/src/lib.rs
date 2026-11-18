@@ -65,6 +65,9 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+/// HTTPS for plug-in installs, over craft-update's client (desktop only).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_http;
 mod rtl;
 pub mod scrub;
 mod shuttle;
@@ -215,6 +218,9 @@ pub struct FilmcraftApp {
     pub hooks: HostHooks,
     pub dialog: Option<Dialog>,
     pub(crate) updates_rt: updates_ui::Runtime,
+    /// Window ▸ Plug-ins: the Plug-ins window, the install confirmation, the parameter dialog and
+    /// the download in progress ([`panels::plugins`]).
+    pub plugins: panels::plugins::PluginsUi,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,

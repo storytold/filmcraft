@@ -47,6 +47,7 @@ impl FilmcraftApp {
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             updates_rt: Default::default(),
+            plugins: Default::default(),
             file_dialogs: Default::default(),
             native_dialog: None,
             overwrite_prompt: None,

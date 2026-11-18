@@ -374,6 +374,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
+        // Plug-in catalogs and releases download over the update checker's HTTPS client
+        app.session.plugins.set_fetch(filmcraft_ui_egui::plugin_http::http_fetch());
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;

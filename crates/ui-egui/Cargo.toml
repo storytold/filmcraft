@@ -49,6 +49,8 @@ cpu-time = "1"
 
 [dev-dependencies]
 pollster = "1"
+# Test plug-ins are written in WebAssembly text.
+wat = "1.261"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui

@@ -325,6 +325,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
         return r;
     }
+    if let Some(r) = crate::panels::plugins::route(app, id, &params) {
+        return r;
+    }
     if let Some(t) = id.strip_prefix("tool.") {
         let tool = Tool::from_name(t).ok_or_else(|| format!("unknown tool `{t}`"))?;
         app.ui.tool = tool;
@@ -965,6 +968,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         }
     }
     crate::panels::workspaces::menu(app, &mut v);
+    crate::panels::plugins::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
 }
