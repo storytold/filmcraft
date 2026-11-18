@@ -82,6 +82,53 @@ fn yuv_code_range_gpu_matches_cpu() {
     }
 }
 
+#[test]
+fn yuv16_r16unorm_matches_cpu_and_alpha() {
+    let instance = crate::adapter::native_instance();
+    let required = std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_some();
+    let Some(adapter) = crate::blend_tests::checked_gpu_result(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())), required)
+    else {
+        return;
+    };
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    if !adapter.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+        eprintln!("adapter lacks TEXTURE_FORMAT_16BIT_NORM; skipping");
+        return;
+    }
+    let desc = wgpu::DeviceDescriptor { required_features: crate::requested_features(&adapter), ..Default::default() };
+    let Some((dev, q)) = crate::blend_tests::checked_gpu_result(pollster::block_on(adapter.request_device(&desc)), required) else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.supports_r16_unorm());
+    for bits in [10, 12, 16] {
+        let scale = 1u32 << (bits - 8);
+        let max_code = ((1u32 << bits) - 1) as u16;
+        for range in [Range::Full, Range::Limited] {
+            let y: Vec<u16> = (0..=255).map(|code| (code * scale).min(max_code as u32) as u16).collect();
+            let u = vec![(96 * scale) as u16; 256];
+            let v = vec![(180 * scale) as u16; 256];
+            let alpha: Vec<u16> = (0..=255).map(|i| ((i * max_code as u32) / 255) as u16).collect();
+            let frame = Arc::new(VideoFrame {
+                width: 256,
+                height: 1,
+                data: PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C444, bits, alpha: Some(Arc::new(alpha)) },
+                color: filmcraft_color::ColorInfo { range, ..filmcraft_color::ColorInfo::REC709 },
+                par: (1, 1),
+                pts: Default::default(),
+            });
+            assert!(prepare_frame_for(&frame, true).is_none());
+            let plan = FramePlan::Layers { width: 256, height: 1, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            c.composite_prepared(&plan, Some(&prepare_for(&plan, true)));
+            let (_, _, gpu) = c.read_output().expect("readback");
+            let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().expect("pixels");
+            assert!(error <= 1, "R16Unorm {bits}-bit {range:?} max error {error}");
+        }
+    }
+}
+
 fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let y: Vec<u8> = (0..w * h).map(|i| (16 + ((i % w) * 219 / w)) as u8).collect();
@@ -215,12 +262,34 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
     assert_eq!(c.cpu_transitions, 0);
     eprintln!("Push 72 cases: worst p99 {}, mean {}", worst.0, worst.1);
+    for id in ["cross_dissolve", "dip_to_black", "dip_to_white"] {
+        for progress in [0.0, 0.25, 0.37, 0.5, 0.75, 1.0] {
+            let plan = FramePlan::Composite {
+                width: w,
+                height: h,
+                steps: vec![
+                    PlanStep::Layers(vec![layer(1)]),
+                    PlanStep::Transition {
+                        inputs: [vec![layer(0)], vec![layer(1)]],
+                        effect: filmcraft_project::find_effect(id).unwrap().instance(),
+                        progress,
+                        scale: 1.0,
+                    },
+                ],
+            };
+            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            let (_, _, gpu) = c.read_output().expect("dissolve readback");
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "{id}@{progress} exceeded one byte level");
+        }
+    }
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6);
     let fallback = FramePlan::Composite {
         width: w,
         height: h,
         steps: vec![PlanStep::Transition {
             inputs: [vec![layer(0)], vec![layer(1)]],
-            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
             progress: 0.37,
             scale: 1.0,
         }],
@@ -230,7 +299,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     let expected = execute_cpu(&fallback).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
     assert_eq!(c.cpu_transitions, 1);
-    assert_eq!(c.gpu_transitions, 4 * 3 * 6);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6);
 
     // Reuse both input targets across ordered transitions; preparation advances past intervening layers.
     let transition = |progress| PlanStep::Transition {
@@ -251,7 +320,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
     assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
-    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3 * 6 + 2);
     assert_eq!(c.cpu_transitions, 1);
 }
 
@@ -793,4 +862,329 @@ fn accumulator_readback_retires_rejected_native_map() {
         !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
         "cleanup attempted to unmap an already rejected mapping"
     );
+}
+
+#[test]
+fn upload_cache_and_pools_reuse_textures_and_uniforms() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_frame = |v: u8| Arc::new(VideoFrame::rgba8(8, 8, std::iter::repeat_n([v, 255u8.saturating_sub(v), 64, 255], 64).flatten().collect()));
+    let frames: Vec<Arc<VideoFrame>> = (0..32u8).map(make_frame).collect();
+    let plan = FramePlan::Layers {
+        width: 8,
+        height: 8,
+        layers: frames
+            .iter()
+            .map(|f| PlanLayer { frame: f.clone(), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None })
+            .collect(),
+    };
+    c.composite(&plan);
+    let uploaded_once = c.uploaded_bytes;
+    let uniform_bufs = c.uniform_pool.bufs.len();
+    assert_eq!(c.uploads.len(), 32, "32 layers must stay cached without 24-entry thrashing");
+    c.composite(&plan);
+    assert_eq!(c.uploaded_bytes, uploaded_once, "re-compositing 32 cached layers must upload 0 bytes");
+    assert_eq!(c.uniform_pool.bufs.len(), uniform_bufs, "uniform pool must reuse buffers across frames");
+
+    // Exceed UPLOAD_CACHE_MAX_ENTRIES to exercise eviction -> texture_pool recycling -> reuse.
+    for i in 0..(UPLOAD_CACHE_MAX_ENTRIES + 8) {
+        let f = make_frame((i % 251) as u8);
+        let p = FramePlan::Layers {
+            width: 8,
+            height: 8,
+            layers: vec![PlanLayer { frame: f, matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
+        };
+        c.composite(&p);
+    }
+    assert_eq!(c.uploads.len(), UPLOAD_CACHE_MAX_ENTRIES);
+    assert!(c.texture_pool_bytes > 0, "evicted textures must be retained in texture_pool");
+}
+
+#[test]
+fn upload_cache_overflow_pins_layers() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |rgba: [u8; 4]| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()));
+    let mut layers = Vec::with_capacity(UPLOAD_CACHE_MAX_ENTRIES + 4);
+    layers.push(PlanLayer::new(make_rgba([255, 0, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal));
+    for _ in 0..(UPLOAD_CACHE_MAX_ENTRIES + 3) {
+        layers.push(PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal));
+    }
+    let plan = FramePlan::Layers { width: 4, height: 4, layers };
+    c.composite(&plan);
+    let (_, _, out) = c.read_output().expect("readback");
+    assert_eq!(&out[..4], &[255, 0, 0, 255], "first layer must not be evicted before bind groups are built");
+}
+
+#[test]
+fn upload_cache_overflow_defers_step_recycle() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |rgba: [u8; 4]| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n(rgba, 16).flatten().collect()));
+    let step0 = vec![PlanLayer::new(make_rgba([0, 255, 0, 255]), Affine::IDENTITY, 1.0, Blend::Normal)];
+    let step1: Vec<PlanLayer> =
+        (0..(UPLOAD_CACHE_MAX_ENTRIES + 4)).map(|_| PlanLayer::new(make_rgba([0, 0, 0, 0]), Affine::IDENTITY, 1.0, Blend::Normal)).collect();
+    let plan = FramePlan::Composite { width: 4, height: 4, steps: vec![PlanStep::Layers(step0), PlanStep::Layers(step1)] };
+    c.composite(&plan);
+    let (_, _, out) = c.read_output().expect("readback");
+    assert_eq!(&out[..4], &[0, 255, 0, 255], "step0 texture must not be overwritten before command buffer submit");
+}
+
+#[test]
+fn upload_cache_overflow_holds_evicted_textures_until_finish_submit() {
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let make_rgba = |v: u8| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()));
+    for i in 0..UPLOAD_CACHE_MAX_ENTRIES {
+        let p = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(make_rgba(i as u8), Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&p);
+    }
+    let pool_before = c.texture_pool_bytes;
+    c.begin_frame();
+    // Uploading a new frame evicts one from the prior frame, which must stay pending until submit.
+    assert!(c.upload(&make_rgba(255), None).is_some());
+    assert_eq!(c.texture_pool_bytes, pool_before, "evicted texture must not return to pool mid-frame");
+    assert!(!c.pending_recycle.is_empty(), "evicted texture must be staged in pending_recycle");
+    c.end_frame();
+    c.finish_submit();
+    assert!(c.pending_recycle.is_empty());
+    assert!(c.texture_pool_bytes > pool_before, "evicted texture must return to pool after submit");
+}
+
+#[test]
+fn failing_gpu_surface_readback_is_not_cached_and_fails_export() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct ToggleSurface {
+        id: usize,
+        fail: AtomicBool,
+    }
+
+    impl filmcraft_frame::GpuSurface for ToggleSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err("simulated readback failure".to_string());
+            }
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([255u8, 0, 0, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let surf = Arc::new(ToggleSurface { id: 0xDEAD_BEEF, fail: AtomicBool::new(true) });
+    let frame = Arc::new(VideoFrame {
+        width: 4,
+        height: 4,
+        data: PixelData::GpuSurface(surf.clone()),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+
+    assert!(
+        matches!(c.try_render_export_prepared(&plan, None), Err(ExportRenderError::SourceReadback(ref why)) if why.contains("simulated readback failure")),
+        "failed readback must report ExportRenderError::SourceReadback"
+    );
+    assert!(
+        matches!(c.try_render_export_rgba8_prepared(&plan, None), Err(ExportRenderError::SourceReadback(ref why)) if why.contains("simulated readback failure")),
+        "failed readback must report ExportRenderError::SourceReadback for rgba8"
+    );
+    assert!(c.render_export_prepared(&plan, None).is_none(), "failed readback must abort export frame instead of emitting blank pixels");
+    assert!(c.render_export_rgba8_prepared(&plan, None).is_none(), "failed readback must abort rgba8 export frame");
+    assert!(!c.uploads.contains_key(&(surf.id, 4, 4)), "failed readback must not populate upload cache");
+
+    let empty_zero_plan = FramePlan::Layers { width: 4, height: 4, layers: Vec::new() };
+    assert_eq!(
+        c.try_render_export_surface_prepared(&empty_zero_plan, None, &(), 0, (0, 0)),
+        Ok(SurfaceRender::Unavailable),
+        "zero-sized target is unavailable GPU render, not a readback error"
+    );
+
+    surf.fail.store(false, Ordering::Relaxed);
+    let (_, _, px) = c.try_render_export_prepared(&plan, None).expect("subsequent readback must recover and not hit cached blank pixels");
+    assert!(px[0] > 0.9 && px[1] < 0.01 && px[3] > 0.9, "expected red pixel after recovery, got {:?}", &px[..4]);
+}
+
+#[test]
+fn gpu_surface_retires_after_submitted_work_done() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct DropSurface {
+        id: usize,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropSurface {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    impl filmcraft_frame::GpuSurface for DropSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([10u8, 20, 30, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let surf = Arc::new(DropSurface { id: 0xCAFE_BABE, dropped: dropped.clone() });
+    let frame = Arc::new(VideoFrame {
+        width: 4,
+        height: 4,
+        data: PixelData::GpuSurface(surf),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    c.composite(&plan);
+    drop(plan);
+    assert!(!dropped.load(Ordering::Acquire), "cached GpuSurface must stay alive in compositor");
+
+    let make_rgba = |v: u8| Arc::new(VideoFrame::rgba8(4, 4, std::iter::repeat_n([v, 0, 0, 255], 16).flatten().collect()));
+    c.begin_frame();
+    for i in 0..(UPLOAD_CACHE_MAX_ENTRIES + 2) {
+        assert!(c.upload(&make_rgba((i % 250) as u8), None).is_some());
+    }
+    assert!(!dropped.load(Ordering::Acquire), "evicted GpuSurface must not drop before submit completes");
+    c.end_frame();
+    c.finish_submit();
+    let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+    assert!(dropped.load(Ordering::Acquire), "retired GpuSurface must drop once GPU work completes");
+}
+
+#[test]
+fn compositor_teardown_timeout_retains_gpu_surface_until_queue_completes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct TeardownDropSurface {
+        id: usize,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for TeardownDropSurface {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    impl filmcraft_frame::GpuSurface for TeardownDropSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            self.id
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> Chroma {
+            Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<PixelData, String> {
+            Ok(PixelData::Rgba8(Arc::new(std::iter::repeat_n([40u8, 50, 60, 255], 16).flatten().collect())))
+        }
+    }
+
+    let Some((dev, q)) = device() else {
+        return;
+    };
+
+    // Case 1: Simulated teardown poll timeout returns without blocking and keeps external surface
+    // owners alive inside the queue completion closure until the GPU finishes or the device drops.
+    let dropped_timeout = Arc::new(AtomicBool::new(false));
+    {
+        let mut c = GpuCompositor::new(&dev, &q);
+        let surf = Arc::new(TeardownDropSurface { id: 0x1111_2222, dropped: dropped_timeout.clone() });
+        let frame = Arc::new(VideoFrame {
+            width: 4,
+            height: 4,
+            data: PixelData::GpuSurface(surf),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Default::default(),
+        });
+        let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plan);
+        drop(plan);
+        assert!(!dropped_timeout.load(Ordering::Acquire));
+
+        let enc = dev.create_command_encoder(&Default::default());
+        q.submit([enc.finish()]);
+        c.teardown_with_poll(|_| false);
+        assert!(c.uploads.is_empty() && c.pending_retire.is_empty(), "external surface owners must be detached from compositor on teardown");
+        assert!(!dropped_timeout.load(Ordering::Acquire), "timed-out teardown must not release GpuSurface before queue completes");
+    }
+    let _ = dev.poll(wgpu::PollType::wait_indefinitely());
+    assert!(dropped_timeout.load(Ordering::Acquire), "retained GpuSurface must drop once queue work completes");
+
+    // Case 2: Normal Drop runs bounded Wait and releases the cached GpuSurface synchronously on completion.
+    let dropped_sync = Arc::new(AtomicBool::new(false));
+    {
+        let mut c = GpuCompositor::new(&dev, &q);
+        let surf = Arc::new(TeardownDropSurface { id: 0x3333_4444, dropped: dropped_sync.clone() });
+        let frame = Arc::new(VideoFrame {
+            width: 4,
+            height: 4,
+            data: PixelData::GpuSurface(surf),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Default::default(),
+        });
+        let plan = FramePlan::Layers { width: 4, height: 4, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plan);
+        drop(plan);
+    }
+    assert!(dropped_sync.load(Ordering::Acquire), "normal Drop must still release GpuSurface once bounded wait completes");
 }

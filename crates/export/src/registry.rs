@@ -26,6 +26,42 @@ pub struct EncoderFrame<'a> {
     pub index: u64,
 }
 
+/// An opaque GPU-resident surface that an encoder accepts directly without CPU readback.
+pub trait GpuEncodeInput: Send + Sync {
+    /// Stable per-process identifier used by GPU compositors to cache imported views.
+    fn id(&self) -> u64;
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+    /// Rendering was submitted into this surface and the GPU did not confirm it finished: the
+    /// surface must not go back to the encoder's pool, where the next picture would write into it
+    /// while the submitted work may still be running. Dropping it after this retires its slot.
+    fn retire(&self) {}
+}
+
+/// What became of one zero-copy frame ([`FrameRenderer::render_planned_gpu`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuFrame {
+    /// Composited into the encoder's surface, and the GPU confirmed the work finished.
+    Rendered,
+    /// The encoder's surface cannot be imported into this renderer's device (another adapter, or
+    /// no external-memory support). It is a property of the device, so the caller stops offering
+    /// surfaces for the rest of the export instead of failing an import on every frame.
+    NoImport,
+    /// Submitted, but the GPU did not confirm it within the timeout: the surface is retired
+    /// ([`GpuEncodeInput::retire`]) and the frame is rendered again by the CPU path.
+    Unconfirmed,
+    /// Not usable for this frame (its size, a lost device, a plan that cannot be drawn): nothing
+    /// was submitted, so the surface is simply released.
+    Unavailable,
+}
+
+/// Pool of [`GpuEncodeInput`] surfaces supplied by a [`VideoEncoder`] for zero-copy export.
+pub trait GpuEncodePool: Send + Sync {
+    fn acquire(&self, width: u32, height: u32) -> Option<std::sync::Arc<dyn GpuEncodeInput>>;
+}
+
 /// Per-picture work an encoder hands to the export's render threads, see
 /// [`VideoEncoder::prepare_ahead`].
 pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
@@ -36,6 +72,14 @@ pub trait VideoEncoder: Send {
     fn timescale(&self) -> u32;
     fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>>;
     fn flush(&mut self) -> Result<Vec<EncodedPacket>>;
+    /// Pool of encoder-owned GPU surfaces for zero-copy GPU rendering ([`FrameRenderer::render_planned_gpu`]).
+    fn gpu_input_pool(&self) -> Option<std::sync::Arc<dyn GpuEncodePool>> {
+        None
+    }
+    /// Encode a GPU-resident surface rendered via [`FrameRenderer::render_planned_gpu`].
+    fn encode_gpu(&mut self, _input: std::sync::Arc<dyn GpuEncodeInput>, _index: u64) -> Result<Vec<EncodedPacket>> {
+        Err(crate::ExportError::Unsupported("GPU encode input is not supported by this encoder".into()))
+    }
     /// Media start offset for an edit list (B-frame delay), in the encoder timescale.
     fn media_start(&self) -> Option<i64> {
         None
@@ -108,6 +152,9 @@ pub fn encoder_registered(f: EncoderFactory) -> bool {
     video_factories().read().unwrap_or_else(PoisonError::into_inner).iter().any(|x| std::ptr::fn_addr_eq(*x, f))
 }
 
+/// Thread-safe planner preparation callback produced by [`FrameRenderer::plan_preparer`].
+pub type PlanPreparer = std::sync::Arc<dyn Fn(&filmcraft_render::plan::FramePlan) -> Box<dyn std::any::Any + Send + Sync> + Send + Sync>;
+
 /// Renders one export frame on something other than the CPU reference renderer — today the GPU
 /// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
 /// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
@@ -127,6 +174,61 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// Optional thread-safe texture preparer executed outside the renderer pool lock.
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        None
+    }
+
+    /// Render a pre-planned and pre-prepared frame as linear premultiplied RGBA f32.
+    fn render_planned(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<filmcraft_render::Image> {
+        None
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
+    fn render_planned_rgba8(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into an encoder-provided GPU surface
+    /// without CPU readback ([`GpuFrame`] says whether it got there and whether the surface can be
+    /// recycled).
+    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> GpuFrame {
+        GpuFrame::Unavailable
+    }
+
+    /// Like [`Self::render`], returning `Err` on unrecoverable source readback failure instead of
+    /// falling back to CPU compositing.
+    fn try_render(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Result<Option<filmcraft_render::Image>> {
+        Ok(self.render(project, seq, t, opts, sources))
+    }
+
+    /// Like [`Self::render_planned`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<filmcraft_render::Image>> {
+        Ok(self.render_planned(plan, prep))
+    }
+
+    /// Like [`Self::render_planned_rgba8`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<(u32, u32, Vec<u8>)>> {
+        Ok(self.render_planned_rgba8(plan, prep))
+    }
+
+    /// Like [`Self::render_planned_gpu`], returning `Err` on unrecoverable source readback failure.
+    fn try_render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn GpuEncodeInput,
+    ) -> Result<GpuFrame> {
+        Ok(self.render_planned_gpu(plan, prep, target))
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

@@ -34,6 +34,13 @@ pub trait VideoDecoder: Send {
     fn is_random_access(&self, _sample: &[u8]) -> Option<bool> {
         None
     }
+    /// Whether `sample` is one picture that decodes with no other sample: an IDR access unit (H.264
+    /// 7.4.1.2.4: it starts a coded video sequence and references nothing before it). A decoder that
+    /// is reset and fed only such a sample, then flushed, outputs exactly that picture, so the GOP
+    /// cache can seek to it without decoding the samples after it. False when unknown.
+    fn is_independent(&self, _sample: &[u8]) -> bool {
+        false
+    }
     /// Whether `sample` can be left out without changing any other picture: a non-reference
     /// picture. Decoding forward to a frame while catching up skips such samples when their
     /// frames are late ([`filmcraft_media::cancel::catch_up`]). False when unknown.
@@ -240,6 +247,9 @@ pub struct H264Decoder {
     draft: bool,
     /// Worker threads (a background decoder gets fewer).
     threads: usize,
+    /// Field or MBAFF coding (`frame_mbs_only_flag` 0), or an `avcC` whose SPS does not parse: a
+    /// sample may then hold one field of a frame, so no sample is taken to be a whole picture.
+    interlaced: bool,
 }
 
 impl H264Decoder {
@@ -261,13 +271,14 @@ impl H264Decoder {
         let threads = Self::threads_now();
         let dec = Self::make_inner(&avcc, threads)?;
         let length_size = avcc_length_size(&avcc);
-        Ok(Self { avcc, dec, length_size, draft: false, threads })
+        let interlaced = crate::hw::NalStreamInfo::from_avcc(&avcc).map_or(true, |i| i.interlaced);
+        Ok(Self { avcc, dec, length_size, draft: false, threads, interlaced })
     }
     /// A decoder for Annex B byte-stream samples (start codes, in-band parameter sets: MXF, TS).
     pub fn annexb() -> Self {
         recycle_h264_planes();
         let threads = Self::threads_now();
-        Self { avcc: Vec::new(), dec: craft_video::h264::decode::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
+        Self { avcc: Vec::new(), dec: craft_video::h264::decode::Decoder::with_threads(threads), length_size: 0, draft: false, threads, interlaced: true }
     }
     fn convert(p: craft_video::h264::decode::Picture) -> DecodedFrame {
         use std::sync::Arc;
@@ -324,6 +335,12 @@ impl VideoDecoder for H264Decoder {
     fn set_draft(&mut self, on: bool) {
         self.draft = on;
         self.dec.set_draft(on);
+    }
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        // Only IDR access units. A non-IDR intra picture may still need the decoder's history to
+        // output correctly (recovery point handling), so it keeps the decode-forward path. Not with
+        // field coding: a sample can be one field, and the IDR's first field alone is not the frame.
+        !self.interlaced && self.length_size != 0 && nal_headers(sample, self.length_size).any(|(h, _)| h & 0x1f == 5)
     }
     fn is_disposable(&self, sample: &[u8]) -> bool {
         if self.length_size == 0 {

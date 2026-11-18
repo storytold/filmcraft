@@ -1,8 +1,22 @@
 use filmcraft_project::{EffectInstance, ParamValue};
-use wgpu::util::DeviceExt;
+
+pub(crate) fn kind(id: &str) -> Option<u32> {
+    match id {
+        "push" => Some(0),
+        "cross_dissolve" | "cross_dissolve_legacy" => Some(1),
+        "dip_to_black" | "dip_to_black_legacy" => Some(2),
+        "dip_to_white" | "dip_to_white_legacy" => Some(3),
+        _ => None,
+    }
+}
+
+pub(crate) fn supports(id: &str) -> bool {
+    kind(id).is_some()
+}
 
 pub(crate) struct PushStage {
     pipeline: wgpu::RenderPipeline,
+    uniforms: super::UniformPool,
 }
 
 impl PushStage {
@@ -31,12 +45,18 @@ impl PushStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline }
+        Self { pipeline, uniforms: super::UniformPool::new("push-params", 8 * 4) }
     }
 
-    pub fn draw(
-        &self,
+    pub fn begin_frame(&mut self) {
+        self.uniforms.begin_frame();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        &mut self,
         (device, queue): (&wgpu::Device, &wgpu::Queue),
+        enc: &mut wgpu::CommandEncoder,
         canvas: &wgpu::TextureView,
         inputs: [&wgpu::TextureView; 2],
         size: (u32, u32),
@@ -51,10 +71,13 @@ impl PushStage {
         let blur = effect.f64_at("motion_blur", Default::default()) as f32;
         let blur = if blur.is_finite() { (blur / 100.0).clamp(0.0, 1.0) } else { 0.0 };
         let progress = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 0.0 };
-        let values = [size.0 as f32, size.1 as f32, progress, blur, direction as f32, 0.0, 0.0, 0.0];
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let uniform =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("push-params"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM });
+        let tx_kind = kind(&effect.effect).unwrap_or(0);
+        let values = [size.0 as f32, size.1 as f32, progress, blur, direction as f32, tx_kind as f32, 0.0, 0.0];
+        let mut bytes = [0u8; 32];
+        for (dst, v) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
+            dst.copy_from_slice(&v.to_le_bytes());
+        }
+        let uniform = self.uniforms.write(device, queue, &bytes);
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("push"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -64,13 +87,9 @@ impl PushStage {
                 wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
             ],
         });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("push") });
-        {
-            let mut pass = super::accum_pass(&mut encoder, canvas, wgpu::LoadOp::Load);
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        queue.submit([encoder.finish()]);
+        let mut pass = super::accum_pass(enc, canvas, wgpu::LoadOp::Load);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
     }
 }

@@ -23,6 +23,7 @@ struct Samples {
     intra: bool,
     resets: Arc<AtomicUsize>,
     decodes: Arc<AtomicUsize>,
+    reads: Arc<AtomicUsize>,
 }
 
 /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
@@ -78,6 +79,10 @@ impl VideoDecoder for Dec {
     fn is_disposable(&self, sample: &[u8]) -> bool {
         sample[0] % 2 == 1
     }
+    // IdrSamples mark their pictures in the second byte
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        sample.get(1) == Some(&1)
+    }
 }
 
 impl VideoSamples for Samples {
@@ -95,6 +100,7 @@ impl VideoSamples for Samples {
         (i < self.n).then_some(i)
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         Ok(vec![i as u8])
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
@@ -111,7 +117,32 @@ impl VideoSamples for Samples {
 }
 
 fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+    Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default(), reads: Default::default() }
+}
+
+/// Every picture is an IDR picture: its samples carry the independence mark (see `Dec::is_independent`).
+struct IdrSamples(Samples);
+
+impl VideoSamples for IdrSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        i
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.reads.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![i as u8, 1])
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        self.0.make_decoder()
+    }
 }
 
 fn index_of(f: &VideoFrame) -> usize {
@@ -133,6 +164,181 @@ fn frames_held_by_a_threaded_decoder_do_not_restart_it() {
     }
     assert_eq!(s.resets.load(Ordering::Relaxed), 1, "only the first request seeks");
     assert!(s.decodes.load(Ordering::Relaxed) <= 60 + 24 + 1);
+}
+
+#[test]
+fn an_idr_seek_decodes_only_its_own_sample_whatever_the_order() {
+    // one long GOP and 24 pictures in flight: a window decode would feed up to 24 samples past each seek
+    let s = IdrSamples(samples(300, 250, 24, false));
+    let c = GopCache::new(None);
+    let order = [200usize, 3, 150, 0, 299, 42, 7];
+    for &i in &order {
+        assert_eq!(index_of(&c.frame(&s, i as i64 * 1000).expect("frame")), i);
+    }
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), order.len(), "one sample decoded per seek");
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), order.len(), "each seek starts a reset decoder");
+    assert_eq!(s.0.reads.load(Ordering::Relaxed), order.len(), "one sample read per seek");
+}
+
+#[test]
+fn samples_that_are_not_idr_keep_the_decode_forward_window() {
+    // no sample carries the independence mark: the seek decodes from the sync sample as before
+    let s = samples(300, 250, 24, false);
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 200_000).expect("frame")), 200);
+    assert!(s.decodes.load(Ordering::Relaxed) > 200, "decoded from the sync sample, not the sample alone");
+    // nothing is read ahead of the decode: each sample is read once, as it is fed
+    assert_eq!(s.reads.load(Ordering::Relaxed), s.decodes.load(Ordering::Relaxed));
+}
+
+/// Marks every tenth sample as an IDR sample, though the container's only sync sample is the first.
+struct MixedSamples(Samples);
+
+impl VideoSamples for MixedSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        Ok(vec![i as u8, i.is_multiple_of(10) as u8])
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        self.0.make_decoder()
+    }
+}
+
+#[test]
+fn a_running_decoder_keeps_decoding_forward_through_an_idr_sample() {
+    let s = MixedSamples(samples(300, 250, 2, false));
+    let c = GopCache::new(None);
+    for i in 0..60usize {
+        assert_eq!(index_of(&c.frame(&s, i as i64 * 1000).expect("frame")), i);
+    }
+    // sample 0 (an IDR with no cursor yet) decodes alone; sample 1 starts the run that goes on
+    // through the IDR samples 10, 20, ... without another reset
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), 2, "one isolated decode and one run");
+}
+
+/// Drops what the decoder outputs when drained: an isolated decode then yields no picture.
+struct Mute(Box<dyn VideoDecoder>);
+
+impl VideoDecoder for Mute {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        self.0.decode(sample, pts)
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        let _ = self.0.flush();
+        Vec::new()
+    }
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn name(&self) -> &str {
+        "mute"
+    }
+    fn is_independent(&self, sample: &[u8]) -> bool {
+        self.0.is_independent(sample)
+    }
+}
+
+struct MuteSamples(IdrSamples);
+
+impl VideoSamples for MuteSamples {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(Mute(self.0.make_decoder()?)))
+    }
+}
+
+#[test]
+fn an_isolated_decode_without_a_picture_falls_back_to_decoding_forward() {
+    // a decoder that holds each picture 2 samples: draining the lone sample yields nothing here
+    let s = MuteSamples(IdrSamples(samples(100, 100, 2, false)));
+    let c = GopCache::new(None);
+    assert_eq!(index_of(&c.frame(&s, 40_000).expect("frame")), 40);
+    assert!(s.0.0.decodes.load(Ordering::Relaxed) > 1, "the window path decoded the following samples");
+    // the sample read for the isolated decode is the one the window path starts with (read once, not
+    // twice); the window path's random-access probe reads its first sample once more
+    assert_eq!(s.0.0.reads.load(Ordering::Relaxed), s.0.0.decodes.load(Ordering::Relaxed));
+}
+
+#[test]
+fn concurrent_idr_seeks_decode_one_sample_each_with_a_bounded_spare_pool() {
+    let s = Arc::new(IdrSamples(samples(64, 64, 24, false)));
+    let c = Arc::new(GopCache::new(None));
+    let start = Arc::new(std::sync::Barrier::new(4));
+    std::thread::scope(|scope| {
+        for t in 0..4usize {
+            let (s, c, start) = (s.clone(), c.clone(), start.clone());
+            scope.spawn(move || {
+                start.wait();
+                for k in 0..16usize {
+                    let i = (k * 7 + t * 16) % 64;
+                    assert_eq!(index_of(&c.frame(&*s, i as i64 * 1000).expect("frame")), i);
+                }
+            });
+        }
+    });
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), 64);
+    assert_eq!(s.0.resets.load(Ordering::Relaxed), 64);
+    let spare = c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).spare.len();
+    assert!(spare <= MAX_SPARE_DECODERS, "{spare} spare decoders");
+    assert_eq!(c.shared.pool.spares.load(Ordering::Relaxed), spare, "the pool counts the spares");
+}
+
+#[test]
+fn spare_decoders_of_many_idr_sources_stay_within_the_process_cap() {
+    // each source is its own cache; the pool is shared, so their spares are counted together
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET));
+    let sources: Vec<_> = (0..10).map(|_| (IdrSamples(samples(8, 8, 0, false)), GopCache::in_pool(None, pool.clone()))).collect();
+    std::thread::scope(|scope| {
+        for (s, c) in &sources {
+            scope.spawn(move || {
+                for i in [3usize, 5, 1] {
+                    assert_eq!(index_of(&c.frame(s, i as i64 * 1000).expect("frame")), i);
+                }
+            });
+        }
+    });
+    let held: usize = sources.iter().map(|(_, c)| c.shared.state.lock().unwrap_or_else(PoisonError::into_inner).spare.len()).sum();
+    assert!(held <= MAX_SPARE_DECODERS, "{held} spare decoders for 10 sources");
+    assert_eq!(pool.spares.load(Ordering::Relaxed), held);
+    // dropping the caches gives them back
+    drop(sources);
+    assert_eq!(pool.spares.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_cancelled_idr_seek_decodes_nothing_and_a_later_one_succeeds() {
+    let s = IdrSamples(samples(64, 64, 4, false));
+    let c = GopCache::new(None);
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || c.frame(&s, 30_000));
+    assert!(matches!(r, Err(CodecError::Cancelled)), "cancelled before decoding");
+    assert_eq!(s.0.decodes.load(Ordering::Relaxed), 0);
+    assert_eq!(index_of(&c.frame(&s, 30_000).expect("frame")), 30);
 }
 
 /// A decoder that, like a slice-threaded one, splits each picture's work over rayon.
@@ -1182,4 +1388,102 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
+}
+
+#[test]
+fn ping_pong_concurrent_streams_keep_separate_cursors() {
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
+    let s = samples(300, 30, 0, false);
+    let mut c = GopCache::in_pool(None, pool.clone());
+    // Hold only ~12 frames so distant streams (0.. and 150..) cannot stay co-cached for long.
+    c.budget = 0;
+
+    // Warm stream A at 150, then jump to stream B at 0, then advance both interleaved.
+    assert_eq!(index_of(&c.frame(&s, 150_000).expect("A0")), 150);
+    for step in 0..80usize {
+        assert_eq!(index_of(&c.frame(&s, step as i64 * 1000).expect("B")), step);
+        assert_eq!(index_of(&c.frame(&s, (151 + step) as i64 * 1000).expect("A")), 151 + step);
+    }
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 2, "two interleaved offsets keep two cursors");
+    assert!(s.resets.load(Ordering::Relaxed) <= 3, "only initial seeks, got {} resets", s.resets.load(Ordering::Relaxed));
+    assert!(s.decodes.load(Ordering::Relaxed) < 200, "no re-decoding from sync per step, decoded {}", s.decodes.load(Ordering::Relaxed));
+}
+
+#[test]
+fn multi_cursor_eviction_preserves_both_active_playheads() {
+    let mut c = GopCache::new(None);
+    c.budget = 0;
+    let pic = || VideoFrame::rgba8(1, 1, vec![0; 4]);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 200_000;
+    st.extra.push(StreamCursor {
+        decoder: Box::new(Dec {
+            delay: 0,
+            intra: false,
+            held: VecDeque::new(),
+            draft: false,
+            limited: false,
+            resets: Default::default(),
+            decodes: Default::default(),
+        }),
+        next: 10,
+        start: 0,
+        out_max: 9_000,
+        pin: 9_000,
+        last_used: Instant::now(),
+        background: false,
+    });
+    for k in 0..20 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    for k in 150..250 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    assert!(st.frames.contains_key(&200_000), "primary playhead kept");
+    assert!(st.frames.contains_key(&9_000), "secondary playhead kept across distant decodes");
+}
+
+#[test]
+fn extra_cursor_cache_hit_does_not_refresh_primary_recency() {
+    let pool = Arc::new(Pool::new(16, IDLE, FRAME_BUDGET).tiered(RECENT, 32));
+    let s = samples(400, 30, 0, false);
+    let c = GopCache::in_pool(None, pool.clone());
+    // Warm primary cursor at sample 0 (pin = 0).
+    assert_eq!(index_of(&c.frame(&s, 0).expect("P0")), 0);
+    let now = Instant::now();
+    {
+        let mut st = c.shared.state.lock().unwrap();
+        let make_cursor = |next: usize, pin: i64, last_used: Instant| StreamCursor {
+            decoder: s.make_decoder().unwrap(),
+            next,
+            start: next.saturating_sub(1),
+            out_max: pin,
+            pin,
+            last_used,
+            background: false,
+        };
+        // Cache frame 100_000 for extra[0]; primary is older than extra[1] and extra[2],
+        // while extra[0] starts oldest until the cache hit refreshes it.
+        c.store_finished(&mut st, 100_000, VideoFrame::rgba8(1, 1, vec![100, 0, 0, 255]), false);
+        st.last_used = now - Duration::from_millis(300);
+        st.primary_last_used = now - Duration::from_millis(300);
+        st.extra = vec![
+            make_cursor(101, 100_000, now - Duration::from_millis(400)),
+            make_cursor(201, 200_000, now - Duration::from_millis(200)),
+            make_cursor(301, 300_000, now - Duration::from_millis(100)),
+        ];
+        pool.decoders.fetch_add(3, Ordering::Relaxed);
+    }
+    // Cache hit near extra[0] (100_000) refreshes extra[0].last_used = hit_now,
+    // leaving primary as the oldest cursor of the four.
+    assert_eq!(index_of(&c.frame(&s, 100_000).expect("hit extra0")), 100);
+    // Distant miss at 360_000 (cannot continue any cursor): must reset the LRU cursor (primary at 0)
+    // and preserve all three extra cursors (100_000, 200_000, 300_000).
+    assert_eq!(index_of(&c.frame(&s, 360_000).expect("distant miss")), 360);
+    let st = c.shared.state.lock().unwrap();
+    let extra_pins: Vec<i64> = st.extra.iter().map(|cur| cur.pin).collect();
+    assert!(extra_pins.contains(&100_000), "extra0 kept: {extra_pins:?}");
+    assert!(extra_pins.contains(&200_000), "extra1 kept: {extra_pins:?}");
+    assert!(extra_pins.contains(&300_000), "extra2 kept: {extra_pins:?}");
+    assert_eq!(st.pin, 360_000);
 }

@@ -403,6 +403,7 @@ fn media_time_counts_frames_at_the_source_rate() {
         layer_size: (320, 180),
         layer_to_output: Affine::IDENTITY,
         tc: "",
+        readback_error: None,
     };
     assert_eq!(env.media_time(TimeDisplay::Frames).as_deref(), Some("30"));
     assert_eq!(env.media_time(TimeDisplay::Feet35).as_deref(), Some("1+14"));

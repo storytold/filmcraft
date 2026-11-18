@@ -108,6 +108,64 @@ fn bit_exact_with_the_software_decoders() {
     }
 }
 
+/// An H.264 IDR sample decoded alone (`reset`, `decode`, `flush`) yields exactly its own picture, the
+/// one a sequential decode yields, in hardware and in software: what the GOP cache's seek to an IDR
+/// sample relies on (`VideoDecoder::is_independent`). Samples that are not IDR pictures do not claim it.
+#[test]
+fn an_idr_sample_alone_yields_its_own_picture() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let Some(path) = fixture(
+        &ff,
+        "h264_idr_only.mp4",
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=640x360:r=30:d=2,noise=alls=12:allf=t",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-x264-params",
+            "keyint=1:scenecut=0",
+            "-pix_fmt",
+            "yuvj420p",
+        ],
+    ) else {
+        return;
+    };
+    let s = read_stream(&path);
+    let Some(mut hw) = hardware(&s) else { return };
+    let mut sw = software(&s);
+    let all = decode_all(sw.as_mut(), &s.samples);
+    assert_eq!(all.len(), s.samples.len());
+    for (smp, _) in &s.samples {
+        assert!(hw.is_independent(smp) && sw.is_independent(smp), "every sample of an IDR-only stream is independent");
+    }
+    // out of order, repeated, first and last
+    let n = s.samples.len();
+    for k in [n / 2, 0, n - 1, 7, 7, n / 3, 1, n - 2] {
+        let (smp, pts) = &s.samples[k];
+        for d in [&mut hw, &mut sw] {
+            d.reset();
+            let mut out = d.decode(smp, *pts).unwrap_or_else(|e| panic!("{}: sample {k}: {e}", d.name()));
+            out.extend(d.flush());
+            assert_eq!(out.len(), 1, "{}: sample {k} alone gives one picture", d.name());
+            let Some(want) = all.iter().find(|f| f.pts == *pts) else { panic!("no picture at pts {pts}") };
+            assert_same(&format!("{} sample {k} alone", d.name()), &out, std::slice::from_ref(want));
+        }
+    }
+    // B-frame stream: only the IDR samples are independent, never a P or B picture
+    let Some(b) = named(&ff, "h264_high.mp4") else { return };
+    let b = read_stream(&b);
+    for (i, (smp, _)) in b.samples.iter().enumerate() {
+        assert_eq!(hw.is_independent(smp), sw.is_independent(smp), "sample {i}: hardware and software agree");
+        if !b.sync[i] {
+            assert!(!sw.is_independent(smp), "sample {i} is not a sync sample");
+        }
+    }
+}
+
 /// The small parity fixtures: H.264 High, HEVC Main (open GOP) and Main 10, VP9 profiles 0 / 2 and
 /// AV1 8- / 10-bit (640x360, B-frames or hidden reference frames, two GOPs or more).
 fn small_streams(ff: &std::path::Path) -> Vec<(String, Stream)> {

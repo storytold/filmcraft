@@ -518,10 +518,149 @@ fn gpu_hook_scenarios() {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
+
+    // 7. A renderer whose device cannot import the encoder's surfaces at all (another adapter, no
+    //    external memory) is asked for one surface only: the export remembers that and stops
+    //    paying a failed import on every frame, while the frames still come out through the
+    //    RGBA8 readback.
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(NoImportRenderer) as Box<dyn FrameRenderer>));
+    let (p, seq, m) = project();
+    let settings = ExportSettings { format: Format::PngSequence, gpu_rendering: crate::GpuRendering::Auto, ..Default::default() };
+    let pipe = crate::pipeline::Pipeline::new(Arc::clone(&p), seq, &settings, false).unwrap();
+    let pool = CountingPool::default();
+    for f in 0..4 {
+        let _ = pipe.frame_or_gpu(f, &m, Some(&pool)).unwrap();
+    }
+    assert_eq!(pool.acquired(), 1, "a permanent import failure is asked for a surface once, not once per frame");
+    assert!(gpu_render_stats().fallbacks >= 4, "the readback path rendered every frame: {:?}", gpu_render_stats());
+
+    // 8. A preparer that panics is caught inside the pool boundary: the pool retires and the
+    //    rest of the export completes on the CPU (byte-equal to Off).
+    crate::reset_frame_renderers_for_tests();
+    PANICS.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| Some(Box::new(PanickingPreparerRenderer) as Box<dyn FrameRenderer>));
+    let (p, seq, m) = project();
+    let mk_prep = |path: &String, gpu: crate::GpuRendering| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
+        s.gpu_rendering = gpu;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
+    mk_prep(&tmp("prep-panic-off.png"), crate::GpuRendering::Off);
+    mk_prep(&tmp("prep-panic-auto.png"), crate::GpuRendering::Auto);
+    for f in ["000", "005", "011"] {
+        assert_eq!(
+            std::fs::read(tmp(&format!("prep-panic-off{f}.png"))).unwrap(),
+            std::fs::read(tmp(&format!("prep-panic-auto{f}.png"))).unwrap(),
+            "frame {f}: a panicking GPU preparer falls back to the CPU"
+        );
+    }
+    assert!(PANICS.load(std::sync::atomic::Ordering::SeqCst) <= 4, "preparer reused after a panic: {}", PANICS.load(std::sync::atomic::Ordering::SeqCst));
     crate::reset_frame_renderers_for_tests();
 }
 
+/// A renderer whose device cannot import the encoder's surfaces (`GpuFrame::NoImport`), but which
+/// does render the frame to RGBA8.
+struct NoImportRenderer;
+
+impl FrameRenderer for NoImportRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        Some(std::sync::Arc::new(|_plan: &filmcraft_render::plan::FramePlan| Box::new(()) as Box<dyn std::any::Any + Send + Sync>))
+    }
+
+    fn render_planned_rgba8(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        Some((320, 180, vec![0u8; 320 * 180 * 4]))
+    }
+
+    fn render_planned_gpu(&mut self, _plan: &filmcraft_render::plan::FramePlan, _prep: Option<&dyn std::any::Any>, _target: &dyn GpuEncodeInput) -> GpuFrame {
+        GpuFrame::NoImport
+    }
+}
+
+/// An encoder surface that only counts how often one was asked for.
+struct CountingSurface;
+
+impl GpuEncodeInput for CountingSurface {
+    fn id(&self) -> u64 {
+        1
+    }
+
+    fn width(&self) -> u32 {
+        320
+    }
+
+    fn height(&self) -> u32 {
+        180
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_arc_any(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        Arc::new(())
+    }
+}
+
+#[derive(Default)]
+struct CountingPool(std::sync::atomic::AtomicUsize);
+
+impl CountingPool {
+    fn acquired(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl GpuEncodePool for CountingPool {
+    fn acquire(&self, _width: u32, _height: u32) -> Option<Arc<dyn GpuEncodeInput>> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Some(Arc::new(CountingSurface))
+    }
+}
+
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct PanickingPreparerRenderer;
+
+impl FrameRenderer for PanickingPreparerRenderer {
+    fn render(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        Some(filmcraft_render::Image::new(320, 180))
+    }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        filmcraft_render::plan::DeviceCaps::ALL
+    }
+
+    fn plan_preparer(&self) -> Option<PlanPreparer> {
+        Some(std::sync::Arc::new(|_plan: &filmcraft_render::plan::FramePlan| -> Box<dyn std::any::Any + Send + Sync> {
+            PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("GPU preparer failure (test)");
+        }))
+    }
+}
 
 struct PanickingRenderer;
 
@@ -730,4 +869,100 @@ mod apv_chroma {
             assert!(enc.encode(&EncoderFrame { width: 16, height: 8, rgba: &[], hdr: Some(&short), index: 0 }).is_err(), "{profile}");
         }
     }
+}
+
+#[test]
+fn cpu_fallback_propagates_gpu_surface_readback_error() {
+    #[derive(Debug)]
+    struct FailingSurface;
+    impl filmcraft_frame::GpuSurface for FailingSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            0xBAD_CE01
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64 * 64 * 4
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> filmcraft_frame::Chroma {
+            filmcraft_frame::Chroma::C444
+        }
+        fn to_cpu(&self) -> std::result::Result<filmcraft_frame::PixelData, String> {
+            Err("synthetic cpu-fallback readback failure".to_string())
+        }
+    }
+    struct FailingSource {
+        info: filmcraft_media::MediaInfo,
+    }
+    impl filmcraft_media::MediaSource for FailingSource {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Ok(Arc::new(filmcraft_frame::VideoFrame {
+                width: 64,
+                height: 64,
+                data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingSurface)),
+                color: filmcraft_color::ColorInfo::REC709,
+                par: (1, 1),
+                pts: req.time,
+            }))
+        }
+        fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(filmcraft_media::MediaError::NoStream("audio"))
+        }
+    }
+
+    let g = GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 64, 64, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let mut p = Project::new("cpu-fallback-fail");
+    let item = p.add_item(
+        "failing-gpu-source",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 64, frame_rate: FrameRate::FPS_24, ..Default::default() }, 2, 0, None);
+    let r = FrameRate::FPS_24;
+    let clip = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(1)), r).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+
+    // CPU-only effect on an adjustment layer clears the GPU pool via `is_cpu_frame` and routes
+    // the frame through `pipeline.rs` CPU sequence rendering.
+    let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 64, height: 64, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
+    let mut over = p.make_track_item(adj, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(1)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
+    p.sequence_mut(seq).unwrap().video_tracks[1].items.push(over);
+
+    let mut sources = SourceMap::default();
+    sources.0.insert(item, Arc::new(FailingSource { info }));
+    let out = tmp("cpu-fallback-fail.png");
+    let _ = std::fs::remove_file(tmp("cpu-fallback-fail000.png"));
+    let s = ExportSettings {
+        format: Format::PngSequence,
+        path: out,
+        range: Some(TimeRange::new(Tick::ZERO, r.tick_of(1))),
+        gpu_rendering: crate::GpuRendering::Auto,
+        ..Default::default()
+    };
+    let res = export(&Arc::new(p), seq, &s, &sources, &Progress::default());
+    assert!(
+        matches!(res, Err(crate::ExportError::Encode(ref msg)) if msg.contains("synthetic cpu-fallback readback failure")),
+        "expected ExportError::Encode propagating GPU readback failure, got {res:?}"
+    );
+    assert!(!std::path::Path::new(&tmp("cpu-fallback-fail000.png")).exists(), "failed CPU-fallback readback must not write output frames");
 }

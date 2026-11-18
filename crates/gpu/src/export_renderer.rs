@@ -11,9 +11,10 @@
 //! the CPU renderer; a `FramePlan::Image` plan (HDR / wide gamut / anything the plan sends to the
 //! CPU) is returned unchanged — it already is the CPU image.
 
-use crate::{GpuCompositor, prepare};
+use crate::GpuCompositor;
+use crate::SurfaceRender;
 use filmcraft_project::{ItemId, Project};
-use filmcraft_render::plan::{DeviceCaps, FramePlan, plan_frame};
+use filmcraft_render::plan::{DeviceCaps, FramePlan, try_plan_frame};
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::Tick;
 
@@ -127,7 +128,8 @@ impl ExportRenderer {
                 }
                 let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let desc = wgpu::DeviceDescriptor { required_features: crate::requested_features(&adapter), ..Default::default() };
+                let (device, queue) = pollster::block_on(adapter.request_device(&desc)).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
@@ -149,25 +151,188 @@ impl ExportRenderer {
         self.compositor.caps()
     }
 
+    /// Whether this renderer's device natively samples 16-bit normalized YUV planes (`R16Unorm`).
+    pub fn supports_r16_unorm(&self) -> bool {
+        self.compositor.supports_r16_unorm()
+    }
+
+    /// Thread-safe planner preparation callback matching this renderer's `R16Unorm` capability.
+    pub fn plan_preparer(&self) -> std::sync::Arc<dyn Fn(&FramePlan) -> Box<dyn std::any::Any + Send + Sync> + Send + Sync> {
+        let r16_unorm = self.compositor.supports_r16_unorm();
+        std::sync::Arc::new(move |plan: &FramePlan| Box::new(crate::prepare_for(plan, r16_unorm)))
+    }
+
+    /// Render a pre-planned and pre-prepared frame as linear premultiplied RGBA f32.
+    pub fn render_plan(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<Image> {
+        self.try_render_plan(plan, prep).ok().flatten()
+    }
+
+    /// Like [`Self::render_plan`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render_plan(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Result<Option<Image>, String> {
+        match plan {
+            // Already the CPU image: return it unchanged instead of rendering it twice.
+            FramePlan::Image(img) => Ok(Some(img.clone())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return Ok(None);
+                }
+                let (w, h, px) = match self.compositor.try_render_export_prepared(plan, prep) {
+                    Ok(v) => v,
+                    Err(crate::ExportRenderError::Unavailable) => return Ok(None),
+                    Err(crate::ExportRenderError::SourceReadback(why)) => return Err(why),
+                };
+                // an error reported while this frame was drawn leaves its pixels untrusted
+                if device_failed() {
+                    return Ok(None);
+                }
+                timing::add_frame();
+                Ok(Some(Image { w: w as usize, h: h as usize, px }))
+            }
+        }
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into sRGB-resolved RGBA8.
+    pub fn render_plan_rgba8(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Option<(u32, u32, Vec<u8>)> {
+        self.try_render_plan_rgba8(plan, prep).ok().flatten()
+    }
+
+    /// Like [`Self::render_plan_rgba8`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render_plan_rgba8(&mut self, plan: &FramePlan, prep: Option<&crate::PreparedPlan>) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+        match plan {
+            FramePlan::Image(img) => Ok(Some((img.w as u32, img.h as u32, img.over_black_rgba8()))),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return Ok(None);
+                }
+                let out = match self.compositor.try_render_export_rgba8_prepared(plan, prep) {
+                    Ok(v) => v,
+                    Err(crate::ExportRenderError::Unavailable) => return Ok(None),
+                    Err(crate::ExportRenderError::SourceReadback(why)) => return Err(why),
+                };
+                if device_failed() {
+                    return Ok(None);
+                }
+                timing::add_frame();
+                Ok(Some(out))
+            }
+        }
+    }
+
+    /// Render a pre-planned and pre-prepared frame directly into an externally owned GPU surface
+    /// (`OUTPUT_FORMAT` / `Rgba8Unorm`) without CPU readback ([`SurfaceRender`] says whether it got
+    /// there, and whether the surface may be reused).
+    pub fn render_plan_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&crate::PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> SurfaceRender {
+        self.try_render_plan_surface(plan, prep, target, target_id, w, h).unwrap_or(SurfaceRender::Unavailable)
+    }
+
+    /// Like [`Self::render_plan_surface`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback.
+    pub fn try_render_plan_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&crate::PreparedPlan>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> Result<SurfaceRender, String> {
+        if matches!(plan, FramePlan::Image(_)) || device_failed() {
+            return Ok(SurfaceRender::Unavailable);
+        }
+        let outcome = self.compositor.try_render_export_surface_prepared(plan, prep, target, target_id, (w, h))?;
+        match outcome {
+            // a device that died right after a confirmed render: the surface is fine, but the frame
+            // has to be rendered again by the CPU path
+            SurfaceRender::Rendered if device_failed() => Ok(SurfaceRender::Unavailable),
+            SurfaceRender::Rendered => {
+                timing::add_frame();
+                Ok(SurfaceRender::Rendered)
+            }
+            // an unconfirmed submission is never "unavailable": its surface must not be reused
+            other => Ok(other),
+        }
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan`] for `FrameRenderer` implementations.
+    pub fn render_planned(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<Image> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::try_render_plan`] for `FrameRenderer` implementations.
+    pub fn try_render_planned(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<Image>, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan_rgba8`] for `FrameRenderer` implementations.
+    pub fn render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan_rgba8(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::try_render_plan_rgba8`] for `FrameRenderer` implementations.
+    pub fn try_render_planned_rgba8(&mut self, plan: &FramePlan, prep: Option<&dyn std::any::Any>) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan_rgba8(plan, prep)
+    }
+
+    /// Type-erased wrapper around [`Self::render_plan_surface`] for `FrameRenderer` implementations.
+    pub fn render_planned_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> crate::SurfaceRender {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.render_plan_surface(plan, prep, target, target_id, w, h)
+    }
+
+    /// Type-erased wrapper around [`Self::try_render_plan_surface`] for `FrameRenderer` implementations.
+    pub fn try_render_planned_surface(
+        &mut self,
+        plan: &FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn std::any::Any,
+        target_id: u64,
+        w: u32,
+        h: u32,
+    ) -> Result<crate::SurfaceRender, String> {
+        let prep = prep.and_then(|p| p.downcast_ref::<crate::PreparedPlan>());
+        self.try_render_plan_surface(plan, prep, target, target_id, w, h)
+    }
+
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
     pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        self.try_render(project, seq, t, opts, sources).ok().flatten()
+    }
+
+    /// Like [`Self::render`], returning `Err` when a source [`GpuSurface`](filmcraft_frame::GpuSurface)
+    /// fails CPU readback instead of falling back to CPU transparent pixels.
+    pub fn try_render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
+        let plan = try_plan_frame(project, seq, t, opts, self.compositor.caps(), sources)?;
         match &plan {
-            // Already the CPU image: return it unchanged instead of rendering it twice.
-            FramePlan::Image(img) => Some(img.clone()),
+            FramePlan::Image(img) => Ok(Some(img.clone())),
             FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
-                let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
-                // an error reported while this frame was drawn leaves its pixels untrusted
-                if device_failed() {
-                    return None;
-                }
-                timing::add_frame();
-                Some(Image { w: w as usize, h: h as usize, px })
+                let prep = crate::prepare_for(&plan, self.compositor.supports_r16_unorm());
+                self.try_render_plan(&plan, Some(&prep))
             }
         }
     }
@@ -684,6 +849,92 @@ mod tests {
         let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
         let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
         assert_parity(&cpu, &gpu, "frame renderer");
+    }
+
+    #[test]
+    fn try_render_propagates_readback_failure_on_opacity_masked_clip() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (try_render masked readback): no adapter");
+            return;
+        };
+        #[derive(Debug)]
+        struct FailingGpuSurface;
+        impl filmcraft_frame::GpuSurface for FailingGpuSurface {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn id(&self) -> usize {
+                0xBAD_CA5E
+            }
+            fn gpu_bytes(&self) -> u64 {
+                64 * 64 * 4
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn chroma(&self) -> filmcraft_frame::Chroma {
+                filmcraft_frame::Chroma::C444
+            }
+            fn to_cpu(&self) -> Result<filmcraft_frame::PixelData, String> {
+                Err("synthetic masked gpu readback failure".to_string())
+            }
+        }
+        struct FailingSource(filmcraft_media::MediaInfo);
+        impl MediaSource for FailingSource {
+            fn info(&self) -> &filmcraft_media::MediaInfo {
+                &self.0
+            }
+            fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+                Ok(Arc::new(filmcraft_frame::VideoFrame {
+                    width: 64,
+                    height: 64,
+                    data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+                    color: filmcraft_color::ColorInfo::REC709,
+                    par: (1, 1),
+                    pts: req.time,
+                }))
+            }
+            fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+                Err(filmcraft_media::MediaError::NoStream("audio"))
+            }
+        }
+        let g =
+            GeneratorSource::new(Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] }, 64, 64, filmcraft_time::FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+        let info = g.info().clone();
+        let mut p = Project::new("masked-fail");
+        let item = p.add_item(
+            "masked-gpu",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info: info.clone(),
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+        let seq =
+            p.new_sequence("s", SequenceSettings { width: 64, height: 64, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let mut clip = p
+            .make_track_item(
+                item,
+                TrackKind::Video,
+                Tick::ZERO,
+                TimeRange::new(Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(1)),
+                filmcraft_time::FrameRate::FPS_24,
+            )
+            .unwrap();
+        clip.effect_mut("opacity").unwrap().masks.push(filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 32.0)));
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
+        let mut m = SourceMap::default();
+        m.0.insert(item, Arc::new(FailingSource(info)));
+        let res = r.try_render(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
+        assert!(matches!(res, Err(ref msg) if msg.contains("synthetic masked gpu readback failure")), "expected readback failure, got {res:?}");
     }
 
     #[test]

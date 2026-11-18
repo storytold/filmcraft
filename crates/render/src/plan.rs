@@ -181,13 +181,52 @@ impl PlanStack {
         self.steps.push(PlanStep::Adjust { ops });
     }
 
+    fn append(&mut self, other: PlanStack) {
+        if self.exhausted {
+            return;
+        }
+        if other.cpu_only {
+            self.cpu_only = true;
+        }
+        if other.exhausted || self.layers.saturating_add(other.layers) > MAX_PLAN_LAYERS {
+            self.exhausted = true;
+            return;
+        }
+        for step in other.steps {
+            match step {
+                PlanStep::Layers(mut ls) => {
+                    if let Some(PlanStep::Layers(prev)) = self.steps.last_mut() {
+                        prev.append(&mut ls);
+                    } else {
+                        self.steps.push(PlanStep::Layers(ls));
+                    }
+                }
+                step @ (PlanStep::Transition { .. } | PlanStep::Adjust { .. }) => {
+                    self.steps.push(step);
+                }
+            }
+        }
+        self.layers = self.layers.saturating_add(other.layers);
+    }
+
     fn into_layers(self, width: usize, height: usize) -> Option<Vec<PlanLayer>> {
+        self.into_layers_inner(width, height, false).ok().flatten()
+    }
+
+    fn try_into_layers(self, width: usize, height: usize) -> Result<Option<Vec<PlanLayer>>, String> {
+        self.into_layers_inner(width, height, true)
+    }
+
+    fn into_layers_inner(self, width: usize, height: usize, strict: bool) -> Result<Option<Vec<PlanLayer>>, String> {
         if self.exhausted || self.cpu_only {
-            return None;
+            return Ok(None);
         }
         match self.finish(width, height) {
-            FramePlan::Layers { layers, .. } => Some(layers),
-            plan => Some(vec![PlanLayer::new(cpu_frame(execute_cpu(&plan)), Affine::IDENTITY, 1.0, Blend::Normal)]),
+            FramePlan::Layers { layers, .. } => Ok(Some(layers)),
+            plan => {
+                let img = if strict { try_execute_cpu(&plan)? } else { execute_cpu(&plan) };
+                Ok(Some(vec![PlanLayer::new(cpu_frame(img), Affine::IDENTITY, 1.0, Blend::Normal)]))
+            }
         }
     }
 
@@ -275,15 +314,47 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 
 /// Plan the frame at timeline `t` for a device that runs `caps`.
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, caps: DeviceCaps, sources: &dyn SourceProvider) -> FramePlan {
-    let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
+    plan_frame_inner(project, seq_id, t, opts, caps, sources, false).unwrap_or_else(|_| FramePlan::Image(crate::Image::new(1, 1)))
+}
+
+/// Like [`plan_frame`], returning `Err` when CPU readback of a [`GpuSurface`](filmcraft_frame::GpuSurface)
+/// fails during layer pre-rendering or CPU fallback.
+pub fn try_plan_frame(
+    project: &Project,
+    seq_id: ItemId,
+    t: Tick,
+    opts: RenderOptions,
+    caps: DeviceCaps,
+    sources: &dyn SourceProvider,
+) -> Result<FramePlan, String> {
+    plan_frame_inner(project, seq_id, t, opts, caps, sources, true)
+}
+
+fn plan_frame_inner(
+    project: &Project,
+    seq_id: ItemId,
+    t: Tick,
+    opts: RenderOptions,
+    caps: DeviceCaps,
+    sources: &dyn SourceProvider,
+    strict_readback: bool,
+) -> Result<FramePlan, String> {
+    let Some(seq) = project.sequence(seq_id) else { return Ok(FramePlan::Image(crate::Image::new(1, 1))) };
     let (w, h) = output_size(seq, opts.scale);
+    let fallback = || {
+        if strict_readback {
+            crate::try_render_sequence(project, seq_id, t, opts, sources).map(FramePlan::Image)
+        } else {
+            Ok(FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources)))
+        }
+    };
     if whole_frame_on_cpu(project, seq, t, opts.scale, caps) {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
     let mut layers = PlanStack::default();
-    push_tracks(Scene { project, seq, t, opts, caps, sources, nest: 0 }, &mut layers);
+    push_tracks(Scene { project, seq, t, opts, caps, sources, nest: 0, strict_readback }, &mut layers)?;
     if layers.exhausted || layers.cpu_only {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
     if opts.captions {
         for o in crate::caption_overlays(seq, t, w, h) {
@@ -296,9 +367,9 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
     }
     if layers.exhausted {
-        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+        return fallback();
     }
-    layers.finish(w, h)
+    Ok(layers.finish(w, h))
 }
 
 /// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]) for
@@ -400,75 +471,135 @@ fn push_adjustment(sc: Scene, item: &TrackItem, out: &mut PlanStack) {
 
 /// Push the layers of every video track of the scene's sequence at its time, bottom track first
 /// (the sequence must be [`layered_at`] that time).
-fn push_tracks(sc: Scene, layers: &mut PlanStack) {
-    let Scene { project, seq, t, opts, .. } = sc;
+fn push_tracks(sc: Scene, layers: &mut PlanStack) -> Result<(), String> {
+    if layers.exhausted {
+        return Ok(());
+    }
+    let Scene { seq, t, opts, .. } = sc;
     let (w, h) = output_size(seq, opts.scale);
-    for tr in &seq.video_tracks {
-        if layers.exhausted {
-            return;
+    let active: Vec<&filmcraft_project::Track> = seq
+        .video_tracks
+        .iter()
+        .filter(|tr| tr.enabled && (tr.transitions.iter().any(|x| x.range().contains(t)) || tr.item_at(t).is_some_and(|i| i.enabled)))
+        .collect();
+    if active.len() <= 1 {
+        for tr in active {
+            if layers.exhausted {
+                return Ok(());
+            }
+            layers.append(push_one_track(sc, tr, w, h)?);
         }
-        if !tr.enabled {
-            continue;
+        return Ok(());
+    }
+    use rayon::prelude::*;
+    let ctx = filmcraft_media::cancel::Context::current();
+    let stacks: Vec<Result<PlanStack, String>> = active.into_par_iter().map(|tr| ctx.clone().run(|| push_one_track(sc, tr, w, h))).collect();
+    for s in stacks {
+        let s = s?;
+        if !layers.exhausted {
+            layers.append(s);
         }
-        if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
-            let p = trn.progress(t) as f32;
-            let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
-            let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
-            match trn.effect.effect.as_str() {
-                "push" => {
-                    let mut inputs = [Vec::new(), Vec::new()];
-                    for (slot, item) in inputs.iter_mut().zip([a, b]) {
-                        if let Some(item) = item {
-                            let mut input = PlanStack::default();
-                            push_item(sc, item, 1.0, Some(Blend::Normal), &mut input);
-                            let Some(input_layers) = input.into_layers(w, h) else {
-                                layers.exhausted = true;
-                                return;
-                            };
-                            *slot = input_layers;
-                        }
-                    }
-                    let progress = if trn.reverse {
-                        inputs.swap(0, 1);
-                        1.0 - p
-                    } else {
-                        p
-                    };
-                    layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
+    }
+    Ok(())
+}
+
+fn push_one_track(sc: Scene, tr: &filmcraft_project::Track, w: usize, h: usize) -> Result<PlanStack, String> {
+    let Scene { project, t, opts, .. } = sc;
+    let mut layers = PlanStack::default();
+    if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
+        // These dissolves are symmetric: Reverse (play B→A backwards) renders the same frames.
+        let p = trn.progress(t) as f32;
+        let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
+        let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
+        match trn.effect.effect.as_str() {
+            "push" => {
+                let eval_side = |item: Option<&TrackItem>| -> Result<Option<Vec<PlanLayer>>, String> {
+                    let Some(item) = item else { return Ok(Some(Vec::new())) };
+                    let mut input = PlanStack::default();
+                    push_item(sc, item, 1.0, Some(Blend::Normal), &mut input)?;
+                    if sc.strict_readback { input.try_into_layers(w, h) } else { Ok(input.into_layers(w, h)) }
+                };
+                let (res_a, res_b) = if a.is_some() && b.is_some() {
+                    let ctx = filmcraft_media::cancel::Context::current();
+                    let (ctx_a, ctx_b) = (ctx.clone(), ctx);
+                    rayon::join(|| ctx_a.run(|| eval_side(a)), || ctx_b.run(|| eval_side(b)))
+                } else {
+                    (eval_side(a), eval_side(b))
+                };
+                let (Some(la), Some(lb)) = (res_a?, res_b?) else {
+                    layers.exhausted = true;
+                    return Ok(layers);
+                };
+                let mut inputs = [la, lb];
+                let progress = if trn.reverse {
+                    inputs.swap(0, 1);
+                    1.0 - p
+                } else {
+                    p
+                };
+                layers.push_transition(inputs, trn.effect.clone(), progress, opts.scale);
+            }
+            "dip_to_black" | "dip_to_white" => {
+                let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+                layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
+                let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
+                if let Some(it) = it {
+                    push_item(sc, it, k, Some(Blend::Normal), &mut layers)?;
                 }
-                "dip_to_black" | "dip_to_white" => {
-                    let col = if trn.effect.effect == "dip_to_black" { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
-                    layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
-                    let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
-                    if let Some(it) = it {
-                        push_item(sc, it, k, Some(Blend::Normal), layers);
-                    }
-                }
-                _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+            }
+            _ => {
+                // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
+                let mut stack_a = PlanStack::default();
+                let mut stack_b = PlanStack::default();
+                if a.is_some() && b.is_some() {
+                    let ctx = filmcraft_media::cancel::Context::current();
+                    let (ctx_a, ctx_b) = (ctx.clone(), ctx);
+                    let (ra, rb) = rayon::join(
+                        || {
+                            ctx_a.run(|| -> Result<(), String> {
+                                if let Some(it) = a {
+                                    push_item(sc, it, 1.0, Some(Blend::Normal), &mut stack_a)?;
+                                }
+                                Ok(())
+                            })
+                        },
+                        || {
+                            ctx_b.run(|| -> Result<(), String> {
+                                if let Some(it) = b {
+                                    push_item(sc, it, p, Some(Blend::Normal), &mut stack_b)?;
+                                }
+                                Ok(())
+                            })
+                        },
+                    );
+                    ra?;
+                    rb?;
+                } else {
                     if let Some(it) = a {
-                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
+                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), &mut stack_a)?;
                     }
                     if let Some(it) = b {
-                        push_item(sc, it, p, Some(Blend::Normal), layers);
+                        push_item(sc, it, p, Some(Blend::Normal), &mut stack_b)?;
                     }
                 }
+                layers.append(stack_a);
+                layers.append(stack_b);
             }
-            continue;
         }
-        let Some(item) = tr.item_at(t) else { continue };
-        if !item.enabled {
-            continue;
-        }
-        if is_adjustment(project, item) {
-            if opts.effects {
-                push_adjustment(sc, item, layers);
-            }
-            continue;
-        }
-        push_item(sc, item, 1.0, None, layers);
+        return Ok(layers);
     }
+    let Some(item) = tr.item_at(t) else { return Ok(layers) };
+    if !item.enabled {
+        return Ok(layers);
+    }
+    if is_adjustment(project, item) {
+        if opts.effects {
+            push_adjustment(sc, item, &mut layers);
+        }
+        return Ok(layers);
+    }
+    push_item(sc, item, 1.0, None, &mut layers)?;
+    Ok(layers)
 }
 
 /// Whether a nested sequence can be drawn by pushing its own layers into the plan of the sequence
@@ -500,16 +631,17 @@ struct Scene<'a> {
     caps: DeviceCaps,
     sources: &'a dyn SourceProvider,
     nest: u32,
+    strict_readback: bool,
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
 /// the CPU reference mixes the clips and composites the result Normal, ignoring their modes.
 /// `nest` counts the multi-camera clips already followed to reach `item` (see
 /// [`crate::MAX_NEST_DEPTH`]).
-fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blend>, out: &mut PlanStack) {
-    let Scene { project, seq, t, opts, caps, sources, nest } = sc;
+fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blend>, out: &mut PlanStack) -> Result<(), String> {
+    let Scene { project, seq, t, opts, caps, sources, nest, strict_readback } = sc;
     if out.exhausted {
-        return;
+        return Ok(());
     }
     // frame time (`ft`) vs. effect time (`mt`): they differ inside a frame hold without Hold Filters
     let ft = item.source_time_at(t);
@@ -531,9 +663,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, inner, extra_opacity * op, Some(bl), out);
+            push_item(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, inner, extra_opacity * op, Some(bl), out)?;
         }
-        return;
+        return Ok(());
     }
     // A nested sequence that is only shown (no effects, untransformed, fully opaque, blending
     // Normal) contributes its own layers: the compositor draws them like the clips of this
@@ -548,9 +680,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
     {
-        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out);
+        push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out)?;
         if out.exhausted {
-            return;
+            return Ok(());
         }
         let (w, h) = output_size(nested, opts.scale);
         for o in crate::caption_overlays(nested, ft, w, h) {
@@ -561,31 +693,31 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 Blend::Normal,
             ));
         }
-        return;
+        return Ok(());
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
     if !(opts.effects && item.has_standard_effects() || item.has_opacity_masks())
         && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
     {
-        let Some(size) = crate::source_size(project, item.item) else { return };
+        let Some(size) = crate::source_size(project, item.item) else { return Ok(()) };
         let (w, h) = output_size(seq, opts.scale);
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, None, mt));
         if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(item, mt, size, &m, w, h) {
             out.push(PlanLayer::new(cpu_frame(img), Affine::translate(x as f64, y as f64), op * extra_opacity, bl));
         }
-        return;
+        return Ok(());
     }
     if let Some(chain) = gpu_chain(project, item, opts) {
-        let Some(src) = sources.source(item.item) else { return };
-        let Some(size) = crate::source_size(project, item.item) else { return };
+        let Some(src) = sources.source(item.item) else { return Ok(()) };
+        let Some(size) = crate::source_size(project, item.item) else { return Ok(()) };
         let motion = motion_matrix(seq, item, size, crate::source_par(project, item.item), mt);
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let time = crate::video_source_time(item, t, src.info().frame_rate());
         // The GPU turns the frame as decoded, the container's display rotation folded into the
         // layer's matrix or its effect stage: turning a 4K frame on the CPU is too slow to play (#3467).
-        let Ok((frame, turns)) = src.video_frame_unturned(FrameRequest { time, scale: want }) else { return };
+        let Ok((frame, turns)) = src.video_frame_unturned(FrameRequest { time, scale: want }) else { return Ok(()) };
         let upright = |f: &VideoFrame| if turns % 2 == 1 { (f.height, f.width) } else { (f.width, f.height) };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
@@ -623,7 +755,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
                 let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, turns, ops };
                 out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
-                return;
+                return Ok(());
             }
         } else if plain {
             // Draft playback at reduced resolution: hand over planes box-filtered to the size
@@ -641,14 +773,20 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 .then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale))
                 .then_apply(&quarter_turns(turns, frame.width as f64, frame.height as f64));
             out.push(PlanLayer { input, ..PlanLayer::new(frame, m, op * extra_opacity, bl) });
-            return;
+            return Ok(());
         }
     }
     // CPU-rendered layer (standard effects): drawn by the GPU as a pre-rendered canvas image.
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
-    if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
+    let item_res = if strict_readback {
+        crate::try_item_layer(project, seq, item, t, opts, sources, &tc)?
+    } else {
+        crate::item_layer(project, seq, item, t, opts, sources, &tc)
+    };
+    if let Some((img, op2, _)) = item_res {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
     }
+    Ok(())
 }
 
 /// Maps a `w`×`h` frame's pixels to the frame turned clockwise by `q` quarter turns, as
@@ -672,6 +810,11 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
     effect_image_with(frame, fx, None)
 }
 
+/// [`effect_image`] returning `Err` if a GPU-resident source fails CPU readback.
+pub fn try_effect_image(frame: &VideoFrame, fx: &LayerFx) -> Result<crate::Image, String> {
+    try_effect_image_with(frame, fx, None)
+}
+
 /// [`effect_image`] of a colour-managed layer ([`PlanLayer::input`]).
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
     let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
@@ -681,21 +824,40 @@ pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcr
     img
 }
 
+/// [`effect_image_with`] returning `Err` if a GPU-resident source fails CPU readback.
+pub fn try_effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> Result<crate::Image, String> {
+    let mut img = turned(try_linear_image(frame, fx.decimation.max(1) as usize, input)?, fx.turns);
+    for op in &fx.ops {
+        op.apply(&mut img);
+    }
+    Ok(img)
+}
+
 /// Execute a plan on the CPU (reference for the GPU compositor).
 pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
+    execute_cpu_inner(plan, false).unwrap_or_else(|_| crate::Image::new(1, 1))
+}
+
+/// [`execute_cpu`] returning `Err` if any GPU-resident layer fails CPU readback instead of
+/// substituting transparent pixels.
+pub fn try_execute_cpu(plan: &FramePlan) -> Result<crate::Image, String> {
+    execute_cpu_inner(plan, true)
+}
+
+fn execute_cpu_inner(plan: &FramePlan, strict_readback: bool) -> Result<crate::Image, String> {
     match plan {
-        FramePlan::Image(img) => img.clone(),
+        FramePlan::Image(img) => Ok(img.clone()),
         FramePlan::Composite { width, height, steps } => {
             let mut canvas = crate::Image::new(*width, *height);
             for step in steps {
                 match step {
-                    PlanStep::Layers(layers) => execute_layers(&mut canvas, layers),
+                    PlanStep::Layers(layers) => execute_layers_inner(&mut canvas, layers, strict_readback)?,
                     PlanStep::Transition { inputs, effect, progress, scale } => {
-                        let [a, b] = inputs.each_ref().map(|layers| {
-                            let mut input = crate::Image::new(*width, *height);
-                            execute_layers(&mut input, layers);
-                            input
-                        });
+                        let [la, lb] = inputs;
+                        let mut a = crate::Image::new(*width, *height);
+                        execute_layers_inner(&mut a, la, strict_readback)?;
+                        let mut b = crate::Image::new(*width, *height);
+                        execute_layers_inner(&mut b, lb, strict_readback)?;
                         let mixed = crate::transitions::apply_scaled(effect, &a, &b, *progress, *scale);
                         crate::blend::composite(&mut canvas, &mixed, 1.0, Blend::Normal);
                     }
@@ -706,12 +868,12 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                     }
                 }
             }
-            canvas
+            Ok(canvas)
         }
         FramePlan::Layers { width, height, layers } => {
             let mut canvas = crate::Image::new(*width, *height);
-            execute_layers(&mut canvas, layers);
-            canvas
+            execute_layers_inner(&mut canvas, layers, strict_readback)?;
+            Ok(canvas)
         }
     }
 }
@@ -725,6 +887,13 @@ fn linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::In
         img.map_rgb(|c, _, _| t.apply(c));
     }
     img
+}
+
+fn try_linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::InputTransform>) -> Result<crate::Image, String> {
+    if let Some(cpu) = frame.try_materialize_cpu()? {
+        return Ok(linear_image(&cpu, n, input));
+    }
+    Ok(linear_image(frame, n, input))
 }
 
 /// `img` turned clockwise by `q` quarter turns, as [`VideoFrame::rotated`] turns a frame.
@@ -747,12 +916,14 @@ fn turned(img: crate::Image, q: u8) -> crate::Image {
     crate::Image { w: ow, h: oh, px }
 }
 
-fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
+fn execute_layers_inner(canvas: &mut crate::Image, layers: &[PlanLayer], strict_readback: bool) -> Result<(), String> {
     let (width, height) = (canvas.w, canvas.h);
     for l in layers {
-        let src = match &l.fx {
-            Some(fx) => effect_image_with(&l.frame, fx, l.input.as_deref()),
-            None => linear_image(&l.frame, 1, l.input.as_deref()),
+        let src = match (&l.fx, strict_readback) {
+            (Some(fx), true) => try_effect_image_with(&l.frame, fx, l.input.as_deref())?,
+            (Some(fx), false) => effect_image_with(&l.frame, fx, l.input.as_deref()),
+            (None, true) => try_linear_image(&l.frame, 1, l.input.as_deref())?,
+            (None, false) => linear_image(&l.frame, 1, l.input.as_deref()),
         };
         let placed = if l.matrix == Affine::scale(width as f64, height as f64) && src.w == 1 && src.h == 1 {
             crate::Image::filled(width, height, src.get(0, 0))
@@ -761,6 +932,7 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
         };
         crate::blend::composite(canvas, &placed, l.opacity, l.blend);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -801,6 +973,50 @@ mod tests {
         let got = execute_cpu(&FramePlan::Layers { width: 1, height: 1, layers });
         assert_eq!(got.px, expected.px);
         assert!(got.px.iter().any(|v| *v != 0.0));
+    }
+
+    #[test]
+    fn try_into_layers_propagates_readback_failure_on_composite_transition_input() {
+        #[derive(Debug)]
+        struct FailingGpuSurface;
+        impl filmcraft_frame::GpuSurface for FailingGpuSurface {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn id(&self) -> usize {
+                0xBAD_C011
+            }
+            fn gpu_bytes(&self) -> u64 {
+                4
+            }
+            fn bits(&self) -> u32 {
+                8
+            }
+            fn chroma(&self) -> filmcraft_frame::Chroma {
+                filmcraft_frame::Chroma::C444
+            }
+            fn to_cpu(&self) -> Result<filmcraft_frame::PixelData, String> {
+                Err("synthetic into_layers readback failure".to_string())
+            }
+        }
+        let frame = Arc::new(VideoFrame {
+            width: 1,
+            height: 1,
+            data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        });
+        let steps = vec![PlanStep::Transition {
+            inputs: [vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)], vec![]],
+            effect: filmcraft_project::find_effect("push").unwrap().instance(),
+            progress: 0.0,
+            scale: 1.0,
+        }];
+        let err = PlanStack { steps: steps.clone(), exhausted: false, cpu_only: false, layers: 1 }.try_into_layers(1, 1).err();
+        assert!(err.as_deref().is_some_and(|m| m.contains("synthetic into_layers readback failure")), "unexpected result: {err:?}");
+        // Non-strict preview path preserves infallible flattening behaviour.
+        assert!(PlanStack { steps, exhausted: false, cpu_only: false, layers: 1 }.into_layers(1, 1).is_some());
     }
 
     #[test]
