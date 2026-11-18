@@ -160,8 +160,26 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let grow = outline.ceil() + 1.0;
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
-    let by0 = (top - grow).floor();
-    let by1 = (top + block_h + grow).ceil();
+    let mut by0 = (top - grow).floor();
+    let mut by1 = (top + block_h + grow).ceil();
+    let line_top = by0.clamp(0.0, h as f32);
+    let stroke_pad = outline.ceil();
+    let laid_out: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let lt = line_top + lh * i as f32;
+            let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
+            let line = layout(line, &ts, &ParagraphStyle::default());
+            let transform = render::at(xs[i], baseline.round());
+            // The background follows line spacing, while accents and descenders can extend past it.
+            if let Some((_, y0, _, y1)) = render::layout_path(&line, &transform).bounds() {
+                by0 = by0.min(y0.floor() - stroke_pad);
+                by1 = by1.max(y1.ceil() + stroke_pad);
+            }
+            (line, transform, lt)
+        })
+        .collect();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
     // only the visible intersection; `draw` receives the original coordinates and clips into it.
     let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
@@ -176,8 +194,8 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     }
     let mut cover = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
-    for (i, line) in lines.iter().enumerate() {
-        let lt = top + lh * i as f32;
+    for (i, (line, transform, lt)) in laid_out.iter().enumerate() {
+        let lt = *lt;
         if style.background && style.background_color[3] > 0 {
             let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
             let (y0, y1) = (lt, lt + lh);
@@ -190,10 +208,8 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
                 }
             }
         }
-        let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
-        let l = layout(line, &ts, &ParagraphStyle::default());
         let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
-        render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
+        render::draw(line, transform, &mut m, (ox, oy));
         cover = m.a;
     }
     let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
@@ -595,10 +611,51 @@ mod tests {
     }
 
     #[test]
-    fn default_style_renders_like_the_reference() {
+    fn reference_pixels_are_preserved_when_the_overlay_grows() {
         for (c, st, w, h) in reference_cases() {
-            assert_eq!(render_caption(&c, &st, w, h), reference_render_caption(&c, &st, w, h), "{:?} {w}x{h} {st:?}", c.text);
+            let actual = render_caption(&c, &st, w, h).expect("caption overlay");
+            let reference = reference_render_caption(&c, &st, w, h).expect("reference caption overlay");
+            assert_eq!((actual.x, actual.w), (reference.x, reference.w), "{:?} {w}x{h} {st:?}", c.text);
+            assert!(actual.y <= reference.y);
+            let first_row = (reference.y - actual.y) as usize;
+            assert!(first_row + reference.h <= actual.h);
+            let stride = actual.w * 4;
+            let original_window = &actual.px[first_row * stride..(first_row + reference.h) * stride];
+            assert!(original_window == reference.px, "pixels changed inside the previous overlay for {:?} {w}x{h} {st:?}", c.text);
         }
+    }
+
+    #[test]
+    fn caption_background_does_not_clip_accented_glyphs_or_descenders() {
+        let (w, h) = (1000, 360);
+        let text = "Ấp Ệ Ỗ gjpqy";
+        let style = CaptionStyle {
+            size: 240.0,
+            font: "Inter".into(),
+            font_style: "Bold".into(),
+            anchor: CaptionAnchor::Middle,
+            line_spacing: 0.8,
+            outline: 0.0,
+            background: true,
+            background_color: [0, 0, 0, 255],
+            color: [255, 255, 255, 255],
+            ..Default::default()
+        };
+        let px = 80.0;
+        let ts = caption_style(&style.font, &style.font_style, px);
+        let laid_out = layout(text, &ts, &ParagraphStyle::default());
+        let metrics = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
+        let lh = px * style.line_spacing;
+        let top = ((h as f32 - lh) / 2.0).round() - 1.0;
+        let baseline = (top + (lh - (metrics.ascent + metrics.descent)) / 2.0 + metrics.ascent).round();
+        let x = (w as f32 - filmcraft_text::measure(text, &ts)) / 2.0;
+        let mut full_frame = filmcraft_text::Mask { w, h, a: vec![0.0; w * h] };
+        render::draw(&laid_out, &render::at(x, baseline), &mut full_frame, (0, 0));
+        let expected_ink = full_frame.a.iter().sum::<f32>();
+
+        let overlay = render_caption(&cap(text), &style, w, h).expect("caption overlay");
+        let rendered_ink = overlay.px.chunks_exact(4).map(|pixel| pixel[0]).sum::<f32>();
+        assert!((rendered_ink - expected_ink).abs() < 0.05, "overlay kept {rendered_ink} of {expected_ink} glyph coverage");
     }
 
     #[test]
