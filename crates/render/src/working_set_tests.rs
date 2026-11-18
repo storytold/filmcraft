@@ -142,3 +142,71 @@ fn an_effect_on_a_nested_sequence_counts_its_working_copy() {
     // the blur works on a copy of the nested canvas, as it does on a media layer
     assert_eq!(at(true), canvas + 2 * canvas + canvas);
 }
+
+#[test]
+fn a_frame_blend_counts_the_second_picture_and_optical_flow_its_frame() {
+    let at = |mode: filmcraft_project::TimeInterpolation| {
+        let (mut p, s) = project((3840, 2160), 50.0);
+        let ti = &mut p.sequence_mut(s).unwrap().video_tracks[0].items[0];
+        // half speed: the second output frame falls halfway between two source frames
+        ti.speed = 0.5;
+        ti.time_interpolation = mode;
+        frame_working_set(&p, s, FPS.tick_of(1), RenderOptions::default())
+    };
+    use filmcraft_project::TimeInterpolation as Ti;
+    let (canvas, decoded, layer) = (img(1080, 1920), 3840 * 2160 * 4, img(1920, 1080));
+    assert_eq!(at(Ti::FrameSampling), canvas + decoded + layer + canvas);
+    // both decoded pictures and both converted ones
+    assert_eq!(at(Ti::FrameBlending), canvas + 2 * decoded + 2 * layer + canvas);
+    // and the in-between frame Optical Flow draws while both are alive
+    assert_eq!(at(Ti::OpticalFlow), canvas + 2 * decoded + 3 * layer + canvas);
+}
+
+#[test]
+fn a_multicam_clip_counts_its_angle_even_on_a_disabled_track() {
+    let at = |multicam: Option<u32>| {
+        let (mut p, first) = project((3840, 2160), 100.0);
+        let uhd = p.sequence(first).unwrap().video_tracks[0].items[0].clone();
+        let settings = SequenceSettings { width: 1080, height: 1920, frame_rate: FPS, ..Default::default() };
+        // angle 1 is a 4K clip on a disabled track
+        let inner = p.new_sequence("inner", settings.clone(), 2, 0, None);
+        let iseq = p.sequence_mut(inner).unwrap();
+        iseq.video_tracks[1].items.push(uhd);
+        iseq.video_tracks[1].enabled = false;
+        let outer = p.new_sequence("outer", settings, 1, 0, None);
+        let mut ti = p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(60)), FPS).unwrap();
+        ti.multicam = multicam.map(|angle| filmcraft_project::multicam::MulticamSel { enabled: true, angle });
+        p.sequence_mut(outer).unwrap().video_tracks[0].items.push(ti);
+        frame_working_set(&p, outer, Tick::ZERO, RenderOptions::default())
+    };
+    let canvas = img(1080, 1920);
+    let clip = 3840 * 2160 * 4 + img(3840, 2160) + canvas;
+    // a plain nest leaves the disabled track out: the outer canvas, the nested one and its placement
+    assert_eq!(at(None), canvas + canvas + canvas);
+    // the multi-camera clip draws angle 1 whether or not its track is enabled
+    assert_eq!(at(Some(1)), canvas + (canvas + clip) + canvas);
+    // angle 0 is the empty track, and an angle with no track draws an empty nested canvas
+    assert_eq!(at(Some(0)), canvas + canvas + canvas);
+    assert_eq!(at(Some(7)), canvas + canvas + canvas);
+}
+
+#[test]
+fn a_graphic_with_effects_counts_its_working_copy() {
+    let at = |effect: bool| {
+        let (mut p, s) = project((3840, 2160), 100.0);
+        let g = p.add_item("G", Label::Rose, ItemKind::Graphic { width: 1080, height: 1920, rate: FPS }, None);
+        let mut ti = p.make_track_item(g, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(60)), FPS).unwrap();
+        if effect {
+            ti.effects.push(filmcraft_project::effect::find_effect("gaussian_blur").unwrap().instance());
+        }
+        let seq = p.sequence_mut(s).unwrap();
+        seq.video_tracks[0].items.clear();
+        seq.video_tracks[0].items.push(ti);
+        frame_working_set(&p, s, Tick::ZERO, RenderOptions::default())
+    };
+    let canvas = img(1080, 1920);
+    // the graphic at its layer size and its placement
+    assert_eq!(at(false), canvas + canvas + canvas);
+    // the blur works on a copy of the rasterised graphic, as it does on a media layer
+    assert_eq!(at(true), canvas + 2 * canvas + canvas);
+}

@@ -13,8 +13,12 @@
 //! alive besides the canvas). A layer of media costs its decoded picture, the float image at the
 //! decimation the renderer will choose (`decimation`), one working copy of it when something works
 //! on it (effects, opacity masks, the second picture of a frame blend) and the layer placed on an
-//! output-sized image unless it already is one. It is an upper bound for the common cases, not an
-//! exact count: the decoder may hand back an already reduced picture.
+//! output-sized image unless it already is one. A frame blend also holds the second decoded picture,
+//! and Optical Flow the frame it synthesises while both pictures are alive. A graphic drawn with
+//! effects or masks is rasterised at its layer size and gets the same working copy. It is an upper
+//! bound for the common cases, not an exact count: the decoder may hand back an already reduced
+//! picture, and a few effects hold more than one copy at their peak (a Gaussian blur's vertical pass
+//! holds two transposed ones).
 
 use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, TrackItem};
 use filmcraft_time::Tick;
@@ -39,17 +43,22 @@ pub fn image_bytes(w: usize, h: usize) -> u64 {
 /// The estimated peak bytes of a CPU render of sequence `seq_id` at timeline `t` (see the module
 /// docs). 0 when there is no such sequence.
 pub fn frame_working_set(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions) -> u64 {
-    project.sequence(seq_id).map_or(0, |seq| sequence_bytes(project, seq, t, opts))
+    project.sequence(seq_id).map_or(0, |seq| sequence_bytes(project, seq, t, opts, None))
 }
 
-fn sequence_bytes(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions) -> u64 {
+/// `seq_canvas` estimated: every enabled track, or with `only` that one track, enabled or not (a
+/// multi-camera clip's angle).
+fn sequence_bytes(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, only: Option<usize>) -> u64 {
     let (w, h) = output_size(seq, opts.scale);
     let canvas = image_bytes(w, h);
     if opts.depth > MAX_NEST_DEPTH {
         return canvas;
     }
     let mut peak = 0u64;
-    for track in seq.video_tracks.iter().filter(|tr| tr.enabled) {
+    for (ti, track) in seq.video_tracks.iter().enumerate() {
+        if only.is_some_and(|o| o != ti) || (!track.enabled && only.is_none()) {
+            continue;
+        }
         if let Some(tr) = track.transitions.iter().find(|tr| tr.range().contains(t)) {
             // the picture below, both sides on output-sized images and their mix, besides the
             // larger side's own layer while it is drawn
@@ -81,30 +90,45 @@ fn item_bytes(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts
             let layer = image_bytes(lw, lh);
             let decoded = u64::from(src.0).saturating_mul(u64::from(src.1)).saturating_mul(DECODED_PX);
             // a working copy only for effects, opacity masks or a frame blend's second picture
-            let worked = (opts.effects && item.has_standard_effects())
-                || item.has_opacity_masks()
-                || interpolation_blend(item, t, pi.frame_rate(), seq.settings.frame_rate).is_some();
+            let blend = interpolation_blend(item, t, pi.frame_rate(), seq.settings.frame_rate).is_some();
+            let worked = (opts.effects && item.has_standard_effects()) || item.has_opacity_masks() || blend;
             let copy = if worked { layer } else { 0 };
+            // a frame blend also decodes the second picture; Optical Flow draws its frame while
+            // both pictures are alive (`media_image`)
+            let flow = if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow { layer } else { 0 };
+            let blended = if blend { decoded.saturating_add(flow) } else { 0 };
             // a layer that is the output already, placed as it is, is mixed (or kept) as it is
             let px = lw as f64 / f64::from(src.0.max(1));
             let s = f64::from(opts.scale);
             let m = Affine::scale(s, s).then_apply(&motion).then_apply(&Affine::scale(1.0 / px, 1.0 / px));
             let placed = if (lw, lh) == (w, h) && identity_placement(&m) { 0 } else { placed };
-            decoded.saturating_add(layer).saturating_add(copy).saturating_add(placed)
+            decoded.saturating_add(layer).saturating_add(copy).saturating_add(blended).saturating_add(placed)
         }
         ItemKind::Sequence(nested) => {
             let sub = RenderOptions { scale: want, depth: opts.depth.saturating_add(1), ..opts };
             // The nested render hands back its canvas as the layer. Its effects then work on a copy
             // of that canvas, after everything else the nested render held has gone back to the pool.
-            let rendered = sequence_bytes(project, nested, item.source_time_at(t), sub);
             let (nw, nh) = output_size(nested, want);
+            let ft = item.source_time_at(t);
+            // a multi-camera clip draws its angle's track only, or nothing (`base_layer`)
+            let rendered = match item.multicam_angle(nested) {
+                Some(angle) => match nested.angle_video_track_index(angle) {
+                    Some(ti) => sequence_bytes(project, nested, ft, sub, Some(ti)),
+                    None => image_bytes(nw, nh),
+                },
+                None => sequence_bytes(project, nested, ft, sub, None),
+            };
             let worked = (opts.effects && item.has_standard_effects()) || item.has_opacity_masks();
             let with_copy = if worked { image_bytes(nw, nh).saturating_mul(2) } else { 0 };
             rendered.max(with_copy).saturating_add(placed)
         }
         ItemKind::Graphic { .. } => {
+            // without effects or masks the vectors are drawn straight onto the output-sized layer
+            // (`item_layer_ex`); with them, rasterised at the layer size and worked on like media
             let (gw, gh) = (((sw as f32 * want).ceil() as usize).max(1), ((sh as f32 * want).ceil() as usize).max(1));
-            image_bytes(gw, gh).saturating_add(placed)
+            let worked = (opts.effects && item.has_standard_effects()) || item.has_opacity_masks();
+            let copy = if worked { image_bytes(gw, gh) } else { 0 };
+            image_bytes(gw, gh).saturating_add(copy).saturating_add(placed)
         }
         // the picture below, its adjusted copy and the opacity weight, all output-sized
         ItemKind::AdjustmentLayer { .. } => placed.saturating_mul(3),
