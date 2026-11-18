@@ -1672,7 +1672,7 @@ mod tests {
             .enumerate()
             .filter(|(_, it)| it.id.starts_with("file.openRecent.") || it.id == "file.clearRecent")
             .map(|(i, _)| i)
-            .last()
+            .next_back()
             .map_or(open_at + 1, |last_recent| last_recent + 1);
         assert_eq!(cloud_open, expect_at, "Open from cloud… follows Open Recent with nothing between");
         assert_eq!(cloud_save, cloud_open + 1, "Save as to cloud… immediately follows Open from cloud…");
