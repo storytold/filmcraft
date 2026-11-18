@@ -92,6 +92,16 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   the caller's previous frame is that very picture. Vectors come back on the 4×4 grid in S10.5 fixed
   point with the per-block cost. The ABI checks in `nvof/abi_tests.rs` were worked out from the
   headers' field lists, not printed by a C compiler (see that file).
+- **Windows: NVIDIA NGX DLSS Neural Reconstruction** (`ngx/`), temporal neural reconstruction for
+  Clip ▸ Video Options ▸ Optical Flow Track ▸ DLSS Neural Enhance (`clip.opticalFlowOverlay.dlssEnhance`).
+  The driver's `_nvngx.dll` (from `System32\DriverStore\FileRepository\nv_dispi.inf_*`) and the
+  system's installed OTA DLSS model binary (`ProgramData\NVIDIA\NGX\models\dlss\versions\*\files\*_E658700.bin`)
+  are loaded at run time on a Direct3D 11 device; nothing is bundled or required at build time.
+  `register()` installs the factory behind `filmcraft_render::flow::register_neural_enhancer`;
+  `NeuralEnhancer` opens a DLAA (`NVSDK_NGX_PerfQuality_Value_DLAA`) session with Preset K (`11`,
+  Transformer model), feeds the linear `RGBA16F` frame and the hardware `NVOFA` motion vectors
+  (`DXGI_FORMAT_R16G16_FLOAT`), and falls back to motion-compensated CPU temporal fusion
+  (`fuse_temporal_cpu`) when NGX or an RTX GPU is absent.
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the

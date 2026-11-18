@@ -92,6 +92,37 @@ fn encode(v: f32) -> f32 {
     return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
 
+fn src_rgb_clamped(x: i32, y: i32) -> vec3<f32> {
+    let cx = clamp(x, 0, i32(p.out_w) - 1);
+    let cy = clamp(y, 0, i32(p.out_h) - 1);
+    return textureLoad(src, vec2<i32>(cx, cy), 0).rgb;
+}
+
+// `dlss_enhance_pixel`
+fn dlss_enhance_pixel(x: i32, y: i32, conf: f32, act: f32) -> vec3<f32> {
+    let c = src_rgb_clamped(x, y);
+    let luma_c = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    var sum = c * 0.25;
+    var w_sum = 0.25;
+    for (var oy: i32 = -1; oy <= 1; oy = oy + 1) {
+        for (var ox: i32 = -1; ox <= 1; ox = ox + 1) {
+            if ox == 0 && oy == 0 {
+                continue;
+            }
+            let ws = select(0.10, 0.15, ox == 0 || oy == 0);
+            let n = src_rgb_clamped(x + ox, y + oy);
+            let luma_n = 0.2126 * n.r + 0.7152 * n.g + 0.0722 * n.b;
+            let dl = luma_n - luma_c;
+            let w = ws / (1.0 + dl * dl * 36.0);
+            sum = sum + n * w;
+            w_sum = w_sum + w;
+        }
+    }
+    let inv = 1.0 / w_sum;
+    let clarity = 0.45 + 0.40 * conf * (1.0 - 0.35 * act);
+    return clamp(c + (c - sum * inv) * clarity, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= p.out_w || id.y >= p.out_h {
@@ -115,6 +146,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let b = select(0.5, conf, act > 0.0);
         rgb = vec3<f32>(u, v, b);
         encoded = true;
+    } else if p.mode == 3u {
+        rgb = dlss_enhance_pixel(i32(id.x), i32(id.y), conf, act);
     } else if act > 0.0 {
         let angle = atan2(dy, dx);
         if p.mode == 0u {

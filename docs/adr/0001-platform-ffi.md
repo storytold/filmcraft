@@ -68,6 +68,7 @@ remain in effect; implementation differences are not exceptions to those rules.
 | Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
 | Windows / 64-bit Linux | [`nvof::session`](../../crates/platform/src/nvof/session.rs) | NVIDIA Optical Flow (NVOFA) and CUDA driver loading, session and buffer setup, pitched uploads / readback and `nvOFExecute`. |
+| Windows | [`ngx::session`](../../crates/platform/src/ngx/session.rs) | NVIDIA NGX Direct3D 11 (`_nvngx.dll` / OTA `nvngx_dlss.dll`) loading, D3D11 texture uploads/readback, and `NVSDK_NGX_D3D11_EvaluateFeature` (DLAA Preset K Transformer). |
 | Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
 | Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
 

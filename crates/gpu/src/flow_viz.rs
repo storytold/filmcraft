@@ -230,8 +230,8 @@ impl GpuFlowViz {
             return Ok(Vec::new());
         }
         let n = curr.w.saturating_mul(curr.h);
-        let glow = mode == FlowVizMode::KineticGlow;
-        if glow && curr.px.len() != n.saturating_mul(4) {
+        let needs_src = matches!(mode, FlowVizMode::KineticGlow | FlowVizMode::DlssEnhance);
+        if needs_src && curr.px.len() != n.saturating_mul(4) {
             return Err(format!("the {}x{} frame holds {} values", curr.w, curr.h, curr.px.len()));
         }
         let scale = if max_motion_px.is_finite() { max_motion_px.clamp(0.5, 512.0) } else { 16.0 };
@@ -239,6 +239,7 @@ impl GpuFlowViz {
             FlowVizMode::HsvWheel => 0,
             FlowVizMode::MotionVectors => 1,
             FlowVizMode::KineticGlow => 2,
+            FlowVizMode::DlssEnhance => 3,
         };
         let (gw, gh, fw, fh, cells) = cell_bytes(field);
         let mut params = Vec::with_capacity(PARAMS_BYTES);
@@ -262,7 +263,7 @@ impl GpuFlowViz {
         };
         self.queue.write_buffer(&self.params, 0, &params);
         self.queue.write_buffer(&cells_buf, 0, &cells);
-        if glow {
+        if needs_src {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &src, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 &rgba_bytes(&curr.px),
@@ -270,7 +271,7 @@ impl GpuFlowViz {
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
         }
-        let src_view = if glow { self.sized.as_ref().map(|s| s.src_view.clone()) } else { None };
+        let src_view = if needs_src { self.sized.as_ref().map(|s| s.src_view.clone()) } else { None };
         let src_view = src_view.unwrap_or_else(|| self.blank_view.clone());
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("flow-viz"),

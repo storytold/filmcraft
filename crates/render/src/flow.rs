@@ -792,6 +792,141 @@ impl Default for FlowVizEncoder {
     }
 }
 
+/// Stateful hardware neural frame-reconstruction session (e.g. NVIDIA NGX DLSS Preset K
+/// Transformer on Direct3D 11) for a fixed `(width, height)` frame size.
+pub trait NeuralSession: Send {
+    /// Backend name (e.g. `"NVIDIA NGX DLSS (Preset K)"`).
+    fn backend(&self) -> &'static str;
+
+    /// Reconstruct / temporally anti-alias `curr` using the dense optical-flow field `field`
+    /// (`prev -> curr`) and temporal history when `sequential` is `true`.
+    fn enhance(&mut self, curr: &Image, field: &FlowField, sequential: bool) -> Result<Image, String>;
+}
+
+/// Factory registered by `filmcraft-platform` to open hardware neural enhancement sessions.
+pub type NeuralSessionFactory = fn(width: u32, height: u32) -> Result<Box<dyn NeuralSession>, String>;
+
+fn neural_factory_slot() -> &'static RwLock<Option<NeuralSessionFactory>> {
+    static SLOT: OnceLock<RwLock<Option<NeuralSessionFactory>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Register the platform's hardware neural-enhancement session factory (called by `filmcraft_platform::register`).
+pub fn register_neural_enhancer(factory: NeuralSessionFactory) {
+    *neural_factory_slot().write().unwrap_or_else(PoisonError::into_inner) = Some(factory);
+}
+
+/// Whether a hardware neural-enhancement factory is registered.
+pub fn neural_enhancer_registered() -> bool {
+    neural_factory_slot().read().unwrap_or_else(PoisonError::into_inner).is_some()
+}
+
+/// Name [`NeuralEnhancer::backend`] reports for the motion-compensated CPU temporal fallback.
+pub const CPU_NEURAL_BACKEND: &str = "Motion-Compensated Temporal";
+
+/// Motion-compensated temporal reconstruction on the CPU (the reference fallback when hardware
+/// NGX DLSS is absent or declines the frame size): warps `prev` along `field` (`prev -> curr`)
+/// weighted by flow confidence and photometric agreement so temporal grain is suppressed without
+/// ghosting across disocclusions or brightness changes.
+pub fn fuse_temporal_cpu(prev: Option<&Image>, curr: &Image, field: &FlowField) -> Image {
+    let (w, h) = (curr.w, curr.h);
+    let n = w.saturating_mul(h).saturating_mul(4);
+    let Some(p) = prev.filter(|p| (p.w, p.h) == (w, h) && p.px.len() == n && curr.px.len() == n && w > 0 && h > 0) else {
+        return curr.clone();
+    };
+    let mut out = Image::new(w, h);
+    out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        for (x, dst) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let i = (y * w + x) * 4;
+            let Some(c) = curr.px.get(i..i + 4) else { continue };
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let ([dx, dy], conf) = field.sample_px(px, py);
+            let (dx, dy) = (if dx.is_finite() { dx } else { 0.0 }, if dy.is_finite() { dy } else { 0.0 });
+            let warped = p.sample_bilinear_clamped(px - dx, py - dy);
+            let lc = luma([c[0], c[1], c[2], c[3]]);
+            let lw = luma(warped);
+            let diff = (lc - lw).abs();
+            let photo_agree = if diff.is_finite() { 1.0 / (1.0 + (diff / 0.06).powi(2)) } else { 0.0 };
+            let blend = (0.28 * conf.clamp(0.0, 1.0) * photo_agree).clamp(0.0, 0.35);
+            for k in 0..3 {
+                let ck = if c[k].is_finite() { c[k] } else { 0.0 };
+                let wk = if warped[k].is_finite() { warped[k] } else { ck };
+                dst[k] = ck + (wk - ck) * blend;
+            }
+            dst[3] = if c[3].is_finite() { c[3] } else { 1.0 };
+        }
+    });
+    out
+}
+
+/// Stateful neural frame enhancer that prefers the registered hardware engine (NVIDIA NGX DLSS
+/// Preset K Transformer) and transparently falls back to [`fuse_temporal_cpu`] if hardware is
+/// absent, declines the frame size, or fails mid-clip.
+pub struct NeuralEnhancer {
+    width: usize,
+    height: usize,
+    hw: Option<Box<dyn NeuralSession>>,
+    has_history: bool,
+    fallback_reason: Option<String>,
+}
+
+impl NeuralEnhancer {
+    /// Open a neural enhancer for frames of `width` × `height`.
+    pub fn new(width: usize, height: usize) -> Self {
+        let factory = *neural_factory_slot().read().unwrap_or_else(PoisonError::into_inner);
+        let (hw, fallback_reason) = match (factory, u32::try_from(width), u32::try_from(height)) {
+            (None, _, _) => (None, None),
+            (Some(f), Ok(w), Ok(h)) => match f(w, h) {
+                Ok(s) => (Some(s), None),
+                Err(e) => (None, Some(e)),
+            },
+            (Some(_), _, _) => (None, Some(format!("frame size {width}x{height} is too large for hardware neural enhancement"))),
+        };
+        Self { width, height, hw, has_history: false, fallback_reason }
+    }
+
+    /// Whether this enhancer is backed by a hardware neural session.
+    pub fn is_hardware(&self) -> bool {
+        self.hw.is_some()
+    }
+
+    /// Name of the active backend (`"NVIDIA NGX DLSS (Preset K)"` or [`CPU_NEURAL_BACKEND`]).
+    pub fn backend(&self) -> &'static str {
+        self.hw.as_ref().map_or(CPU_NEURAL_BACKEND, |s| s.backend())
+    }
+
+    /// Why a registered hardware engine is not used, if it is not.
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.fallback_reason.as_deref()
+    }
+
+    /// Reconstruct `curr` with `prev` and `field`, returning `(reconstructed_image, used_hardware)`.
+    pub fn enhance(&mut self, prev: Option<&Image>, curr: &Image, field: &FlowField) -> (Image, bool) {
+        if curr.w != self.width || curr.h != self.height {
+            self.has_history = false;
+            return (fuse_temporal_cpu(prev, curr, field), false);
+        }
+        if let Some(hw) = self.hw.as_mut() {
+            let sequential = self.has_history && prev.is_some_and(|p| (p.w, p.h) == (self.width, self.height));
+            match hw.enhance(curr, field, sequential) {
+                Ok(img) if (img.w, img.h) == (self.width, self.height) => {
+                    self.has_history = true;
+                    return (img, true);
+                }
+                Ok(img) => {
+                    self.fallback_reason = Some(format!("{} returned {}x{} for a {}x{} frame", hw.backend(), img.w, img.h, self.width, self.height));
+                }
+                Err(why) => {
+                    self.fallback_reason = Some(format!("{} failed: {why}", hw.backend()));
+                }
+            }
+            self.hw = None;
+            self.has_history = false;
+        }
+        (fuse_temporal_cpu(prev, curr, field), false)
+    }
+}
+
 /// Visual representation mode for an optical-flow overlay track.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -804,6 +939,8 @@ pub enum FlowVizMode {
     MotionVectors,
     /// Kinetic edge & motion aura: illuminates moving parts of the source frame with directional neon energy.
     KineticGlow,
+    /// DLSS 5 / NGX temporal neural reconstruction + edge-preserving local structure enhancement.
+    DlssEnhance,
 }
 
 impl FlowVizMode {
@@ -812,6 +949,7 @@ impl FlowVizMode {
             "hsv" | "hsvWheel" | "wheel" => Some(Self::HsvWheel),
             "uv" | "motionVectors" | "vectors" => Some(Self::MotionVectors),
             "glow" | "kineticGlow" | "kinetic" => Some(Self::KineticGlow),
+            "dlss" | "dlssEnhance" | "neural" | "neuralEnhance" => Some(Self::DlssEnhance),
             _ => None,
         }
     }
@@ -821,6 +959,7 @@ impl FlowVizMode {
             Self::HsvWheel => "hsvWheel",
             Self::MotionVectors => "motionVectors",
             Self::KineticGlow => "kineticGlow",
+            Self::DlssEnhance => "dlssEnhance",
         }
     }
 
@@ -829,8 +968,59 @@ impl FlowVizMode {
             Self::HsvWheel => "HSV Neon Flow Wheel",
             Self::MotionVectors => "Motion Vectors (UV Pass)",
             Self::KineticGlow => "Kinetic Motion Glow",
+            Self::DlssEnhance => "DLSS Neural Enhance",
         }
     }
+}
+
+/// Clamped linear RGB fetch from `img` with non-finite values sanitized to `0.0` (matching the GPU
+/// upload in `filmcraft_gpu::flow_viz`).
+#[inline]
+fn src_rgb_clamped(img: &Image, x: isize, y: isize) -> [f32; 3] {
+    if img.w == 0 || img.h == 0 {
+        return [0.0; 3];
+    }
+    let cx = x.clamp(0, img.w as isize - 1) as usize;
+    let cy = y.clamp(0, img.h as isize - 1) as usize;
+    let i = cy.saturating_mul(img.w).saturating_add(cx).saturating_mul(4);
+    let Some(p) = img.px.get(i..i + 3) else {
+        return [0.0; 3];
+    };
+    let fin = |v: f32| if v.is_finite() { v } else { 0.0 };
+    [fin(p[0]), fin(p[1]), fin(p[2])]
+}
+
+/// Edge-preserving bilateral local structure & micro-contrast enhancement for `FlowVizMode::DlssEnhance`
+/// (reproduced step for step in `flow_viz.wgsl`).
+#[inline]
+fn dlss_enhance_pixel(curr: &Image, x: isize, y: isize, conf: f32, active: f32) -> [f32; 3] {
+    let c = src_rgb_clamped(curr, x, y);
+    let luma_c = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let mut sum = [c[0] * 0.25, c[1] * 0.25, c[2] * 0.25];
+    let mut w_sum = 0.25f32;
+    for oy in -1isize..=1 {
+        for ox in -1isize..=1 {
+            if ox == 0 && oy == 0 {
+                continue;
+            }
+            let ws = if ox == 0 || oy == 0 { 0.15f32 } else { 0.10f32 };
+            let n = src_rgb_clamped(curr, x + ox, y + oy);
+            let luma_n = 0.2126 * n[0] + 0.7152 * n[1] + 0.0722 * n[2];
+            let dl = luma_n - luma_c;
+            let w = ws / (1.0 + dl * dl * 36.0);
+            sum[0] += n[0] * w;
+            sum[1] += n[1] * w;
+            sum[2] += n[2] * w;
+            w_sum += w;
+        }
+    }
+    let inv = 1.0 / w_sum;
+    let clarity = 0.45 + 0.40 * conf * (1.0 - 0.35 * active);
+    [
+        (c[0] + (c[0] - sum[0] * inv) * clarity).clamp(0.0, 1.0),
+        (c[1] + (c[1] - sum[1] * inv) * clarity).clamp(0.0, 1.0),
+        (c[2] + (c[2] - sum[2] * inv) * clarity).clamp(0.0, 1.0),
+    ]
 }
 
 /// Convert HSV (`h` in radians `-π..π`, `s` in `0..1`, `v` in `0..1`) to linear RGB.
@@ -934,7 +1124,7 @@ pub fn render_flow_viz(curr: &Image, field: &FlowField, mode: FlowVizMode, max_m
                     } else {
                         let angle = dy.atan2(dx);
                         let neon = hsv_to_linear_rgb(angle, 0.85, 1.0);
-                        let src = curr.sample_bilinear_clamped(px, py);
+                        let src = src_rgb_clamped(curr, x as isize, y as isize);
                         let src_luma = (0.2126 * src[0] + 0.7152 * src[1] + 0.0722 * src[2]).clamp(0.0, 2.0);
                         let energy = (active.sqrt() * (0.25 + 0.75 * src_luma)).clamp(0.0, 1.0);
                         *dst = [
@@ -944,6 +1134,10 @@ pub fn render_flow_viz(curr: &Image, field: &FlowField, mode: FlowVizMode, max_m
                             1.0,
                         ];
                     }
+                }
+                FlowVizMode::DlssEnhance => {
+                    let rgb = dlss_enhance_pixel(curr, x as isize, y as isize, conf, active);
+                    *dst = [rgb[0], rgb[1], rgb[2], 1.0];
                 }
             }
         }
@@ -1276,5 +1470,48 @@ mod tests {
         assert!(!enc.is_gpu());
         assert_eq!(enc.fallback_reason(), Some("no usable GPU"));
         assert_eq!(enc.encode(&img, &field, FlowVizMode::HsvWheel, 16.0), (cpu, false));
+    }
+
+    #[test]
+    fn dlss_enhance_and_neural_enhancer_preserve_colour_and_fall_back_cleanly() {
+        let a = texture(48, 32, 0.0, 0.0);
+        let b = texture(48, 32, 3.0, -1.0);
+        let field = estimate_cpu(&a, &b);
+
+        let fused = fuse_temporal_cpu(Some(&a), &b, &field);
+        assert_eq!((fused.w, fused.h), (48, 32));
+        assert!(interior_diff(&fused, &b, 4) < 0.05);
+
+        let enhanced = render_flow_viz(&fused, &field, FlowVizMode::DlssEnhance, 16.0);
+        assert_eq!((enhanced.w, enhanced.h), (48, 32));
+        let p = enhanced.get(24, 16);
+        assert!(p[0] > 0.05 && p[3] == 1.0, "DlssEnhance must produce valid opaque colour: {p:?}");
+
+        struct FakeNeural {
+            calls: usize,
+        }
+        impl NeuralSession for FakeNeural {
+            fn backend(&self) -> &'static str {
+                "Fake NGX DLSS"
+            }
+            fn enhance(&mut self, curr: &Image, _field: &FlowField, _sequential: bool) -> Result<Image, String> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    return Err("ngx lost".into());
+                }
+                Ok(curr.clone())
+            }
+        }
+        register_neural_enhancer(|w, h| if (w, h) == (48, 32) { Ok(Box::new(FakeNeural { calls: 0 })) } else { Err("unsupported size".into()) });
+        let mut ne = NeuralEnhancer::new(48, 32);
+        assert!(ne.is_hardware());
+        assert_eq!(ne.backend(), "Fake NGX DLSS");
+        let (_, on_hw1) = ne.enhance(None, &a, &field);
+        assert!(on_hw1);
+        let (_, on_hw2) = ne.enhance(Some(&a), &b, &field);
+        assert!(!on_hw2, "second call fails and falls back to CPU temporal fusion");
+        assert!(!ne.is_hardware());
+        assert_eq!(ne.backend(), CPU_NEURAL_BACKEND);
+        assert!(ne.fallback_reason().is_some_and(|r| r.contains("ngx lost")));
     }
 }

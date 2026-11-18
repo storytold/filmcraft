@@ -24,7 +24,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_project::{ClipId, ItemId, ParamValue, Project, TrackId, TrackKind};
-use filmcraft_render::flow::{CPU_FLOW_BACKEND, FlowEstimator, FlowVizEncoder, FlowVizMode};
+use filmcraft_render::flow::{CPU_FLOW_BACKEND, FlowEstimator, FlowVizEncoder, FlowVizMode, NeuralEnhancer};
 use filmcraft_render::{Blend, Image, RenderOptions, render_sequence_track};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
@@ -56,9 +56,9 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "clip.opticalFlowOverlay",
             "Generate Optical Flow Track…",
             // parameterised (any mode): for agents and the timeline menu's enabled check; the menus
-            // show the three modes below
+            // show the four modes below
             &[],
-            r#"{"clips":[id]?,"mode":"hsvWheel|motionVectors|kineticGlow"?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
+            r#"{"clips":[id]?,"mode":"hsvWheel|motionVectors|kineticGlow|dlssEnhance"?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
             |s, p| run_overlay(s, p, None),
         ),
         spec(
@@ -81,6 +81,13 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             &["Clip", "Video Options", "Optical Flow Track"],
             r#"{"clips":[id]?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
             |s, p| run_overlay(s, p, Some(FlowVizMode::KineticGlow)),
+        ),
+        spec(
+            "clip.opticalFlowOverlay.dlssEnhance",
+            "DLSS Neural Enhance",
+            &["Clip", "Video Options", "Optical Flow Track"],
+            r#"{"clips":[id]?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
+            |s, p| run_overlay(s, p, Some(FlowVizMode::DlssEnhance)),
         ),
     ]
 }
@@ -131,7 +138,7 @@ fn parse_blend_index(cmd: &str, name: Option<&str>, mode: FlowVizMode) -> Result
             .ok_or_else(|| bad(cmd, format!("unknown blendMode `{n}`"))),
         None => Ok(match mode {
             FlowVizMode::HsvWheel | FlowVizMode::KineticGlow => Blend::Screen.index(),
-            FlowVizMode::MotionVectors => Blend::Normal.index(),
+            FlowVizMode::MotionVectors | FlowVizMode::DlssEnhance => Blend::Normal.index(),
         }),
     }
 }
@@ -240,7 +247,9 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
 
     let mode = match (fixed_mode, str_p(p, "mode")) {
         (Some(m), None) => m,
-        (_, Some(m)) => FlowVizMode::from_name(m).ok_or_else(|| bad(cmd, format!("unknown mode `{m}` (expected hsvWheel, motionVectors, kineticGlow)")))?,
+        (_, Some(m)) => {
+            FlowVizMode::from_name(m).ok_or_else(|| bad(cmd, format!("unknown mode `{m}` (expected hsvWheel, motionVectors, kineticGlow, dlssEnhance)")))?
+        }
         (None, None) => FlowVizMode::HsvWheel,
     };
 
@@ -250,7 +259,7 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
     }
     let default_opacity = match mode {
         FlowVizMode::HsvWheel | FlowVizMode::KineticGlow => 85.0,
-        FlowVizMode::MotionVectors => 100.0,
+        FlowVizMode::MotionVectors | FlowVizMode::DlssEnhance => 100.0,
     };
     let opacity = f64_p(p, "opacity").unwrap_or(default_opacity);
     if !opacity.is_finite() || !(0.0..=100.0).contains(&opacity) {
@@ -413,7 +422,10 @@ impl JobCtx {
         }
         // the overlay is drawn and colour-encoded on the GPU when the app registered one
         let mut viz = FlowVizEncoder::new();
-        if viz.is_gpu() {
+        let mut neural = (self.look.mode == FlowVizMode::DlssEnhance).then(|| NeuralEnhancer::new(fw, fh));
+        if let Some(ne) = neural.as_ref().filter(|n| n.is_hardware()) {
+            out.viz_gpu_name = Some(if viz.is_gpu() { format!("{} + {}", ne.backend(), viz.backend()) } else { ne.backend().to_string() });
+        } else if viz.is_gpu() {
             out.viz_gpu_name = Some(viz.backend());
         }
         let (mut viz_gpu, mut viz_cpu) = (0u64, 0u64);
@@ -447,8 +459,12 @@ impl JobCtx {
             } else {
                 cpu += 1;
             }
-            let (encoded, on_gpu) = viz.encode(&curr, &field, look.mode, look.max_motion);
-            if on_gpu {
+            let (viz_src, on_neural_hw) = match neural.as_mut() {
+                Some(ne) => ne.enhance(prev.as_ref(), &curr, &field),
+                None => (curr.clone(), false),
+            };
+            let (encoded, on_gpu) = viz.encode(&viz_src, &field, look.mode, look.max_motion);
+            if on_gpu || on_neural_hw {
                 viz_gpu += 1;
             } else {
                 viz_cpu += 1;
@@ -485,7 +501,7 @@ impl JobCtx {
         }
         out.viz_gpu_frames += viz_gpu;
         out.viz_cpu_frames += viz_cpu;
-        if let Some(why) = viz.fallback_reason()
+        if let Some(why) = viz.fallback_reason().or_else(|| neural.as_ref().and_then(NeuralEnhancer::fallback_reason))
             && out.viz_fallback.is_none()
         {
             out.viz_fallback = Some(why.to_string());

@@ -254,3 +254,18 @@ fn a_headless_session_places_the_clip_on_its_next_command() {
     let placed = seq.video_tracks.iter().skip(1).flat_map(|t| t.items.iter()).any(|it| it.start == start && it.duration == dur);
     assert!(placed, "the overlay clip sits above V1");
 }
+
+#[test]
+fn dlss_enhance_mode_places_normal_blend_full_opacity_clip_above() {
+    let (mut s, seq_id, clip, start, dur) = demo(3);
+    let dir = tempfile::tempdir().unwrap();
+    let res = s.execute("clip.opticalFlowOverlay.dlssEnhance", json!({"clips": [clip.0], "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
+    assert_eq!(res["mode"], "dlssEnhance");
+    let new_clip = ClipId(res["clips"][0].as_u64().unwrap());
+    let (ti, it) = overlay_of(&s, seq_id, new_clip);
+    assert!(ti > 0);
+    assert_eq!((it.start, it.duration), (start, dur));
+    let op = it.effects.iter().find(|e| e.effect == "opacity").unwrap();
+    assert_eq!(op.params["blend"].value, ParamValue::Choice(Blend::Normal.index()));
+    assert_eq!(op.params["opacity"].value, ParamValue::Float(100.0));
+}

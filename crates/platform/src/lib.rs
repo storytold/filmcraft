@@ -40,6 +40,8 @@ pub mod hardware_encode;
 pub mod hybrid;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
+#[cfg(target_os = "windows")]
+pub mod ngx;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
@@ -105,6 +107,7 @@ pub fn register() -> Availability {
         ENCODERS.call_once(|| {
             filmcraft_export::register_encoder(nvenc::export::factory);
             filmcraft_render::flow::register_optical_flow(nvof::factory);
+            filmcraft_render::flow::register_neural_enhancer(ngx::factory);
         });
         filmcraft_codecs::register_video_decoder(media_foundation_factory);
         filmcraft_codecs::hw::set_hw_backend("Media Foundation");
