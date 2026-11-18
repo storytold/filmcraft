@@ -444,7 +444,7 @@ fn set_style_highlight_turns_animated_captions_on_and_off() {
     assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["style"]["highlight"], "#ffc800ff");
     let saved = serde_json::to_string(&style(&s)).unwrap();
     assert_eq!(serde_json::from_str::<filmcraft_project::CaptionStyle>(&saved).unwrap(), style(&s));
-    for bad in [json!("yellowish"), json!(42), json!({"r": 1})] {
+    for bad in [json!("yellowish"), json!(42), json!({"r": 1}), json!([255, 200, 0, "bad"]), json!([255, 200, 0])] {
         assert!(s.execute("captions.setStyle", json!({"highlight": bad})).is_err(), "{bad}");
     }
     assert_eq!(style(&s).highlight, Some([255, 200, 0, 255]), "a refused value changes nothing");

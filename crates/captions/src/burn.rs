@@ -233,15 +233,12 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
         let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
         render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
         cover = m.a;
-        if let Some((_, r)) = spoken.as_ref().filter(|(si, _)| *si == i)
-            && let (Some(through), Some(word)) = (line.get(..r.end), line.get(r.clone()))
-        {
-            // where the word starts: the line up to its end, less the word (measuring the text
-            // before it would drop the trailing space)
-            let x = xs[i] + filmcraft_text::measure(through, &ts) - filmcraft_text::measure(word, &ts);
-            let wl = layout(word, &ts, &ParagraphStyle::default());
+        if let Some((_, r)) = spoken.as_ref().filter(|(si, _)| *si == i) {
+            // the word's own glyphs, where the line placed them: right-to-left lines put a
+            // logically later word on the left, so its place is not a prefix width
+            let wl = filmcraft_text::Layout { glyphs: l.glyphs.iter().filter(|g| r.contains(&g.cluster)).copied().collect(), ..Default::default() };
             let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut hi) };
-            render::draw(&wl, &render::at(x, baseline.round()), &mut m, (ox, oy));
+            render::draw(&wl, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
             hi = m.a;
         }
     }
@@ -262,10 +259,16 @@ pub fn render_caption_at(c: &Caption, style: &CaptionStyle, w: usize, h: usize, 
         if !stroke.is_empty() {
             over(&mut p, oc, stroke[j]);
         }
+        // the spoken word's share of the text's coverage takes the highlight colour, in one
+        // composite: antialiased edges keep the text's own coverage
         match (hc, hi.get(j).copied()) {
-            (Some(hc), Some(a)) if a > 0.0 => {
-                over(&mut p, tc, cover[j] * (1.0 - a));
-                over(&mut p, hc, a);
+            (Some(hc), Some(a)) if a > 0.0 && cover[j] > 0.0 => {
+                let w = (a / cover[j]).min(1.0);
+                let mut c = [0.0f32; 4];
+                for k in 0..4 {
+                    c[k] = tc[k] * (1.0 - w) + hc[k] * w;
+                }
+                over(&mut p, c, cover[j]);
             }
             _ => over(&mut p, tc, cover[j]),
         }
@@ -672,6 +675,32 @@ mod tests {
         // a style the family lacks falls back to the nearest weight, like graphic text
         let missing = CaptionStyle { font_style: "No Such Style".into(), ..Default::default() };
         assert!(render_caption(&cap("Hello world"), &missing, 1920, 1080).is_some());
+    }
+
+    /// A highlight in the text's own colour draws exactly what plain captions draw: the word's
+    /// edges are not composited twice.
+    #[test]
+    fn a_highlight_in_the_text_colour_changes_nothing() {
+        let c = cap("one two three");
+        let plain = CaptionStyle { background: false, outline: 0.0, ..Default::default() };
+        let same = CaptionStyle { highlight: Some(plain.color), ..plain.clone() };
+        assert_eq!(render_caption_at(&c, &same, 1280, 720, Some(0.5)), render_caption(&c, &plain, 1280, 720));
+    }
+
+    /// In a right-to-left line the logically last word is drawn on the left: the highlight
+    /// follows the word as drawn, not its logical position.
+    #[test]
+    fn the_highlight_follows_right_to_left_text() {
+        let c = cap("\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}");
+        let st = CaptionStyle { background: false, highlight: Some([255, 200, 0, 255]), ..Default::default() };
+        let o = render_caption_at(&c, &st, 1280, 720, Some(0.9)).unwrap();
+        let cols = |hl: bool| -> Vec<usize> {
+            (0..o.w * o.h).filter(|j| o.px[j * 4 + 3] > 0.5 && (o.px[j * 4 + 2] < 0.5 * o.px[j * 4]) == hl).map(|j| j % o.w).collect()
+        };
+        let (hl, rest) = (cols(true), cols(false));
+        assert!(!hl.is_empty() && !rest.is_empty());
+        let mean = |v: &[usize]| v.iter().sum::<usize>() as f64 / v.len() as f64;
+        assert!(mean(&hl) < mean(&rest), "the last word of a Hebrew line is on its left");
     }
 
     /// Animated captions: with a highlight colour the word being spoken
