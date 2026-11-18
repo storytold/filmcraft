@@ -201,13 +201,18 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 let mut toast = None;
-                if let Some((name, bytes)) = recovered {
+                if let Some((name, bytes, content_dirty, view_dirty)) = recovered {
                     let path = format!("/recovered/{name}");
                     fs::put(&path, bytes);
                     match session.execute("file.open", json!({"path": path})) {
                         Ok(_) => {
                             // the recovered changes are unsaved
-                            session.saved_revision = 0;
+                            if content_dirty {
+                                session.saved_revision = 0;
+                            }
+                            if view_dirty {
+                                session.view_epoch = session.view_epoch.wrapping_add(1);
+                            }
                             toast = Some(format!("Recovered unsaved changes to {name}"));
                         }
                         Err(e) => log::warn!("recovery failed: {e}"),
