@@ -14,9 +14,8 @@ use serde_json::{Value, json};
 
 use crate::server::FilmcraftMcp;
 
-/// Engine commands that block until a render is written (or a transcription is done) when called
-/// with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "transcript.generate", "transcript.findPauses"];
+/// Engine commands that block until a render is written when called with `wait: true`.
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
 
 /// Long commands that wait unless told `wait: false` (the engine's own default for them).
 /// NOTE: `transcript.generate` and `transcript.findPauses` were previously here but are now

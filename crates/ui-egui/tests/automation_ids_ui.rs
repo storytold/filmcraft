@@ -188,20 +188,20 @@ fn source_monitor_play_button_plays_and_stops() {
     d.ok("ui.panel.show", json!({"panel": "Source"}));
     d.frames(3);
     let t0 = d.app().session.state.source_playhead;
-    d.click("source.transport.src.play");
+    d.click("source.transport.source.playback.toggle");
     let ctx = d.harness.ctx.clone();
     assert!(source_playing(&ctx), "Play started the Source monitor");
     d.frames(40);
     let t1 = d.app().session.state.source_playhead;
     assert!(t1 > t0, "the Source playhead moves while playing: {t0:?} → {t1:?}");
     assert!(!d.app().playback.playing, "the Program monitor stays stopped");
-    d.click("source.transport.src.play");
+    d.click("source.transport.source.playback.toggle");
     assert!(!source_playing(&ctx), "a second click stops it");
     let t2 = d.app().session.state.source_playhead;
     d.frames(20);
     assert_eq!(d.app().session.state.source_playhead, t2, "stopped: the playhead stays");
     // one monitor plays at a time
-    d.click("source.transport.src.play");
+    d.click("source.transport.source.playback.toggle");
     assert!(source_playing(&ctx));
     d.ok("ui.playback", json!({"action": "play"}));
     d.frames(3);
@@ -215,10 +215,10 @@ fn source_monitor_play_button_plays_and_stops() {
 fn button_editor_adds_and_removes_transport_buttons() {
     let mut d = Driver::demo();
     assert!(d.has("program.transport.markers.add") && !d.has("program.transport.playback.loop"));
-    d.click("program.transport.buttonEditor");
-    d.wait_for("program.buttonEditor.playback.loop");
-    d.click("program.buttonEditor.playback.loop");
-    d.click("program.buttonEditor.markers.add");
+    d.click("program.transport.editor");
+    d.wait_for("program.transport.editor.playback.loop");
+    d.click("program.transport.editor.playback.loop");
+    d.click("program.transport.editor.markers.add");
     assert_eq!(d.app().ui.panels.transport.program.added, vec!["playback.loop".to_string()]);
     assert_eq!(d.app().ui.panels.transport.program.hidden, vec!["markers.add".to_string()]);
     d.ok("ui.key", json!({"key": "Escape"}));
@@ -230,9 +230,9 @@ fn button_editor_adds_and_removes_transport_buttons() {
     assert!(d.app().playback.looping, "the added button does what it says");
     // the Source monitor's bar is its own
     assert!(d.ids("source.transport.").is_empty() || !d.has("source.transport.playback.loop"));
-    d.click("program.transport.buttonEditor");
-    d.wait_for("program.buttonEditor.reset");
-    d.click("program.buttonEditor.reset");
+    d.click("program.transport.editor");
+    d.wait_for("program.transport.editor.reset");
+    d.click("program.transport.editor.reset");
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(3);
     assert!(d.has("program.transport.markers.add") && !d.has("program.transport.playback.loop"), "Reset Layout");

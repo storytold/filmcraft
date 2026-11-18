@@ -85,8 +85,24 @@ fn as_pressed(mut m: egui::Modifiers) -> egui::Modifiers {
 
 /// Resolve a point from `{id}` (element centre) or `{x, y}`.
 fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
+    point_with_settlement(app, p, false)
+}
+
+fn settled_point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
+    point_with_settlement(app, p, true)
+}
+
+fn point_with_settlement(app: &FilmcraftApp, p: &Value, require_settled: bool) -> Result<egui::Pos2, String> {
     if let Some(id) = p.get("id").and_then(Value::as_str) {
-        let e = app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
+        let e = if require_settled {
+            match app.auto.settled(id) {
+                Some(e) => e,
+                None if app.auto.find(id).is_some() => return Err(format!("{RETRY}`{id}` is still laying out")),
+                None => return Err(format!("{RETRY}no element `{id}` (see ui.elements)")),
+            }
+        } else {
+            app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?
+        };
         let fx = p.get("fx").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         let fy = p.get("fy").and_then(Value::as_f64).unwrap_or(0.5) as f32;
         return Ok(egui::pos2(e.rect[0] + e.rect[2] * fx, e.rect[1] + e.rect[3] * fy));
@@ -315,7 +331,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "ui.click" | "ui.move" => {
-            let pos = match point(app, p) {
+            let pos = match if req.method == "ui.click" { settled_point(app, p) } else { point(app, p) } {
                 Ok(p) => p,
                 Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 Err(e) => return err(e),
@@ -326,7 +342,12 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 let dialog_elements = app.auto.dialog_elements();
                 if !dialog_elements.is_empty() {
                     let target_id = p.get("id").and_then(Value::as_str);
-                    let in_dialog = target_id.is_some_and(|id| app.auto.in_dialog(id));
+                    let hits = |r: &[f32; 4]| egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])).contains(pos);
+                    let in_modal_area = ctx.memory(|m| m.top_modal_layer().and_then(|l| m.area_rect(l.id))).is_some_and(|r| r.contains(pos));
+                    let in_dialog = match target_id {
+                        Some(id) => app.auto.in_dialog(id),
+                        None => in_modal_area || dialog_elements.iter().any(|e| hits(&e.rect)),
+                    };
                     if !in_dialog {
                         let ids = dialog_elements.iter().map(|e| format!("`{}`", e.id)).collect::<Vec<_>>().join(", ");
                         // A modal dialog (Settings, Recovery) blocks everything behind it.
@@ -412,10 +433,16 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.key" => {
             let Some(name) = s("key") else { return err("missing `key`") };
             let Some((m, key)) = crate::menus::parse_shortcut(name) else { return err(format!("unknown key `{name}`")) };
-            // A modal dialog eats shortcuts aimed behind it (e.g. Delete while Settings is up).
-            if !app.auto.dialog_elements().is_empty() {
-                let ids = app.auto.dialog_elements().iter().map(|e| format!("`{}`", e.id)).collect::<Vec<_>>().join(", ");
-                return err(format!("a dialog is open: press one of {ids} first"));
+            // A dialog consumes its own keys, but refuses shortcuts aimed behind it.
+            let dialog = app.auto.dialog_elements();
+            if !dialog.is_empty() {
+                let for_dialog = ctx.egui_wants_keyboard_input()
+                    || app.shortcut_editor.recording.is_some()
+                    || matches!(key, egui::Key::Escape | egui::Key::Enter | egui::Key::Tab);
+                if !for_dialog {
+                    let ids = dialog.iter().map(|e| format!("`{}`", e.id)).collect::<Vec<_>>().join(", ");
+                    return err(format!("a dialog is open: click one of {ids} or focus a field in it first"));
+                }
             }
             let m = as_pressed(m | modifiers(p));
             app.synthetic.push(egui::Event::ModifiersChanged(m));

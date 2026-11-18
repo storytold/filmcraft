@@ -28,6 +28,7 @@ pub const HOW: &str = "Entry with a `command`: run it with command_run (faster; 
     ui_type after the click; kind `slider` / `handle` takes ui_drag.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UiMapParams {
     /// Only entries whose id starts with this, e.g. `timeline.track.`, `export.video.`, `addTracks.`.
     #[serde(default)]

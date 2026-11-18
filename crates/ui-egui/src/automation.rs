@@ -98,16 +98,8 @@ impl Registry {
     }
     /// The last complete frame's elements drawn in dialog windows.
     pub fn dialog_elements(&self) -> &[Element] {
-        // When the frame is still being drawn (done=false), the dialog elements are in
-        // the current frame's `elements` at `dialogs_from`. When the frame is done,
-        // they're in the complete frame's `elements` at `dialogs_from`.
-        if self.done {
-            let (latest, from, _) = self.latest();
-            from.and_then(|f| latest.get(f..)).unwrap_or_default()
-        } else {
-            // Mid-frame: dialogs are in the current elements being drawn
-            self.dialogs_from.and_then(|f| self.elements.get(f..)).unwrap_or_default()
-        }
+        let (latest, from, _) = self.latest();
+        from.and_then(|f| latest.get(f..)).unwrap_or_default()
     }
     /// The last complete frame's elements whose id starts with a prefix.
     pub fn query(&self, prefix: &str) -> Vec<&Element> {

@@ -125,22 +125,38 @@ impl BridgeClient {
             return Err(AutomationError::Bridge(format!("cannot connect to {} ({first}); {hint}", self.addr)));
         };
         let port = self.addr.rsplit_once(':').map(|(_, p)| p.to_string()).unwrap_or_default();
-        let spawned = if app.extension().is_some_and(|e| e == "app") {
-            std::process::Command::new("open").arg("-a").arg(&app).args(["--args", "--control", &port]).spawn()
+        let child = if app.extension().is_some_and(|e| e == "app") {
+            // `open` is short-lived; its stdout/stderr would corrupt the MCP stdio channel, so
+            // null them, and wait for its status so a bad `FILMCRAFT_APP` path fails fast.
+            let status = std::process::Command::new("open")
+                .arg("-a")
+                .arg(&app)
+                .args(["--args", "--control", &port])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            match status {
+                Ok(s) if s.success() => None,
+                Ok(s) => return Err(AutomationError::Bridge(format!("cannot connect to {} and could not start {}: `open` exited with {s}", self.addr, app.display()))),
+                Err(e) => return Err(AutomationError::Bridge(format!("cannot connect to {} and could not start {}: {e}", self.addr, app.display()))),
+            }
         } else {
-            std::process::Command::new(&app)
+            match std::process::Command::new(&app)
                 .args(["--control", &port])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
+            {
+                Ok(c) => Some(c),
+                Err(e) => return Err(AutomationError::Bridge(format!("cannot connect to {} and could not start {}: {e}", self.addr, app.display()))),
+            }
         };
-        let mut _child = match spawned {
-            Ok(c) => c,
-            Err(e) => return Err(AutomationError::Bridge(format!("cannot connect to {} and could not start {}: {e}", self.addr, app.display()))),
-        };
-        // The app outlives this connection attempt; on Unix we'd ideally `wait()` or detach it.
-        // `Child::detach()` is unavailable in MSRV; we drop the handle (leaves a zombie reaped at CLI exit).
+        if let Some(mut _child) = child {
+            // The app outlives this connection attempt; on Unix we'd ideally `wait()` or detach it.
+            // `Child::detach()` is unavailable in MSRV; we drop the handle (leaves a zombie reaped at CLI exit).
+        }
         let deadline = tokio::time::Instant::now() + LAUNCH_WAIT;
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -325,6 +341,10 @@ mod tests {
         let e = BridgeClient::new(addr.clone()).unwrap().call("ui.inspect", json!({})).await.unwrap_err().to_string();
         assert!(e.contains("Settings ▸ Agents"), "{e}");
         // a launcher that can't start fails cleanly (once), it doesn't hang
+        if app_is_running() {
+            // a real FilmCraft on this machine short-circuits the launch path
+            return;
+        }
         let b = BridgeClient::new(addr).unwrap().with_launcher(Some("/nonexistent/FilmCraft-test-binary".into()));
         let e = b.call("ui.inspect", json!({})).await.unwrap_err().to_string();
         assert!(e.contains("could not start"), "{e}");

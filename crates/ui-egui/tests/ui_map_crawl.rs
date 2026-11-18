@@ -1351,6 +1351,8 @@ fn crawl(scope: Scope, name: &str) -> Crawl {
                 why.to_string()
             } else if !e.visible {
                 "outside the visible area of its panel or dialog (scroll it into view first)".into()
+            } else if e.clicked {
+                "the crawl could not reach or click it (see the crawl's reach errors / panics)".into()
             } else {
                 format!("found {} clicks deep (the crawl clicks {} deep)", e.depth, scope.depth + 1)
             });
