@@ -416,11 +416,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
             // a full path (Quick Export, Export mode) opens the dialog in its folder
-            let path = std::path::Path::new(name);
-            let mut dialog = rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts))
-                .set_file_name(path.file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy));
-            if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
+            let (file_name, dir) = save_as_name_dir(name);
+            let mut dialog = rfd::FileDialog::new().add_filter(filmcraft_ui_egui::i18n::t(filter), &file_filters::extensions(exts)).set_file_name(file_name);
+            if let Some(dir) = dir {
                 dialog = dialog.set_directory(dir);
             }
             dialog.save_file().map(|p| p.to_string_lossy().to_string())
@@ -606,6 +604,17 @@ fn dialogs_need_worker_thread(target_os: &str) -> bool {
     matches!(target_os, "linux" | "macos")
 }
 
+/// Split a SaveAs name into the file name the dialog shows and the folder it opens
+/// in: a full path (Quick Export, Export mode) opens in its folder, a bare name keeps
+/// the dialog where it was, and a path whose folder does not exist opens with no
+/// starting directory rather than in a folder that is not there.
+fn save_as_name_dir(name: &str) -> (String, Option<std::path::PathBuf>) {
+    let path = std::path::Path::new(name);
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_owned());
+    let dir = path.parent().filter(|d| d.is_dir()).map(std::path::Path::to_path_buf);
+    (file_name, dir)
+}
+
 /// Show `dialog` with rfd on a worker thread and answer on the returned channel (#260, #4995).
 /// Filter names are translated here, on the UI thread (the interface language is per thread). A
 /// dialog thread that can't start or panics drops the sender: the app takes that as cancelled.
@@ -641,7 +650,14 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                     rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
                 }
                 FileDialog::SaveAs { filter, exts, name, .. } => {
-                    rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                    // a full path (Quick Export, Export mode) opens the dialog in its folder,
+                    // as the synchronous picker does
+                    let (file_name, dir) = save_as_name_dir(&name);
+                    let mut dialog = rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(file_name);
+                    if let Some(dir) = dir {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    dialog.save_file().map(path).into_iter().collect()
                 }
                 FileDialog::Folder { at } => {
                     let d = rfd::FileDialog::new();
@@ -748,11 +764,23 @@ mod tests {
                 other => panic!("the dialog changed kind: {other:?}"),
             };
             assert_eq!(exts.first().map(String::as_str), Some("mp4"), "the literal extension stays first (save suffix)");
-            assert!(exts.iter().any(|e| e == "[mM][pP]4"), "{exts:?}");
+            // On macOS and Windows the native dialogs ignore case themselves, so
+            // extensions() returns the literal list only; the bracket patterns
+            // exist on Linux and the BSDs, where the portal globs are
+            // case-sensitive.
+            if cfg!(any(target_os = "windows", target_os = "macos")) {
+                assert_eq!(exts, ["mp4"], "{exts:?}");
+            } else {
+                assert!(exts.iter().any(|e| e == "[mM][pP]4"), "{exts:?}");
+            }
         }
         let project = super::project_patterns();
         assert_eq!(project.first().map(String::as_str), Some("fcproj"));
-        assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            assert_eq!(project, ["fcproj"], "{project:?}");
+        } else {
+            assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+        }
         // #1644: the Open Project dialog's "All files" fallback is a single `*`.
         assert_eq!(super::file_filters::all_files(), ["*"]);
     }
@@ -766,5 +794,21 @@ mod tests {
         assert!(super::dialogs_need_worker_thread("linux"), "the XDG portal call blocks the frame loop (#260)");
         assert!(super::dialogs_need_worker_thread("macos"), "a modal dialog inside winit's macOS event handler panics (#4995)");
         assert!(!super::dialogs_need_worker_thread("windows"), "unchanged: no report of either failure there");
+    }
+
+    /// SaveAs names split into a file name and a starting directory: a full path opens
+    /// the dialog in its folder, a bare name keeps the dialog put, and a missing folder
+    /// is no starting directory rather than a wrong one.
+    #[test]
+    fn save_as_names_split_into_file_name_and_starting_directory() {
+        assert_eq!(super::save_as_name_dir("clip.mp4"), ("clip.mp4".to_string(), None));
+        let dir = std::env::temp_dir();
+        let full = dir.join("clip.mp4");
+        assert_eq!(super::save_as_name_dir(&full.to_string_lossy()), ("clip.mp4".to_string(), Some(dir)));
+        assert_eq!(
+            super::save_as_name_dir("/nonexistent-dir-xyz/clip.mp4"),
+            ("clip.mp4".to_string(), None),
+            "a folder that does not exist is not a starting directory"
+        );
     }
 }
