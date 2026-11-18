@@ -897,3 +897,46 @@ fn readback_staging_size_is_padded_and_overflow_safe() {
     assert!(readback_staging_bytes(8192, 4320) > Some(256 * 1024 * 1024));
     assert_eq!(readback_staging_bytes(usize::MAX, 2), None);
 }
+
+/// The clips of a frame's CPU-mixed transitions are held together, so their memory is counted for
+/// the whole frame: two 3840x2160 transitions fit the budget, three do not, and a frame over it goes
+/// whole to the CPU before any canvas is made.
+#[test]
+fn a_batch_of_transitions_over_the_memory_budget_goes_to_the_cpu() {
+    let layer = |w: usize, h: usize| {
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, vec![0.5, 0.2, 0.1, 1.0])), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal)
+    };
+    let step = |inputs: [Vec<PlanLayer>; 2]| PlanStep::Transition {
+        inputs,
+        effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+        progress: 0.5,
+        scale: 1.0,
+    };
+    let (w, h) = (3840usize, 2160usize);
+    let one = vec![step([vec![layer(w, h)], vec![layer(w, h)]])];
+    let pair = || step([vec![layer(w, h)], vec![layer(w, h)]]);
+    let (two, three) = (vec![pair(), pair()], vec![pair(), pair(), pair()]);
+    let one_side = vec![step([vec![layer(w, h)], Vec::new()])];
+    assert!(transition_batch_bytes(w, h, &one).unwrap() <= TRANSITION_BATCH_BUDGET, "one 4K transition fits");
+    assert!(transition_batch_bytes(w, h, &two).unwrap() <= TRANSITION_BATCH_BUDGET, "two 4K transitions just fit");
+    assert!(transition_batch_bytes(w, h, &three).unwrap() > TRANSITION_BATCH_BUDGET, "three 4K transitions do not");
+    assert!(transition_batch_bytes(w, h, &one_side).unwrap() < transition_batch_bytes(w, h, &one).unwrap(), "a side with no clip holds nothing");
+    assert_eq!(transition_batch_bytes(usize::MAX, 2, &one), None);
+    let push = vec![PlanStep::Transition {
+        inputs: [vec![layer(w, h)], vec![layer(w, h)]],
+        effect: filmcraft_project::find_effect("push").unwrap().instance(),
+        progress: 0.5,
+        scale: 1.0,
+    }];
+    assert_eq!(transition_batch_bytes(w, h, &push), Some(0), "Push is drawn by the GPU and reads nothing back");
+
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&FramePlan::Composite { width: w, height: h, steps: three });
+    assert_eq!(c.cpu_fallback_frames, 1, "the frame over the budget goes whole to the CPU");
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "and no canvas is made for it");
+    assert_eq!(c.hybrid_off_until, None, "which is not a failed read-back");
+}

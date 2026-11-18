@@ -1018,6 +1018,12 @@ impl GpuCompositor {
             self.cpu_fallback_frames += 1;
             return cpu(self);
         }
+        // The clips of the frame's transitions are all held at once, so their memory adds up: over
+        // the budget the frame goes to the CPU before any canvas is made.
+        if cpu_mix && transition_batch_bytes(width, height, steps).is_none_or(|bytes| bytes > TRANSITION_BATCH_BUDGET) {
+            self.cpu_fallback_frames += 1;
+            return cpu(self);
+        }
         // one frame for the effect stage's pool: the adjustment steps' working textures stay
         // pooled with those of the layers between them
         if let Some(f) = self.fx.as_mut() {
@@ -1574,6 +1580,28 @@ const SLOT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// After a failed read-back of transition canvases, how long frames with a transition the GPU
 /// does not draw itself go whole to the CPU before the GPU is asked again.
 const HYBRID_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The most memory the clips of one frame's CPU-mixed transitions may hold at once (canvases,
+/// staging buffers and the images they are read into: see [`transition_batch_bytes`]). A frame
+/// over it goes whole to the CPU. One 3840x2160 transition (two clips) is about 530 MB and two in
+/// the same frame about 1.06 GB; a third goes over.
+const TRANSITION_BATCH_BUDGET: u64 = 1 << 30;
+
+/// The memory the clips of the CPU-mixed transitions in `steps` hold at once at `width` x `height`:
+/// for each clip a half-float canvas, its staging buffer and the f32 image it is read into. A side
+/// with no clip holds nothing; `None` when it does not fit in a `u64`.
+fn transition_batch_bytes(width: usize, height: usize, steps: &[PlanStep]) -> Option<u64> {
+    let clips = steps
+        .iter()
+        .filter_map(|s| match s {
+            PlanStep::Transition { inputs, effect, .. } if effect.effect != "push" => Some(inputs.iter().filter(|i| !i.is_empty()).count() as u64),
+            _ => None,
+        })
+        .sum::<u64>();
+    let pixels = u64::try_from(width).ok()?.checked_mul(u64::try_from(height).ok()?)?;
+    let per_clip = pixels.checked_mul(8 + 16)?.checked_add(readback_staging_bytes(width, height)?)?;
+    per_clip.checked_mul(clips)
+}
 
 /// The size of the staging buffer that reads back one canvas of `width` x `height` (half-float
 /// RGBA, rows padded to 256 bytes); `None` when it does not fit in a `u64`.
