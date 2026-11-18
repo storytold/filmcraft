@@ -103,6 +103,7 @@ impl FilmcraftApp {
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
+            last_timeline_center_x: 500.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
             clip_mismatch: None,
@@ -128,7 +129,6 @@ impl FilmcraftApp {
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,
-            engine_call: false,
             workspaces,
             menu_workspaces: Default::default(),
         }
@@ -293,8 +293,12 @@ impl FilmcraftApp {
                     // A sequence switch (including opening/reverting/recovering a project, which
                     // emits this event for the newly active sequence) is a new IME owner context.
                     self.restart_ime_target();
+                    // A smoothed track-slider target belongs to the sequence it was derived
+                    // from; do not apply it to the next sequence before its saved view is shown.
+                    self.tl.track_anim = None;
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
+                    self.ui.timeline.seen_playhead = None;
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
@@ -317,6 +321,11 @@ impl FilmcraftApp {
     /// logic subsystems, advance playback, poll jobs, then drain completed screenshots and ask
     /// for hidden paints. Safe on hidden logic-only callbacks.
     pub fn logic_inner(&mut self, ctx: &egui::Context) {
+        // a hidden zoom-bar drag cursor is always released exactly when it should be, so a lag
+        // spike, a focus loss or anything else can never leave it stuck on the mouse. The
+        // watchdog also covers the track sliders' Shift drags (same lock), and those stay live
+        // while the zoom bar is hidden, so it runs unconditionally (it is a no-op without a lock)
+        crate::panels::timeline::zoombar_cursor_watchdog(&mut self.tl, ctx, &self.session.state.timeline_ui);
         // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
         // the last UI time (which is stale there), so `now()` never runs behind the host clock.
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
@@ -506,7 +515,6 @@ impl eframe::App for FilmcraftApp {
     /// state, shut the session down so its recovery journal is flushed or removed, and start an
     /// update that waits for the exit.
     fn on_exit(&mut self) {
-        self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {
@@ -551,6 +559,21 @@ mod lifecycle_synthetic_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn opening_another_sequence_cancels_the_previous_track_slider_animation() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let first = session.state.active_sequence;
+        let second = session.execute("file.newSequence", serde_json::json!({"name": "Second"})).unwrap()["sequence"].as_u64().unwrap();
+        session.drain_events();
+        let mut app = FilmcraftApp::new(session);
+        app.timeline_view_of = first;
+        app.tl.track_anim = Some([100.0, 10.0, 100.0, 10.0]);
+        app.session.execute("sequence.open", serde_json::json!({"item": second})).unwrap();
+        app.logic_session_events();
+        assert_eq!(app.tl.track_anim, None);
     }
 
     /// `raw_input_hook` runs before hidden logic ticks too, but those raw events are not fed to

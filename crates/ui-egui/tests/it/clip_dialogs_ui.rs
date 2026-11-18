@@ -679,8 +679,9 @@ fn close_all_projects_asks_to_save() {
     // nothing unsaved: no question
     d.exec("file.openDemoProject", json!({}));
     let path = std::env::temp_dir().join(format!("fc-close-all-{}.fcproj", std::process::id()));
-    d.exec("file.saveAs", json!({"path": path.to_string_lossy()}));
+    d.ok("ui.menu.invoke", json!({"id": "file.saveAs", "params": {"path": path.to_string_lossy()}}));
     assert!(!d.app().session.is_dirty());
+    assert!(!d.app().session.has_unsaved_changes(), "Save As records the current project view too");
     d.menu("file.closeAllProjects");
     let _ = std::fs::remove_file(&path);
     assert!(d.app().ui.clip_dialog.is_none());
