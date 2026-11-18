@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -171,6 +171,9 @@ struct Shared {
     stats: Mutex<FrameStats>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
+    /// Jobs a worker has taken from the queue (counted under the queue lock) and not yet finished
+    /// recording ([`FrameServer::pending_jobs`]).
+    taken: AtomicUsize,
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -515,6 +518,7 @@ impl FrameServer {
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
+            taken: AtomicUsize::new(0),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -814,6 +818,13 @@ impl FrameServer {
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
+    /// Jobs queued or running. At 0 every job asked for so far is in [`FrameServer::stats`],
+    /// cancelled ones included, so a test can take a baseline that later jobs alone change.
+    pub fn pending_jobs(&self) -> usize {
+        let q = self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        q.len().saturating_add(self.shared.taken.load(Ordering::Acquire))
+    }
+
     /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
     pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
         for d in 0..=max_back {
@@ -971,6 +982,7 @@ fn worker(
                     // highest priority (lowest number) first; FIFO among equals
                     let best = q.iter().enumerate().min_by_key(|(i, j)| (j.prio, *i)).map(|(i, _)| i).unwrap_or(0);
                     if let Some(job) = q.remove(best) {
+                        sh.taken.fetch_add(1, Ordering::AcqRel);
                         break job;
                     }
                 }
@@ -986,6 +998,8 @@ fn worker(
             sh.stats.lock().unwrap_or_else(PoisonError::into_inner).failed += 1;
             log::error!("frame job {:?} panicked; the worker continues", job.key);
         }
+        // its counts are recorded (`run_job`, or `failed` above)
+        sh.taken.fetch_sub(1, Ordering::AcqRel);
         if let Some(f) = repaint.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
             f();
         }

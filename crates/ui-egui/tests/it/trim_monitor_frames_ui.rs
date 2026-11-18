@@ -81,9 +81,9 @@ impl Driver {
 
 /// The demo's first V1 clip cut in two with the razor: a cut inside one take, its roll edit point
 /// selected so the Program panel shows the Trim Monitor. Also [`given_up`] just before the edit
-/// point is selected: the Program monitor's own frames from the setup (a warm-up frame the razor's
-/// new revision replaces) are not the Trim Monitor's, and once it shows, the Program monitor asks
-/// for no more frames that could replace them.
+/// point is selected, once every setup job has finished: the Program monitor's own frames from the
+/// setup (a warm-up frame the razor's new revision replaces or cancels) are not the Trim Monitor's,
+/// and a cancelled job is only counted when its worker finishes it.
 fn demo_through_edit() -> (Driver, u64) {
     let mut session = Session::default();
     session.execute("file.openDemoProject", json!({})).expect("demo project");
@@ -95,6 +95,12 @@ fn demo_through_edit() -> (Driver, u64) {
     let seq = d.harness.state().session.active_sequence().expect("sequence").clone();
     let a = seq.video_tracks[0].items.iter().find(|c| c.end() == mid).expect("the clip before the cut").id;
     d.frames(2);
+    let t0 = Instant::now();
+    while d.harness.state().frames.pending_jobs() > 0 && t0.elapsed() < Duration::from_secs(20) {
+        d.frames(1);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(d.harness.state().frames.pending_jobs(), 0, "the setup's frame jobs finish");
     let setup = given_up(&d);
     d.exec("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "roll"}));
     d.frames(2);
