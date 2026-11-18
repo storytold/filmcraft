@@ -3589,6 +3589,7 @@
 	The default graphics are used from the next start.	Varsayılan grafikler bir sonraki başlatmadan itibaren kullanılır.
 	DirectX 12 only	Yalnızca DirectX 12
 	software rendering	yazılımsal işleme
+	integrated GPU	tümleşik GPU
 	Label Color Presets	Etiket Rengi Önayarları
 	{name} (Modified)	{name} (Değiştirildi)
 	Revert to the preset's colors and names	Önayarın renklerine ve adlarına geri dön

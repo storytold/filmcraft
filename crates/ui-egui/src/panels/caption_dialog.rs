@@ -1,8 +1,8 @@
 //! Create Captions from Transcript (Premiere's Text panel ▸ Create captions dialog).
 //!
 //! `transcript.createCaptions` run without params from the UI (the Transcript toolbar, the
-//! Captions tab, Sequence ▸ Transcript) opens this dialog instead; with params the engine command
-//! runs directly. The dialog opens with the settings used last time (`Preferences::captions`),
+//! Captions tab, Sequence ▸ Transcript, `ui.menu.invoke`) opens this dialog instead; with params,
+//! or from `engine.execute` (#1540), the engine command runs directly. The dialog opens with the settings used last time (`Preferences::captions`),
 //! where Premiere goes back to its default preset on every use.
 //!
 //! The open dialog lives in `UiState::caption_dialog` (serde) so agents can set it with `ui.set`.

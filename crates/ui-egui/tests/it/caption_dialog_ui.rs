@@ -76,7 +76,7 @@ fn session() -> Session {
 #[test]
 fn create_captions_opens_the_dialog_and_remembers_its_settings() {
     let mut d = Driver::new(session());
-    let r = d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    let r = d.ok("ui.menu.invoke", json!({"id": "transcript.createCaptions"}));
     assert_eq!(r["dialog"], "captions");
     // the modal fades in before it takes clicks
     d.frames(10);
@@ -100,7 +100,7 @@ fn create_captions_opens_the_dialog_and_remembers_its_settings() {
     assert_eq!((last.lines, last.max_chars, last.min_seconds), (1, 7, 1.2));
 
     // next time it opens with those settings; Cancel makes nothing
-    d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    d.ok("ui.menu.invoke", json!({"id": "transcript.createCaptions"}));
     d.frames(3);
     assert_eq!(d.app().ui.caption_dialog.as_ref().unwrap().settings, last);
     d.ok("ui.click", json!({"id": "captions.cancel"}));
@@ -112,7 +112,7 @@ fn create_captions_opens_the_dialog_and_remembers_its_settings() {
 #[test]
 fn saved_presets_are_kept_in_preferences() {
     let mut d = Driver::new(session());
-    d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    d.ok("ui.menu.invoke", json!({"id": "transcript.createCaptions"}));
     d.frames(10);
     d.app().ui.caption_dialog.as_mut().unwrap().settings.max_chars = 7;
     d.app().ui.caption_dialog.as_mut().unwrap().saving = Some("Shorts".into());
@@ -136,7 +136,7 @@ fn a_failed_settings_save_stays_in_the_status_bar() {
     let mut s = session();
     s.prefs_path = Some(blocker.join("preferences.json"));
     let mut d = Driver::new(s);
-    d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    d.ok("ui.menu.invoke", json!({"id": "transcript.createCaptions"}));
     d.frames(10);
     d.app().ui.caption_dialog.as_mut().unwrap().settings.max_chars = 7;
     d.frames(2);
@@ -146,4 +146,16 @@ fn a_failed_settings_save_stays_in_the_status_bar() {
     assert_eq!(d.app().session.active_sequence().unwrap().caption_tracks.len(), 1);
     let status = d.app().ui.status.clone();
     assert!(status.starts_with("Couldn't save caption settings"), "{status}");
+}
+
+/// #1540: an agent can neither see nor close a dialog, so `engine.execute` without params makes
+/// the captions with the command's defaults instead of opening one.
+#[test]
+fn engine_execute_makes_the_captions_without_the_dialog() {
+    let mut d = Driver::new(session());
+    let r = d.ok("engine.execute", json!({"command": "transcript.createCaptions"}));
+    assert!(r.get("dialog").is_none(), "{r}");
+    d.frames(3);
+    assert!(d.app().ui.caption_dialog.is_none());
+    assert_eq!(d.app().session.active_sequence().unwrap().caption_tracks.len(), 1);
 }
