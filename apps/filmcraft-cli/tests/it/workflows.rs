@@ -490,3 +490,59 @@ fn end_frame_of(project: &str) -> Option<u64> {
     let v: Value = serde_json::from_slice(&o.stdout).ok()?;
     v["video"][0]["items"][0]["endFrame"].as_u64()
 }
+
+/// One bad file in a batch must not block editing and exporting the good clip.
+#[test]
+fn truncated_file_in_batch_does_not_block_healthy_clip_edit() {
+    let (ffmpeg, ffprobe) = filmcraft_testkit::require_oracles!();
+    let Some(src) = phone_vfr_mp4(&ffmpeg) else {
+        return filmcraft_testkit::skip("damaged MP4 workflow", "ffmpeg could not make the VFR H.264/AAC fixture (libx264?)");
+    };
+    let src_bytes = std::fs::read(&src).unwrap();
+    assert!(src_bytes.len() > 32, "the source must be longer than the truncated file");
+
+    let dir = Scratch::new("truncated_batch");
+    let truncated = dir.path("truncated.mp4");
+    std::fs::write(&truncated, &src_bytes[..32]).unwrap();
+    let mut m = Mcp::start(&dir.path("data"));
+    let imported = m.tool("media_import", json!({"paths": [truncated, src]}));
+    let errors = imported["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{imported}");
+    assert!(errors[0].as_str().is_some_and(|error| error.contains("truncated.mp4")), "{imported}");
+    let items = imported["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{imported}");
+    let item = items[0].as_u64().unwrap();
+    let made = m.run("file.newSequenceFromClip", json!({"items": [item]}));
+    assert!(made["sequence"].is_u64(), "{made}");
+
+    // Mark Out includes its frame, so the extract removes 31 of the source's 120 frames.
+    m.run("markers.markIn", json!({"seconds": 1.5}));
+    m.run("markers.markOut", json!({"seconds": 2.5}));
+    m.run("sequence.extract", json!({}));
+
+    let out = dir.path("healthy_edit.mp4");
+    let r = m.run("file.exportMedia", json!({"path": out, "format": "h264", "range": "entire", "gpuRendering": "off", "wait": true}));
+    assert_eq!(r["result"]["frames"], 89, "{r}");
+    assert_eq!(r["offlineMedia"], json!([]), "{r}");
+
+    let info = probe(&ffprobe, &out);
+    let (video, audio) = (streams(&info, "video"), streams(&info, "audio"));
+    assert_eq!((video.len(), audio.len()), (1, 1), "{info}");
+    assert_eq!(video[0]["codec_name"], "h264", "{info}");
+    assert_eq!(video[0]["nb_read_frames"], "89", "{info}");
+    assert_eq!(audio[0]["codec_name"], "aac", "{info}");
+    assert!(num(&audio[0]["nb_read_frames"]) > 0.0, "{info}");
+
+    // The source flash and beep at 3 s move together when 31 frames are removed.
+    let flash_at = 59;
+    let flash_time = flash_at as f64 / 30.0;
+    let picture = frames(&ffmpeg, &out, None, "gray");
+    assert_eq!(picture.len(), 89);
+    let flash = &picture[flash_at];
+    let brightness = flash.iter().map(|&pixel| f64::from(pixel)).sum::<f64>() / flash.len() as f64;
+    assert!(brightness > 200.0, "expected the second white flash at frame {flash_at}, got brightness {brightness}");
+    let samples = pcm(&ffmpeg, &out, 0);
+    let beeps = onsets(&samples);
+    assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
+    assert!((beeps[1] - flash_time).abs() <= 1.0 / 30.0, "second beep at {:.3} s, flash at {flash_time:.3} s", beeps[1]);
+}
