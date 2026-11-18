@@ -117,6 +117,19 @@ fn is_modifier_key(key: egui::Key) -> bool {
 /// the chord is recorded when the key they modify is pressed, with them as its modifiers.
 fn record(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some((cmd, add)) = app.shortcut_editor.recording.clone() else { return };
+    let wheel = ctx.input(|i| {
+        i.events.iter().find_map(|event| match event {
+            egui::Event::MouseWheel { modifiers, .. } => Some(*modifiers),
+            _ => None,
+        })
+    });
+    if let Some(m) = wheel {
+        let mods = Mods { cmd: m.command || m.mac_cmd, ctrl: m.ctrl && cfg!(target_os = "macos"), alt: m.alt, shift: m.shift };
+        app.shortcut_editor.recording = None;
+        assign(app, &cmd, &format!("{}Scroll", mods.prefix()), add);
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+        return;
+    }
     let got = ctx.input_mut(|i| {
         let mut got = None;
         i.events.retain(|e| match e {
@@ -891,6 +904,18 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
 }
 
 fn matches_search(row: &serde_json::Value, query: &str) -> bool {
+    if let Ok(chord) = Chord::parse(query) {
+        let platform = Platform::current();
+        if row.get("shortcuts").and_then(serde_json::Value::as_array).into_iter().flatten().any(|binding| {
+            binding
+                .get("keys")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|keys| Chord::parse(keys).ok())
+                .is_some_and(|other| other.effective(platform) == chord.effective(platform))
+        }) {
+            return true;
+        }
+    }
     ["id", "label", "category"].iter().any(|key| crate::i18n::matches_query(row.get(key).and_then(serde_json::Value::as_str).unwrap_or(""), query))
         || row.get("shortcuts").and_then(serde_json::Value::as_array).into_iter().flatten().any(|binding| {
             ["keys", "display", "panel"].iter().any(|key| crate::i18n::matches_query(binding.get(key).and_then(serde_json::Value::as_str).unwrap_or(""), query))
@@ -949,10 +974,14 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
     }
 }
 
+fn slider_pair_only(commands: &[String]) -> bool {
+    commands.len() == 2 && commands.iter().any(|c| c.starts_with("timeline.slider")) && commands.iter().any(|c| c.starts_with("timeline.trackSlider"))
+}
+
 /// Bottom row: messages / conflicts, Undo / Redo / Clear, Cancel / OK. Returns Some(ok) to close.
 fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool> {
     let plat = Platform::current();
-    let conflicts = app.session.shortcuts.conflicts(plat);
+    let conflicts: Vec<_> = app.session.shortcuts.conflicts(plat).into_iter().filter(|(_, _, commands)| !slider_pair_only(commands)).collect();
     let mut close = None;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -1012,6 +1041,14 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
 #[cfg(test)]
 mod localization_tests {
     use super::*;
+
+    #[test]
+    fn slider_pair_exception_does_not_hide_a_third_conflicting_command() {
+        let mut commands = vec!["timeline.sliderCenter".to_string(), "timeline.trackSliderMirror".to_string()];
+        assert!(slider_pair_only(&commands));
+        commands.push("timeline.other".to_string());
+        assert!(!slider_pair_only(&commands));
+    }
 
     #[test]
     fn command_search_accepts_translated_labels_ids_and_keys() {
