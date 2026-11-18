@@ -45,9 +45,13 @@ log = { workspace = true }
 roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
+# WebAssembly command plug-ins (`plugin`).
+craft-plugin = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
+# Test plug-ins are written in WebAssembly text.
+wat = "1.261"
 filmcraft-testkit = { workspace = true }
 tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }

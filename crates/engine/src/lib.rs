@@ -40,6 +40,7 @@ mod palette;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
+pub mod plugin;
 pub mod presets;
 pub mod previews;
 pub mod prfpset;
@@ -594,6 +595,8 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// Installed plug-ins, where they are kept and how they download; the last run ([`plugin`]).
+    pub plugins: plugin::Runtime,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -689,6 +692,7 @@ impl Session {
             command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
+            plugins: Default::default(),
         }
     }
 
@@ -733,6 +737,9 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
+        // plug-ins are kept in `<data dir>/Plug-ins` (their settings are in the preferences)
+        #[cfg(not(target_arch = "wasm32"))]
+        self.plugins.open_store(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
@@ -1485,6 +1492,8 @@ mod par_tests;
 mod paste_media_tests;
 #[cfg(test)]
 mod place_items_tests;
+#[cfg(test)]
+mod plugin_tests;
 #[cfg(test)]
 mod presets_tests;
 #[cfg(test)]

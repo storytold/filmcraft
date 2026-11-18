@@ -85,6 +85,10 @@ craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "57288edafdc45552e30481cc649021de446abfa0", features = ["serde"] }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "57288edafdc45552e30481cc649021de446abfa0" }
+# WebAssembly command plug-ins (RFC-0046): sandbox, manifest, permissions, store, catalogs and
+# GitHub installs (crates/engine/src/plugin.rs). Pinned to the fork commit the RFC's reference
+# implementation uses until the upstream pull request lands.
+craft-plugin = { version = "0.1.0", git = "https://github.com/Dasemu/craft-libs", rev = "93428fbe5d11b735365fa87068a9e1fc85fb3550" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
