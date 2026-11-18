@@ -51,6 +51,7 @@ web-time = "1"
 filmcraft-testkit = { workspace = true }
 tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
+rayon = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

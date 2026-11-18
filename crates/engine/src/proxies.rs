@@ -304,10 +304,8 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         crate::media_queue::MEDIA_JOBS.ticket()
     };
     let (pool, project, services) = (s.media.clone(), s.project.clone(), s.services.clone());
+    let waiting = job.progress.clone();
     let run = move || {
-        // a job cancelled while it waits raises the same flag the loop below checks
-        #[cfg(not(target_arch = "wasm32"))]
-        ticket.wait(&prog.cancel);
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
@@ -352,6 +350,27 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         };
         prog.finished.store(true, std::sync::atomic::Ordering::Relaxed);
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
+    };
+    // its turn first, on the job's thread, so a queued job holds no pool of threads while it waits
+    // (a job cancelled while it waits raises the same flag the loop above checks); the ticket lets
+    // the next job go when this one is done
+    let run = move || {
+        #[cfg(not(target_arch = "wasm32"))]
+        let turn = ticket.wait(&waiting.cancel);
+        #[cfg(target_arch = "wasm32")]
+        let turn = {
+            let _ = &waiting;
+            true
+        };
+        if turn {
+            filmcraft_export::on_own_threads(0, run);
+        } else {
+            // cancelled while it waited: the loop above only records that and lets its outputs go,
+            // here, as the shared pool may be busy with a long export for a while yet
+            run();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(ticket);
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
