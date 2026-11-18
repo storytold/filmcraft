@@ -1293,6 +1293,14 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=2e686d9668a7ff383182c15c9997a89dec1b07c2#2e686d9668a7ff383182c15c9997a89dec1b07c2"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-jpeg"
+version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=937ac93c5cf3cd4b6a81e195b078fe161eb081b9#937ac93c5cf3cd4b6a81e195b078fe161eb081b9"
 dependencies = [
  "thiserror 2.0.21",
@@ -2378,7 +2386,7 @@ name = "filmcraft-codecs"
 version = "0.20.1"
 dependencies = [
  "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
- "craft-jpeg",
+ "craft-jpeg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=937ac93c5cf3cd4b6a81e195b078fe161eb081b9)",
  "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-video",
  "craft-y4m",
@@ -2479,6 +2487,7 @@ dependencies = [
  "craft-audio 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-dpx",
  "craft-exr",
+ "craft-jpeg 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2e686d9668a7ff383182c15c9997a89dec1b07c2)",
  "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=82062077bba679ba5236e2d1a391f02d1533cbab)",
  "craft-tga",
  "craft-video",
