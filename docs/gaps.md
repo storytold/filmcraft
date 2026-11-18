@@ -222,6 +222,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
+- **Have:** sandboxed WebAssembly command plug-ins (RFC-0046, [plugins.md](plugins.md)): they
+  run FilmCraft's own commands as one undo step; they host no effects or audio processing.
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
 - **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md §0.3). **200–400 h.**
 
