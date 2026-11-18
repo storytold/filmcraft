@@ -5,7 +5,17 @@ use filmcraft_platform::amf::{Config, Profile, Session, av1_available, av1_hdr_a
 
 #[test]
 fn test_amf_safe_session_h264() {
-    let cfg = Config { width: 320, height: 240, fps: (30, 1), bitrate_kbps: 1000, max_bitrate_kbps: 1500, cbr: false, keyint: 30, profile: Profile::H264High };
+    let cfg = Config {
+        width: 320,
+        height: 240,
+        fps: (30, 1),
+        bitrate_kbps: 1000,
+        max_bitrate_kbps: 1500,
+        cbr: false,
+        keyint: 30,
+        profile: Profile::H264High,
+        signal: Default::default(),
+    };
     let mut session = match Session::open(&cfg) {
         Ok(s) => s,
         Err(e) => {
@@ -34,7 +44,17 @@ fn test_amf_safe_session_hevc() {
         return;
     }
     // Match the capability probe: some AMD runtimes reject smaller HEVC pictures.
-    let cfg = Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 1000, max_bitrate_kbps: 1500, cbr: false, keyint: 30, profile: Profile::HevcMain };
+    let cfg = Config {
+        width: 640,
+        height: 360,
+        fps: (30, 1),
+        bitrate_kbps: 1000,
+        max_bitrate_kbps: 1500,
+        cbr: false,
+        keyint: 30,
+        profile: Profile::HevcMain,
+        signal: Default::default(),
+    };
     let mut session = Session::open(&cfg).expect("AMF HEVC session failed after a successful capability probe");
     let y = vec![128u8; 640 * 360];
     let u = vec![128u8; 320 * 180];
