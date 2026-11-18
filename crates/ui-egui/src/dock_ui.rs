@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use craft_ui::docking::{
     Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Node, ResizeEdge, WindowKind, Workspace,
 };
-use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
@@ -272,7 +272,6 @@ impl FilmcraftApp {
             seqs,
             seq_width,
             tokens: t,
-            active_tab: None,
             seq_actions: Vec::new(),
             menu: None,
             seq_menu_viewport: egui::ViewportId::ROOT,
@@ -479,8 +478,6 @@ struct FilmContent<'a> {
     /// The width the sequence tabs take in the Timeline's tab strip.
     seq_width: f32,
     tokens: Tokens,
-    /// The active panel and the UI that draws its tab strip, set before the tab labels are laid out.
-    active_tab: Option<(egui::Id, PanelKind)>,
     seq_actions: Vec<SeqAction>,
     /// The ≡ button clicked: its panel and where its menu opens.
     menu: Option<(PanelKind, egui::Pos2, egui::ViewportId)>,
@@ -514,8 +511,20 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         // The body fills its frame; allocating it lets a floated panel take its full size.
         ui.allocate_rect(ui.max_rect(), Sense::hover());
         // Painted after the body so child backgrounds cannot hide the focus outline (#1075).
+        // Alternate Slider Position puts the zoom bar against the top edge of the Timeline body,
+        // where this line would lie right on top of it: there the line stays off the body and the
+        // whole window edge carries the 1px line instead (Timeline only) -- the native window's
+        // edge when the panel has its own window, else the group window with its tab strip.
         if self.app.ui.focused == *panel {
-            ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            let alternate_top = *panel == PanelKind::Timeline && self.app.session.state.timeline_ui.alternate_slider_position;
+            if alternate_top {
+                // the group body plus its tab strip: a floating window can hold several groups,
+                // and the window rect would draw the ring around the neighbours too
+                let window = Rect::from_min_max(pos2(frame.min.x, frame.min.y - t.tab_h), frame.max);
+                ui.ctx().layer_painter(ui.layer_id()).rect_stroke(window, 0.0, Stroke::new(2.0, Color32::from_rgb(0x74, 0xb0, 0xff)), StrokeKind::Inside);
+            } else {
+                ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            }
         }
     }
 
@@ -544,10 +553,9 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// Underline the selected tab without changing its accessible name or the labels in menus.
-    fn label(&mut self, ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
-        let label = if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label() } else { logical.to_owned() };
-        if self.active_tab == Some((ui.unique_id(), *panel)) { egui::RichText::new(label).color(color).underline().into() } else { label.into() }
+    /// With no sequence open, the Timeline's tab says so.
+    fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
+        if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
     }
 
     /// FilmCraft's own panel items head a tab's context menu, as in its ≡ menu; craft-ui adds
@@ -587,8 +595,6 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 
     /// The ≡ panel menu of the group's shown panel; for the Timeline, its sequence tabs first.
     fn group_header(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
-        // The header is a child of the UI craft-ui uses to draw the group's tabs.
-        self.active_tab = ui.stack().parent.as_ref().map(|strip| (strip.unique_id, *active));
         let t = self.tokens;
         let header = ui.max_rect();
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
