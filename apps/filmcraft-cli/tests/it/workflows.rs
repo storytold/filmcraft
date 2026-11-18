@@ -491,6 +491,30 @@ fn end_frame_of(project: &str) -> Option<u64> {
     v["video"][0]["items"][0]["endFrame"].as_u64()
 }
 
+/// Decoded frame timestamps on the container timeline, in presentation order.
+fn presentation_frames(ffprobe: &Path, path: &str, stream: &str) -> Vec<Value> {
+    let out = Command::new(ffprobe)
+        .args(["-v", "error", "-of", "json", "-select_streams", stream, "-show_frames", "-show_entries", "frame=pts_time,nb_samples", path])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "ffprobe {path}: {}", String::from_utf8_lossy(&out.stderr));
+    let mut info: Value = serde_json::from_slice(&out.stdout).unwrap();
+    serde_json::from_value(info["frames"].take()).unwrap()
+}
+
+/// Map a position in the decoded 48 kHz PCM to the timestamp of its audio frame.
+fn audio_presentation_time(frames: &[Value], decoded_seconds: f64) -> f64 {
+    let mut sample = (decoded_seconds * 48_000.0).round() as u64;
+    for frame in frames {
+        let count = frame["nb_samples"].as_u64().unwrap();
+        if sample < count {
+            return num(&frame["pts_time"]) + sample as f64 / 48_000.0;
+        }
+        sample -= count;
+    }
+    panic!("beep at PCM offset {decoded_seconds:.3} s is outside the probed audio frames");
+}
+
 /// One bad file in a batch must not block editing and exporting the good clip.
 #[test]
 fn truncated_file_in_batch_does_not_block_healthy_clip_edit() {
@@ -535,7 +559,6 @@ fn truncated_file_in_batch_does_not_block_healthy_clip_edit() {
 
     // The source flash and beep at 3 s move together when 31 frames are removed.
     let flash_at = 59;
-    let flash_time = flash_at as f64 / 30.0;
     let picture = frames(&ffmpeg, &out, None, "gray");
     assert_eq!(picture.len(), 89);
     let flash = &picture[flash_at];
@@ -544,5 +567,13 @@ fn truncated_file_in_batch_does_not_block_healthy_clip_edit() {
     let samples = pcm(&ffmpeg, &out, 0);
     let beeps = onsets(&samples);
     assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
-    assert!((beeps[1] - flash_time).abs() <= 1.0 / 30.0, "second beep at {:.3} s, flash at {flash_time:.3} s", beeps[1]);
+    // The ordinal identifies the white frame. Its timestamp and the beep's timestamp
+    // must agree on the MP4 timeline, including any offset or gap in either stream.
+    let video_frames = presentation_frames(&ffprobe, &out, "v:0");
+    assert_eq!(video_frames.len(), picture.len());
+    let flash_time = num(&video_frames[flash_at]["pts_time"]);
+    assert_eq!(num(&audio[0]["sample_rate"]), 48_000.0);
+    let audio_frames = presentation_frames(&ffprobe, &out, "a:0");
+    let beep_time = audio_presentation_time(&audio_frames, beeps[1]);
+    assert!((beep_time - flash_time).abs() <= 1.0 / 30.0, "second beep at {beep_time:.3} s, flash at {flash_time:.3} s");
 }
