@@ -25,6 +25,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.dockAction", "Docking Action", [], None),
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
+    uic!("perf.frameTiming", "Frame Timing Log", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
     uic!("app.language.english", "English", ["Edit", "Language"], None),
     // Alphabetical by the language's own name after English; Cyrillic, then CJK names follow
@@ -313,6 +314,16 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "perf.stats" {
         // the engine's counters plus playback, frame workers and UI timings
         return Ok(crate::perf::stats(app));
+    }
+    if id == "perf.frameTiming" {
+        // {"on": bool} turns the per-frame timing log on or off; without it, toggles
+        let on = match params.get("on") {
+            None | Some(Value::Null) => !crate::frame_timing::enabled(),
+            Some(Value::Bool(b)) => *b,
+            Some(other) => return Err(format!("`on` must be true or false, not {other}")),
+        };
+        crate::frame_timing::set_enabled(on);
+        return Ok(json!({"on": on, "logTarget": crate::frame_timing::TARGET}));
     }
     if let Some(result) = crate::dock_ui::route(app, ctx, id, &params) {
         return result;

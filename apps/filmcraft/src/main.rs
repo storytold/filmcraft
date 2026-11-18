@@ -143,6 +143,8 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // FILMCRAFT_FRAME_TIMING=1: per-frame playback / scrubbing timings in the log (frame_timing.rs).
+    filmcraft_ui_egui::frame_timing::init_from_env();
     // Which graphics backends and adapter the window starts with: `--graphics`, else the saved
     // mode, which moves on after starts that died before their window painted (a driver crash),
     // see graphics.rs.

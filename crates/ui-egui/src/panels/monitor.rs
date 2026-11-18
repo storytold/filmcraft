@@ -86,6 +86,8 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
     // while playing, which way: frames on the other side of the playhead are not due yet
     let dir = playing.then(|| play_direction(speed));
+    let program = which == Which::Program;
+    let sched_t0 = crate::frame_timing::start().filter(|_| program);
     if playing {
         let preroll = which == Which::Program && app.playback.preroll.is_some();
         app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
@@ -95,6 +97,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     } else {
         app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
     }
+    app.timing.stop(crate::frame_timing::Stage::Schedule, sched_t0);
     let asked = asked_before(app, prefix, key, playing);
     let tex_name = if channel {
         format!("monitor-{prefix}-{display:?}")
@@ -115,16 +118,21 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
             None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
         }
-    } else if grid {
-        let recent = playing_recent(app, key, dir);
-        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
     } else {
+        let t = crate::frame_timing::start().filter(|_| program);
         let recent = playing_recent(app, key, dir);
-        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+        let r = if grid {
+            cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
+        } else {
+            cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+        };
+        app.timing.stop(crate::frame_timing::Stage::CpuTexture, t);
+        r
     };
     let exact = on_screen == Some(key);
     if which == Which::Program {
         app.program_shown = on_screen;
+        app.timing.note_shown(crate::frame_timing::Shown { frame, exact });
     }
     if !playing && !exact {
         app.monitor_inexact = true;

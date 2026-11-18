@@ -67,6 +67,11 @@ impl FilmcraftApp {
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        let timed = crate::frame_timing::enabled();
+        if timed {
+            self.timing.add_composite(&g.compositor.last_timing);
+        }
+        let tex_t0 = crate::frame_timing::start();
         let mut renderer = g.render_state.renderer.write();
         let id = match g.texture {
             Some(id) => {
@@ -75,9 +80,11 @@ impl FilmcraftApp {
             }
             None => renderer.register_native_texture(&g.render_state.device, &view, eframe::wgpu::FilterMode::Linear),
         };
+        drop(renderer);
         g.texture = Some(id);
         g.last_key = Some(key);
         g.size = size;
+        self.timing.stop(crate::frame_timing::Stage::EguiTexture, tex_t0);
         Some((id, size))
     }
 }

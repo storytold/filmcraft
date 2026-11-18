@@ -4,6 +4,29 @@
 and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live counters with
 `perf.stats` ([control-protocol.md](control-protocol.md)).
 
+## Per-frame timing log (playback and scrubbing)
+
+`perf.stats` counters are cumulative; to see where each frame's milliseconds go on a real machine,
+start the desktop app with `FILMCRAFT_FRAME_TIMING=1` (or run `perf.frameTiming {"on": true}` over
+the control channel; without `on` it toggles). Lines go to the app log
+(`<data dir>/Logs/filmcraft.log`, on Windows `%APPDATA%\FilmCraft\Logs`) under the target
+`filmcraft::frame_timing`; nothing is measured while it is off.
+
+- `pass`: one per UI refresh while playing, scrubbing or waiting for the Program monitor's exact
+  frame: `gap` (egui paint, present and vsync wait between passes), `logic` / `audio` (audio-clock
+  poll), `ui`, `sched` (frame scheduling), the GPU compositor's CPU side (`cpufx`, `upload` with MB,
+  `record`, `submit`), `eguitex`, `cputex`, `scrub` (scrub audio), `total` and `dt` since the last pass.
+- `job`: one per frame-worker job: queue `wait`, `source` (source frames) with the GOP cache's
+  `lock` wait, `hit` / `miss`, `seeks`, `samples` and `decode` (decode-pool wall time, hardware or
+  software, including the Media Foundation readback), `plan` (planning / CPU rendering) and
+  `prepare` (`filmcraft_gpu::prepare`).
+- `summary`: once a second, p50 / p95 / max of every stage, frames shown / dropped, upload MB/s,
+  GOP-cache counters and hardware vs software pictures.
+
+Code: `crates/ui-egui/src/frame_timing.rs`, `filmcraft_codecs::gop::trace`,
+`filmcraft_gpu::CompositeTiming`. GPU execution time is not measured directly; it surfaces as `gap`.
+Each `pass` line also lists `causes=[file:line …]`, egui's record of what asked for that refresh.
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and

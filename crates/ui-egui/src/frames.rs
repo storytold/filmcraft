@@ -983,6 +983,12 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
     SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
     PROFILING.with(|p| p.set(profiling));
+    let timed = crate::frame_timing::enabled();
+    if timed {
+        // (drop what earlier requests on this thread left behind)
+        let _ = filmcraft_codecs::gop::trace::take();
+    }
+    let mut prepare_time = Duration::ZERO;
     // A cancelled job may have missed layers (its source gave up): its result is not cached.
     // A job whose media bytes were still loading (web) rendered with missing layers: like a
     // cancelled one, its result is not cached (the caller retries it).
@@ -997,7 +1003,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
+                            let t0 = Instant::now();
                             let prepared = filmcraft_gpu::prepare(&plan);
+                            prepare_time = t0.elapsed();
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
@@ -1041,6 +1049,20 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             st.recent.pop_front();
         }
         st.recent.push_back((src_ms as f32, render_ms as f32));
+    }
+    if timed {
+        crate::frame_timing::record_job(crate::frame_timing::JobSample {
+            frame: job.key.frame,
+            prio: job.prio,
+            prefetch: job.prefetch,
+            cancelled,
+            preview,
+            wait: started.saturating_duration_since(job.queued),
+            total: started.elapsed(),
+            source: SOURCE_TIME.with(|s| s.get()).0,
+            prepare: prepare_time,
+            gop: filmcraft_codecs::gop::trace::take(),
+        });
     }
     if profiling {
         let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());

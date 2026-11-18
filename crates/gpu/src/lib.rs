@@ -99,6 +99,27 @@ pub struct GpuCompositor {
     pub cpu_adjustments: u64,
     /// Total bytes uploaded (stats).
     pub uploaded_bytes: u64,
+    /// Where the CPU time of the last [`composite_prepared`](Self::composite_prepared) went.
+    pub last_timing: CompositeTiming,
+}
+
+/// CPU-side wall time of one composite, by stage (the frame-timing log). The GPU executes the
+/// work after `submit` returns, so GPU execution time is not in here: it shows up as time the
+/// next present waits.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CompositeTiming {
+    /// Layers whose effects the GPU cannot run, rendered on the CPU here.
+    pub cpu_fx: std::time::Duration,
+    /// Texture creation and `write_texture` of the layers not already uploaded.
+    pub upload: std::time::Duration,
+    /// Bytes those uploads copied.
+    pub upload_bytes: u64,
+    /// Uniforms, bind groups and command recording (effect passes, layer draws, resolve).
+    pub record: std::time::Duration,
+    /// `queue.submit`.
+    pub submit: std::time::Duration,
+    /// Transitions composited on the CPU.
+    pub cpu_transition: std::time::Duration,
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -435,6 +456,7 @@ impl GpuCompositor {
             gpu_adjustments: 0,
             cpu_adjustments: 0,
             uploaded_bytes: 0,
+            last_timing: CompositeTiming::default(),
         }
     }
 
@@ -730,6 +752,7 @@ impl GpuCompositor {
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
     /// result is identical; only the upload work on this thread differs).
     pub fn composite_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> (wgpu::TextureView, (u32, u32)) {
+        self.last_timing = CompositeTiming::default();
         self.render_plan(plan, prep, true, true)
     }
 
@@ -764,6 +787,7 @@ impl GpuCompositor {
         let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
+        let t_fx = web_time::Instant::now();
         let max_side = self.device.limits().max_texture_dimension_2d;
         let cpu_fx: Vec<Option<PlanLayer>> = layers
             .iter()
@@ -778,6 +802,9 @@ impl GpuCompositor {
             .collect();
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
+        let t_upload = web_time::Instant::now();
+        self.last_timing.cpu_fx += t_upload.duration_since(t_fx);
+        let bytes0 = self.uploaded_bytes;
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
             .enumerate()
@@ -788,6 +815,9 @@ impl GpuCompositor {
                 self.upload(&l.frame, p)
             })
             .collect();
+        let t_record = web_time::Instant::now();
+        self.last_timing.upload += t_record.duration_since(t_upload);
+        self.last_timing.upload_bytes += self.uploaded_bytes.saturating_sub(bytes0);
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
@@ -950,7 +980,11 @@ impl GpuCompositor {
             pass.set_bind_group(0, &final_bg, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
+        let commands = enc.finish();
+        let t_submit = web_time::Instant::now();
+        self.last_timing.record += t_submit.duration_since(t_record);
+        self.queue.submit([commands]);
+        self.last_timing.submit += t_submit.elapsed();
         (if resolve { out_view } else { accum_view }, (w, h))
     }
 
@@ -964,7 +998,11 @@ impl GpuCompositor {
     ) -> (wgpu::TextureView, (u32, u32)) {
         let cpu = |c: &mut Self| {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            c.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None)
+            let t0 = web_time::Instant::now();
+            let image = FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan));
+            c.last_timing.cpu_transition += t0.elapsed();
+            // (`render_plan`, not `composite_prepared`: that would reset this composite's timing)
+            c.render_plan(&image, None, true, true)
         };
         if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
             self.cpu_transitions += 1;
