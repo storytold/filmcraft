@@ -928,7 +928,16 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         let r = if ok == 0 && (stopped || !failed.is_empty()) {
             Err(if stopped { "stopped".to_string() } else { failed.join("; ") })
         } else {
-            Ok(filmcraft_export::Report { path: dir.clone(), frames: ok, seconds: secs, bytes, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(filmcraft_export::Report {
+                path: dir.clone(),
+                frames: ok,
+                seconds: secs,
+                bytes,
+                render_fps: 0.0,
+                extra_files: Vec::new(),
+                encoder: None,
+                warnings: Vec::new(),
+            })
         };
         *lock(&res) = Some(r);
         prog.finished.store(true, Ordering::Relaxed);

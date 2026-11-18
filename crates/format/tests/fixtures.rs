@@ -241,10 +241,10 @@ fn v8_loads_without_transcripts_and_v9_roundtrips_them() {
     assert_eq!(again.project.transcripts[&ItemId(7)].speakers[0].name, "Speaker 1");
 }
 
-/// Schemas 12 to 17 (before generated media): no ComfyUI clip recipes; each loads (through every
+/// Schemas 12 to 18 (before generated media): no ComfyUI clip recipes; each loads (through every
 /// later step) with none, and a recipe survives a save and load.
 #[test]
-fn v12_to_v17_minimal_load_without_generated_media() {
+fn v12_to_v18_minimal_load_without_generated_media() {
     for (file, version, name) in [
         ("v12-minimal.fcproj", 12, "Before Generated Clips"),
         ("v13-minimal.fcproj", 13, "Before Generated Clips (v13)"),
@@ -252,6 +252,7 @@ fn v12_to_v17_minimal_load_without_generated_media() {
         ("v15-minimal.fcproj", 15, "Before Generated Clips (v15)"),
         ("v16-minimal.fcproj", 16, "Before Generated Clips (v16)"),
         ("v17-minimal.fcproj", 17, "Before Generated Clips (v17)"),
+        ("v18-minimal.fcproj", 18, "Before Generated Clips (v18)"),
     ] {
         let l = decode(&fixture(file)).unwrap();
         assert_eq!(l.schema_version, version);
@@ -268,9 +269,27 @@ fn v12_to_v17_minimal_load_without_generated_media() {
         let again = decode(&encode(&p, true)).unwrap();
         assert_eq!(again.schema_version, SCHEMA_VERSION);
         assert!(!again.migrated());
-        const { assert!(SCHEMA_VERSION >= 18) };
+        const { assert!(SCHEMA_VERSION >= 19) };
         assert_eq!(again.project, p);
     }
+}
+
+/// Schema 18 camera raw Source Settings (`interpret.raw`) are not applied by this build yet, but a
+/// v18 project keeps them through a load and save instead of silently dropping them.
+#[test]
+fn v18_camera_raw_settings_survive_a_save() {
+    let base = decode(&fixture("v1-edit.fcproj")).unwrap().project;
+    let mut doc: serde_json::Value = serde_json::from_slice(&encode(&base, false)).unwrap();
+    doc["schema_version"] = 18.into();
+    let raw = serde_json::json!({"white_balance": {"Custom": {"temperature": 3200.0, "tint": 12.5}}, "exposure": -0.75});
+    doc["project"]["items"]["5"]["kind"]["Media"]["interpret"]["raw"] = raw.clone();
+    let l = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+    assert_eq!(l.schema_version, 18);
+    let ItemKind::Media(m) = &l.project.item(ItemId(5)).unwrap().kind else { panic!("item 5 is media") };
+    assert_eq!(m.interpret.raw.as_ref(), Some(&raw));
+    let saved: serde_json::Value = serde_json::from_slice(&encode(&l.project, false)).unwrap();
+    assert_eq!(saved["schema_version"], SCHEMA_VERSION);
+    assert_eq!(saved["project"]["items"]["5"]["kind"]["Media"]["interpret"]["raw"], raw);
 }
 
 /// Schema 11 (before M10.7): no source graphics; graphic clips without template / roll /
