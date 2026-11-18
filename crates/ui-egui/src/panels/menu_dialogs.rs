@@ -134,14 +134,17 @@ pub fn open_path(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str, reveal
     }
 }
 
-/// Where Reveal Log Files points: `<data dir>/Logs` (the temp folder without a data directory).
-pub fn logs_dir(app: &FilmcraftApp) -> std::path::PathBuf {
-    app.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Logs")).unwrap_or_else(|| filmcraft_engine::temp_dir().join("FilmCraft Logs"))
+/// Where Reveal Log Files points: `<data dir>/Logs` (a private folder in the temp folder without a data directory).
+pub fn logs_dir(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
+    match app.session.prefs_path.as_ref().and_then(|p| p.parent()) {
+        Some(d) => Ok(d.join("Logs")),
+        None => filmcraft_engine::private_temp_dir().map(|d| d.join("Logs")).map_err(|e| format!("no private temporary folder: {e}")),
+    }
 }
 
 /// Write this session's log (system report and the command journal) into [`logs_dir`].
 fn write_session_log(app: &FilmcraftApp) -> Result<std::path::PathBuf, String> {
-    let dir = logs_dir(app);
+    let dir = logs_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("session-{}.log", std::process::id()));
     let mut text = format!("{}\n", system_report(app));
@@ -170,7 +173,10 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
 }
 
 /// Menu / shortcut entry points. Returns None for ids this module doesn't handle.
-pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
+/// `dialogs`: whether a command sent without parameters may open its dialog (a menu, a shortcut,
+/// `ui.menu.invoke`); from `engine.execute` it may not (#1540), and the command goes on to the
+/// engine instead. The UI commands above the dialogs answer either way.
+pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value, dialogs: bool) -> Option<Result<Value, String>> {
     // New Item sends the bin it was clicked in (null = root); the Color Matte dialog takes it
     let carried = if id == "file.newColorMatte" { crate::panels::project::bin_only(params) } else { None };
     let empty = params.as_object().is_none_or(|m| m.is_empty()) || carried.is_some();
@@ -213,7 +219,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             }
             return Some(r);
         }
-        "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() => {
+        // the native pickers are dialogs too: not from `engine.execute` (#1540)
+        "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() && dialogs => {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
@@ -233,8 +240,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 app.session.execute(&id, p).map_err(|e| e.to_string())
             }));
         }
-        // Lumetri Color panel menu ▸ Export .cube…: ask where to save the grade, then export it
-        "lumetri.exportCube" if params.get("path").is_none() => {
+        // Color Grading panel menu ▸ Export .cube…: ask where to save the grade, then export it
+        "lumetri.exportCube" if params.get("path").is_none() && dialogs => {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
@@ -247,9 +254,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 Some(c) => has_lumetri(&filmcraft_project::ClipId(c)),
                 None => app.session.state.selection.iter().find_map(has_lumetri),
             };
-            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Lumetri Color".into())) };
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Color Grading".into())) };
             let stem: String =
-                stem.unwrap_or_else(|| "Lumetri".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+                stem.unwrap_or_else(|| "Color Grading".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
             let mut p = params.as_object().cloned().unwrap_or_default();
             p.entry("clip").or_insert(json!(clip));
             let id = id.to_string();
@@ -257,14 +264,17 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 p.insert("path".into(), json!(path));
                 let r = app.session.execute(&id, Value::Object(p)).map_err(|e| e.to_string());
+                // effects the LUT cannot hold (vignette, sharpen, other effects on the clip) are named
+                let left_out: Vec<&str> = r.as_ref().ok().and_then(|v| v["leftOut"].as_array()).into_iter().flatten().filter_map(Value::as_str).collect();
                 app.ui.status = match &r {
-                    Ok(_) => tlf!("Exported {path}", path),
+                    Ok(_) if left_out.is_empty() => tlf!("Exported {path}", path),
+                    Ok(_) => tlf!("Exported {path}; not in the LUT: {effects}", path, effects = left_out.join(", ")),
                     Err(e) => e.clone(),
                 };
                 r
             }));
         }
-        "file.mediaPropertiesFile" if params.get("path").is_none() => {
+        "file.mediaPropertiesFile" if params.get("path").is_none() && dialogs => {
             let exts: Vec<&str> =
                 filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect();
             let id = id.to_string();
@@ -280,7 +290,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         _ => {}
     }
-    if !empty {
+    if !empty || !dialogs {
         return None;
     }
     let cmd = dialog_command(id)?;

@@ -2,10 +2,10 @@
 //! sources. Animated PNG and GIF files open as movies instead ([`crate::animated`]); here they would
 //! show their first frame.
 //!
-//! JPEG, PNG, WebP and TIFF stills are turned upright by their EXIF Orientation (a phone photo
-//! stored sideways decodes with its size swapped), so everything downstream sees the picture as
-//! the camera meant it. The uncompressed / PackBits YCbCr TIFFs read by our own decoder, DNG and
-//! the other formats ignore it.
+//! JPEG, PNG, WebP and TIFF stills (including the uncompressed / PackBits YCbCr TIFFs read by our
+//! own decoder) are turned upright by their EXIF Orientation (a phone photo stored sideways
+//! decodes with its size swapped), so everything downstream sees the picture as the camera meant
+//! it. DNG and the other formats ignore it.
 
 use std::sync::Arc;
 

@@ -121,7 +121,7 @@ fn code8(x: f32) -> u8 {
 /// Whether a source of `len` values holds a non-empty `w` x `h` picture of `per_px` values per pixel.
 /// The 8-bit conversions size their planes from `w` and `h`, so they check this first: a short
 /// source would otherwise allocate planes far larger than the data (or index past its end).
-fn covers(len: usize, w: usize, h: usize, per_px: usize) -> bool {
+pub(crate) fn covers(len: usize, w: usize, h: usize, per_px: usize) -> bool {
     w > 0 && h > 0 && w.checked_mul(h).and_then(|n| n.checked_mul(per_px)).is_some_and(|n| len >= n)
 }
 

@@ -6,13 +6,13 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
+use craft_media::mxf::{FrameInfo, MxfWriter, PackageIds, Pattern, PictureCoding, PictureDesc, Rational, SoundDesc, StartTimecode, WriterConfig};
 use filmcraft_codecs::MxfSource;
 use filmcraft_color::Transfer;
 use filmcraft_dng::tiff::tags;
 use filmcraft_dng::writer::{Compression, Options, Value, write};
 use filmcraft_frame::{PixelData, VideoFrame};
 use filmcraft_media::{FrameRequest, MediaKind, MediaSource};
-use filmcraft_mxf::{FrameInfo, MxfWriter, PackageIds, Pattern, PictureCoding, PictureDesc, Rational, SoundDesc, StartTimecode, WriterConfig};
 use filmcraft_time::FrameRate;
 
 const W: usize = 16;

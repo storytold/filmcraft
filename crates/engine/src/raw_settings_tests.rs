@@ -235,12 +235,12 @@ fn settings_apply_to_dng_stills_and_cinemadng_mxf() {
     std::fs::write(&still, frame(0.25)).unwrap();
     let sid = item_of(&s.execute("file.import", json!({"paths": [still.to_string_lossy()]})).unwrap());
     // CinemaDNG in MXF (CinemaDNG specification §7), written by our MXF writer
-    let rate = filmcraft_mxf::Rational::new(24, 1);
-    let mut cfg = filmcraft_mxf::WriterConfig::new(filmcraft_mxf::Pattern::Op1a, rate, filmcraft_mxf::PackageIds::from_seed("raw", "A001_C004"));
-    cfg.picture = Some(filmcraft_mxf::PictureDesc::new(filmcraft_mxf::PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32));
-    let mut w = filmcraft_mxf::MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
+    let rate = craft_media::mxf::Rational::new(24, 1);
+    let mut cfg = craft_media::mxf::WriterConfig::new(craft_media::mxf::Pattern::Op1a, rate, craft_media::mxf::PackageIds::from_seed("raw", "A001_C004"));
+    cfg.picture = Some(craft_media::mxf::PictureDesc::new(craft_media::mxf::PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32));
+    let mut w = craft_media::mxf::MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
     for i in 0..3 {
-        w.push_picture(&frame(level(i)), filmcraft_mxf::FrameInfo::intra()).unwrap();
+        w.push_picture(&frame(level(i)), craft_media::mxf::FrameInfo::intra()).unwrap();
     }
     let mxf = dir.join("A001_C004.mxf");
     std::fs::write(&mxf, w.finish().unwrap().into_inner()).unwrap();
@@ -351,12 +351,12 @@ fn only_camera_raw_footage_has_source_settings() {
 
 /// A three-frame CinemaDNG MXF whose frame `i` is a grey of `level(i) + lift`.
 fn write_mxf(path: &Path, seed: &str, lift: f64) {
-    let rate = filmcraft_mxf::Rational::new(24, 1);
-    let mut cfg = filmcraft_mxf::WriterConfig::new(filmcraft_mxf::Pattern::Op1a, rate, filmcraft_mxf::PackageIds::from_seed("raw", seed));
-    cfg.picture = Some(filmcraft_mxf::PictureDesc::new(filmcraft_mxf::PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32));
-    let mut w = filmcraft_mxf::MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
+    let rate = craft_media::mxf::Rational::new(24, 1);
+    let mut cfg = craft_media::mxf::WriterConfig::new(craft_media::mxf::Pattern::Op1a, rate, craft_media::mxf::PackageIds::from_seed("raw", seed));
+    cfg.picture = Some(craft_media::mxf::PictureDesc::new(craft_media::mxf::PictureCoding::CinemaDng { linear_raw: false }, W as u32, H as u32));
+    let mut w = craft_media::mxf::MxfWriter::new(std::io::Cursor::new(Vec::new()), cfg).unwrap();
     for i in 0..3 {
-        w.push_picture(&frame(level(i) + lift), filmcraft_mxf::FrameInfo::intra()).unwrap();
+        w.push_picture(&frame(level(i) + lift), craft_media::mxf::FrameInfo::intra()).unwrap();
     }
     std::fs::write(path, w.finish().unwrap().into_inner()).unwrap();
 }
