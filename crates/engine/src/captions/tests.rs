@@ -160,6 +160,80 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
     }
 }
 
+/// `captions.add` puts a caption on the frame grid as `timeline.place` does: its start and its end
+/// each snap to the nearest frame. At 29.97 fps, 1 s falls three hundredths of a frame before
+/// frame 30; rounding the start down put a caption asked for at 1 s on frame 29, a frame before a
+/// clip placed at 1 s and inside the caption that ends at 1 s, so adding it failed.
+#[test]
+fn caption_add_snaps_its_start_to_the_nearest_frame() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "29.97", "fps": 29.97, "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    assert_eq!(rate, filmcraft_time::FrameRate::FPS_29_97);
+    let item = s.project.items.values().find(|i| i.as_media().is_some_and(|m| m.info.has_video())).unwrap().id;
+    s.execute("timeline.place", json!({"item": item.0, "track": "V1", "seconds": 1.0, "duration": {"seconds": 1.0}})).unwrap();
+    let clip_start = s.active_sequence().unwrap().video_tracks[0].items[0].start;
+    assert_eq!(clip_start, rate.tick_of(30));
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    let add = |s: &mut Session, text: &str, at: f64, seconds: f64| {
+        s.execute("captions.add", json!({"track": "C1", "text": text, "seconds": at, "durationSeconds": seconds}))
+    };
+    add(&mut s, "A", 0.0, 1.0).unwrap();
+    add(&mut s, "B", 1.0, 1.0).expect("B starts where A ends");
+    add(&mut s, "C", 3.0, 0.8).unwrap();
+    add(&mut s, "D", 4.03, 2.02).unwrap();
+    let spans: Vec<(String, Tick, Tick)> = s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (c.text.clone(), c.start, c.end())).collect();
+    let want = |text: &str, start: i64, end: i64| (text.to_string(), rate.tick_of(start), rate.tick_of(end));
+    // 3.8 s is frame 113.886, so C ends at the start of frame 114, 24 frames after it starts.
+    // D starts at frame 120.779 and ends at 6.05 s, frame 181.319; its 2.02 s alone is 60.54
+    // frames, so snapping the duration instead of the end would end it on frame 182.
+    assert_eq!(spans, vec![want("A", 0, 30), want("B", 30, 60), want("C", 90, 114), want("D", 121, 181)]);
+    assert_eq!(spans[1].1, clip_start, "a caption asked for at a clip's time starts with the clip");
+}
+
+/// At a rate whose frame is not a whole number of ticks, `frame_duration` is rounded down. At
+/// 37.516 fps a caption asked for at 0.016 s lasting 0.016 s has both ends on frame 1, and the
+/// one-frame minimum used to end it a tick before frame 2, so `captions.list` gave it the same in
+/// and out timecode. It ends at the start of frame 2.
+#[test]
+fn a_caption_on_one_frame_ends_at_the_next_frame() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "37.516", "fps": 37.516, "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    assert_ne!(rate.tick_of(1), Tick::ZERO + rate.frame_duration(), "one frame is not a whole number of ticks");
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.add", json!({"track": "C1", "text": "A", "seconds": 0.016, "durationSeconds": 0.016})).unwrap();
+    let c = &s.active_sequence().unwrap().caption_tracks[0].captions[0];
+    assert_eq!((c.start, c.end()), (rate.tick_of(1), rate.tick_of(2)));
+    let listed = s.execute("captions.list", json!({})).unwrap();
+    let row = &listed["tracks"][0]["captions"][0];
+    assert_ne!(row["in"], row["out"], "{listed}");
+}
+
+/// A caption asked for before the sequence starts begins at zero and lasts its duration, snapped to
+/// the nearest frame. The start moves to zero before snapping, so the end is snapped from there.
+/// Snapping the start and end below zero first gave the caption the length of that snapped span:
+/// at 30 fps one asked for at -0.02 s for 0.04 s lasted two frames, where 0.04 s is 1.2 frames. At
+/// a rate whose frame is not a whole number of ticks the end also fell a tick before a frame: at
+/// 11 fps one asked for at -0.09 s for 0.09 s ended a tick before frame 1, so `captions.list` gave
+/// it the same in and out timecode, and at 37.516 fps one asked for at -0.5 s for 1 s ended a tick
+/// before frame 38.
+#[test]
+fn a_caption_asked_for_before_zero_starts_at_zero_and_ends_on_a_frame() {
+    for (fps, at, seconds, frames) in [(30.0, -0.02, 0.04, 1), (11.0, -0.09, 0.09, 1), (37.516, -0.5, 1.0, 38)] {
+        let mut s = demo();
+        s.execute("file.newSequence", json!({"name": "before zero", "fps": fps, "video": 1, "audio": 1})).unwrap();
+        let rate = s.sequence_rate();
+        s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+        s.execute("captions.add", json!({"track": "C1", "text": "A", "seconds": at, "durationSeconds": seconds})).unwrap();
+        let c = &s.active_sequence().unwrap().caption_tracks[0].captions[0];
+        assert_eq!((c.start, c.end()), (Tick::ZERO, rate.tick_of(frames)), "{fps} fps");
+        let listed = s.execute("captions.list", json!({})).unwrap();
+        let row = &listed["tracks"][0]["captions"][0];
+        assert_ne!(row["in"], row["out"], "{fps} fps: {listed}");
+    }
+}
+
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
     let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
     s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()
