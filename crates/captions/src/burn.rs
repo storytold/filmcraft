@@ -654,7 +654,7 @@ mod tests {
         let expected_ink = full_frame.a.iter().sum::<f32>();
 
         let overlay = render_caption(&cap(text), &style, w, h).expect("caption overlay");
-        let rendered_ink = overlay.px.chunks_exact(4).map(|pixel| pixel[0]).sum::<f32>();
+        let rendered_ink = overlay.px.as_chunks::<4>().0.iter().map(|pixel| pixel[0]).sum::<f32>();
         assert!((rendered_ink - expected_ink).abs() < 0.05, "overlay kept {rendered_ink} of {expected_ink} glyph coverage");
     }
 
