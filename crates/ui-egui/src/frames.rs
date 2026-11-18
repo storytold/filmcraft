@@ -7,9 +7,8 @@
 //! Sequence frames inside a rendered segment come from its render preview instead of the live
 //! render (see `filmcraft_engine::previews`).
 
-use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -164,11 +163,24 @@ struct Shared {
     /// frames: compositing, CPU effects. Frames cannot be ready sooner than this after they are
     /// started, and the workers can finish at most `workers / cost` of them per second.
     render_cost: Mutex<f64>,
+    /// Wall times (s) of the latest playback jobs, whole job: what [`strided_plan`] sizes its lead
+    /// and stride from (`render_cost` leaves out the decode and the wait for a decoder).
+    /// (with the output size they were rendered at: a new scale starts from its own samples, and
+    /// only the Program's sequence jobs are recorded, not a multicam grid's or an item's).
+    latency: Mutex<VecDeque<(u32, f32)>>,
+    /// Frame the strided playback last saw due (`i64::MIN`: none), to tell a seek or a loop from
+    /// the playhead's ordinary advance.
+    last_due: AtomicI64,
+    /// Stride in force while playing (1: every frame) and the frames a monitor looks back with.
+    stride: AtomicI64,
+    window: AtomicI64,
     workers: usize,
     /// Always-on counters for `perf.stats`.
     stats: Mutex<FrameStats>,
     /// Set (under the queue lock) when the [`FrameServer`] is dropped: the workers return.
     stop: AtomicBool,
+    /// Whether the active GPU compositor uploads 16-bit YUV planes directly as `R16Unorm`.
+    r16_unorm: AtomicBool,
 }
 
 /// Cumulative frame-job statistics (`perf.stats`): cheap enough to keep on all the time.
@@ -274,39 +286,78 @@ pub fn process_cpu_time() -> Option<Duration> {
     }
 }
 
-thread_local! {
-    /// (wall, cpu) spent in source `video_frame` calls by this worker during the current job.
-    static SOURCE_TIME: Cell<(Duration, Duration)> = const { Cell::new((Duration::ZERO, Duration::ZERO)) };
-    /// This worker is profiling the current job (thread CPU of source calls is measured).
-    static PROFILING: Cell<bool> = const { Cell::new(false) };
+/// Source-decode timing shared across any rayon tasks a frame job spawns.
+///
+/// Tracks the wall-clock union of concurrent intervals (so parallel track reads do not
+/// over-count wall time) alongside the summed thread-CPU time.
+struct SourceAcc {
+    origin: Instant,
+    intervals: Mutex<Vec<(u64, u64)>>,
+    cpu_ns: AtomicU64,
+    profiling: bool,
 }
 
-/// Run `f`, adding its wall/CPU time to this thread's source-time accumulator.
-fn timed_source<R>(f: impl FnOnce() -> R) -> R {
-    let cpu = || if PROFILING.with(Cell::get) { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
-    let (w0, c0) = (Instant::now(), cpu());
-    let r = f();
-    let (dw, dc) = (w0.elapsed(), cpu().saturating_sub(c0));
-    SOURCE_TIME.with(|s| {
-        let (w, c) = s.get();
-        s.set((w + dw, c + dc));
-    });
-    r
+impl SourceAcc {
+    fn new(profiling: bool) -> Self {
+        Self { origin: Instant::now(), intervals: Mutex::new(Vec::new()), cpu_ns: AtomicU64::new(0), profiling }
+    }
+
+    fn timed<R>(&self, f: impl FnOnce() -> R) -> R {
+        let cpu = || if self.profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO };
+        let (start, c0) = (Instant::now(), cpu());
+        let r = f();
+        let (end, dc) = (Instant::now(), cpu().saturating_sub(c0));
+        let s = start.saturating_duration_since(self.origin).as_nanos() as u64;
+        let e = end.saturating_duration_since(self.origin).as_nanos() as u64;
+        if e > s {
+            self.intervals.lock().unwrap_or_else(PoisonError::into_inner).push((s, e));
+        }
+        if self.profiling {
+            self.cpu_ns.fetch_add(dc.as_nanos() as u64, Ordering::Relaxed);
+        }
+        r
+    }
+
+    fn union_ns(mut intervals: Vec<(u64, u64)>) -> u64 {
+        intervals.sort_unstable_by_key(|&(s, _)| s);
+        let mut iter = intervals.into_iter();
+        if let Some((mut cur_s, mut cur_e)) = iter.next() {
+            let mut sum = 0u64;
+            for (s, e) in iter {
+                if s <= cur_e {
+                    cur_e = cur_e.max(e);
+                } else {
+                    sum = sum.saturating_add(cur_e.saturating_sub(cur_s));
+                    cur_s = s;
+                    cur_e = e;
+                }
+            }
+            sum.saturating_add(cur_e.saturating_sub(cur_s))
+        } else {
+            0
+        }
+    }
+
+    fn totals(&self) -> (Duration, Duration) {
+        let intervals = self.intervals.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let wall_ns = Self::union_ns(intervals);
+        (Duration::from_nanos(wall_ns), Duration::from_nanos(self.cpu_ns.load(Ordering::Relaxed)))
+    }
 }
 
 /// A media source that times its `video_frame` calls (see [`JobRecord::source_wall`]).
-struct TimedSource(filmcraft_media::SharedSource);
+struct TimedSource(filmcraft_media::SharedSource, Arc<SourceAcc>);
 
 impl filmcraft_media::MediaSource for TimedSource {
     fn info(&self) -> &filmcraft_media::MediaInfo {
         self.0.info()
     }
     fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
-        timed_source(|| self.0.video_frame(req))
+        self.1.timed(|| self.0.video_frame(req))
     }
     /// The inner source's unturned frame, timed like [`Self::video_frame`].
     fn video_frame_unturned(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<(Arc<filmcraft_frame::VideoFrame>, u8)> {
-        timed_source(|| self.0.video_frame_unturned(req))
+        self.1.timed(|| self.0.video_frame_unturned(req))
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
         self.0.audio(start, frames, sample_rate)
@@ -320,12 +371,13 @@ impl filmcraft_media::MediaSource for TimedSource {
 /// [`FrameServer::render_cost`] and, while profiling, [`JobRecord`]).
 struct JobProvider {
     inner: filmcraft_engine::media_pool::PoolProvider,
+    acc: Arc<SourceAcc>,
 }
 
 impl filmcraft_render::SourceProvider for JobProvider {
     fn source(&self, item: ItemId) -> Option<filmcraft_media::SharedSource> {
         let s = self.inner.pool.monitor_source(item, self.inner.source(item)?);
-        Some(Arc::new(TimedSource(s)))
+        Some(Arc::new(TimedSource(s, self.acc.clone())))
     }
 }
 
@@ -352,8 +404,8 @@ struct PlanCache {
 }
 
 impl PlanCache {
-    const MAX: usize = 96;
-    const BUDGET: usize = 1 << 30;
+    const MAX: usize = 128;
+    const BUDGET: usize = 3 << 29;
 
     fn get(&mut self, k: &FrameKey) -> Option<Arc<GpuPlan>> {
         self.clock += 1;
@@ -364,25 +416,59 @@ impl PlanCache {
         })
     }
 
+    /// Bytes of the plan for `k`, or of the largest plan cached for its target (the frames one
+    /// monitor shows are what its prefetch has to fit); 0 when nothing of that target is cached.
+    fn bytes_of(&self, k: &FrameKey) -> usize {
+        self.map
+            .get(k)
+            .map(|(_, _, b)| *b)
+            .or_else(|| self.map.iter().filter(|(cached, _)| cached.target == k.target).map(|(_, (_, _, b))| *b).max())
+            .unwrap_or(0)
+    }
+
     fn insert(&mut self, k: FrameKey, p: GpuPlan) {
         self.clock += 1;
         let b = p.bytes();
-        self.bytes += b;
+        self.bytes = self.bytes.saturating_add(b);
         if let Some((_, _, old)) = self.map.insert(k, (Arc::new(p), self.clock, b)) {
-            self.bytes -= old;
+            self.bytes = self.bytes.saturating_sub(old);
         }
         if self.map.len() > Self::MAX || self.bytes > Self::BUDGET {
-            let mut v: Vec<(u64, FrameKey, usize)> = self.map.iter().map(|(k, v)| (v.1, *k, v.2)).collect();
-            v.sort_unstable_by_key(|x| x.0);
-            for (_, k, b) in v {
-                if self.map.len() <= Self::MAX && self.bytes <= Self::BUDGET {
-                    break;
+            let entries: Vec<(FrameKey, u64, usize)> = self.map.iter().map(|(key, v)| (*key, v.1, v.2)).collect();
+            for evicted in plan_evictions(&entries, Self::MAX, Self::BUDGET, k) {
+                if let Some((_, _, b)) = self.map.remove(&evicted) {
+                    self.bytes = self.bytes.saturating_sub(b);
                 }
-                self.map.remove(&k);
-                self.bytes -= b;
             }
         }
     }
+}
+
+/// Which plans `entries` (`key`, last use, bytes) a cache of `max_entries` entries and `budget`
+/// bytes has to drop: the least recently used first, never `keep` — the plan just inserted. Without
+/// that exception a plan larger than the whole budget (a 8K monitor, or many layers) evicted itself
+/// on every insert, so the next request re-planned the same frame again and again.
+fn plan_evictions(entries: &[(FrameKey, u64, usize)], max_entries: usize, budget: usize, keep: FrameKey) -> Vec<FrameKey> {
+    let mut live = entries.len();
+    let mut bytes = entries.iter().fold(0usize, |sum, e| sum.saturating_add(e.2));
+    if live <= max_entries && bytes <= budget {
+        return Vec::new();
+    }
+    let mut order: Vec<(u64, FrameKey, usize)> = entries.iter().map(|(key, used, b)| (*used, *key, *b)).collect();
+    order.sort_unstable_by_key(|x| x.0);
+    let mut dropped = Vec::new();
+    for (_, key, b) in order {
+        if live <= max_entries && bytes <= budget {
+            break;
+        }
+        if key == keep {
+            continue;
+        }
+        bytes = bytes.saturating_sub(b);
+        live = live.saturating_sub(1);
+        dropped.push(key);
+    }
+    dropped
 }
 
 struct Cache {
@@ -437,6 +523,25 @@ pub fn prefetch_depth(speed: f64) -> i64 {
     if speed.abs() > 1.5 { 24 } else { 14 }
 }
 
+/// Frames prefetched even when one frame's plan is too large for the cache to hold that many,
+/// so playback never waits for a single frame it could have rendered earlier.
+const MIN_PREFETCH: i64 = 4;
+
+/// [`prefetch_depth`] reduced to the frames the plan cache holds at `plan_bytes` each: asking for
+/// more only makes the prefetch run evict the plans it just rendered, and those frames are then
+/// rendered again when the playhead reaches them (a 4K four-layer plan leaves the cache holding
+/// seven to ten of them, not the fourteen asked for).
+///
+/// A cache that holds most of the run already is left alone: evicting its last frame or two costs
+/// little, while the frames it does hold are the margin that keeps the workers fed.
+fn fitting_prefetch_depth(base: i64, plan_bytes: usize) -> i64 {
+    let fits = i64::try_from(PlanCache::BUDGET / plan_bytes.max(1)).unwrap_or(i64::MAX);
+    if fits.saturating_mul(4) >= base.saturating_mul(3) {
+        return base;
+    }
+    fits.max(MIN_PREFETCH)
+}
+
 /// Playback starts its clock once this many frames from the playhead are ready, or after
 /// [`PREROLL_TIMEOUT_S`]: otherwise the first frames after Play are due before any decoder had a
 /// chance to produce them (a seek decodes from the previous keyframe).
@@ -445,7 +550,7 @@ pub const PREROLL_FRAMES: i64 = 6;
 /// Seconds before a scrubbed-to frame whose frames a seek still decodes in full (see
 /// [`FrameServer::request`]); earlier non-reference pictures are skipped on the way.
 pub const SCRUB_KEEP_S: f64 = 2.0;
-pub const PREROLL_TIMEOUT_S: f64 = 0.5;
+pub const PREROLL_TIMEOUT_S: f64 = 1.5;
 
 /// How many revisions behind the project a playing monitor's picture may be while the frame due
 /// is not ready at the current one (#1673). A value dragged during playback makes a revision per
@@ -474,6 +579,134 @@ pub fn playback_plan(render_cost: f64, fps: f64, workers: usize) -> (i64, i64) {
         return (1, 1);
     }
     (frames_per_job.ceil() as i64, load.ceil() as i64)
+}
+
+/// Frames behind the frame due that a playing monitor may fall back to (`FrameServer::recent`,
+/// `FrameServer::nearest_plan`) while every frame is rendered. [`FrameServer::display_window`] is
+/// larger while playback is strided: a frame rendered for the grid slot can land up to a stride
+/// plus the grace after its due time and must still be the picture shown, or it is wasted work.
+pub const DISPLAY_WINDOW: i64 = 6;
+/// Playback leaves "render every frame" only when the workers are this far over real time, measured
+/// on the whole job (see [`strided_plan`]). The 1/4-scale publi preview sits at ~1.15 and plays
+/// ~45 fps in exact mode; striding it would cap it at 30.
+pub const STRIDE_ENTER_LOAD: f64 = 1.5;
+/// Once strided, playback returns to every frame only below this load (hysteresis against flapping).
+pub const STRIDE_EXIT_LOAD: f64 = 1.1;
+/// The widest stride (2 updates per second at 60 fps); a bound for hostile or garbage timings.
+pub const MAX_STRIDE: i64 = 30;
+const MAX_LEAD: i64 = 240;
+/// The longest a strided playback lets the picture on screen trail the clock (s): beyond about
+/// this the lip-sync with the audio (which stays the clock) is plainly off. A frame that lands
+/// later than this behind its due time is cached but not shown. At 60 fps it is 18 frames, so a
+/// stride above 6 shows each picture for part of its interval only; the measured mean lag of a
+/// stride of 12 (about 290 ms) was already at this edge.
+pub const MAX_DISPLAY_LAG_S: f64 = 0.3;
+const LATENCY_SAMPLES: usize = 32;
+const MIN_LATENCY_SAMPLES: usize = 8;
+
+/// Wall time (s) of whole playback jobs (source decode, effects, plan): mean, median, 90th percentile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JobLatency {
+    pub mean: f64,
+    pub p50: f64,
+    pub p90: f64,
+}
+
+/// [`JobLatency`] of recent job times (s); `None` while there are too few finite samples to trust.
+pub fn latency_stats(samples: &[f32]) -> Option<JobLatency> {
+    if samples.len() < MIN_LATENCY_SAMPLES {
+        return None;
+    }
+    let mut v: Vec<f64> = samples.iter().map(|s| f64::from(*s)).filter(|s| s.is_finite() && *s >= 0.0).collect();
+    if v.len() < MIN_LATENCY_SAMPLES {
+        return None;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    let at = |p: f64| v.get(((v.len() - 1) as f64 * p).round() as usize).copied().unwrap_or(0.0);
+    Some(JobLatency { mean: v.iter().sum::<f64>() / v.len() as f64, p50: at(0.5), p90: at(0.9) })
+}
+
+/// What the strided playback asks for ([`strided_plan`]); all distances are in frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StridePlan {
+    /// Spacing of the rendered frames: those with `frame % stride == 0` (an absolute grid, so the
+    /// same frame is asked for on every refresh and its job is never replaced by a neighbour's).
+    pub stride: i64,
+    /// The nearest frame ahead of the playhead worth starting: a job takes the median latency.
+    pub lead_min: i64,
+    /// How far ahead a job started now is expected to be done (90th percentile latency).
+    pub lead: i64,
+    /// How long after its due time a frame still improves the picture (it replaces an older one
+    /// until the next grid frame is due).
+    pub grace: i64,
+    /// Frames a playing monitor looks back for the newest ready picture: twice the stride plus the
+    /// grace, but never more than [`MAX_DISPLAY_LAG_S`] and never less than [`DISPLAY_WINDOW`].
+    pub window: i64,
+    /// Grid frames kept queued or running at once: about one per worker, so none waits in the queue.
+    pub depth: i64,
+}
+
+/// The strided regime for a CPU-bound preview, or `None` to keep rendering every frame
+/// ([`playback_plan`]). Unlike `playback_plan` it is sized from the whole job (decode included, the
+/// time between starting a frame and having it) at `fps`, and only engages when the workers are
+/// [`STRIDE_ENTER_LOAD`] over real time, so any pipeline that keeps up, or nearly does, is untouched.
+/// `current` is the stride in force (1 = none): it is kept while it still covers the load without
+/// being more than a third too wide, so the picture rate does not flap between two strides.
+pub fn strided_plan(lat: Option<JobLatency>, fps: f64, workers: usize, current: i64) -> Option<StridePlan> {
+    let lat = lat?;
+    if !(fps.is_finite() && fps > 0.0 && lat.mean.is_finite() && lat.mean > 0.0 && lat.p50.is_finite() && lat.p90.is_finite()) {
+        return None;
+    }
+    let w = workers.max(1);
+    let load = lat.mean * fps * 1.15 / w as f64;
+    let floor = if current > 1 { STRIDE_EXIT_LOAD } else { STRIDE_ENTER_LOAD };
+    if load < floor {
+        return None;
+    }
+    let wanted = (load.ceil() as i64).clamp(2, MAX_STRIDE);
+    let stride = if (2..=MAX_STRIDE).contains(&current) && load <= current as f64 && load > 0.7 * current as f64 { current } else { wanted };
+    let frames = |s: f64| (s.max(0.0) * fps).ceil() as i64;
+    let lead_min = frames(lat.p50).clamp(1, MAX_LEAD);
+    let lead = frames(lat.p90).saturating_add(2).clamp(lead_min, MAX_LEAD);
+    let window = stride.saturating_mul(2).saturating_add(stride.max(DISPLAY_WINDOW)).min(frames(MAX_DISPLAY_LAG_S)).max(DISPLAY_WINDOW);
+    // a job later than the picture can be shown is not worth finishing
+    let grace = stride.max(DISPLAY_WINDOW).min(window);
+    Some(StridePlan { stride, lead_min, lead, grace, window, depth: i64::try_from(w).unwrap_or(i64::MAX).saturating_add(1) })
+}
+
+/// The first multiple of `stride` (at least 1) at or after `frame`.
+fn grid_ceil(frame: i64, stride: i64) -> i64 {
+    let s = stride.max(1);
+    frame.saturating_add((s - frame.rem_euclid(s)) % s)
+}
+
+/// Whether `frame` is one the playback renders at `stride` (every frame at 1).
+pub fn is_planned(frame: i64, stride: i64) -> bool {
+    stride <= 1 || frame.rem_euclid(stride) == 0
+}
+
+/// Whether the playhead has jumped since the strided playback last looked (a seek, a loop, the
+/// start of strided playback: `last` is `i64::MIN`), rather than advanced as the clock does. The
+/// frame due then has no picture near it, and the grid starts `lead_min` frames later, so it is
+/// asked for at once.
+fn playhead_jumped(last: i64, cur: i64, plan: &StridePlan) -> bool {
+    last == i64::MIN || cur < last || cur.saturating_sub(last) > plan.window
+}
+
+/// Whether a queued job for `frame`, with the playhead at `cur`, can still improve the picture: it
+/// is not so near that even `grace` frames late it would be over, and not past what is asked for.
+fn queued_job_useful(frame: i64, cur: i64, plan: &StridePlan) -> bool {
+    let ahead = frame.saturating_sub(cur);
+    let span = plan.lead.saturating_add(plan.depth.saturating_mul(plan.stride)).saturating_add(plan.grace);
+    ahead >= plan.lead_min.saturating_sub(plan.grace) && ahead < span
+}
+
+/// Whether a running job for `frame` is still worth finishing: not more than `grace` frames past
+/// its due time, and no ready frame at or before the playhead is already newer (`newest_ready`), in
+/// which case the monitor would not show it. (A cancelled plan job stops at its next layer, effect or
+/// row of a CPU effect, see `filmcraft_media::cancel`, and is never cached.)
+fn running_job_useful(frame: i64, cur: i64, newest_ready: Option<i64>, plan: &StridePlan) -> bool {
+    frame.saturating_sub(cur) >= -plan.grace && newest_ready.is_none_or(|n| frame > n)
 }
 
 impl FrameServer {
@@ -505,9 +738,14 @@ impl FrameServer {
             profiling: AtomicBool::new(false),
             records: Mutex::new(Vec::new()),
             render_cost: Mutex::new(0.0),
+            latency: Mutex::new(VecDeque::new()),
+            last_due: AtomicI64::new(i64::MIN),
+            stride: AtomicI64::new(1),
+            window: AtomicI64::new(DISPLAY_WINDOW),
             workers: workers.max(1),
             stats: Mutex::new(FrameStats::default()),
             stop: AtomicBool::new(false),
+            r16_unorm: AtomicBool::new(false),
         });
         let repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         #[cfg(not(target_arch = "wasm32"))]
@@ -522,6 +760,12 @@ impl FrameServer {
         #[cfg(target_arch = "wasm32")]
         let _ = workers;
         Self { shared, pool, services, previews, repaint }
+    }
+
+    /// Tell frame workers whether the GPU compositor supports native `R16Unorm` uploads so
+    /// 10/12/16-bit YUV frames skip CPU half-float conversion.
+    pub fn set_r16_unorm(&self, enabled: bool) {
+        self.shared.r16_unorm.store(enabled, Ordering::Relaxed);
     }
 
     /// The default number of frame workers for this machine.
@@ -690,6 +934,25 @@ impl FrameServer {
         let dir = if speed < 0.0 { -1 } else { 1 };
         let step = speed.abs().max(1.0) as i64;
         let fps = rate.as_f64() * speed.abs().max(1.0) / step as f64;
+        // A CPU-bound preview (the effects take far longer than the frame interval on every worker)
+        // asks only for what can reach the screen, see `strided_plan`. Anything lighter, or any
+        // other speed, direction or preroll, takes the exact path below, unchanged.
+        // The stride belongs to the Program's sequence: another target (a multicam grid, an item)
+        // is scheduled by the exact path and never resets it.
+        if matches!(key.target, Target::Sequence(_) | Target::SequencePlan(..) | Target::SequenceLive(_)) {
+            if !preroll && dir > 0 && step == 1 {
+                // frames due per second of wall time: slow motion (0.5x) is half the rate, not the full one
+                let due_fps = rate.as_f64() * speed.abs();
+                let plan = strided_plan(self.latency(key.size), due_fps, self.shared.workers, self.playback_stride());
+                self.set_stride(plan.as_ref());
+                if let Some(plan) = plan {
+                    self.schedule_strided(key, rate, scale, project, &plan);
+                    return;
+                }
+            } else {
+                self.set_stride(None);
+            }
+        }
         let (lead, stride) = if preroll { (1, 1) } else { playback_plan(self.render_cost(), fps, self.shared.workers) };
         if lead <= 1 {
             // the frame due now; once the clock runs, the frames before it are late
@@ -705,7 +968,12 @@ impl FrameServer {
         }
         // During preroll the clock has not started: only the frames that gate start, not a
         // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
-        let ahead = if preroll { (PREROLL_FRAMES - 1).max(0) } else { prefetch_depth(speed) };
+        let ahead = if preroll {
+            (PREROLL_FRAMES - 1).max(0)
+        } else {
+            let plan_bytes = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).bytes_of(&key);
+            fitting_prefetch_depth(prefetch_depth(speed), plan_bytes)
+        };
         for i in 0..ahead {
             let f = key.frame + (lead + i * stride) * dir * step;
             if f >= 0 {
@@ -725,12 +993,19 @@ impl FrameServer {
         let (target, rev, cur) = (key.target, key.revision, key.frame);
         let span = (lead + ahead * stride) * step + 26;
         let ahead_of = |k: &FrameKey| (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span;
+        // Let running jobs up to 6 frames behind the playhead finish: cancelling a multi-layer
+        // job moments after the playhead advances discards partial decodes, breaks GOP progress,
+        // and starves `nearest_plan(6)` into a cancellation spiral.
+        let running_window = |k: &FrameKey| {
+            let d = (k.frame - cur) * dir;
+            d >= -6 * step && d < span
+        };
         // Queued jobs of an older revision are dropped, but one already rendering a frame still
-        // ahead is left to finish (#1673): a value dragged during playback asks for a new
-        // revision on every pass, and cancelling those jobs each time left nothing ever ready.
+        // ahead (or just passed) is left to finish (#1673): a value dragged during playback asks
+        // for a new revision on every pass, and cancelling those jobs each time left nothing ready.
         self.retain_jobs(
             |k| k.target != target || (k.revision == rev && ahead_of(k)),
-            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && ahead_of(k)),
+            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && running_window(k)),
         );
     }
 
@@ -739,6 +1014,85 @@ impl FrameServer {
     pub fn preroll_ready(&self, key: FrameKey, speed: f64, last: i64) -> bool {
         let step = (speed.abs().max(1.0) as i64) * if speed < 0.0 { -1 } else { 1 };
         (0..PREROLL_FRAMES).map(|i| key.frame + i * step).filter(|f| *f >= 0 && *f <= last).all(|f| self.is_ready(&FrameKey { frame: f, ..key }))
+    }
+
+    /// Stride in force while playing (1: every frame), see [`strided_plan`].
+    pub fn playback_stride(&self) -> i64 {
+        self.shared.stride.load(Ordering::Relaxed).max(1)
+    }
+
+    /// Whether `frame` is one the playback in force renders (the others are left out on purpose).
+    pub fn is_planned(&self, frame: i64) -> bool {
+        is_planned(frame, self.playback_stride())
+    }
+
+    /// Frames a playing monitor looks back for the newest ready frame: [`DISPLAY_WINDOW`], wider
+    /// while playback is strided. The monitors and the bench displays use this one value.
+    pub fn display_window(&self) -> i64 {
+        self.shared.window.load(Ordering::Relaxed).max(DISPLAY_WINDOW)
+    }
+
+    fn set_stride(&self, plan: Option<&StridePlan>) {
+        self.shared.stride.store(plan.map_or(1, |p| p.stride), Ordering::Relaxed);
+        self.shared.window.store(plan.map_or(DISPLAY_WINDOW, |p| p.window), Ordering::Relaxed);
+        if plan.is_none() {
+            self.shared.last_due.store(i64::MIN, Ordering::Relaxed);
+        }
+    }
+
+    /// Latency of the recent playback jobs rendered at output size `size`.
+    fn latency(&self, size: u32) -> Option<JobLatency> {
+        let samples: Vec<f32> =
+            self.shared.latency.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|(s, _)| *s == size).map(|(_, w)| *w).collect();
+        latency_stats(&samples)
+    }
+
+    /// The CPU-bound regime of [`Self::schedule_playback`]: ask only for the grid frames a job
+    /// started now can finish by (or shortly after) their due time, about one per worker, and keep
+    /// only the jobs that can still improve the picture. The same grid frames are asked for on
+    /// every refresh, so the queue never fills with neighbours of a frame it already has, and the
+    /// workers take them in due order.
+    fn schedule_strided(&self, key: FrameKey, rate: filmcraft_time::FrameRate, scale: f32, project: &Arc<Project>, plan: &StridePlan) {
+        let cur = key.frame;
+        // after a seek or a loop nothing is near the playhead: render the frame due first (the
+        // grid below starts `lead_min` frames ahead), and keep it queued however near it is
+        let last = self.shared.last_due.swap(cur, Ordering::Relaxed);
+        let rescue = playhead_jumped(last, cur, plan).then_some(cur);
+        if let Some(f) = rescue {
+            self.request_job(FrameRequest {
+                key: FrameKey { frame: f, ..key },
+                time: rate.tick_of(f),
+                scale,
+                project,
+                priority: 0,
+                prefetch: false,
+                catch_up: Some(Tick::ZERO),
+            });
+        }
+        let plan_bytes = self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).bytes_of(&key);
+        let depth = plan.depth.min(fitting_prefetch_depth(prefetch_depth(1.0), plan_bytes)).max(1);
+        let first = grid_ceil(cur.saturating_add(plan.lead_min), plan.stride);
+        for i in 0..depth {
+            let f = first.saturating_add(i.saturating_mul(plan.stride));
+            self.request_job(FrameRequest {
+                key: FrameKey { frame: f, ..key },
+                time: rate.tick_of(f),
+                scale,
+                project,
+                priority: u32::try_from(i.saturating_add(1)).unwrap_or(u32::MAX),
+                prefetch: true,
+                catch_up: Some(rate.tick_of(f) - rate.tick_of(cur)),
+            });
+        }
+        let (target, rev) = (key.target, key.revision);
+        let newest = self.recent(key, 1, plan.grace.saturating_add(plan.stride), 0).map(|k| k.frame);
+        self.retain_jobs(
+            |k| k.target != target || (k.revision == rev && (queued_job_useful(k.frame, cur, plan) || rescue == Some(k.frame))),
+            |k| {
+                k.target != target
+                    || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && running_job_useful(k.frame, cur, newest, plan))
+            },
+        );
     }
 
     /// The current per-frame render cost estimate (s), see [`playback_plan`].
@@ -766,6 +1120,8 @@ impl FrameServer {
     /// Playback stopped: drop its queued prefetch jobs and cancel the running ones (left alone,
     /// they would keep the workers busy, e.g. rendering effects for frames nobody will see).
     pub fn stop_prefetch(&self) {
+        self.set_stride(None);
+        self.shared.latency.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| !j.prefetch);
         for (_, c, prefetch) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
             if *prefetch {
@@ -778,14 +1134,20 @@ impl FrameServer {
         self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 
-    /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
-    pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
+    /// Nearest cached frame at or before `frame`, returning its actual cached [`FrameKey`].
+    pub fn nearest_with_key(&self, key: FrameKey, max_back: i64) -> Option<(FrameKey, Arc<Rgba>)> {
         for d in 0..=max_back {
-            if let Some(v) = self.get(&FrameKey { target, frame: frame - d, size, revision, draft: false }) {
-                return Some(v);
+            let k = FrameKey { frame: key.frame - d, ..key };
+            if let Some(v) = self.get(&k) {
+                return Some((k, v));
             }
         }
         None
+    }
+
+    /// The most recent cached frame for `target` at or before `frame` within `max_back` frames.
+    pub fn nearest(&self, target: Target, frame: i64, size: u32, revision: u64, max_back: i64) -> Option<Arc<Rgba>> {
+        self.nearest_with_key(FrameKey { target, frame, size, revision, draft: false }, max_back).map(|(_, v)| v)
     }
 
     /// Without worker threads (wasm32): run queued jobs on the calling (UI) thread, highest
@@ -856,6 +1218,15 @@ impl Drop for FrameServer {
 pub struct PlaybackMeter {
     pub shown: u64,
     pub dropped: u64,
+    /// Frames the playback left out on purpose (strided playback, [`strided_plan`]): not `dropped`.
+    pub skipped: u64,
+    /// Distinct pictures that reached the screen ([`Self::picture`]): what the viewer sees change.
+    pub distinct: u64,
+    lag_frames: u64,
+    lag_samples: u64,
+    last_picture: Option<i64>,
+    /// Whether the frame in `current` is one the playback renders (see `skipped`).
+    current_planned: bool,
     /// Frame due at the last refresh, and whether its exact picture has been shown.
     current: Option<(i64, bool)>,
     /// Frames advanced per displayed frame (speed), and direction.
@@ -869,6 +1240,12 @@ impl PlaybackMeter {
 
     /// Record one display refresh: `frame` is due now and `exact` says whether it is on screen.
     pub fn refresh(&mut self, frame: i64, exact: bool) {
+        self.refresh_planned(frame, exact, true);
+    }
+
+    /// [`Self::refresh`] for a playback that renders only some frames (`planned`: this frame is one
+    /// of them): a frame left out on purpose that was not shown is `skipped`, not `dropped`.
+    pub fn refresh_planned(&mut self, frame: i64, exact: bool, planned: bool) {
         let step = if self.step == 0 { 1 } else { self.step };
         match self.current {
             Some((f, seen)) if f == frame => self.current = Some((f, seen || exact)),
@@ -881,16 +1258,22 @@ impl PlaybackMeter {
                     self.dropped += (moved - 1) as u64;
                 }
                 self.current = Some((frame, exact));
+                self.current_planned = planned;
             }
-            None => self.current = Some((frame, exact)),
+            None => {
+                self.current = Some((frame, exact));
+                self.current_planned = planned;
+            }
         }
     }
 
     fn close(&mut self, seen: bool) {
         if seen {
             self.shown += 1;
-        } else {
+        } else if self.current_planned {
             self.dropped += 1;
+        } else {
+            self.skipped += 1;
         }
     }
 
@@ -898,6 +1281,7 @@ impl PlaybackMeter {
     /// was hidden, so nothing could be shown).
     pub fn resync(&mut self, frame: i64, exact: bool) {
         self.current = Some((frame, exact));
+        self.current_planned = true;
     }
 
     /// Playback stopped: account for the frame on screen.
@@ -905,6 +1289,31 @@ impl PlaybackMeter {
         if let Some((_, seen)) = self.current.take() {
             self.close(seen);
         }
+    }
+
+    /// Record the picture on screen at one refresh: `due` is the frame due now and `on_screen` the
+    /// frame shown (`None`: nothing yet). Feeds `distinct` and [`Self::mean_lag_frames`].
+    pub fn picture(&mut self, due: i64, on_screen: Option<i64>) {
+        let Some(shown) = on_screen else { return };
+        self.lag_samples = self.lag_samples.saturating_add(1);
+        self.lag_frames = self.lag_frames.saturating_add(u64::try_from(due.saturating_sub(shown)).unwrap_or(0));
+        if self.last_picture != Some(shown) {
+            self.distinct += 1;
+            self.last_picture = Some(shown);
+        }
+    }
+
+    /// Mean distance (frames) between the frame due and the picture on screen over the refreshes
+    /// that had a picture: how far the video trails the clock (0 when every frame is shown).
+    pub fn mean_lag_frames(&self) -> f64 {
+        self.lag_frames as f64 / self.lag_samples.max(1) as f64
+    }
+
+    /// Whether the playback is below full quality: frames were lost (`dropped`), or left out on
+    /// purpose (`skipped`, or a `stride` above 1 in force right now). The monitor's indicator
+    /// is yellow then, green only when every frame is being shown.
+    pub fn degraded(&self, stride: i64) -> bool {
+        self.dropped > 0 || self.skipped > 0 || stride > 1
     }
 
     /// Shown and dropped so far, counting the frame currently due as shown when it is.
@@ -981,28 +1390,32 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     }
     let profiling = sh.profiling.load(Ordering::Relaxed);
     let (started, cpu0) = (Instant::now(), if profiling { thread_cpu_time().unwrap_or_default() } else { Duration::ZERO });
-    SOURCE_TIME.with(|s| s.set((Duration::ZERO, Duration::ZERO)));
-    PROFILING.with(|p| p.set(profiling));
+    let acc = Arc::new(SourceAcc::new(profiling));
     // A cancelled job may have missed layers (its source gave up): its result is not cached.
     // A job whose media bytes were still loading (web) rendered with missing layers: like a
     // cancelled one, its result is not cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
+    let mut eval_wall = Duration::ZERO;
     let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
         filmcraft_media::cancel::with_catch_up(job.catch_up, || {
             filmcraft_media::cancel::with_draft(job.key.draft, || {
                 filmcraft_media::cancel::with_background(is_background(job), || {
                     if let Target::SequencePlan(seq, caps) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews);
+                        let t0 = Instant::now();
+                        let (plan, pv) = plan_job(job, seq, caps, pool, services, previews, &acc);
+                        eval_wall = t0.elapsed();
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
+                            let prepared = filmcraft_gpu::prepare_for(&plan, sh.r16_unorm.load(Ordering::Relaxed));
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
                     } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
+                        let t0 = Instant::now();
+                        let (img, pv) = render_job(job, pool, services, previews, &acc);
+                        eval_wall = t0.elapsed();
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             sh.done.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, Arc::new(img));
@@ -1015,20 +1428,34 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     });
     let cancelled = job.cancel.load(Ordering::Relaxed);
     sh.in_flight.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, c, _)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+    let (acc_wall, source_cpu) = acc.totals();
+    let source_wall = acc_wall.min(eval_wall);
     if job.prefetch {
         // Work beyond fetching source frames (decoding is sequential per source and is
         // not saved by skipping frames, so it is left out of the estimate). A cancelled job
         // only tells that the work takes at least this long.
-        let cost = started.elapsed().saturating_sub(SOURCE_TIME.with(|s| s.get()).0).as_secs_f64();
+        let cost = started.elapsed().saturating_sub(source_wall).as_secs_f64();
         let mut c = sh.render_cost.lock().unwrap_or_else(PoisonError::into_inner);
         if !cancelled || cost > *c {
             *c = if *c == 0.0 { cost } else { *c * 0.8 + cost * 0.2 };
         }
+        let wall = started.elapsed().as_secs_f32();
+        let size = job.key.size;
+        let mut l = sh.latency.lock().unwrap_or_else(PoisonError::into_inner);
+        let same: Vec<f32> = l.iter().filter(|(s, _)| *s == size).map(|(_, w)| *w).collect();
+        let mean = if same.is_empty() { 0.0 } else { same.iter().sum::<f32>() / same.len() as f32 };
+        // a cancelled job only tells that the whole job takes at least this long; only the
+        // Program's sequence jobs are recorded (a multicam grid cell or an item is another cost)
+        if matches!(job.key.target, Target::Sequence(_) | Target::SequencePlan(..) | Target::SequenceLive(_)) && (!cancelled || wall > mean) {
+            if l.len() >= LATENCY_SAMPLES {
+                l.pop_front();
+            }
+            l.push_back((size, wall));
+        }
     }
     {
         let job_wall = started.elapsed();
-        let source = SOURCE_TIME.with(|s| s.get()).0;
-        let (src_ms, render_ms) = (source.as_secs_f64() * 1e3, job_wall.saturating_sub(source).as_secs_f64() * 1e3);
+        let (src_ms, render_ms) = (source_wall.as_secs_f64() * 1e3, job_wall.saturating_sub(source_wall).as_secs_f64() * 1e3);
         let mut st = sh.stats.lock().unwrap_or_else(PoisonError::into_inner);
         st.jobs += 1;
         st.cancelled += cancelled as u64;
@@ -1043,7 +1470,6 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
         st.recent.push_back((src_ms as f32, render_ms as f32));
     }
     if profiling {
-        let (source_wall, source_cpu) = SOURCE_TIME.with(|s| s.get());
         let rec = JobRecord {
             key: job.key,
             prio: job.prio,
@@ -1062,13 +1488,13 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
 }
 
 /// The preview frame for a sequence job, when its segment has been rendered.
-fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewStore) -> Option<Arc<filmcraft_frame::VideoFrame>> {
+fn preview_frame(job: &Job, seq: ItemId, pool: &MediaPool, previews: &PreviewStore, acc: &SourceAcc) -> Option<Arc<filmcraft_frame::VideoFrame>> {
     let rate = job.project.sequence(seq)?.settings.frame_rate;
-    timed_source(|| previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale))
+    acc.timed(|| previews.frame(pool, &job.project, seq, rate.frame_at(job.time), job.scale))
 }
 
-fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> JobProvider {
-    JobProvider { inner: pool.provider(job.project.clone(), services.clone()) }
+fn provider(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, acc: &Arc<SourceAcc>) -> JobProvider {
+    JobProvider { inner: pool.provider(job.project.clone(), services.clone()), acc: acc.clone() }
 }
 
 fn plan_job(
@@ -1078,9 +1504,10 @@ fn plan_job(
     pool: &Arc<MediaPool>,
     services: &Arc<dyn Services>,
     previews: &PreviewStore,
+    acc: &Arc<SourceAcc>,
 ) -> (filmcraft_render::plan::FramePlan, bool) {
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
-    if let Some(frame) = preview_frame(job, seq, pool, previews)
+    if let Some(frame) = preview_frame(job, seq, pool, previews, acc)
         && let Some(q) = job.project.sequence(seq)
     {
         // One full-frame layer: the preview scaled to the output size. Previews never contain
@@ -1100,14 +1527,14 @@ fn plan_job(
         }
         return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
     }
-    let provider = provider(job, pool, services);
+    let provider = provider(job, pool, services, acc);
     (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, caps, &provider), false)
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
-fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore) -> (Rgba, bool) {
+fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, previews: &PreviewStore, acc: &Arc<SourceAcc>) -> (Rgba, bool) {
     if let Target::Sequence(seq) | Target::SequencePlan(seq, _) = job.key.target
-        && let Some(f) = preview_frame(job, seq, pool, previews)
+        && let Some(f) = preview_frame(job, seq, pool, previews, acc)
         && let Some(q) = job.project.sequence(seq)
     {
         let (w, h) = filmcraft_render::output_size(q, job.scale);
@@ -1124,7 +1551,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
         }
         return (Rgba { w: img.w, h: img.h, px: img.over_black_with_alpha_rgba8() }, true);
     }
-    let provider = provider(job, pool, services);
+    let provider = provider(job, pool, services, acc);
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
         Target::Sequence(seq) | Target::SequencePlan(seq, _) | Target::SequenceLive(seq) => {
@@ -1149,8 +1576,61 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameKey, PlaybackMeter, Target, background_work, playback_plan, recent_keys};
+    use super::{
+        DISPLAY_WINDOW, FrameKey, FrameServer, JobLatency, MAX_STRIDE, PlanCache, PlaybackMeter, STRIDE_ENTER_LOAD, STRIDE_EXIT_LOAD, Target, background_work,
+        fitting_prefetch_depth, grid_ceil, is_planned, latency_stats, plan_evictions, playback_plan, playhead_jumped, queued_job_useful, recent_keys,
+        running_job_useful, strided_plan,
+    };
     use filmcraft_project::ItemId;
+
+    #[test]
+    fn the_prefetch_run_fits_the_plan_cache() {
+        // Plans that fit the budget keep the frames asked for: 1080p four-layer plans (~12 MB).
+        assert_eq!(fitting_prefetch_depth(14, 12 << 20), 14);
+        // Nothing cached yet: no reduction.
+        assert_eq!(fitting_prefetch_depth(14, 0), 14);
+        // A 10-layer 1080p plan (~41 MB) leaves the cache holding far more than the fourteen asked.
+        assert_eq!(fitting_prefetch_depth(14, 42_508_800), 14);
+        // A 4K four-layer plan or a transition frame with every layer visible (~62-75 MB) still fits
+        // the whole playback window: the cache keeps it, so playback must not cut its lookahead.
+        // (At the 512 MiB budget this used to hold eight to ten of the fourteen frames, which were
+        // then evicted and rendered again before the playhead reached them.)
+        let four_k = 62_208_000;
+        assert!(14 * four_k <= PlanCache::BUDGET, "the 4K playback window fits the budget");
+        assert_eq!(fitting_prefetch_depth(14, four_k), 14);
+        assert_eq!(fitting_prefetch_depth(14, 74_649_600), 14);
+        // However large a plan gets, playback still runs a few frames ahead and never asks for more
+        // plans than the cache can hold.
+        let huge = PlanCache::BUDGET / 4;
+        let depth = fitting_prefetch_depth(14, huge);
+        assert!((super::MIN_PREFETCH..14).contains(&depth), "{depth}");
+        assert!(depth as usize * huge <= PlanCache::BUDGET, "the prefetched plans fit");
+        assert_eq!(fitting_prefetch_depth(14, PlanCache::BUDGET), super::MIN_PREFETCH);
+        // Fast playback asks for more frames and is bounded the same way.
+        assert_eq!(fitting_prefetch_depth(24, 4 << 20), 24);
+        assert!(fitting_prefetch_depth(24, PlanCache::BUDGET / 4) < 24);
+    }
+
+    #[test]
+    fn the_plan_just_inserted_is_never_evicted() {
+        let key = |frame: i64| FrameKey { target: Target::Sequence(ItemId(1)), frame, size: 1000, revision: 0, draft: false };
+        let budget = PlanCache::BUDGET;
+        // A plan larger than the whole budget used to evict itself, so the same frame was planned
+        // again on every request: it keeps its entry and the others make room for it.
+        let huge = budget + 1;
+        assert_eq!(plan_evictions(&[(key(1), 1, 1 << 20), (key(2), 2, huge)], PlanCache::MAX, budget, key(2)), [key(1)]);
+        // Alone, nothing else is dropped and the cache simply stays over budget.
+        assert!(plan_evictions(&[(key(2), 2, huge)], PlanCache::MAX, budget, key(2)).is_empty());
+        // The next insert is not the kept plan, so the oversized one goes then (least recently used
+        // first, then the older plan), and the cache fits again.
+        let over = [(key(2), 2, huge), (key(3), 3, 1 << 20)];
+        assert_eq!(plan_evictions(&over, PlanCache::MAX, budget, key(3)), [key(2)]);
+        // The entry bound evicts the least recently used, oldest first, and never the new plan.
+        let many: Vec<(FrameKey, u64, usize)> = (0..PlanCache::MAX as i64 + 2).map(|f| (key(f), f as u64 + 1, 0)).collect();
+        assert_eq!(plan_evictions(&many, PlanCache::MAX, budget, key(PlanCache::MAX as i64 + 1)), [key(0), key(1)]);
+        // Nothing over either bound: nothing is dropped.
+        assert!(plan_evictions(&many[..3], PlanCache::MAX, budget, key(2)).is_empty());
+    }
 
     #[test]
     fn only_item_thumbnails_are_background_work() {
@@ -1216,6 +1696,241 @@ mod tests {
         // 0.5 s of effects per frame at 24 fps on 6 workers: 12 frames pass while one renders,
         // so start 12 ahead, and every 3rd frame is what 6 workers can finish
         assert_eq!(playback_plan(0.5, 24.0, 6), (12, 3));
+    }
+
+    fn lat_of(mean: f64) -> Option<JobLatency> {
+        Some(JobLatency { mean, p50: mean * 0.875, p90: mean * 1.75 })
+    }
+
+    #[test]
+    fn strided_plan_leaves_light_and_borderline_pipelines_alone() {
+        // S1-S5-like: tens of ms per job on 6 workers at 60 fps
+        assert_eq!(strided_plan(lat_of(0.020), 60.0, 6, 1), None);
+        // the publi at 1/4 scale: ~0.1 s per job, load 1.15, ~45 fps in exact mode today
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(None, 60.0, 6, 1), None);
+        // hostile timings and rates are refused, never divided by or cast
+        assert_eq!(strided_plan(lat_of(0.5), 0.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.5), f64::NAN, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(f64::NAN), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.0), 60.0, 0, 1), None);
+        assert!(strided_plan(lat_of(1e9), 60.0, 0, 1).is_some_and(|p| p.stride == MAX_STRIDE && p.lead <= 240));
+    }
+
+    /// A pipeline that keeps up (load under the entry threshold) decides exactly as before the
+    /// strided regime existed: no stride, every frame planned, the display window of 6, and the
+    /// lead/skip choice is still `playback_plan`'s alone.
+    #[test]
+    fn a_pipeline_that_keeps_up_decides_as_before() {
+        assert_eq!(DISPLAY_WINDOW, 6);
+        const { assert!(STRIDE_ENTER_LOAD >= 1.5 && STRIDE_EXIT_LOAD <= 1.1, "the thresholds the 0.25-scale playback relies on") };
+        let mut checked = 0;
+        for workers in [1usize, 2, 4, 6, 8, 16] {
+            for fps in [12.0, 24.0, 25.0, 30.0, 60.0, 120.0] {
+                for ms in (1..=400).map(|i| f64::from(i) * 0.001) {
+                    let load = ms * fps * 1.15 / workers as f64;
+                    if load >= STRIDE_ENTER_LOAD {
+                        continue;
+                    }
+                    checked += 1;
+                    // not striding: never starts one, whatever the percentiles
+                    assert_eq!(strided_plan(lat_of(ms), fps, workers, 1), None, "{ms} s {fps} fps {workers} workers");
+                    // ... and every frame is one the playback renders
+                    assert!((0..64).all(|f| is_planned(f, 1)));
+                    // the lead and skip stay `playback_plan`'s (unchanged): a light one is every frame
+                    if load <= 1.0 {
+                        assert_eq!(playback_plan(ms, fps, workers), (1, 1));
+                    }
+                    if load < STRIDE_EXIT_LOAD {
+                        // ... and a stride left over from a heavier moment is dropped
+                        for cur in 2..=MAX_STRIDE {
+                            assert_eq!(strided_plan(lat_of(ms), fps, workers, cur), None, "{ms} s {fps} fps {workers} workers stride {cur}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000);
+    }
+
+    #[test]
+    fn the_display_window_is_capped_in_time_and_exact_playback_keeps_six() {
+        // stride 6 at 60 fps: 2 * 6 + 6 = 18 frames = exactly 0.3 s
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.window, p.grace), (6, 18, 6));
+        // a stride of 30 would look back 90 frames (1.5 s): held to 0.3 s, and a job later than
+        // that is not worth finishing
+        let p = strided_plan(lat_of(1e9), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.window, p.grace), (30, 18, 18));
+        // at 24 fps 0.3 s is 8 frames (7.2 rounded up)
+        let p = strided_plan(lat_of(0.5), 24.0, 1, 1).unwrap();
+        assert!(p.stride > 2 && p.window == 8 && p.grace <= p.window, "{p:?}");
+        // never below the exact playback's window, and every plan keeps grace within it
+        for ms in [0.05, 0.1, 0.3, 1.0, 10.0] {
+            for fps in [12.0, 24.0, 30.0, 60.0, 120.0] {
+                if let Some(p) = strided_plan(lat_of(ms), fps, 2, 1) {
+                    assert!(
+                        p.window >= DISPLAY_WINDOW && p.grace <= p.window && p.window <= ((fps * 0.3_f64).ceil() as i64).max(DISPLAY_WINDOW),
+                        "{p:?} at {fps}"
+                    );
+                }
+            }
+        }
+        // idle server: the exact window
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        assert_eq!((server.display_window(), server.playback_stride()), (DISPLAY_WINDOW, 1));
+    }
+
+    #[test]
+    fn the_indicator_is_not_green_while_frames_are_left_out() {
+        let mut m = PlaybackMeter::default();
+        assert!(!m.degraded(1), "every frame shown, none lost");
+        assert!(m.degraded(6), "a stride in force");
+        m.skipped = 1;
+        assert!(m.degraded(1), "frames left out on purpose, the stride already back to 1");
+        m.skipped = 0;
+        m.dropped = 1;
+        assert!(m.degraded(1), "frames lost");
+    }
+
+    #[test]
+    fn the_playhead_jump_is_told_from_the_clock_advancing() {
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap();
+        assert!(playhead_jumped(i64::MIN, 100, &p), "the start of strided playback");
+        assert!(!playhead_jumped(100, 101, &p) && !playhead_jumped(100, 100, &p) && !playhead_jumped(100, 100 + p.window, &p));
+        assert!(playhead_jumped(100, 100 + p.window + 1, &p), "a seek forward");
+        assert!(playhead_jumped(100, 99, &p), "a seek back or a loop");
+        assert!(!playhead_jumped(i64::MAX - 1, i64::MAX, &p), "no overflow");
+        assert!(playhead_jumped(i64::MIN + 1, i64::MAX, &p));
+    }
+
+    /// A server with `n` heavy playback-job samples at output size `size`, as if jobs had run.
+    fn heavy_server(size: u32, mean: f32, n: usize) -> FrameServer {
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        server.shared.latency.lock().unwrap().extend((0..n).map(|_| (size, mean)));
+        server
+    }
+
+    fn play(server: &FrameServer, target: Target, size: u32, speed: f64) {
+        let key = FrameKey { target, frame: 100, size, revision: 0, draft: false };
+        let project = std::sync::Arc::new(filmcraft_project::Project::new("Frames"));
+        server.schedule_playback(key, filmcraft_time::FrameRate::FPS_24, 0.25, &project, speed, false);
+    }
+
+    #[test]
+    fn another_target_never_resets_the_programs_stride() {
+        let server = heavy_server(250, 0.2, 16);
+        play(&server, Target::Sequence(ItemId(1)), 250, 1.0);
+        let stride = server.playback_stride();
+        assert!(stride > 1, "the Program is CPU-bound and strides");
+        // the Multicam view schedules its grid on every refresh of the same playback
+        play(&server, Target::MulticamGrid(ItemId(1), 0, 0), 250, 1.0);
+        assert_eq!(server.playback_stride(), stride);
+        play(&server, Target::Item(ItemId(2)), 250, 1.0);
+        assert_eq!(server.playback_stride(), stride);
+        // the Program itself still leaves the stride when it stops striding (a speed it does not stride at)
+        play(&server, Target::Sequence(ItemId(1)), 250, -1.0);
+        assert_eq!(server.playback_stride(), 1);
+    }
+
+    #[test]
+    fn slow_motion_is_judged_by_the_frames_due_per_second() {
+        // 0.1 s per job on one worker: load 2.76 at 24 frames per second, 1.38 at half speed
+        let server = heavy_server(250, 0.1, 16);
+        play(&server, Target::Sequence(ItemId(1)), 250, 0.5);
+        assert_eq!(server.playback_stride(), 1, "half speed is not over the entry load");
+        let server = heavy_server(250, 0.1, 16);
+        play(&server, Target::Sequence(ItemId(1)), 250, 1.0);
+        assert!(server.playback_stride() > 1);
+    }
+
+    #[test]
+    fn latency_samples_follow_the_scale_and_stop_with_the_playback() {
+        let server = heavy_server(250, 0.2, 16);
+        assert!(server.latency(250).is_some());
+        assert!(server.latency(500).is_none(), "another scale has no samples of its own yet");
+        play(&server, Target::Sequence(ItemId(1)), 500, 1.0);
+        assert_eq!(server.playback_stride(), 1, "the old scale's latency does not stride the new one");
+        server.stop_prefetch();
+        assert!(server.latency(250).is_none(), "stopping the playback forgets its samples");
+    }
+
+    #[test]
+    fn strided_plan_sizes_stride_and_lead_from_the_whole_job() {
+        // publi at full scale: ~0.5 s per job on 6 workers at 60 fps -> load 5.75
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.lead_min, p.lead, p.grace, p.depth), (6, 27, 55, 6, 7));
+        // half scale: ~0.25 s -> load 2.875
+        let p = strided_plan(lat_of(0.25), 60.0, 6, 1).unwrap();
+        assert_eq!((p.stride, p.grace), (3, 6));
+        assert!(p.lead_min <= p.lead);
+    }
+
+    #[test]
+    fn strided_plan_has_hysteresis_in_both_directions() {
+        // load 1.15: not enough to start striding, enough to keep it
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 1), None);
+        assert_eq!(strided_plan(lat_of(0.100), 60.0, 6, 3).map(|p| p.stride), Some(2));
+        // load 2.99: a stride of 4 in force stays, a fresh start takes 3
+        assert_eq!(strided_plan(lat_of(0.26), 60.0, 6, 4).map(|p| p.stride), Some(4));
+        assert_eq!(strided_plan(lat_of(0.26), 60.0, 6, 1).map(|p| p.stride), Some(3));
+        // a stride that no longer covers the load widens at once
+        assert_eq!(strided_plan(lat_of(0.5), 60.0, 6, 2).map(|p| p.stride), Some(6));
+    }
+
+    #[test]
+    fn the_grid_is_absolute_and_never_overflows() {
+        assert_eq!([grid_ceil(10, 6), grid_ceil(12, 6), grid_ceil(0, 6), grid_ceil(-3, 6), grid_ceil(7, 1), grid_ceil(7, 0)], [12, 12, 0, 0, 7, 7]);
+        assert!(grid_ceil(i64::MAX, 6) >= i64::MAX - 6);
+        assert!(is_planned(12, 6) && !is_planned(13, 6) && is_planned(13, 1) && is_planned(13, 0) && is_planned(-6, 6));
+    }
+
+    #[test]
+    fn strided_jobs_are_kept_only_while_they_can_improve_the_picture() {
+        let p = strided_plan(lat_of(0.5), 60.0, 6, 1).unwrap(); // stride 6, lead_min 27, lead 55, grace 6, depth 7
+        // queued: a job nearer than lead_min - grace cannot be done even grace frames late
+        assert!(!queued_job_useful(100 + 20, 100, &p));
+        assert!(queued_job_useful(100 + 21, 100, &p));
+        assert!(queued_job_useful(100 + 100, 100, &p));
+        assert!(!queued_job_useful(100 + 103, 100, &p));
+        // running: up to grace frames late; never once a newer frame at or before the clock is ready
+        assert!(running_job_useful(95, 100, None, &p));
+        assert!(!running_job_useful(93, 100, None, &p));
+        assert!(!running_job_useful(98, 100, Some(99), &p));
+        assert!(running_job_useful(130, 100, Some(99), &p));
+    }
+
+    #[test]
+    fn latency_stats_needs_enough_finite_samples() {
+        assert_eq!(latency_stats(&[0.1; 7]), None);
+        assert_eq!(latency_stats(&[f32::NAN; 8]), None);
+        let ten: Vec<f32> = (1..=10).map(|i| i as f32).collect();
+        assert_eq!(latency_stats(&ten), Some(JobLatency { mean: 5.5, p50: 6.0, p90: 9.0 }));
+    }
+
+    #[test]
+    fn meter_separates_frames_left_out_on_purpose_from_lost_ones() {
+        let mut m = PlaybackMeter::default();
+        m.start(1.0);
+        // stride 2: the odd frames are not planned; frame 2 is planned and never reached the screen
+        for (f, exact, planned) in [(0, true, true), (1, false, false), (2, false, true), (3, false, false), (4, true, true)] {
+            m.refresh_planned(f, exact, planned);
+        }
+        m.finish();
+        assert_eq!((m.shown, m.dropped, m.skipped), (2, 1, 2));
+    }
+
+    #[test]
+    fn meter_counts_distinct_pictures_and_their_lag() {
+        let mut m = PlaybackMeter::default();
+        m.start(1.0);
+        for (due, pic) in [(0, Some(0)), (1, Some(0)), (2, Some(0)), (3, Some(3)), (4, Some(3)), (5, None)] {
+            m.picture(due, pic);
+        }
+        assert_eq!(m.distinct, 2);
+        assert!((m.mean_lag_frames() - 0.8).abs() < 1e-9, "lags 0,1,2,0,1 -> {}", m.mean_lag_frames());
     }
 
     #[test]
@@ -1375,5 +2090,63 @@ mod tests {
             matches!(&all.plan, FramePlan::Composite { steps, .. } if steps.iter().any(|st| matches!(st, PlanStep::Adjust { .. }))),
             "an effect stage: the adjustment layer is a step of the plan"
         );
+    }
+
+    #[test]
+    fn source_acc_unions_fixed_intervals() {
+        assert_eq!(super::SourceAcc::union_ns(Vec::new()), 0);
+        assert_eq!(super::SourceAcc::union_ns(vec![(10, 30), (50, 80)]), 50);
+        // Overlapping, out-of-order, nested, and touching intervals merge deterministically.
+        assert_eq!(super::SourceAcc::union_ns(vec![(100, 200), (50, 120), (110, 150), (200, 220), (300, 350)]), 220);
+    }
+
+    #[test]
+    fn source_acc_records_concurrent_intervals() {
+        use std::sync::{Arc, Barrier};
+        use std::time::{Duration, Instant};
+
+        let acc = super::SourceAcc::new(false);
+        let barrier = Arc::new(Barrier::new(2));
+        let t0 = Instant::now();
+        std::thread::scope(|s| {
+            let b1 = Arc::clone(&barrier);
+            let a1 = &acc;
+            let h1 = s.spawn(move || {
+                a1.timed(|| {
+                    b1.wait();
+                    std::thread::sleep(Duration::from_millis(10));
+                });
+            });
+            let b2 = Arc::clone(&barrier);
+            let a2 = &acc;
+            let h2 = s.spawn(move || {
+                a2.timed(|| {
+                    b2.wait();
+                    std::thread::sleep(Duration::from_millis(10));
+                });
+            });
+            h1.join().unwrap();
+            h2.join().unwrap();
+        });
+        let scope_elapsed = t0.elapsed();
+        let (wall, _) = acc.totals();
+        assert!(wall > Duration::ZERO);
+        assert!(wall <= scope_elapsed + Duration::from_millis(2), "parallel source wall {wall:?} must not exceed outer wall {scope_elapsed:?}");
+    }
+
+    #[test]
+    fn nearest_with_key_returns_actual_cached_frame_key() {
+        use super::{FrameKey, FrameServer, Rgba, Target};
+        use filmcraft_project::ItemId;
+        use std::sync::{Arc, PoisonError};
+
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media, s.services, s.previews, 1);
+        let k7 = FrameKey { target: Target::Sequence(ItemId(1)), frame: 7, size: 1000, revision: 3, draft: false };
+        let k10 = FrameKey { frame: 10, ..k7 };
+        server.shared.done.lock().unwrap_or_else(PoisonError::into_inner).insert(k7, Arc::new(Rgba { w: 1, h: 1, px: vec![0, 0, 0, 255] }));
+        let (found_k, _) = server.nearest_with_key(k10, 6).expect("cached k7 within max_back=6");
+        assert_eq!(found_k, k7);
+        assert!(server.nearest_with_key(FrameKey { frame: 14, ..k7 }, 6).is_none());
     }
 }

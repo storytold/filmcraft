@@ -122,10 +122,15 @@ impl Display {
             // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
             let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
-            adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
-                let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
-                (c, d)
-            })
+            adapter
+                .and_then(|a| {
+                    let desc = eframe::wgpu::DeviceDescriptor { required_features: filmcraft_gpu::requested_features(&a), ..Default::default() };
+                    pollster::block_on(a.request_device(&desc)).ok()
+                })
+                .map(|(d, q)| {
+                    let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
+                    (c, d)
+                })
         } else {
             None
         };
@@ -151,7 +156,7 @@ impl Display {
         if let Some((comp, dev)) = self.gpu.as_mut() {
             let plan = server.get_plan(&key).map(|p| (key, p));
             exact = plan.is_some();
-            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, 6))
+            if let Some((k, plan)) = plan.or_else(|| server.nearest_plan(key, server.display_window()))
                 && self.last != Some(k)
             {
                 let before = comp.uploaded_bytes;
@@ -165,7 +170,7 @@ impl Display {
         } else {
             let img = server.get(&key).map(|i| (key, i));
             exact = img.is_some();
-            let near = img.or_else(|| server.nearest(key.target, key.frame, key.size, key.revision, 6).map(|i| (FrameKey { frame: key.frame - 1, ..key }, i)));
+            let near = img.or_else(|| server.nearest_with_key(FrameKey { draft: false, ..key }, server.display_window()));
             if let Some((k, img)) = near
                 && self.last != Some(k)
             {

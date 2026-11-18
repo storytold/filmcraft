@@ -22,6 +22,7 @@ impl FilmcraftApp {
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
+                self.frames.set_r16_unorm(compositor.supports_r16_unorm());
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
@@ -58,13 +59,13 @@ impl FilmcraftApp {
         }
         let t0 = web_time::Instant::now();
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-            (view.clone(), size)
+            g.compositor.try_composite_prepared(&plan.plan, Some(&plan.prepared)).map(|(view, size)| (view.clone(), size))
         }));
-        let Ok((view, size)) = ran else {
+        let Ok(rendered) = ran else {
             self.disable_gpu("compositor panicked");
             return None;
         };
+        let (view, size) = rendered?;
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         let mut renderer = g.render_state.renderer.write();

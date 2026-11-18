@@ -108,7 +108,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             .frames
             .get_plan(&key)
             .map(|p| (key, p))
-            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| app.frames.nearest_plan(key, if playing { app.frames.display_window() } else { 6 }))
             .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
             .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
@@ -130,12 +130,14 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         app.monitor_inexact = true;
     }
     if playing {
+        let planned = app.frames.is_planned(frame);
         let clock = if which == Which::Program { &mut app.playback } else { &mut app.source_playback.clock };
         if std::mem::take(&mut clock.hidden) {
             clock.meter.resync(frame, exact);
         } else {
-            clock.meter.refresh(frame, exact);
+            clock.meter.refresh_planned(frame, exact, planned);
         }
+        clock.meter.picture(frame, on_screen.map(|k| k.frame));
     }
     if let Some(tex) = shown {
         ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -193,7 +195,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
 
 fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
     if which == Which::Program && app.playback.playing && !app.ui.fullscreen_program {
-        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
+        let c = if app.playback.meter.degraded(app.frames.playback_stride()) { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
 }
@@ -612,7 +614,7 @@ fn play_direction(speed: f64) -> i64 {
 /// While playing, a frame to show when the one due is not ready at the project's revision: the
 /// same frame (or one just played) rendered for one of the last few revisions (#1673).
 fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option<FrameKey> {
-    dir.and_then(|dir| app.frames.recent(key, dir, 6, crate::frames::PLAYING_REVISION_LAG))
+    dir.and_then(|dir| app.frames.recent(key, dir, app.frames.display_window(), crate::frames::PLAYING_REVISION_LAG))
 }
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
@@ -646,7 +648,11 @@ fn cpu_texture_as(
         .frames
         .get(&key)
         .map(|img| (key, img))
-        .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
+        .or_else(|| {
+            (1..=app.frames.display_window())
+                .map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key })
+                .find_map(|k| app.frames.get(&k).map(|img| (k, img)))
+        })
         .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
         .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {

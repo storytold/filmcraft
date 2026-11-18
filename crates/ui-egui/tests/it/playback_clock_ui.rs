@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
-use filmcraft_ui_egui::{AudioOut, FilmcraftApp};
+use filmcraft_ui_egui::frames::PREROLL_TIMEOUT_S;
+use filmcraft_ui_egui::{AUDIO_STALL_S, AudioOut, FilmcraftApp};
 use serde_json::json;
 
 /// An output whose stream opens, then plays `per_poll` frames each time the clock is read
@@ -39,6 +40,16 @@ impl AudioOut for FakeOut {
     }
 }
 
+/// Simulated seconds per harness step.
+const STEP_S: f64 = 0.25;
+
+/// Steps long enough for the preroll timeout plus `playing_s` seconds of playback: the clock only
+/// starts once [`PREROLL_TIMEOUT_S`] has passed (when no frame of the demo sequence is ready), so a
+/// run budgeted for playback alone would spend all of it in the preroll.
+fn steps_for(playing_s: f64) -> usize {
+    ((PREROLL_TIMEOUT_S + playing_s) / STEP_S).ceil() as usize
+}
+
 /// Play for `steps` × 0.25 s of simulated time with the given output; the playhead in seconds.
 fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
     let mut s = Session::default();
@@ -60,7 +71,8 @@ fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
 /// the playhead never moved. After a short grace period playback falls back to the wall clock.
 #[test]
 fn a_stalled_audio_device_does_not_freeze_playback() {
-    let (t, audio_clock) = play_with(0, 16);
+    // Preroll timeout, then the stall grace, then 2.5 s of wall-clock playback to see it move.
+    let (t, audio_clock) = play_with(0, steps_for(AUDIO_STALL_S + 2.5));
     assert!(t > 1.5, "the playhead should move with the wall clock, it is at {t:.2} s");
     assert!(!audio_clock, "the stalled device no longer drives the clock");
 }
@@ -68,7 +80,7 @@ fn a_stalled_audio_device_does_not_freeze_playback() {
 /// Control: a device that plays keeps driving the clock (0.1 s of audio per poll).
 #[test]
 fn a_playing_audio_device_drives_the_clock() {
-    let (t, audio_clock) = play_with(4_800, 8);
+    let (t, audio_clock) = play_with(4_800, steps_for(1.5));
     assert!(t > 0.2, "{t:.2} s");
     assert!(audio_clock);
 }

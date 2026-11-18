@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod pool;
+pub mod transfers;
 
 use std::sync::Arc;
 
@@ -46,6 +47,22 @@ impl Chroma {
     }
 }
 
+/// A decoded biplanar video surface held in GPU memory that can be imported directly by a GPU
+/// compositor and lazily read back to CPU [`PixelData`] only when a CPU consumer asks for pixels.
+pub trait GpuSurface: Send + Sync + std::fmt::Debug {
+    fn as_any(&self) -> &dyn std::any::Any;
+    /// Stable monotonic identifier for texture import caching.
+    fn id(&self) -> usize;
+    /// Approximate byte footprint in GPU memory (for cache budgets).
+    fn gpu_bytes(&self) -> u64;
+    /// Significant bits per sample (e.g. 8 or 10).
+    fn bits(&self) -> u32;
+    /// Chroma subsampling format.
+    fn chroma(&self) -> Chroma;
+    /// Lazy readback to planar CPU [`PixelData`].
+    fn to_cpu(&self) -> Result<PixelData, String>;
+}
+
 #[derive(Clone, Debug)]
 pub enum PixelData {
     /// Straight-alpha, sRGB/709-encoded RGBA, 8 bits per channel.
@@ -56,6 +73,8 @@ pub enum PixelData {
     Yuv8 { planes: [Arc<Vec<u8>>; 3], chroma: Chroma, alpha: Option<Arc<Vec<u8>>> },
     /// 9–16-bit planar Y'CbCr stored in u16 (`bits` significant bits).
     Yuv16 { planes: [Arc<Vec<u16>>; 3], chroma: Chroma, bits: u32, alpha: Option<Arc<Vec<u16>>> },
+    /// GPU-resident decoded Y'CbCr surface (zero-copy to GPU compositor, lazy readback to CPU).
+    GpuSurface(Arc<dyn GpuSurface>),
 }
 
 #[derive(Clone, Debug)]
@@ -119,12 +138,34 @@ impl VideoFrame {
         self
     }
 
+    /// Materialize a GPU-resident frame into CPU planar `PixelData`, or `Ok(None)` if already on CPU.
+    /// Returns `Err` when GPU-to-CPU readback fails.
+    pub fn try_materialize_cpu(&self) -> Result<Option<VideoFrame>, String> {
+        let PixelData::GpuSurface(surf) = &self.data else { return Ok(None) };
+        let data = surf.to_cpu()?;
+        Ok(Some(VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts }))
+    }
+
+    /// Materialize a GPU-resident frame into CPU planar `PixelData`, or `None` if already on CPU.
+    pub fn materialize_cpu(&self) -> Option<VideoFrame> {
+        match self.try_materialize_cpu() {
+            Ok(frame) => frame,
+            Err(why) => {
+                log::warn!("GPU surface CPU readback failed: {why}");
+                let (w, h) = (self.width as usize, self.height as usize);
+                let data = PixelData::RgbaF32(Arc::new(vec![0.0; w.saturating_mul(h).saturating_mul(4)]));
+                Some(VideoFrame { width: self.width, height: self.height, data, color: self.color, par: self.par, pts: self.pts })
+            }
+        }
+    }
+
     pub fn format_label(&self) -> String {
         match &self.data {
             PixelData::Rgba8(_) => "RGBA 8-bit".into(),
             PixelData::RgbaF32(_) => "RGBA 32-bit float".into(),
             PixelData::Yuv8 { chroma, .. } => format!("YUV {} 8-bit", chroma.label()),
             PixelData::Yuv16 { chroma, bits, .. } => format!("YUV {} {bits}-bit", chroma.label()),
+            PixelData::GpuSurface(s) => format!("YUV {} {}-bit (GPU)", s.chroma().label(), s.bits()),
         }
     }
 
@@ -135,6 +176,7 @@ impl VideoFrame {
             PixelData::RgbaF32(d) => d.len() * 4,
             PixelData::Yuv8 { planes, alpha, .. } => planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len()),
             PixelData::Yuv16 { planes, alpha, .. } => (planes.iter().map(|p| p.len()).sum::<usize>() + alpha.as_ref().map_or(0, |a| a.len())) * 2,
+            PixelData::GpuSurface(s) => usize::try_from(s.gpu_bytes()).unwrap_or(usize::MAX),
         }
     }
 
@@ -179,7 +221,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(box_plane(a, w, h, ow, oh, n))),
                 }
             }
-            PixelData::Rgba8(_) | PixelData::RgbaF32(_) => return None,
+            PixelData::Rgba8(_) | PixelData::RgbaF32(_) | PixelData::GpuSurface(_) => return None,
         };
         Some(VideoFrame { width: ow as u32, height: oh as u32, data, color: self.color, par: self.par, pts: self.pts })
     }
@@ -192,6 +234,7 @@ impl VideoFrame {
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = match &self.data {
             PixelData::Yuv8 { chroma, .. } | PixelData::Yuv16 { chroma, .. } => chroma.shifts(),
+            PixelData::GpuSurface(s) => s.chroma().shifts(),
             PixelData::Rgba8(_) | PixelData::RgbaF32(_) => (0, 0),
         };
         let (mx, my) = ((1usize << sx) - 1, (1usize << sy) - 1);
@@ -199,6 +242,9 @@ impl VideoFrame {
         let r = Region { x, y, w: region.w, h: region.h }.clip(w, h);
         if r.w == 0 || r.h == 0 || (r.w == w && r.h == h) {
             return self.clone();
+        }
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.cropped(region);
         }
         let chroma_rect = |cw: usize, ch: usize| {
             (r.x >> sx, r.y >> sy, r.w.div_ceil(1 << sx).min(cw - (r.x >> sx).min(cw)), r.h.div_ceil(1 << sy).min(ch - (r.y >> sy).min(ch)))
@@ -235,6 +281,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(crop_plane(a, w, h, 1, r))),
                 }
             }
+            PixelData::GpuSurface(_) => return self.clone(),
         };
         VideoFrame { width: r.w as u32, height: r.h as u32, data, color: self.color, par: self.par, pts: self.pts }
     }
@@ -247,6 +294,9 @@ impl VideoFrame {
         let q = quarter_turns % 4;
         if q == 0 {
             return self.clone();
+        }
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.rotated(q);
         }
         let (w, h) = (self.width as usize, self.height as usize);
         let data = match &self.data {
@@ -269,6 +319,7 @@ impl VideoFrame {
                     alpha: alpha.as_ref().map(|a| Arc::new(rotate_plane(a, w, h, 1, q))),
                 }
             }
+            PixelData::GpuSurface(_) => return self.clone(),
         };
         let (width, height, par) = if q % 2 == 1 { (self.height, self.width, (self.par.1, self.par.0)) } else { (self.width, self.height, self.par) };
         VideoFrame { width, height, data, color: self.color, par, pts: self.pts }
@@ -284,6 +335,24 @@ impl VideoFrame {
     /// buffers. Returns (width, height, pixels).
     pub fn to_linear_f32_decimated(&self, n: usize) -> (usize, usize, Vec<f32>) {
         self.to_linear_f32_decimated_with(n, None)
+    }
+
+    /// Like [`VideoFrame::to_linear_f32_decimated`], returning `Err` if GPU-to-CPU readback fails
+    /// instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_decimated(&self, n: usize) -> Result<(usize, usize, Vec<f32>), String> {
+        self.try_to_linear_f32_decimated_with(n, None)
+    }
+
+    /// Like [`VideoFrame::to_linear_f32_decimated_with`], returning `Err` if GPU-to-CPU readback
+    /// fails instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_decimated_with(&self, n: usize, decode: Option<&DecodeTable>) -> Result<(usize, usize, Vec<f32>), String> {
+        if let Some(cpu) = self.try_materialize_cpu()? {
+            if matches!(cpu.data, PixelData::GpuSurface(_)) {
+                return Err("GPU surface readback returned another GPU surface".to_string());
+            }
+            return Ok(cpu.to_linear_f32_decimated_with(n, decode));
+        }
+        Ok(self.to_linear_f32_decimated_with(n, decode))
     }
 
     /// Like [`VideoFrame::to_linear_f32_decimated`], decoding each channel's signal through
@@ -308,6 +377,18 @@ impl VideoFrame {
     /// only: the rectangle (clipped to the picture) and its premultiplied linear RGBA pixels, row
     /// by row. Each pixel is exactly what the full conversion gives at that position. The buffer
     /// may come from the pool ([`pool::recycle_f32`] hands it back).
+    /// Like [`VideoFrame::to_linear_f32_region`], returning `Err` if GPU-to-CPU readback fails
+    /// instead of substituting transparent pixels.
+    pub fn try_to_linear_f32_region(&self, n: usize, decode: Option<&DecodeTable>, region: Region) -> Result<(Region, Vec<f32>), String> {
+        if let Some(cpu) = self.try_materialize_cpu()? {
+            if matches!(cpu.data, PixelData::GpuSurface(_)) {
+                return Err("GPU surface readback returned another GPU surface".to_string());
+            }
+            return Ok(cpu.to_linear_f32_region(n, decode, region));
+        }
+        Ok(self.to_linear_f32_region(n, decode, region))
+    }
+
     pub fn to_linear_f32_region(&self, n: usize, decode: Option<&DecodeTable>, region: Region) -> (Region, Vec<f32>) {
         let n = self.bounded_decimation(n);
         let (ow, oh) = self.decimated_size(n);
@@ -324,6 +405,9 @@ impl VideoFrame {
     /// code pair as the float conversion does (at full size already as bytes); G' goes through the
     /// table of its quantised signal.
     pub fn to_opaque_srgb8(&self, n: usize) -> Option<Vec<u8>> {
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.to_opaque_srgb8(n);
+        }
         let PixelData::Yuv8 { planes, chroma, alpha: None } = &self.data else { return None };
         let (w, h) = (self.width as usize, self.height as usize);
         let (sx, sy) = chroma.shifts();
@@ -388,6 +472,10 @@ impl VideoFrame {
     /// Convert the rectangle `r` (inside the decimated picture) into `out`, which must hold exactly
     /// `r.w * r.h * 4` floats; every one of them is written.
     fn convert_region(&self, n: usize, decode: Option<&DecodeTable>, r: Region, out: &mut [f32]) {
+        if let Some(cpu) = self.materialize_cpu() {
+            cpu.convert_region(n, decode, r, out);
+            return;
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         if r.w == 0 || r.h == 0 || out.len() != r.w * r.h * 4 {
             return;
@@ -419,6 +507,7 @@ impl VideoFrame {
         };
         let inv = 1.0 / (n as f32 * n as f32);
         match &self.data {
+            PixelData::GpuSurface(_) => out.fill(0.0),
             PixelData::RgbaF32(d) => {
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
                     let oy = r.y + ry;
@@ -662,6 +751,9 @@ impl VideoFrame {
 
     /// Convert to straight-alpha sRGB RGBA8 for display (fast paths for 8-bit sources).
     pub fn to_rgba8(&self) -> Vec<u8> {
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.to_rgba8();
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         match &self.data {
             PixelData::Rgba8(d) => d.as_ref().clone(),
@@ -709,6 +801,9 @@ impl VideoFrame {
 
     /// Luma plane (8-bit, for scopes/thumbnails analysis).
     pub fn luma8(&self) -> Vec<u8> {
+        if let Some(cpu) = self.materialize_cpu() {
+            return cpu.luma8();
+        }
         match &self.data {
             PixelData::Yuv8 { planes, .. } => planes[0].as_ref().clone(),
             _ => self.to_rgba8().as_chunks::<4>().0.iter().map(|p| (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) as u8).collect(),
