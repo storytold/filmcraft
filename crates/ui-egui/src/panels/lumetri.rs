@@ -514,6 +514,13 @@ fn lerp_col(a: Color32, b: Color32, f: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// Inset of the curve plot from its allocated area (#4915): 10 pt, reduced
+/// when the area is too small to hold it, so the plot keeps positive size
+/// and the point mappings never divide by zero or a negative extent.
+fn curve_plot_inset(area: Rect) -> f32 {
+    10.0f32.min((area.width() - 2.0) / 2.0).min((area.height() - 2.0) / 2.0).max(0.0)
+}
+
 /// Curve editor: drag points, click the curve to add, double-click a point to remove. Returns its
 /// rectangle (its automation element, `lumetri.curve.<param>`).
 #[allow(clippy::too_many_arguments)]
@@ -525,8 +532,9 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     let (area, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
     // The plot is inset from the allocated area: mapped to the full area, the end points
     // would sit on its corners, where the dock divider's hit zone covers the white point
-    // and it can never be grabbed (#4915).
-    let plot = area.shrink(10.0);
+    // and it can never be grabbed (#4915). The inset shrinks with the area so a
+    // narrow panel never collapses the plot.
+    let plot = area.shrink(curve_plot_inset(area));
     let p = ui.painter();
     p.rect_filled(area, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
     for i in 1..4 {
@@ -761,7 +769,8 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
 
 #[cfg(test)]
 mod tests {
-    use super::without_point;
+    use super::{curve_plot_inset, without_point};
+    use egui::{Rect, pos2, vec2};
 
     #[test]
     fn a_curve_point_is_removed_by_position_not_by_list_order() {
@@ -773,5 +782,21 @@ mod tests {
         // hue curves wrap around: any point can go
         assert_eq!(without_point(&pts, 0, true), Some(vec![[1.0, 1.0], [0.5, 0.7]]));
         assert_eq!(without_point(&pts, 7, false), None);
+    }
+
+    #[test]
+    fn the_curve_plot_keeps_positive_size() {
+        // a normal panel keeps the full 10 pt inset
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(260.0, 260.0));
+        assert_eq!(curve_plot_inset(area), 10.0);
+        // a narrow panel shrinks the inset instead of collapsing the plot:
+        // the old `area.shrink(10.0)` gave a 12 pt area a -8 pt plot
+        let narrow = Rect::from_min_size(pos2(0.0, 0.0), vec2(12.0, 12.0));
+        assert_eq!(curve_plot_inset(narrow), 5.0);
+        let plot = narrow.shrink(curve_plot_inset(narrow));
+        assert!(plot.width() > 0.0 && plot.height() > 0.0, "{plot:?}");
+        // a degenerate area never goes negative
+        let tiny = Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 1.0));
+        assert_eq!(curve_plot_inset(tiny), 0.0);
     }
 }
