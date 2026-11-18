@@ -24,6 +24,7 @@ filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
+craft-media = { workspace = true, features = ["mxf"] }
 filmcraft-codecs = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-edit = { workspace = true }
@@ -32,7 +33,6 @@ filmcraft-scopes = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
 filmcraft-export = { workspace = true }
-filmcraft-mxf = { workspace = true }
 filmcraft-format = { workspace = true }
 filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
