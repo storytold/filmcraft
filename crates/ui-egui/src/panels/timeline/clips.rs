@@ -224,11 +224,34 @@ pub(super) fn draw_clip(
             _ => None,
         });
         if let Some(aspect) = aspect.filter(|a| a.is_finite() && *a > 0.0) {
-            let tw = th.height() * aspect;
-            let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
-            let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
+            // aspect-correct and never bigger than the clip's picture area: at tall track heights
+            // the tiles used to grow past the clip, cropping the frame at the bottom and to the
+            // right. The frame stops growing once its bottom meets the clip's bottom.
             let mode = app.ui.timeline.thumbnail_mode;
             let (pps, frozen) = (app.ui.timeline.pps, app.tl.thumb_pps);
+            // the width cap lives in the frozen coordinate space too, but only Continuous tiles
+            // run in that space: capped by the live width it changes under the tiles mid-gesture
+            // and reveals new frames, each one a thumbnail request
+            let cap_w = match (mode, frozen) {
+                (crate::state::ThumbnailMode::Continuous, Some(f)) if pps.is_finite() && pps > 0.0 && f.is_finite() && f > 0.0 => {
+                    th.width() * (f as f32 / pps as f32)
+                }
+                _ => th.width(),
+            };
+            // a subpixel frozen cap is no cap at all: the tiler rejects widths under one point,
+            // so a short clip would lose its thumbnails mid-gesture. Fall back to live tiling
+            // entirely -- passing the live width with the frozen scale would scale it up.
+            let subpixel = cap_w < 1.0;
+            let cap_w = if subpixel { th.width() } else { cap_w };
+            let frozen = if subpixel { None } else { frozen };
+            let mut fh = th.height();
+            let mut tw = fh * aspect;
+            if tw > cap_w {
+                tw = cap_w;
+                fh = (tw / aspect).min(th.height());
+            }
+            let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
+            let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
             for (x, w, offset) in zoomed_thumbnail_tiles(mode, th.min.x, th.max.x, tw, visible, it.duration, rate.frame_duration(), pps, frozen) {
                 let mt = rate.snap(it.source_time_at(it.start + offset));
                 // a multi-camera clip shows its angle's clip
@@ -243,7 +266,7 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, th.height()));
+                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, fh));
                     cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 }
             }
