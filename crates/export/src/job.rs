@@ -66,6 +66,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use filmcraft_isobmff::{Brand, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_render::SourceProvider;
+use filmcraft_render::plan::FramePlan;
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
@@ -110,17 +111,59 @@ struct Ahead {
     frames: Vec<Frame>,
 }
 
+/// A batch planned while the previous one was being rendered ([`plan_batch`]).
+struct Planned {
+    /// First frame.
+    first: i64,
+    plans: Vec<Option<FramePlan>>,
+}
+
+/// Plan frames `f..end` in parallel for the GPU renderers ([`Pipeline::plan`]) while the batch
+/// before them is composited: their sources decode here, not inside the renderers. `None` when a
+/// source was not ready for one of them (as in [`render_batch`]); the batch then plans as it
+/// renders. A frame whose planning panicked is left to plan itself (and fall back as it would).
+fn plan_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider) -> Option<Vec<Option<FramePlan>>> {
+    let pending = AtomicBool::new(false);
+    let n = usize::try_from(end - f).unwrap_or(0);
+    let plans: Vec<Option<FramePlan>> = (0..n)
+        .into_par_iter()
+        .map(|k| {
+            let fi = f.saturating_add(i64::try_from(k).unwrap_or(i64::MAX));
+            let plan = catch_unwind(AssertUnwindSafe(|| pipe.plan(fi, sources))).ok().flatten();
+            if filmcraft_media::pending::take() {
+                pending.store(true, Ordering::Relaxed);
+            }
+            plan
+        })
+        .collect();
+    (!pending.load(Ordering::Relaxed)).then_some(plans)
+}
+
 /// Render frames `f..end` in parallel. `None` when a source was not ready for one of them (the
 /// pending flag, taken after every frame because it is per thread): the batch is incomplete and
 /// must be rendered again.
 /// `prepare` (the encoder's [`VideoEncoder::prepare_ahead`]) then works on each frame, numbered
-/// from `f0` like [`EncoderFrame::index`].
-fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider, prepare: Option<&PrepareAhead>, f0: i64) -> Option<Vec<Frame>> {
+/// from `f0` like [`EncoderFrame::index`]. `plans`: the batch's plans when it was planned
+/// ahead ([`plan_batch`]); a frame without one plans as it renders.
+fn render_batch(
+    pipe: &Pipeline,
+    f: i64,
+    end: i64,
+    sources: &dyn SourceProvider,
+    prepare: Option<&PrepareAhead>,
+    f0: i64,
+    plans: Option<Vec<Option<FramePlan>>>,
+) -> Option<Vec<Frame>> {
     let pending = AtomicBool::new(false);
-    let frames: Vec<Frame> = (f..end)
+    let n = usize::try_from(end - f).unwrap_or(0);
+    let mut plans = plans.filter(|p| p.len() == n).unwrap_or_default();
+    plans.resize_with(n, || None);
+    let frames: Vec<Frame> = plans
         .into_par_iter()
-        .map(|fi| {
-            let frame = pipe.frame(fi, sources);
+        .enumerate()
+        .map(|(k, plan)| {
+            let fi = f.saturating_add(i64::try_from(k).unwrap_or(i64::MAX));
+            let frame = pipe.frame_planned(fi, plan, sources);
             if filmcraft_media::pending::take() {
                 pending.store(true, Ordering::Relaxed);
             }
@@ -167,6 +210,8 @@ pub struct Exporter {
     budget: u64,
     /// The batch starting at `next`, already rendered.
     ahead: Option<Ahead>,
+    /// The batch after `ahead`, already planned (GPU renderers that take plans).
+    planned: Option<Planned>,
     /// Steps that rendered a batch alongside the encoding of the previous one.
     overlapped_steps: u64,
     brand: Brand,
@@ -329,6 +374,7 @@ impl Exporter {
             overlap: true,
             budget: IN_FLIGHT_BUDGET,
             ahead: None,
+            planned: None,
             overlapped_steps: 0,
             brand,
             venc,
@@ -366,6 +412,7 @@ impl Exporter {
         self.overlap = on;
         if !on {
             self.ahead = None;
+            self.planned = None;
         }
     }
 
@@ -498,6 +545,7 @@ impl Exporter {
     pub fn step(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
         if progress.cancel.load(Ordering::Relaxed) {
             self.ahead = None;
+            self.planned = None;
             return Err(ExportError::Cancelled);
         }
         let _ = filmcraft_media::pending::take();
@@ -522,6 +570,7 @@ impl Exporter {
             return self.step_batch(sources, progress);
         }
         self.ahead = None;
+        self.planned = None;
         if self.first_pass {
             // end of the analysis pass: encode for real with its statistics
             let _ = self.venc.flush()?;
@@ -583,7 +632,14 @@ impl Exporter {
         }))
     }
 
-    /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile.
+    /// The plans of the batch `f..end` when it was planned ahead; plans made for another range (a
+    /// batch rendered again after a pending source, the second pass) are dropped.
+    fn take_planned(&mut self, f: i64, end: i64) -> Option<Vec<Option<FramePlan>>> {
+        self.planned.take().filter(|p| p.first == f && i64::try_from(p.plans.len()).is_ok_and(|n| n == end - f)).map(|p| p.plans)
+    }
+
+    /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile
+    /// and, when the GPU renderers take plans, planning the one after that.
     fn step_batch(&mut self, sources: &dyn SourceProvider, progress: &Progress) -> Result<Step> {
         let prepare = self.venc.prepare_ahead();
         let f0 = self.f0;
@@ -591,8 +647,9 @@ impl Exporter {
             Some(a) if a.first == self.next => (a.first, a.frames),
             _ => {
                 let (f, end) = (self.next, self.next.saturating_add(self.batch_len()).min(self.f1));
+                let plans = self.take_planned(f, end);
                 let pipe = &self.pipe;
-                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0)) {
+                match timed(Stage::Render, || render_batch(pipe, f, end, sources, prepare.as_ref(), f0, plans)) {
                     Some(frames) => (f, frames),
                     None => return Ok(Step::Pending),
                 }
@@ -615,13 +672,23 @@ impl Exporter {
                 }
             };
         };
+        // and the one after it, planned meanwhile (its sources decoded) for the renderers
+        let later = (b < self.f1 && self.pipe.plans_ahead()).then(|| (b, b.saturating_add(self.batch_len()).min(self.f1)));
+        let plans = self.take_planned(a, b);
         let pipe = self.pipe.clone();
         let mut slot: Option<std::thread::Result<Option<Vec<Frame>>>> = None;
+        let mut planned: Option<std::thread::Result<Option<Vec<Option<FramePlan>>>>> = None;
         let mut encode_done: Option<web_time::Instant> = None;
         let encoded = rayon::in_place_scope(|s| {
             s.spawn(|_| {
-                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0)))));
+                slot = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Render, || render_batch(&pipe, a, b, sources, prepare.as_ref(), f0, plans)))));
             });
+            if let Some((c, d)) = later {
+                let (planned, pipe) = (&mut planned, &pipe);
+                s.spawn(move |_| {
+                    *planned = Some(catch_unwind(AssertUnwindSafe(|| timed(Stage::Plan, || plan_batch(pipe, c, d, sources)))));
+                });
+            }
             let r = self.encode_batch(f, frames, sources);
             encode_done = Some(web_time::Instant::now());
             r
@@ -636,6 +703,10 @@ impl Exporter {
                 self.overlapped_steps += 1;
                 progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
                 self.next = end;
+                // a planning that panicked leaves its frames to plan themselves
+                if let (Some((c, _)), Some(Ok(Some(plans)))) = (later, planned) {
+                    self.planned = Some(Planned { first: c, plans });
+                }
                 match slot {
                     Some(Ok(Some(frames))) => self.ahead = Some(Ahead { first: a, frames }),
                     // a source was not ready: the next step renders this batch again

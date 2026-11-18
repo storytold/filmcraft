@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use filmcraft_geom::Vec2;
 use filmcraft_project::{ItemId, Project};
+use filmcraft_render::plan::FramePlan;
 use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
@@ -68,6 +69,8 @@ struct RendererPool {
     capacity: usize,
     /// What every renderer of the pool runs: a frame is planned for whichever one it gets.
     caps: filmcraft_render::plan::DeviceCaps,
+    /// Every renderer composites frames planned beforehand ([`FrameRenderer::takes_plans`]).
+    takes_plans: bool,
     renderers: std::sync::Mutex<Vec<Box<dyn FrameRenderer>>>,
     available: std::sync::Condvar,
     /// A renderer panicked: the pool is retired and the rest of the export renders on the CPU.
@@ -78,9 +81,11 @@ impl RendererPool {
     /// `None` for an empty list (a pool nobody could take from).
     fn new(renderers: Vec<Box<dyn FrameRenderer>>) -> Option<Self> {
         let adjust_side = renderers.iter().map(|r| r.caps().adjust_side).min()?;
+        let takes_plans = renderers.iter().all(|r| r.takes_plans());
         Some(Self {
             capacity: renderers.len(),
             caps: filmcraft_render::plan::DeviceCaps { adjust_side },
+            takes_plans,
             renderers: std::sync::Mutex::new(renderers),
             available: std::sync::Condvar::new(),
             failed: std::sync::atomic::AtomicBool::new(false),
@@ -144,6 +149,12 @@ pub(crate) struct Pipeline {
     pub hdr_out: bool,
     /// Keep straight alpha in the RGBA8 output instead of flattening over black.
     alpha: bool,
+    /// An SDR export that encodes the rendered picture as it is (no fitting, overlays, video
+    /// limiter or alpha): a frame the GPU renderers draw comes back as the encoder's RGBA8,
+    /// converted on the GPU ([`FrameRenderer::render_plan_rgba8`]). Reading back the half floats
+    /// and turning them into f32 and then into sRGB bytes on the CPU took about 30 ms of CPU time
+    /// a 1080p frame.
+    rgba8_out: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
@@ -171,6 +182,17 @@ impl Drop for Pipeline {
             filmcraft_frame::pool::trim_planes();
         }
     }
+}
+
+/// How many GPU renderers an export runs: four (two on a two-thread pool). With the frames planned
+/// ahead and read back as RGBA8 (1080p60 on 32 threads), 2 and 4 renderers gave 95–117 fps and 8
+/// gave 89–108: more renderers wait on each other in the shared queue.
+/// `FILMCRAFT_EXPORT_GPU_RENDERERS` sets the count (benchmarks).
+pub(crate) fn gpu_renderer_count(threads: usize) -> usize {
+    if let Some(n) = std::env::var("FILMCRAFT_EXPORT_GPU_RENDERERS").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        return n.clamp(1, 32);
+    }
+    threads.clamp(2, 4)
 }
 
 impl Pipeline {
@@ -212,9 +234,7 @@ impl Pipeline {
         let renderer = if settings.gpu_rendering == GpuRendering::Off {
             None
         } else {
-            // Four renderers: as fast as one per worker (measured on 16 threads, where more only
-            // contend for memory bandwidth in the read-back), with a quarter of the GPU memory.
-            let count = rayon::current_num_threads().clamp(2, 4);
+            let count = gpu_renderer_count(rayon::current_num_threads());
             let mut list = Vec::with_capacity(count);
             for _ in 0..count {
                 if let Some(r) = build_frame_renderer() {
@@ -225,8 +245,19 @@ impl Pipeline {
             }
             RendererPool::new(list)
         };
+        let rgba8_out = !hdr_out
+            && !settings.keeps_alpha()
+            && geom.content.is_none()
+            && (w, h) == (r.width, r.height)
+            && overlay.is_none()
+            && !(effects.name_overlay.enabled && !effects.name_overlay.text.trim().is_empty())
+            && !effects.timecode_overlay.enabled
+            && !effects.video_limiter.enabled
+            // `FILMCRAFT_EXPORT_GPU_RGBA8=0`: the CPU converts the read-back floats, as before (benchmarks)
+            && std::env::var("FILMCRAFT_EXPORT_GPU_RGBA8").map_or(true, |v| v.trim() != "0");
         Ok(Pipeline {
             renderer,
+            rgba8_out,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -246,27 +277,88 @@ impl Pipeline {
         })
     }
 
+    /// Whether the export plans frames ahead of rendering them ([`Self::plan`]): its GPU
+    /// renderers take plans. `FILMCRAFT_EXPORT_PLAN_AHEAD=0` leaves the planning to the renderers,
+    /// as before (benchmarks).
+    pub(crate) fn plans_ahead(&self) -> bool {
+        self.renderer.as_ref().is_some_and(|pool| pool.takes_plans) && std::env::var("FILMCRAFT_EXPORT_PLAN_AHEAD").map_or(true, |v| v.trim() != "0")
+    }
+
+    /// Output frame `f` planned for the GPU renderers (its sources' pictures decoded, its layers
+    /// placed), or `None` when the frame is not theirs to draw (the CPU renders it whole) or they
+    /// plan their own frames: [`Self::frame_planned`] then renders it as [`Self::frame`] does.
+    /// Needs no renderer, so the export plans a batch while the one before it is composited.
+    /// Planned inside the renderers, each frame of a batch waited there for the others' pictures
+    /// to decode (a 100 fps long-GOP camera file: 45 ms a frame with 8 renderers) while the GPU and
+    /// the encoder sat idle, 58 fps whatever the number of renderers.
+    pub(crate) fn plan(&self, f: i64, sources: &dyn SourceProvider) -> Option<FramePlan> {
+        let pool = self.renderer.as_ref().filter(|pool| pool.takes_plans)?;
+        let t = self.rate.tick_of(f);
+        if filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps) {
+            return None;
+        }
+        let started = web_time::Instant::now();
+        let plan = filmcraft_render::plan::plan_frame(&self.project, self.seq, t, self.opts, pool.caps, sources);
+        crate::stats::note_plan_frame(started.elapsed());
+        Some(plan)
+    }
+
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
+        self.frame_planned(f, None, sources)
+    }
+
+    /// [`Self::frame`], composited from `plan` (the frame's [`Self::plan`]) when there is one.
+    pub(crate) fn frame_planned(&self, f: i64, plan: Option<FramePlan>, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
-        // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
-        // draw, any internal error) falls back to the CPU reference renderer below. A frame the
-        // planner hands back as one CPU image anyway (an adjustment layer the GPU can't run, a
-        // complex transition, HDR) does not take a pooled renderer: it would render on the CPU
-        // inside the pool, as many frames at a time as there are renderers instead of one per
-        // export thread.
-        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
-        let gpu = match pool {
-            Some(pool) => {
+        let gpu = match (plan, self.renderer.as_ref()) {
+            // the CPU drew the whole frame while planning it: no renderer has anything to do
+            (Some(FramePlan::Image(img)), Some(_)) => Some(img),
+            (Some(plan), Some(pool)) if self.rgba8_out => {
+                let asked = web_time::Instant::now();
+                let rgba = pool
+                    .with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.render_plan_rgba8(&plan)
+                    })
+                    .flatten()
+                    .filter(|(w, h, _)| (*w, *h) == (self.w as usize, self.h as usize));
+                if let Some((_, _, rgba)) = rgba {
+                    note_gpu_frame();
+                    return (rgba, Vec::new());
+                }
+                // the GPU could not draw it: the CPU reference renderer below does
+                None
+            }
+            (Some(plan), Some(pool)) => {
                 let asked = web_time::Instant::now();
                 pool.with(|r| {
                     crate::note_lock_wait(asked.elapsed());
-                    r.render(&self.project, self.seq, t, self.opts, sources)
+                    r.render_plan(&plan)
                 })
                 .flatten()
             }
-            None => None,
+            (_, pool) => {
+                // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU
+                // cannot draw, any internal error) falls back to the CPU reference renderer below.
+                // A frame the planner hands back as one CPU image anyway (an adjustment layer the
+                // GPU can't run, a complex transition, HDR) does not take a pooled renderer: it
+                // would render on the CPU inside the pool, as many frames at a time as there are
+                // renderers instead of one per export thread.
+                let pool = pool.filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+                match pool {
+                    Some(pool) => {
+                        let asked = web_time::Instant::now();
+                        pool.with(|r| {
+                            crate::note_lock_wait(asked.elapsed());
+                            r.render(&self.project, self.seq, t, self.opts, sources)
+                        })
+                        .flatten()
+                    }
+                    None => None,
+                }
+            }
         };
         let img = match gpu {
             Some(img) => {

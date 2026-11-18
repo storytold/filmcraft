@@ -30,6 +30,18 @@ impl FrameRenderer for GpuFrameRenderer {
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
     }
+
+    fn takes_plans(&self) -> bool {
+        true
+    }
+
+    fn render_plan(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_render::Image> {
+        self.0.render_plan(plan)
+    }
+
+    fn render_plan_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan) -> Option<(usize, usize, Vec<u8>)> {
+        self.0.render_plan_rgba8(plan)
+    }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and
