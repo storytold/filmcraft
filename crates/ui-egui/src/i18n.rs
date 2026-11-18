@@ -547,6 +547,7 @@ mod feature_name_tests {
             ("tr", include_str!("i18n/tr.tsv")),
             ("uk", include_str!("i18n/uk.tsv")),
             ("zh-cn", include_str!("i18n/zh-cn.tsv")),
+            ("zh-tw", include_str!("i18n/zh-tw.tsv")),
         ];
         for (language, catalog) in catalogs {
             let (entries, errors) = super::catalog::parse_entries(catalog);

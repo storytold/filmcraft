@@ -184,8 +184,8 @@
 	Link Media…	連結媒體…
 	Linked Selection	連結選取項目
 	Lock Guides	鎖定參考線
-	Lumetri Color	Lumetri 色彩
-	Lumetri Scopes	Lumetri 示波器
+	Color Grading	色彩分級
+	Video Scopes	視訊示波器
 	Magnification	縮放倍率
 	Make Offline…	設為離線…
 	Make Subclip…	建立子片段…
@@ -866,7 +866,7 @@
 	Clip Volume	片段音量
 	(no clip selected)	（未選取片段）
 	Master · {name}	主控 · {name}
-	Add Lumetri Color to clip	將 Lumetri Color 加入片段
+	Add Color Grading to clip	將色彩分級加入片段
 	Input LUT	輸入 LUT
 	Color	色彩
 	Temperature	色溫
@@ -1635,7 +1635,7 @@
 	Elliptical	橢圓
 	Emboss	浮雕
 	Enable HSL Secondary	啟用次要 HSL 校正
-	Enable Mercury Transmit	啟用 Mercury 傳輸
+	Enable External Video Output	啟用外部視訊輸出
 	Enable ProRes hardware accelerated encoding, if available	如有支援，啟用 ProRes 硬體加速編碼
 	Enable clip and XMP metadata linking	啟用片段與 XMP 中繼資料連結
 	Enable developer mode	啟用開發者模式
@@ -1703,7 +1703,7 @@
 	Focus Size	焦點大小
 	Fold Motion	動態摺疊
 	Foldback	折返
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	若要調整色彩管理參數，請前往 Lumetri 色彩面板中的「設定」索引標籤。
+	For color management parameters, go to the Settings tab in the Color Grading panel.	若要調整色彩管理參數，請前往色彩分級面板中的「設定」索引標籤。
 	Format	格式
 	Four Scopes (RGB, 8 bit)	四種示波器（RGB，8 位元）
 	Four Scopes (YUV, float, no clamp)	四種示波器（YUV，浮點數，不限幅）
@@ -1966,7 +1966,7 @@
 	Luma Key	亮度去背
 	Luma Source	亮度來源
 	Luma and Chroma	亮度與色度
-	Lumetri Presets	Lumetri 預設集
+	Color Grading Presets	色彩分級預設集
 	Luminance	亮度
 	Luminance Threshold	亮度門檻值
 	Luminosity	明度
@@ -3068,7 +3068,6 @@
 	Left align text	文字靠左對齊
 	Looping GIF, 640×360 at 15 fps	循環播放 GIF，640×360，15 fps
 	Lower First	下場優先
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3600,4 +3599,10 @@
 	Shows a report on this computer.	顯示此電腦的報告。
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 視窗中顯示版本、社群連結與致謝資訊。
 	no Korean font is installed on this system; the interface stays in English	此系統未安裝韓文字型；介面維持英文
+	List Color Grading Presets	列出色彩分級預設集
+	Apply Color Grading Preset	套用色彩分級預設集
+	Color Grading Preset Thumbnails	色彩分級預設集縮圖
+	Toggle Color Grading Section	切換色彩分級區段
+	Color Grading Section	色彩分級區段
+	Read Video Scopes	讀取視訊示波器
 audio.volume	Level	音量
