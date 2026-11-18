@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+craft-hdr = { workspace = true }
 craft-psd = { workspace = true }
 craft-tiff-ycbcr = { workspace = true }
 craft-tga = { workspace = true }

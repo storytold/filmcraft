@@ -71,6 +71,8 @@ craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytol
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
 craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "bea91b1861eea3889bec9d26338076f2ff31c4ac", default-features = false }
+# Shared Radiance HDR reader with bounded direct RGBA output.
+craft-hdr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "472462df9f1cb7316a92d1be21cdbf90e0980300" }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
 craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b3643af6477326e840f86be78c89357f5308ba1d" }
