@@ -80,8 +80,11 @@ impl Driver {
 }
 
 /// The demo's first V1 clip cut in two with the razor: a cut inside one take, its roll edit point
-/// selected so the Program panel shows the Trim Monitor.
-fn demo_through_edit() -> Driver {
+/// selected so the Program panel shows the Trim Monitor. Also [`given_up`] just before the edit
+/// point is selected: the Program monitor's own frames from the setup (a warm-up frame the razor's
+/// new revision replaces) are not the Trim Monitor's, and once it shows, the Program monitor asks
+/// for no more frames that could replace them.
+fn demo_through_edit() -> (Driver, u64) {
     let mut session = Session::default();
     session.execute("file.openDemoProject", json!({})).expect("demo project");
     let seq = session.active_sequence().expect("sequence");
@@ -91,9 +94,11 @@ fn demo_through_edit() -> Driver {
     d.exec("timeline.razor", json!({"time": mid.0, "track": "V1"}));
     let seq = d.harness.state().session.active_sequence().expect("sequence").clone();
     let a = seq.video_tracks[0].items.iter().find(|c| c.end() == mid).expect("the clip before the cut").id;
+    d.frames(2);
+    let setup = given_up(&d);
     d.exec("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "roll"}));
     d.frames(2);
-    d
+    (d, setup)
 }
 
 /// Frame jobs given up so far for a newer request: cancelled while running or dropped while waiting.
@@ -104,13 +109,13 @@ fn given_up(d: &Driver) -> u64 {
 
 #[test]
 fn both_pictures_of_a_cut_inside_one_take_arrive_and_follow_a_roll() {
-    let mut d = demo_through_edit();
+    let (mut d, setup) = demo_through_edit();
     let (out, inc) = d.wanted();
     assert_eq!(inc, out + 1, "a through edit: the incoming picture is the outgoing one's next frame");
     assert!(d.settle(Duration::from_secs(20)).is_some(), "both pictures show their frames ({out}, {inc})");
     // Nothing moved, so no decode was worth cancelling. With one view per item and size, each
     // picture's request dropped or cancelled the other's decode: they still arrived, but late.
-    assert_eq!(given_up(&d), 0, "the two pictures gave up each other's decode");
+    assert_eq!(given_up(&d) - setup, 0, "the two pictures gave up each other's decode");
     for _ in 0..6 {
         d.exec("trim.forward", json!({}));
     }
@@ -142,7 +147,8 @@ fn movie_4k(codec: &str, gop: u32) -> Option<std::path::PathBuf> {
 
 /// How long the Trim Monitor takes to show both frames of a cut inside one 4K take, when the edit
 /// point is selected and after a burst of roll steps (one per refresh, as holding a trim key
-/// does), and how many frame jobs were started, and cancelled or dropped before starting, meanwhile. Prints the numbers:
+/// does), and how many frame jobs finished (a cancelled one too), and were cancelled or dropped
+/// before starting, meanwhile. Prints the numbers:
 /// `cargo test --release -p filmcraft-ui-egui --test it trim_monitor_frames_ui::perf_ -- --ignored --nocapture`
 #[test]
 #[ignore]

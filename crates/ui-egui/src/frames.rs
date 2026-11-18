@@ -665,9 +665,12 @@ impl FrameServer {
                 *v = SHARED_VIEW;
             }
         };
-        if let Some((.., v)) =
+        if let Some((_, _, running_prefetch, v)) =
             self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter_mut().find(|(k, c, ..)| *k == key && !c.load(Ordering::Relaxed))
         {
+            // as for a queued job: a frame on screen that playback was prefetching is no longer
+            // only prefetch, so stopping playback must not cancel it
+            *running_prefetch &= prefetch;
             share(v);
             hit();
             return;
@@ -1224,6 +1227,28 @@ mod tests {
         assert!(!running.load(Ordering::Relaxed), "the incoming picture's request cancelled the outgoing one's decode");
         fs.request_in_view(key(119), Tick::ZERO, 1.0, &s.project, 1);
         assert!(running.load(Ordering::Relaxed), "a newer frame in its own view replaces it");
+    }
+
+    #[test]
+    fn a_running_prefetch_a_picture_asks_for_survives_stopping_playback() {
+        use super::FrameServer;
+        use filmcraft_time::Tick;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Playback is prefetching a frame (a stand-in entry no worker owns) when a Trim Monitor
+        // picture asks for that exact frame; then playback stops.
+        let s = filmcraft_engine::Session::default();
+        let fs = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let key = |frame| FrameKey { target: Target::Item(ItemId(1)), frame, size: 500, revision: 0, draft: false };
+        let prefetching = Arc::new(AtomicBool::new(false));
+        let other = Arc::new(AtomicBool::new(false));
+        fs.shared.in_flight.lock().unwrap().push((key(120), prefetching.clone(), true, 0));
+        fs.shared.in_flight.lock().unwrap().push((key(121), other.clone(), true, 0));
+        fs.request_in_view(key(120), Tick::ZERO, 1.0, &s.project, 1);
+        fs.stop_prefetch();
+        assert!(!prefetching.load(Ordering::Relaxed), "stopping playback cancelled the frame a picture waits for");
+        assert!(other.load(Ordering::Relaxed), "a prefetch nobody else asked for is still cancelled");
     }
 
     #[test]
