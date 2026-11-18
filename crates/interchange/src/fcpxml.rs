@@ -127,6 +127,14 @@ struct Asset {
     has_audio: bool,
 }
 
+/// Most times truncated media is imported again at a shallower depth.
+const MAX_REIMPORTS: usize = 4096;
+
+/// Deepest storyline/element nesting a hostile file may walk. The FCPXML structure can nest
+/// connected clips and secondary storylines without limit, and layout recurses once per level
+/// (audit: FilmCraft F3).
+const MAX_XML_DEPTH: usize = 128;
+
 struct Imp<'a, 'i, 'r> {
     b: Builder,
     opts: &'a ImportOptions,
@@ -137,7 +145,17 @@ struct Imp<'a, 'i, 'r> {
     media_nodes: HashMap<String, Node<'a, 'i>>,
     media_items: HashMap<String, ItemId>,
     media_active: HashSet<String>,
+    /// Traversals cut short by either the media-chain or XML-layout depth limit.
+    depth_hits: usize,
+    /// Media imported incomplete (a nested one below it was left out), by id: the
+    /// (media-chain, XML-layout) depths it was imported at. Retry when neither depth is
+    /// worse and at least one is shallower; both limits must still be respected.
+    media_truncated_at: HashMap<String, (usize, usize)>,
+    /// Re-imports of truncated media still allowed.
+    reimports_left: usize,
     effects: HashMap<String, String>,
+    /// Current storyline/element nesting, checked against [`MAX_XML_DEPTH`].
+    depth: usize,
 }
 
 /// Where an element's keyframe times start, the media time it starts at and its playback speed.
@@ -186,7 +204,11 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
         media_nodes: HashMap::new(),
         media_items: HashMap::new(),
         media_active: HashSet::new(),
+        depth_hits: 0,
+        media_truncated_at: HashMap::new(),
+        reimports_left: MAX_REIMPORTS,
         effects: HashMap::new(),
+        depth: 0,
     };
     if let Some(res) = child(root, "resources") {
         for r in elements(res) {
@@ -229,7 +251,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
                 "project" => {
                     if let Some(s) = child(c, "sequence") {
                         let name = c.attribute("name").unwrap_or("Project");
-                        let id = imp.sequence(s, name, Some(bin));
+                        let id = imp.sequence(s, name, Some(bin), None);
                         imp.b.top.push(id);
                     }
                 }
@@ -244,7 +266,7 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
     }
     for p in children(root, "project") {
         if let Some(s) = child(p, "sequence") {
-            let id = imp.sequence(s, p.attribute("name").unwrap_or("Project"), None);
+            let id = imp.sequence(s, p.attribute("name").unwrap_or("Project"), None, None);
             imp.b.top.push(id);
         }
     }
@@ -305,11 +327,29 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
 
     /// Nested sequence from a `<media>` resource.
     fn media(&mut self, id: &str) -> Option<ItemId> {
+        let depth = self.media_active.len();
+        let mut again = None;
         if let Some(i) = self.media_items.get(id) {
-            return Some(*i);
+            // Imported with a nested one cut off: import it again (into the same item) where that
+            // one now fits.
+            let shallower =
+                self.media_truncated_at.get(id).is_some_and(|&(media, xml)| depth <= media && self.depth <= xml && (depth < media || self.depth < xml))
+                    && !self.media_active.contains(id);
+            if !shallower || self.reimports_left == 0 {
+                return Some(*i);
+            }
+            self.reimports_left -= 1;
+            again = Some(*i);
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
+        // The active set is the current nesting chain: a long acyclic chain of compound clips
+        // would otherwise recurse once per resource.
+        if depth >= crate::MAX_NESTING_DEPTH {
+            self.depth_hits += 1;
+            self.report.warn(format!("FCPXML media resource {id:?} is nested too deeply; imported as a gap"));
+            return None;
+        }
         if !self.media_active.insert(id.into()) {
             self.report.warn(format!("recursive FCPXML media resource {id:?} ignored"));
             return None;
@@ -317,20 +357,26 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         // Mark the resource before descending: a compound clip can reference itself through a
         // ref-clip before a completed sequence is available to cache.
         let name = n.attribute("name").unwrap_or("Compound Clip").to_string();
-        let item = self.sequence(s, &name, None);
+        let hits_before = self.depth_hits;
+        let item = self.sequence(s, &name, None, again);
         self.media_active.remove(id);
         self.media_items.insert(id.into(), item);
+        if self.depth_hits > hits_before {
+            self.media_truncated_at.insert(id.into(), (depth, self.depth));
+        } else {
+            self.media_truncated_at.remove(id);
+        }
         Some(item)
     }
 
-    fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>) -> ItemId {
+    fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>, reuse: Option<ItemId>) -> ItemId {
         let (rate, w, h) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
         let df = s.attribute("tcFormat") == Some("DF");
         let mut settings = settings_for(rate, w, h, df);
         if let Some(sr) = s.attribute("audioRate").and_then(parse_audio_rate) {
             settings.sample_rate = sr;
         }
-        let id = self.b.reserve_sequence(name, settings.clone(), bin);
+        let id = reuse.unwrap_or_else(|| self.b.reserve_sequence(name, settings.clone(), bin));
         let mut seq = empty_sequence(settings);
         let tc_start = attr_time(s, "tcStart").unwrap_or(Tick::ZERO);
         seq.start_timecode = rate.frame_at(tc_start);
@@ -346,9 +392,21 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         id
     }
 
+    /// Lay out a storyline, refusing nesting past [`MAX_XML_DEPTH`].
+    fn storyline(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.depth_hits += 1;
+            self.report.warn(format!("XML storylines are nested too deeply (more than {MAX_XML_DEPTH}); deeper clips were skipped"));
+            return;
+        }
+        self.depth += 1;
+        self.storyline_inner(seq, ctx, spine, origin, lane, primary);
+        self.depth -= 1;
+    }
+
     /// Lay out a storyline. `origin` maps the storyline's offsets to timeline time
     /// (`timeline = origin + offset`). `lane` is the storyline's lane (0 = primary).
-    fn storyline(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
+    fn storyline_inner(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
         // (timeline start, timeline end, video clip on this storyline's track)
         let mut laid: Vec<(Tick, Tick, Option<filmcraft_project::ClipId>)> = Vec::new();
         let mut transitions: Vec<(usize, Node)> = Vec::new();
@@ -405,8 +463,29 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
     }
 
-    /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
+    /// Lay out one element, refusing nesting past [`MAX_XML_DEPTH`].
     fn element(&mut self, seq: &mut Sequence, ctx: &Ctx, el: Node<'a, 'i>, t0: Tick, lane: i32, primary: bool) -> (Tick, Option<filmcraft_project::ClipId>) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.depth_hits += 1;
+            self.report.warn(format!("XML elements are nested too deeply (more than {MAX_XML_DEPTH}); deeper clips were skipped"));
+            return (t0, None);
+        }
+        self.depth += 1;
+        let out = self.element_inner(seq, ctx, el, t0, lane, primary);
+        self.depth -= 1;
+        out
+    }
+
+    /// Lay out one storyline element at timeline time `t0`. Returns (timeline end, video clip).
+    fn element_inner(
+        &mut self,
+        seq: &mut Sequence,
+        ctx: &Ctx,
+        el: Node<'a, 'i>,
+        t0: Tick,
+        lane: i32,
+        primary: bool,
+    ) -> (Tick, Option<filmcraft_project::ClipId>) {
         let tag = el.tag_name().name();
         let dur = attr_time(el, "duration").unwrap_or(Tick::ZERO);
         let local_start = attr_time(el, "start").unwrap_or(Tick::ZERO);

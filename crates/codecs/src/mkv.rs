@@ -238,21 +238,17 @@ fn from_tick(t: &filmcraft_matroska::Track, rate: FrameRate, time: Tick, snap: b
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
 /// 1 profile, 2 level, 3 bit depth, 4 chroma subsampling) and the track's `Colour`.
 fn vp9_config(private: &[u8], v: Option<&filmcraft_matroska::VideoInfo>) -> VpcConfig {
-    let mut c = VpcConfig { bit_depth: 8, colour_primaries: 2, transfer_characteristics: 2, matrix_coefficients: 2, ..Default::default() };
-    let mut p = 0;
-    while p + 2 <= private.len() {
-        let (id, len) = (private[p], private[p + 1] as usize);
-        let Some(val) = private.get(p + 2..p + 2 + len) else { break };
-        let x = val.first().copied().unwrap_or(0);
-        match id {
-            1 => c.profile = x,
-            2 => c.level = x,
-            3 => c.bit_depth = x,
-            4 => c.chroma_subsampling = x,
-            _ => {}
-        }
-        p += 2 + len;
-    }
+    let features = filmcraft_matroska::vp9_features(private);
+    let mut c = VpcConfig {
+        profile: features.profile,
+        level: features.level,
+        bit_depth: features.bit_depth,
+        chroma_subsampling: features.chroma_subsampling,
+        colour_primaries: 2,
+        transfer_characteristics: 2,
+        matrix_coefficients: 2,
+        ..Default::default()
+    };
     if let Some(col) = v.and_then(|v| v.color.as_ref()) {
         if let Some(t) = col.transfer_characteristics {
             c.transfer_characteristics = t as u8;
@@ -327,7 +323,7 @@ fn codec_label(c: &Codec) -> String {
         Codec::Vp8 => "VP8".into(),
         Codec::Vp9 { .. } => "VP9".into(),
         Codec::Av1 { .. } => "AV1".into(),
-        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| filmcraft_apv::Profile::from_idc(a.profile_idc)) {
+        Codec::Apv { apvc } => match filmcraft_isobmff::ApvConfig::parse(apvc).ok().and_then(|a| craft_video::apv::Profile::from_idc(a.profile_idc)) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -697,18 +693,8 @@ impl MediaSource for MkvSource {
             i += 1;
         }
         drop(st);
-        let frac = s0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -756,6 +742,25 @@ mod multi_audio_tests {
         assert!((primary.channels[0][20] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][20] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 50, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673).
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        // 32-bit float samples: a coarser source (16-bit) hides a one-ulp change of a weight
+        let mut t = TrackSpec::new(TrackKind::Audio, "A_PCM/FLOAT/IEEE");
+        t.audio = Some((48_000.0, 1, Some(32)));
+        let mut writer = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![t], MuxOptions::default()).unwrap();
+        let signs = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 1);
+        for (k, second) in signs.chunks(48_000).enumerate() {
+            let pcm: Vec<u8> = second.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let ns = i64::try_from(k).unwrap() * 1_000_000_000;
+            writer.write_frame(0, ns, true, &pcm, Some(1_000_000_000)).unwrap();
+        }
+        let source = super::MkvSource::open("tone.mkv", writer.finish().unwrap().into_inner().into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("mkv 48 kHz at 1999 Hz", 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+            source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+        });
     }
 }
 
@@ -805,5 +810,14 @@ mod origin_tests {
         let sound = src.audio(0, 48_000 * 2 / 5, 48_000).unwrap();
         assert!(sound.channels[0][9_590].abs() < 0.001, "silent before the delay");
         assert!((sound.channels[0][9_610] - 0.5).abs() < 0.001, "sound 0.2 s after the first picture");
+    }
+}
+
+#[cfg(test)]
+mod vp9_feature_compat_tests {
+    #[test]
+    fn codec_private_keeps_defaults_after_a_truncated_feature() {
+        let config = super::vp9_config(&[1, 1, 2, 3, 1, 10, 4, 2, 9], None);
+        assert_eq!((config.profile, config.level, config.bit_depth, config.chroma_subsampling), (2, 0, 10, 0));
     }
 }

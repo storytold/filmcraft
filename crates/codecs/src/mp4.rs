@@ -332,12 +332,13 @@ impl Mp4Source {
             if matches!(entry.codec, CodecConfig::Dnx { .. }) {
                 // the sample entry doesn't say which VC-3 compression ID it is: read the first frame header
                 let s0 = &t.samples[0];
-                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_dnx::probe(&d).ok()) {
-                    info.codec = filmcraft_dnx::cid_name(h.cid);
+                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| craft_video::dnx::probe(&d).ok())
+                {
+                    info.codec = craft_video::dnx::cid_name(h.cid);
                     let sub = match h.chroma {
-                        filmcraft_dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
-                        filmcraft_dnx::ChromaFormat::Yuv422 => "YUV 4:2:2",
-                        filmcraft_dnx::ChromaFormat::Yuv444 => "4:4:4",
+                        craft_video::dnx::ChromaFormat::Yuv420 => "YUV 4:2:0",
+                        craft_video::dnx::ChromaFormat::Yuv422 => "YUV 4:2:2",
+                        craft_video::dnx::ChromaFormat::Yuv444 => "4:4:4",
                     };
                     info.pixel_format = format!("{sub} {}-bit", h.bit_depth);
                     info.has_alpha = h.alpha;
@@ -346,12 +347,13 @@ impl Mp4Source {
             if matches!(entry.codec, CodecConfig::ProRes { .. }) {
                 // a 4444 fourcc doesn't mean the frames carry alpha (alpha_channel_type does): read the first frame header
                 let s0 = &t.samples[0];
-                if let Some(h) = filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| filmcraft_prores::probe(&d).ok())
+                if let Some(h) =
+                    filmcraft_media::reader::read_range(&*bytes.0, s0.offset, s0.size as usize).ok().and_then(|d| craft_video::prores::probe(&d).ok())
                 {
-                    info.has_alpha = h.alpha != filmcraft_prores::AlphaType::None;
+                    info.has_alpha = h.alpha != craft_video::prores::AlphaType::None;
                     let sub = match h.chroma {
-                        filmcraft_prores::ChromaFormat::Yuv422 => "4:2:2 10-bit",
-                        filmcraft_prores::ChromaFormat::Yuv444 => "4:4:4 12-bit",
+                        craft_video::prores::ChromaFormat::Yuv422 => "4:2:2 10-bit",
+                        craft_video::prores::ChromaFormat::Yuv444 => "4:4:4 12-bit",
                     };
                     info.pixel_format = format!("{} {sub}", if info.has_alpha { "YUVA" } else { "YUV" });
                 }
@@ -584,18 +586,8 @@ impl MediaSource for Mp4Source {
         }
         // Resample the local window. Its first sample is presentation sample `p0`; the edit list
         // offset is already in `s0` and must not shift the read position a second time.
-        let frac = p0 as f64 - start as f64 * ratio;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, p0, src_rate, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -606,8 +598,8 @@ impl MediaSource for Mp4Source {
 fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(u32, u32)> {
     let entry = t.entries.first()?;
     if let Some((rate, channels)) = match &entry.codec {
-        CodecConfig::Ac3 { dac3 } => dac3_layout(dac3),
-        CodecConfig::Eac3 { dec3 } => dec3_layout(dec3),
+        CodecConfig::Ac3 { dac3 } => filmcraft_isobmff::dac3_layout(dac3),
+        CodecConfig::Eac3 { dec3 } => filmcraft_isobmff::dec3_layout(dec3),
         _ => None,
     } {
         return Some((rate, channels));
@@ -623,41 +615,6 @@ fn ac3_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option<(
     let rate = h.sample_rate;
     let channels = u32::try_from(h.channels()).ok()?;
     (rate > 0 && channels > 0).then_some((rate, channels))
-}
-
-/// E-AC-3 `ec-3` entry: the program-layout fields are the 24 bits starting at byte 2 of the
-/// descriptor, then `bsmod(5) | acmod(3) | lfeon(1)`. Matches FFmpeg's `dec3` demuxer.
-fn dec3_layout(payload: &[u8]) -> Option<(u32, u32)> {
-    if payload.len() < 5 {
-        return None;
-    }
-    let bits = u32::from(payload[2]) << 16 | u32::from(payload[3]) << 8 | u32::from(payload[4]);
-    let acmod = ((bits >> 9) & 0x7) as u8;
-    let lfeon = bits & 0x100 != 0;
-    let channels = dac3_channels(acmod, lfeon)?;
-    Some((0, channels))
-}
-
-/// AC-3 `ac-3` entry: `dac3` begins with the syncframe bitstream information: sample rate code,
-/// bit stream id, bit stream mode, channel mode and LFE flag. The descriptor has no sample rate,
-/// so the caller keeps the sample-entry rate.
-fn dac3_layout(payload: &[u8]) -> Option<(u32, u32)> {
-    if payload.len() < 3 {
-        return None;
-    }
-    // The descriptor begins with the bitstream information: fscod(2), bsid(5), bsmod(3),
-    // acmod(3) and lfeon(1), continuing in the second payload byte.
-    let bits = u32::from_be_bytes([0, 0, payload[1], payload[2]]);
-    let acmod = ((bits >> 11) & 0x7) as u8;
-    let lfeon = bits & 0x400 != 0;
-    let channels = dac3_channels(acmod, lfeon)?;
-    Some((0, channels))
-}
-
-/// Full-bandwidth channels per AC-3 channel mode (Table 5.8) plus the optional LFE channel.
-fn dac3_channels(acmod: u8, lfeon: bool) -> Option<u32> {
-    let n = [2u32, 1, 2, 3, 3, 4, 4, 5].get(usize::from(acmod & 7))?.checked_add(u32::from(lfeon))?;
-    (n > 0).then_some(n)
 }
 
 /// What the file says about one audio track (`None`: the track has no sample description).
@@ -741,7 +698,7 @@ pub(crate) fn codec_label(c: &CodecConfig) -> String {
         // the editing codec of iMovie and Final Cut; no decoder here reads it (#3646)
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"icod" => "Apple Intermediate Codec".into(),
         CodecConfig::Av1(c) => format!("AV1 ({} Profile)", ["Main", "High", "Professional"].get(c.seq_profile as usize).unwrap_or(&"Main")),
-        CodecConfig::Apv(a) => match filmcraft_apv::Profile::from_idc(a.profile_idc) {
+        CodecConfig::Apv(a) => match craft_video::apv::Profile::from_idc(a.profile_idc) {
             Some(p) => p.name().into(),
             None => "APV".into(),
         },
@@ -786,7 +743,8 @@ fn yuv_label(chroma_format_idc: u32, bits: u32) -> String {
 /// into it for 4:2:0 files, which labelled them "4:0:0" (#1959). The profile alone can't say (High
 /// 4:2:2 is 8 or 10-bit, High 10 can be 8-bit).
 fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
-    let from_sps = a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| filmcraft_h264::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        a.sps.first().and_then(|n| n.get(1..)).and_then(|rbsp| craft_video::h264::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     if let Some(sps) = from_sps {
         return Some((sps.chroma_format_idc, sps.bit_depth_luma));
     }
@@ -804,7 +762,8 @@ fn avc_format(a: &filmcraft_isobmff::AvcConfig) -> Option<(u32, u32)> {
 /// `chroma_format_idc` and luma bit depth of an HEVC track: from its first SPS, which is what the
 /// decoder decodes, else the `hvcC` record's own fields (which a muxer may leave at 0, i.e. "4:0:0").
 fn hevc_format(h: &filmcraft_isobmff::HevcConfig) -> (u32, u32) {
-    let from_sps = h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| filmcraft_hevc::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
+    let from_sps =
+        h.sps().first().and_then(|n| n.get(2..)).and_then(|rbsp| craft_video::hevc::decode::params::Sps::parse(&filmcraft_bitstream::unescape_rbsp(rbsp)).ok());
     match from_sps {
         Some(sps) => (sps.chroma_format_idc, sps.bit_depth_luma),
         None => (h.chroma_format_idc as u32, h.bit_depth_luma as u32),
@@ -827,7 +786,7 @@ fn pixfmt_label(c: &CodecConfig) -> String {
             format!("YUV {sub} {}-bit", c.bit_depth.max(8))
         }
         CodecConfig::Apv(a) => {
-            let chroma = filmcraft_apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(filmcraft_apv::ChromaFormat::Yuv422);
+            let chroma = craft_video::apv::ChromaFormat::from_idc(a.chroma_format_idc).unwrap_or(craft_video::apv::ChromaFormat::Yuv422);
             crate::apv::apv_pixfmt_label(chroma, a.bit_depth_minus8.saturating_add(8))
         }
         // 4444 until the first frame header says whether it codes alpha (`open_reader`)
@@ -1002,6 +961,30 @@ mod multi_audio_tests {
         assert!((primary.channels[0][50] - 0.25).abs() < 0.001);
         assert!((secondary.channels[0][50] + 0.5).abs() < 0.001);
         assert!(source.audio_stream(2, 0, 100, 48_000).is_err());
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673), with and without an edit
+    /// list that moves presentation away from the first stored sample.
+    #[test]
+    fn resampled_audio_does_not_depend_on_the_read_cuts() {
+        let rate = 44_100u32;
+        for media_time in [None, Some(441)] {
+            let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+            let entry = SampleEntry::pcm(PcmConfig { bits: 32, float: true, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
+            let mut cfg = TrackConfig::new(entry, rate);
+            if let Some(media_time) = media_time {
+                cfg.edits = vec![filmcraft_isobmff::Edit { segment_duration: 36_000, media_time, media_rate: 0x10000 }];
+            }
+            let track = mux.add_track(cfg).unwrap();
+            let samples = filmcraft_testkit::cuts::signs(filmcraft_testkit::cuts::SOURCE_SAMPLES, 2);
+            let data: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+            mux.write_sample(track, WriteSample { data: &data, duration: samples.len() as u32, composition_offset: 0, is_sync: true }).unwrap();
+            let source = super::Mp4Source::open("tone.mov", mux.finish().unwrap().into_inner().into()).unwrap();
+            let what = format!("mov 44.1 kHz float at 1999 Hz, edit {media_time:?}");
+            filmcraft_testkit::cuts::assert_cut_independent(&what, 1_000, filmcraft_testkit::cuts::FRAMES, |s, n| {
+                source.audio(s, n, filmcraft_testkit::cuts::RATE).unwrap().channels
+            });
+        }
     }
 }
 
