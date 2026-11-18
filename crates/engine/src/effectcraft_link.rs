@@ -221,7 +221,7 @@ fn close_job(p: &Progress, result: &Outcome, outcome: &std::result::Result<Strin
             p.done.store(total, Ordering::Relaxed);
             set_status(p, format!("Done in {}", duration_text(seconds)));
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            Ok(Report { path: path.clone(), frames: total, seconds, bytes, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(Report { path: path.clone(), frames: total, seconds, bytes, render_fps: 0.0, extra_files: Vec::new(), encoder: None, warnings: Vec::new() })
         }
         Err(e) => {
             *p.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
@@ -1130,6 +1130,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: replace_clip,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "effectcraft.edit",
@@ -1140,6 +1141,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: edit_clip,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "effectcraft.openProject",
@@ -1150,6 +1152,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: crate::commands::always,
             run: open_project,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "effectcraft.link",
@@ -1160,6 +1163,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: has_seq,
             run: link_clip,
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "effectcraft.sync",
@@ -1170,6 +1174,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: crate::commands::always,
             run: sync_now,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }

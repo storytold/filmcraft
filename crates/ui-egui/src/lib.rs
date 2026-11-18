@@ -203,6 +203,13 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211), on its own output so opening it never waits for the device
+    /// (#2633). Falls back to `audio` when the platform layer installs none (headless tests).
+    pub scrub_out: Option<Box<dyn scrub::ScrubOut>>,
+    /// The sequence sample rate `scrub_out` was last configured for (`sync_scrub_output`).
+    pub(crate) scrub_rate: Option<u32>,
+    /// The sequence the open scrub stream's fill was built for (`sync_scrub_output`).
+    pub(crate) scrub_sequence: Option<filmcraft_project::ItemId>,
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
@@ -251,6 +258,10 @@ pub struct FilmcraftApp {
     pub(crate) pending_panel_raise: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
+    /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a
+    /// dialog to ask for parameters runs the engine command instead (an agent cannot see or
+    /// close a dialog; `ui.menu.invoke` keeps the menu behaviour, #1540).
+    pub(crate) engine_call: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
