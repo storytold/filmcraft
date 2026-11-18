@@ -553,10 +553,11 @@ fn screen_recording_webm_extract_preserves_picture_and_sound() {
     let source = frames(&ffmpeg, &src, None, "gray");
     let rendered = frames(&ffmpeg, &out, None, "gray");
     assert_eq!((source.len(), rendered.len()), (75, 50));
-    assert_shows(&rendered[12], &source, 12, "picture before the cut");
-    assert_shows(&rendered[25], &source, 50, "flash after the cut");
+    for (frame, picture) in rendered.iter().enumerate() {
+        let source_frame = if frame < 20 { frame } else { frame + 25 };
+        assert_shows(picture, &source, source_frame, &format!("export frame {frame}"));
+    }
     assert!(rendered[25].iter().all(|&level| level > 200), "expected a white frame at 1 s");
-    assert_shows(&rendered[40], &source, 65, "picture after the cut");
     let source_pcm = pcm(&ffmpeg, &src, 0);
     let exported_pcm = pcm(&ffmpeg, &out, 0);
     let beeps = onsets(&exported_pcm);
