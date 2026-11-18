@@ -269,6 +269,40 @@ fn transition_plans_preserve_reference_track_order_and_reverse() {
     }
 }
 
+/// A transition with a clip on one side only keeps that clip's blend mode, as the CPU renderer does
+/// (a fade from or to nothing carries on as the clip would): a Multiply clip over a lower track
+/// stays multiplied through a wipe in or out.
+#[test]
+fn a_one_sided_transition_keeps_the_clips_blend_mode() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let a = place(&mut p, seq, 1, red, 0, 24);
+    let rate = FrameRate::FPS_24;
+    let s = p.sequence_mut(seq).unwrap();
+    s.video_tracks[1].items[0].effect_mut("opacity").unwrap().param_mut("blend").unwrap().value = ParamValue::Choice(3);
+    s.video_tracks[1].transitions.push(filmcraft_project::Transition {
+        id: filmcraft_project::TransitionId(997),
+        effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+        start: rate.tick_of(18),
+        duration: rate.tick_of(12),
+        from: Some(a),
+        to: None,
+        align: Default::default(),
+        reverse: false,
+    });
+    for name in ["wipe", "film_dissolve", "page_peel"] {
+        p.sequence_mut(seq).unwrap().video_tracks[1].transitions[0].effect = filmcraft_project::find_effect(name).unwrap().instance();
+        for f in [18, 21, 24] {
+            let opts = RenderOptions { scale: 0.5, ..Default::default() };
+            let plan = plan::plan_frame(&p, seq, rate.tick_of(f), opts, plan::DeviceCaps::ALL, &map);
+            let got = plan::execute_cpu(&plan);
+            let reference = render_sequence(&p, seq, rate.tick_of(f), opts, &map);
+            let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert!(max < 1e-5, "{name}, frame {f}: {max}");
+        }
+    }
+}
+
 #[test]
 fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
     // the GPU compositor can only cross-fade layers: a Morph Cut frame is planned whole on the

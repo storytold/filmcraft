@@ -256,6 +256,11 @@ mod tests {
     /// How far two renders of a frame are apart over black: the 99th percentile and the mean of
     /// the largest 8-bit channel difference per pixel.
     fn parity_stats(cpu: &Image, gpu: &Image) -> (u32, f64) {
+        // images of different sizes are as far apart as can be: a zip would compare only the part
+        // they share
+        if (cpu.w, cpu.h) != (gpu.w, gpu.h) {
+            return (u32::MAX, f64::INFINITY);
+        }
         let to8 = |img: &Image| -> Vec<u8> { img.over_black_rgba8() };
         let (a, b) = (to8(cpu), to8(gpu));
         let mut d: Vec<u32> = a
@@ -732,23 +737,21 @@ mod tests {
             set_transition(&mut p, seq, 0, 1, name, &ids, false);
             let tr = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0];
             (tr.from, tr.to) = if from_nothing { (None, ids.first().copied()) } else { (ids.first().copied(), None) };
-            for f in [5, 8, 11] {
+            for f in [18, 20, 23] {
                 let t = rate.tick_of(f);
                 let what = format!("{name} from_nothing={from_nothing} frame {f}");
+                let before = r.compositor.cpu_transitions;
                 let gpu = r.render(&p, seq, t, opts, &m).expect("hybrid transition frame");
+                assert_eq!(r.compositor.cpu_transitions, before + 1, "{what}: mixed on the CPU against a blank side");
                 assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &what);
             }
         }
     }
 
-    /// The adapter and backend the off-screen device runs on, as `ExportRenderer::new` picks it.
-    fn adapter_description() -> String {
-        let instance = crate::adapter::native_instance();
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-        let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-        crate::adapter::pick(&adapters, None, power)
-            .map(|a| format!("{} ({:?})", a.get_info().name, a.get_info().backend))
-            .unwrap_or_else(|_| "no adapter".into())
+    /// The adapter and backend the renderer's own device runs on.
+    fn adapter_description(r: &ExportRenderer) -> String {
+        let info = r.compositor.device.adapter_info();
+        format!("{} ({:?})", info.name, info.backend)
     }
 
     /// Every video transition, on the path the GPU export and the monitor take, against the CPU
@@ -765,7 +768,7 @@ mod tests {
             eprintln!("SKIPPED (gpu transition export): no adapter");
             return;
         };
-        eprintln!("adapter: {}", adapter_description());
+        eprintln!("adapter: {}", adapter_description(&r));
         let rate = filmcraft_time::FrameRate::FPS_24;
         let mut p = Project::new("x");
         let mut m = SourceMap::default();

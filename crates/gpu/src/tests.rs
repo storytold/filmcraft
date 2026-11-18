@@ -334,6 +334,7 @@ fn transition_canvases_are_freed_with_the_transition() {
     let one_side = wipe([vec![layer(0)], Vec::new()]);
     c.composite(&one_side);
     assert_eq!(c.slot_readback.len(), 1, "only the clip that exists is read back");
+    assert_eq!(c.transition_inputs.iter().flatten().count(), 1, "the canvas of the side that became empty is freed");
     let expected = execute_cpu(&one_side).over_black_rgba8();
     let got = c.read_output().expect("readback").2;
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "a fade from nothing matches the CPU reference");

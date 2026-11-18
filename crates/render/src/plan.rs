@@ -411,6 +411,17 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32,
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
                 return false;
             }
+            // A fade from or to nothing carries on with the one clip's blend mode in the CPU
+            // renderer; a step is mixed over what is below as Normal, so such a clip keeps the
+            // frame on the CPU. (Push is drawn by the GPU as it always was.)
+            if trn.effect.effect != "push" {
+                let side = |id| tr.item(id?).filter(|i| i.enabled);
+                if let (Some(only), None) | (None, Some(only)) = (side(trn.from), side(trn.to))
+                    && crate::opacity_blend(only, only.effect_time_at(t)).1 != Blend::Normal
+                {
+                    return false;
+                }
+            }
         }
         if let Some(it) = tr.item_at(t)
             && it.enabled

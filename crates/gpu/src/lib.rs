@@ -1002,10 +1002,12 @@ impl GpuCompositor {
             self.cpu_adjustments += 1;
             return cpu(self);
         }
-        // after a failed read-back the GPU is not asked for these clips for a while
-        if self.hybrid_off_until.is_some_and(|until| std::time::Instant::now() < until)
-            && steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"))
-        {
+        // Clips of a transition the GPU does not draw itself are read back and waited for here,
+        // which a browser cannot do (no blocking wait on the device, and `std::time::Instant`
+        // panics on wasm32): there those frames go whole to the CPU, as they did before. After a
+        // failed read-back the GPU is not asked for these clips for a while either.
+        let cpu_mix = steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push"));
+        if cpu_mix && (cfg!(target_arch = "wasm32") || self.hybrid_off_until.is_some_and(|until| std::time::Instant::now() < until)) {
             self.cpu_fallback_frames += 1;
             return cpu(self);
         }
@@ -1061,6 +1063,10 @@ impl GpuCompositor {
                     // to draw or read back
                     if let Some(place) = pictures.get_mut(first + index) {
                         *place = Some(filmcraft_render::Image::new(width, height));
+                    }
+                    // a canvas left from a frame where this side had a clip is not needed now
+                    if let Some(old) = self.transition_inputs.get_mut(first + index) {
+                        *old = None;
                     }
                     continue;
                 }
@@ -1198,6 +1204,10 @@ impl GpuCompositor {
             }
             let row = w.checked_mul(8)?.div_ceil(256).checked_mul(256)?;
             let needed = u64::from(row) * u64::from(h);
+            // a canvas too large for one staging buffer is left to the CPU, not a validation error
+            if needed > self.device.limits().max_buffer_size {
+                return None;
+            }
             if self.slot_readback.get(k)?.as_ref().is_none_or(|(_, size)| *size < needed) {
                 let b = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("transition-input-readback"),
@@ -1215,7 +1225,7 @@ impl GpuCompositor {
             );
             layout.push((w, h, row));
         }
-        self.queue.submit([enc.finish()]);
+        let submitted = self.queue.submit([enc.finish()]);
         let mut waits = Vec::with_capacity(slots.len());
         for k in 0..slots.len() {
             let (buf, _) = self.slot_readback.get(k)?.as_ref()?;
@@ -1225,8 +1235,9 @@ impl GpuCompositor {
             });
             waits.push(rx);
         }
-        // one wait for all of them
-        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(SLOT_READ_TIMEOUT) }).ok()?;
+        // one wait for all of them, for this frame's copies and not for whatever another renderer
+        // sharing the queue submitted since
+        self.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: Some(SLOT_READ_TIMEOUT) }).ok()?;
         let mut images = Vec::with_capacity(slots.len());
         for (k, (w, h, row)) in layout.into_iter().enumerate() {
             waits.get(k)?.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?.ok()?;
