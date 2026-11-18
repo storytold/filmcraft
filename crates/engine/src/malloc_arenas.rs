@@ -15,6 +15,12 @@
 //! variable set. It does nothing when the variable or the `glibc.malloc.arena_max` tunable is
 //! already set (setting either is how to opt out: `MALLOC_ARENA_MAX=64`), on other systems, and when
 //! the program cannot be started again (it then carries on with the default arenas).
+//!
+//! `Command::exec` puts SIGPIPE back to its default action just before it calls `execvp`, and
+//! leaves it there when the call fails. A program that then wrote to a closed pipe (`| head`) would
+//! be killed instead of getting the `EPIPE` the CLI handles (`stdout_failed`). After a failed
+//! restart [`restart`] installs a SIGPIPE handler that does nothing (`signal-hook`, safe code), so
+//! a write to a closed pipe fails with `EPIPE` again, as Rust programs normally do.
 
 /// Arenas FilmCraft runs with on glibc.
 pub const ARENAS: &str = "2";
@@ -36,9 +42,22 @@ pub fn limit_and_restart() {
         }
         // `exec` only returns on failure (a binary replaced while running, a sandbox without
         // `/proc`): carry on with the default arenas
-        let err = cmd.args(args).env("MALLOC_ARENA_MAX", ARENAS).exec();
+        let err = restart(cmd.args(args).env("MALLOC_ARENA_MAX", ARENAS));
         log::debug!("could not restart with MALLOC_ARENA_MAX={ARENAS}: {err}");
     }
+}
+
+/// `exec` `cmd` in place of this program. Returns only when that fails, with SIGPIPE answered by a
+/// handler that does nothing, so writes to a closed pipe return `EPIPE` (see the module docs).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn restart(cmd: &mut std::process::Command) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let err = cmd.exec();
+    // SIGPIPE is not one of signal-hook's forbidden signals, so this does not panic
+    if let Err(e) = signal_hook::flag::register(signal_hook::consts::SIGPIPE, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))) {
+        log::debug!("could not handle SIGPIPE after the failed restart: {e}");
+    }
+    err
 }
 
 /// Whether to set the limit: neither `MALLOC_ARENA_MAX` nor an `arena_max` tunable is given.
@@ -59,5 +78,18 @@ mod tests {
         // empty still means the user set it (glibc ignores it, and so do we)
         assert!(!needs_limit(Some(OsStr::new("")), None));
         assert!(!needs_limit(None, Some(OsStr::new("glibc.malloc.check=0:glibc.malloc.arena_max=8"))));
+    }
+
+    /// A failed restart used to leave SIGPIPE at its default action (`Command::exec` resets it
+    /// before `execvp`), so a write to a closed pipe killed the program instead of failing.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn a_failed_restart_still_gets_epipe_from_a_closed_pipe() {
+        use std::io::Write;
+        let err = restart(&mut std::process::Command::new("/nonexistent/filmcraft-restart-test"));
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        drop(reader);
+        assert_eq!(writer.write_all(b"after the failed restart").unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
     }
 }
