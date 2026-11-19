@@ -867,7 +867,11 @@ fn param_value_widget(
             let drop = icons::button(vui, Icon::Eyedropper, 18.0, armed, &t, tl!("Eyedropper (pick a color from the Program monitor)"));
             app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
             if drop.clicked() {
-                app.ui.eyedropper = if armed { None } else { Some(target) };
+                if armed {
+                    crate::panels::monitor::disarm_eyedropper(app, vui.ctx());
+                } else {
+                    app.ui.eyedropper = Some(target);
+                }
             }
             // `#rrggbb`, for the colour you already know: a green screen's published value, a
             // brand colour, one read off another shot. While the field has focus it shows what is

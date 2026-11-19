@@ -1140,10 +1140,10 @@ mod tests {
     }
 
     /// Hue vs Hue stores a shift around the neutral middle: the curve's value minus 0.5, in turns
-    /// (±180°). The UI plots and edits it in absolute hue, so a point dragged to blue (240°) stores
-    /// 0.5 − 120/360 for a red input, and the renderer turns red blue.
+    /// (±180°). A flat curve at 0.5 − 120/360 is a −120° shift, so red (input hue 0) renders blue;
+    /// a flat 0.5 curve is no shift and leaves red unchanged.
     #[test]
-    fn hue_vs_hue_stores_a_shift_a_point_dragged_to_blue_produces_blue() {
+    fn hue_vs_hue_stores_a_shift_so_red_renders_blue() {
         let mut e = find_effect("lumetri").unwrap().instance();
         e.params.get_mut("hue_vs_hue").unwrap().value = ParamValue::Curve(vec![[0.0, 0.5 - 120.0 / 360.0], [1.0, 0.5 - 120.0 / 360.0]]);
         let mut img = Image::filled(1, 1, [1.0, 0.0, 0.0, 1.0]);
@@ -1156,7 +1156,7 @@ mod tests {
         let mut img = Image::filled(1, 1, [1.0, 0.0, 0.0, 1.0]);
         apply(&mut img, &e, &cx());
         let rgb = [img.px[0], img.px[1], img.px[2]];
-        assert!(rgb[0] > 0.99 && rgb[2] < 0.01, "red changed to {rgb:?}");
+        assert!(rgb[0] > 0.99 && rgb[1] < 0.01 && rgb[2] < 0.01, "red changed to {rgb:?}");
     }
 
     /// #2094: at and above the luma floor (0.02 encoded, about 5/255) the lift is exactly what it

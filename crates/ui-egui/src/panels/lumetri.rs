@@ -131,32 +131,41 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             sub(ui, &t, tl!("RGB Curves"));
             let key = egui::Id::unique("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
-            let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W / 2.0;
-            let row = ui
-                .horizontal(|ui| {
-                    for (i, c) in
-                        [Color32::WHITE, Color32::from_rgb(230, 70, 70), Color32::from_rgb(80, 200, 90), Color32::from_rgb(80, 130, 250)].iter().enumerate()
-                    {
-                        let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-                        ui.painter().circle_filled(r.center(), 6.0, *c);
-                        if ch == i {
-                            ui.painter().circle_stroke(r.center(), 8.5, Stroke::new(1.5, t.hot_text));
-                        }
-                        if resp.clicked() {
-                            ch = i;
-                        }
-                    }
-                })
-                .response
-                .rect;
-            ui.data_mut(|d| d.insert_temp(key, ch));
-            let (id, col) = [
+            let channels = [
                 ("curve_luma", Color32::WHITE),
                 ("curve_red", Color32::from_rgb(230, 70, 70)),
                 ("curve_green", Color32::from_rgb(80, 200, 90)),
                 ("curve_blue", Color32::from_rgb(80, 130, 250)),
-            ][ch];
-            curve_eyedropper(ui, app, id, clip, idx, &t, pos2(scale_x, row.center().y));
+            ];
+            let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W / 2.0;
+            ui.horizontal_wrapped(|ui| {
+                for (i, (cid, c)) in channels.iter().enumerate() {
+                    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                    ui.painter().circle_filled(r.center(), 6.0, *c);
+                    if ch == i {
+                        ui.painter().circle_stroke(r.center(), 8.5, Stroke::new(1.5, t.hot_text));
+                    }
+                    if resp.clicked() {
+                        ch = i;
+                    }
+                    app.auto.add(&format!("lumetri.curve.channel.{cid}"), r, "Channel");
+                }
+                // the eyedropper sits at the plot's right edge, kept inside the visible panel;
+                // a panel too narrow for the buttons and it takes it on the next line instead
+                let inset = ui.max_rect().left() - ui.clip_rect().left();
+                let target = (scale_x - CURVE_EYEDROPPER_BTN / 2.0).min(ui.clip_rect().right() - inset - CURVE_EYEDROPPER_BTN);
+                let spacing = ui.spacing().item_spacing.x;
+                if target > ui.cursor().min.x + spacing {
+                    ui.add_space(target - ui.cursor().min.x - spacing);
+                } else {
+                    ui.end_row();
+                }
+                let (r, _) = ui.allocate_exact_size(vec2(CURVE_EYEDROPPER_BTN, CURVE_EYEDROPPER_BTN), Sense::hover());
+                let (cid, _) = channels.get(ch).copied().unwrap_or(channels[0]);
+                curve_eyedropper(ui, app, cid, clip, idx, &t, r.center());
+            });
+            ui.data_mut(|d| d.insert_temp(key, ch));
+            let (id, col) = channels.get(ch).copied().unwrap_or(channels[0]);
             let r = curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
             auto_rows.push((format!("lumetri.curve.{id}"), r, "Curve"));
             if hdr {
@@ -662,7 +671,11 @@ fn curve_eyedropper(ui: &mut egui::Ui, app: &mut FilmcraftApp, id: &str, clip: C
     app.auto.add(&format!("lumetri.param.{id}.eyedropper"), btn, "Eyedropper");
     let br = br.on_hover_text(tl!("Eyedropper (pick a color from the Program monitor)"));
     if br.clicked() {
-        app.ui.eyedropper = if armed { None } else { Some(target) };
+        if armed {
+            crate::panels::monitor::disarm_eyedropper(app, ui.ctx());
+        } else {
+            app.ui.eyedropper = Some(target);
+        }
     }
 }
 

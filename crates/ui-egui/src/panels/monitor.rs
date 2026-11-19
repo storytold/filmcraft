@@ -16,7 +16,7 @@ use crate::FilmcraftApp;
 use crate::frames::{FrameKey, Target};
 use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
-use crate::state::{CurveAxis, DisplayMode, PlaybackRes};
+use crate::state::{CurveAxis, DisplayMode, Eyedropper, PlaybackRes};
 use crate::theme::Tokens;
 use crate::widgets::ZoomThumbPart;
 
@@ -671,9 +671,31 @@ struct EyedropperPick {
     uv: (f32, f32),
     key: FrameKey,
     time: Tick,
+    /// The eyedropper that was armed at the click: the pick completes only while it stays armed,
+    /// so disarming or re-arming another parameter discards it instead of filling that one.
+    armed: Eyedropper,
     /// The project as the eyedropper samples it: the armed effect switched off (so a colour it keys
     /// out can be picked), or its curve stages neutralized from the armed curve on.
     project: std::sync::Arc<filmcraft_project::Project>,
+}
+
+impl EyedropperPick {
+    /// Whether the pick may still complete: the eyedropper it was made with is still armed and the
+    /// monitor still shows the target it was clicked on.
+    fn still_applies(&self, armed: Option<&Eyedropper>, target: Target) -> bool {
+        armed == Some(&self.armed) && self.key.target == target
+    }
+}
+
+/// The pick waiting for its frame, if any.
+fn eyedropper_pending() -> egui::Id {
+    egui::Id::unique("eyedropper-pending")
+}
+
+/// Disarm the eyedropper, dropping a pick that is still waiting for its frame.
+pub(crate) fn disarm_eyedropper(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    app.ui.eyedropper = None;
+    ctx.data_mut(|d| d.remove::<EyedropperPick>(eyedropper_pending()));
 }
 
 /// Output scale of the frame an eyedropper samples (half size is plenty and quick to render).
@@ -713,14 +735,13 @@ fn curve_sample_input(e: &mut filmcraft_project::EffectInstance, axis: CurveAxis
 /// eyedropper switches the armed effect off (an Ultra Key has already removed the green it is asked
 /// to key), a curve eyedropper neutralizes the armed curve and every curve after it, so it samples
 /// what enters that curve — its x axis — and not the curve's own output nor a later stage's. Esc
-/// disarms.
+/// disarms; disarming or arming another parameter drops a pick whose frame is still rendering.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
-    let pending_id = egui::Id::unique("eyedropper-pending");
+    let pending_id = eyedropper_pending();
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        app.ui.eyedropper = None;
-        ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        disarm_eyedropper(app, &ctx);
         return;
     }
     if resp.hovered() {
@@ -746,9 +767,17 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         // a revision of its own, so this render never replaces what the monitor caches
         let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip.rotate_left(17) ^ armed.effect as u64;
         let key = FrameKey { target, frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
-        ctx.data_mut(|d| d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), project: std::sync::Arc::new(project) }));
+        ctx.data_mut(|d| {
+            d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), armed: armed.clone(), project: std::sync::Arc::new(project) })
+        });
     }
     let Some(pick) = ctx.data(|d| d.get_temp::<EyedropperPick>(pending_id)) else { return };
+    // the eyedropper was disarmed, re-armed for another parameter or moved to another sequence
+    // since the click: drop the pick rather than fill what is armed now
+    if !pick.still_applies(app.ui.eyedropper.as_ref(), target) {
+        ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        return;
+    }
     app.frames.request(pick.key, pick.time, EYEDROPPER_SCALE, &pick.project, 0);
     let Some(img) = app.frames.get(&pick.key) else {
         ctx.request_repaint();
@@ -1543,5 +1572,41 @@ mod tests {
     fn eyedropper_rejects_empty_and_truncated_frames() {
         assert_eq!(sample_rgb(&Rgba { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
         assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
+    }
+
+    fn pick(armed: Eyedropper, target: Target) -> EyedropperPick {
+        EyedropperPick {
+            uv: (0.5, 0.5),
+            key: FrameKey { target, frame: 0, size: 500, revision: 1, draft: false },
+            time: Tick::ZERO,
+            armed,
+            project: std::sync::Arc::new(filmcraft_project::Project::default()),
+        }
+    }
+
+    /// A click's frame renders in the background: a pick must not fill an eyedropper that was
+    /// disarmed or armed for another parameter (or another sequence) meanwhile.
+    #[test]
+    fn a_pending_pick_applies_only_to_the_eyedropper_it_was_clicked_for() {
+        let seq = Target::Sequence(filmcraft_project::ItemId(1));
+        let red = Eyedropper { clip: 7, effect: 0, param: "curve_red".into(), mask: None, curve: Some(CurveAxis::Channel(0)) };
+        let blue = Eyedropper { param: "curve_blue".into(), ..red.clone() };
+        let p = pick(red.clone(), seq);
+        assert!(p.still_applies(Some(&red), seq));
+        assert!(!p.still_applies(None, seq), "a disarmed eyedropper takes no pick");
+        assert!(!p.still_applies(Some(&blue), seq), "another armed parameter takes no pick");
+        assert!(!p.still_applies(Some(&red), Target::Sequence(filmcraft_project::ItemId(2))), "another sequence takes no pick");
+    }
+
+    #[test]
+    fn disarming_the_eyedropper_drops_the_pending_pick() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        let red = Eyedropper { clip: 7, effect: 0, param: "curve_red".into(), mask: None, curve: None };
+        ctx.data_mut(|d| d.insert_temp(eyedropper_pending(), pick(red.clone(), Target::Sequence(filmcraft_project::ItemId(1)))));
+        app.ui.eyedropper = Some(red);
+        disarm_eyedropper(&mut app, &ctx);
+        assert!(app.ui.eyedropper.is_none());
+        assert!(ctx.data(|d| d.get_temp::<EyedropperPick>(eyedropper_pending())).is_none(), "the waiting pick goes with the eyedropper");
     }
 }

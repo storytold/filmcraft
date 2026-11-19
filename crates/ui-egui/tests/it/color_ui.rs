@@ -259,6 +259,32 @@ fn lumetri_curves_grow_with_the_panel() {
     assert!(r[2] > 400.0, "curve width {r:?}");
 }
 
+/// A Color Grading panel too narrow for the RGB channel buttons and the plot's eyedropper side
+/// by side keeps the eyedropper on its own line, inside the panel and clear of the buttons.
+#[test]
+fn lumetri_curve_eyedropper_clears_the_channel_buttons() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.set", json!({"focused": "LumetriColor"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(3);
+    // narrower than the four channel buttons plus the eyedropper at the plot's right edge
+    d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": "LumetriColor", "rect": [40, 40, 120, 700]}}));
+    d.frames(4);
+    let eye = d.element("lumetri.param.curve_luma.eyedropper").expect("the eyedropper is shown");
+    let panel = d.element("panel.LumetriColor").expect("the panel body");
+    assert!(eye[0] >= panel[0] && eye[0] + eye[2] <= panel[0] + panel[2], "the eyedropper {eye:?} leaves the panel {panel:?}");
+    for id in ["curve_luma", "curve_red", "curve_green", "curve_blue"] {
+        let button = d.element(&format!("lumetri.curve.channel.{id}")).unwrap_or_else(|| panic!("channel {id} is missing"));
+        let overlap = eye[0] < button[0] + button[2] && button[0] < eye[0] + eye[2] && eye[1] < button[1] + button[3] && button[1] < eye[1] + eye[3];
+        assert!(!overlap, "the eyedropper {eye:?} covers the {id} channel button {button:?}");
+    }
+}
+
 #[test]
 fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let mut d = Driver::demo();
