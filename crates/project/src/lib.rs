@@ -116,10 +116,27 @@ pub struct Project {
     /// made from, keyed by that item. Schema v14.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub narrations: BTreeMap<ItemId, Narration>,
+    /// Media items made by a generative tool (ComfyUI clips, docs/comfyui.md): how to make each
+    /// again. Shared (`Arc`) so undo snapshots don't copy the workflows. Schema v18.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub generated: BTreeMap<ItemId, std::sync::Arc<Generation>>,
     /// Project notes (Window ▸ Project Notes): free plain text kept with the project, for to-dos,
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+}
+
+/// How a generated media item was made (and is made again).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Generation {
+    /// The tool (`"comfyui"`).
+    pub provider: String,
+    /// The tool's recipe (for ComfyUI a `filmcraft_comfyui::Recipe`: workflow, input overrides,
+    /// output nodes; never a server).
+    pub recipe: serde_json::Value,
+    /// What the last run reported (outputs, texts, files written); null until it ran.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub last_run: serde_json::Value,
 }
 
 impl Default for Project {
@@ -148,6 +165,7 @@ impl Project {
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
+            generated: BTreeMap::new(),
             notes: String::new(),
         }
     }
@@ -177,7 +195,7 @@ impl Project {
         }
         self.search_bins.iter().for_each(|b| see(b.id.0));
         // deleting an item leaves these entries behind: a new item taking that id would inherit them
-        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).for_each(|i| see(i.0));
+        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).chain(self.generated.keys()).for_each(|i| see(i.0));
         // `lut.import` names LUTs `lut<id>`
         self.luts.iter().filter_map(|l| l.id.strip_prefix("lut")?.parse().ok()).for_each(&mut see);
         fn mixer(m: &MixerStrip) -> impl Iterator<Item = u64> + '_ {

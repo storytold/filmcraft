@@ -3707,3 +3707,47 @@
 	Toggle Color Grading Section	색 보정 섹션 전환
 	Color Grading Section	색 보정 섹션
 	Read Video Scopes	비디오 스코프 읽기
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	프로젝트는 누구에게서나 올 수 있습니다. 허용하기 전에는 파일을 서버로 보내지 않습니다
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	ComfyUI의 Workflow ▸ Export (API)로 저장한 워크플로
+	All Inputs ({count})	모든 입력 ({count})
+	Allow Uploads	업로드 허용
+	Applied	적용됨
+	Back to the workflow's value	워크플로 값으로 되돌리기
+	Choose a file to upload	업로드할 파일 선택
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	ComfyUI 클립 설정
+	ComfyUI Settings	ComfyUI 설정
+	ComfyUI workflow (API)	ComfyUI 워크플로 (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	연결됨 (ComfyUI {ver})
+	Create & Generate	만들고 생성
+	Create Clip	클립 만들기
+	Created {name}	{name} 만듦
+	Expose ComfyUI Inputs	ComfyUI 입력 노출
+	Expose: show this input first for this workflow	노출: 이 워크플로에서 이 입력을 먼저 표시
+	Exposed	노출됨
+	Exposed {input}	{input} 노출됨
+	Exposed: shown first for this workflow (click to stop)	노출됨: 이 워크플로에서 먼저 표시됨 (클릭하여 해제)
+	Generate ComfyUI Clip	ComfyUI 클립 생성
+	Generate again with new random seeds	새 무작위 시드로 다시 생성
+	Generating…	생성 중…
+	Inspect ComfyUI Workflow	ComfyUI 워크플로 검사
+	Load Workflow…	워크플로 불러오기…
+	Load a workflow, or select a ComfyUI clip	워크플로를 불러오거나 ComfyUI 클립을 선택하세요
+	Named by the project file: uploaded only after Allow Uploads	프로젝트 파일이 지정함: 업로드 허용 후에만 업로드됨
+	New ComfyUI Clip	새 ComfyUI 클립
+	New Seeds	새 시드
+	New clip	새 클립
+	Selected ComfyUI clip	선택한 ComfyUI 클립
+	Send these files to the ComfyUI server when the clip is generated	클립을 생성할 때 이 파일들을 ComfyUI 서버로 보냅니다
+	Server	서버
+	Test	테스트
+	Text output	텍스트 출력
+	This clip uploads files named by the project file: {files}	이 클립은 프로젝트 파일이 지정한 파일을 업로드합니다: {files}
+	not reachable	연결할 수 없음
+	select a ComfyUI clip	ComfyUI 클립을 선택하세요
+	{input} no longer exposed	{input} 노출 해제됨
+	{n} file(s) allowed	파일 {n}개 허용됨
+	{n} inputs	입력 {n}개

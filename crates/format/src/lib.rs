@@ -41,6 +41,10 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: camera raw Source Settings (`Interpretation::raw`). No-op step; this build keeps
+//!   them as written (untyped) so a save does not drop them.
+//! - **v19**: generated media (`Project::generated`: the recipes of ComfyUI clips). No-op step;
+//!   older builds would drop the recipes when saving.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -184,7 +188,7 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 19);
     }
 
     #[test]

@@ -3745,3 +3745,47 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+
+# ComfyUI clips (Window ▸ ComfyUI…)
+	A project can come from anyone: its files are sent to the server only after you allow them	Un projet peut venir de n’importe qui : ses fichiers ne sont envoyés au serveur qu’après votre autorisation
+	A workflow saved with ComfyUI's Workflow ▸ Export (API)	Un workflow enregistré avec Workflow ▸ Export (API) de ComfyUI
+	All Inputs ({count})	Toutes les entrées ({count})
+	Allow Uploads	Autoriser les envois
+	Applied	Appliqué
+	Back to the workflow's value	Revenir à la valeur du workflow
+	Choose a file to upload	Choisir un fichier à envoyer
+	ComfyUI	ComfyUI
+	ComfyUI Clip Settings	Réglages du clip ComfyUI
+	ComfyUI Settings	Réglages de ComfyUI
+	ComfyUI workflow (API)	Workflow ComfyUI (API)
+	ComfyUI…	ComfyUI…
+	Connected (ComfyUI {ver})	Connecté (ComfyUI {ver})
+	Create & Generate	Créer et générer
+	Create Clip	Créer le clip
+	Created {name}	{name} créé
+	Expose ComfyUI Inputs	Exposer les entrées ComfyUI
+	Expose: show this input first for this workflow	Exposer : afficher cette entrée en premier pour ce workflow
+	Exposed	Exposées
+	Exposed {input}	{input} exposée
+	Exposed: shown first for this workflow (click to stop)	Exposée : affichée en premier pour ce workflow (cliquez pour arrêter)
+	Generate ComfyUI Clip	Générer le clip ComfyUI
+	Generate again with new random seeds	Générer à nouveau avec de nouvelles graines aléatoires
+	Generating…	Génération…
+	Inspect ComfyUI Workflow	Inspecter le workflow ComfyUI
+	Load Workflow…	Charger un workflow…
+	Load a workflow, or select a ComfyUI clip	Chargez un workflow ou sélectionnez un clip ComfyUI
+	Named by the project file: uploaded only after Allow Uploads	Indiqué par le fichier de projet : envoyé seulement après Autoriser les envois
+	New ComfyUI Clip	Nouveau clip ComfyUI
+	New Seeds	Nouvelles graines
+	New clip	Nouveau clip
+	Selected ComfyUI clip	Clip ComfyUI sélectionné
+	Send these files to the ComfyUI server when the clip is generated	Envoyer ces fichiers au serveur ComfyUI lors de la génération du clip
+	Server	Serveur
+	Test	Tester
+	Text output	Sortie texte
+	This clip uploads files named by the project file: {files}	Ce clip envoie des fichiers indiqués par le fichier de projet : {files}
+	not reachable	inaccessible
+	select a ComfyUI clip	sélectionnez un clip ComfyUI
+	{input} no longer exposed	{input} n’est plus exposée
+	{n} file(s) allowed	{n} fichier(s) autorisé(s)
+	{n} inputs	{n} entrées

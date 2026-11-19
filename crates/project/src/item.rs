@@ -27,6 +27,10 @@ pub struct Interpretation {
     /// is edited into a sequence. None = one stereo clip of the first two channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_channels: Option<AudioChannelMap>,
+    /// Camera raw Source Settings (project schema v18), kept exactly as written: this build
+    /// does not apply them yet, but a save must not drop them. None = as the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<serde_json::Value>,
 }
 
 /// Modify ▸ Audio Channels: the clip channel format and, per audio clip, the source channels it

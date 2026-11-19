@@ -1245,7 +1245,7 @@ dependencies = [
 [[package]]
 name = "craft-fcproj-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6bd1c3dc357f012ddb31c6799ad2e36a1596003d#6bd1c3dc357f012ddb31c6799ad2e36a1596003d"
+source = "git+https://github.com/storytold/craft-libs?rev=9877b68b5e0741111f21c54724575435b9e41697#9877b68b5e0741111f21c54724575435b9e41697"
 dependencies = [
  "serde",
  "serde_json",
@@ -2397,6 +2397,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-comfyui"
+version = "0.20.1"
+dependencies = [
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "filmcraft-dng"
 version = "0.20.1"
 dependencies = [
@@ -2434,6 +2446,7 @@ dependencies = [
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-comfyui",
  "filmcraft-dng",
  "filmcraft-edit",
  "filmcraft-export",
@@ -2782,6 +2795,7 @@ dependencies = [
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-comfyui",
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",

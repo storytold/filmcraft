@@ -17,6 +17,9 @@ whisper = ["filmcraft-speech/whisper"]
 speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
+# ComfyUI clips over HTTP(S). Off by default and in wasm builds (sessions can still install a
+# transport of their own).
+comfyui = ["filmcraft-comfyui/http"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -38,6 +41,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-comfyui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
