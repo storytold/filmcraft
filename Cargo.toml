@@ -11,7 +11,7 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
-craft-psd = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "06496f5bf20988123d319f83f9a51523218c2173" }
+craft-psd = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8dbe9705ffd23002c97f31a7727b1027ecd5c3fd" }
 # Shared bounded classic TIFF directory traversal.
 craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e" }
 # Isolated YCbCr codec pin; DNG keeps its craft-raw/craft-tiff type identity.
