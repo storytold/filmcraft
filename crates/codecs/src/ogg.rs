@@ -1,8 +1,8 @@
-//! Ogg audio source (`filmcraft-ogg` demux): Ogg Opus with our Opus decoder and Ogg Vorbis with the
+//! Ogg audio source (`craft_media::ogg` demux): Ogg Opus with our Opus decoder and Ogg Vorbis with the
 //! bootstrap Vorbis decoder.
 //!
 //! Opus (RFC 7845): packet positions come from granule positions and TOC durations
-//! ([`filmcraft_ogg::OpusTiming`]); the pre-skip samples land before 0 and are never returned, the
+//! ([`craft_media::ogg::OpusTiming`]); the pre-skip samples land before 0 and are never returned, the
 //! final page's end trimming is applied, and random access decodes [`crate::audio::OPUS_PRE_ROLL`]
 //! of preceding packets first (so a seek gives the same samples as continuous playback).
 //!
@@ -13,25 +13,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use craft_media::ogg::{Codec, OggFile, OpusTiming};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, SharedSource};
-use filmcraft_ogg::{Codec, OggFile, OpusTiming};
 use filmcraft_time::Tick;
 
 use crate::CodecError;
 use crate::audio::{OPUS_PRE_ROLL, OPUS_RATE, PacketDecoder, check_decoded_budget, read_resampled};
 
-impl filmcraft_ogg::ByteSource for crate::Src {
-    fn len(&self) -> u64 {
-        self.0.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.0.read_at(offset, buf)
-    }
-}
-
 pub fn sniff(head: &[u8]) -> bool {
-    filmcraft_ogg::sniff(head)
+    craft_media::ogg::sniff(head)
 }
 
 struct OpusState {
@@ -43,7 +34,7 @@ struct OpusState {
 
 enum Kind {
     Opus {
-        head: Box<filmcraft_opus::OpusHead>,
+        head: Box<craft_audio::opus::OpusHead>,
         timing: OpusTiming,
         state: Mutex<OpusState>,
     },
@@ -69,7 +60,7 @@ impl OggSource {
 
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
-        let file = filmcraft_ogg::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
+        let file = craft_media::ogg::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
         for w in &file.warnings {
             log::warn!("{name}: {w}");
         }
@@ -81,7 +72,9 @@ impl OggSource {
         let st = &file.streams[stream];
         let (kind, rate, channels, codec) = match st.codec {
             Codec::Opus => {
-                let head = filmcraft_opus::OpusHead::parse(&st.headers[0]).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
+                // an oversized first packet is filed as data, leaving an Opus stream without its header
+                let first = st.headers.first().ok_or_else(|| CodecError::Decode("Opus: missing header packet".into()))?;
+                let head = craft_audio::opus::OpusHead::parse(first).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?;
                 let timing = OpusTiming::of(st, head.pre_skip as u32);
                 let channels = head.channels as u32;
                 (
@@ -123,7 +116,7 @@ impl OggSource {
         &self.file
     }
 
-    fn opus_packet(&self, st: &mut OpusState, head: &filmcraft_opus::OpusHead, timing: &OpusTiming, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
+    fn opus_packet(&self, st: &mut OpusState, head: &craft_audio::opus::OpusHead, timing: &OpusTiming, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
         }
@@ -135,7 +128,7 @@ impl OggSource {
         if st.last_decoded.is_none_or(|l| l + 1 != i) {
             let d = st.decoder.as_mut().ok_or_else(|| CodecError::Decode("no audio decoder".into()))?;
             d.reset();
-            let from = timing.starts.partition_point(|&x| x <= timing.starts[i] - OPUS_PRE_ROLL as i64).saturating_sub(1);
+            let from = timing.starts.partition_point(|&x| x <= timing.starts[i].saturating_sub(OPUS_PRE_ROLL as i64)).saturating_sub(1);
             for j in from..i {
                 if let Ok(prev) = read(j) {
                     let _ = d.decode(&prev, 0);
@@ -163,7 +156,7 @@ fn decode_vorbis(file: &OggFile, bytes: &crate::Src, s: usize) -> crate::Result<
     if st.headers.len() < 3 {
         return Err(CodecError::Decode("Vorbis: missing header packets".into()));
     }
-    let vi = filmcraft_ogg::VorbisInfo::parse(&st.headers[0]).ok_or_else(|| CodecError::Decode("Vorbis: bad identification header".into()))?;
+    let vi = craft_media::ogg::VorbisInfo::parse(&st.headers[0]).ok_or_else(|| CodecError::Decode("Vorbis: bad identification header".into()))?;
     let mut extra = st.headers[0].clone();
     extra.extend_from_slice(&st.headers[2]);
     let mut dec = PacketDecoder::new(CODEC_TYPE_VORBIS, vi.sample_rate, Some(extra))?;
@@ -212,14 +205,21 @@ impl MediaSource for OggSource {
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         let (head, timing, state) = match &self.kind {
-            Kind::Pcm { rate, samples } => return Ok(read_resampled(samples, *rate, start, frames, sample_rate)),
+            Kind::Pcm { rate, samples } => return read_resampled(samples, *rate, start, frames, sample_rate),
             Kind::Opus { head, timing, state } => (head, timing, state),
         };
+        if sample_rate == 0 {
+            return Err(MediaError::Decode("audio sample rate must be nonzero".into()));
+        }
         let ch = head.channels.max(1);
+        // Bound the request before the Opus frame count is derived from it (a rate of 1 Hz at most scales it by 48000).
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         let ratio = OPUS_RATE as f64 / sample_rate as f64;
         let exact = sample_rate == OPUS_RATE;
         let s0 = if exact { start } else { (start as f64 * ratio).floor() as i64 };
         let need = if exact { frames as i64 } else { (frames as f64 * ratio).ceil() as i64 + 2 };
+        // OpusHead may declare up to 255 channels; the shared limit also bounds both buffers
+        filmcraft_media::validate_audio_buffer_shape(ch, need.max(0) as usize)?;
         let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         let n = timing.starts.len();
@@ -252,17 +252,7 @@ impl MediaSource for OggSource {
             out.channels = src;
             return Ok(out);
         }
-        let frac = s0 as f64 - start as f64 * ratio;
-        for k in 0..frames {
-            let pos = k as f64 * ratio - frac;
-            let i0 = pos.floor().max(0.0) as usize;
-            let f = (pos - i0 as f64) as f32;
-            for c in 0..ch {
-                let a = src[c].get(i0).copied().unwrap_or(0.0);
-                let b = src[c].get(i0 + 1).copied().unwrap_or(a);
-                out.channels[c][k] = a + (b - a) * f;
-            }
-        }
+        filmcraft_media::resample_window_into(&src, s0, OPUS_RATE, start, sample_rate, &mut out.channels);
         Ok(out)
     }
 }
@@ -285,4 +275,74 @@ pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedRe
         return None;
     }
     Some(OggSource::open_reader(name, reader.clone()).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    /// Ogg CRC-32 (polynomial 0x04C11DB7, no reflection, no final XOR; RFC 3533).
+    fn crc(data: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for &b in data {
+            crc ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            }
+        }
+        crc
+    }
+
+    /// One page holding whole packets (each under 255 bytes).
+    fn page(out: &mut Vec<u8>, flags: u8, granule: i64, seq: u32, packets: &[&[u8]]) {
+        let start = out.len();
+        out.extend_from_slice(b"OggS");
+        out.push(0);
+        out.push(flags);
+        out.extend_from_slice(&granule.to_le_bytes());
+        out.extend_from_slice(&9u32.to_le_bytes());
+        out.extend_from_slice(&seq.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.push(packets.len() as u8);
+        out.extend(packets.iter().map(|p| p.len() as u8));
+        for p in packets {
+            out.extend_from_slice(p);
+        }
+        let sum = crc(&out[start..]);
+        out[start + 22..start + 26].copy_from_slice(&sum.to_le_bytes());
+    }
+
+    /// An Ogg Opus file of CELT 20 ms packets with pseudo-random payloads, 3 packets a page.
+    fn opus_file(packets: usize) -> Vec<u8> {
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, 1, 0, 0]);
+        head.extend_from_slice(&48_000u32.to_le_bytes());
+        head.extend_from_slice(&[0, 0, 0]);
+        let mut f = Vec::new();
+        page(&mut f, 0x02, 0, 0, &[&head]);
+        page(&mut f, 0, 0, 1, &[b"OpusTags\0\0\0\0\0\0\0\0"]);
+        let noise = filmcraft_testkit::cuts::noise(packets * 120, 6);
+        let pkts: Vec<Vec<u8>> = noise
+            .chunks(120)
+            .map(|c| {
+                let mut p = vec![0xF8];
+                p.extend(c.iter().map(|v| (v * 127.0 + 128.0) as u8));
+                p
+            })
+            .collect();
+        let mut done = 0;
+        for (seq, chunk) in (2u32..).zip(pkts.chunks(3)) {
+            done += chunk.len();
+            let refs: Vec<&[u8]> = chunk.iter().map(Vec::as_slice).collect();
+            page(&mut f, if done == packets { 0x04 } else { 0 }, done as i64 * 960, seq, &refs);
+        }
+        f
+    }
+
+    /// Resampled audio must not depend on where a read starts (#4673): Opus (48 kHz) read at 47 kHz.
+    #[test]
+    fn resampled_opus_does_not_depend_on_the_read_cuts() {
+        let src = OggSource::open("cuts.opus", opus_file(30).into()).unwrap();
+        filmcraft_testkit::cuts::assert_cut_independent("Opus 48 kHz at 47 kHz", 1_000, 20_000, |s, n| src.audio(s, n, 47_000).unwrap().channels);
+    }
 }

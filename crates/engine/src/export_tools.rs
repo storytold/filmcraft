@@ -287,6 +287,12 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "h264Profile") {
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+    }
+    if let Some(v) = bool_p(p, "h264IntraOnly") {
+        settings.h264_intra_only = v;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }
@@ -494,8 +500,7 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         cue.end = cue.end.min(range.duration);
         cue.start < cue.end
     });
-    let bytes =
-        filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
+    let bytes = filmcraft_captions::write(&doc, format, filmcraft_captions::write_options(q.settings.drop_frame, Some(q.settings.frame_rate)));
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -565,6 +570,9 @@ pub(crate) fn guard_job(
             progress.finished.store(true, Ordering::Relaxed);
             *result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(msg));
         }
+        // the parts of a job (preview segments, proxies) share the renderers they kept; the job
+        // is over, so free them (GPU devices and memory) instead of holding them idle
+        filmcraft_export::release_idle_renderers();
     }
 }
 
@@ -1037,6 +1045,9 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "job": it.job,
         "error": it.error,
         "offlineMedia": it.job.map_or_else(|| json!([]), |j| offline_media_json(s, j)),
+        // the finished export's report, as `file.exportMedia` and `jobs.list` give it: the encoder
+        // that ran and its warnings (`null` until it is done, and when it failed)
+        "result": job.and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone()).and_then(std::result::Result::ok),
     })
 }
 
@@ -1525,7 +1536,7 @@ fn spec(
     run: Run,
     journal: bool,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {

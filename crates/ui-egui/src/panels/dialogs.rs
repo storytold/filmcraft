@@ -444,11 +444,11 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let t = app.tokens;
     match tab {
         1 => {
-            ui.set_width(680.0);
+            ui.set_width(820.0);
             crate::credits::contributors_ui(ui, &t, &mut app.auto);
         }
         2 => {
-            ui.set_width(680.0);
+            ui.set_width(820.0);
             crate::credits::models_ui(ui);
         }
         _ => about_tab(app, ui),

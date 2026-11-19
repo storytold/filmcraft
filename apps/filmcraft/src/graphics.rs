@@ -24,13 +24,25 @@
 //! [`FAILURES_TO_MOVE_ON`] such failures in a row in the same mode, the launch moves on to the next
 //! [`Mode`] of the platform's [`LADDER`] and keeps it; a start that paints resets the count. A
 //! start-up error that wgpu does report (no adapter, device creation failed) moves on at once,
-//! within the same process.
+//! within the same process, to the next mode down that this process has not tried, then to any
+//! untried one from the top: a saved fallback that no longer works, such as software rendering
+//! where no software adapter is installed, goes back to the default instead of ending every
+//! later start (#2581). When every mode has failed, [`failure_message`] lists each one with its
+//! error, how to choose a mode by hand, and where the log is. A panic out of wgpu before the app
+//! exists (a surface the chosen GPU claimed and then could not configure, #2553) saves the next
+//! mode and starts FilmCraft again in it, once: the event loop does not run again in a process it
+//! unwound out of.
 //!
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
 //! [`GraphicsStart::reset_to_default`]); `--graphics default` does the same from the command
-//! line, and `--graphics dx12|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
+//! line, and `--graphics dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
 //! the saved state alone: the user is in charge.
+//!
+//! # A start that hangs
+//! A driver can also hang instead of crashing (#1061). On Windows, [`probe::choose`] first tests
+//! the mode in a child process with a time limit, before this process loads any driver, and
+//! moves on from a mode that hangs there; see [`probe`].
 //!
 //! All files are written beside and renamed into place, so a reader never sees half a file; two
 //! instances updating [`STATE_FILE`] at the same moment can lose one update (a failure counted
@@ -70,6 +82,9 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// The low-power (integrated) GPU (Linux): on a laptop with two GPUs the high-performance one
+    /// can claim the window's surface and still fail to draw to it (NVIDIA 470 on Wayland, #2553).
+    LowPower,
     /// A software adapter (WARP on Windows, lavapipe / llvmpipe elsewhere); the preview then
     /// composites on the CPU (`FilmcraftApp::set_wgpu`).
     Software,
@@ -81,6 +96,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::LowPower => "low-power",
             Mode::Software => "software",
         }
     }
@@ -90,12 +106,13 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::LowPower => "integrated GPU",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -105,13 +122,57 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
 } else if cfg!(target_os = "macos") {
     &[Mode::Default]
 } else {
-    &[Mode::Default, Mode::Software]
+    &[Mode::Default, Mode::LowPower, Mode::Software]
 };
 
 /// The mode after `mode` in `ladder`, if any.
 fn next_in(ladder: &[Mode], mode: Mode) -> Option<Mode> {
     let i = ladder.iter().position(|m| *m == mode)?;
     ladder.get(i.checked_add(1)?).copied()
+}
+
+/// The mode to try after `current` failed, given the modes this process already `tried`: the
+/// next one down `ladder` not tried yet, else the first untried one from the top, else none.
+fn next_untried(ladder: &[Mode], current: Mode, tried: &[Mode]) -> Option<Mode> {
+    let after = ladder.iter().position(|m| *m == current).map_or(0, |i| i.saturating_add(1));
+    ladder.iter().skip(after).chain(ladder.iter().take(after)).copied().find(|m| *m != current && !tried.contains(m))
+}
+
+/// The longest error shown per mode in [`failure_message`]; wgpu's can run to many lines.
+const MAX_ERROR_SHOWN: usize = 400;
+
+/// What to tell the user when the window could not start: `error` (the last one), each mode
+/// this process tried with the error it reported (`failed`), how to choose a mode by hand on this
+/// platform, the version, and where the log is (`log`).
+pub fn failure_message(error: &str, failed: &[(Mode, String)], log: Option<&Path>) -> String {
+    failure_message_for(error, failed, log, LADDER)
+}
+
+fn failure_message_for(error: &str, failed: &[(Mode, String)], log: Option<&Path>, ladder: &[Mode]) -> String {
+    let shorten = |text: &str| -> String {
+        let text = text.trim();
+        match text.char_indices().nth(MAX_ERROR_SHOWN) {
+            Some((end, _)) => format!("{}…", text.get(..end).unwrap_or(text)),
+            None => text.to_string(),
+        }
+    };
+    let mut msg = format!("FilmCraft could not start its window: {}\n", shorten(error));
+    if !failed.is_empty() {
+        msg.push_str("\nGraphics modes tried:\n");
+        for (mode, err) in failed {
+            msg.push_str(&format!("• {} (--graphics {}): {}\n", mode.label(), mode.name(), shorten(err)));
+        }
+    }
+    msg.push_str("\nUpdating the graphics driver usually fixes this.");
+    if ladder.len() > 1 {
+        let names: Vec<String> = ladder.iter().map(|m| format!("--graphics {}", m.name())).collect();
+        msg.push_str(&format!(" To choose a graphics mode yourself, start FilmCraft with {}.", names.join(", ")));
+    }
+    msg.push_str(&format!("\n\nFilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH));
+    if let Some(log) = log {
+        msg.push_str(&format!("\nDetails are in {}", log.display()));
+    }
+    msg
 }
 
 /// [`STATE_FILE`]: the mode to start with and the failed starts in a row in it.
@@ -262,6 +323,8 @@ pub struct GraphicsStart {
     mode: Mode,
     /// [`Self::reset_to_default`] was used: a later [`Self::confirm`] must not save this mode over it.
     reset: Arc<AtomicBool>,
+    /// The modes this process tried that failed, in order, each with the error wgpu reported.
+    failed: Vec<(Mode, String)>,
 }
 
 impl GraphicsStart {
@@ -282,7 +345,7 @@ impl GraphicsStart {
         let forced = forced.map(|m| if LADDER.contains(&m) { m } else { first });
         let reset = Arc::new(AtomicBool::new(false));
         let Some(dir) = data_dir.filter(|_| !explicit_backend) else {
-            return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset };
+            return Self { state: None, attempt: None, mode: forced.unwrap_or(Mode::Default), reset, failed: Vec::new() };
         };
         let state = dir.join(STATE_FILE);
         let attempts_dir = dir.join(ATTEMPTS_DIR);
@@ -323,7 +386,7 @@ impl GraphicsStart {
         {
             log::warn!("can't write {file}: {e}");
         }
-        let start = Self { state: Some(state), attempt: None, mode: next.mode, reset };
+        let start = Self { state: Some(state), attempt: None, mode: next.mode, reset, failed: Vec::new() };
         start.with_new_attempt(&attempts_dir, now, pid)
     }
 
@@ -342,18 +405,43 @@ impl GraphicsStart {
         self.mode
     }
 
+    /// The modes this process tried that failed, each with its error ([`Self::step_down`]).
+    pub fn failed(&self) -> &[(Mode, String)] {
+        &self.failed
+    }
+
+    /// Keep `error` for `mode` among this process's failures, as a mode that failed its test
+    /// start ([`probe`]) does.
+    pub fn add_failure(&mut self, mode: Mode, error: &str) {
+        self.failed.push((mode, error.to_string()));
+    }
+
+    /// The data folder this start keeps its files in; `None` without one or with `WGPU_BACKEND`.
+    pub fn folder(&self) -> Option<&Path> {
+        self.state.as_deref().and_then(Path::parent)
+    }
+
     /// Running in a fallback mode, i.e. not the platform default.
     pub fn degraded(&self) -> bool {
         self.mode != Mode::Default
     }
 
-    /// Move on to the next mode after a start-up error wgpu reported; `false` when none is left.
-    /// The error is certain, so the next mode is saved at once.
-    pub fn step_down(&mut self) -> bool {
-        let Some(next) = next_in(LADDER, self.mode) else {
+    /// Move on after the start-up error wgpu reported (`error`) to the next mode this process has
+    /// not tried ([`next_untried`]); `false` when every mode has failed. The error is certain, so
+    /// the next mode is saved at once.
+    pub fn step_down(&mut self, error: &str) -> bool {
+        self.failed.push((self.mode, error.to_string()));
+        let tried: Vec<Mode> = self.failed.iter().map(|(m, _)| *m).collect();
+        let Some(next) = next_untried(LADDER, self.mode, &tried) else {
             return false;
         };
         log::warn!("graphics mode {} failed to start; trying {}", self.mode.name(), next.name());
+        self.switch_to(next);
+        true
+    }
+
+    /// Start in `next` instead, and save it at once with a new attempt file.
+    pub fn switch_to(&mut self, next: Mode) {
         self.mode = next;
         if let Some(state) = self.state.clone() {
             self.save(&state, Saved { mode: next, failures: 0 });
@@ -368,7 +456,6 @@ impl GraphicsStart {
                 }
             }
         }
-        true
     }
 
     /// The window is up: keep this mode, and the failed starts in a row are over.
@@ -387,6 +474,19 @@ impl GraphicsStart {
     /// This start is over, whether it painted or not (the window closed, or every mode failed
     /// with an error that was reported): its attempt no longer means a crash.
     pub fn finish(&self) {
+        if let Some(path) = &self.attempt {
+            remove_quietly(path);
+        }
+        // Nor was it a hang.
+        if let Some(dir) = self.folder() {
+            probe::close_record(dir, self.mode);
+        }
+    }
+
+    /// This start ends before any window, because no graphics mode passed its test start: its
+    /// attempt is over, but the record of an earlier start that hung stays open, so the next
+    /// launch still moves on from that mode instead of starting it untested.
+    pub fn abandon(&self) {
         if let Some(path) = &self.attempt {
             remove_quietly(path);
         }
@@ -459,6 +559,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
+        Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
@@ -486,6 +588,8 @@ fn pick_software(adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>
 pub fn is_graphics_failure(err: &eframe::Error) -> bool {
     matches!(err, eframe::Error::Wgpu(_))
 }
+
+pub mod probe;
 
 #[cfg(test)]
 mod tests;

@@ -191,7 +191,7 @@ pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::Fx
         crate::effects::apply(img, e, cx);
         return;
     }
-    let Some(cov) = effect_coverage(&e.masks, cx.t, cx.px_scale, img.w, img.h) else {
+    let Some(cov) = effect_coverage(&e.masks, cx.t, cx.mask_scale, img.w, img.h) else {
         crate::effects::apply(img, e, cx);
         return;
     };
@@ -321,5 +321,28 @@ mod tests {
                 assert!((r - c[y * w + x]).abs() < 1e-5, "({x},{y}) {r} vs {}", c[y * w + x]);
             }
         }
+    }
+
+    /// An effect's mask outline is placed by the uncapped ratio, not the capped effect-size scale.
+    #[test]
+    fn effect_masks_use_the_uncapped_scale() {
+        let mut e = filmcraft_project::find_effect("invert").unwrap().instance();
+        e.masks.push(mask(MaskPath::rect(0.0, 0.0, 4.0, 8.0), 0.0));
+        let cx = crate::effects::FxCtx {
+            t: Tick(0),
+            px_scale: 0.1,
+            mask_scale: 2.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let mut img = Image::filled(8, 8, [1.0, 1.0, 1.0, 1.0]);
+        apply_effect(&mut img, &e, &cx);
+        // the 4-wide mask covers all 8 working pixels at 2 working px per clip px
+        assert!(img.px.chunks(4).all(|p| p[0] < 0.5), "mask did not cover the whole image");
     }
 }
