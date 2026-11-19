@@ -716,6 +716,13 @@ fn src_of(dur: Tick, speed: f64) -> Tick {
     Tick((dur.0 as f64 * speed.abs()).round() as i64)
 }
 
+/// Whether a clip whose duration grows by `ext` from the end it plays towards (the Out edge, or a
+/// reversed clip's In edge) still stays inside `media`. The source Out is rounded from the whole
+/// duration, so an extension the media reaches can still land the source Out a tick past it (#4812).
+fn out_growth_fits(it: &TrackItem, ext: Tick, speed: f64, media: Tick) -> bool {
+    it.source_in + src_of(it.duration + ext, speed) <= media
+}
+
 /// The frame boundary one frame before `t`, which must be one.
 fn frame_before(rate: FrameRate, t: Tick) -> Tick {
     rate.tick_of(rate.frame_at(t).saturating_sub(1))
@@ -763,13 +770,22 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 } else {
                     let rate = seq.settings.frame_rate;
                     let limit = Tick(it.start.0.saturating_sub(ext.0));
+                    // a reversed clip's In edge consumes media after its source Out, which is rounded
+                    // from the whole duration rather than from the extension alone (#4812)
+                    let fits = |t: Tick| {
+                        let ext = Tick(it.start.0.saturating_sub(t.0));
+                        match (it.reverse, media) {
+                            (true, Some(m)) => out_growth_fits(it, ext, speed, m),
+                            _ => src_of(ext, speed) <= handle,
+                        }
+                    };
                     // the division can land a tick past a whole frame, so a boundary the media still
                     // reaches is kept instead of being rounded away (#4812)
                     let mut first = rate.snap(limit);
                     let before = frame_before(rate, first);
-                    if src_of(Tick(it.start.0.saturating_sub(before.0)), speed) <= handle {
+                    if fits(before) {
                         first = before;
-                    } else if src_of(Tick(it.start.0.saturating_sub(first.0)), speed) > handle {
+                    } else if !fits(first) {
                         first = frame_after(rate, first);
                     }
                     Tick(it.start.0.saturating_sub(first.0)).max(Tick::ZERO)
@@ -803,11 +819,25 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 } else {
                     let end = it.end();
                     let rate = seq.settings.frame_rate;
+                    // the source Out is rounded from the whole duration, so ask where the clip's
+                    // source Out actually lands rather than how much the extension costs alone (#4812)
+                    let fits = |t: Tick| {
+                        let ext = Tick(t.0.saturating_sub(end.0));
+                        match (it.reverse, media) {
+                            // a reversed clip's Out edge consumes media before source_in, which `head` measures
+                            (true, _) => src_of(ext, speed) <= remain,
+                            (false, Some(m)) => out_growth_fits(it, ext, speed, m),
+                            (false, None) => true,
+                        }
+                    };
                     let mut last = rate.snap(Tick(end.0.saturating_add(ext.0)));
+                    if !fits(last) {
+                        last = frame_before(rate, last);
+                    }
                     // the division can land a tick short of a whole frame, so a boundary the media
                     // still reaches is kept instead of being rounded away (#4812)
                     let after = frame_after(rate, last);
-                    if src_of(Tick(after.0.saturating_sub(end.0)), speed) <= remain {
+                    if fits(after) {
                         last = after;
                     }
                     Tick(last.0.saturating_sub(end.0)).max(Tick::ZERO)
