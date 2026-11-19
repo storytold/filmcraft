@@ -542,6 +542,23 @@ fn text_section_header(
     open
 }
 
+/// The clips a layer property change in the editor goes to (#4625): `clip`, the one it shows,
+/// then each other selected graphic clip whose layer `l` is the same kind of layer (text or
+/// shape), outside locked tracks. With several text clips selected, a Font or Font Size change
+/// sets that value on all of them.
+fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) -> Vec<u64> {
+    let mut ids = vec![clip.0];
+    let layer_kind = |it: &TrackItem| layer_indices(&it.effects).get(l).and_then(|&i| it.effects.get(i)).map(|e| e.effect.clone());
+    let (Some(q), Some(kind)) = (app.session.active_sequence(), layer_kind(it)) else { return ids };
+    for &c in &app.session.state.selection {
+        let Some((track, other)) = q.find_item(c) else { continue };
+        if !ids.contains(&c.0) && q.track(track).is_some_and(|t| !t.locked) && is_graphic_clip(app, c) && layer_kind(other).as_ref() == Some(&kind) {
+            ids.push(c.0);
+        }
+    }
+    ids
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -560,6 +577,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
     let sel = app.session.state.graphic_layers.first().copied().filter(|l| *l < idx.len());
+    let group = sel.map_or_else(Vec::new, |l| property_targets(app, clip, &it, l));
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut autos: Vec<(String, Rect, String)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 6.0))).id_salt("gfx-props"));
@@ -799,6 +817,18 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, tl!("   Distance"), NumberField { id: "shadow_distance", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
                 cx.number(ui, tl!("   Size"), NumberField { id: "shadow_size", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
                 cx.number(ui, tl!("   Blur"), NumberField { id: "shadow_blur", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
+            }
+        }
+        // a property change goes to the layer of every clip in the group (#4625); character styles
+        // of a Type-tool selection stay on their own clip
+        if group.len() > 1 {
+            for (cmd, p) in &mut cx.actions {
+                if cmd == "graphics.set"
+                    && let Some(o) = p.as_object_mut()
+                {
+                    o.remove("clip");
+                    o.insert("clips".into(), json!(group));
+                }
             }
         }
         actions.append(&mut cx.actions);

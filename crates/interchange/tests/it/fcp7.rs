@@ -743,6 +743,78 @@ fn absurd_start_timecode_is_bounded() {
 }
 
 #[test]
+fn deeply_nested_sequence_chain_imports_without_unbounded_recursion() {
+    // sequence-0 uses sequence-1, which uses sequence-2, ... : an acyclic chain of 400
+    // definitions, each one level of native recursion in the importer.
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    assert!(imp.project.sequences().count() > filmcraft_interchange::MAX_NESTING_DEPTH);
+}
+
+#[test]
+fn a_sequence_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+    // sequence-0 … sequence-65 form a chain. Importing sequence-0 first reaches sequence-63 at the
+    // depth limit, so sequence-64 is left out of it; sequence-63 is also listed on its own, where
+    // sequence-64 fits, and must not keep the incomplete copy.
+    let n = 66;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        let nested = if i + 1 < n {
+            format!(
+                "<clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>",
+                i + 1
+            )
+        } else {
+            String::new()
+        };
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>{nested}</track></video></media></sequence>"
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    let s63 = imp.project.sequences().find(|i| i.name == "S63").and_then(|i| imp.project.sequence(i.id)).unwrap();
+    assert_eq!(s63.video_tracks[0].items.len(), 1, "sequence-63 keeps its nested sequence-64");
+}
+
+#[test]
+fn a_nested_clip_left_out_by_the_depth_limit_stays_as_an_offline_placeholder_with_its_extent() {
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("left out; imported offline"), "{rep:?}");
+    let p = &imp.project;
+    let placeholder = p
+        .sequences()
+        .filter_map(|i| p.sequence(i.id))
+        .flat_map(|s| s.video_tracks.iter().flat_map(|t| t.items.iter()))
+        .find(|ti| p.item(ti.item).and_then(|i| i.as_media()).is_some_and(|m| m.offline))
+        .expect("an offline placeholder");
+    assert!(placeholder.duration > Tick::ZERO, "the clip keeps its length");
+}
+
+#[test]
 fn a_huge_link_group_does_not_write_quadratic_links() {
     let r = FrameRate::FPS_29_97;
     let mut p = Project::new("P");
