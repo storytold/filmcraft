@@ -14,6 +14,13 @@ pub const SUB: usize = 16;
 /// Coarser chords show as dents and bumps along curved edges (#4791).
 const FLATTEN_TOL: f32 = 1.0 / 32.0;
 
+/// Most chords one curve may be split into. The tolerance decides the count; this cap only bounds
+/// the work a hostile path (huge or out-of-frame coordinates) can demand. It is far above what an
+/// on-screen curve needs: at 1024 chords a quadratic stays within `FLATTEN_TOL` for a second
+/// difference up to 131 000 px and a cubic up to 43 000 px. Lower caps (the previous 64 and 96)
+/// silently broke the tolerance on large curves, which is the artefact in #4791.
+const MAX_CHORDS: usize = 1024;
+
 /// A 2×3 affine transform `[a, b, c, d, e, f]`: (x, y) → (a x + c y + e, b x + d y + f).
 pub type Xform = [f32; 6];
 
@@ -79,7 +86,7 @@ impl Path {
         let (x0, y0) = self.cur;
         let dd = ((x0 - 2.0 * cx + x).abs() + (y0 - 2.0 * cy + y).abs()).max(0.01) * self.tol();
         // n chords stay within |d| / (4 n²) of the curve (d: second difference).
-        let n = ((dd / (4.0 * FLATTEN_TOL)).sqrt().ceil() as usize).clamp(1, 64);
+        let n = ((dd / (4.0 * FLATTEN_TOL)).sqrt().ceil() as usize).clamp(1, MAX_CHORDS);
         for i in 1..=n {
             let t = i as f32 / n as f32;
             let u = 1.0 - t;
@@ -91,7 +98,7 @@ impl Path {
         let dd =
             ((x0 - 2.0 * c1x + c2x).abs() + (y0 - 2.0 * c1y + c2y).abs()).max((c1x - 2.0 * c2x + x).abs() + (c1y - 2.0 * c2y + y).abs()).max(0.01) * self.tol();
         // Wang's bound: n chords stay within 3 max|d| / (4 n²) of the curve.
-        let n = ((3.0 * dd / (4.0 * FLATTEN_TOL)).sqrt().ceil() as usize).clamp(1, 96);
+        let n = ((3.0 * dd / (4.0 * FLATTEN_TOL)).sqrt().ceil() as usize).clamp(1, MAX_CHORDS);
         for i in 1..=n {
             let t = i as f32 / n as f32;
             let u = 1.0 - t;
@@ -499,6 +506,60 @@ mod tests {
             }
         }
         assert!(worst.0 < 0.06, "coverage off by {} at {:?}", worst.0, (worst.1, worst.2));
+    }
+
+    /// Distance from `p` to segment `a`–`b`.
+    fn dist_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let (qx, qy) = (a.0 + t * dx - p.0, a.1 + t * dy - p.1);
+        (qx * qx + qy * qy).sqrt()
+    }
+
+    /// Largest distance from a densely sampled curve to its flattened polyline.
+    fn max_deviation(poly: &[(f32, f32)], curve: impl Fn(f32) -> (f32, f32)) -> f32 {
+        let mut worst = 0.0f32;
+        for i in 0..=2000 {
+            let p = curve(i as f32 / 2000.0);
+            let mut best = f32::MAX;
+            for w in poly.windows(2) {
+                best = best.min(dist_to_segment(p, w[0], w[1]));
+            }
+            worst = worst.max(best);
+        }
+        worst
+    }
+
+    /// #4791: the chord cap must not flatten a large curve coarser than `FLATTEN_TOL`. These
+    /// curves need 128 chords; at the previous caps of 64 (quadratic) and 96 (cubic) they strayed
+    /// 0.125 px and 0.056 px from the true outline.
+    #[test]
+    fn large_curves_keep_the_flattening_tolerance() {
+        let (p0, p1, p2) = ((0.0f32, 0.0f32), (512.0f32, 1024.0f32), (1024.0f32, 0.0f32));
+
+        let mut q = Path::new();
+        q.move_to(p0.0, p0.1);
+        q.quad_to(p1.0, p1.1, p2.0, p2.1);
+        let quad = max_deviation(&q.contours[0], |t| {
+            let u = 1.0 - t;
+            (u * u * p0.0 + 2.0 * u * t * p1.0 + t * t * p2.0, u * u * p0.1 + 2.0 * u * t * p1.1 + t * t * p2.1)
+        });
+
+        // The cubic with the same outline as the quadratic above.
+        let c1 = (2.0 / 3.0 * p1.0, 2.0 / 3.0 * p1.1);
+        let c2 = (p2.0 - 2.0 / 3.0 * (p2.0 - p1.0), p2.1 - 2.0 / 3.0 * (p2.1 - p1.1));
+        let mut c = Path::new();
+        c.move_to(p0.0, p0.1);
+        c.cubic_to(c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
+        let cubic = max_deviation(&c.contours[0], |t| {
+            let u = 1.0 - t;
+            let (a, b, cc, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            (a * p0.0 + b * c1.0 + cc * c2.0 + d * p2.0, a * p0.1 + b * c1.1 + cc * c2.1 + d * p2.1)
+        });
+
+        assert!(quad <= FLATTEN_TOL + 1e-4, "quadratic strays {quad} px from the outline");
+        assert!(cubic <= FLATTEN_TOL + 1e-4, "cubic strays {cubic} px from the outline");
     }
 
     #[test]
