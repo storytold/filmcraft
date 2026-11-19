@@ -3934,16 +3934,19 @@ mod tests {
     /// Diagonal cutouts whose bounding boxes overlap are not stacked holes.
     #[test]
     fn separator_ignores_diagonal_cutouts() {
-        let lower = [(10.0, 10.0), (12.0, 12.0), (10.0, 14.0), (8.0, 12.0)];
+        let outer = [(6.0, 6.0), (14.0, 6.0), (14.0, 16.0), (6.0, 16.0)];
         let upper = [(10.0, 8.0), (12.0, 10.0), (10.0, 12.0), (8.0, 10.0)];
+        let lower = [(10.0, 10.0), (12.0, 12.0), (10.0, 14.0), (8.0, 12.0)];
         let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(16.0, 16.0));
         for &ppp in &[1.0, 2.0] {
-            let mut p = snap_fill(&upper, r, ppp);
+            let mut p = snap_fill(&outer, r, ppp);
             let n = p.len();
+            p.extend(snap_fill(&upper, r, ppp));
+            let m = p.len();
             p.extend(snap_fill(&lower, r, ppp));
             let before = p.clone();
-            let m = p.len();
-            keep_holes_apart(&mut p, &[(0, n), (n, m)], ppp);
+            let end = p.len();
+            keep_holes_apart(&mut p, &[(0, n), (n, m), (m, end)], ppp);
             assert_eq!(p, before, "diagonal cutouts moved at {ppp}x");
         }
     }
