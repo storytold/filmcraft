@@ -254,6 +254,8 @@ impl Pen16<'_> {
             ranges.push((start, pts.len()));
         }
         keep_walls(&mut pts, &ranges, self.painter.pixels_per_point());
+        keep_holes_apart(&mut pts, &ranges, self.painter.pixels_per_point());
+        keep_walls(&mut pts, &ranges, self.painter.pixels_per_point());
         if pts.len() < 3 {
             return;
         }
@@ -388,49 +390,148 @@ fn snap_fill(pts: &[(f32, f32)], rect: Rect, ppp: f32) -> Vec<Pos2> {
 
 /// Snap the holes of a glyph so each one keeps at least one device pixel of wall from its outer
 /// contour; snapping contours independently can put an outer and a hole edge on the same row.
+fn bounds(pts: &[Pos2]) -> (f32, f32, f32, f32) {
+    pts.iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |(x0, x1, y0, y1), p| (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y)))
+}
+
 fn keep_walls(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
     if ranges.len() < 2 {
         return;
     }
-    let bounds = |slice: &[Pos2]| {
-        slice.iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |(x0, x1, y0, y1), p| (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y)))
-    };
-    let (ox0, ox1, oy0, oy1) = bounds(&pts[ranges[0].0..ranges[0].1]);
     let min = 1.0 / ppp;
+    let (ox0, ox1, oy0, oy1) = bounds(&pts[ranges[0].0..ranges[0].1]);
     for &(a, b) in &ranges[1..] {
         if b - a < 3 {
             continue;
         }
-        let (hx0, hx1, hy0, hy1) = bounds(&pts[a..b]);
+        let (mut hx0, hx1, mut hy0, hy1) = bounds(&pts[a..b]);
         if hx0 - ox0 < min {
             let target = ox0 + min;
-            for p in &mut pts[a..b] {
-                if (p.x - hx0).abs() < 0.01 {
-                    p.x = target;
+            let target = if hx1 - target >= min - 1e-4 { target } else { (ox0 + min * 0.5).min(hx1 - min * 0.5) };
+            if target > hx0 + 1e-4 {
+                for p in &mut pts[a..b] {
+                    if (p.x - hx0).abs() < 0.01 {
+                        p.x = target;
+                    }
                 }
+                hx0 = target;
             }
         }
         if ox1 - hx1 < min {
             let target = ox1 - min;
-            for p in &mut pts[a..b] {
-                if (p.x - hx1).abs() < 0.01 {
-                    p.x = target;
+            let target = if target - hx0 >= min - 1e-4 { target } else { (ox1 - min * 0.5).max(hx0 + min * 0.5) };
+            if target < hx1 - 1e-4 {
+                for p in &mut pts[a..b] {
+                    if (p.x - hx1).abs() < 0.01 {
+                        p.x = target;
+                    }
                 }
             }
         }
         if hy0 - oy0 < min {
             let target = oy0 + min;
-            for p in &mut pts[a..b] {
-                if (p.y - hy0).abs() < 0.01 {
-                    p.y = target;
+            let target = if hy1 - target >= min - 1e-4 { target } else { (oy0 + min * 0.5).min(hy1 - min * 0.5) };
+            if target > hy0 + 1e-4 {
+                for p in &mut pts[a..b] {
+                    if (p.y - hy0).abs() < 0.01 {
+                        p.y = target;
+                    }
                 }
+                hy0 = target;
             }
         }
         if oy1 - hy1 < min {
             let target = oy1 - min;
-            for p in &mut pts[a..b] {
-                if (p.y - hy1).abs() < 0.01 {
-                    p.y = target;
+            let target = if target - hy0 >= min - 1e-4 { target } else { (oy1 - min * 0.5).max(hy0 + min * 0.5) };
+            if target < hy1 - 1e-4 {
+                for p in &mut pts[a..b] {
+                    if (p.y - hy1).abs() < 0.01 {
+                        p.y = target;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Keep sibling holes at least one device pixel apart where their spans overlap.
+fn keep_holes_apart(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
+    let min = 1.0 / ppp;
+    for i in 1..ranges.len() {
+        for j in i + 1..ranges.len() {
+            let (a, b) = ranges[i];
+            let (c, d) = ranges[j];
+            if b - a < 3 || d - c < 3 {
+                continue;
+            }
+            let (ax0, ax1, ay0, ay1) = bounds(&pts[a..b]);
+            let (bx0, bx1, by0, by1) = bounds(&pts[c..d]);
+            if ax0 < bx1 && bx0 < ax1 {
+                let (up, lo, up1, lo0) = if ay1 <= by1 { ((a, b), (c, d), ay1, by0) } else { ((c, d), (a, b), by1, ay0) };
+                if lo0 - up1 < min - 1e-4 {
+                    let target = lo0 - min;
+                    let (_, _, up0, _) = bounds(&pts[up.0..up.1]);
+                    if target - up0 >= min - 1e-4 {
+                        for p in &mut pts[up.0..up.1] {
+                            if (p.y - up1).abs() < 0.01 {
+                                p.y = target;
+                            }
+                        }
+                    } else {
+                        let target = up1 + min;
+                        let (_, _, _, lo1) = bounds(&pts[lo.0..lo.1]);
+                        if lo1 - target >= min - 1e-4 {
+                            for p in &mut pts[lo.0..lo.1] {
+                                if (p.y - lo0).abs() < 0.01 {
+                                    p.y = target;
+                                }
+                            }
+                        } else {
+                            let target = up1 + min * 0.5;
+                            if lo1 - target >= min * 0.5 - 1e-4 {
+                                for p in &mut pts[lo.0..lo.1] {
+                                    if (p.y - lo0).abs() < 0.01 {
+                                        p.y = target;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let (ax0, ax1, ay0, ay1) = bounds(&pts[a..b]);
+            let (bx0, bx1, by0, by1) = bounds(&pts[c..d]);
+            if ay0 < by1 && by0 < ay1 {
+                let (left, right, left1, right0) = if ax1 <= bx1 { ((a, b), (c, d), ax1, bx0) } else { ((c, d), (a, b), bx1, ax0) };
+                if right0 - left1 < min - 1e-4 {
+                    let target = right0 - min;
+                    let (left0, _, _, _) = bounds(&pts[left.0..left.1]);
+                    if target - left0 >= min - 1e-4 {
+                        for p in &mut pts[left.0..left.1] {
+                            if (p.x - left1).abs() < 0.01 {
+                                p.x = target;
+                            }
+                        }
+                    } else {
+                        let target = left1 + min;
+                        let (_, right1, _, _) = bounds(&pts[right.0..right.1]);
+                        if right1 - target >= min - 1e-4 {
+                            for p in &mut pts[right.0..right.1] {
+                                if (p.x - right0).abs() < 0.01 {
+                                    p.x = target;
+                                }
+                            }
+                        } else {
+                            let target = left1 + min * 0.5;
+                            if right1 - target >= min * 0.5 - 1e-4 {
+                                for p in &mut pts[right.0..right.1] {
+                                    if (p.x - right0).abs() < 0.01 {
+                                        p.x = target;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2201,18 +2302,18 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             ]);
             pen.glyph(1.0, &[
                 &[
-                    (3.111, 5.333), (2.941, 5.367), (2.797, 5.464), (2.7, 5.608), (2.667, 5.778), (2.667, 11.111), (2.7, 11.281), (2.797, 11.425),
-                    (2.941, 11.522), (3.111, 11.556), (4.889, 11.556), (5.059, 11.522), (5.203, 11.425), (5.3, 11.281), (5.333, 11.111), (5.333, 5.778),
-                    (5.3, 5.608), (5.203, 5.464), (5.059, 5.367), (4.889, 5.333),
+                    (3.555, 4.7108), (3.215, 4.7516), (2.927, 4.868), (2.733, 5.0408), (2.667, 5.2448), (2.667, 11.6444), (2.733, 11.8484), (2.927, 12.0212),
+                    (3.215, 12.1376), (3.555, 12.1784), (7.111, 12.1784), (7.451, 12.1376), (7.739, 12.0212), (7.933, 11.8484), (7.999, 11.6444),
+                    (7.999, 5.2448), (7.933, 5.0408), (7.739, 4.868), (7.451, 4.7516), (7.111, 4.7108),
                 ],
                 &[
-                    (3.556, 6.222), (4.444, 6.222), (4.444, 7.111), (3.556, 7.111),
+                    (4.445, 5.7776), (6.221, 5.7776), (6.221, 6.8444), (4.445, 6.8444),
                 ],
                 &[
-                    (3.556, 8.0), (4.444, 8.0), (4.444, 8.889), (3.556, 8.889),
+                    (4.445, 7.9112), (6.221, 7.9112), (6.221, 8.978), (4.445, 8.978),
                 ],
                 &[
-                    (3.556, 9.778), (4.444, 9.778), (4.444, 10.667), (3.556, 10.667),
+                    (4.445, 10.0448), (6.221, 10.0448), (6.221, 11.1116), (4.445, 11.1116),
                 ],
             ], &[
                 4, 28, 31, 4, 24, 27, 4, 20, 23, 21, 20, 4, 21, 4, 3, 21, 3, 2, 21, 2, 1, 21, 1, 0, 21, 0, 19, 21, 19, 18, 21, 18, 17, 21, 17, 16, 21, 16, 15,
@@ -3652,10 +3753,18 @@ mod tests {
                                 }
                                 let (pa, pb) = (m.vertices[a as usize].pos, m.vertices[b as usize].pos);
                                 if (pa.y - pb.y).abs() < 1e-4 {
-                                    assert!(on_grid(pa.y, ppp, 2.0), "{icon:?} at {ppp}x size {size}: fill edge at y {} px", pa.y * ppp);
+                                    assert!(
+                                        on_grid(pa.y, ppp, 1.0) || on_grid(pa.y, ppp, 2.0),
+                                        "{icon:?} at {ppp}x size {size}: fill edge at y {} px",
+                                        pa.y * ppp
+                                    );
                                 }
                                 if (pa.x - pb.x).abs() < 1e-4 {
-                                    assert!(on_grid(pa.x, ppp, 2.0), "{icon:?} at {ppp}x size {size}: fill edge at x {} px", pa.x * ppp);
+                                    assert!(
+                                        on_grid(pa.x, ppp, 1.0) || on_grid(pa.x, ppp, 2.0),
+                                        "{icon:?} at {ppp}x size {size}: fill edge at x {} px",
+                                        pa.x * ppp
+                                    );
                                 }
                             }
                         }
@@ -3769,6 +3878,64 @@ mod tests {
                 let (hx0, hx1, hy0, hy1) = bounds(&p[n..]);
                 for (wall, side) in [(hx0 - ox0, "left"), (ox1 - hx1, "right"), (hy0 - oy0, "top"), (oy1 - hy1, "bottom")] {
                     assert!(wall * ppp >= 1.0 - 1e-3, "{side} wall {wall} px at {size} pt {ppp}x");
+                }
+            }
+        }
+    }
+
+    /// Stacked holes keep a separator where their columns overlap (Overwrite at 13 pt).
+    #[test]
+    fn snapping_keeps_sibling_holes_apart() {
+        let outer = [(0.727, 2.909), (14.545, 2.909), (14.545, 11.636), (0.727, 11.636)];
+        let upper = [(5.091, 3.636), (10.182, 3.636), (10.182, 8.0), (5.091, 8.0)];
+        let slot = [(4.364, 8.727), (10.909, 8.727), (10.909, 9.455), (4.364, 9.455)];
+        for &ppp in &[1.0, 2.0] {
+            let r = Rect::from_min_size(pos2(10.3, 7.7), vec2(13.0, 13.0));
+            let mut p = snap_fill(&outer, r, ppp);
+            let n = p.len();
+            p.extend(snap_fill(&upper, r, ppp));
+            let m = p.len();
+            p.extend(snap_fill(&slot, r, ppp));
+            let ranges = [(0, n), (n, m), (m, p.len())];
+            keep_walls(&mut p, &ranges, ppp);
+            keep_holes_apart(&mut p, &ranges, ppp);
+            keep_walls(&mut p, &ranges, ppp);
+            let (_, _, uy0, uy1) = bounds(&p[n..m]);
+            let (_, _, sy0, sy1) = bounds(&p[m..]);
+            assert!((sy0 - uy1) * ppp >= 1.0 - 1e-3, "separator {} px at {ppp}x", (sy0 - uy1) * ppp);
+            assert!((uy1 - uy0) * ppp >= 1.0 - 1e-3 && (sy1 - sy0) * ppp >= 1.0 - 1e-3, "hole collapsed at {ppp}x");
+        }
+    }
+
+    /// The Workspaces sidebar keeps its three holes open with one-pixel walls and gaps.
+    #[test]
+    fn snapping_keeps_workspaces_sidebars_open() {
+        let outer = [(2.667, 4.719), (6.932, 4.719), (6.932, 12.17), (2.667, 12.17)];
+        let holes = [
+            [(4.089, 5.834), (5.51, 5.834), (5.51, 6.822), (4.089, 6.822)],
+            [(4.089, 7.878), (5.51, 7.878), (5.51, 8.756), (4.089, 8.756)],
+            [(4.089, 10.023), (5.51, 10.023), (5.51, 10.912), (4.089, 10.912)],
+        ];
+        for &ppp in &[1.0, 2.0] {
+            let r = Rect::from_min_size(pos2(10.3, 7.7), vec2(16.0, 16.0));
+            let mut p = snap_fill(&outer, r, ppp);
+            let mut ranges = vec![(0, p.len())];
+            for h in &holes {
+                let start = p.len();
+                p.extend(snap_fill(h, r, ppp));
+                ranges.push((start, p.len()));
+            }
+            keep_walls(&mut p, &ranges, ppp);
+            keep_holes_apart(&mut p, &ranges, ppp);
+            keep_walls(&mut p, &ranges, ppp);
+            let (ox0, ox1, _, _) = bounds(&p[ranges[0].0..ranges[0].1]);
+            for (i, &(a, b)) in ranges[1..].iter().enumerate() {
+                let (hx0, hx1, hy0, hy1) = bounds(&p[a..b]);
+                assert!((hx1 - hx0) * ppp >= 1.0 - 1e-3 && (hy1 - hy0) * ppp >= 1.0 - 1e-3, "hole {i} closed at {ppp}x");
+                assert!((hx0 - ox0) * ppp >= 1.0 - 1e-3 && (ox1 - hx1) * ppp >= 1.0 - 1e-3, "hole {i} wall at {ppp}x");
+                if i > 0 {
+                    let (_, _, _, prev) = bounds(&p[ranges[i].0..ranges[i].1]);
+                    assert!((hy0 - prev) * ppp >= 1.0 - 1e-3, "hole {i} gap at {ppp}x");
                 }
             }
         }
