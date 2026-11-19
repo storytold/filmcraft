@@ -303,7 +303,7 @@ const MAX_LIVE_DECODERS: usize = 4;
 /// A cache asked for a frame this recently may be needed again soon (the next clip being
 /// prefetched, a clip the user scrubs back to): it keeps its decoder up to [`HARD_DECODERS`], and
 /// beyond [`MAX_LIVE_DECODERS`] only until it has been idle this long. Its frames are only kept
-/// within [`FRAME_BUDGET`] once it has been idle for [`RECENT`]: going back to a clip left (or
+/// within [`active_frame_budget`] once it has been idle for [`RECENT`]: going back to a clip left (or
 /// paused) more than that long ago may cost a re-decode from its keyframe when other clips have
 /// filled the budget meanwhile. Frames go least recently used cache first, earliest frames first.
 const IDLE: Duration = Duration::from_secs(3);
@@ -312,7 +312,7 @@ const IDLE: Duration = Duration::from_secs(3);
 /// keeps its decoder and frames whatever the count. Caches idle for less than [`IDLE`] but longer
 /// than this are a burst of navigation (thumbnails of every clip, the playhead jumping from clip
 /// to clip) that the playhead has already left: they give up decoders beyond [`HARD_DECODERS`]
-/// and frames beyond [`FRAME_BUDGET`]. Without this, everything touched within [`IDLE`] counted
+/// and frames beyond [`active_frame_budget`]. Without this, everything touched within [`IDLE`] counted
 /// as in use, so a burst held every clip's decoder (42 live hardware sessions, 6.5 GB of VRAM)
 /// and hundreds of MB of frames per clip.
 const RECENT: Duration = Duration::from_millis(500);
@@ -344,7 +344,9 @@ pub fn clamp_frame_budgets(bytes: usize) -> (usize, usize) {
 }
 
 /// Set the process-wide decoded frame budget (bytes) for GOP caching.
-/// Automatically adjusts cache headroom for higher-RAM systems (e.g. 32 GB+).
+/// Automatically adjusts pool budget for higher-RAM systems (e.g. 32 GB+); note that
+/// [`clamp_frame_budgets`] caps the per-cache limit at 384 MiB for any pool budget `>= 1 GiB`,
+/// so `CACHE_BUDGET` / `cache_budget_val` only diverges from 384 MiB when called with `< 1 GiB`.
 pub fn set_frame_budget(bytes: usize) {
     let (pool, per_cache) = clamp_frame_budgets(bytes);
     let _guard = BUDGET_UPDATE.lock().unwrap_or_else(|e| e.into_inner());

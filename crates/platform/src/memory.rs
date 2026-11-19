@@ -1,16 +1,9 @@
 //! Host system memory detection.
 
 /// Query the host machine's total physical memory in bytes, if available.
-#[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
-pub fn total_physical_memory() -> Option<u64> {
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut mem = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
-    // SAFETY: `mem` is properly initialized with dwLength set.
-    unsafe { GlobalMemoryStatusEx(&mut mem) }.ok()?;
-    (mem.ullTotalPhys > 0).then_some(mem.ullTotalPhys)
-}
-
+///
+/// Linux reads `/proc/meminfo` with zero `unsafe`; Windows, macOS, and other targets return `None`
+/// and retain the 1.0 GiB base default to keep non-media OS FFI out of `crates/platform` (ADR 0001).
 #[cfg(target_os = "linux")]
 pub fn total_physical_memory() -> Option<u64> {
     let content = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -23,7 +16,7 @@ pub fn total_physical_memory() -> Option<u64> {
     None
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 pub fn total_physical_memory() -> Option<u64> {
     None
 }
@@ -31,9 +24,9 @@ pub fn total_physical_memory() -> Option<u64> {
 /// Compute a recommended GOP frame cache budget (in bytes) scaled to total physical RAM.
 ///
 /// Default base budget is 1 GiB (`filmcraft_codecs::FRAME_BUDGET`).
-/// On systems with >= 32 GiB RAM (threshold at 30.0 GiB to accommodate hardware/OS-reserved RAM), scaled to 2.5 GiB.
-/// On systems with >= 16 GiB RAM (threshold at 14.0 GiB), scaled to 1.5 GiB.
-/// On 32-bit/WASM targets, systems with < 16 GiB, or unsupported OSes (e.g. macOS where physical RAM detection returns None), kept at 1.0 GiB.
+/// On Linux hosts with >= 32 GiB RAM (threshold at 30.0 GiB to accommodate hardware/OS-reserved RAM), scaled to 2.5 GiB.
+/// On Linux hosts with >= 16 GiB RAM (threshold at 14.0 GiB), scaled to 1.5 GiB.
+/// On 32-bit/WASM targets, systems with < 16 GiB, or targets where [`total_physical_memory`] returns `None` (Windows, macOS), kept at 1.0 GiB.
 pub fn default_frame_budget_for_ram(total_bytes: u64) -> usize {
     if usize::BITS <= 32 {
         return filmcraft_codecs::FRAME_BUDGET;
