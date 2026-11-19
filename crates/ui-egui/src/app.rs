@@ -450,7 +450,7 @@ impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
         if let Some(info) = raw_input.viewports.get(&egui::ViewportId::ROOT) {
-            self.window_state.observe(ctx, info);
+            self.window_state.observe(ctx, info, raw_input.screen_rect);
         }
         capture::note_raw_geometry(self, ctx, raw_input);
         #[cfg(target_os = "macos")]
