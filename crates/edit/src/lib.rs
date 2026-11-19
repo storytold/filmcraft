@@ -27,7 +27,7 @@ pub mod transitions;
 use std::collections::HashMap;
 
 use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionAlign, TransitionId};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EditError {
@@ -716,6 +716,16 @@ fn src_of(dur: Tick, speed: f64) -> Tick {
     Tick((dur.0 as f64 * speed.abs()).round() as i64)
 }
 
+/// The frame boundary one frame before `t`, which must be one.
+fn frame_before(rate: FrameRate, t: Tick) -> Tick {
+    rate.tick_of(rate.frame_at(t).saturating_sub(1))
+}
+
+/// The frame boundary one frame after `t`, which must be one.
+fn frame_after(rate: FrameRate, t: Tick) -> Tick {
+    rate.tick_of(rate.frame_at(t).saturating_add(1))
+}
+
 /// Neighbours on the same track: (previous end, next start).
 fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
     let idx = track.items.iter().position(|i| i.id == id).unwrap_or(0);
@@ -748,13 +758,22 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 // stop at the first frame boundary the media reaches, so the In edge stays on a frame
                 // when the clip's speed is not 100% (#4704)
                 let ext = Tick((handle.0 as f64 / speed).floor() as i64);
-                let rate = seq.settings.frame_rate;
-                let limit = Tick(it.start.0.saturating_sub(ext.0));
-                let mut first = rate.snap(limit);
-                if first < limit {
-                    first = rate.tick_of(rate.frame_at(limit).saturating_add(1));
+                if ext <= Tick::ZERO {
+                    ext
+                } else {
+                    let rate = seq.settings.frame_rate;
+                    let limit = Tick(it.start.0.saturating_sub(ext.0));
+                    // the division can land a tick past a whole frame, so a boundary the media still
+                    // reaches is kept instead of being rounded away (#4812)
+                    let mut first = rate.snap(limit);
+                    let before = frame_before(rate, first);
+                    if src_of(Tick(it.start.0.saturating_sub(before.0)), speed) <= handle {
+                        first = before;
+                    } else if src_of(Tick(it.start.0.saturating_sub(first.0)), speed) > handle {
+                        first = frame_after(rate, first);
+                    }
+                    Tick(it.start.0.saturating_sub(first.0)).max(Tick::ZERO)
                 }
-                if ext > Tick::ZERO { Tick(it.start.0.saturating_sub(first.0)).max(Tick::ZERO) } else { ext }
             };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
@@ -779,9 +798,21 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 // stop at the last frame boundary the media reaches, so the Out edge stays on a frame
                 // when the clip's speed is not 100% (#4704)
                 let ext = Tick((remain.0 as f64 / speed).floor() as i64);
-                let end = it.end();
-                let last = seq.settings.frame_rate.snap(Tick(end.0.saturating_add(ext.0)));
-                hi = hi.min(if ext > Tick::ZERO { Tick(last.0.saturating_sub(end.0)).max(Tick::ZERO) } else { ext });
+                let limit = if ext <= Tick::ZERO {
+                    ext
+                } else {
+                    let end = it.end();
+                    let rate = seq.settings.frame_rate;
+                    let mut last = rate.snap(Tick(end.0.saturating_add(ext.0)));
+                    // the division can land a tick short of a whole frame, so a boundary the media
+                    // still reaches is kept instead of being rounded away (#4812)
+                    let after = frame_after(rate, last);
+                    if src_of(Tick(after.0.saturating_sub(end.0)), speed) <= remain {
+                        last = after;
+                    }
+                    Tick(last.0.saturating_sub(end.0)).max(Tick::ZERO)
+                };
+                hi = hi.min(limit);
             }
             d = d.clamp(lo, hi.max(lo));
         }

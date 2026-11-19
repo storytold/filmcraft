@@ -618,6 +618,42 @@ fn a_trim_to_the_media_end_of_a_speed_changed_clip_stops_on_a_frame() {
 }
 
 #[test]
+fn a_trim_to_the_media_end_keeps_a_frame_the_media_exactly_reaches() {
+    // 7 source frames at speed 0.07 are exactly 100 timeline frames, but 74_088_000_000 / 0.07
+    // lands a tick short of the 100th frame, so the boundary has to be checked against the media
+    // instead of being rounded away
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 43, 0);
+    {
+        let it = fx.seq.find_item_mut(a).unwrap().1;
+        it.speed = 0.07;
+        // leave exactly 7 frames of media past the Out point
+        it.source_in = f(993) - src_of(it.duration, 0.07);
+    }
+    let mut n = fx.next;
+    let d = trim(&mut fx.seq, a, Edge::Out, TrimMode::Ripple, f(200), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(100));
+    let it = fx.seq.find_item(a).unwrap().1;
+    assert_eq!(it.duration, f(143));
+    assert_eq!(it.source_out(), f(1000), "the Out point reaches the last frame of the media");
+    fx.seq.check().unwrap();
+
+    // the In edge: 7 frames of head handle are exactly 100 timeline frames
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c = fx.put(v1, 200, 43, 7);
+    fx.seq.find_item_mut(c).unwrap().1.speed = 0.07;
+    let mut n = fx.next;
+    let d = trim(&mut fx.seq, c, Edge::In, TrimMode::Ripple, -f(200), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(100));
+    let it = fx.seq.find_item(c).unwrap().1;
+    assert_eq!((it.start, it.duration), (f(200), f(143)));
+    assert_eq!(it.source_in, Tick::ZERO, "the In point reaches the first frame of the media");
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn ripple_trim_group_takes_a_split_edit_along() {
     // V1: a [0,10) then b [10,20). b's linked sound leads it by 4 on sync-locked A1: [6,20).
     let mut fx = Fx::new();
