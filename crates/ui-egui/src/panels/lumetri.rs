@@ -577,14 +577,24 @@ pub(crate) fn curve_sample_x(axis: CurveAxis, rgb: [u8; 3]) -> f32 {
     }
 }
 
+/// The height an empty curve plots and samples at. The hue-axis curves (Hue vs Sat, Hue vs Hue and
+/// Hue vs Luma), Luma vs Sat and Sat vs Sat are neutral at 0.5 — an unchanged shift or saturation —
+/// while the master and RGB curves are identity; `None` means identity (y = x).
+fn curve_empty_height(axis: CurveAxis) -> Option<f32> {
+    match axis {
+        CurveAxis::Hue | CurveAxis::Lightness | CurveAxis::Saturation => Some(0.5),
+        CurveAxis::Luma | CurveAxis::Channel(_) => None,
+    }
+}
+
 /// The curve's value at `x` (0..1), evaluated with the same monotone-cubic LUT the curve is drawn
-/// and rendered with. `wrapping` repeats the curve one period left and right (the circular hue
-/// curves); an empty wrapping curve is neutral at 0.5, an empty RGB curve is identity.
-fn curve_value_at(pts: &[[f32; 2]], x: f32, wrapping: bool) -> f32 {
+/// and rendered with. The hue curves wrap one period left and right; every other axis is straight.
+fn curve_value_at(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> f32 {
     let x = x.clamp(0.0, 1.0);
     if pts.is_empty() {
-        return if wrapping { 0.5 } else { x };
+        return curve_empty_height(axis).unwrap_or(x);
     }
+    let wrapping = axis == CurveAxis::Hue;
     let lut = if wrapping { filmcraft_render::effects::hue_lut(pts, 128) } else { filmcraft_render::effects::vs_sat_lut(pts, 128) }
         .unwrap_or_else(|| filmcraft_render::effects::curve_lut(pts, 128));
     // linear interpolation between LUT samples, like the render's own curve sampling, so the
@@ -598,8 +608,8 @@ fn curve_value_at(pts: &[[f32; 2]], x: f32, wrapping: bool) -> f32 {
 /// The three control points a curve eyedropper adds at `x`: the centre point on the current curve,
 /// and two neighbours at the same height, `CURVE_EYEDROPPER_SPREAD` away on either side, so that
 /// dragging the centre lifts only that range. Neighbours clamp into 0..1.
-pub(crate) fn curve_eyedropper_points(pts: &[[f32; 2]], x: f32, wrapping: bool) -> Vec<[f32; 2]> {
-    let y = curve_value_at(pts, x, wrapping);
+pub(crate) fn curve_eyedropper_points(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> Vec<[f32; 2]> {
+    let y = curve_value_at(pts, x, axis);
     let mut out = vec![[(x - CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y], [x, y], [(x + CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y]];
     out.sort_by(|a, b| a[0].total_cmp(&b[0]));
     out
@@ -728,8 +738,11 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
     let to_screen = |q: [f32; 2]| pos2(plot.min.x + q[0] * plot.width(), plot.max.y - q[1] * plot.height());
     let from_screen = |s: Pos2| [((s.x - plot.min.x) / plot.width()).clamp(0.0, 1.0), ((plot.max.y - s.y) / plot.height()).clamp(0.0, 1.0)];
     // curve polyline: the plotted value is the stored one, so Hue vs Hue is a flat middle line when
-    // neutral, like the other curves, and its line is always continuous
-    let draw_pts: Vec<[f32; 2]> = if hue && pts.is_empty() { vec![[0.0, 0.5], [1.0, 0.5]] } else { pts.clone() };
+    // neutral, like the other curves, and its line is always continuous. An empty curve is drawn
+    // at its neutral height (0.5 for the hue, Luma vs Sat and Sat vs Sat curves), not on the
+    // identity diagonal.
+    let draw_pts: Vec<[f32; 2]> =
+        if pts.is_empty() { curve_axis(id).and_then(curve_empty_height).map_or_else(Vec::new, |y| vec![[0.0, y], [1.0, y]]) } else { pts.clone() };
     // the hue curves wrap around red; Luma vs Sat and Sat vs Sat do not (same LUTs as the render)
     let lut = match (hue, id.starts_with("hue_vs_")) {
         (true, true) => filmcraft_render::effects::hue_lut(&pts, 128),
@@ -971,19 +984,39 @@ mod tests {
     #[test]
     fn curve_eyedropper_points_are_three_on_the_curve() {
         // an empty hue curve is neutral at 0.5, with neighbours CURVE_EYEDROPPER_SPREAD away
-        let pts = curve_eyedropper_points(&[], 0.5, true);
+        let pts = curve_eyedropper_points(&[], 0.5, CurveAxis::Hue);
         assert_eq!(pts.len(), 3);
         assert!(pts.windows(2).all(|w| w[0][0] <= w[1][0]), "sorted by x: {pts:?}");
         assert!(pts.iter().all(|q| q[1] == 0.5), "neutral: {pts:?}");
         let s = CURVE_EYEDROPPER_SPREAD;
         assert!(close(pts[0][0], 0.5 - s, 1e-5) && close(pts[1][0], 0.5, 1e-5) && close(pts[2][0], 0.5 + s, 1e-5), "{pts:?}");
         // an empty RGB curve is identity: the centre lands exactly on the line y = x
-        let pts = curve_eyedropper_points(&[], 0.5, false);
+        let pts = curve_eyedropper_points(&[], 0.5, CurveAxis::Luma);
         assert_eq!(pts.len(), 3);
         assert!(close(pts[1][1], 0.5, 1e-5), "on the identity line: {pts:?}");
         // neighbours clamp into 0..1 at the edges
-        let pts = curve_eyedropper_points(&[], 0.0, false);
+        let pts = curve_eyedropper_points(&[], 0.0, CurveAxis::Luma);
         assert!(pts.iter().all(|q| (0.0..=1.0).contains(&q[0])), "{pts:?}");
+    }
+
+    /// Luma vs Sat and Sat vs Sat are neutral at 0.5 where they have no points (an unchanged
+    /// saturation), on a straight axis: the pick lands on the flat middle, not the identity
+    /// diagonal, while master and RGB curves still sample their identity.
+    #[test]
+    fn empty_vs_sat_curves_are_neutral_and_do_not_wrap() {
+        for axis in [CurveAxis::Lightness, CurveAxis::Saturation] {
+            for x in [0.0, 0.2, 0.5, 0.9] {
+                let pts = curve_eyedropper_points(&[], x, axis);
+                assert!(pts.iter().all(|q| close(q[1], 0.5, 1e-6)), "{axis:?} at {x}: {pts:?}");
+            }
+            // non-wrapping: beyond its outermost points the curve stays flat instead of repeating
+            let pts = [[0.2, 0.9], [0.8, 0.1]];
+            assert!(close(curve_value_at(&pts, 0.0, axis), 0.9, 1e-6), "{axis:?} stays flat left of its points");
+            assert!(close(curve_value_at(&pts, 1.0, axis), 0.1, 1e-6), "{axis:?} stays flat right of its points");
+        }
+        for axis in [CurveAxis::Luma, CurveAxis::Channel(1)] {
+            assert!(close(curve_value_at(&[], 0.2, axis), 0.2, 1e-6), "{axis:?} is identity when empty");
+        }
     }
 
     /// The Hue vs Hue gradient is centred on the hue under the cursor: the middle is that hue (no
@@ -1012,7 +1045,7 @@ mod tests {
         assert!(close(hue_absolute(0.0, dot), blue, 1e-6), "the dot sits at the blue height for a red cursor");
         assert!(close((0.0f32 + dot - 0.5).rem_euclid(1.0), blue, 1e-6), "and the renderer agrees");
         // the neutral curve is the flat middle, so it plots as a horizontal line
-        let neutral = curve_eyedropper_points(&[], 0.5, true);
+        let neutral = curve_eyedropper_points(&[], 0.5, CurveAxis::Hue);
         assert!(neutral.iter().all(|q| close(q[1], 0.5, 1e-6)), "{neutral:?}");
     }
 

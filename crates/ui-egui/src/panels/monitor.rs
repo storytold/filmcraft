@@ -774,7 +774,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
             .and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
             .unwrap_or_default();
         let mut merged = pts.clone();
-        merged.extend(crate::panels::lumetri::curve_eyedropper_points(&pts, x, axis == CurveAxis::Hue));
+        merged.extend(crate::panels::lumetri::curve_eyedropper_points(&pts, x, axis));
         merged.sort_by(|a, b| a[0].total_cmp(&b[0]));
         // like the render's curve_lut, collapse points that share an x (the clamped neighbour
         // can land exactly on the centre at the edge of the axis)
