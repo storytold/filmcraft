@@ -383,6 +383,56 @@ fn full_res_rgb(s: &Session, item: ItemId, i: i64) -> [f32; 3] {
     centre(&s.media.full_res_source(&s.project, item, &*s.services).unwrap(), i)
 }
 
+fn assert_cached_raw_development(s: &Session, id: ItemId, expected: f32) {
+    struct NoFileReads;
+
+    impl crate::Services for NoFileReads {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            panic!("the RAW clip reopened {path}");
+        }
+
+        fn write_file(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+            panic!("resolving a source must not write a file");
+        }
+    }
+
+    let source = s.media.full_res_source(&s.project, id, &NoFileReads).unwrap();
+    for channel in centre(&source, 0) {
+        assert!((channel - expected).abs() < 3e-3, "developed frame: {channel}, expected {expected}");
+    }
+}
+
+#[test]
+fn refreshed_raw_clip_reuses_the_open_source_with_its_development_settings() {
+    let dir = tmp_dir("raw-refresh");
+    let path = dir.join("A001_C007.mxf");
+    write_mxf(&path, "A001_C007", 0.0);
+    let mut s = demo();
+    let id = item_of(&s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap());
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    assert_eq!(s.execute("media.refreshChanged", json!({})).unwrap()["refreshed"], json!([]));
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    write_mxf(&path, "A001_C007", 0.1);
+    assert_eq!(s.execute("media.refreshChanged", json!({})).unwrap()["refreshed"], json!([id.0]));
+
+    assert_cached_raw_development(&s, id, (2.0 * (level(0) + 0.1)) as f32);
+}
+
+#[test]
+fn relinked_raw_clip_reuses_the_open_source_with_its_development_settings() {
+    let dir = tmp_dir("raw-relink");
+    let old = dir.join("A001_C008.mxf");
+    let replacement = dir.join("A001_C009.mxf");
+    write_mxf(&old, "A001_C008", 0.0);
+    write_mxf(&replacement, "A001_C009", 0.2);
+    let mut s = demo();
+    let id = item_of(&s.execute("file.import", json!({"paths": [old.to_string_lossy()]})).unwrap());
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    s.execute("media.relink", json!({"item": id.0, "path": replacement.to_string_lossy(), "force": true, "relinkOthers": false})).unwrap();
+
+    assert_cached_raw_development(&s, id, (2.0 * (level(0) + 0.2)) as f32);
+}
+
 fn same(a: [f32; 3], b: [f32; 3], what: &str) {
     for k in 0..3 {
         assert!((a[k] - b[k]).abs() < 1e-6, "{what}: channel {k}: {a:?} vs {b:?}");

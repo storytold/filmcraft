@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
+use filmcraft_media::raw::RawSettings;
 use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, Opener, SharedSource};
 use filmcraft_project::{ItemId, MediaClip, MediaRef, Project};
 use filmcraft_render::offline::OfflineReason;
@@ -49,9 +50,14 @@ pub struct OfflineMedia {
     pub error: String,
 }
 
+struct CachedSource {
+    key: String,
+    source: SharedSource,
+    reopened_for: Option<RawSettings>,
+}
+
 pub struct MediaPool {
-    /// item → (reference key, source)
-    sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
+    sources: RwLock<HashMap<ItemId, CachedSource>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
@@ -159,26 +165,34 @@ impl MediaPool {
 
     /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
-        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (String::new(), src));
+        self.insert_keyed(item, String::new(), src);
     }
 
     /// Cache a source for an item under its [`media_key`].
     pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
-        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src));
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, CachedSource { key, source: src, reopened_for: None });
     }
 
     /// Cache a source opened from `path` for an item.
     pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
+        self.cache_file(item, path, src, None);
+    }
+
+    /// Cache a freshly replaced file, so resolving its RAW settings can reuse this open.
+    pub(crate) fn insert_reopened_file(&self, item: ItemId, path: &str, src: SharedSource, raw: Option<RawSettings>) {
+        self.cache_file(item, path, src, raw);
+    }
+
+    fn cache_file(&self, item: ItemId, path: &str, src: SharedSource, reopened_for: Option<RawSettings>) {
         self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
-        let src = self.unsupported_as_slate(item, path, src);
-        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (format!("file:{path}"), src));
+        let source = self.unsupported_as_slate(item, path, src);
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, CachedSource { key: format!("file:{path}"), source, reopened_for });
     }
 
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
     /// cannot decode.
     fn unsupported_as_slate(&self, item: ItemId, path: &str, src: SharedSource) -> SharedSource {
-        let slate = SlateSource::new(src.info().clone(), &file_name(path), OfflineReason::Unreadable);
-        Arc::new(UnsupportedAsSlate { inner: src, slate, item, path: path.to_string(), offline: self.offline.clone() })
+        Arc::new(UnsupportedAsSlate::new(src, item, path, self.offline.clone()))
     }
 
     pub fn remove(&self, item: ItemId) {
@@ -243,7 +257,7 @@ impl MediaPool {
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
-        self.sources.read().unwrap_or_else(PoisonError::into_inner).get(&item).map(|(_, s)| s.clone())
+        self.sources.read().unwrap_or_else(PoisonError::into_inner).get(&item).map(|cached| cached.source.clone())
     }
 
     /// Sources opened so far (originals and proxies; `perf.stats`).
@@ -328,11 +342,21 @@ impl MediaPool {
             return Some(s);
         }
         let key = media_key(m);
-        if let Some((k, s)) = self.sources.read().unwrap_or_else(PoisonError::into_inner).get(&item)
-            && (k.is_empty() || *k == key)
-        {
-            return Some(s.clone());
-        }
+        let reopened_file = {
+            let sources = self.sources.read().unwrap_or_else(PoisonError::into_inner);
+            match sources.get(&item) {
+                Some(cached) if cached.key.is_empty() || cached.key == key => return Some(cached.source.clone()),
+                Some(cached)
+                    if cached.reopened_for.is_some()
+                        && cached.reopened_for == m.interpret.raw
+                        && let MediaRef::File { path } = &m.media
+                        && cached.key.strip_prefix("file:") == Some(path.as_str()) =>
+                {
+                    Some(cached.source.clone())
+                }
+                _ => None,
+            }
+        };
         let src: SharedSource = match &m.media {
             MediaRef::Generator(g) => {
                 let v = m.info.video.as_ref();
@@ -342,6 +366,17 @@ impl MediaPool {
             MediaRef::File { path } if m.offline => {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
+            }
+            // Develop the refreshed or relinked file on first use. A numbered sequence still
+            // needs its own opener.
+            MediaRef::File { .. }
+                if m.info.kind != filmcraft_media::MediaKind::ImageSequence
+                    && let Some(opened) = reopened_file
+                    && let Some(raw) = &m.interpret.raw
+                    && let Some(developed) = opened.with_raw_settings(raw) =>
+            {
+                self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
+                developed
             }
             MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
                 if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
@@ -366,7 +401,7 @@ impl MediaPool {
                 }
             },
         };
-        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
+        self.insert_keyed(item, key, src.clone());
         Some(src)
     }
 
@@ -586,6 +621,13 @@ struct UnsupportedAsSlate {
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
 }
 
+impl UnsupportedAsSlate {
+    fn new(inner: SharedSource, item: ItemId, path: &str, offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>) -> Self {
+        let slate = SlateSource::new(inner.info().clone(), &file_name(path), OfflineReason::Unreadable);
+        Self { inner, slate, item, path: path.to_string(), offline }
+    }
+}
+
 impl MediaSource for UnsupportedAsSlate {
     fn info(&self) -> &MediaInfo {
         self.inner.info()
@@ -618,6 +660,10 @@ impl MediaSource for UnsupportedAsSlate {
     }
     fn raw_info(&self) -> Option<filmcraft_media::raw::RawInfo> {
         self.inner.raw_info()
+    }
+    fn with_raw_settings(&self, settings: &filmcraft_media::raw::RawSettings) -> Option<SharedSource> {
+        let inner = self.inner.with_raw_settings(settings)?;
+        Some(Arc::new(Self::new(inner, self.item, &self.path, self.offline.clone())))
     }
 }
 
