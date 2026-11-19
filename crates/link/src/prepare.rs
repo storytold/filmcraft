@@ -439,6 +439,11 @@ fn pinned(project: &Project, wanted: &[Need]) -> HashSet<String> {
 /// even when the folder stays over `limit`. Other movies go oldest first. A link of another project
 /// can still lose its movie here; `link.editIn` on that link renders it again before it asks
 /// EffectCraft to reopen the comp ([`crate::reopen::reopen`]).
+///
+/// Limits of this rule. A movie of another project is not durable storage. The render comes back
+/// only while that project's original nest still exists and the user reopens the link through
+/// FilmCraft. If EffectCraft opens or renders that comp on its own after the movie is gone, the
+/// footage is offline there until FilmCraft renders it again.
 fn prune(dir: &Path, limit: u64, keep: &HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(SystemTime, u64, PathBuf, bool)> = entries
