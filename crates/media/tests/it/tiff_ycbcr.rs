@@ -187,3 +187,30 @@ fn ffmpeg_ycbcr_tiffs_match_ffmpeg_decode() {
         assert!(worst <= 6, "{pix_fmt}: worst channel difference {worst}");
     }
 }
+
+#[test]
+fn shared_ycbcr_retains_unsupported_error_classification_and_strict_color() {
+    use filmcraft_media::MediaError;
+    let mut cases = vec![
+        ycbcr_tiff(65535, 65535, (1, 1), 1, &[0; 3], &[]),
+        ycbcr_tiff(1, 1, (1, 1), 1, &[0; 3], &[(284, 3, vec![2])]),
+        ycbcr_tiff(1, 1, (1, 1), 1, &[0; 3], &[(324, 4, vec![8])]),
+    ];
+    let mut samples = ycbcr_tiff(1, 1, (1, 1), 1, &[0; 3], &[]);
+    let count = u16::from_le_bytes([samples[8], samples[9]]) as usize;
+    for i in 0..count {
+        let at = 10 + i * 12;
+        if u16::from_le_bytes([samples[at], samples[at + 1]]) == 277 {
+            samples[at + 8..at + 10].copy_from_slice(&1u16.to_le_bytes());
+        }
+    }
+    cases.push(samples);
+    for bytes in cases {
+        assert!(matches!(decode_raster("test.tiff", &bytes), Err(MediaError::Unsupported(_))));
+    }
+    let weights = [(529, 5, vec![4, 10, 4, 10, 4, 10])];
+    let non_unit = ycbcr_tiff(1, 1, (1, 1), 1, &[128; 3], &weights);
+    assert_eq!(decode_raster("test.tiff", &non_unit).unwrap().rgba, [128, 64, 128, 255]);
+    let bad = ycbcr_tiff(1, 1, (1, 1), 1, &[128; 3], &[(529, 5, vec![1, 2])]);
+    assert!(matches!(decode_raster("test.tiff", &bad), Err(MediaError::Decode(_))));
+}
