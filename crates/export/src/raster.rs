@@ -26,290 +26,39 @@ pub(crate) fn rgb(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
     Ok(rgba.as_chunks::<4>().0.iter().flat_map(|&[r, g, b, _]| [r, g, b]).collect())
 }
 
-/// An uncompressed Targa file: 24-bit BGR, or 32-bit BGRA with `alpha` (straight alpha, as the
-/// frame carries it).
+/// An uncompressed Targa file in bottom-up order.
 pub(crate) fn tga(rgba: &[u8], w: u32, h: u32, alpha: bool) -> Result<Vec<u8>> {
-    checked_len(rgba, w, h)?;
-    let (tw, th) = match (u16::try_from(w), u16::try_from(h)) {
-        (Ok(tw), Ok(th)) => (tw, th),
-        _ => return Err(ExportError::Unsupported(format!("Targa frames are at most 65535×65535 (got {w}×{h})"))),
-    };
-    let bpp: usize = if alpha { 4 } else { 3 };
-    let row = w as usize * 4;
-    let mut out = Vec::with_capacity(18 + w as usize * h as usize * bpp + 26);
-    out.extend_from_slice(&[0, 0, 2]); // no ID, no colour map, uncompressed true-colour
-    out.extend_from_slice(&[0; 5]); // colour map specification (unused)
-    out.extend_from_slice(&[0, 0, 0, 0]); // x / y origin
-    out.extend_from_slice(&tw.to_le_bytes());
-    out.extend_from_slice(&th.to_le_bytes());
-    out.push(if alpha { 32 } else { 24 });
-    out.push(if alpha { 8 } else { 0 }); // attribute bits; bottom-left origin
-    // bottom-left origin: the last frame row comes first
-    for line in rgba.chunks_exact(row).rev() {
-        for &[r, g, b, a] in line.as_chunks::<4>().0 {
-            out.extend_from_slice(&[b, g, r]);
-            if alpha {
-                out.push(a);
-            }
-        }
-    }
-    // TGA 2.0 footer without extension or developer areas
-    out.extend_from_slice(&[0; 8]);
-    out.extend_from_slice(b"TRUEVISION-XFILE.\0");
-    Ok(out)
+    craft_tga::rgba8_raw::encode_rgba8_raw(rgba, w, h, alpha).map_err(|e| match e {
+        craft_tga::rgba8_raw::Rgba8EncodeError::FrameSize => ExportError::Encode("frame size".into()),
+        craft_tga::rgba8_raw::Rgba8EncodeError::Dimensions => ExportError::Unsupported(format!("Targa frames are at most 65535×65535 (got {w}×{h})")),
+        craft_tga::rgba8_raw::Rgba8EncodeError::OutOfMemory => ExportError::Encode(format!("out of memory for a {w}×{h} Targa frame")),
+    })
 }
 
-/// Header size of the DPX files we write (file + image + orientation + film + TV headers).
-const DPX_HEADER: usize = 2048;
-
-/// A DPX file: 10-bit RGB (8-bit values widened by bit replication, so 0 → 0 and 255 → 1023).
+/// A 10-bit RGB DPX file.
 pub(crate) fn dpx(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
-    let n = checked_len(rgba, w, h)?;
-    // one 32-bit word per pixel; `n` is already `w * h * 4`
-    let size = n.checked_add(DPX_HEADER).ok_or_else(|| ExportError::Encode("frame size".into()))?;
-    let file_size = u32::try_from(size).map_err(|_| ExportError::Unsupported(format!("a {w}×{h} DPX frame exceeds 4 GB")))?;
-    // SMPTE ST 268: undefined numeric fields are all ones, undefined text fields are NUL
-    let mut hd = vec![0xFF_u8; DPX_HEADER];
-    for (a, b) in [
-        (36, 660),    // file name, creation time, creator, project, copyright
-        (664, 768),   // reserved
-        (1356, 1408), // reserved
-        (1432, 1620), // source file name, time, input device, serial number
-        (1644, 1664), // reserved
-        (1664, 1712), // film manufacturer, type, offset, prefix, count, format
-        (1732, 1920), // frame id, slate, reserved
-        (1972, 2048), // reserved
-    ] {
-        hd[a..b].fill(0);
-    }
-    for e in 0..8 {
-        let d = 780 + e * 72 + 40;
-        hd[d..d + 32].fill(0); // element descriptions
-    }
-    let put32 = |hd: &mut Vec<u8>, at: usize, v: u32| hd[at..at + 4].copy_from_slice(&v.to_be_bytes());
-    let put16 = |hd: &mut Vec<u8>, at: usize, v: u16| hd[at..at + 2].copy_from_slice(&v.to_be_bytes());
-    // file information header
-    hd[0..4].copy_from_slice(b"SDPX");
-    put32(&mut hd, 4, DPX_HEADER as u32); // offset to the image data
-    hd[8..16].copy_from_slice(b"V2.0\0\0\0\0");
-    put32(&mut hd, 16, file_size);
-    put32(&mut hd, 20, 1); // ditto key: new frame
-    put32(&mut hd, 24, 1664); // generic header length
-    put32(&mut hd, 28, 384); // industry header length
-    put32(&mut hd, 32, 0); // user data length
-    hd[160..169].copy_from_slice(b"FilmCraft");
-    // image information header
-    put16(&mut hd, 768, 0); // orientation: left to right, top to bottom
-    put16(&mut hd, 770, 1); // one image element
-    put32(&mut hd, 772, w);
-    put32(&mut hd, 776, h);
-    let el = 780;
-    put32(&mut hd, el, 0); // unsigned
-    put32(&mut hd, el + 4, 0); // reference low data code
-    put32(&mut hd, el + 12, 1023); // reference high data code
-    hd[el + 20] = 50; // descriptor: RGB
-    hd[el + 21] = 6; // transfer: ITU-R BT.709
-    hd[el + 22] = 6; // colorimetric: ITU-R BT.709
-    hd[el + 23] = 10; // bit depth
-    put16(&mut hd, el + 24, 1); // packing: filled to 32-bit words, method A
-    put16(&mut hd, el + 26, 0); // no encoding (uncompressed)
-    put32(&mut hd, el + 28, DPX_HEADER as u32); // offset to the element's data
-    put32(&mut hd, el + 32, 0); // end-of-line padding
-    put32(&mut hd, el + 36, 0); // end-of-image padding
-    // image orientation header: no offset, square pixels
-    put32(&mut hd, 1408, 0);
-    put32(&mut hd, 1412, 0);
-    put32(&mut hd, 1424, w);
-    put32(&mut hd, 1428, h);
-    put32(&mut hd, 1628, 1);
-    put32(&mut hd, 1632, 1);
-    // television header: progressive
-    hd[1928] = 0;
-    let mut out = Vec::with_capacity(size);
-    out.extend_from_slice(&hd);
-    let ten = |v: u8| (u32::from(v) << 2) | (u32::from(v) >> 6);
-    for &[r, g, b, _] in rgba.as_chunks::<4>().0 {
-        out.extend_from_slice(&((ten(r) << 22) | (ten(g) << 12) | (ten(b) << 2)).to_be_bytes());
-    }
-    Ok(out)
+    craft_dpx::rgba8_dpx10::encode_rgba8_dpx10(rgba, w, h, "FilmCraft").map_err(|e| match e {
+        craft_dpx::rgba8_dpx10::Rgba8EncodeError::FrameSize => ExportError::Encode("frame size".into()),
+        craft_dpx::rgba8_dpx10::Rgba8EncodeError::TooLarge => ExportError::Unsupported(format!("a {w}×{h} DPX frame exceeds 4 GB")),
+        craft_dpx::rgba8_dpx10::Rgba8EncodeError::OutOfMemory => ExportError::Encode(format!("out of memory for a {w}×{h} DPX frame")),
+    })
 }
 
-/// IEEE 754 binary16 bits of `v`, rounded to nearest even (overflow → infinity, NaN → quiet NaN).
-fn half(v: f32) -> u16 {
-    let b = v.to_bits();
-    let sign = ((b >> 16) & 0x8000) as u16;
-    let exp = ((b >> 23) & 0xFF) as i32;
-    let man = b & 0x7F_FFFF;
-    if exp == 0xFF {
-        return sign | 0x7C00 | if man != 0 { 0x200 } else { 0 };
-    }
-    // rounds `m >> shift` to nearest, ties to even (`shift` is 1..=24)
-    let round = |m: u32, shift: u32| {
-        let (q, rem, mid) = (m >> shift, m & ((1 << shift) - 1), 1 << (shift - 1));
-        if rem > mid || (rem == mid && q & 1 == 1) { q + 1 } else { q }
-    };
-    let e = exp - 127 + 15;
-    if e >= 0x1F {
-        sign | 0x7C00
-    } else if e <= 0 {
-        if e < -10 {
-            return sign;
-        }
-        // subnormal half: the 24-bit significand scaled by 2^(e - 14); rounding up may carry
-        // into the smallest normal, which is the right encoding
-        sign | round(man | 0x80_0000, (14 - e) as u32) as u16
-    } else {
-        // a carry out of the mantissa bumps the exponent (up to infinity), as it should
-        sign | round(((e as u32) << 23) | man, 13) as u16
-    }
-}
+#[cfg(test)]
+use craft_exr::rgba8::{half, rle};
 
-/// An OpenEXR file: half-float scene-linear Rec.709 RGB, or RGBA with `alpha` (premultiplied, as
-/// EXR defines alpha; the frame's straight alpha is multiplied in after linearisation).
+/// Write a scanline OpenEXR using FilmCraft's color conversion table.
 pub(crate) fn exr(rgba: &[u8], w: u32, h: u32, alpha: bool, compression: ExrCompression) -> Result<Vec<u8>> {
-    let n = checked_len(rgba, w, h)?;
-    let too_large = || ExportError::Unsupported(format!("an OpenEXR frame of {w}×{h} is too large"));
-    let (Ok(x_max), Ok(y_max)) = (i32::try_from(w - 1), i32::try_from(h - 1)) else {
-        return Err(too_large());
+    let compression = match compression {
+        ExrCompression::None => craft_exr::rgba8::Compression::None,
+        ExrCompression::Rle => craft_exr::rgba8::Compression::Rle,
+        ExrCompression::Zips => craft_exr::rgba8::Compression::Zips,
+        ExrCompression::Zip => craft_exr::rgba8::Compression::Zip,
     };
-    // channels in the alphabetical order the file layout requires
-    let names: &[u8] = if alpha { b"ABGR" } else { b"BGR" };
-    let line = (w as usize).checked_mul(names.len() * 2).ok_or_else(|| ExportError::Encode("frame size".into()))?;
-    // a chunk's byte count is a signed 32-bit field
-    let lines = compression.lines();
-    if line.checked_mul(lines).and_then(|c| i32::try_from(c).ok()).is_none() {
-        return Err(too_large());
-    }
-
-    let mut hd = Vec::with_capacity(512);
-    hd.extend_from_slice(&[0x76, 0x2F, 0x31, 0x01]); // magic number 20000630
-    hd.extend_from_slice(&[2, 0, 0, 0]); // version 2, single-part scan-line file, short names
-    let attr = |hd: &mut Vec<u8>, name: &str, ty: &str, value: &[u8]| {
-        for s in [name, ty] {
-            hd.extend_from_slice(s.as_bytes());
-            hd.push(0);
-        }
-        hd.extend_from_slice(&(value.len() as i32).to_le_bytes());
-        hd.extend_from_slice(value);
-    };
-    let le = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
-    let mut channels = Vec::new();
-    for &c in names {
-        channels.extend_from_slice(&[c, 0]);
-        channels.extend_from_slice(&1_i32.to_le_bytes()); // pixel type HALF
-        channels.extend_from_slice(&[0, 0, 0, 0]); // pLinear 0, reserved
-        channels.extend_from_slice(&1_i32.to_le_bytes()); // x sampling
-        channels.extend_from_slice(&1_i32.to_le_bytes()); // y sampling
-    }
-    channels.push(0);
-    let window: Vec<u8> = [0, 0, x_max, y_max].iter().flat_map(|v| v.to_le_bytes()).collect();
-    attr(&mut hd, "channels", "chlist", &channels);
-    attr(&mut hd, "chromaticities", "chromaticities", &le(&[0.64, 0.33, 0.30, 0.60, 0.15, 0.06, 0.3127, 0.3290]));
-    attr(&mut hd, "compression", "compression", &[compression.code()]);
-    attr(&mut hd, "dataWindow", "box2i", &window);
-    attr(&mut hd, "displayWindow", "box2i", &window);
-    attr(&mut hd, "lineOrder", "lineOrder", &[0]); // INCREASING_Y
-    attr(&mut hd, "pixelAspectRatio", "float", &le(&[1.0]));
-    attr(&mut hd, "screenWindowCenter", "v2f", &le(&[0.0, 0.0]));
-    attr(&mut hd, "screenWindowWidth", "float", &le(&[1.0]));
-    hd.push(0); // end of header
-
-    // offset table (one entry per chunk), then the chunks: first y, data size, data
-    let chunks = (h as usize).div_ceil(lines);
-    let table = chunks.checked_mul(8);
-    let body = (h as usize).checked_mul(line + 8);
-    let size = table.zip(body).and_then(|(t, b)| hd.len().checked_add(t)?.checked_add(b)).ok_or_else(|| ExportError::Encode("frame size".into()))?;
-    // the uncompressed size: compressed chunks only shrink it
-    let mut out = Vec::with_capacity(size);
-    out.extend_from_slice(&hd);
-    let table_at = out.len();
-    out.resize(table_at + chunks * 8, 0);
-    let lin = filmcraft_color::srgb_u8_to_linear_table();
-    let opaque: [u16; 256] = std::array::from_fn(|i| half(lin[i]));
-    let row = w as usize * 4;
-    let wn = w as usize;
-    let mut px = vec![0_u16; wn * names.len()];
-    let mut raw = Vec::with_capacity(line * lines);
-    // the deflate hash tables, shared by the frame's chunks instead of zeroed for each one
-    let mut tables = crate::deflate::Tables::default();
-    for (k, block) in rgba[..n].chunks(row * lines).enumerate() {
-        raw.clear();
-        for src in block.chunks_exact(row) {
-            // planar per line: every pixel of the first channel, then the next channel …
-            for (x, &[r, g, b, a]) in src.as_chunks::<4>().0.iter().enumerate() {
-                let rgb = [b, g, r];
-                if alpha {
-                    let k = f32::from(a) / 255.0;
-                    px[x] = half(k);
-                    for (c, &v) in rgb.iter().enumerate() {
-                        px[(c + 1) * wn + x] = if a == 255 { opaque[v as usize] } else { half(lin[v as usize] * k) };
-                    }
-                } else {
-                    for (c, &v) in rgb.iter().enumerate() {
-                        px[c * wn + x] = opaque[v as usize];
-                    }
-                }
-            }
-            raw.extend(px.iter().flat_map(|v| v.to_le_bytes()));
-        }
-        let packed = match compression {
-            ExrCompression::None => None,
-            ExrCompression::Rle => Some(rle(&predict(&raw))),
-            ExrCompression::Zips | ExrCompression::Zip => Some(crate::deflate::zlib(&predict(&raw), &mut tables)),
-        };
-        // a chunk that does not shrink is stored as it is (readers compare the sizes)
-        let data = packed.as_deref().filter(|p| p.len() < raw.len()).unwrap_or(&raw);
-        let offset = (out.len() as u64).to_le_bytes();
-        out[table_at + k * 8..table_at + k * 8 + 8].copy_from_slice(&offset);
-        out.extend_from_slice(&((k * lines) as i32).to_le_bytes());
-        out.extend_from_slice(&(data.len() as i32).to_le_bytes());
-        out.extend_from_slice(data);
-    }
-    Ok(out)
-}
-
-/// The OpenEXR RLE / ZIP predictor: bytes split into even and odd halves, then each byte replaced
-/// by its difference from the previous one, plus 128.
-fn predict(raw: &[u8]) -> Vec<u8> {
-    let half = raw.len().div_ceil(2);
-    let mut t = vec![0_u8; raw.len()];
-    for (i, &b) in raw.iter().enumerate() {
-        t[if i % 2 == 0 { i / 2 } else { half + i / 2 }] = b;
-    }
-    let mut p = t.first().copied().unwrap_or(0);
-    for v in t.iter_mut().skip(1) {
-        let d = v.wrapping_sub(p).wrapping_add(128);
-        p = *v;
-        *v = d;
-    }
-    t
-}
-
-/// OpenEXR run-length coding: a signed count byte, then either `count + 1` copies of one byte
-/// (count ≥ 0, runs of 3 to 128) or `-count` literal bytes (1 to 127).
-fn rle(src: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(src.len() + src.len() / 127 + 1);
-    let mut i = 0;
-    while i < src.len() {
-        let b = src[i];
-        let run = src[i..].iter().take(128).take_while(|&&x| x == b).count();
-        if run >= 3 {
-            out.extend_from_slice(&[(run - 1) as u8, b]);
-            i += run;
-            continue;
-        }
-        // literals up to the next run of three (or 127 bytes)
-        let s = i;
-        while i < src.len() && i - s < 127 {
-            if src.get(i..i + 3).is_some_and(|t| t[0] == t[1] && t[1] == t[2]) {
-                break;
-            }
-            i += 1;
-        }
-        out.push(((i - s) as u8).wrapping_neg());
-        out.extend_from_slice(&src[s..i]);
-    }
-    out
+    craft_exr::rgba8::write_rgba8(rgba, w, h, alpha, compression, filmcraft_color::srgb_u8_to_linear_table()).map_err(|e| match e {
+        craft_exr::rgba8::Error::FrameSize => ExportError::Encode("frame size".into()),
+        craft_exr::rgba8::Error::TooLarge => ExportError::Unsupported(format!("an OpenEXR frame of {w}×{h} is too large")),
+    })
 }
 
 #[cfg(test)]
@@ -508,7 +257,12 @@ mod tests {
                     } else if c == ExrCompression::Rle {
                         unpredict(&unrle(data))
                     } else {
-                        unpredict(&crate::deflate::tests::inflate(data).unwrap())
+                        {
+                            use std::io::Read as _;
+                            let mut decoded = Vec::new();
+                            flate2::read::ZlibDecoder::new(data).read_to_end(&mut decoded).unwrap();
+                            unpredict(&decoded)
+                        }
                     };
                     assert_eq!(got, want, "{c:?} chunk {k}");
                 }
@@ -566,5 +320,13 @@ mod tests {
             assert!(exr(&[0; 7], 2, 1, false, c).is_err());
             assert!(exr(&[], 0, 1, false, c).is_err());
         }
+    }
+
+    #[test]
+    fn tga_and_dpx_errors_keep_their_export_messages() {
+        assert!(matches!(tga(&[0; 7], 2, 1, true), Err(ExportError::Encode(m)) if m == "frame size"));
+        let wide = vec![0; 65536 * 4];
+        assert!(matches!(tga(&wide, 65536, 1, false), Err(ExportError::Unsupported(m)) if m.contains("65535×65535 (got 65536×1)")));
+        assert!(matches!(dpx(&[0; 7], 2, 1), Err(ExportError::Encode(m)) if m == "frame size"));
     }
 }
