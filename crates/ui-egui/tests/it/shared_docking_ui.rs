@@ -46,6 +46,51 @@ fn layout() -> Layout {
 }
 
 #[test]
+fn monitor_tabs_follow_the_loaded_clip_and_sequence_name() {
+    let mut app = FilmcraftApp::new(Session::default());
+    app.ui.dock = layout();
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    let label = |h: &Harness<'_, FilmcraftApp>, panel: PanelKind| {
+        let bounds = rect(h, &format!("panel.tab.{}", panel.id()));
+        h.output()
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if bounds.contains(text.pos) && text.galley.text().starts_with(panel.title()) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .expect("painted monitor title")
+    };
+    step(&mut h);
+    assert_eq!(label(&h, PanelKind::Source), "Source");
+    assert_eq!(label(&h, PanelKind::Program), "Program");
+
+    let session = &mut h.state_mut().session;
+    session.execute("file.newSequence", json!({"name":"Review","width":1280,"height":720,"fps":24})).unwrap();
+    let clip = session.execute("file.newOfflineFile", json!({"name":"A003.mp4","video":true,"audio":false})).unwrap()["item"].as_u64().unwrap();
+    session.execute("source.open", json!({"item":clip})).unwrap();
+    step(&mut h);
+    assert_eq!(label(&h, PanelKind::Source), "Source: A003.mp4");
+    assert_eq!(label(&h, PanelKind::Program), "Program: Review");
+
+    let session = &mut h.state_mut().session;
+    let sequence = session.state.active_sequence.unwrap();
+    session
+        .edit("Rename Sequence", |project, _| {
+            project.item_mut(sequence).unwrap().name = "Final Cut".into();
+            Ok(())
+        })
+        .unwrap();
+    let name = format!("{}.mov", "Camera Angle ".repeat(12).trim_end());
+    let clip = session.execute("file.newOfflineFile", json!({"name":name,"video":true,"audio":false})).unwrap()["item"].as_u64().unwrap();
+    session.execute("source.open", json!({"item":clip})).unwrap();
+    step(&mut h);
+    assert_eq!(label(&h, PanelKind::Program), "Program: Final Cut");
+    let source = label(&h, PanelKind::Source);
+    assert!(source.contains('…') && source.ends_with(".mov"), "{source}");
+}
+
+#[test]
 fn active_tab_underline_follows_selection_even_when_another_tab_is_hovered() {
     let mut session = Session::default();
     session.prefs.appearance.accessible_contrast = true;
