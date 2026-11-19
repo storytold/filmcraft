@@ -78,8 +78,11 @@ fn test_amf_hevc_hdr_export_signals_its_colour_in_the_stream() {
         eprintln!("No AMD AMF HEVC Main 10 encoder on this system, skipping test.");
         return;
     }
-    // the HDR probes as well as the encoders: without them an HDR sequence exports tone-mapped to SDR
-    filmcraft_platform::register();
+    // the HDR probe as well as the AMF encoder: without the probe an HDR sequence exports
+    // tone-mapped to SDR; use `direct_factory` + AMF HDR probe rather than `register()` so NVENC
+    // does not intercept HEVC on dual-GPU AMD+NVIDIA test hosts.
+    filmcraft_export::register_encoder(filmcraft_platform::amf::export::direct_factory);
+    filmcraft_export::register_hdr_probe(Format::Hevc, filmcraft_platform::amf::hevc_hdr_available);
     use filmcraft_color::{ColorPipeline, WorkingSpace};
     for (name, working, signal) in
         [("pq", WorkingSpace::Rec2100Pq, filmcraft_export::ColorSignal::PQ), ("hlg", WorkingSpace::Rec2100Hlg, filmcraft_export::ColorSignal::HLG)]
@@ -130,7 +133,7 @@ fn test_amf_hevc_export_and_decode() {
         return;
     }
 
-    filmcraft_export::register_encoder(filmcraft_platform::amf::export::factory);
+    filmcraft_export::register_encoder(filmcraft_platform::amf::export::direct_factory);
 
     // Match the capability probe: some AMD runtimes reject smaller HEVC pictures.
     let (p, seq, m) = project(640, 360, 24);
@@ -181,7 +184,7 @@ fn test_amf_h264_export_and_decode() {
         return;
     }
 
-    filmcraft_export::register_encoder(filmcraft_platform::amf::export::factory);
+    filmcraft_export::register_encoder(filmcraft_platform::amf::export::direct_factory);
 
     let (p, seq, m) = project(320, 240, 24);
     let out_path = tmp("amf_test_h264.mp4");
@@ -259,4 +262,17 @@ fn test_amf_av1_export_and_decode() {
     }
 
     std::fs::remove_file(&out_path).unwrap();
+}
+
+#[test]
+fn test_amf_factory_defers_h264_and_hevc_to_nvenc_when_present() {
+    if !filmcraft_platform::nvenc::hevc_available() {
+        eprintln!("No NVENC on this system, skipping dual-GPU handoff check.");
+        return;
+    }
+    let rate = FrameRate::FPS_24;
+    let h264 = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+    let hevc = ExportSettings { format: Format::Hevc, ..Default::default() };
+    assert!(filmcraft_platform::amf::export::factory(Format::H264, 320, 240, rate, &h264).is_none());
+    assert!(filmcraft_platform::amf::export::factory(Format::Hevc, 640, 360, rate, &hevc).is_none());
 }

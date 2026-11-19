@@ -19,6 +19,12 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
     factory_with(format, w, h, rate, s, Session::open)
 }
 
+/// AMF export factory without the dual-GPU handoff to NVENC (for testing AMF directly on AMD+NVIDIA hosts).
+#[doc(hidden)]
+pub fn direct_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    factory_with(format, w, h, rate, s, Session::open)
+}
+
 /// [`factory`] with the session open replaced, so what it declines is tested without the hardware.
 fn factory_with(
     format: Format,
