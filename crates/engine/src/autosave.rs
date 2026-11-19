@@ -1318,6 +1318,34 @@ mod durability_tests {
     }
 
     #[test]
+    fn interrupted_replacement_keeps_a_legacy_snapshot_without_fingerprint() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-legacy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session).unwrap();
+        let old = Project::new("Legacy");
+        let old_bytes = filmcraft_format::encode(&old, false);
+        fs::write(session.join(SNAPSHOT), &old_bytes).unwrap();
+        let old_meta = JournalMeta { project_name: old.name.clone(), project_path: Some("legacy.fcproj".into()), dirty: true, ..JournalMeta::default() };
+        fs::write(session.join(META), serde_json::to_vec(&old_meta).unwrap()).unwrap();
+        let replacement = filmcraft_format::encode(&Project::new("Replacement"), false);
+
+        let result = write_recovery_pair(&session, &replacement, &JournalMeta { dirty: true, ..JournalMeta::default() }, |path, bytes| {
+            if path == session.join(SNAPSHOT) {
+                return Err(io::Error::other("interrupted before snapshot replacement"));
+            }
+            filmcraft_format::atomic_write(path, bytes)
+        });
+
+        assert!(result.is_err());
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].meta.project_path.as_deref(), Some("legacy.fcproj"));
+        assert_eq!(load_candidate(&candidates[0]).unwrap().project.name, "Legacy");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn missing_metadata_keeps_the_original_snapshot_and_does_not_adopt_a_new_path() {
         let dir = std::env::temp_dir().join(format!("fc-journal-metadata-less-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

@@ -829,9 +829,10 @@ impl Session {
         self.is_dirty() || self.view_epoch != self.saved_view_epoch
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed and journal its current project view without
+    /// treating it as an edit to project content.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_changed();
         self.sync_persistence();
     }
 
