@@ -26,6 +26,11 @@ pub fn sniff(b: &[u8]) -> bool {
     craft_psd::head::sniff(b)
 }
 
+#[cfg(test)]
+fn unpack(name: &str, src: &[u8], out: &mut [u8]) -> Result<()> {
+    craft_psd::compression::packbits::decode_to_slice(src, out).map_err(|e| err(name, &e.to_string()))
+}
+
 fn err(name: &str, what: &str) -> MediaError {
     MediaError::Decode(format!("{name}: PSD: {what}"))
 }
@@ -104,8 +109,9 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
     if !sniff(b) {
         return Err(err(name, "not a Photoshop document"));
     }
+    let header = Header::from_bytes(b).map_err(|e| err(name, &e.to_string()))?;
+    let (colours, bytes_per_sample) = validate_header(name, &header)?;
     let merged = Merged::open(b, MAX_PIXELS as u64).map_err(|e| err(name, &e.to_string()))?;
-    let (colours, bytes_per_sample) = validate_header(name, &merged.head.header)?;
     if merged.head.resource(ids::VERSION_INFO).and_then(|r| r.data.get(4)).is_some_and(|&v| v == 0) {
         return Err(MediaError::Unsupported(format!(
             "{name}: PSD: saved without Maximize Compatibility, so the file holds no composite image (resave it with that option on)"
