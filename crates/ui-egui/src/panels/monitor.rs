@@ -677,6 +677,9 @@ struct EyedropperPick {
     /// The project as the eyedropper samples it: the armed effect switched off (so a colour it keys
     /// out can be picked), or its curve stages neutralized from the armed curve on.
     project: std::sync::Arc<filmcraft_project::Project>,
+    /// For an HDR sequence, the curve stage's grading space at the clicked frame: the pick reads
+    /// the working picture and encodes it with this, not the display-encoded Program pixel.
+    grade: Option<filmcraft_color::GradeSpace>,
 }
 
 impl EyedropperPick {
@@ -695,6 +698,7 @@ fn eyedropper_pending() -> egui::Id {
 /// Disarm the eyedropper, dropping a pick that is still waiting for its frame.
 pub(crate) fn disarm_eyedropper(app: &mut FilmcraftApp, ctx: &egui::Context) {
     app.ui.eyedropper = None;
+    app.frames.clear_working();
     ctx.data_mut(|d| d.remove::<EyedropperPick>(eyedropper_pending()));
 }
 
@@ -753,46 +757,71 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         && pic.height() > 0.0
     {
         let uv = (((pos.x - pic.min.x) / pic.width()).clamp(0.0, 1.0), ((pos.y - pic.min.y) / pic.height()).clamp(0.0, 1.0));
+        let frame = rate.frame_at(time);
+        let at = rate.tick_of(frame);
         let mut project = (*app.session.project).clone();
+        let working = project.sequence(seq).map(|q| q.settings.color.working);
+        let mt = project.sequence(seq).and_then(|q| q.find_item(filmcraft_project::ClipId(armed.clip))).map(|(_, it)| it.effect_time_at(at));
+        let mut grade = None;
         if let Some(e) =
             project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
         {
             if let Some(axis) = armed.curve {
+                if let (Some(working), Some(mt)) = (working, mt) {
+                    let gs = filmcraft_color::GradeSpace::new(working, e.f64_at("curves_hdr_range", mt) as f32);
+                    grade = gs.is_hdr().then_some(gs);
+                }
                 curve_sample_input(e, axis);
             } else {
                 e.enabled = false;
             }
         }
-        let frame = rate.frame_at(time);
         // a revision of its own, so this render never replaces what the monitor caches
         let revision = app.session.revision ^ 0x5eed_d70b_0000_0000 ^ armed.clip.rotate_left(17) ^ armed.effect as u64;
         let key = FrameKey { target, frame, size: (EYEDROPPER_SCALE * 1000.0) as u32, revision, draft: false };
-        ctx.data_mut(|d| {
-            d.insert_temp(pending_id, EyedropperPick { uv, key, time: rate.tick_of(frame), armed: armed.clone(), project: std::sync::Arc::new(project) })
-        });
+        ctx.data_mut(|d| d.insert_temp(pending_id, EyedropperPick { uv, key, time: at, armed: armed.clone(), project: std::sync::Arc::new(project), grade }));
     }
     let Some(pick) = ctx.data(|d| d.get_temp::<EyedropperPick>(pending_id)) else { return };
     // the eyedropper was disarmed, re-armed for another parameter or moved to another sequence
     // since the click: drop the pick rather than fill what is armed now
     if !pick.still_applies(app.ui.eyedropper.as_ref(), target) {
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        app.frames.clear_working();
         return;
     }
-    app.frames.request(pick.key, pick.time, EYEDROPPER_SCALE, &pick.project, 0);
-    let Some(img) = app.frames.get(&pick.key) else {
-        ctx.request_repaint();
-        return;
-    };
-    ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
-    app.ui.eyedropper = None;
-    let Some(rgb) = sample_rgb(&img, pick.uv) else {
-        app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
-        return;
+    // HDR picks read the curve stage's grading signal from a working-space render: the Program
+    // picture is display-encoded (and tone-mapped from HDR to SDR), not what the curves sample.
+    let (signal, rgb) = if let Some(gs) = pick.grade {
+        app.frames.request_working(pick.key, pick.time, EYEDROPPER_SCALE, &pick.project);
+        let Some(img) = app.frames.take_working(&pick.key) else {
+            ctx.request_repaint();
+            return;
+        };
+        ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        app.ui.eyedropper = None;
+        let Some(c) = sample_working(&img, pick.uv) else {
+            app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
+            return;
+        };
+        (gs.encode(c), None)
+    } else {
+        app.frames.request(pick.key, pick.time, EYEDROPPER_SCALE, &pick.project, 0);
+        let Some(img) = app.frames.get(&pick.key) else {
+            ctx.request_repaint();
+            return;
+        };
+        ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
+        app.ui.eyedropper = None;
+        let Some(rgb) = sample_rgb(&img, pick.uv) else {
+            app.ui.status = tl!("Eyedropper: no picture to sample").to_string();
+            return;
+        };
+        (rgb.map(|v| f32::from(v) / 255.0), Some(rgb))
     };
     if let Some(axis) = armed.curve {
         // add three control points around the sampled value, on the current curve
         let Target::Sequence(seq) = target else { return };
-        let x = crate::panels::lumetri::curve_sample_x(axis, rgb);
+        let x = crate::panels::lumetri::curve_signal_x(axis, signal, pick.grade.is_some());
         let pts: Vec<[f32; 2]> = app
             .session
             .project
@@ -815,6 +844,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         }
         return;
     }
+    let Some(rgb) = rgb else { return };
     let mut params = json!({"clip": armed.clip, "effect": armed.effect, "param": armed.param, "value": eyedropper_value(rgb)});
     if let Some(k) = armed.mask {
         params["mask"] = json!(k);
@@ -851,6 +881,30 @@ fn sample_rgb(img: &crate::frames::Rgba, uv: (f32, f32)) -> Option<[u8; 3]> {
     }
     let avg = |c: usize| u8::try_from(sum[c].checked_div(n)?).ok();
     Some([avg(0)?, avg(1)?, avg(2)?])
+}
+
+/// The average working-linear colour of the 5×5 pixels around `uv` (0..1 across and down) of a
+/// working-space frame: the premultiplied picture over black, as the monitor shows it, before the
+/// display transform. `None` for an empty or truncated frame.
+fn sample_working(img: &filmcraft_render::Image, uv: (f32, f32)) -> Option<[f32; 3]> {
+    if img.w == 0 || img.h == 0 || img.px.len() < img.w.checked_mul(img.h)?.checked_mul(4)? {
+        return None;
+    }
+    let cx = ((uv.0 * img.w as f32) as usize).min(img.w - 1);
+    let cy = ((uv.1 * img.h as f32) as usize).min(img.h - 1);
+    let (mut sum, mut n) = ([0.0f32; 3], 0u32);
+    for y in cy.saturating_sub(2)..=(cy + 2).min(img.h - 1) {
+        for x in cx.saturating_sub(2)..=(cx + 2).min(img.w - 1) {
+            let i = (y * img.w + x) * 4;
+            for (c, s) in sum.iter_mut().enumerate() {
+                *s += *img.px.get(i + c)?;
+            }
+            n += 1;
+        }
+    }
+    let n = n.max(1) as f32;
+    let c = [sum[0] / n, sum[1] / n, sum[2] / n];
+    c.iter().all(|v| v.is_finite()).then_some(c)
 }
 
 pub fn quantize_scale(s: f32) -> f32 {
@@ -1574,6 +1628,17 @@ mod tests {
         assert_eq!(sample_rgb(&Rgba { w: 4, h: 4, px: vec![0; 10] }, (0.5, 0.5)), None);
     }
 
+    #[test]
+    fn working_sample_averages_the_pixels_around_the_point() {
+        let mut px = [0.4f32, 0.2, 0.1, 1.0].repeat(64);
+        px[(4 * 8 + 5) * 4] = 0.0;
+        let img = filmcraft_render::Image { w: 8, h: 8, px };
+        let c = sample_working(&img, (0.5, 0.5)).expect("a picture");
+        assert!((c[0] - 0.4 * 24.0 / 25.0).abs() < 1e-6 && (c[1] - 0.2).abs() < 1e-6, "{c:?}");
+        assert_eq!(sample_working(&filmcraft_render::Image { w: 0, h: 0, px: vec![] }, (0.5, 0.5)), None);
+        assert_eq!(sample_working(&filmcraft_render::Image { w: 4, h: 4, px: vec![0.0; 10] }, (0.5, 0.5)), None);
+    }
+
     fn pick(armed: Eyedropper, target: Target) -> EyedropperPick {
         EyedropperPick {
             uv: (0.5, 0.5),
@@ -1581,6 +1646,7 @@ mod tests {
             time: Tick::ZERO,
             armed,
             project: std::sync::Arc::new(filmcraft_project::Project::default()),
+            grade: None,
         }
     }
 

@@ -139,6 +139,9 @@ struct Job {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Queued by playback prefetch (dropped when playback stops).
     prefetch: bool,
+    /// Render the sequence in its working space instead of the monitor picture: a curve
+    /// eyedropper reads the grading signal the curve stages see (HDR).
+    working: bool,
     /// While playing: how far before this frame the frames are late (the playhead's distance;
     /// zero for the frame due now), so a decoder catching up may skip pictures only late frames
     /// need (`filmcraft_media::cancel::with_catch_up`).
@@ -155,6 +158,9 @@ struct Shared {
     cv: Condvar,
     done: Mutex<Cache>,
     plans: Mutex<PlanCache>,
+    /// The working-space picture of the latest curve eyedropper pick (HDR), kept apart from the
+    /// monitor cache: it is read once, in linear light, and never shown.
+    working: Mutex<Option<(FrameKey, Arc<filmcraft_render::Image>)>>,
     /// Running jobs: key, cancel flag, prefetch.
     in_flight: Mutex<Vec<(FrameKey, Arc<std::sync::atomic::AtomicBool>, bool)>>,
     /// Per-job timings, collected while profiling is on (benchmarks, `ui.inspect`).
@@ -428,6 +434,7 @@ struct FrameRequest<'a> {
     project: &'a Arc<Project>,
     priority: u32,
     prefetch: bool,
+    working: bool,
     catch_up: Option<Tick>,
 }
 
@@ -501,6 +508,7 @@ impl FrameServer {
             cv: Condvar::new(),
             done: Mutex::new(Cache { map: HashMap::new(), bytes: 0, budget: 768 << 20, clock: 0 }),
             plans: Mutex::new(PlanCache::default()),
+            working: Mutex::new(None),
             in_flight: Mutex::new(Vec::new()),
             profiling: AtomicBool::new(false),
             records: Mutex::new(Vec::new()),
@@ -627,15 +635,41 @@ impl FrameServer {
     /// non-reference pictures, while nearby frames stay decoded (and cached) for scrubbing back.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
         let late = (prio == 0).then(|| Tick::from_seconds_f64(SCRUB_KEEP_S));
-        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late });
+        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, working: false, catch_up: late });
+    }
+
+    /// Queue a working-space render for a curve eyedropper: the pick reads the grading signal the
+    /// curve stages work on, which on an HDR sequence is not the display-encoded monitor picture.
+    pub fn request_working(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>) {
+        // priority 1: the pick is interactive but must not evict (or be evicted by) the monitor's
+        // own frame, which also asks at priority 0
+        self.request_job(FrameRequest { key, time, scale, project, priority: 1, prefetch: false, working: true, catch_up: None });
+    }
+
+    /// The working-space frame of a finished pick, taken out of the cache. `None` while it renders.
+    pub fn take_working(&self, key: &FrameKey) -> Option<Arc<filmcraft_render::Image>> {
+        let mut w = self.shared.working.lock().unwrap_or_else(PoisonError::into_inner);
+        match w.as_ref() {
+            Some((k, _)) if k == key => w.take().map(|(_, img)| img),
+            _ => None,
+        }
+    }
+
+    /// Drop a pick's working-space frame (the eyedropper was disarmed before it finished).
+    pub fn clear_working(&self) {
+        *self.shared.working.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     fn request_job(&self, request: FrameRequest<'_>) {
-        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up } = request;
+        let FrameRequest { key, time, scale, project, priority: prio, prefetch, working, catch_up } = request;
         let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
-        if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
-            || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
-        {
+        let ready = if working {
+            self.shared.working.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|(k, _)| *k == key)
+        } else {
+            self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
+                || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
+        };
+        if ready {
             hit();
             return;
         }
@@ -674,7 +708,7 @@ impl FrameServer {
                 }
             }
         }
-        q.push_back(Job { key, queued: Instant::now(), cancel: Default::default(), prefetch, catch_up, time, scale, project: project.clone(), prio });
+        q.push_back(Job { key, queued: Instant::now(), cancel: Default::default(), prefetch, working, catch_up, time, scale, project: project.clone(), prio });
         drop(q);
         self.shared.cv.notify_one();
     }
@@ -700,6 +734,7 @@ impl FrameServer {
                 project,
                 priority: 0,
                 prefetch: false,
+                working: false,
                 catch_up: (!preroll && dir > 0).then_some(Tick::ZERO),
             });
         }
@@ -718,6 +753,7 @@ impl FrameServer {
                     project,
                     priority: i as u32 + 1,
                     prefetch: true,
+                    working: false,
                     catch_up: late,
                 });
             }
@@ -1001,6 +1037,13 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
+                    } else if job.working {
+                        let img = render_working_job(job, pool, services);
+                        loading = filmcraft_media::pending::take();
+                        if !job.cancel.load(Ordering::Relaxed) && !loading {
+                            *sh.working.lock().unwrap_or_else(PoisonError::into_inner) = Some((job.key, Arc::new(img)));
+                        }
+                        false
                     } else {
                         let (img, pv) = render_job(job, pool, services, previews);
                         loading = filmcraft_media::pending::take();
@@ -1102,6 +1145,15 @@ fn plan_job(
     }
     let provider = provider(job, pool, services);
     (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, caps, &provider), false)
+}
+
+/// Render a curve pick's frame in the sequence's working space: the eyedropper then reads the
+/// grading signal the curve stages see, before the display transform tone-maps it for the monitor.
+fn render_working_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>) -> filmcraft_render::Image {
+    let Target::Sequence(seq) = job.key.target else { return filmcraft_render::Image::new(1, 1) };
+    let provider = provider(job, pool, services);
+    let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, working_output: true, ..Default::default() };
+    filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider)
 }
 
 /// Render a job to RGBA8; the flag says whether it came from a render preview.
@@ -1300,6 +1352,7 @@ mod tests {
             queued: web_time::Instant::now(),
             cancel: Default::default(),
             prefetch: false,
+            working: false,
             catch_up: None,
             time: filmcraft_time::Tick::ZERO,
             scale: 0.1,
@@ -1311,6 +1364,34 @@ mod tests {
         run_job(&server.shared, &job, &server.pool, &server.services, &server.previews);
         assert!(job.cancel.load(Ordering::Relaxed), "the job ran without its cancel flag");
         assert!(!server.is_ready(&job.key), "a cancelled job's frame is not cached");
+    }
+
+    /// A curve eyedropper's working-space render stays out of the monitor cache: the pick reads it
+    /// in linear light and it must never replace the display picture the monitor would show.
+    #[test]
+    fn a_working_job_is_kept_apart_from_the_monitor_cache() {
+        use super::{FrameKey, FrameServer, Job, run_job};
+        use std::sync::Arc;
+
+        let s = filmcraft_engine::Session::default();
+        let server = FrameServer::new(s.media.clone(), s.services.clone(), s.previews.clone(), 1);
+        let key = FrameKey { target: Target::Sequence(ItemId(999)), frame: 0, size: 500, revision: 7, draft: false };
+        let job = Job {
+            key,
+            queued: web_time::Instant::now(),
+            cancel: Default::default(),
+            prefetch: false,
+            working: true,
+            catch_up: None,
+            time: filmcraft_time::Tick::ZERO,
+            scale: 0.5,
+            project: Arc::new(filmcraft_project::Project::new("Frames")),
+            prio: 1,
+        };
+        run_job(&server.shared, &job, &server.pool, &server.services, &server.previews);
+        assert!(server.get(&key).is_none(), "the working render is not a monitor frame");
+        assert!(server.take_working(&key).is_some(), "the pick can take its working render");
+        assert!(server.take_working(&key).is_none(), "and only once");
     }
     /// A sequence plan is made for the caps in its key: the same frame asked for a device without
     /// an effect stage and for one with it gives two cached plans, the CPU image and the plan with

@@ -625,12 +625,9 @@ pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> Gra
 /// highlights instead of clipping them. SDR signals are clamped as before.
 #[inline]
 fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
-    if !hdr {
-        return f(v.map(|q| q.clamp(0.0, 1.0)));
-    }
-    let m = v[0].max(v[1]).max(v[2]).max(1.0);
-    let o = f(v.map(|q| (q / m).max(0.0)));
-    o.map(|q| q * m)
+    let m = if hdr { v[0].max(v[1]).max(v[2]).max(1.0) } else { 1.0 };
+    let o = f(filmcraft_color::within_unit(v, hdr));
+    if hdr { o.map(|q| q * m) } else { o }
 }
 
 /// The luma (encoded, 0..1) down to which the Color Grading highlight / shadow lift scales a pixel by

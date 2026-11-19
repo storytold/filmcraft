@@ -573,16 +573,24 @@ fn curve_axis(id: &str) -> Option<CurveAxis> {
     })
 }
 
-/// The X (input) position a sampled pixel maps to on `axis`'s curve. The pixel arrives as
-/// display-encoded sRGB, the same space the curve LUTs operate in.
-pub(crate) fn curve_sample_x(axis: CurveAxis, rgb: [u8; 3]) -> f32 {
-    let (r, g, b) = (rgb[0] as f32 / 255.0, rgb[1] as f32 / 255.0, rgb[2] as f32 / 255.0);
+/// The X (input) position a pixel's grading signal maps to on `axis`'s curve. `signal` is the
+/// space the curve stage works in: display-encoded sRGB in SDR, PQ / HLG normalised to the curves'
+/// HDR Range in HDR (above 1 for highlights above it). HDR hue, lightness and saturation come from
+/// the signal scaled into 0…1 the way the hue / sat curves see it (`within_unit` in
+/// `filmcraft_render::effects`); the luma and channel curves sample the signal itself.
+pub(crate) fn curve_signal_x(axis: CurveAxis, signal: [f32; 3], hdr: bool) -> f32 {
     match axis {
-        CurveAxis::Luma => filmcraft_color::luma709(r, g, b),
-        CurveAxis::Channel(i) => [r, g, b].get(i as usize).copied().unwrap_or(r),
-        CurveAxis::Hue => filmcraft_color::rgb_to_hsl(r, g, b)[0],
-        CurveAxis::Lightness => filmcraft_color::rgb_to_hsl(r, g, b)[2],
-        CurveAxis::Saturation => filmcraft_color::rgb_to_hsl(r, g, b)[1],
+        CurveAxis::Luma => filmcraft_color::luma709(signal[0], signal[1], signal[2]),
+        CurveAxis::Channel(i) => signal.get(i as usize).copied().unwrap_or(signal[0]),
+        CurveAxis::Hue | CurveAxis::Lightness | CurveAxis::Saturation => {
+            let v = filmcraft_color::within_unit(signal, hdr);
+            let hsl = filmcraft_color::rgb_to_hsl(v[0], v[1], v[2]);
+            match axis {
+                CurveAxis::Hue => hsl[0],
+                CurveAxis::Lightness => hsl[2],
+                _ => hsl[1],
+            }
+        }
     }
 }
 
@@ -618,6 +626,8 @@ fn curve_value_at(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> f32 {
 /// and two neighbours at the same height, `CURVE_EYEDROPPER_SPREAD` away on either side, so that
 /// dragging the centre lifts only that range. Neighbours clamp into 0..1.
 pub(crate) fn curve_eyedropper_points(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> Vec<[f32; 2]> {
+    // the curve's domain is 0..1: an HDR pick above HDR Range lands on its top
+    let x = x.clamp(0.0, 1.0);
     let y = curve_value_at(pts, x, axis);
     let mut out = vec![[(x - CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y], [x, y], [(x + CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y]];
     out.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -976,22 +986,38 @@ mod tests {
     }
 
     #[test]
-    fn curve_sample_x_maps_pixels_to_each_axis() {
+    fn curve_signal_x_maps_sdr_pixels_to_each_axis() {
+        // SDR picks arrive as display-encoded sRGB bytes
+        let sdr = |axis, rgb: [u8; 3]| curve_signal_x(axis, rgb.map(|v| f32::from(v) / 255.0), false);
         let red = [255, 0, 0];
-        assert!(close(curve_sample_x(CurveAxis::Channel(0), red), 1.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Channel(1), red), 0.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Channel(2), red), 0.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Hue, red), 0.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Saturation, red), 1.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Lightness, red), 0.5, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Luma, red), 0.2126, 1e-3));
+        assert!(close(sdr(CurveAxis::Channel(0), red), 1.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Channel(1), red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Channel(2), red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Hue, red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Saturation, red), 1.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Lightness, red), 0.5, 1e-6));
+        assert!(close(sdr(CurveAxis::Luma, red), 0.2126, 1e-3));
         // white is neutral: hue and saturation collapse to 0, lightness is 1
         let white = [255, 255, 255];
-        assert!(close(curve_sample_x(CurveAxis::Saturation, white), 0.0, 1e-6));
-        assert!(close(curve_sample_x(CurveAxis::Lightness, white), 1.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Saturation, white), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Lightness, white), 1.0, 1e-6));
         // green sits a third of the way round the hue wheel
         let green = [0, 255, 0];
-        assert!(close(curve_sample_x(CurveAxis::Hue, green), 1.0 / 3.0, 1e-4));
+        assert!(close(sdr(CurveAxis::Hue, green), 1.0 / 3.0, 1e-4));
+    }
+
+    /// HDR picks use the curve stage's grading signal, not the display picture: channels and luma
+    /// see a highlight above HDR Range as x > 1, and the hue / sat curves see it scaled into 0…1.
+    #[test]
+    fn curve_signal_x_reads_hdr_signals_like_the_curve_stage() {
+        let highlight = [2.0, 1.0, 0.5];
+        assert!(close(curve_signal_x(CurveAxis::Channel(0), highlight, true), 2.0, 1e-6));
+        assert!(close(curve_signal_x(CurveAxis::Luma, highlight, true), 0.2126 * 2.0 + 0.7152 + 0.0722 * 0.5, 1e-5));
+        // `within_unit` scales by the largest channel when it is above 1
+        let scaled = [1.0, 0.5, 0.25];
+        for axis in [CurveAxis::Hue, CurveAxis::Lightness, CurveAxis::Saturation] {
+            assert!(close(curve_signal_x(axis, highlight, true), curve_signal_x(axis, scaled, true), 1e-6), "{axis:?}");
+        }
     }
 
     #[test]
@@ -1010,6 +1036,9 @@ mod tests {
         // neighbours clamp into 0..1 at the edges
         let pts = curve_eyedropper_points(&[], 0.0, CurveAxis::Luma);
         assert!(pts.iter().all(|q| (0.0..=1.0).contains(&q[0])), "{pts:?}");
+        // a coordinate above the curve's domain (an HDR highlight) lands on its top
+        let pts = curve_eyedropper_points(&[], 2.0, CurveAxis::Luma);
+        assert!(close(pts[1][0], 1.0, 1e-6), "{pts:?}");
     }
 
     /// Luma vs Sat and Sat vs Sat are neutral at 0.5 where they have no points (an unchanged
