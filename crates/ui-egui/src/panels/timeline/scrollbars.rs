@@ -1097,10 +1097,38 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Whether a forwarded event batch names a custom Timeline control shortcut that must not also
+/// fire an application shortcut (for example, a clipboard Paste standing in for Ctrl+V).
+pub fn custom_control_shortcut_pending_for_events(app: &FilmcraftApp, events: &[egui::Event], modifiers: egui::Modifiers) -> bool {
+    if app.ui.focused != crate::dock::PanelKind::Timeline {
+        return false;
+    }
+    let Some(text) = chord_and_button(events, modifiers) else { return false };
+    if text.ends_with("Click") || text.ends_with("Scroll") {
+        return false;
+    }
+    let settings = &app.session.state.timeline_ui;
+    let zoom = [&settings.control_center_on_playhead, &settings.control_explode_slider, &settings.control_alternate_drag_speed, &settings.control_settings];
+    let track =
+        [&settings.track_control_mirror, &settings.track_control_explode, &settings.track_control_alternate_drag_speed, &settings.track_control_settings];
+    zoom.iter().enumerate().any(|(i, binding)| i != 2 && !binding.is_empty() && binding.as_str() == text)
+        || settings.timeline_control_bindings.iter().any(|binding| !binding.is_empty() && binding.as_str() == text)
+        || track.iter().enumerate().any(|(i, binding)| i != 2 && !binding.is_empty() && binding.as_str() == text)
+}
+
 #[cfg(test)]
 mod slider_clipboard_shortcut_tests {
     use super::chord_and_button;
     use egui::{Event, Modifiers};
+
+    #[test]
+    fn forwarded_clipboard_paste_matches_a_custom_timeline_control() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.session.state.timeline_ui.timeline_control_bindings[0] = "Ctrl + V".into();
+        assert!(super::custom_control_shortcut_pending_for_events(&app, &[Event::Paste("text".into())], Modifiers::COMMAND));
+        assert!(!super::custom_control_shortcut_pending_for_events(&app, &[Event::Paste("text".into())], Modifiers::NONE));
+    }
 
     #[test]
     fn paste_event_matches_a_custom_ctrl_v_slider_binding() {
@@ -4197,6 +4225,17 @@ mod controls_tests {
             }
         }
         assert_eq!(super::minimap_classes(&boundaries), expected);
+    }
+
+    #[test]
+    fn overlapping_video_tracks_hide_a_cut_in_the_minimap() {
+        let mut boundaries = vec![[0i64; 3]; 11];
+        // V1 has clips [0, 5] and [5, 10]; a V2 clip spans [0, 10]. The second
+        // track covers the shared edit point, so the minimap must remain one solid run.
+        for (start, end) in [(0, 5), (5, 10), (0, 10)] {
+            super::minimap_add_span(&mut boundaries, start, end, 2);
+        }
+        assert_eq!(super::minimap_classes(&boundaries), vec![2; 10]);
     }
 
     #[test]
