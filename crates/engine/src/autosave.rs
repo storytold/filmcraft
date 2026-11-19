@@ -664,6 +664,9 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
 /// Load a candidate's snapshot.
 pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded, String> {
     let b = fs::read(&c.snapshot_path).map_err(|e| format!("{}: {e}", c.snapshot_path.display()))?;
+    if c.meta.snapshot_fingerprint.is_some_and(|fingerprint| fingerprint != snapshot_fingerprint(&b)) {
+        return Err(format!("{} changed after the recovery list was scanned; scan for recovery candidates again", c.snapshot_path.display()));
+    }
     filmcraft_format::decode(&b).map_err(|e| e.to_string())
 }
 
@@ -723,6 +726,8 @@ pub(crate) struct ProjectFileFence {
     pub revision: u64,
     pub view_epoch: u64,
     pub path: Option<String>,
+    /// Project name can change during an adopting Save As without advancing either counter.
+    pub project_name: String,
 }
 
 enum Msg {
@@ -1188,6 +1193,11 @@ impl Worker {
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
+        // Timeline view edits are journaled, but explicit or periodic project auto-saves must
+        // never rotate versions when the project content itself is clean.
+        if !s.content_dirty {
+            return Err(String::new());
+        }
         let scratch = crate::project_tools::trusted_scratch(s.project.settings.scratch.auto_save.as_deref(), s.path.as_deref(), &self.prefs.scratch_folders);
         let (dir, name) = match (&s.path, scratch) {
             // Project Settings ▸ Scratch Disks ▸ Project Auto Save
@@ -1217,7 +1227,7 @@ impl Worker {
                     && let Some(p) = &s.path
                 {
                     let fence = self.project_file_fence.lock().unwrap_or_else(PoisonError::into_inner);
-                    let is_current = project_snapshot_is_current(p, s.revision, s.view_epoch, &fence);
+                    let is_current = project_snapshot_is_current(p, &s.project.name, s.revision, s.view_epoch, &fence);
                     if is_current {
                         match filmcraft_format::atomic_write(Path::new(p), &bytes) {
                             Ok(()) => {
@@ -1242,8 +1252,10 @@ fn journal_state_matches(revision: u64, view_epoch: u64, dirty: bool, journaled:
     revision == journaled && view_epoch == journaled_view && journaled_dirty == Some(dirty)
 }
 
-fn project_snapshot_is_current(path: &str, revision: u64, view_epoch: u64, fence: &ProjectFileFence) -> bool {
-    fence.path.as_deref() == Some(path) && (revision > fence.revision || (revision == fence.revision && view_epoch >= fence.view_epoch))
+fn project_snapshot_is_current(path: &str, project_name: &str, revision: u64, view_epoch: u64, fence: &ProjectFileFence) -> bool {
+    fence.path.as_deref() == Some(path)
+        && fence.project_name == project_name
+        && (revision > fence.revision || (revision == fence.revision && view_epoch >= fence.view_epoch))
 }
 
 /// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
@@ -1332,6 +1344,45 @@ mod durability_tests {
     }
 
     #[test]
+    fn recovery_rejects_a_snapshot_replaced_after_candidate_scan() {
+        let dir = std::env::temp_dir().join(format!("fc-recovery-snapshot-changed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session_dir = recovery_root(&dir).join("1-1");
+        fs::create_dir_all(&session_dir).unwrap();
+        let original = filmcraft_format::encode(&Project::new("Scanned"), false);
+        write_recovery_pair(&session_dir, &original, &JournalMeta { dirty: true, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+        let candidates = scan_candidates(&dir, None);
+        assert_eq!(candidates.len(), 1);
+
+        let replacement = filmcraft_format::encode(&Project::new("Replaced"), false);
+        fs::write(session_dir.join(SNAPSHOT), replacement).unwrap();
+        assert!(load_candidate(&candidates[0]).is_err(), "a changed snapshot must not be installed under stale metadata");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn flush_acknowledges_clean_journal_removal_before_a_replacement_is_written() {
+        let dir = std::env::temp_dir().join(format!("fc-journal-clean-barrier-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut session = crate::Session::default();
+        session.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+        let persistence = session.persistence.as_ref().unwrap();
+        assert_eq!(persistence.flush().unwrap(), Some(session.revision));
+        let session_dir = persistence.session_dir.clone();
+
+        persistence.send_clean();
+        assert_eq!(persistence.flush().unwrap(), None, "Flush follows Clean in the worker queue");
+        let replacement = filmcraft_format::encode(&Project::new("Replacement"), false);
+        write_recovery_pair(&session_dir, &replacement, &JournalMeta { dirty: true, ..JournalMeta::default() }, filmcraft_format::atomic_write).unwrap();
+
+        assert_eq!(fs::read(session_dir.join(SNAPSHOT)).unwrap(), replacement);
+        session.shutdown();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn recovery_keeps_original_when_worker_has_stopped() {
         let d = std::env::temp_dir().join(format!("fc-recover-worker-stopped-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
@@ -1363,12 +1414,13 @@ mod project_file_fence_tests {
 
     #[test]
     fn stale_snapshot_cannot_write_after_save_or_document_replacement() {
-        let fence = ProjectFileFence { revision: 10, view_epoch: 7, path: Some("project.fcproj".into()) };
-        assert!(!project_snapshot_is_current("project.fcproj", 9, 20, &fence), "older content must not replace a save");
-        assert!(!project_snapshot_is_current("project.fcproj", 10, 6, &fence), "older view state must not replace a saved view");
-        assert!(!project_snapshot_is_current("other.fcproj", 12, 8, &fence), "a replaced document's destination must not be written");
-        assert!(project_snapshot_is_current("project.fcproj", 10, 7, &fence));
-        assert!(project_snapshot_is_current("project.fcproj", 11, 7, &fence));
+        let fence = ProjectFileFence { revision: 10, view_epoch: 7, path: Some("project.fcproj".into()), project_name: "Project".into() };
+        assert!(!project_snapshot_is_current("project.fcproj", "Project", 9, 20, &fence), "older content must not replace a save");
+        assert!(!project_snapshot_is_current("project.fcproj", "Project", 10, 6, &fence), "older view state must not replace a saved view");
+        assert!(!project_snapshot_is_current("other.fcproj", "Project", 12, 8, &fence), "a replaced document's destination must not be written");
+        assert!(!project_snapshot_is_current("project.fcproj", "Old name", 10, 7, &fence), "a pre-rename snapshot must not undo Save As naming");
+        assert!(project_snapshot_is_current("project.fcproj", "Project", 10, 7, &fence));
+        assert!(project_snapshot_is_current("project.fcproj", "Project", 11, 7, &fence));
     }
 
     #[test]
@@ -1381,7 +1433,7 @@ mod project_file_fence_tests {
         let current_bytes = filmcraft_format::encode(&current, false);
         fs::write(&path, &current_bytes).unwrap();
         let project_path = path.to_string_lossy().into_owned();
-        let fence = Arc::new(Mutex::new(ProjectFileFence { revision: 2, view_epoch: 1, path: Some(project_path.clone()) }));
+        let fence = Arc::new(Mutex::new(ProjectFileFence { revision: 1, view_epoch: 1, path: Some(project_path.clone()), project_name: current.name.clone() }));
         let (events, received) = channel();
         let prefs = AutoSavePrefs { save_current_project: true, ..AutoSavePrefs::default() };
         let mut worker = Worker {
@@ -1449,6 +1501,27 @@ mod worker_failure_tests {
         s.start_autosave(cfg).unwrap();
         s.execute("sequence.addEdit", json!({"seconds": 0.5})).unwrap();
         (s, dir)
+    }
+
+    #[test]
+    fn explicit_auto_save_does_not_rotate_versions_for_a_clean_view_change() {
+        let dir = std::env::temp_dir().join(format!("fc-worker-clean-view-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut prefs = Preferences::default();
+        prefs.auto_save.recovery_journal = false;
+        prefs.save(&dir.join("preferences.json")).unwrap();
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        s.view_changed();
+        s.sync_persistence();
+
+        let result = s.execute("file.autoSaveNow", json!({})).unwrap();
+        assert!(result["path"].is_null(), "a view-only change keeps the explicit autosave no-op result");
+        assert!(!dir.join(names::AUTO_SAVE_DIR).exists(), "a clean view-only snapshot must not create an autosave version");
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn failure_toasts(s: &mut Session) -> usize {

@@ -687,6 +687,7 @@ impl Session {
             fence.revision = self.revision;
             fence.view_epoch = self.view_epoch;
             fence.path.clone_from(&self.path);
+            fence.project_name.clone_from(&self.project.name);
         }
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone(), self.project_file_fence.clone())?);
         self.sync_persistence();

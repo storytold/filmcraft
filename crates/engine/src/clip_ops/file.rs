@@ -236,6 +236,7 @@ pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     fence.revision = s.revision;
     fence.view_epoch = s.view_epoch;
     fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     Ok(json!({"closed": true}))
 }

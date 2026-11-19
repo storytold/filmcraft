@@ -1610,6 +1610,7 @@ fn build() -> Vec<CommandSpec> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
@@ -1636,6 +1637,7 @@ fn build() -> Vec<CommandSpec> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
@@ -5391,6 +5393,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
         }
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
@@ -5459,6 +5462,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     fence.revision = s.revision;
     fence.view_epoch = s.view_epoch;
     fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
@@ -5485,6 +5489,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     fence.revision = s.revision;
     fence.view_epoch = s.view_epoch;
     fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
     drop(fence);
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
