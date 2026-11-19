@@ -52,7 +52,10 @@ use layout::{track_scroll_max, video_row_tops};
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
-pub use scrollbars::{controls_listening, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden, sync_slider_bindings, zoombar_cursor_watchdog};
+pub use scrollbars::{
+    controls_listening, custom_control_shortcut_pending_for_events, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden, sync_slider_bindings,
+    zoombar_cursor_watchdog,
+};
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
 pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};

@@ -1085,6 +1085,44 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Whether a forwarded event batch names a custom Timeline control shortcut that must not also
+/// fire an application shortcut (for example, a clipboard Paste standing in for Ctrl+V).
+pub fn custom_control_shortcut_pending_for_events(app: &FilmcraftApp, events: &[egui::Event], modifiers: egui::Modifiers) -> bool {
+    if app.ui.focused != crate::dock::PanelKind::Timeline {
+        return false;
+    }
+    let text = if modifiers.command && events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))) {
+        Some("Ctrl + V".to_string())
+    } else {
+        chord_and_button(events)
+    };
+    let Some(text) = text else { return false };
+    if text.ends_with("Click") || text.ends_with("Scroll") {
+        return false;
+    }
+    let settings = &app.session.state.timeline_ui;
+    let zoom = [&settings.control_center_on_playhead, &settings.control_explode_slider, &settings.control_alternate_drag_speed, &settings.control_settings];
+    let track =
+        [&settings.track_control_mirror, &settings.track_control_explode, &settings.track_control_alternate_drag_speed, &settings.track_control_settings];
+    zoom.iter().enumerate().any(|(i, binding)| i != 2 && !binding.is_empty() && binding.as_str() == text.as_str())
+        || settings.timeline_control_bindings.iter().any(|binding| !binding.is_empty() && binding.as_str() == text.as_str())
+        || track.iter().enumerate().any(|(i, binding)| i != 2 && !binding.is_empty() && binding.as_str() == text.as_str())
+}
+
+#[cfg(test)]
+mod forwarded_clipboard_control_tests {
+    use egui::{Event, Modifiers};
+
+    #[test]
+    fn forwarded_clipboard_paste_matches_custom_control_binding() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.session.state.timeline_ui.timeline_control_bindings[0] = "Ctrl + V".into();
+        assert!(super::custom_control_shortcut_pending_for_events(&app, &[Event::Paste("text".into())], Modifiers::COMMAND));
+        assert!(!super::custom_control_shortcut_pending_for_events(&app, &[Event::Paste("text".into())], Modifiers::NONE));
+    }
+}
+
 fn gesture(response: &egui::Response, ui: &egui::Ui) -> Option<String> {
     let name = if response.triple_clicked() {
         "Triple Click"
