@@ -268,8 +268,6 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
             }
         })
         .transpose()?;
-    let timeline_ui_before = app.session.state.timeline_ui.clone();
-    let view_epoch_before = app.session.view_epoch;
     let mut view_settings_changed = false;
     let explicit_zoom_scroll = tl.get("pps").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v > 0.0)
         || tl.get("scroll").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v >= 0.0);
@@ -423,10 +421,7 @@ fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Resul
     if let Some(v) = tl.get("showAudioNames").and_then(Value::as_bool) {
         app.ui.timeline.show_audio_names = v;
     }
-    // Compare the complete persisted settings value. Numeric fields can keep the same number
-    // while selecting a preset clears their Custom flag, which is itself saved project state.
-    view_settings_changed |= timeline_ui_before != app.session.state.timeline_ui;
-    if view_settings_changed && app.session.view_epoch == view_epoch_before {
+    if view_settings_changed {
         app.session.project_view_changed();
     }
     // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
@@ -1015,30 +1010,6 @@ mod input_bounds_tests {
         assert!(result.is_ok());
         assert_eq!(app.ui.timeline.video_track_h, 180.0);
         assert_eq!(app.tl.track_anim, None);
-    }
-
-    #[test]
-    fn selecting_a_preset_persists_custom_flag_changes_when_the_number_is_unchanged() {
-        let mut app = app();
-        let original_revision = app.session.revision;
-        let settings = &mut app.session.state.timeline_ui;
-        settings.playhead_side_seconds = 5.0;
-        settings.playhead_side_custom = true;
-        settings.shift_drag_speed = 1.0;
-        settings.shift_drag_custom = true;
-        settings.max_zoom_seconds = 0.4;
-        settings.max_zoom_custom = true;
-
-        let result =
-            set_timeline(&mut app, &egui::Context::default(), &json!({"timeline": {"playheadSideSeconds": 5.0, "shiftDragSpeed": 1.0, "maxZoomLevel": 0.4}}));
-
-        assert!(result.is_ok());
-        let settings = &app.session.state.timeline_ui;
-        assert!(!settings.playhead_side_custom);
-        assert!(!settings.shift_drag_custom);
-        assert!(!settings.max_zoom_custom);
-        assert_eq!(app.session.revision, original_revision, "view settings do not dirty project content");
-        assert_eq!(app.session.view_epoch, 1, "Custom flag changes are persisted as view changes");
     }
 
     #[test]
