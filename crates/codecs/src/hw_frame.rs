@@ -87,7 +87,7 @@ pub(crate) fn obus(data: &[u8]) -> Vec<(u8, &[u8])> {
 /// subsampling. Colour description (primaries, transfer, matrix and range) is per-stream
 /// metadata, not a DXVA session-format constraint; the decoder reads the in-band header itself.
 /// `None` when the sequence header does not parse.
-fn av1_format(seq: &[u8]) -> Option<(u8, u32, u32, u32, bool, bool, bool)> {
+fn av1_format(seq: &[u8]) -> Option<(u8, u32, u32, u32, bool, u8, u8)> {
     let h = craft_video::av1::decode::SequenceHeader::parse(seq).ok()?;
     let c = &h.color;
     Some((
