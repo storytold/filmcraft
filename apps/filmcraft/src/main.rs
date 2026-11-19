@@ -332,35 +332,26 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
         displays
             .into_iter()
             .filter_map(|display| {
-                let scale = display_coordinate_scale(display.scale_factor);
-                if !scale.is_finite() || scale <= 0.0 {
+                if !display.scale_factor.is_finite() || display.scale_factor <= 0.0 {
                     return None;
                 }
-                let x = display.x as f32 / scale;
-                let y = display.y as f32 / scale;
-                let width = display.width as f32 / scale;
-                let height = display.height as f32 / scale;
+                // Keep Windows bounds in physical pixels for scale-aware initial placement.
+                // macOS and Linux display-info results are already in logical points.
+                let x = display.x as f32;
+                let y = display.y as f32;
+                let width = display.width as f32;
+                let height = display.height as f32;
                 if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
                     return None;
                 }
-                Some(DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)), primary: display.is_primary })
+                Some(DisplayBounds {
+                    rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)),
+                    scale_factor: display.scale_factor,
+                    primary: display.is_primary,
+                })
             })
             .collect(),
     )
-}
-
-/// Display-info reports logical bounds on macOS and Linux, but physical bounds on Windows.
-/// Divide only Windows coordinates to compare them with the viewport's logical position.
-fn display_coordinate_scale(scale_factor: f32) -> f32 {
-    #[cfg(target_os = "windows")]
-    {
-        scale_factor
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = scale_factor;
-        1.0
-    }
 }
 
 /// `ViewportInfo::maximized` is intentionally not refreshed on macOS because winit's query can
@@ -764,19 +755,11 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn display_bounds_are_normalized_once_by_backend() {
-        let scale_factor = 2.0;
-        let coordinate_scale = super::display_coordinate_scale(scale_factor);
-        let reported_width = if cfg!(target_os = "windows") { 3840.0 } else { 1920.0 };
-        assert_eq!(reported_width / coordinate_scale, 1920.0);
-    }
-
     /// #1994: a saved rectangle replaces the default before native creation; agent windows keep
     /// the default and therefore cannot fight with the interactive user's window manager.
     #[test]
     fn saved_window_state_is_applied_only_when_requested() {
-        let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: 80.0, y: 60.0 };
+        let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: 80.0, y: 60.0, scale_factor: 1.0 };
         let restored = super::native_options(false, Some(state), None);
         assert_eq!(restored.viewport.inner_size, Some(egui::vec2(1280.0, 720.0)));
         assert_eq!(restored.viewport.position, Some(egui::pos2(80.0, 60.0)));
