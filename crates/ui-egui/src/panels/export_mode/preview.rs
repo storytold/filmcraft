@@ -130,7 +130,18 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         if app.texture_key(name).is_some_and(|old| old.target != key.target) {
             app.textures.remove(name);
         }
-        let (texture, shown) = crate::panels::monitor::cpu_texture(app, ui.ctx(), name, key, &asked, None, crate::state::DisplayMode::Composite);
+        let (mut texture, mut shown) = crate::panels::monitor::cpu_texture(app, ui.ctx(), name, key, &asked, None, crate::state::DisplayMode::Composite);
+        // The shared monitor may fall back to an older cached frame. Playing or requesting
+        // a frame within the range must not show an out-of-range stand-in. Preserve the
+        // existing ability to inspect an explicitly positioned frame while paused.
+        if shown.is_some_and(|old| {
+            preview_bounds(app)
+                .is_some_and(|(first, last)| (app.playback.playing || (first..=last).contains(&key.frame)) && !(first..=last).contains(&old.frame))
+        }) {
+            app.textures.remove(name);
+            texture = None;
+            shown = None;
+        }
         if shown != Some(key) {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
         }
@@ -462,6 +473,65 @@ mod preview_tests {
         crate::menus::invoke(&mut app, &ctx, "playhead.stepForward", json!({})).unwrap();
         assert!(!app.playback.playing);
         assert_eq!(app.session.sequence_rate().frame_at(app.session.playhead()), preview_bounds(&app).unwrap().0 + 1);
+    }
+
+    #[test]
+    fn export_range_change_stops_and_clamps_both_directions_and_preroll() {
+        for speed in [1.0, -1.0] {
+            for preroll in [false, true] {
+                let mut app = app();
+                app.audio = None;
+                let rate = app.session.sequence_rate();
+                app.session.set_playhead(rate.snap(Tick::from_seconds_f64(3.0)));
+                app.play(speed);
+                app.playback.preroll = preroll.then_some(1.0);
+                app.playback.preroll_ready = false;
+                app.playback.anchor_time = 1.0;
+                app.set_now_for_test(1.0);
+                let before = serde_json::to_value(&app.session.project).unwrap();
+                let revision = app.session.revision;
+                let undo = app.session.undo_mark();
+                let dirty = app.session.is_dirty();
+                if speed > 0.0 {
+                    app.ui.export.custom_start = 4.0;
+                    app.ui.export.custom_end = 5.0;
+                } else {
+                    app.ui.export.custom_start = 0.0;
+                    app.ui.export.custom_end = 1.0;
+                }
+                let (first, last) = preview_bounds(&app).unwrap();
+                let ctx = egui::Context::default();
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.advance_playback(ui.ctx()));
+                out.textures_delta.clear();
+                assert!(!app.playback.playing, "speed={speed}, preroll={preroll}");
+                assert_eq!(rate.frame_at(app.session.playhead()), if speed > 0.0 { first } else { last });
+                assert!(app.playback.preroll.is_none());
+                assert!(app.playback.smooth_playhead.is_none());
+                assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+                assert_eq!(app.session.revision, revision);
+                assert_eq!(app.session.undo_mark(), undo);
+                assert_eq!(app.session.is_dirty(), dirty);
+            }
+        }
+    }
+
+    #[test]
+    fn export_range_change_drops_an_out_of_range_preview_texture() {
+        for playing in [false, true] {
+            let mut app = app();
+            app.session.set_playhead(Tick::ZERO);
+            app.playback.playing = playing;
+            let seq = app.session.state.active_sequence.unwrap();
+            let key = FrameKey { target: Target::Sequence(seq), frame: 0, size: 500, revision: app.session.revision, draft: false };
+            let ctx = egui::Context::default();
+            app.texture_for(&ctx, "export-preview", key, &crate::frames::Rgba { w: 1, h: 1, px: vec![255, 0, 0, 255] });
+            assert_eq!(app.texture_key("export-preview"), Some(key));
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                preview_column(&mut app, ui, Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 900.0)), seq);
+            });
+            out.textures_delta.clear();
+            assert_eq!(app.texture_key("export-preview").is_none(), playing, "paused inspection is preserved");
+        }
     }
 
     #[test]

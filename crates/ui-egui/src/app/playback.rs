@@ -248,6 +248,22 @@ impl FilmcraftApp {
             self.playback.smooth_playhead = None;
             return;
         }
+        // Range edits can exclude the current frame in either playback direction, even
+        // while preroll is waiting. Stop before the old clock or buffered audio advances.
+        if self.ui.mode == state::Mode::Export
+            && let Some((first, last)) = panels::export_mode::preview_bounds(self)
+        {
+            let rate = self.session.sequence_rate();
+            let frame = rate.frame_at(self.session.playhead());
+            let bounded = frame.clamp(first, last);
+            if frame != bounded {
+                self.stop();
+                self.session.set_playhead(rate.tick_of(bounded));
+                self.playback.smooth_playhead = None;
+                ctx.request_repaint();
+                return;
+            }
+        }
         let now = self.now();
         if let Some(since) = self.playback.preroll {
             let since = if since < 0.0 { now } else { since };

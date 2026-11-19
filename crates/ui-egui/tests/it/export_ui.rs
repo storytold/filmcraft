@@ -613,6 +613,32 @@ fn export_preview_plays_steps_and_scrubs_without_changing_settings() {
 }
 
 #[test]
+fn export_preview_range_change_stops_at_the_new_start() {
+    let mut d = Driver::new("preview-range-change");
+    d.ok("ui.set", json!({"mode":"export"}));
+    d.ok("ui.set", json!({"export":{"range":"custom","customStart":0.0,"customEnd":10.0}}));
+    d.click("export.preview.first");
+    d.wait_until("initial preview picture", |d| d.app().texture_key("export-preview").is_some_and(|key| key.frame == 0));
+    d.click("export.preview.toggle");
+    assert!(d.app().playback.playing);
+    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let undo = d.app().session.undo_mark();
+    let dirty = d.app().session.is_dirty();
+    d.ok("ui.set", json!({"export":{"customStart":8.0,"customEnd":10.0}}));
+    d.frames(3);
+    assert!(!d.app().playback.playing);
+    let rate = d.app().session.sequence_rate();
+    assert_eq!(d.app().session.playhead(), rate.snap(filmcraft_engine::time::Tick::from_seconds_f64(8.0)));
+    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(d.app().session.undo_mark(), undo);
+    assert_eq!(d.app().session.is_dirty(), dirty);
+    let first = rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(8.0));
+    assert!(d.app().texture_key("export-preview").is_none_or(|key| key.frame >= first));
+    d.wait_until("new range preview picture", |d| d.app().texture_key("export-preview").is_some_and(|key| key.frame == first));
+    d.snapshot("export-preview-range-change");
+}
+
+#[test]
 fn frame_rate_offers_the_high_rates_a_sequence_can_have() {
     use filmcraft_time::FrameRate;
     let mut d = Driver::new("frame-rate");

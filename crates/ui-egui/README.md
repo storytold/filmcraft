@@ -238,6 +238,9 @@ prefetch and preroll; cached pictures remain visible while the next frame render
 
 The seek bar and playback respect Entire Source, Source In/Out (inclusive Out), Work Area and
 Custom. Playback stops on the last selected frame; Play there restarts at the range start.
+If a range change excludes the playing frame, playback stops at the nearest new boundary,
+including during preroll. Playback and in-range seeks do not show cached pictures outside
+the selected range; explicitly positioned paused-frame inspection is preserved.
 Export does not loop even if Program looping is enabled; the Program preference is preserved.
 Navigation changes the shared sequence playhead without altering clips, marks, export settings,
 dirty state or undo history. Audio-only formats keep audition and navigation controls.
