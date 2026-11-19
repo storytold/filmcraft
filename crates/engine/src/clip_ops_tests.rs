@@ -191,6 +191,63 @@ fn a_drag_that_comes_back_leaves_the_other_clips_where_they_started() {
     assert_eq!(s.history.undo.len(), undo + 1, "the drag is one undo step");
 }
 
+/// #4817: a clip saved before a parameter existed has none of it, so the value it starts a drag
+/// with is the definition's default — what the first update inserts. The undo snapshot still lacks
+/// the parameter, and reading that as "no baseline" fell back to the already-edited value, so a
+/// second drag step moved the clip twice.
+#[test]
+fn a_drag_moves_a_clip_that_lacks_the_parameter_by_the_whole_change() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    // B's Motion, as an older project saved it, has no Scale
+    {
+        let mut p = (*s.project).clone();
+        let seq = s.state.active_sequence.unwrap();
+        p.sequence_mut(seq).unwrap().find_item_mut(ClipId(b)).unwrap().1.effect_mut("motion").unwrap().params.remove("scale");
+        s.project = std::sync::Arc::new(p);
+    }
+    assert!(clip(&s, b).effect("motion").unwrap().param("scale").is_none(), "B has no Scale to begin with");
+    let undo = s.history.undo.len();
+    // one drag: A's Scale 100 % to 110 % to 120 %
+    for (i, v) in [110.0, 120.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "motion", "param": "scale", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+        assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), v);
+    }
+    assert_eq!(f64_param(&clip(&s, b), "motion", "scale"), 120.0, "B moved by the whole drag's change, not twice the first step's");
+    assert_eq!(s.history.undo.len(), undo + 1, "the drag is one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), 100.0);
+    assert!(clip(&s, b).effect("motion").unwrap().param("scale").is_none(), "one undo takes B's new Scale away again");
+}
+
+/// #4817: the clip the drag names reads its baseline from the snapshot the same way, so a parameter
+/// it lacks must not make the companions fall a step behind.
+#[test]
+fn a_drag_baseline_reads_the_default_of_a_parameter_the_primary_lacks() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    {
+        let mut p = (*s.project).clone();
+        let seq = s.state.active_sequence.unwrap();
+        p.sequence_mut(seq).unwrap().find_item_mut(ClipId(a)).unwrap().1.effect_mut("motion").unwrap().params.remove("scale");
+        s.project = std::sync::Arc::new(p);
+    }
+    // one drag: A's Scale 100 % to 110 % to 120 %
+    for (i, v) in [110.0, 120.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "motion", "param": "scale", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+    }
+    assert_eq!(f64_param(&clip(&s, a), "motion", "scale"), 120.0);
+    assert_eq!(f64_param(&clip(&s, b), "motion", "scale"), 120.0, "B moved by the whole drag's change");
+}
+
 #[test]
 fn paste_attributes_with_scaled_keyframes_and_remove_attributes() {
     let mut s = demo();

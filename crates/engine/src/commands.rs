@@ -421,8 +421,10 @@ fn shifted_param(old: &ParamValue, new: &ParamValue, other: &ParamValue) -> Opti
 }
 
 /// The value `pid` of effect `eff` on clip `c` in `seq` has at `at` (or the playhead, pinned to the
-/// clip), when the clip, the effect and the parameter are all there. Used to read a drag's starting
-/// values from the project before it began (#4817).
+/// clip), when the clip and the effect are there. Used to read a drag's starting values from the
+/// project before it began (#4817). A parameter an older instance lacks reads as its definition's
+/// default: that is the value the drag's first update inserts, so the snapshot's silence must not
+/// be mistaken for "no baseline" and fall back to the already-edited value.
 fn effect_param_value_at(seq: &filmcraft_project::Sequence, c: ClipId, eff: &Value, pid: &str, at: Option<Tick>, ph: Tick) -> Option<ParamValue> {
     let (_, it) = seq.find_item(c)?;
     let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
@@ -431,7 +433,7 @@ fn effect_param_value_at(seq: &filmcraft_project::Sequence, c: ClipId, eff: &Val
         Value::String(sid) => it.effects.iter().find(|e| &e.effect == sid),
         _ => None,
     }?;
-    e.param(pid).map(|p| p.value_at(mt))
+    e.param(pid).map(|p| p.value_at(mt)).or_else(|| e.def().and_then(|d| d.param(pid)).map(|d| d.default.clone()))
 }
 
 /// Ultra Key's Setting writes the preset's dependent parameters onto the effect, so the matte the
