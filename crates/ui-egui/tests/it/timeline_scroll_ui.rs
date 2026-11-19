@@ -591,3 +591,23 @@ fn next_screen_during_a_wheel_zoom_is_not_undone_by_the_zoom() {
     assert_eq!(pps, 200.0, "the zoom still lands");
     assert!((scroll - (zoomed + width / 200.0)).abs() < 1e-6, "one screen on from the zoomed view: scroll {scroll}, zoomed {zoomed}, screen {}", width / 200.0);
 }
+
+/// Show Previous Screen at the start of the sequence stays at the start. With narrower track
+/// headers the Timeline shows more, and a page is still everything it shows: the headers are not
+/// taken off the width a second time.
+#[test]
+fn screen_paging_stops_at_the_start_and_follows_the_header_width() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    d.exec("timeline.prevScreen", json!({}));
+    assert_eq!(d.view().0, 0.0, "Page Up at the start stays at the start");
+    let before = f64::from(d.app().last_timeline_width);
+    d.app().ui.timeline.header_w -= 80.0;
+    d.frames(3);
+    let width = f64::from(d.app().last_timeline_width);
+    assert!((width - (before + 80.0)).abs() < 1e-3, "narrower headers leave more for the tracks: {before} -> {width}");
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, pps, ..) = d.view();
+    assert!((scroll - width / pps).abs() < 1e-6, "one screen at the new width: scroll {scroll}, screen {}", width / pps);
+}
