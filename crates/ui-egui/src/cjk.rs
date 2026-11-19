@@ -34,8 +34,8 @@ const THAI_SAMPLE: &str = "ภาพถ่ายภาษาไทย";
 const THAI_PREFERRED: &[&str] = &["Noto Sans Thai", "Thonburi", "Leelawadee UI", "Leelawadee", "Tahoma", "Sarabun", "Noto Sans Thai UI"];
 
 // Lao: neither the UI fonts nor the CJK/Thai fallbacks have it.
-const LAO_SAMPLE: &str = "ພາສາລາວ";
-const LAO_PREFERRED: &[&str] = &["Noto Sans Lao", "Noto Sans Lao UI", "Leelawadee UI", "Lao UI", "Lao Sangam MN", "Lao MN", "Saysettha OT", "Phetsarath OT", "DokChampa",];
+const LAO_PREFERRED: &[&str] =
+    &["Noto Sans Lao", "Noto Sans Lao UI", "Leelawadee UI", "Lao UI", "Lao Sangam MN", "Lao MN", "Saysettha OT", "Phetsarath OT", "DokChampa"];
 
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
@@ -74,9 +74,7 @@ pub(crate) fn thai_available() -> bool {
 pub(crate) const LAO_FACE: &str = "system-lao";
 
 pub(crate) fn lao_craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fonts::CraftFont> {
-    filmcraft_text::fonts::CRAFT_FONTS
-        .iter()
-        .filter(|f| f.scripts.iter().any(|s| matches!(*s, "Laoo" | "Lao")))
+    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| matches!(*s, "Laoo" | "Lao")))
 }
 
 fn lao_font() -> Option<Arc<FontData>> {

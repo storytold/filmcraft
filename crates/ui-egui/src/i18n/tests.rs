@@ -797,7 +797,7 @@ fn japanese_needs_an_installed_font() {
         for family in crate::theme::font_families() {
             let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
             stack.retain(|n| !crate::rtl::is_system_face(n));
-           stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != crate::cjk::THAI_FACE && n != crate::cjk::LAO_FACE && n != "system-chinese");
+            stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != crate::cjk::THAI_FACE && n != crate::cjk::LAO_FACE && n != "system-chinese");
             if craft {
                 assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");

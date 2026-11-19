@@ -100,7 +100,7 @@
 	Add Guide	ເພີ່ມເສັ້ນນຳສາຍຕາ
 	Add Guide…	ເພີ່ມເສັ້ນນຳສາຍຕາ…
 	Add keyframe	ເພີ່ມຄີເຟຣມ
-	Add Lumetri Color to clip	ເພີ່ມ Lumetri Color ໃສ່ຄລິບ
+	Add Color Grading to clip	ເພີ່ມການເກຣດສີໃສ່ຄລິບ
 	Add Marker	ເພີ່ມເຄື່ອງໝາຍ
 	Add Marker (M)	ເພີ່ມເຄື່ອງໝາຍ (M)
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	ເພີ່ມສື່ໃສ່ໂຄງການຂອງທ່ານ. ລາກໄຟລ໌ມາວາງໃສ່ບ່ອນໃດກໍໄດ້ໃນໜ້າຕ່າງ, ຫຼື ເລືອກແຫຼ່ງຂໍ້ມູນດ້ານລຸ່ມ.
@@ -1024,7 +1024,7 @@
 	Enable hardware accelerated decoding (requires restart)	ເປີດໃຊ້ການຖອດລະຫັດດ້ວຍຮາດແວຣ໌ (ຕ້ອງຣີສະຕາດ)
 	Enable HSL Secondary	ເປີດໃຊ້ HSL ຂັ້ນສອງ
 	Enable language auto-detection	ເປີດໃຊ້ການກວດຫາພາສາອັດຕະໂນມັດ
-	Enable Mercury Transmit	ເປີດໃຊ້ Mercury Transmit
+	Enable External Video Output	ເປີດໃຊ້ການສົ່ງອອກວິດີໂອພາຍນອກ
 	Enable ProRes hardware accelerated encoding, if available	ເປີດໃຊ້ການເຂົ້າລະຫັດ ProRes ດ້ວຍຮາດແວຣ໌ ຖ້າມີ
 	Enable proxies	ເປີດໃຊ້ພຣັອກຊີ
 	Enable Remix	ເປີດໃຊ້ຣີມິກສ໌
@@ -1213,7 +1213,7 @@
 	Font Size	ຂະໜາດຟອນຕ໌
 	Font Style	ຮູບແບບຟອນຕ໌
 	Fonts used in the project:	ຟອນຕ໌ທີ່ໃຊ້ໃນໂຄງການ:
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	ສຳລັບພາລາມິເຕີການຈັດການສີ, ໃຫ້ໄປທີ່ແຖບການຕັ້ງຄ່າໃນແຜງ Lumetri Color.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	ສຳລັບພາລາມິເຕີການຈັດການສີ, ໃຫ້ໄປທີ່ແຖບການຕັ້ງຄ່າໃນແຜງການເກຣດສີ.
 	Forest	ປ່າໄມ້
 	Format	ຮູບແບບ
 	Format and size	ຮູບແບບ ແລະ ຂະໜາດ
@@ -1745,10 +1745,15 @@
 	Luma Min / Max	ລູມາ ຕ່ຳສຸດ / ສູງສຸດ
 	Luma Source	ແຫຼ່ງລູມາ
 	Luma vs Sat	ລູມາ ທຽບ ຄວາມອີ່ມສີ
-	Lumetri	Lumetri
-	Lumetri Color	ສີ Lumetri
-	Lumetri Presets	ຄ່າຕິດຕັ້ງລ່ວງໜ້າ Lumetri
-	Lumetri Scopes	ສະໂຄບ Lumetri
+	Color Grading	ການເກຣດສີ
+	Color Grading Presets	ຄ່າຕັ້ງລ່ວງໜ້າການເກຣດສີ
+	Video Scopes	ສະໂຄບວິດີໂອ
+	List Color Grading Presets	ລາຍການຄ່າຕັ້ງລ່ວງໜ້າການເກຣດສີ
+	Apply Color Grading Preset	ນຳໃຊ້ຄ່າຕັ້ງລ່ວງໜ້າການເກຣດສີ
+	Color Grading Preset Thumbnails	ຮູບຫຍໍ້ຄ່າຕັ້ງລ່ວງໜ້າການເກຣດສີ
+	Toggle Color Grading Section	ສະຫຼັບພາກສ່ວນການເກຣດສີ
+	Color Grading Section	ພາກສ່ວນການເກຣດສີ
+	Read Video Scopes	ອ່ານຄ່າສະໂຄບວິດີໂອ
 	Luminance	ຄວາມສະຫວ່າງ
 	Luminance Threshold	ຄ່າເລີ່ມປ່ຽນຄວາມສະຫວ່າງ
 	Luminosity	ຄວາມສ່ອງສະຫວ່າງ
