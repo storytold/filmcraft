@@ -71,6 +71,8 @@ winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 craft-update = { workspace = true }
+# Apply saved window positions in physical pixels after eframe's viewport builder has run.
+winit = { version = "0.30", default-features = false }
 # graphics/probe.rs: the display drivers' names and versions, so a driver update tests the
 # graphics start again (MIT).
 winreg = "0.55"

@@ -56,7 +56,6 @@ fn default_scale_factor() -> f32 {
 pub struct DisplayBounds {
     /// macOS/Linux report logical bounds; Windows reports physical pixel bounds.
     pub rect: egui::Rect,
-    pub scale_factor: f32,
     pub primary: bool,
 }
 
@@ -88,20 +87,26 @@ impl WindowState {
         state.valid().then_some(state).ok_or_else(|| "rectangle is outside the supported range".to_owned()).map(Some)
     }
 
-    /// Apply the saved rectangle before eframe creates its initially hidden native window.
+    /// Apply the saved size and, where the backend permits, position before native display.
     pub fn apply_to(self, viewport: egui::ViewportBuilder, displays: Option<&[DisplayBounds]>) -> egui::ViewportBuilder {
         let viewport = viewport.with_inner_size([self.width, self.height]);
-        match self.position_for(displays) {
-            Some(position) => viewport.with_position(position),
-            None => viewport,
+        #[cfg(target_os = "windows")]
+        {
+            let _ = displays;
+            viewport
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            match self.position_for(displays) {
+                Some(position) => viewport.with_position(position),
+                None => viewport,
+            }
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn position_for(self, displays: Option<&[DisplayBounds]>) -> Option<[f32; 2]> {
         let Some(displays) = displays else { return Some([self.x, self.y]) };
-        if cfg!(target_os = "windows") {
-            return self.position_for_physical_displays(displays);
-        }
         self.position_for_logical_displays(displays)
     }
 
@@ -113,25 +118,23 @@ impl WindowState {
         displays.iter().find(|display| display.primary).or_else(|| displays.first()).map(|display| [display.rect.min.x, display.rect.min.y])
     }
 
-    /// Windows display bounds and native window positions are physical pixels, while the saved
-    /// viewport position is in points. Convert it to pixels using its saved monitor scale, then
-    /// to the primary monitor's points because winit initially creates the window there.
-    fn position_for_physical_displays(self, displays: &[DisplayBounds]) -> Option<[f32; 2]> {
-        let initial_display = displays.iter().find(|display| display.primary).or_else(|| displays.first())?;
-        let initial_scale = initial_display.scale_factor;
-        if !initial_scale.is_finite() || initial_scale <= 0.0 || !self.scale_factor.is_finite() || self.scale_factor <= 0.0 {
+    /// Windows display bounds and native window positions are physical pixels; viewport positions
+    /// are points. Keep this out of the viewport builder because eframe reapplies that builder
+    /// after a DPI change and would scale the logical position a second time.
+    pub fn physical_position(self, displays: Option<&[DisplayBounds]>) -> Option<[i32; 2]> {
+        if !self.scale_factor.is_finite() || !(0.25..=16.0).contains(&self.scale_factor) {
             return None;
         }
-        let saved = egui::Rect::from_min_size(
-            egui::pos2(self.x * self.scale_factor, self.y * self.scale_factor),
-            egui::vec2(self.width * self.scale_factor, self.height * self.scale_factor),
-        );
-        let position_pixels = if displays.iter().any(|display| saved.intersect(display.rect).area() > 0.0) {
-            egui::pos2(self.x * self.scale_factor, self.y * self.scale_factor)
-        } else {
-            initial_display.rect.min
+        let saved_position = egui::pos2(self.x * self.scale_factor, self.y * self.scale_factor);
+        let position_pixels = match displays {
+            Some(displays) if !displays.is_empty() => {
+                let primary = displays.iter().find(|display| display.primary).or_else(|| displays.first())?;
+                let saved = egui::Rect::from_min_size(saved_position, egui::vec2(self.width * self.scale_factor, self.height * self.scale_factor));
+                if displays.iter().any(|display| saved.intersect(display.rect).area() > 0.0) { saved_position } else { primary.rect.min }
+            }
+            _ => saved_position,
         };
-        Some([position_pixels.x / initial_scale, position_pixels.y / initial_scale])
+        Some([physical_coordinate(position_pixels.x)?, physical_coordinate(position_pixels.y)?])
     }
 
     fn valid(self) -> bool {
@@ -158,6 +161,13 @@ impl WindowState {
         let state = Self { width: inner.width() * zoom, height: inner.height() * zoom, x: outer.min.x * zoom, y: outer.min.y * zoom, scale_factor };
         state.valid().then_some(state)
     }
+}
+
+fn physical_coordinate(position: f32) -> Option<i32> {
+    if !position.is_finite() || position < i32::MIN as f32 || position > i32::MAX as f32 {
+        return None;
+    }
+    Some(position.round() as i32)
 }
 
 /// Authoritative owner of the last normal rectangle for an interactive desktop session.
@@ -293,43 +303,62 @@ mod tests {
 
         let viewport = state.apply_to(egui::ViewportBuilder::default(), None);
         assert_eq!(viewport.inner_size, Some(egui::vec2(1440.0, 900.0)));
-        assert_eq!(viewport.position, Some(egui::pos2(120.0, 80.0)));
+        assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(120.0, 80.0)));
     }
 
     #[test]
     fn offscreen_position_moves_to_primary_display_before_creation() {
         let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
-        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
         let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
-        assert_eq!(viewport.position, Some(egui::pos2(0.0, 0.0)));
+        assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(0.0, 0.0)));
     }
 
     #[test]
     fn position_on_attached_secondary_display_is_preserved() {
         let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), scale_factor: 1.0, primary: false },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), primary: false },
         ];
         let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
-        assert_eq!(viewport.position, Some(egui::pos2(2400.0, 80.0)));
+        assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(2400.0, 80.0)));
     }
 
     #[test]
     fn windows_saved_position_uses_saved_scale_before_initial_creation() {
         let state = WindowState { width: 1000.0, height: 700.0, x: 1500.0, y: 100.0, scale_factor: 2.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), scale_factor: 2.0, primary: false },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
         ];
 
-        assert_eq!(state.position_for_physical_displays(&displays), Some([3000.0, 200.0]));
+        assert_eq!(state.physical_position(Some(&displays)), Some([3000, 200]));
+    }
+
+    #[test]
+    fn windows_saved_position_keeps_equal_scale_placement() {
+        let state = WindowState { width: 1000.0, height: 700.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
+        let displays = [
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), primary: false },
+        ];
+
+        assert_eq!(state.physical_position(Some(&displays)), Some([2400, 80]));
+    }
+
+    #[test]
+    fn windows_offscreen_position_falls_back_to_primary_pixels() {
+        let state = WindowState { width: 1000.0, height: 700.0, x: 2400.0, y: 80.0, scale_factor: 2.0 };
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(-1920.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
+
+        assert_eq!(state.physical_position(Some(&displays)), Some([-1920, 0]));
     }
 
     #[test]
     fn logical_display_bounds_are_not_scaled_again() {
         let state = WindowState { width: 800.0, height: 700.0, x: 1000.0, y: 100.0, scale_factor: 2.0 };
-        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 2.0, primary: true }];
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
         assert_eq!(state.position_for_logical_displays(&displays), Some([1000.0, 100.0]));
     }
 

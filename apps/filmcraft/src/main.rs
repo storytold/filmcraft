@@ -125,6 +125,10 @@ fn main() -> eframe::Result {
     let window_state_path = if launch.control_port.is_none() { data_root.as_ref().map(|dir| dir.join(WINDOW_STATE_FILE)) } else { None };
     let restored_window = window_state_path.as_deref().and_then(WindowState::load);
     let attached_displays = restored_window.and_then(|_| attached_display_bounds());
+    #[cfg(target_os = "windows")]
+    let restored_window_position = restored_window.and_then(|state| state.physical_position(attached_displays.as_deref()));
+    #[cfg(not(target_os = "windows"))]
+    let restored_window_position: Option<[i32; 2]> = None;
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -179,7 +183,8 @@ fn main() -> eframe::Result {
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let creator = app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), window_state_path.clone(), restored_window);
+        let creator =
+            app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created), window_state_path.clone(), restored_window, restored_window_position);
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eframe::run_native("FilmCraft", options, creator)));
         let app_created = app_created.load(Ordering::Relaxed);
         let result = match run {
@@ -293,8 +298,8 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
 ///
 /// A valid saved rectangle replaces the safe default before eframe creates its hidden native
-/// window. Position is applied exactly once here: a second macOS move after creation would race
-/// external window managers and produce a visible jump (#1994).
+/// window. Windows position is applied in physical pixels in `app_creator`, after eframe's own
+/// builder application and before the first frame is shown; other platforms use the builder.
 fn native_options(agent: bool, restored: Option<WindowState>, displays: Option<&[DisplayBounds]>) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default().with_title("FilmCraft").with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT]);
     if let Some(state) = restored {
@@ -318,8 +323,8 @@ fn native_options(agent: bool, restored: Option<WindowState>, displays: Option<&
 }
 
 /// Enumerate attached displays before native creation so a rectangle saved on a disconnected
-/// monitor does not reopen permanently off-screen. `display-info` reports CoreGraphics logical
-/// coordinates on macOS and physical coordinates on the other desktop backends.
+/// monitor does not reopen permanently off-screen. `display-info` reports logical bounds on macOS
+/// and Linux, and physical bounds on Windows.
 fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
     let displays = match display_info::DisplayInfo::all() {
         Ok(displays) => displays,
@@ -332,9 +337,6 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
         displays
             .into_iter()
             .filter_map(|display| {
-                if !display.scale_factor.is_finite() || display.scale_factor <= 0.0 {
-                    return None;
-                }
                 // Keep Windows bounds in physical pixels for scale-aware initial placement.
                 // macOS and Linux display-info results are already in logical points.
                 let x = display.x as f32;
@@ -344,11 +346,7 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
                 if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
                     return None;
                 }
-                Some(DisplayBounds {
-                    rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)),
-                    scale_factor: display.scale_factor,
-                    primary: display.is_primary,
-                })
+                Some(DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)), primary: display.is_primary })
             })
             .collect(),
     )
@@ -376,9 +374,14 @@ fn app_creator(
     created: Arc<AtomicBool>,
     window_state_path: Option<std::path::PathBuf>,
     restored_window: Option<WindowState>,
+    _restored_window_position: Option<[i32; 2]>,
 ) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
+        #[cfg(target_os = "windows")]
+        if let (Some([x, y]), Some(window)) = (_restored_window_position, cc.winit_window()) {
+            window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
         created.store(true, Ordering::Relaxed);
         // Start the control server before anything touches recovery state: `file.recover`
@@ -762,11 +765,25 @@ mod tests {
         let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: 80.0, y: 60.0, scale_factor: 1.0 };
         let restored = super::native_options(false, Some(state), None);
         assert_eq!(restored.viewport.inner_size, Some(egui::vec2(1280.0, 720.0)));
-        assert_eq!(restored.viewport.position, Some(egui::pos2(80.0, 60.0)));
+        assert_eq!(restored.viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(80.0, 60.0)));
 
         let agent = super::native_options(true, None, None);
         assert_eq!(agent.viewport.inner_size, Some(egui::vec2(super::DEFAULT_WINDOW_WIDTH, super::DEFAULT_WINDOW_HEIGHT)));
         assert_eq!(agent.viewport.position, None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_restore_sets_physical_position_outside_the_viewport_builder() {
+        let state = filmcraft_ui_egui::window_state::WindowState { width: 1000.0, height: 700.0, x: 1500.0, y: 100.0, scale_factor: 2.0 };
+        let displays = [
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
+        ];
+        let options = super::native_options(false, Some(state), Some(&displays));
+
+        assert_eq!(options.viewport.position, None);
+        assert_eq!(state.physical_position(Some(&displays)), Some([3000, 200]));
     }
 
     /// The new start after a graphics panic keeps the arguments and picks the next mode, replacing a
