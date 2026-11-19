@@ -11,9 +11,9 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
-craft-psd = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "06496f5bf20988123d319f83f9a51523218c2173" }
+craft-psd = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8dbe9705ffd23002c97f31a7727b1027ecd5c3fd" }
 # Shared bounded classic TIFF directory traversal.
-craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "bea91b1861eea3889bec9d26338076f2ff31c4ac" }
+craft-tiff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e" }
 # Isolated YCbCr codec pin; DNG keeps its craft-raw/craft-tiff type identity.
 craft-tiff-ycbcr = { package = "craft-tiff", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "cca00b22bfae6e8aafdb47e122efc5137fee269a" }
 # internal
@@ -70,10 +70,12 @@ craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/cr
 craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "99d0a6eca48082183a9d125cb4ef1a1707576070" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "25c7a8959cf70cf8c3f076d05baadb0990710569" }
 # Shared lossless JPEG decoding for DNG.
-craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "bea91b1861eea3889bec9d26338076f2ff31c4ac", default-features = false }
+craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e", default-features = false }
+# Shared Radiance HDR reader with bounded direct RGBA output.
+craft-hdr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "472462df9f1cb7316a92d1be21cdbf90e0980300" }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
-craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b3643af6477326e840f86be78c89357f5308ba1d" }
+craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "7f3fdc0dfebd03f33a241f91f916e9a78d3e5c93" }
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "47107f660191de2f0b425569506f4daa4faadac9" }
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
@@ -83,8 +85,8 @@ craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
-craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "57288edafdc45552e30481cc649021de446abfa0", features = ["serde"] }
-craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "57288edafdc45552e30481cc649021de446abfa0" }
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e", features = ["serde"] }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
