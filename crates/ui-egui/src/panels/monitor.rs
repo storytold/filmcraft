@@ -672,19 +672,48 @@ struct EyedropperPick {
     key: FrameKey,
     time: Tick,
     /// The project as the eyedropper samples it: the armed effect switched off (so a colour it keys
-    /// out can be picked), or its curve stages switched off.
+    /// out can be picked), or its curve stages neutralized from the armed curve on.
     project: std::sync::Arc<filmcraft_project::Project>,
 }
 
 /// Output scale of the frame an eyedropper samples (half size is plenty and quick to render).
 const EYEDROPPER_SCALE: f32 = 0.5;
 
+/// The curves at and after `axis`'s stage. The Color Grading pipeline applies the master curve,
+/// then the RGB channel curves, then the hue / sat curves, and HSL Secondary after all of them, so
+/// neutralizing these leaves exactly the tone that enters the selected curve.
+fn curves_from(axis: CurveAxis) -> &'static [&'static str] {
+    const MASTER: &[&str] = &["curve_luma", "curve_red", "curve_green", "curve_blue", "hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"];
+    const CHANNEL: &[&str] = &["curve_red", "curve_green", "curve_blue", "hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"];
+    const HSL: &[&str] = &["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"];
+    match axis {
+        CurveAxis::Luma => MASTER,
+        CurveAxis::Channel(_) => CHANNEL,
+        CurveAxis::Hue | CurveAxis::Lightness | CurveAxis::Saturation => HSL,
+    }
+}
+
+/// Prepare a lumetri instance for a curve eyedropper: switch HSL Secondary off and empty the
+/// selected curve and every later one, so the sample is the selected curve's input. A master pick
+/// drops the master curve itself, while an RGB channel or hue / sat pick keeps it active.
+fn curve_sample_input(e: &mut filmcraft_project::EffectInstance, axis: CurveAxis) {
+    if let Some(p) = e.param_mut("hsl_on") {
+        p.value = filmcraft_project::ParamValue::Bool(false);
+    }
+    for id in curves_from(axis) {
+        if let Some(p) = e.param_mut(id) {
+            p.value = filmcraft_project::ParamValue::Curve(Vec::new());
+        }
+    }
+}
+
 /// Eyedropper: while a colour or curve parameter's eyedropper is armed (Effect Controls / Lumetri
 /// Curves), the Program picture takes a crosshair and a click fills that parameter with the colour
 /// under the pointer. The colour is read from a render of the sequence at the playhead; a colour
 /// eyedropper switches the armed effect off (an Ultra Key has already removed the green it is asked
-/// to key), a curve eyedropper switches the curve stages off, so it samples what enters the curve —
-/// its x axis — and not the curve's own output. Esc disarms.
+/// to key), a curve eyedropper neutralizes the armed curve and every curve after it, so it samples
+/// what enters that curve — its x axis — and not the curve's own output nor a later stage's. Esc
+/// disarms.
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
@@ -707,15 +736,8 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
         if let Some(e) =
             project.sequence_mut(seq).and_then(|q| q.find_item_mut(filmcraft_project::ClipId(armed.clip))).and_then(|(_, it)| it.effects.get_mut(armed.effect))
         {
-            if armed.curve.is_some() {
-                // a curve's x axis is the tone entering it, and the curve sits after Basic
-                // Correction, Creative and the wheels but before HSL Secondary: switch the Curves
-                // and HSL Secondary sections off, so the sample is the curve's input, not its output
-                for id in ["curves_on", "hsl_on"] {
-                    if let Some(p) = e.param_mut(id) {
-                        p.value = filmcraft_project::ParamValue::Bool(false);
-                    }
-                }
+            if let Some(axis) = armed.curve {
+                curve_sample_input(e, axis);
             } else {
                 e.enabled = false;
             }
@@ -1455,6 +1477,50 @@ mod tests {
         assert!(transport_is_lit("media.toggleProxies", true, false));
 
         assert!(!transport_is_lit("playback.toggle", true, true));
+    }
+
+    #[test]
+    fn a_curve_eyedropper_samples_the_selected_curves_input() {
+        let master = vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]];
+        let red = vec![[0.0, 0.0], [0.5, 0.2], [1.0, 1.0]];
+        let hue = vec![[0.0, 0.7], [1.0, 0.3]];
+        let lumetri = || {
+            let mut e = filmcraft_project::find_effect("lumetri").map(|d| d.instance()).expect("lumetri is a known effect");
+            for (id, pts) in [("curve_luma", &master), ("curve_red", &red), ("hue_vs_sat", &hue)] {
+                e.param_mut(id).expect("curve parameter").value = filmcraft_project::ParamValue::Curve((*pts).clone());
+            }
+            e
+        };
+        let curve = |e: &filmcraft_project::EffectInstance, id: &str| e.param(id).and_then(|p| p.value.as_curve()).map(<[_]>::to_vec);
+        let hsl_off = |e: &filmcraft_project::EffectInstance| e.param("hsl_on").and_then(|p| p.value.as_bool()) == Some(false);
+
+        // the master curve is the first curve stage: its pick drops it (and everything after it)
+        let mut e = lumetri();
+        curve_sample_input(&mut e, CurveAxis::Luma);
+        assert!(hsl_off(&e));
+        for id in ["curve_luma", "curve_red", "curve_green", "curve_blue", "hue_vs_sat", "luma_vs_sat"] {
+            assert_eq!(curve(&e, id), Some(Vec::new()), "{id} is neutralized for a master pick");
+        }
+
+        // a channel pick sits after the master curve: that adjustment stays, the channel and later curves go
+        let mut e = lumetri();
+        curve_sample_input(&mut e, CurveAxis::Channel(0));
+        assert!(hsl_off(&e));
+        assert_eq!(curve(&e, "curve_luma"), Some(master.clone()), "the master adjustment stays upstream of red");
+        assert_eq!(e.param("curves_on").and_then(|p| p.value.as_bool()), Some(true), "the Curves section stays on");
+        for id in ["curve_red", "curve_green", "curve_blue", "hue_vs_sat"] {
+            assert_eq!(curve(&e, id), Some(Vec::new()), "{id} is neutralized for a red pick");
+        }
+
+        // a hue curve pick sits after every RGB curve: those stay, the hue / sat curves go
+        let mut e = lumetri();
+        curve_sample_input(&mut e, CurveAxis::Hue);
+        assert!(hsl_off(&e));
+        assert_eq!(curve(&e, "curve_luma"), Some(master), "the master adjustment stays upstream of the hue curves");
+        assert_eq!(curve(&e, "curve_red"), Some(red), "the channel adjustment stays upstream of the hue curves");
+        for id in ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"] {
+            assert_eq!(curve(&e, id), Some(Vec::new()), "{id} is neutralized for a hue pick");
+        }
     }
 
     #[test]
