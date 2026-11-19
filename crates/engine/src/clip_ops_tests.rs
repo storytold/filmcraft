@@ -168,6 +168,29 @@ fn set_param_with_moves_the_other_clips_by_the_same_amount() {
     assert!(s.execute("effects.setParam", json!({"clip": a, "effect": "motion", "param": "scale", "value": 50.0, "mask": 0, "with": [b]})).is_err());
 }
 
+/// #4817: a drag that folds into one undo step moves the companions by the whole drag's change
+/// from where they started, not by the last step's, so dragging a value down and back up leaves
+/// them where they were even where they clamped on the way.
+#[test]
+fn a_drag_that_comes_back_leaves_the_other_clips_where_they_started() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].id.0, v1(&s)[1].id.0);
+    let opacity = |s: &Session, id: u64| f64_param(&clip(s, id), "opacity", "opacity");
+    s.execute("effects.setParam", json!({"clip": b, "effect": "opacity", "param": "opacity", "value": 10.0})).unwrap();
+    let undo = s.history.undo.len();
+    // one drag: 100 % down to 50 % (B clamps at 0 %) and back up to 100 %
+    for (i, v) in [80.0, 50.0, 80.0, 100.0].into_iter().enumerate() {
+        let mut p = json!({"clip": a, "effect": "opacity", "param": "opacity", "value": v, "with": [b], "merge": true});
+        if i == 0 {
+            p["begin"] = json!(true);
+        }
+        s.execute("effects.setParam", p).unwrap();
+        assert_eq!(opacity(&s, a), v);
+    }
+    assert_eq!(opacity(&s, b), 10.0, "back where it started, not at the 50 % it clamped through");
+    assert_eq!(s.history.undo.len(), undo + 1, "the drag is one undo step");
+}
+
 #[test]
 fn paste_attributes_with_scaled_keyframes_and_remove_attributes() {
     let mut s = demo();

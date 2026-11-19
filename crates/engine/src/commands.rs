@@ -420,6 +420,39 @@ fn shifted_param(old: &ParamValue, new: &ParamValue, other: &ParamValue) -> Opti
     }
 }
 
+/// The value `pid` of effect `eff` on clip `c` in `seq` has at `at` (or the playhead, pinned to the
+/// clip), when the clip, the effect and the parameter are all there. Used to read a drag's starting
+/// values from the project before it began (#4817).
+fn effect_param_value_at(seq: &filmcraft_project::Sequence, c: ClipId, eff: &Value, pid: &str, at: Option<Tick>, ph: Tick) -> Option<ParamValue> {
+    let (_, it) = seq.find_item(c)?;
+    let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+    let e = match eff {
+        Value::Number(n) => it.effects.get(n.as_u64().unwrap_or(0) as usize),
+        Value::String(sid) => it.effects.iter().find(|e| &e.effect == sid),
+        _ => None,
+    }?;
+    e.param(pid).map(|p| p.value_at(mt))
+}
+
+/// Ultra Key's Setting writes the preset's dependent parameters onto the effect, so the matte the
+/// setting names is the one the clip shows (#4817). Custom leaves them as they are.
+fn apply_ultra_key_setting(e: &mut filmcraft_project::EffectInstance, pid: &str, v: &ParamValue) {
+    if e.effect == "ultra_key"
+        && pid == "setting"
+        && let ParamValue::Choice(setting) = v
+        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(*setting)
+    {
+        for (id, value) in rows {
+            if let Some(p) = e.param_mut(id) {
+                p.value = ParamValue::Float(*value);
+                p.keyframes.clear();
+            } else {
+                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
+            }
+        }
+    }
+}
+
 fn resolve_effect_alias(name: &str) -> Option<&'static str> {
     let lower = name.trim().to_ascii_lowercase();
     match lower.as_str() {
@@ -3845,6 +3878,15 @@ fn build() -> Vec<CommandSpec> {
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
+                // #4817: a drag's first write pushes the project as the drag found it, and the rest
+                // fold into that step, so the companions move by the whole drag's change from where
+                // they started. Dragging down and back up then leaves them where they were, even
+                // where they clamped on the way: Opacity 10 % beside 100 % goes to 0 % and back.
+                let merged = merge
+                    .as_deref()
+                    .is_some_and(|k| s.history.merge_key.as_deref() == Some(k) && s.history.undo.last().is_some_and(|u| u.0 == "Change Effect Parameter"));
+                let before = if merged { s.history.undo.last().map(|u| u.1.clone()) } else { None };
+                let start_seq = before.as_deref().and_then(|p| s.state.active_sequence.and_then(|id| p.sequence(id)));
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
@@ -3901,21 +3943,11 @@ fn build() -> Vec<CommandSpec> {
                         (keyframes, v, old)
                     };
                     let accepted_value = param_value_to_json(&v);
-
-                    if e.effect == "ultra_key"
-                        && pid == "setting"
-                        && let ParamValue::Choice(setting) = v
-                        && let Some(rows) = filmcraft_project::effect::ultra_key_setting(setting)
-                    {
-                        for (id, value) in rows {
-                            if let Some(p) = e.param_mut(id) {
-                                p.value = ParamValue::Float(*value);
-                                p.keyframes.clear();
-                            } else {
-                                e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
-                            }
-                        }
-                    }
+                    apply_ultra_key_setting(e, &pid, &v);
+                    // the value each clip started the drag with (#4817); the current value when this
+                    // is not a drag that folds into an earlier step
+                    let started = |c: ClipId, now: ParamValue| start_seq.and_then(|seq| effect_param_value_at(seq, c, &eff, &pid, at, ph)).unwrap_or(now);
+                    let p0 = started(c, old);
                     // #4603: the other selected clips change by the same amount, in the same step
                     for &oc in &with {
                         let Some((_, oit)) = q.find_item_mut(oc) else { continue };
@@ -3940,7 +3972,7 @@ fn build() -> Vec<CommandSpec> {
                             oe.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                         }
                         let Some(oprm) = oe.params.get_mut(&pid) else { continue };
-                        let Some(ov) = shifted_param(&old, &v, &oprm.value_at(omt)) else { continue };
+                        let Some(ov) = shifted_param(&p0, &v, &started(oc, oprm.value_at(omt))) else { continue };
                         let ov = match (odef.as_ref().map(|d| &d.kind), ov) {
                             (Some(filmcraft_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) if min <= max => {
                                 ParamValue::Float(x.clamp(*min, *max))
@@ -3952,6 +3984,7 @@ fn build() -> Vec<CommandSpec> {
                         } else {
                             oprm.set_at(omt, ov);
                         }
+                        apply_ultra_key_setting(oe, &pid, &v);
                     }
                     Ok((keyframes, accepted_value))
                 })?;

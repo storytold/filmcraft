@@ -164,6 +164,23 @@ fn ultra_key_setting_writes_aggressive_parameters() {
     assert_eq!(e.param("contrast").unwrap().value.as_f64(), Some(10.0));
 }
 
+/// #4817: Ultra Key's Setting writes its preset rows onto every companion clip too, so the whole
+/// selection ends with the matte the setting names, not just the same setting value.
+#[test]
+fn ultra_key_setting_writes_the_preset_on_the_other_selected_clips() {
+    let mut s = demo();
+    let (a, b) = (first_v1_clip(&s), s.active_sequence().unwrap().video_tracks[0].items[1].id.0);
+    s.execute("effects.apply", json!({"clips": [a, b], "effect": "ultra_key"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": a, "effect": "ultra_key", "param": "setting", "value": 2, "with": [b]})).unwrap();
+    for clip in [a, b] {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+        let e = it.effect("ultra_key").unwrap();
+        assert_eq!(e.param("setting").unwrap().value, filmcraft_project::ParamValue::Choice(2), "clip {clip} took the setting");
+        assert_eq!(e.param("tolerance").unwrap().value.as_f64(), Some(90.0), "clip {clip} took the preset's Tolerance");
+        assert_eq!(e.param("choke").unwrap().value.as_f64(), Some(10.0), "clip {clip} took the preset's Choke");
+    }
+}
+
 /// #2679: a value outside a parameter's range (the `min`/`max` `effects.list` publishes) is
 /// refused with the range, not saved: gamma 1.1 meant as a factor turned the frame black.
 #[test]
