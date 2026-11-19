@@ -2,15 +2,17 @@
 //!
 //! [`factory`] is registered with `filmcraft_export::register_encoder`.
 
-use filmcraft_export::{ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, HardwareEncoding, Result, VideoEncoder};
+use filmcraft_export::{
+    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result,
+    VideoEncoder,
+};
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
 
-use super::device::IntelGpu;
 use super::session::{Codec, Config, Packet, Profile, QsvSession};
 
 /// The Intel Quick Sync Video export encoder.
-pub struct QsvEncoder {
+struct QsvEncoder {
     session: QsvSession,
     codec: Codec,
     w: u32,
@@ -230,15 +232,17 @@ impl VideoEncoder for QsvEncoder {
         let (w, h) = (self.w as usize, self.h as usize);
         let pts = f.index as i64;
 
-        let packets = match f.hdr {
-            Some(rgb) => {
+        let packets = match (self.ten_bit, f.hdr) {
+            (true, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
                     filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, filmcraft_export::Matrix::new(kr, kb), &mut self.y16, &mut self.u16, &mut self.v16)
                 })?;
                 self.session.encode_p010(&self.y16, &self.u16, &self.v16, pts).map_err(|e| ExportError::Encode(format!("Intel encode failed: {e}")))?
             }
-            None => {
+            (true, None) => return Err(ExportError::Unsupported("Intel Quick Sync Main 10 needs the HDR picture (EncoderFrame::hdr)".into())),
+            (false, Some(_)) => return Err(ExportError::Unsupported("Intel Quick Sync 8-bit encoder does not take HDR pictures".into())),
+            (false, None) => {
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
                     filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v)
                 });
@@ -287,44 +291,156 @@ impl VideoEncoder for QsvEncoder {
     }
 }
 
+/// Validate export settings and build a QSV [`Config`], or explain why QSV declines.
+fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> std::result::Result<Config, String> {
+    if !matches!(format, Format::H264 | Format::Hevc | Format::Av1) || s.format.is_mxf() {
+        return Err("only MP4 / MOV H.264, H.265 and AV1 exports".into());
+    }
+    let hdr = s.signal.is_hdr();
+    if hdr && format == Format::H264 {
+        return Err("HDR (8-bit H.264 here carries it with software signalling)".into());
+    }
+    if matches!(format, Format::Hevc | Format::Av1) && (hdr && (s.signal.primaries != 9 || s.signal.matrix != 9) || !hdr && s.signal != ColorSignal::default())
+    {
+        return Err(format!("the colour signal {:?} ({} here is BT.709, or BT.2020 with PQ / HLG)", s.signal, format.label()));
+    }
+    if !matches!(s.h264_pass, H264Pass::Single) || s.bitrate_mode == BitrateMode::Vbr2Pass {
+        return Err("two-pass VBR".into());
+    }
+    if s.bitrate_mode == BitrateMode::Crf {
+        return Err("CRF (constant quality)".into());
+    }
+    if format == Format::H264 && s.h264_intra_only {
+        return Err("all-intra H.264".into());
+    }
+    if s.pixel_aspect.is_some_and(|(n, d)| n != d) {
+        return Err("non-square pixels".into());
+    }
+    if s.field_order != FieldOrder::Progressive {
+        return Err("interlaced output".into());
+    }
+    if w == 0 || h == 0 || !w.is_multiple_of(2) || !h.is_multiple_of(2) || w > 8192 || h > 8192 {
+        return Err(format!("Intel Quick Sync needs nonzero even dimensions up to 8192x8192 (got {w}x{h})"));
+    }
+    if rate.num <= 0 || rate.den <= 0 || rate.num > i64::from(u32::MAX) || rate.den > i64::from(u32::MAX) {
+        return Err("frame rate".into());
+    }
+    let (codec, profile) = match (format, s.h264_profile) {
+        (Format::H264, H264Profile::Baseline) => (Codec::H264, Profile::H264Baseline),
+        (Format::H264, H264Profile::Main) => (Codec::H264, Profile::H264Main),
+        (Format::H264, H264Profile::High) => (Codec::H264, Profile::H264High),
+        (Format::H264, H264Profile::High10) => return Err("High 10".into()),
+        (Format::Hevc, _) if hdr => (Codec::Hevc, Profile::HevcMain10),
+        (Format::Hevc, _) => (Codec::Hevc, Profile::HevcMain),
+        (Format::Av1, _) if hdr => (Codec::Av1, Profile::Av1Main10),
+        (Format::Av1, _) => (Codec::Av1, Profile::Av1Main),
+        _ => return Err("unsupported format".into()),
+    };
+    let keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| ((rate.num as f64 / rate.den as f64) * 2.0).round().max(1.0) as u32);
+    Ok(Config { codec, profile, size: (w, h), rate, bitrate_kbps: s.bitrate_kbps.max(100), keyint, ten_bit: hdr })
+}
+
+fn codec_for_format(format: Format) -> Option<Codec> {
+    match format {
+        Format::H264 => Some(Codec::H264),
+        Format::Hevc => Some(Codec::Hevc),
+        Format::Av1 => Some(Codec::Av1),
+        _ => None,
+    }
+}
+
 /// The export encoder factory registered with `filmcraft_export::register_encoder`.
 pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    let codec = match format {
-        Format::H264 if s.hardware_encoding == HardwareEncoding::Auto && !s.signal.is_hdr() => Codec::H264,
-        Format::Hevc => Codec::Hevc,
-        Format::Av1 => Codec::Av1,
-        _ => return None,
-    };
+    factory_with(
+        format,
+        w,
+        h,
+        rate,
+        s,
+        super::has_device,
+        |codec| match codec {
+            Codec::Hevc => super::hevc_available(),
+            Codec::Av1 => super::av1_available(),
+            Codec::H264 => false,
+        },
+        QsvSession::new,
+    )
+}
 
-    if w == 0 || h == 0 || !w.is_multiple_of(2) || !h.is_multiple_of(2) || w > 8192 || h > 8192 {
+#[allow(clippy::too_many_arguments)]
+fn factory_with(
+    format: Format,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    s: &ExportSettings,
+    has_device: impl FnOnce() -> bool,
+    codec_available: impl FnOnce(Codec) -> bool,
+    open: impl FnOnce(Config) -> std::result::Result<QsvSession, String>,
+) -> Option<Result<Box<dyn VideoEncoder>>> {
+    let codec = codec_for_format(format)?;
+    if format == Format::H264 && s.hardware_encoding != HardwareEncoding::Auto {
         return None;
     }
 
-    // Check if an Intel GPU is physically present
-    IntelGpu::probe().ok().flatten()?;
-
-    let is_hdr = s.signal.is_hdr();
-    let profile = match (codec, is_hdr) {
-        (Codec::H264, _) => Profile::H264High,
-        (Codec::Hevc, true) => Profile::HevcMain10,
-        (Codec::Hevc, false) => Profile::HevcMain,
-        (Codec::Av1, true) => Profile::Av1Main10,
-        (Codec::Av1, false) => Profile::Av1Main,
-    };
-
-    let cfg = Config { codec, profile, size: (w, h), rate, bitrate_kbps: s.bitrate_kbps.max(100), keyint: s.keyframe_distance.unwrap_or(60), ten_bit: is_hdr };
-
-    let session = match QsvSession::new(cfg) {
-        Ok(sess) => sess,
-        Err(e) => {
-            log::info!("Intel Quick Sync encoder declined: {e}");
-            filmcraft_export::note_hw_encode_declined();
+    if format == Format::H264 {
+        let cfg = match config(format, w, h, rate, s) {
+            Ok(c) => c,
+            Err(why) => {
+                log::info!("Intel Quick Sync H.264 declined: {why}");
+                filmcraft_export::note_hw_encode_declined_by("Intel Quick Sync", &why);
+                return None;
+            }
+        };
+        if !has_device() {
             return None;
+        }
+        return match open(cfg) {
+            Ok(session) => {
+                filmcraft_export::note_hw_encode_session();
+                Some(Ok(Box::new(QsvEncoder::new(session, codec, w, h, rate, s.signal, false))))
+            }
+            Err(why) => {
+                log::info!("Intel Quick Sync H.264 encoder declined: {why}");
+                filmcraft_export::note_hw_encode_declined_by("Intel Quick Sync", &why);
+                None
+            }
+        };
+    }
+
+    if !has_device() {
+        return None;
+    }
+
+    let cfg = match config(format, w, h, rate, s) {
+        Ok(c) => c,
+        Err(why) => {
+            if !codec_available(codec) {
+                log::info!("no Intel Quick Sync {} encoder: {why}", codec.name());
+                return None;
+            }
+            log::info!("Intel Quick Sync {} encoding declined: {why}", codec.name());
+            filmcraft_export::note_hw_encode_declined_by("Intel Quick Sync", &why);
+            return Some(Err(ExportError::Unsupported(format!("{} export with Intel Quick Sync: {why}", codec.name()))));
         }
     };
 
-    filmcraft_export::note_hw_encode_session();
-    Some(Ok(Box::new(QsvEncoder::new(session, codec, w, h, rate, s.signal, is_hdr))))
+    let ten_bit = cfg.ten_bit;
+    match open(cfg) {
+        Ok(session) => {
+            filmcraft_export::note_hw_encode_session();
+            Some(Ok(Box::new(QsvEncoder::new(session, codec, w, h, rate, s.signal, ten_bit))))
+        }
+        Err(why) if !codec_available(codec) => {
+            log::info!("no Intel Quick Sync {} encoder: {why}", codec.name());
+            None
+        }
+        Err(why) => {
+            log::info!("Intel Quick Sync {} encoding declined: {why}", codec.name());
+            filmcraft_export::note_hw_encode_declined_by("Intel Quick Sync", &why);
+            Some(Err(ExportError::Unsupported(format!("{} export with Intel Quick Sync: {why}", codec.name()))))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -395,5 +511,105 @@ mod tests {
         assert_eq!((av1c.seq_profile, av1c.seq_level_idx_0, av1c.seq_tier_0), (0, 8, false));
         assert!(av1c.high_bitdepth && !av1c.twelve_bit && !av1c.monochrome);
         assert_eq!(av1c.config_obus, av1_seq_obu);
+    }
+
+    #[test]
+    fn declined_h264_settings_never_open_qsv_session() {
+        let declined = |format, w, h, rate, s: &ExportSettings| {
+            let res = factory_with(format, w, h, rate, s, || true, |_| true, |_| panic!("must not open QSV session"));
+            assert!(res.is_none(), "expected None for {format:?} {w}x{h} {rate:?}");
+        };
+
+        let mut s = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Off, ..Default::default() };
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &s);
+
+        s.hardware_encoding = HardwareEncoding::Auto;
+        declined(Format::ProRes, 1280, 720, FrameRate::FPS_24, &s);
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { format: Format::MxfOp1a, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { bitrate_mode: BitrateMode::Crf, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { h264_pass: H264Pass::First, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { h264_intra_only: true, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { h264_profile: H264Profile::High10, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { signal: ColorSignal::PQ, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { signal: ColorSignal::HLG, ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { pixel_aspect: Some((4, 3)), ..s.clone() });
+        declined(Format::H264, 1280, 720, FrameRate::FPS_24, &ExportSettings { field_order: FieldOrder::UpperFirst, ..s.clone() });
+        declined(Format::H264, 0, 720, FrameRate::FPS_24, &s);
+        declined(Format::H264, 641, 360, FrameRate::FPS_24, &s);
+        declined(Format::H264, 8194, 720, FrameRate::FPS_24, &s);
+        declined(Format::H264, 1280, 720, FrameRate { num: 0, den: 1 }, &s);
+        declined(Format::H264, 1280, 720, FrameRate { num: 24, den: 0 }, &s);
+    }
+
+    #[test]
+    fn config_maps_profiles_and_declines_unwritable_hevc_and_av1_settings() {
+        let h264_base = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+        for (hp, qp) in [(H264Profile::Baseline, Profile::H264Baseline), (H264Profile::Main, Profile::H264Main), (H264Profile::High, Profile::H264High)] {
+            let s = ExportSettings { h264_profile: hp, ..h264_base.clone() };
+            let c = config(Format::H264, 1280, 720, FrameRate::FPS_24, &s).unwrap();
+            assert_eq!((c.codec, c.profile, c.ten_bit), (Codec::H264, qp, false));
+        }
+
+        for (fmt, codec, sdr_p, hdr_p) in
+            [(Format::Hevc, Codec::Hevc, Profile::HevcMain, Profile::HevcMain10), (Format::Av1, Codec::Av1, Profile::Av1Main, Profile::Av1Main10)]
+        {
+            let sdr = ExportSettings { format: fmt, ..Default::default() };
+            let c_sdr = config(fmt, 1920, 1080, FrameRate::FPS_24, &sdr).unwrap();
+            assert_eq!((c_sdr.codec, c_sdr.profile, c_sdr.ten_bit, c_sdr.keyint), (codec, sdr_p, false, 48));
+
+            for sig in [ColorSignal::PQ, ColorSignal::HLG] {
+                let c_hdr = config(fmt, 1920, 1080, FrameRate::FPS_24, &ExportSettings { signal: sig, ..sdr.clone() }).unwrap();
+                assert_eq!((c_hdr.codec, c_hdr.profile, c_hdr.ten_bit), (codec, hdr_p, true));
+            }
+
+            for bad in [
+                ExportSettings { signal: ColorSignal { primaries: 9, transfer: 1, matrix: 1 }, ..sdr.clone() },
+                ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 9 }, ..sdr.clone() },
+                ExportSettings { bitrate_mode: BitrateMode::Crf, ..sdr.clone() },
+                ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..sdr.clone() },
+                ExportSettings { h264_pass: H264Pass::First, ..sdr.clone() },
+                ExportSettings { pixel_aspect: Some((4, 3)), ..sdr.clone() },
+                ExportSettings { field_order: FieldOrder::LowerFirst, ..sdr.clone() },
+            ] {
+                assert!(config(fmt, 1280, 720, FrameRate::FPS_24, &bad).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn hevc_and_av1_declined_paths_respect_device_and_codec_availability() {
+        for fmt in [Format::Hevc, Format::Av1] {
+            let bad = ExportSettings { format: fmt, bitrate_mode: BitrateMode::Crf, ..Default::default() };
+            // No Intel device -> silently returns None so another encoder can handle the request.
+            assert!(factory_with(fmt, 1280, 720, FrameRate::FPS_24, &bad, || false, |_| true, |_| panic!("no device")).is_none());
+            // Intel device present + codec unavailable -> also returns None.
+            assert!(factory_with(fmt, 1280, 720, FrameRate::FPS_24, &bad, || true, |_| false, |_| panic!("must decline")).is_none());
+            // Intel device present + codec available + invalid settings -> Unsupported error naming QSV.
+            let err = match factory_with(fmt, 1280, 720, FrameRate::FPS_24, &bad, || true, |_| true, |_| panic!("must decline")) {
+                Some(Err(e)) => e.to_string(),
+                _ => panic!("expected Some(Err(_)) for {fmt:?}"),
+            };
+            assert!(err.contains("Intel Quick Sync"), "{err}");
+
+            // Valid settings reach session open and map failure when codec_available == true.
+            let ok = ExportSettings { format: fmt, ..Default::default() };
+            let mut opened = None;
+            let res = factory_with(
+                fmt,
+                1280,
+                720,
+                FrameRate::FPS_24,
+                &ok,
+                || true,
+                |c| c != Codec::H264,
+                |cfg| {
+                    opened = Some(cfg.profile);
+                    Err("simulated open failure".into())
+                },
+            );
+            assert!(opened.is_some());
+            assert!(matches!(res, Some(Err(ExportError::Unsupported(_)))));
+        }
     }
 }

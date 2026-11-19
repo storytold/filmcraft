@@ -3,24 +3,31 @@
 //! Provides hardware-accelerated H.264, HEVC (Main and Main 10 HDR), and AV1 export on Intel
 //! integrated (Iris Xe, UHD) and discrete graphics (Arc A-series, B-series).
 
-pub mod device;
+pub(crate) mod device;
 pub mod export;
-pub mod session;
+pub(crate) mod session;
 
 use std::sync::OnceLock;
 
 use self::device::IntelGpu;
+pub use self::device::{INTEL_VENDOR_ID, IntelAdapterInfo};
+pub use self::session::{Codec, Profile};
 #[cfg(target_os = "windows")]
-use self::session::{Codec, Config, Profile, QsvSession};
+use self::session::{Config, QsvSession};
 
 static HEVC_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static HEVC_HDR_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static AV1_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static AV1_HDR_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
+/// Probe whether an Intel GPU adapter is present without allocating a D3D11 device.
+pub fn probe_adapter() -> Result<Option<IntelAdapterInfo>, String> {
+    IntelGpu::probe()
+}
+
 /// Whether an Intel GPU is physically present on this system.
 pub fn has_device() -> bool {
-    IntelGpu::probe().ok().flatten().is_some()
+    probe_adapter().ok().flatten().is_some()
 }
 
 /// Whether Intel Quick Sync Video hardware encoding is available on this system.

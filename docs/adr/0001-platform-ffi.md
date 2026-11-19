@@ -243,3 +243,26 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum (2026-11-19): Intel Quick Sync Video encoding on Windows
+
+Intel Quick Sync Video (QSV) hardware encoding for H.264, H.265 (HEVC Main / Main 10), and AV1
+(Main / Main 10) is implemented in `qsv/` under the same containment rules:
+
+- **Unsafe allowances:** Only the two private sub-modules [`qsv::device`](../../crates/platform/src/qsv/device.rs)
+  and [`qsv::session`](../../crates/platform/src/qsv/session.rs) carry `#![allow(unsafe_code)]`. They
+  encapsulate DXGI Intel adapter discovery (`vendor_id == 0x8086`), Direct3D 11 device creation
+  with `IMFDXGIDeviceManager`, and Media Foundation hardware encoder transforms (`IMFTransform`,
+  `ICodecAPI`, and `IMFMediaEventGenerator`). [`qsv::export`](../../crates/platform/src/qsv/export.rs)
+  and [`qsv`](../../crates/platform/src/qsv/mod.rs) remain safe code with `unsafe_code = "deny"`.
+- **No callbacks into Rust:** Asynchronous hardware MFTs are unlocked via `MF_TRANSFORM_ASYNC_UNLOCK`
+  and driven synchronously through `IMFMediaEventGenerator::GetEvent` / `ProcessInput` /
+  `ProcessOutput`. No Rust function pointers or callbacks are registered with COM or the driver.
+- **Public API:** `filmcraft_platform::qsv` exposes only safe Rust types (`Codec`, `Profile`,
+  `IntelAdapterInfo`, `probe_adapter`, availability probes, and `export::factory`); COM interfaces
+  and `GUID`s stay module-private (`pub(crate)`).
+- **Platform compilation & opt-in:** On Windows `register()` checks for an Intel adapter and
+  probes 640×360 sessions on background probe threads. H.264 requires `HardwareEncoding::Auto`;
+  unsupported configurations decline cleanly. Non-Windows builds compile without `windows` COM/MF
+  dependencies (`probe_adapter` inspects Linux DRM sysfs, while `QsvSession` returns an error until a
+  VA-API encode backend exists).

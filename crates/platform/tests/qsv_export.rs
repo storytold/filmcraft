@@ -3,9 +3,8 @@
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use filmcraft_export::{ExportSettings, Format, HardwareEncoding};
-use filmcraft_platform::qsv::device::{INTEL_VENDOR_ID, IntelGpu};
 use filmcraft_platform::qsv::export::factory;
-use filmcraft_platform::qsv::session::Codec;
+use filmcraft_platform::qsv::{Codec, INTEL_VENDOR_ID, probe_adapter};
 use filmcraft_time::FrameRate;
 
 #[test]
@@ -16,7 +15,7 @@ fn intel_vendor_id_constant() {
 #[test]
 fn probe_does_not_panic() {
     // Probing for an Intel GPU on any machine must return a Result and never panic
-    let result = IntelGpu::probe();
+    let result = probe_adapter();
     assert!(result.is_ok(), "Intel GPU probe failed: {:?}", result.err());
 }
 
@@ -25,12 +24,6 @@ fn codec_properties() {
     assert_eq!(Codec::H264.name(), "H.264");
     assert_eq!(Codec::Hevc.name(), "HEVC");
     assert_eq!(Codec::Av1.name(), "AV1");
-
-    #[cfg(target_os = "windows")]
-    {
-        assert_ne!(Codec::H264.subtype(), Codec::Hevc.subtype());
-        assert_ne!(Codec::Hevc.subtype(), Codec::Av1.subtype());
-    }
 }
 
 #[test]

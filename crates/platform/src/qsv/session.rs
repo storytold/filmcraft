@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 #[cfg(target_os = "windows")]
 use std::mem::ManuallyDrop;
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
 
 #[cfg(target_os = "windows")]
@@ -34,6 +35,7 @@ use windows::core::{GUID, Interface};
 
 use filmcraft_time::FrameRate;
 
+#[cfg(target_os = "windows")]
 use super::device::IntelGpu;
 #[cfg(target_os = "windows")]
 use crate::media_foundation::gpu::ensure_com;
@@ -49,7 +51,7 @@ pub enum Codec {
 
 impl Codec {
     #[cfg(target_os = "windows")]
-    pub fn subtype(self) -> GUID {
+    pub(crate) fn subtype(self) -> GUID {
         match self {
             Self::H264 => MFVideoFormat_H264,
             Self::Hevc => MFVideoFormat_HEVC,
@@ -92,6 +94,7 @@ impl Profile {
     }
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct Config {
     pub codec: Codec,
@@ -470,23 +473,15 @@ impl QsvSession {
     pub fn sequence_header(&self) -> &[u8] {
         &self.sequence_header
     }
-
-    pub fn codec(&self) -> Codec {
-        self.config.codec
-    }
 }
 
 #[cfg(not(target_os = "windows"))]
-pub struct QsvSession {
-    _gpu: Arc<IntelGpu>,
-    config: Config,
-}
+pub struct QsvSession;
 
 #[cfg(not(target_os = "windows"))]
 impl QsvSession {
     /// Create a new hardware encoding session on the Intel GPU.
     pub fn new(config: Config) -> Result<Self, String> {
-        let _ = IntelGpu::shared()?;
         Err(format!("Intel Quick Sync ({}) via Media Foundation is Windows-only; Linux uses VA-API", config.codec.name()))
     }
 
@@ -507,10 +502,6 @@ impl QsvSession {
 
     pub fn sequence_header(&self) -> &[u8] {
         &[]
-    }
-
-    pub fn codec(&self) -> Codec {
-        self.config.codec
     }
 }
 
@@ -731,7 +722,7 @@ fn is_intel_activate(a: &IMFActivate) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-pub fn find_encoder_activate(api: &MfApi, subtype: GUID) -> Result<Option<IMFActivate>, String> {
+fn find_encoder_activate(api: &MfApi, subtype: GUID) -> Result<Option<IMFActivate>, String> {
     let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
     let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_ASYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
     let (mut list, mut count) = (std::ptr::null_mut::<*mut c_void>(), 0u32);

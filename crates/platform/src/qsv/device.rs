@@ -37,9 +37,9 @@ mod imp {
     /// Discovered Intel GPU adapter.
     pub struct IntelGpu {
         pub info: IntelAdapterInfo,
-        pub adapter: IDXGIAdapter1,
+        _adapter: IDXGIAdapter1,
         pub device: ID3D11Device,
-        pub context: ID3D11DeviceContext,
+        _context: ID3D11DeviceContext,
         pub manager: IMFDXGIDeviceManager,
         lost: AtomicBool,
         _gate: Mutex<()>,
@@ -158,7 +158,7 @@ mod imp {
             let _ = unsafe { mt.SetMultithreadProtected(true) };
             let manager = api.create_device_manager(&device)?;
 
-            Ok(IntelGpu { info, adapter, device, context, manager, lost: AtomicBool::new(false), _gate: Mutex::new(()) })
+            Ok(IntelGpu { info, _adapter: adapter, device, _context: context, manager, lost: AtomicBool::new(false), _gate: Mutex::new(()) })
         }
 
         pub fn usable(&self) -> bool {
@@ -169,30 +169,16 @@ mod imp {
         pub fn manager_param(&self) -> usize {
             self.manager.as_raw() as usize
         }
-
-        pub fn note_failure(&self) {
-            if !self.usable() {
-                log::warn!("Intel D3D11 device lost ({}); resetting", self.info.name);
-                self.lost.store(true, Ordering::Relaxed);
-            }
-        }
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 mod imp {
     use super::{INTEL_VENDOR_ID, IntelAdapterInfo};
-    use std::sync::Arc;
 
-    pub struct IntelGpu {
-        pub info: IntelAdapterInfo,
-    }
+    pub struct IntelGpu;
 
     impl IntelGpu {
-        pub fn shared() -> Result<Arc<IntelGpu>, String> {
-            if let Some(info) = Self::probe()? { Ok(Arc::new(IntelGpu { info })) } else { Err("no Intel GPU adapter found on Linux".into()) }
-        }
-
         pub fn probe() -> Result<Option<IntelAdapterInfo>, String> {
             if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
                 for entry in entries.flatten() {
@@ -216,16 +202,6 @@ mod imp {
             }
             Ok(None)
         }
-
-        pub fn usable(&self) -> bool {
-            true
-        }
-
-        pub fn manager_param(&self) -> usize {
-            0
-        }
-
-        pub fn note_failure(&self) {}
     }
 }
 
