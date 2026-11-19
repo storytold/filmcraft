@@ -812,7 +812,9 @@ mod tests {
     #[test]
     fn saved_window_state_is_applied_only_when_requested() {
         let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: Some(80.0), y: Some(60.0), scale_factor: 1.0 };
-        let restored = super::native_options(false, Some(state), None);
+        let displays =
+            [super::DisplayBounds { rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
+        let restored = super::native_options(false, Some(state), Some(&displays));
         assert_eq!(restored.viewport.inner_size, Some(egui::vec2(1280.0, 720.0)));
         assert_eq!(restored.viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(80.0, 60.0)));
 
