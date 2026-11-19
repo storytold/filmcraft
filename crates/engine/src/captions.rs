@@ -269,7 +269,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let opts = filmcraft_captions::write_options(df, Some(filmcraft_captions::FrameRate { num: seq.settings.frame_rate.num, den: seq.settings.frame_rate.den }));
+    let opts =
+        filmcraft_captions::write_options(df, Some(filmcraft_captions::FrameRate { num: seq.settings.frame_rate.num, den: seq.settings.frame_rate.den }));
     let bytes = filmcraft_captions::write(&doc, format, opts);
     let warnings = filmcraft_captions::charset_warnings(&doc, format, opts);
     let n = doc.cues.len();

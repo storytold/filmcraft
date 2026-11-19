@@ -86,7 +86,7 @@ craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82062077bba679ba5236e2d1a391f02d1533cbab", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
 craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e", features = ["serde"] }
-craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "57288edafdc45552e30481cc649021de446abfa0" }
+craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3b8e426a260695af840a2cd79a064d40778f939e" }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.

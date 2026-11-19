@@ -494,7 +494,14 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         cue.end = cue.end.min(filmcraft_captions::Tick(range.duration.0));
         cue.start < cue.end
     });
-    let bytes = filmcraft_captions::write(&doc, format, filmcraft_captions::write_options(q.settings.drop_frame, Some(filmcraft_captions::FrameRate { num: q.settings.frame_rate.num, den: q.settings.frame_rate.den })));
+    let bytes = filmcraft_captions::write(
+        &doc,
+        format,
+        filmcraft_captions::write_options(
+            q.settings.drop_frame,
+            Some(filmcraft_captions::FrameRate { num: q.settings.frame_rate.num, den: q.settings.frame_rate.den }),
+        ),
+    );
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
