@@ -92,21 +92,6 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   the caller's previous frame is that very picture. Vectors come back on the 4×4 grid in S10.5 fixed
   point with the per-block cost. The ABI checks in `nvof/abi_tests.rs` were worked out from the
   headers' field lists, not printed by a C compiler (see that file).
-- **Experimental Windows x64 DLAA** (`ngx/`). Clip ▸ Video Options ▸ Optical Flow Track ▸
-  Temporal Detail Enhancement (`clip.opticalFlowOverlay.dlssEnhance`) reconstructs each frame
-  and applies a local contrast filter. The normal build uses motion-compensated CPU fusion.
-  For local RTX tests, set `FILMCRAFT_NGX_SDK` at build time to the root of an external
-  [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS/tree/9981c6350dc58c0ce21f024fd65e31e851c31689)
-  and `FILMCRAFT_DLSS_RUNTIME_DIR` at run time to its absolute `lib/Windows_x86_64/rel` directory.
-  This opt-in build links NVIDIA's NGX SDK library. The SDK locates the active driver and loads
-  the release feature DLL in place. The D3D11 session requests Super Sampling in DLAA mode
-  with preset hint K, optical flow estimated from video, zero depth and zero jitter.
-  The job reports the reconstruction and drawing backends separately. The generated temporal
-  detail track uses ProRes 4444 with alpha and the sequence's SDR, PQ or HLG signal.
-  To compare against CPU fusion on a synthetic translation, run
-  `cargo test -p filmcraft-platform --lib compare_dlaa_and_cpu -- --ignored --nocapture`
-  with both variables set. Packaging the SDK or enabling this FFI in a distribution requires
-  a maintainer decision on [#2655](https://github.com/storytold/filmcraft/issues/2655).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
