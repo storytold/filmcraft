@@ -328,3 +328,49 @@ fn shared_packbits_preserves_film_row_acceptance_and_bytes() {
     unpack("a.psd", &[128, 0, 7, 128, 255, 9, 255], &mut row).unwrap();
     assert_eq!(row, [7, 9, 9], "no-ops allowed, trailing truncated packet ignored");
 }
+
+#[test]
+fn composite_rejects_incomplete_rle_rows() {
+    for encoded in [&[3, 7, 8][..], &[0, 7, 128], &[255, 7, 255]] {
+        let mut b = psd(GRAY, 8, 4, 1, &[vec![1, 2, 3, 4]], true, &[]);
+        let table = b.len() - packbits(&[1, 2, 3, 4]).len() - 2;
+        b.truncate(table);
+        b.extend((encoded.len() as u16).to_be_bytes());
+        b.extend(encoded);
+        assert!(matches!(decode("short.psd", &b), Err(MediaError::Decode(_))), "{encoded:?}");
+    }
+}
+
+#[test]
+fn composite_rows_preserve_multiline_alpha_and_spot_selection() {
+    for depth in [8, 16] {
+        let k = if depth == 8 { 1 } else { 257 };
+        for (mode, colours) in [(GRAY, 1), (RGB, 3)] {
+            let colour = vec![204 * k, 227 * k, 255 * k, 7 * k, 9 * k, 11 * k];
+            let alpha = vec![255 * k, 140 * k, 0, 255 * k, 255 * k, 255 * k];
+            let mut planes = vec![colour; colours];
+            planes.push(alpha);
+            // A saved selection after transparency must never be decoded as a colour row.
+            planes.push(vec![0; 6]);
+            for rle in [false, true] {
+                let b = psd(mode, depth, 3, 2, &planes, rle, &layer_count(-1));
+                let r = decode("rows.psd", &b).unwrap();
+                assert!(r.has_alpha);
+                assert_eq!(rgba(&r), [[204, 204, 204, 255], [204, 204, 204, 140], [255, 255, 255, 0], [7, 7, 7, 255], [9, 9, 9, 255], [11, 11, 11, 255]]);
+            }
+        }
+    }
+}
+
+#[test]
+fn composite_unblends_with_native_16bit_alpha_before_rounding() {
+    for (mode, colours) in [(GRAY, 1), (RGB, 3)] {
+        let mut planes = vec![vec![54_000, 50_000, 65_300, 12_345, 65_535, 65_535]; colours];
+        planes.push(vec![12_345, 32_001, 500, 65_535, 1, 0]);
+        for rle in [false, true] {
+            let r = decode("alpha16.psd", &psd(mode, 16, 3, 2, &planes, rle, &lr16_count(-1))).unwrap();
+            assert!(r.has_alpha);
+            assert_eq!(rgba(&r), [[17, 17, 17, 48], [131, 131, 131, 125], [135, 135, 135, 2], [48, 48, 48, 255], [255, 255, 255, 0], [255, 255, 255, 0]]);
+        }
+    }
+}
