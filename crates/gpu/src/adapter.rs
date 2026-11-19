@@ -147,7 +147,31 @@ fn native_descriptor() -> wgpu::InstanceDescriptor {
 /// features among those that are the same GPU listed by the same driver (the first of them when
 /// several expose as many). `None` without a usable adapter.
 pub fn choose(candidates: &[Candidate], power: PowerPreference) -> Option<usize> {
-    let first = wgpu_choice(candidates, power)?;
+    choose_with(candidates, power, false)
+}
+
+/// [`choose`], except that a software rasterizer (llvmpipe, lavapipe, WARP, SwiftShader) gives
+/// way to any usable hardware adapter: it composites on the CPU beside the frame workers, and on
+/// a virtual machine the real GPU is often listed only through OpenGL (virtio-gpu), where wgpu's
+/// Vulkan-first order would never reach it. The window uses this; an off-screen export keeps
+/// [`choose`], so its own device creation does not add a second driver (the GL one on a VM) where
+/// wgpu already has a working adapter.
+pub fn choose_hardware(candidates: &[Candidate], power: PowerPreference) -> Option<usize> {
+    choose_with(candidates, power, true)
+}
+
+fn choose_with(candidates: &[Candidate], power: PowerPreference, prefer_hardware: bool) -> Option<usize> {
+    let mut first = wgpu_choice(candidates, power)?;
+    if prefer_hardware
+        && candidates.get(first).is_some_and(|c| c.device_type == DeviceType::Cpu)
+        && let Some((index, _)) = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.usable && c.device_type != DeviceType::Cpu)
+            .min_by_key(|(index, c)| (type_order(c.device_type, power), *index))
+    {
+        first = index;
+    }
     let Some(preferred) = candidates.get(first) else {
         return Some(first);
     };
@@ -188,15 +212,17 @@ fn dx12_instead(candidates: &[Candidate], preferred: &Candidate) -> Option<usize
 }
 
 /// [`choose`] over enumerated adapters, as egui-wgpu's `native_adapter_selector` for the window
-/// (`surface`), and for the off-screen export device (no surface). The adapters and the choice go
-/// to the log.
-pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPreference) -> Result<Adapter, String> {
+/// (`surface`), and for the off-screen export device (no surface). `prefer_hardware` is the
+/// window's [`choose_hardware`]; an export keeps wgpu's [`choose`]. The adapters and the choice
+/// go to the log.
+pub fn pick(adapters: &[Adapter], surface: Option<&Surface<'_>>, power: PowerPreference, prefer_hardware: bool) -> Result<Adapter, String> {
     let candidates: Vec<Candidate> = adapters.iter().map(|a| Candidate::of(a, surface)).collect();
     for candidate in &candidates {
         log::info!("graphics adapter available: {candidate}");
     }
     let listed = || candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
-    let index = choose(&candidates, power).ok_or_else(|| format!("no usable graphics adapter among {}: {}", candidates.len(), listed()))?;
+    let index = if prefer_hardware { choose_hardware(&candidates, power) } else { choose(&candidates, power) }
+        .ok_or_else(|| format!("no usable graphics adapter among {}: {}", candidates.len(), listed()))?;
     let (Some(chosen), Some(adapter)) = (candidates.get(index), adapters.get(index)) else {
         return Err(format!("graphics adapter {index} of {} is missing", adapters.len()));
     };
@@ -498,6 +524,27 @@ mod tests {
         assert_eq!(desc.backends, backends);
     }
 
+    /// A virtual machine whose Vulkan is llvmpipe (a CPU adapter) and whose GPU is only reachable
+    /// through OpenGL: drawing through the software adapter composites on the CPU beside the frame
+    /// workers, so the hardware adapter wins even though wgpu would list the CPU one first.
+    #[test]
+    fn the_window_prefers_a_hardware_adapter_over_a_software_rasterizer() {
+        let mesa = "Mesa";
+        let adapters = vec![
+            gpu("llvmpipe (LLVM 21.1.8, 256 bits)", Vulkan, Cpu, 0x10005, 0, "", mesa, "26.0.8", 40),
+            gpu("virgl (AMD Radeon Graphics)", Gl, IntegratedGpu, 0x1af4, 0x1010, "", mesa, "26.0.8", 30),
+        ];
+        for power in POWERS {
+            assert_eq!(choose_hardware(&adapters, power), Some(1), "{power:?}");
+        }
+        // An off-screen export keeps wgpu's own choice: without a preference that is the first
+        // listed adapter, the software one; with a preference wgpu already prefers a GPU type.
+        assert_eq!(choose(&adapters, PowerPreference::None), Some(0));
+        // The software adapter is still the answer when it is the only usable one.
+        assert_eq!(choose_hardware(&adapters[..1], HighPerformance), Some(0));
+        assert_eq!(choose_hardware(&adapters[..1], PowerPreference::None), Some(0));
+    }
+
     /// Against the adapters of the machine running the tests: [`wgpu_choice`] is what wgpu's
     /// `request_adapter` returns, and [`pick`] returns that adapter too, a version of it exposing
     /// more features, or for an Intel Gen 9 to Gen 11 GPU its DirectX 12 entry.
@@ -515,7 +562,7 @@ mod tests {
             let options = wgpu::RequestAdapterOptions { power_preference: power, ..Default::default() };
             let wgpu_own = pollster::block_on(instance.request_adapter(&options)).ok().map(|a| Candidate::of(&a, None));
             assert_eq!(wgpu_choice(&candidates, power).and_then(|i| candidates.get(i)), wgpu_own.as_ref(), "{power:?} over {candidates:#?}");
-            let picked = pick(&adapters, None, power).ok().map(|a| Candidate::of(&a, None));
+            let picked = pick(&adapters, None, power, false).ok().map(|a| Candidate::of(&a, None));
             match (&wgpu_own, &picked) {
                 (Some(wgpu_own), Some(picked)) if wgpu_own != picked => {
                     let newer_version = same_gpu_and_driver(wgpu_own, picked) && picked.features > wgpu_own.features;

@@ -125,7 +125,7 @@ impl ExportRenderer {
                 {
                     adapters.retain(|a| named.contains(a.get_info().backend.into()));
                 }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = crate::adapter::pick(&adapters, None, power_preference, false).ok()?;
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
