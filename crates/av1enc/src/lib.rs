@@ -23,9 +23,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Rate control mode for AV1 software encoder.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RateControl {
-    /// Constant Quality / CRF-like mode (crf 0.0..63.0, mapped to qindex 0..255).
+    /// Constant Quality / CRF-like mode (crf 0.0..51.0, mapped to qindex 1..=255).
     ConstantQuality(f32),
-    /// Direct quantization index (0..=1 = minimum quantizer / highest quality, 255 = maximum compression).
+    /// Direct quantization index (1 = minimum DCT quantizer / highest quality, 255 = maximum compression; 0 is clamped to 1).
     Qindex(u8),
     /// 1-pass adaptive CBR rate control targeting `kbps`.
     Cbr { kbps: u32 },
@@ -104,6 +104,9 @@ pub struct Encoder {
     ref_v: Vec<u8>,
     ref_src_y: Vec<u8>,
     last_key_frame: u64,
+    last_frame_inter_blocks: usize,
+    last_frame_intra_blocks: usize,
+    last_frame_4x4_blocks: usize,
 }
 
 #[inline]
@@ -147,17 +150,35 @@ fn copy_block(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize, 
     }
 }
 
+fn apply_spatial_aq(qindex: u8, var: u64) -> u8 {
+    let adjusted = if var > 3000 {
+        qindex.saturating_add(6)
+    } else if var > 1500 {
+        qindex.saturating_add(3)
+    } else if var < 80 {
+        qindex.saturating_sub(6).max(qindex.min(12))
+    } else if var < 250 {
+        qindex.saturating_sub(3).max(qindex.min(16))
+    } else {
+        qindex
+    };
+    adjusted.max(1)
+}
+
 impl Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self> {
+        let sb_cols = config.width.div_ceil(64);
+        let sb_rows = config.height.div_ceil(64);
         if config.width == 0
             || config.height == 0
-            || config.width > 8192
-            || config.height > 8192
-            || u64::from(config.width) * u64::from(config.height) > 8192 * 4320
             || !config.width.is_multiple_of(2)
             || !config.height.is_multiple_of(2)
+            || sb_cols > 64
+            || config.height > 4352
+            || u64::from(sb_cols).saturating_mul(u64::from(sb_rows)) > 2304
+            || u64::from(config.width).saturating_mul(u64::from(config.height)) > 8_912_896
         {
-            return Err(Error::Invalid("dimensions must be even and within the 8K limit"));
+            return Err(Error::Invalid("dimensions must be even and within the 4K Level 5.0 single-tile limit"));
         }
         if config.fps_num == 0 || config.fps_den == 0 || config.key_int == 0 {
             return Err(Error::Invalid("frame rate and keyframe interval must be positive"));
@@ -174,10 +195,10 @@ impl Encoder {
             }
         }
         let initial_qindex = match config.rate_control {
-            Some(RateControl::ConstantQuality(crf)) => (crf * 4.0).round().clamp(0.0, 255.0) as u8,
-            Some(RateControl::Qindex(q)) => q,
-            Some(RateControl::Cbr { .. } | RateControl::Vbr { .. }) => config.qindex,
-            None => config.qindex,
+            Some(RateControl::ConstantQuality(crf)) => (crf * 4.0).round().clamp(1.0, 255.0) as u8,
+            Some(RateControl::Qindex(q)) => q.max(1),
+            Some(RateControl::Cbr { .. } | RateControl::Vbr { .. }) => config.qindex.max(1),
+            None => config.qindex.max(1),
         };
         let y_len = (config.width as usize).saturating_mul(config.height as usize);
         let uv_len = ((config.width as usize) / 2).saturating_mul((config.height as usize) / 2);
@@ -194,7 +215,22 @@ impl Encoder {
             ref_v: vec![128; uv_len],
             ref_src_y: vec![0; y_len],
             last_key_frame: 0,
+            last_frame_inter_blocks: 0,
+            last_frame_intra_blocks: 0,
+            last_frame_4x4_blocks: 0,
         })
+    }
+
+    pub fn last_frame_inter_blocks(&self) -> usize {
+        self.last_frame_inter_blocks
+    }
+
+    pub fn last_frame_intra_blocks(&self) -> usize {
+        self.last_frame_intra_blocks
+    }
+
+    pub fn last_frame_4x4_blocks(&self) -> usize {
+        self.last_frame_4x4_blocks
     }
 
     pub fn config(&self) -> &EncoderConfig {
@@ -298,15 +334,7 @@ impl Encoder {
 
         if self.config.spatial_aq && !frame.y.is_empty() {
             let var = intra::block_variance(frame.y, frame.y_stride, self.config.width as usize, self.config.height as usize);
-            if var > 3000 {
-                qindex = qindex.saturating_add(6);
-            } else if var > 1500 {
-                qindex = qindex.saturating_add(3);
-            } else if var < 80 {
-                qindex = qindex.saturating_sub(6).max(12);
-            } else if var < 250 {
-                qindex = qindex.saturating_sub(3).max(16);
-            }
+            qindex = apply_spatial_aq(qindex, var);
         }
 
         let fh_cfg =
@@ -464,6 +492,9 @@ impl Encoder {
             grid_ref_frame: &mut grid_ref_frame,
             above_dc: &mut above_dc,
             left_dc: &mut left_dc,
+            inter_blocks: 0,
+            intra_blocks: 0,
+            blocks_4x4: 0,
         };
 
         for sb_r in 0..sb_rows as usize {
@@ -482,6 +513,10 @@ impl Encoder {
                 encode_partition(&mut enc_ctx, r, c, 4, sb_info.split, Some((sb_info.mode, sb_info.is_flat, sb_info.is_inter)));
             }
         }
+
+        self.last_frame_inter_blocks = enc_ctx.inter_blocks;
+        self.last_frame_intra_blocks = enc_ctx.intra_blocks;
+        self.last_frame_4x4_blocks = enc_ctx.blocks_4x4;
 
         let tile_payload = sym.finish();
         tu.extend_from_slice(&obu::write_obu(obu::OBU_TILE_GROUP, &tile_payload));
@@ -561,6 +596,9 @@ struct TileEncodeCtx<'a, 'f> {
     grid_ref_frame: &'a mut [i8],
     above_dc: &'a mut [Vec<u8>; 3],
     left_dc: &'a mut [Vec<u8>; 3],
+    inter_blocks: usize,
+    intra_blocks: usize,
+    blocks_4x4: usize,
 }
 
 fn write_split_bool(sym: &mut symbol::SymbolEncoder, pcdf: &[u16], split_or_horz: bool) {
@@ -908,6 +946,7 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
             ctx.grid_ref_frame[span.clone()].fill(1);
             ctx.grid_bsl[span].fill(bsl as u8);
         }
+        ctx.inter_blocks = ctx.inter_blocks.saturating_add(1);
         return;
     }
 
@@ -1155,6 +1194,10 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
         ctx.grid_skip[span.clone()].fill(!has_residual);
         ctx.grid_ref_frame[span.clone()].fill(0);
         ctx.grid_bsl[span].fill(bsl as u8);
+    }
+    ctx.intra_blocks = ctx.intra_blocks.saturating_add(1);
+    if bsl == 0 {
+        ctx.blocks_4x4 = ctx.blocks_4x4.saturating_add(1);
     }
 }
 
@@ -1758,5 +1801,28 @@ mod tests {
 
         assert_eq!(compute_mse(&[], &[]), None);
         assert_eq!(compute_mse(&[1], &[1, 2]), None);
+    }
+
+    #[test]
+    fn enforces_4k_level_5_0_single_tile_dimensions() {
+        for (w, h) in [(5120, 2880), (7680, 4320), (4098, 2160)] {
+            assert!(
+                matches!(Encoder::new(EncoderConfig::new(w, h, 24, 1)), Err(Error::Invalid(_))),
+                "{w}x{h} must be rejected under single-tile Level 5.0 limits"
+            );
+        }
+        for (w, h) in [(4096, 2160), (3840, 2160)] {
+            assert!(Encoder::new(EncoderConfig::new(w, h, 24, 1)).is_ok(), "{w}x{h} must be accepted");
+        }
+    }
+
+    #[test]
+    fn spatial_aq_never_raises_low_crf_qindex_on_low_variance() {
+        for q in 1..=16u8 {
+            for var in [0u64, 50, 150, 249] {
+                let adj = apply_spatial_aq(q, var);
+                assert!(adj >= 1 && adj <= q, "q={q} var={var} raised qindex to {adj}");
+            }
+        }
     }
 }

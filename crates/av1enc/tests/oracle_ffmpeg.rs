@@ -363,3 +363,179 @@ fn ffmpeg_and_ffprobe_verify_4k_level_12_agreement() {
         }
     }
 }
+
+fn generate_mixed_inter_intra_4x4_frame(w: u32, h: u32, f_idx: u32) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut y_p = vec![128u8; (w * h) as usize];
+    let mut u_p = vec![128u8; ((w / 2) * (h / 2)) as usize];
+    let mut v_p = vec![128u8; ((w / 2) * (h / 2)) as usize];
+    let sq_x = 340 + f_idx * 24;
+    let sq_y = 40 + f_idx * 16;
+
+    for y in 0..h {
+        for x in 0..w {
+            let y_val = if (x < 256 && y < 192) || (256..304).contains(&x) && y < 192 {
+                // Noise-free uniform static region: zero reconstruction delta -> guaranteed INTER
+                // blocks next to intra 4x4 splits even at qindex=1.
+                128u8
+            } else if x < 256 {
+                // Static noise-free 64x64 tiles for quantized inter at qindex >= 50.
+                (64 + 40 * (((x / 64) + (y / 64)) % 4)) as u8
+            } else if x < 320 {
+                // High-contrast moving 4px checkerboard adjacent to 256..304 -> forces superblock
+                // splits down to 4x4 intra next to inter sub-blocks.
+                if ((x / 4 + y / 4 + f_idx) & 1) == 0 { 220 } else { 40 }
+            } else if x >= sq_x && x < sq_x + 96 && y >= sq_y && y < sq_y + 96 {
+                215
+            } else {
+                let checker = ((x / 4 + y / 4 + f_idx) & 1) * 48;
+                let base = ((x - 320) * 140 / (w - 320).max(1)) + (y * 60 / h);
+                (32 + base + checker).min(235) as u8
+            };
+            y_p[(y * w + x) as usize] = y_val;
+        }
+    }
+
+    for cy in 0..(h / 2) {
+        let y = cy * 2;
+        for cx in 0..(w / 2) {
+            let x = cx * 2;
+            let (u_val, v_val) = if x < 304 && y < 192 {
+                (128u8, 128u8)
+            } else if x < 256 {
+                (112u8, 144u8)
+            } else if x < 320 {
+                if ((x / 4 + y / 4 + f_idx) & 1) == 0 { (96u8, 160u8) } else { (160u8, 96u8) }
+            } else if x >= sq_x && x < sq_x + 96 && y >= sq_y && y < sq_y + 96 {
+                (70u8, 195u8)
+            } else {
+                ((96 + ((cx + f_idx * 5) % 64)) as u8, (160 - ((cy + f_idx * 3) % 64)) as u8)
+            };
+            u_p[(cy * (w / 2) + cx) as usize] = u_val;
+            v_p[(cy * (w / 2) + cx) as usize] = v_val;
+        }
+    }
+    (y_p, u_p, v_p)
+}
+
+#[test]
+fn ffmpeg_decodes_mixed_inter_and_intra_4x4_stream() {
+    let ffmpeg = filmcraft_testkit::require_ffmpeg!();
+    let (w, h) = (642u32, 362u32);
+    let decoders_out = Command::new(&ffmpeg).args(["-hide_banner", "-decoders"]).output().unwrap();
+    let decoders_str = String::from_utf8_lossy(&decoders_out.stdout);
+    let active_decoders: Vec<&str> = ["libaom-av1", "libdav1d"].into_iter().filter(|d| decoders_str.contains(d)).collect();
+    assert!(!active_decoders.is_empty(), "expected libaom-av1 and/or libdav1d in ffmpeg decoders");
+
+    for (tag, rc, require_4x4) in
+        [("q90", RateControl::Qindex(90), false), ("q50", RateControl::Qindex(50), true), ("cq0", RateControl::ConstantQuality(0.0), true)]
+    {
+        let mut cfg = EncoderConfig::new(w, h, 24, 1);
+        cfg.preset = Preset::Balanced;
+        cfg.key_int = 60;
+        cfg.spatial_aq = true;
+        cfg.rate_control = Some(rc);
+
+        let mut enc = Encoder::new(cfg).unwrap();
+        let mut pkts = Vec::new();
+        let mut inter_totals = Vec::new();
+        let mut intra_totals = Vec::new();
+        let mut b4x4_totals = Vec::new();
+
+        for f_idx in 0..6u32 {
+            let (y_p, u_p, v_p) = generate_mixed_inter_intra_4x4_frame(w, h, f_idx);
+            let yf = YuvFrame { y: &y_p, u: &u_p, v: &v_p, y_stride: w as usize, uv_stride: (w / 2) as usize };
+            let pkt = enc.encode(&yf, (f_idx as i64) * 1000).unwrap();
+            let inter = enc.last_frame_inter_blocks();
+            let intra = enc.last_frame_intra_blocks();
+            let b4x4 = enc.last_frame_4x4_blocks();
+            if f_idx == 0 {
+                assert!(pkt.keyframe, "{tag}: frame 0 must be keyframe");
+                assert_eq!(inter, 0, "{tag}: keyframe cannot contain inter blocks");
+            } else {
+                assert!(!pkt.keyframe, "{tag}: frame {f_idx} must be an inter P-frame");
+                assert!(inter > 0, "{tag} frame {f_idx}: expected inter blocks > 0, got 0");
+                assert!(intra > 0, "{tag} frame {f_idx}: expected intra blocks > 0, got 0");
+                if require_4x4 {
+                    assert!(b4x4 > 0, "{tag} frame {f_idx}: expected 4x4 splits > 0, got 0");
+                }
+            }
+            if require_4x4 {
+                assert!(b4x4 > 0, "{tag} frame {f_idx}: expected 4x4 blocks > 0, got 0");
+            }
+            inter_totals.push(inter);
+            intra_totals.push(intra);
+            b4x4_totals.push(b4x4);
+            pkts.push(pkt);
+        }
+
+        let mut cur = Cursor::new(Vec::new());
+        let mut wr = Mp4Writer::new(&mut cur, WriterOptions::new(Brand::Mp4)).unwrap();
+        let tid = wr
+            .add_track(TrackConfig::new(
+                SampleEntry::av1(
+                    Av1Config {
+                        seq_profile: 0,
+                        seq_level_idx_0: enc.seq_level_idx(),
+                        seq_tier_0: false,
+                        high_bitdepth: false,
+                        twelve_bit: false,
+                        monochrome: false,
+                        chroma_subsampling_x: true,
+                        chroma_subsampling_y: true,
+                        chroma_sample_position: 0,
+                        initial_presentation_delay_minus_one: None,
+                        config_obus: enc.sequence_header_obu(),
+                    },
+                    w as u16,
+                    h as u16,
+                ),
+                24,
+            ))
+            .unwrap();
+        for p in &pkts {
+            wr.write_sample(tid, WriteSample { data: &p.data, duration: 1, is_sync: p.keyframe, composition_offset: 0 }).unwrap();
+        }
+        wr.finish().unwrap();
+
+        let mp4_file = temp_mp4(&format!("test_av1enc_mixed_inter_intra_{tag}.mp4"));
+        fs::write(&mp4_file.0, cur.into_inner()).unwrap();
+
+        let mut in_tree_dec = craft_video::av1::decode::Decoder::new();
+        let mut in_tree_pics = Vec::new();
+        for p in &pkts {
+            in_tree_pics.extend(in_tree_dec.decode(&p.data).unwrap());
+        }
+        in_tree_pics.extend(in_tree_dec.flush());
+        assert_eq!(in_tree_pics.len(), 6);
+
+        let y_len = (w * h) as usize;
+        let uv_len = ((w / 2) * (h / 2)) as usize;
+        let frame_bytes = y_len + 2 * uv_len;
+        for &dec_name in &active_decoders {
+            let out = Command::new(&ffmpeg)
+                .args(["-v", "error", "-xerror", "-c:v", dec_name, "-i"])
+                .arg(&mp4_file.0)
+                .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{dec_name} failed on {tag}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(out.stdout.len(), 6 * frame_bytes, "{dec_name} output byte count mismatch on {tag}");
+            for (fi, pic) in in_tree_pics.iter().enumerate() {
+                let base = fi * frame_bytes;
+                let dec_y = &out.stdout[base..base + y_len];
+                let dec_u = &out.stdout[base + y_len..base + y_len + uv_len];
+                let dec_v = &out.stdout[base + y_len + uv_len..base + frame_bytes];
+                for (idx, (&dy, &iy)) in dec_y.iter().zip(pic.planes[0].iter()).enumerate() {
+                    assert_eq!(dy as u16, iy, "{tag} {dec_name} Y mismatch frame {fi} idx {idx}");
+                }
+                for (idx, (&du, &iu)) in dec_u.iter().zip(pic.planes[1].iter()).enumerate() {
+                    assert_eq!(du as u16, iu, "{tag} {dec_name} U mismatch frame {fi} idx {idx}");
+                }
+                for (idx, (&dv, &iv)) in dec_v.iter().zip(pic.planes[2].iter()).enumerate() {
+                    assert_eq!(dv as u16, iv, "{tag} {dec_name} V mismatch frame {fi} idx {idx}");
+                }
+            }
+            println!("{tag} ({dec_name}): inter={inter_totals:?}, intra={intra_totals:?}, blocks_4x4={b4x4_totals:?} -> bit-exact match");
+        }
+    }
+}

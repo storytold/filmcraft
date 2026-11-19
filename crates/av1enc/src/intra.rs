@@ -1,11 +1,13 @@
-//! Intra prediction for 4x4, 8x8, 16x16, 32x32, and 64x64 blocks (spec 7.11.2).
+//! Intra prediction helpers for 4x4, 8x8, 16x16, 32x32, and 64x64 blocks (spec 7.11.2).
 //!
-//! Provides DC, Vertical, Horizontal, Smooth, and Paeth prediction modes with distortion optimization.
+//! Provides DC, Vertical, and Horizontal SAD evaluation and block variance helpers.
 
 pub const DC_PRED: u8 = 0;
 pub const V_PRED: u8 = 1;
 pub const H_PRED: u8 = 2;
+#[cfg(test)]
 pub const SMOOTH_PRED: u8 = 9;
+#[cfg(test)]
 pub const PAETH_PRED: u8 = 12;
 
 /// Compute intra prediction for a block of size (w, h).
@@ -13,6 +15,7 @@ pub const PAETH_PRED: u8 = 12;
 /// `above`: pixel row above the block (length >= w).
 /// `left`: pixel column left of the block (length >= h).
 /// `mode`: DC_PRED, V_PRED, H_PRED, SMOOTH_PRED, or PAETH_PRED.
+#[cfg(test)]
 pub fn predict_intra_block(mode: u8, w: usize, h: usize, above: Option<&[u8]>, left: Option<&[u8]>, dst: &mut [u8], dst_stride: usize) {
     let valid_above = above.and_then(|a| a.get(..w));
     let valid_left = left.and_then(|l| l.get(..h));
@@ -162,6 +165,7 @@ pub fn sad_h(src: &[u8], src_stride: usize, w: usize, h: usize, left: &[u8]) -> 
     sad
 }
 
+#[cfg(test)]
 pub fn sad_smooth(src: &[u8], src_stride: usize, w: usize, h: usize, above: &[u8], left: &[u8]) -> u64 {
     let mut sad = 0u64;
     let Some(ab) = above.get(..w) else {
@@ -200,6 +204,7 @@ pub fn sad_smooth(src: &[u8], src_stride: usize, w: usize, h: usize, above: &[u8
     sad
 }
 
+#[cfg(test)]
 pub fn sad_paeth(src: &[u8], src_stride: usize, w: usize, h: usize, above: &[u8], left: &[u8], top_left: u8) -> u64 {
     let mut sad = 0u64;
     let Some(ab) = above.get(..w) else {
@@ -272,6 +277,7 @@ pub fn block_variance(src: &[u8], stride: usize, w: usize, h: usize) -> u64 {
 ///
 /// Features early mode termination: if DC prediction error is already negligible (e.g. flat block),
 /// skips evaluation of directional and smooth modes to drastically reduce encode latency.
+#[cfg(test)]
 pub fn choose_best_intra_mode(src: &[u8], src_stride: usize, w: usize, h: usize, above: Option<&[u8]>, left: Option<&[u8]>) -> u8 {
     let dc = get_dc_val(above, left, w, h);
     let mut best_sad = sad_dc(src, src_stride, w, h, dc);
@@ -317,6 +323,7 @@ pub fn choose_best_intra_mode(src: &[u8], src_stride: usize, w: usize, h: usize,
     best_mode
 }
 
+#[cfg(test)]
 fn predict_smooth(above: &[u8], left: &[u8], w: usize, h: usize, dst: &mut [u8], dst_stride: usize) {
     let Some(ab) = above.get(..w) else {
         return;
@@ -350,6 +357,7 @@ fn predict_smooth(above: &[u8], left: &[u8], w: usize, h: usize, dst: &mut [u8],
     }
 }
 
+#[cfg(test)]
 fn predict_paeth(above: &[u8], left: &[u8], top_left: u8, w: usize, h: usize, dst: &mut [u8], dst_stride: usize) {
     let Some(ab) = above.get(..w) else {
         return;
@@ -383,6 +391,7 @@ fn predict_paeth(above: &[u8], left: &[u8], top_left: u8, w: usize, h: usize, ds
     }
 }
 
+#[cfg(test)]
 fn fill_dc(val: u8, w: usize, h: usize, dst: &mut [u8], dst_stride: usize) {
     for y in 0..h {
         let Some(row_start) = y.checked_mul(dst_stride) else { continue };

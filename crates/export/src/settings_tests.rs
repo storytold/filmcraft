@@ -1840,3 +1840,102 @@ fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error(
     assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
 }
+
+#[test]
+#[ignore = "1080p AV1 vs H.264 comparison benchmark"]
+fn av1_vs_h264_1080p_comparison() {
+    let ffmpeg = filmcraft_testkit::require_ffmpeg!();
+    let (w, h, n_frames) = (1920u32, 1080u32, 48usize);
+    let r = FrameRate::FPS_24;
+    let dur = Tick(4 * TICKS_PER_SECOND);
+    let g = GeneratorSource::new(Generator::Demo(filmcraft_media::DemoScene::OceanSunset), w, h, r, dur);
+    let info = g.info().clone();
+    let mut p = Project::new("cmp");
+    let id = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let src: Arc<dyn MediaSource> = Arc::new(g);
+    let mut m = SourceMap::default();
+    m.0.insert(id, src.clone());
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: r, ..Default::default() }, 1, 0, None);
+    let vi = p.make_track_item(id, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(n_frames as i64)), r).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(vi);
+    let p = Arc::new(p);
+
+    let y_len = (w * h) as usize;
+    let uv_len = ((w / 2) * (h / 2)) as usize;
+    let frame_bytes = y_len + 2 * uv_len;
+    let mut ref_yuv = Vec::with_capacity(n_frames);
+    for i in 0..n_frames {
+        let vf = src.video_frame(FrameRequest::full(r.tick_of(i as i64))).unwrap();
+        let rgba = vf.to_rgba8();
+        let (mut ry, mut ru, mut rv) = (Vec::new(), Vec::new(), Vec::new());
+        crate::convert::rgba_to_yuv420_8(&rgba, w as usize, h as usize, &mut ry, &mut ru, &mut rv);
+        ref_yuv.push((ry, ru, rv));
+    }
+
+    let dir = Scratch::new("av1-vs-h264-1080p");
+    println!("| Codec | Mode | Size (bytes) | Bitrate (kbps) | Y PSNR (dB) | U PSNR (dB) | V PSNR (dB) | Speed (fps) |");
+    println!("|---|---|---:|---:|---:|---:|---:|---:|");
+
+    for (codec_name, format) in [("AV1 (software)", Format::Av1), ("H.264 (built-in)", Format::H264)] {
+        for (mode_name, bitrate_mode, bitrate_kbps, max_bitrate_kbps, crf) in [
+            ("CBR 8000", BitrateMode::Cbr, 8000, None, 23.0),
+            ("VBR 8000", BitrateMode::Vbr1Pass, 8000, Some(10_000), 23.0),
+            ("CRF 23", BitrateMode::Crf, 8000, None, 23.0),
+        ] {
+            let out_path = dir.path(&format!("{}_{}.mp4", format.id(), mode_name.replace(' ', "_")));
+            let s = ExportSettings {
+                format,
+                path: out_path.clone(),
+                hardware_encoding: HardwareEncoding::Off,
+                include_audio: false,
+                bitrate_mode,
+                bitrate_kbps,
+                max_bitrate_kbps,
+                crf,
+                range: Some(TimeRange::new(Tick::ZERO, r.tick_of(n_frames as i64))),
+                ..Default::default()
+            };
+            let t0 = std::time::Instant::now();
+            let rep = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+            let elapsed = t0.elapsed().as_secs_f64();
+            assert_eq!(rep.frames as usize, n_frames);
+            let fps = (n_frames as f64) / elapsed.max(1e-6);
+            let actual_kbps = (rep.bytes as f64 * 8.0) / ((n_frames as f64) / 24.0) / 1000.0;
+
+            let out = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-xerror", "-i", &out_path, "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{codec_name} {mode_name}: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(out.stdout.len(), n_frames * frame_bytes);
+
+            let (mut sy, mut su, mut sv) = (0.0f64, 0.0f64, 0.0f64);
+            for (fi, (ry, ru, rv)) in ref_yuv.iter().enumerate() {
+                let base = fi * frame_bytes;
+                let dy = &out.stdout[base..base + y_len];
+                let du = &out.stdout[base + y_len..base + y_len + uv_len];
+                let dv = &out.stdout[base + y_len + uv_len..base + frame_bytes];
+                sy += filmcraft_av1enc::compute_psnr(ry, dy).unwrap();
+                su += filmcraft_av1enc::compute_psnr(ru, du).unwrap();
+                sv += filmcraft_av1enc::compute_psnr(rv, dv).unwrap();
+            }
+            let n = n_frames as f64;
+            println!("| {codec_name} | {mode_name} | {} | {:.1} | {:.2} | {:.2} | {:.2} | {:.2} |", rep.bytes, actual_kbps, sy / n, su / n, sv / n, fps);
+        }
+    }
+}
