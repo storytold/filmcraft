@@ -295,6 +295,57 @@ fn a_project_panel_narrowed_beside_tools_keeps_its_footer_controls_apart() {
     }
 }
 
+/// #4586: when the Project panel becomes too narrow for the Zoom slider while that slider is being
+/// dragged, the drag still ends: the size it reached is saved, or Escape keeps the size it started
+/// from. Neither is left as an unsaved preview.
+#[test]
+fn a_zoom_drag_ends_when_the_panel_gets_too_narrow_for_the_slider() {
+    for escape in [false, true] {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("project.view.set", json!({"view": "icon"})).unwrap();
+        let app = FilmcraftApp::new(session);
+        let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(10_000).build_eframe(move |_| app);
+        frames(&mut h, 4);
+        let size = |h: &Harness<'_, FilmcraftApp>| h.state().session.prefs.project_panel.view.icon_size;
+        let start = size(&h);
+        let r = h.state().auto.find("project.iconSize").expect("the Zoom slider").rect;
+        let from = pos2(r[0] + r[2] * 0.3, r[1] + r[3] * 0.5);
+        let to = pos2(r[0] + r[2] * 0.9, r[1] + r[3] * 0.5);
+        h.event(Event::PointerMoved(from));
+        step(&mut h);
+        h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        step(&mut h);
+        for fraction in [0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+            h.event(Event::PointerMoved(from.lerp(to, fraction)));
+            step(&mut h);
+        }
+        let dragged = h.state().ui.project_panel.icon_size_drag.expect("the Zoom drag did not start");
+        assert_ne!(dragged, start, "the drag did not change the thumbnail size");
+        // the panel narrows under the pointer, so the footer has no room for the slider
+        h.state_mut().ui.dock = craft_ui::docking::Layout {
+            root: Some(craft_ui::docking::Node::Split {
+                axis: craft_ui::layout::SplitAxis::Horizontal,
+                size: craft_ui::layout::SplitSize::FixedFirst(160.0),
+                first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+                second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+            }),
+            floating: vec![],
+        };
+        frames(&mut h, 3);
+        let width = h.state().auto.find("panel.Project").expect("the Project panel").rect[2];
+        assert!(h.state().auto.find("project.iconSize").is_none(), "the {width}-wide footer still draws the Zoom slider");
+        if escape {
+            press(&mut h, Key::Escape);
+        }
+        h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        frames(&mut h, 3);
+        assert!(h.state().ui.project_panel.icon_size_drag.is_none(), "escape {escape}: the drag is still previewed");
+        let expected = if escape { start } else { dragged };
+        assert!((size(&h) - expected).abs() < 0.5, "escape {escape}: the size is {} not {expected}", size(&h));
+    }
+}
+
 fn drag_with(h: &mut Harness<'_, FilmcraftApp>, button: PointerButton, from: egui::Pos2, to: egui::Pos2) {
     h.event(Event::PointerMoved(from));
     step(h);

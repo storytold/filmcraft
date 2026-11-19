@@ -600,6 +600,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let room = right_start - 6.0 - (x + 8.0) - sort_w;
     if room >= 40.0 {
         x = zoom_slider(app, ui, bar, x, (bar.width() - 300.0).clamp(40.0, 120.0).min(room), v, actions);
+    } else if v.inst == Inst::Main {
+        // the slider is left out at this width, so it cannot see the end of a drag it began: end
+        // that here, keeping the dragged size on release or the size it started from on Escape
+        end_zoom_drag(app, ui, pre, actions);
     }
     // Sort Icons (Icon view)
     if v.mode == ViewMode::Icon && x + 24.0 <= right_start - 6.0 {
@@ -676,7 +680,8 @@ const RIGHT_BUTTONS: usize = 5;
 
 /// The footer's Zoom slider, `sw` wide after `x`; gives the x after it. The thumbnail size is in
 /// UI state while dragging and saved on release (had the drag changed the preferences already,
-/// the command would see nothing new and not write preferences.json).
+/// the command would see nothing new and not write preferences.json). A footer too narrow to draw
+/// the slider ends its drag through [`end_zoom_drag`] instead.
 fn zoom_slider(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, x: f32, sw: f32, v: &View, actions: &mut Actions) -> f32 {
     let pre = &v.prefix;
     let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
@@ -717,6 +722,25 @@ fn zoom_slider(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, x: f32, sw:
         }
     }
     sr.max.x + 6.0
+}
+
+/// Ends a Zoom drag that [`zoom_slider`] is not drawn for, because the footer has no room for the
+/// slider (#4586): the size the drag reached is saved as a release does, or with Escape the drag
+/// keeps the size it started from. A drag still under the pointer is left alone until it ends.
+fn end_zoom_drag(app: &mut FilmcraftApp, ui: &egui::Ui, pre: &str, actions: &mut Actions) {
+    let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if ui.input(|i| i.pointer.primary_down()) && !escaped {
+        return;
+    }
+    let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
+    ui.data_mut(|d| {
+        d.remove_temp::<f32>(orig_id);
+    });
+    if let Some(sz) = app.ui.project_panel.icon_size_drag.take()
+        && !escaped
+    {
+        actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+    }
 }
 
 pub const NEW_ITEMS: [(&str, &str); 8] = [
