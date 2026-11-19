@@ -7,6 +7,9 @@ use super::stats::{Stage, timed};
 use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
 use std::sync::{Arc, Mutex, PoisonError};
 
+#[path = "mjpeg.rs"]
+mod mjpeg;
+
 struct MjpegEncoder {
     w: u16,
     h: u16,
@@ -22,10 +25,7 @@ impl VideoEncoder for MjpegEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let rgb: Vec<u8> = f.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
-        let mut out = Vec::new();
-        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, self.quality);
-        enc.encode(&rgb, f.width, f.height, image::ExtendedColorType::Rgb8).map_err(|e| ExportError::Encode(e.to_string()))?;
+        let out = mjpeg::encode(f.rgba, f.width, f.height, self.quality).map_err(ExportError::Encode)?;
         Ok(vec![EncodedPacket { data: out, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
@@ -548,4 +548,31 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
             })
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
+}
+
+#[cfg(test)]
+mod mjpeg_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn mjpeg_packet_timing_and_quality_clamp_stay_in_the_adapter() {
+        for rate in [FrameRate::FPS_24, FrameRate::FPS_29_97] {
+            for (requested, clamped) in [(0, 1), (75, 75), (255, 100)] {
+                let settings = ExportSettings { quality: requested, ..Default::default() };
+                let mut encoder = mjpeg_factory(Format::Mjpeg, 1, 1, rate, &settings).unwrap().unwrap();
+                assert_eq!(encoder.timescale(), rate.num as u32);
+                let rgba = [25, 80, 195, 123];
+                for index in [0, 1, 99] {
+                    let packets = encoder.encode(&EncoderFrame { width: 1, height: 1, rgba: &rgba, hdr: None, index }).unwrap();
+                    assert_eq!(packets.len(), 1);
+                    let packet = &packets[0];
+                    assert!(packet.key);
+                    assert_eq!(packet.duration, rate.den as u32);
+                    assert_eq!(packet.composition_offset, 0);
+                    assert_eq!(packet.data, mjpeg::encode(&rgba, 1, 1, clamped).unwrap());
+                }
+                assert!(encoder.flush().unwrap().is_empty());
+            }
+        }
+    }
 }
