@@ -42,6 +42,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.turkish", "Türkçe", ["Edit", "Language"], None),
     uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.hebrew", "עברית", ["Edit", "Language"], None),
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
@@ -269,6 +270,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.polish"
             | "app.language.swedish"
             | "app.language.turkish"
+            | "app.language.hebrew"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -282,11 +284,15 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         if id == "app.language.korean" && !crate::i18n::korean_font_available() {
             return Err("no Korean font is installed on this system (for example Malgun Gothic or Noto Sans CJK KR); the interface stays in English".into());
         }
+        if id == "app.language.hebrew" && !crate::i18n::hebrew_font_available() {
+            return Err("no Hebrew font is installed on this system (for example Noto Sans Hebrew); the interface stays in English".into());
+        }
         let language = match id {
             "app.language.japanese" => crate::i18n::Language::Ja,
             "app.language.spanish" => crate::i18n::Language::Es,
             "app.language.portuguese" => crate::i18n::Language::PtBr,
             "app.language.ukrainian" => crate::i18n::Language::Uk,
+            "app.language.hebrew" => crate::i18n::Language::He,
             "app.language.chinese" => crate::i18n::Language::ZhCn,
             "app.language.german" => crate::i18n::Language::De,
             "app.language.russian" => crate::i18n::Language::Ru,
@@ -306,6 +312,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
         app.ui.language = language;
         crate::i18n::set_current(language);
+        crate::theme::apply_direction(ctx, language);
         if let Err(e) = saved {
             app.ui.status = tlf!("The language changed but could not be saved: {e}", e);
         }
@@ -972,6 +979,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
             "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
             "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
+            "app.language.hebrew" => it.checked = Some(app.ui.language == crate::i18n::Language::He),
             _ => {}
         }
         if let Some(on) = engine_toggle(&app.session, &it.id) {

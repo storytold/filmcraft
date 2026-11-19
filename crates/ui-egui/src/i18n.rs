@@ -58,12 +58,15 @@ pub enum Language {
     /// Swedish.
     Sv,
     Tr,
+    /// Hebrew.
+    He,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
 static SPANISH: OnceLock<Catalog> = OnceLock::new();
 static PORTUGUESE: OnceLock<Catalog> = OnceLock::new();
 static UKRAINIAN: OnceLock<Catalog> = OnceLock::new();
+static HEBREW: OnceLock<Catalog> = OnceLock::new();
 static CHINESE: OnceLock<Catalog> = OnceLock::new();
 static GERMAN: OnceLock<Catalog> = OnceLock::new();
 static RUSSIAN: OnceLock<Catalog> = OnceLock::new();
@@ -78,12 +81,13 @@ static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
         Self::PtBr,
         Self::Uk,
+        Self::He,
         Self::ZhCn,
         Self::De,
         Self::Ru,
@@ -119,6 +123,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::He => "he",
         }
     }
 
@@ -141,6 +146,7 @@ impl Language {
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
             Self::Tr => "Türkçe",
+            Self::He => "עברית",
         }
     }
 
@@ -151,6 +157,7 @@ impl Language {
             "es" => Some(Self::Es),
             "pt-br" => Some(Self::PtBr),
             "uk" => Some(Self::Uk),
+            "he" => Some(Self::He),
             "zh-cn" => Some(Self::ZhCn),
             "de" => Some(Self::De),
             "ru" => Some(Self::Ru),
@@ -177,12 +184,14 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 19] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
             ("pt", Language::PtBr),
             ("uk", Language::Uk),
+            ("he", Language::He),
+            ("iw", Language::He),
             ("de", Language::De),
             ("ru", Language::Ru),
             ("fr", Language::Fr),
@@ -232,7 +241,13 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::He => "he",
         }
+    }
+
+    /// Whether the interface chrome flows right to left for this language.
+    pub const fn is_rtl(self) -> bool {
+        matches!(self, Self::He)
     }
 
     /// The language's catalog (none for English, the source language).
@@ -243,6 +258,7 @@ impl Language {
             Self::Es => Some(SPANISH.get_or_init(|| Catalog::parse(include_str!("i18n/es.tsv")))),
             Self::PtBr => Some(PORTUGUESE.get_or_init(|| Catalog::parse(include_str!("i18n/pt-br.tsv")))),
             Self::Uk => Some(UKRAINIAN.get_or_init(|| Catalog::parse(include_str!("i18n/uk.tsv")))),
+            Self::He => Some(HEBREW.get_or_init(|| Catalog::parse(include_str!("i18n/he.tsv")))),
             Self::ZhCn => Some(CHINESE.get_or_init(|| Catalog::parse(include_str!("i18n/zh-cn.tsv")))),
             Self::De => Some(GERMAN.get_or_init(|| Catalog::parse(include_str!("i18n/de.tsv")))),
             Self::Ru => Some(RUSSIAN.get_or_init(|| Catalog::parse(include_str!("i18n/ru.tsv")))),
@@ -488,6 +504,12 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Whether the interface can show Hebrew (`theme::install` adds craft-fonts or an installed system
+/// Hebrew face, see `rtl.rs`). False on systems (and web builds) without one.
+pub fn hebrew_font_available() -> bool {
+    crate::rtl::hebrew_available()
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -518,6 +540,7 @@ mod feature_name_tests {
             ("de", include_str!("i18n/de.tsv")),
             ("es", include_str!("i18n/es.tsv")),
             ("fr", include_str!("i18n/fr.tsv")),
+            ("he", include_str!("i18n/he.tsv")),
             ("id", include_str!("i18n/id.tsv")),
             ("it", include_str!("i18n/it.tsv")),
             ("ja", include_str!("i18n/ja.tsv")),

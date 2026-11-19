@@ -60,6 +60,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | *Other shipped:* Swedish | sv | 3,581 (100%) | as Spanish | Latin (bundled fonts, å ä ö) | not recorded; welcome | partial | review |
 | *Other shipped:* Turkish | tr | 3,590 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
 | *Other shipped:* Bosnian | bs | 3,749 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
+| *Other shipped:* Hebrew | he | 3,750 (every entry across the catalogs) | as Spanish, plus missing-font notice | craft-fonts or installed system Hebrew font (`rtl.rs`), RTL chrome & docking (`right_to_left`), Bidi text engine | AI-assisted, not yet native-reviewed; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the
@@ -101,6 +102,7 @@ creative effect names, and the shared `Subtitle` key (caption format and graphic
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-19 | minor | Hebrew (`he`) UI localization (`he.tsv`, 3,750 entries), `Edit ▸ Language ▸ עברית`, `he`/`iw` locale detection, Hebrew font guard, and RTL chrome/docking direction |
 | 2026-10-31 | minor | Bosnian (bs): 41 strings added since it landed translated (markers, clip mismatch, updates, work area bar, track names), 3,651 entries |
 | 2026-10-30 | minor | Bosnian (bs, Latin, Ijekavian) covers the whole interface: 3,610 entries, Edit ▸ Language ▸ Bosanski, every `bs-*` locale; AI-assisted, not native-reviewed |
 | 2026-10-26 | minor | Swedish (sv) covers the whole interface (all 3,581 strings); System Language picks it for `sv-*` locales |

@@ -81,6 +81,20 @@ fn interface_language_persists_and_rejects_hostile_values() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Hebrew is stored as `he`, not a locale or legacy tag.
+#[test]
+fn hebrew_interface_language_persists_and_rejects_locale_tags() {
+    let dir = tmp_dir("interface-language-he");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Default::default() };
+    for value in [json!("he-IL"), json!("he_IL"), json!("HE"), json!("iw")] {
+        assert!(s.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": value})).is_err(), "{value}");
+    }
+    set(&mut s, "general.interfaceLanguage", json!("he"));
+    assert_eq!(Preferences::load(&path).general.interface_language, "he");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A new installation follows the operating system's language (#218); a saved choice is kept.
 #[test]
 fn interface_language_defaults_to_the_system_language() {

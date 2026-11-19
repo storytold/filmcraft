@@ -446,6 +446,7 @@ fn path_id(path: &[bool]) -> String {
 /// release over no target cancels, and a floating window's title bar only moves it.
 fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
     let mut style = DockStyle::from_ui(ui);
+    style.right_to_left = crate::i18n::current().is_rtl();
     style.side_edge_zones = true;
     style.new_dock_zones = false;
     style.maximize_item = true;
