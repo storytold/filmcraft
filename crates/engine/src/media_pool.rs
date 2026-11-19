@@ -183,7 +183,7 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
     }
 
-    /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
+    /// Record the media, proxy and linked-project paths of `p`, loaded from `document` (None: one
     /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
     /// allows. A path already recorded keeps the document it came from first.
     pub fn add_stored(&self, p: &Project, document: Option<&str>) {
@@ -191,7 +191,7 @@ impl MediaPool {
             Some(MediaRef::File { path }) => Some(path.clone()),
             _ => None,
         });
-        self.add_stored_paths(paths, document);
+        self.add_stored_paths(paths.chain(p.project_links.values().map(|link| link.project_path.clone())), document);
     }
 
     /// [`Self::add_stored`] for single paths.
@@ -206,6 +206,11 @@ impl MediaPool {
     /// Forget the stored paths (a new project).
     pub fn clear_stored(&self) {
         self.stored.write().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+
+    /// Keep a worker's path policy independent of later project switches or user selections.
+    pub(crate) fn snapshot_path_policy(&self) -> Self {
+        Self { stored: RwLock::new(self.stored.read().unwrap_or_else(PoisonError::into_inner).clone()), ..Self::default() }
     }
 
     /// The user picked `path` in this session (import, Link Media): open it as given.

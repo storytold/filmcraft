@@ -154,12 +154,9 @@ impl ProjectAdapter for EffectCraft {
                 return Err("image-sequence dependencies are not supported yet; bake this composition".into());
             }
             if let Some(path) = k.get("path").and_then(Value::as_str) {
-                let path = if Path::new(path).is_absolute() {
-                    PathBuf::from(path)
-                } else {
-                    Path::new(&link.project_path).parent().unwrap_or(Path::new(".")).join(path)
-                };
-                let path = path.to_string_lossy();
+                // Footage paths come from the composition, not a user file picker. Refuse a
+                // foreign share/device before even metadata can initiate network access.
+                let path = crate::doc_path::resolve(path, Some(Path::new(&link.project_path))).map_err(|e| e.to_string())?;
                 dependency_bytes = dependency_bytes.checked_add(services.file_size(&path).map_err(|e| e.to_string())?).ok_or("dependency size overflow")?;
                 if dependency_bytes > 512 * 1024 * 1024 {
                     return Err("composition dependencies exceed the 512 MiB prototype budget; bake this composition".into());
@@ -247,7 +244,7 @@ impl Drop for Runtime {
 pub fn export_preflight(s: &Session) -> impl FnOnce(&filmcraft_project::Project, ItemId) -> Result<()> + Send + 'static {
     let adapters = s.project_links.adapters.clone();
     let services = s.services.clone();
-    let media = s.media.clone();
+    let media = s.media.snapshot_path_policy();
     move |project, seq| validate_export_inner(&adapters, &*services, &media, project, seq)
 }
 
@@ -272,7 +269,8 @@ fn validate_export_inner(
         let adapter = adapters
             .get(&link.provider)
             .ok_or_else(|| EngineError::Other(format!("Linked object {}: enable its renderer or bake it before exporting", link.object_name)))?;
-        let revision = adapter.revision(services, link).map_err(|e| EngineError::Other(format!("Linked object {}: {e}", link.object_name)))?;
+        let followed = followed_link(media, link).map_err(EngineError::Other)?;
+        let revision = adapter.revision(services, &followed).map_err(|e| EngineError::Other(format!("Linked object {}: {e}", link.object_name)))?;
         if revision != link.revision {
             return Err(EngineError::Other(format!("Linked object {} has changed: wait for background refresh before exporting", link.object_name)));
         }
@@ -332,7 +330,7 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let link = ProjectLink {
         version: VERSION,
         provider,
-        project_path: path,
+        project_path: path.clone(),
         object: object.id.clone(),
         object_name: object.name.clone(),
         revision: String::new(),
@@ -345,6 +343,7 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
         pr.project_links.insert(id, link);
         Ok(id)
     })?;
+    s.media.allow(&path);
     s.project_links.last_scan = None;
     s.project_links.paused = false;
     poll(s);
@@ -381,6 +380,7 @@ fn bake(s: &mut Session, p: &Value) -> Result<Value> {
                 _ => None,
             })
             .ok_or_else(|| bad("linkedProject.bake", "no rendered source"))?;
+        let source = s.media.follow(&source).map_err(|e| EngineError::Other(e.to_string()))?;
         if s.services.file_size(&source).map_err(|e| EngineError::Other(e.to_string()))? > 128 * 1024 * 1024 {
             return Err(bad("linkedProject.bake", "prototype bake is limited to 128 MiB"));
         }
@@ -427,6 +427,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         pr.project_links.insert(id, next);
         Ok(())
     })?;
+    s.media.allow(path);
     s.project_links.last_scan = None;
     Ok(json!({"item":id.0}))
 }
@@ -511,6 +512,7 @@ pub fn poll(s: &mut Session) {
     let progress = Arc::new(Progress::default());
     let prog = progress.clone();
     let services = s.services.clone();
+    let media = s.media.snapshot_path_policy();
     let spawned = std::thread::Builder::new().name("project-links".into()).spawn(move || {
         let recovery = tasks.iter().map(|(id, l, _)| (*id, l.clone())).collect::<Vec<_>>();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -518,7 +520,7 @@ pub fn poll(s: &mut Session) {
                 .into_iter()
                 .map(|(id, link, adapter)| {
                     prog.status.lock().unwrap_or_else(PoisonError::into_inner).clear();
-                    let result = render_cached(&*adapter, &*services, &link, &prog);
+                    let result = followed_link(&media, &link).and_then(|followed| render_cached(&*adapter, &*services, &followed, &prog));
                     (id, link, result)
                 })
                 .collect()
@@ -532,6 +534,13 @@ pub fn poll(s: &mut Session) {
     } else {
         s.error_toast("project link", "Could not start linked-project worker");
     }
+}
+
+/// Resolve before invoking an adapter: saved paths must not reach native metadata/read calls
+/// (or an external renderer) before the same policy used for ordinary stored media.
+fn followed_link(media: &crate::media_pool::MediaPool, link: &ProjectLink) -> std::result::Result<ProjectLink, String> {
+    let project_path = media.follow(&link.project_path).map_err(|e| format!("Linked object {} project path is not followed: {e}", link.object_name))?;
+    Ok(ProjectLink { project_path, ..link.clone() })
 }
 
 fn render_cached(
@@ -760,6 +769,109 @@ mod tests {
             .unwrap();
         p.sequence_mut(seq).unwrap().video_tracks[0].items.push(clip);
         seq
+    }
+
+    #[test]
+    fn stored_link_paths_are_checked_before_poll_and_export_call_the_adapter() {
+        let (mut s, mock, path) = setup();
+        let id = item(&mut s, &path);
+        finish(&mut s);
+        let seq = sequence_using(&mut s, id);
+        let document = Path::new(&path).with_extension("fcproj");
+        for refused in [r"\\192.0.2.1\share\title.ecproj", "file://192.0.2.1/share/title.ecproj", "https://example.invalid/title.ecproj"] {
+            Arc::make_mut(&mut s.project).project_links.get_mut(&id).unwrap().project_path = refused.into();
+            s.media.clear_stored();
+            s.media.add_stored(&s.project, Some(&document.to_string_lossy()));
+            mock.revision_threads.lock().unwrap().clear();
+            let before = s.project.clone();
+            let renders = mock.renders.load(Ordering::Relaxed);
+            s.project_links.last_scan = None;
+            finish(&mut s);
+            assert_eq!(s.project_links.status[&id].state, "error");
+            assert!(s.project_links.status[&id].message.contains("project path is not followed"));
+            assert!(validate_export(&s, &s.project, seq).unwrap_err().to_string().contains("project path is not followed"));
+            assert!(mock.revision_threads.lock().unwrap().is_empty(), "must refuse before adapter filesystem access");
+            assert_eq!(mock.renders.load(Ordering::Relaxed), renders);
+            assert!(Arc::ptr_eq(&s.project, &before), "keep the saved link and last valid cache without editing the project");
+            let preflight = export_preflight(&s);
+            s.media.clear_stored();
+            assert!(
+                preflight(&before, seq).unwrap_err().to_string().contains("project path is not followed"),
+                "a later project switch must not authorize the worker's saved paths"
+            );
+        }
+        // Explicitly selecting a path is still authorized. Use a synthetic adapter,
+        // never a real network read, to distinguish that from renderer enablement.
+        let selected = s.project.project_links[&id].project_path.clone();
+        s.media.add_stored(&s.project, Some(&document.to_string_lossy()));
+        assert!(s.media.follow(&selected).is_err());
+        s.execute("linkedProject.relink", json!({"item":id,"path":selected})).unwrap();
+        finish(&mut s);
+        assert_eq!(s.project_links.status[&id].state, "ready");
+    }
+
+    #[test]
+    fn stored_relative_link_uses_document_folder_and_keeps_saved_identity() {
+        let (mut s, _, path) = setup();
+        let id = item(&mut s, &path);
+        finish(&mut s);
+        let seq = sequence_using(&mut s, id);
+        let document = Path::new(&path).with_extension("fcproj");
+        let relative = Path::new(&path).file_name().unwrap().to_string_lossy().into_owned();
+        Arc::make_mut(&mut s.project).project_links.get_mut(&id).unwrap().project_path = relative.clone();
+        s.media.add_stored(&s.project, Some(&document.to_string_lossy()));
+        let followed = followed_link(&s.media, &s.project.project_links[&id]).unwrap();
+        assert_eq!(Path::new(&followed.project_path), Path::new(&path));
+        s.project_links.last_scan = None;
+        finish(&mut s);
+        validate_export(&s, &s.project, seq).unwrap();
+        assert_eq!(s.project.project_links[&id].project_path, relative);
+    }
+
+    #[test]
+    fn effectcraft_footage_paths_are_checked_before_metadata_reads() {
+        struct Files {
+            path: String,
+            document: Vec<u8>,
+            other_reads: Mutex<Vec<String>>,
+        }
+        impl Services for Files {
+            fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+                if path == self.path {
+                    Ok(self.document.clone())
+                } else {
+                    self.other_reads.lock().unwrap().push(path.into());
+                    Err(std::io::ErrorKind::NotFound.into())
+                }
+            }
+            fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::Unsupported.into())
+            }
+        }
+        let (mut s, _, path) = setup();
+        let id = item(&mut s, &path);
+        finish(&mut s);
+        let mut link = s.project.project_links[&id].clone();
+        link.object = "1".into();
+        let adapter = EffectCraft { executable: std::env::current_exe().unwrap() };
+        for dependency in [r"\\192.0.2.1\share\clip.mov", "file://192.0.2.1/share/clip.mov", "https://example.invalid/clip.mov", "local.mov"] {
+            let files = Files {
+                path: path.clone(),
+                document: serde_json::to_vec(&json!({"schema":2,"items":{
+                    "1":{"name":"Title","kind":{"type":"Comp","width":16,"height":16,"frame_rate":{"num":24,"den":1},"duration":254016000000_i64}},
+                    "2":{"kind":{"type":"Footage","path":dependency}}
+                }}))
+                .unwrap(),
+                other_reads: Mutex::default(),
+            };
+            assert!(adapter.revision(&files, &link).is_err());
+            let reads = files.other_reads.lock().unwrap();
+            if dependency == "local.mov" {
+                assert_eq!(&*reads, &[Path::new(&path).parent().unwrap().join(dependency).to_string_lossy().into_owned()]);
+            } else {
+                assert!(reads.is_empty(), "refused dependency must never reach metadata/read: {reads:?}");
+            }
+        }
     }
 
     #[test]

@@ -80,6 +80,13 @@ conservatively invalidates every linked composition after any project edit. Sour
 a render are rejected and retried. Whole-dependency hashing happens on the worker on each scan;
 optimizing that cost without weakening invalidation is follow-up work.
 
+Saved link paths follow FilmCraft's document-path policy before background polling or export
+invokes an adapter. Relative links resolve from the FilmCraft document's folder; foreign shares,
+non-file URLs and device paths are refused before filesystem access. Import and Relink explicitly authorize
+the selected project path for that session. Footage paths inside an EffectCraft composition follow
+the same policy relative to that composition. A refused path keeps the last-good cache and reports
+an error; enabling the renderer does not authorize paths in subsequently opened documents.
+
 EffectCraft renders the complete composition at source resolution/rate as ProRes 4444 RGBA, with
 audio off. The cache is disposable and lives in a per-user `FilmCraftLinkedProjects-v1` folder:
 under `~/Library/Caches/FilmCraft` on macOS, `$XDG_CACHE_HOME/filmcraft` (or `~/.cache/filmcraft`)
