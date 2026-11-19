@@ -343,10 +343,22 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
                 let y = display.y as f32;
                 let width = display.width as f32;
                 let height = display.height as f32;
-                if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+                if !x.is_finite()
+                    || !y.is_finite()
+                    || !width.is_finite()
+                    || !height.is_finite()
+                    || !display.scale_factor.is_finite()
+                    || display.scale_factor <= 0.0
+                    || width <= 0.0
+                    || height <= 0.0
+                {
                     return None;
                 }
-                Some(DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)), primary: display.is_primary })
+                Some(DisplayBounds {
+                    rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)),
+                    scale_factor: display.scale_factor,
+                    primary: display.is_primary,
+                })
             })
             .collect(),
     )
@@ -354,15 +366,15 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
 
 /// `ViewportInfo::maximized` is intentionally not refreshed on macOS because winit's query can
 /// deadlock there. AppKit's main-window signal remains current and is safe on the main UI thread.
-fn native_window_maximized() -> bool {
+fn native_window_maximized() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
-        let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
-        objc2_app_kit::NSApplication::sharedApplication(mtm).mainWindow().is_some_and(|window| window.isZoomed())
+        let mtm = objc2::MainThreadMarker::new()?;
+        objc2_app_kit::NSApplication::sharedApplication(mtm).mainWindow().map(|window| window.isZoomed())
     }
     #[cfg(not(target_os = "macos"))]
     {
-        false
+        Some(false)
     }
 }
 
@@ -777,8 +789,8 @@ mod tests {
     fn windows_restore_sets_physical_position_outside_the_viewport_builder() {
         let state = filmcraft_ui_egui::window_state::WindowState { width: 1000.0, height: 700.0, x: 1500.0, y: 100.0, scale_factor: 2.0 };
         let displays = [
-            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
-            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
+            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
+            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), scale_factor: 2.0, primary: false },
         ];
         let options = super::native_options(false, Some(state), Some(&displays));
 

@@ -56,6 +56,8 @@ fn default_scale_factor() -> f32 {
 pub struct DisplayBounds {
     /// macOS/Linux report logical bounds; Windows reports physical pixel bounds.
     pub rect: egui::Rect,
+    /// Native pixels per logical point on this display.
+    pub scale_factor: f32,
     pub primary: bool,
 }
 
@@ -129,8 +131,23 @@ impl WindowState {
         let position_pixels = match displays {
             Some(displays) if !displays.is_empty() => {
                 let primary = displays.iter().find(|display| display.primary).or_else(|| displays.first())?;
-                let saved = egui::Rect::from_min_size(saved_position, egui::vec2(self.width * self.scale_factor, self.height * self.scale_factor));
-                if displays.iter().any(|display| saved.intersect(display.rect).area() > 0.0) { saved_position } else { primary.rect.min }
+                // eframe clamps the viewport size to the largest attached monitor's logical
+                // dimensions before creating the window. Use that same size here when checking
+                // whether the later native physical-position restore remains visible.
+                let largest_monitor_points = displays.iter().fold(egui::Vec2::ZERO, |largest, display| {
+                    if display.scale_factor.is_finite() && display.scale_factor > 0.0 {
+                        largest.max(display.rect.size() / display.scale_factor)
+                    } else {
+                        largest
+                    }
+                });
+                let clamped_size_points = egui::vec2(self.width.min(largest_monitor_points.x), self.height.min(largest_monitor_points.y));
+                let visible = displays.iter().any(|display| {
+                    let size_pixels = clamped_size_points * display.scale_factor;
+                    let saved = egui::Rect::from_min_size(saved_position, size_pixels);
+                    saved.intersect(display.rect).area() > 0.0
+                });
+                if visible { saved_position } else { primary.rect.min }
             }
             _ => saved_position,
         };
@@ -151,8 +168,8 @@ impl WindowState {
 
     /// Egui reports viewport rectangles in interface points. Remove interface zoom to retain OS
     /// logical points, so changing FilmCraft's UI scale does not change the native window size.
-    fn from_viewport(info: &egui::ViewportInfo, zoom: f32, native_maximized: bool) -> Option<Self> {
-        let maximized = if cfg!(target_os = "macos") { native_maximized } else { info.maximized == Some(true) };
+    fn from_viewport(info: &egui::ViewportInfo, zoom: f32, maximized: Option<bool>) -> Option<Self> {
+        let maximized = maximized?;
         if info.minimized == Some(true) || maximized || info.fullscreen == Some(true) || !zoom.is_finite() || zoom <= 0.0 {
             return None;
         }
@@ -176,24 +193,25 @@ pub(crate) struct Tracker {
     current: Option<WindowState>,
     saved: Option<WindowState>,
     save_at: Option<Instant>,
-    native_maximized: fn() -> bool,
+    native_maximized: fn() -> Option<bool>,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
-        Self { path: None, current: None, saved: None, save_at: None, native_maximized: || false }
+        Self { path: None, current: None, saved: None, save_at: None, native_maximized: || Some(false) }
     }
 }
 
 impl Tracker {
-    pub fn new(path: PathBuf, restored: Option<WindowState>, native_maximized: fn() -> bool) -> Self {
+    pub fn new(path: PathBuf, restored: Option<WindowState>, native_maximized: fn() -> Option<bool>) -> Self {
         Self { path: Some(path), current: restored, saved: restored, save_at: None, native_maximized }
     }
 
     /// Observe native geometry and save it after external and user-driven placement has settled.
     pub fn observe(&mut self, ctx: &egui::Context, info: &egui::ViewportInfo) {
         let now = Instant::now();
-        let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor(), (self.native_maximized)()) else { return };
+        let maximized = if cfg!(target_os = "macos") { (self.native_maximized)() } else { Some(info.maximized == Some(true)) };
+        let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor(), maximized) else { return };
         if self.current != Some(state) {
             self.current = Some(state);
             self.save_at = Some(now + SETTLE_TIME);
@@ -264,7 +282,7 @@ mod tests {
 
     #[test]
     fn viewport_geometry_removes_interface_zoom() {
-        let state = WindowState::from_viewport(&info(50.0, 25.0, 800.0, 600.0), 1.5, false);
+        let state = WindowState::from_viewport(&info(50.0, 25.0, 800.0, 600.0), 1.5, Some(false));
         assert_eq!(state, Some(WindowState { width: 1200.0, height: 900.0, x: 75.0, y: 37.5, scale_factor: 1.0 }));
     }
 
@@ -272,7 +290,7 @@ mod tests {
     fn viewport_geometry_retains_native_scale_for_windows_restore() {
         let mut viewport = info(1500.0, 100.0, 1000.0, 700.0);
         viewport.native_pixels_per_point = Some(2.0);
-        let state = WindowState::from_viewport(&viewport, 1.0, false);
+        let state = WindowState::from_viewport(&viewport, 1.0, Some(false));
         assert_eq!(state.map(|state| state.scale_factor), Some(2.0));
     }
 
@@ -296,7 +314,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join(FILE_NAME);
         let state = WindowState { width: 1440.0, height: 900.0, x: 120.0, y: 80.0, scale_factor: 1.0 };
-        let mut tracker = Tracker::new(path.clone(), None, || false);
+        let mut tracker = Tracker::new(path.clone(), None, || Some(false));
         tracker.current = Some(state);
         tracker.save_now();
         assert_eq!(WindowState::load(&path), Some(state));
@@ -309,7 +327,7 @@ mod tests {
     #[test]
     fn offscreen_position_moves_to_primary_display_before_creation() {
         let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
-        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
         let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
         assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(0.0, 0.0)));
     }
@@ -318,8 +336,8 @@ mod tests {
     fn position_on_attached_secondary_display_is_preserved() {
         let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), primary: false },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), scale_factor: 1.0, primary: false },
         ];
         let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
         assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(2400.0, 80.0)));
@@ -329,8 +347,8 @@ mod tests {
     fn windows_saved_position_uses_saved_scale_before_initial_creation() {
         let state = WindowState { width: 1000.0, height: 700.0, x: 1500.0, y: 100.0, scale_factor: 2.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), scale_factor: 2.0, primary: false },
         ];
 
         assert_eq!(state.physical_position(Some(&displays)), Some([3000, 200]));
@@ -340,8 +358,8 @@ mod tests {
     fn windows_saved_position_keeps_equal_scale_placement() {
         let state = WindowState { width: 1000.0, height: 700.0, x: 2400.0, y: 80.0, scale_factor: 1.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), primary: false },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), scale_factor: 1.0, primary: false },
         ];
 
         assert_eq!(state.physical_position(Some(&displays)), Some([2400, 80]));
@@ -350,7 +368,8 @@ mod tests {
     #[test]
     fn windows_offscreen_position_falls_back_to_primary_pixels() {
         let state = WindowState { width: 1000.0, height: 700.0, x: 2400.0, y: 80.0, scale_factor: 2.0 };
-        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(-1920.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
+        let displays =
+            [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(-1920.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
 
         assert_eq!(state.physical_position(Some(&displays)), Some([-1920, 0]));
     }
@@ -358,14 +377,26 @@ mod tests {
     #[test]
     fn logical_display_bounds_are_not_scaled_again() {
         let state = WindowState { width: 800.0, height: 700.0, x: 1000.0, y: 100.0, scale_factor: 2.0 };
-        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
         assert_eq!(state.position_for_logical_displays(&displays), Some([1000.0, 100.0]));
     }
 
     #[test]
     fn native_maximize_does_not_replace_normal_geometry_on_macos() {
         if cfg!(target_os = "macos") {
-            assert_eq!(WindowState::from_viewport(&info(0.0, 0.0, 1600.0, 900.0), 1.0, true), None);
+            assert_eq!(WindowState::from_viewport(&info(0.0, 0.0, 1600.0, 900.0), 1.0, Some(true)), None);
         }
+    }
+
+    #[test]
+    fn unknown_native_maximized_state_does_not_replace_normal_geometry() {
+        assert_eq!(WindowState::from_viewport(&info(0.0, 0.0, 1600.0, 900.0), 1.0, None), None);
+    }
+
+    #[test]
+    fn windows_position_uses_eframe_clamped_size_for_visibility() {
+        let state = WindowState { width: 2400.0, height: 700.0, x: -2200.0, y: 100.0, scale_factor: 1.0 };
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), scale_factor: 1.0, primary: true }];
+        assert_eq!(state.physical_position(Some(&displays)), Some([0, 0]));
     }
 }
