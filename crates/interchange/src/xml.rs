@@ -170,7 +170,10 @@ pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, String> {
     if has_internal_subset(text) {
         return Err("internal DTD subsets are not supported".into());
     }
-    let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    // A node ceiling keeps a large document from multiplying parse work with the file's size
+    // (audit: FilmCraft F3). Real interchange documents are far below it.
+    const MAX_NODES: u32 = 1_000_000;
+    let opts = roxmltree::ParsingOptions { allow_dtd: true, nodes_limit: MAX_NODES, ..Default::default() };
     roxmltree::Document::parse_with_options(text, opts).map_err(|e| e.to_string())
 }
 
