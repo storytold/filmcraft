@@ -132,7 +132,7 @@ fn option_drag_preserves_an_already_selected_linked_group() {
             assert_ne!(copy.link, original.link, "the copies have a new link group");
         }
         d.exec("edit.undo", json!({}));
-        assert_eq!(*d.harness.state().session.project, *before, "one undo removes the group copy");
+        assert_eq!(**d.harness.state().session.project, *before, "one undo removes the group copy");
     }
 }
 
@@ -167,8 +167,8 @@ fn dragging_after_frame_hold_with_repeated_clip_arguments_edits_once() {
         assert_eq!(s.history.undo.len(), undo + 1);
         let after = s.project.clone();
         d.exec("edit.undo", json!({}));
-        assert_eq!(d.harness.state().session.project, before);
+        assert_eq!(*d.harness.state().session.project, before);
         d.exec("edit.redo", json!({}));
-        assert_eq!(d.harness.state().session.project, after);
+        assert_eq!(*d.harness.state().session.project, after);
     }
 }

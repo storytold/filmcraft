@@ -226,6 +226,29 @@ fn compat_presets_map_other_editors() {
 }
 
 #[test]
+fn import_keeps_bindings_for_unknown_command_ids() {
+    let dir = temp_dir("import-unknown");
+    let mut s = Session::default();
+    s.shortcuts.set_dir(&dir);
+    let file = dir.join("plugin.json");
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({"format": "filmcraft-keyboard-shortcuts", "version": 1, "name": "Plugin Keys", "platform": "mac",
+            "bindings": [{"command": "edit.undo", "keys": "Cmd+Z"}, {"command": "plugin.absent.run", "keys": "Cmd+Alt+9"}]}))
+        .unwrap(),
+    )
+    .unwrap();
+    s.execute("shortcuts.import", json!({"path": file.to_string_lossy()})).unwrap();
+    assert_eq!(s.shortcuts.primary("plugin.absent.run").as_deref(), Some("Cmd+Alt+9"), "active set keeps the unknown id");
+    // the saved custom preset keeps it too, so loading it later (plugin installed) restores the key
+    s.execute("shortcuts.loadPreset", json!({"name": "FilmCraft Default"})).unwrap();
+    assert!(s.shortcuts.primary("plugin.absent.run").is_none());
+    s.execute("shortcuts.loadPreset", json!({"name": "Plugin Keys"})).unwrap();
+    assert_eq!(s.shortcuts.primary("plugin.absent.run").as_deref(), Some("Cmd+Alt+9"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn custom_presets_persist_export_and_import() {
     let dir = temp_dir("presets");
     let mut s = Session::default();
@@ -264,7 +287,8 @@ fn custom_presets_persist_export_and_import() {
     assert_eq!(r["name"], json!("From Windows"));
     assert_eq!(s.shortcuts.primary("edit.undo").as_deref(), Some("Cmd+Z"));
     assert_eq!(s.shortcuts.primary("sequence.addEdit").as_deref(), Some("Cmd+Alt+K"));
-    assert_eq!(s.shortcuts.bindings.len(), 2, "unknown commands dropped");
+    assert_eq!(s.shortcuts.bindings.len(), 3, "unknown command ids survive import");
+    assert_eq!(s.shortcuts.primary("no.such").as_deref(), Some("K"));
     s.execute("shortcuts.deletePreset", json!({"name": "My Keys"})).unwrap();
     assert!(s.execute("shortcuts.deletePreset", json!({"name": "FilmCraft Default"})).is_err());
     assert_eq!(s.execute("shortcuts.presets", json!({})).unwrap()["custom"], json!(["From Windows"]));
@@ -301,7 +325,7 @@ fn custom_presets_persist_export_and_import() {
 #[test]
 fn list_searches_labels_and_keys() {
     let s = Session::default();
-    let r = s.shortcuts.commands();
+    let r = s.shortcuts.commands(&s.registry);
     assert!(r.iter().any(|c| c.id == "trim.forward"));
     assert!(!r.iter().any(|c| c.id == "timeline.move"), "commands with required params are not bindable");
     // a parameter doc holds parameters only (each optional or with a default): a result
@@ -329,7 +353,8 @@ fn list_searches_labels_and_keys() {
 /// and `menu_dialogs::meta` themselves, so a command added to either table later is checked too.
 #[test]
 fn commands_that_open_dialogs_can_be_bound() {
-    let r = Session::default().shortcuts.commands();
+    let s = Session::default();
+    let r = s.shortcuts.commands(&s.registry);
     for id in [
         // clip_dialogs::meta
         "edit.pasteAttributes",
@@ -389,6 +414,31 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
     for (cmd, keys) in [("multicam.cutToCamera9", "Ctrl+9"), ("markers.addRange", "Ctrl+Shift+M"), ("graphics.newText", "Cmd+T")] {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
+}
+
+/// Edit in EffectCraft has a default key, no preset gives that key to another command, and a
+/// rebinding survives a restart.
+#[test]
+fn edit_in_effectcraft_key_is_default_conflict_free_and_rebindable() {
+    let mut s = Session::default();
+    assert_eq!(s.shortcuts.primary("link.editIn").as_deref(), Some("Cmd+Alt+Shift+E"));
+    for preset in crate::shortcuts::BUILTIN_PRESETS {
+        s.shortcuts.load_preset(preset).unwrap();
+        for platform in [Platform::Mac, Platform::Linux] {
+            for (context, key, ids) in s.shortcuts.conflicts(platform) {
+                assert!(!ids.iter().any(|id| id == "link.editIn"), "{preset}: {key} in {context} is bound to {ids:?}");
+            }
+        }
+    }
+    let dir = temp_dir("edit-in");
+    let mut s = Session::default();
+    s.shortcuts.set_dir(&dir);
+    s.execute("shortcuts.set", json!({"command": "link.editIn", "keys": "Cmd+Shift+F9"})).unwrap();
+    assert_eq!(s.shortcuts.primary("link.editIn").as_deref(), Some("Cmd+Shift+F9"));
+    let mut t = Shortcuts::new();
+    t.set_dir(&dir);
+    assert_eq!(t.primary("link.editIn").as_deref(), Some("Cmd+Shift+F9"), "the new key survives a restart");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

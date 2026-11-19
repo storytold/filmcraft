@@ -54,7 +54,7 @@ Method and calibration: [docs/target-app-parity.md](docs/target-app-parity.md#th
 | Performance | ~55% | 60–120 | [performance.md](docs/performance.md) |
 | Stability | ~45% | 60–120 | [gaps.md G4](docs/gaps.md#g4-crashes-at-start-up-and-no-test-ci-on-pull-requests) |
 | Platforms (macOS, Windows, Linux, FreeBSD, web) | ~60% | 50–90 | [gaps.md G9](docs/gaps.md#g9-windows-and-linux-at-run-time) |
-| Plugins and ecosystem | ~5% | 200–400 | [gaps.md G11](docs/gaps.md#g11-no-plugin-hosting) |
+| Plugins and ecosystem | ~5% | 200–400 | [gaps.md G11](docs/gaps.md#g11-no-native-plugin-hosting) |
 | AI features | ~25% | 150–300 | [gaps.md G12](docs/gaps.md#g12-ai-features) |
 
 ## Features

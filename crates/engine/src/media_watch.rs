@@ -154,15 +154,19 @@ impl Session {
         if fresh.is_empty() {
             return Ok(json!({"refreshed": []}));
         }
-        let p = Arc::make_mut(&mut self.project);
         let mut refreshed: Vec<ItemId> = Vec::new();
-        for (id, path, info, identity, src) in fresh {
-            if let Some(m) = p.item_mut(id).and_then(|i| i.as_media_mut()) {
-                m.info = info;
-                if identity.is_some() {
-                    m.identity = identity;
+        {
+            let p = self.project_mut();
+            for (id, _, info, identity, _) in &fresh {
+                if let Some(m) = p.item_mut(*id).and_then(|i| i.as_media_mut()) {
+                    m.info = info.clone();
+                    if identity.is_some() {
+                        m.identity = *identity;
+                    }
                 }
             }
+        }
+        for (id, path, _, _, src) in fresh {
             self.media.insert_file(id, &path, src);
             refreshed.push(id);
         }

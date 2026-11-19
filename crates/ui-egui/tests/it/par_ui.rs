@@ -5,7 +5,6 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes `par-*.png`.
 
-use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
@@ -86,7 +85,7 @@ fn session_with_matte(par: (u32, u32)) -> (Session, ItemId) {
     let mut s = Session::default();
     let r = s.execute("file.newColorMatte", json!({"color": "#3366ff", "width": 144, "height": 108, "seconds": 2.0})).unwrap();
     let id = ItemId(r["item"].as_u64().unwrap());
-    if let Some(ItemKind::Media(m)) = Arc::make_mut(&mut s.project).item_mut(id).map(|i| &mut i.kind) {
+    if let Some(ItemKind::Media(m)) = s.project_mut().item_mut(id).map(|i| &mut i.kind) {
         m.info.video.as_mut().unwrap().par = par;
     }
     (s, id)

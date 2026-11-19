@@ -180,7 +180,7 @@ fn marker_csv_menu_exports_sequence_review_notes() {
     let csv = String::from_utf8(bytes).unwrap();
     assert!(csv.contains("\"Review, 日本語\",\"Change \"\"this\"\"\nNext line\""));
     assert_eq!(csv.matches("\"Review, 日本語\"").count(), 1);
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
     assert_eq!(d.harness.state().session.history.undo.len(), undo);
     assert!(d.harness.state().ui.status.starts_with("Exported "));
     let direct = dir.join("direct, 字幕.csv");
@@ -195,7 +195,7 @@ fn marker_csv_save_cancel_and_disabled_menu_leave_the_session_alone() {
     let mut d = Driver::new(session(), None, asked.clone());
     let before = d.harness.state().session.project.clone();
     assert_eq!(d.ok("ui.menu.invoke", json!({"id":"markers.exportCsv"})), Value::Null);
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
     assert_eq!(asked.lock().unwrap().len(), 1);
     let asked = Asked::default();
     let mut d = Driver::new(Session::default(), None, asked.clone());

@@ -752,28 +752,8 @@ fn probe_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
-    let c = |id, label, params, run| CommandSpec {
-        id,
-        label,
-        menu: &[],
-        shortcut: None,
-        params,
-        enabled: always,
-        run,
-        journal: true,
-        named: crate::commands::NamedKeys::NONE,
-    };
-    let q = |id, label, params, run| CommandSpec {
-        id,
-        label,
-        menu: &[],
-        shortcut: None,
-        params,
-        enabled: always,
-        run,
-        journal: false,
-        named: crate::commands::NamedKeys::NONE,
-    };
+    let c = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: always, run, journal: true };
+    let q = |id, label, params, run| CommandSpec { id, label, menu: &[], shortcut: None, alt_shortcuts: &[], params, enabled: always, run, journal: false };
     vec![
         q("mediaBrowser.roots", "Media Browser Locations", "{}", roots),
         q("mediaBrowser.list", "List Directory", r#"{"path":str?,"fileTypes":str?}"#, list_cmd),
@@ -798,11 +778,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Open In Source Monitor",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"path":str?}"#,
             enabled: always,
             run: open_in_source,
             journal: true,
-            named: crate::commands::NamedKeys::NONE,
         },
         q("mediaBrowser.probe", "Media File Properties", r#"{"path":str}"#, probe_cmd),
     ]

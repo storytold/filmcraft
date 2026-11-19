@@ -167,6 +167,9 @@ progress and stop it:
   one, e.g. `hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran`. The
   app logs the same line as a warning and shows it in Events after the job's "Finished" line, and
   `filmcraft-cli export` (with or without `--queue`) prints it on stderr.
+- A clip linked to EffectCraft exports its result movie. When EffectCraft has not rendered the result of
+  its latest edit yet, or that render failed, `file.exportMedia` and `export.quick` return an error that
+  names the clip ([craft-link.md](craft-link.md)). `allowStaleLink: true` exports the older result.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.

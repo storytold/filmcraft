@@ -177,11 +177,11 @@ mod tests {
         }
         assert_eq!(result["keyframes"][2]["time"].as_i64().unwrap(), keys[2]["time"].as_i64().unwrap() + delta.0);
         assert_eq!(s.history.undo.len(), undo + 1);
-        let moved = serde_json::to_value(&s.project).unwrap();
+        let moved = serde_json::to_value(&*s.project).unwrap();
         s.undo();
-        assert_eq!(serde_json::to_value(&s.project).unwrap(), serde_json::to_value(project).unwrap());
+        assert_eq!(serde_json::to_value(&*s.project).unwrap(), serde_json::to_value(project).unwrap());
         s.redo();
-        assert_eq!(serde_json::to_value(&s.project).unwrap(), moved);
+        assert_eq!(serde_json::to_value(&*s.project).unwrap(), moved);
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(interps(&s, &keys[2]), [Interpolation::Hold]);
         assert_eq!(s.history.undo.len(), undo + 1);
         s.undo();
-        assert_eq!(serde_json::to_value(&s.project).unwrap(), serde_json::to_value(&project).unwrap());
+        assert_eq!(serde_json::to_value(&**s.project).unwrap(), serde_json::to_value(&project).unwrap());
 
         let before = s.project.clone();
         let mut invalid = keys[1].clone();

@@ -169,7 +169,7 @@ fn crash_recovery_end_to_end() {
     wait_for("journal", || journaled(&mut a) == rev);
     let st = a.execute("file.autoSaveStatus", json!({})).unwrap();
     assert!(st["status"]["lastBytes"].as_u64().unwrap() > 1000, "{st}");
-    let edited = (*a.project).clone();
+    let edited = (**a.project).clone();
     // Session B starts while A is alive: A's journal is not stale.
     let mut b = Session::default();
     start(&mut b, &d);
@@ -187,7 +187,7 @@ fn crash_recovery_end_to_end() {
     assert_eq!(list[0]["cleanExit"], false);
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);
     c.execute("file.recover", json!({})).unwrap();
-    assert_eq!(*c.project, edited);
+    assert_eq!(**c.project, edited);
     assert!(c.is_dirty(), "recovered changes are unsaved");
     assert_eq!(c.path.as_deref(), Some(proj.as_str()));
     assert!(c.recovery_candidates().is_empty());
@@ -299,7 +299,7 @@ fn recovery_can_retry_after_a_failed_journal_write() {
     assert!(!old_dir.exists());
     assert!(s.recovery_candidates().is_empty());
     let replacement = std::fs::read(&obstruction).unwrap();
-    assert_eq!(filmcraft_format::decode(&replacement).unwrap().project, project);
+    assert_eq!(filmcraft_format::decode(&replacement).unwrap().project, *project);
     assert_eq!(journaled(&mut s), s.revision);
     s.shutdown();
     std::fs::remove_dir_all(&d).unwrap();
@@ -360,7 +360,7 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     assert_eq!(files, vec![written[2].clone(), written[1].clone()], "newest first, oldest pruned");
     let mut t = Session::default();
     t.execute("file.open", json!({"path": written[2]})).unwrap();
-    assert_eq!(*t.project, *s.project);
+    assert_eq!(**t.project, **s.project);
     assert!(s.is_dirty(), "auto-save does not save the project itself by default");
     s.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
     s.execute("sequence.addEdit", json!({"seconds": 5.0})).unwrap();
@@ -371,7 +371,7 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     });
     let mut t = Session::default();
     t.execute("file.open", json!({"path": proj})).unwrap();
-    assert_eq!(*t.project, *s.project);
+    assert_eq!(**t.project, **s.project);
     s.shutdown();
     let _ = std::fs::remove_dir_all(&d);
 }

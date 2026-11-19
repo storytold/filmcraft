@@ -20,6 +20,8 @@ neural-voices = ["filmcraft-engine/neural-voices"]
 [dependencies]
 craft-control-protocol = { workspace = true }
 filmcraft-engine = { workspace = true }
+filmcraft-link = { workspace = true }
+filmcraft-plugins = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
@@ -27,6 +29,7 @@ filmcraft-time = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
+craft-ipc = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }
 serde_json = { workspace = true }

@@ -80,7 +80,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started. Estimates are remaining
 
 ## After beta
 
-Plugin hosting (VST3 / AU, then OpenFX; owner decision, [G11](gaps.md#g11-no-plugin-hosting)),
+The WebAssembly plug-in host exists (`crates/plugins`). Native plugin hosting (VST3 / AU, then OpenFX; owner decision,
+[G11](gaps.md#g11-no-native-plugin-hosting)),
 AI features with openly licensed models ([G12](gaps.md#g12-ai-features)), delivery formats
 ([G13](gaps.md#g13-delivery-formats)), localization ([G14](gaps.md#g14-localization-3-of-the-12-key-languages-missing-hindi-arabic-vietnamese)),
 the web app shell ([G20](gaps.md#g20-the-web-app-shell)).

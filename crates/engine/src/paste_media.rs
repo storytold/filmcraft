@@ -115,10 +115,10 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Paste Media",
         menu: &[],
         shortcut: None,
+        alt_shortcuts: &[],
         params: r#"{"paths":[str],"insert":bool?,"place":bool=true,"bin":binId?}"#,
         enabled: always,
         run: paste_media,
         journal: true,
-        named: crate::commands::NamedKeys::NONE,
     }]
 }

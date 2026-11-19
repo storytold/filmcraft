@@ -7,9 +7,9 @@
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
-//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
-//! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
+//! The Craft Link socket is always on. `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) also
+//! binds loopback TCP; `FILMCRAFT_CONTROL_TOKEN` is required for it (see `docs/control-protocol.md`).
+//! See `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
 //! Auto-save and the crash-recovery journal run in every session (data in `--data-dir`, else
@@ -239,6 +239,26 @@ fn main() -> eframe::Result {
     started
 }
 
+/// The plug-in host (craft-abi 1). Plug-ins live in `<data dir>/Plug-ins`; without a data directory
+/// they are kept for this run only. A failure leaves the app running without plug-ins.
+fn start_plugins(session: &mut Session, data_dir: Option<std::path::PathBuf>) -> Option<std::sync::Arc<filmcraft_plugins::PluginHost>> {
+    let cfg = filmcraft_plugins::HostConfig {
+        store_dir: data_dir.map(|d| d.join("Plug-ins")),
+        link: filmcraft_plugins::host::system_link_client(),
+        ..Default::default()
+    };
+    match filmcraft_plugins::PluginHost::start(session, cfg) {
+        Ok(host) => {
+            host.set_file_picker(Box::new(|| rfd::FileDialog::new().add_filter("FilmCraft plug-in", &["wasm"]).pick_file()));
+            Some(host)
+        }
+        Err(e) => {
+            log::error!("plug-ins are unavailable: {e}");
+            None
+        }
+    }
+}
+
 /// Set for a FilmCraft started again after its graphics panicked (#2553), so that one does not
 /// start a third.
 const RELAUNCHED: &str = "FILMCRAFT_GRAPHICS_RELAUNCHED";
@@ -312,8 +332,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone()));
-        if control_input_only && let Some((_, _, Some(why))) = &control {
+        let control = control_server::start_with(None, control_port, cc.egui_ctx.clone());
+        if control_input_only && let Some(why) = &control.tcp_disabled {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }
         // A fallback graphics mode says so in the window, with a button back to the default.
@@ -331,6 +351,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             }),
         );
         let mut session = Session::default();
+        filmcraft_link::commands::install(&mut session);
+        let plugins = start_plugins(&mut session, data_dir.clone().or_else(default_data_dir));
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);
             cfg.local_offset = local_offset;
@@ -440,6 +462,15 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // feature, so `ctx.open_url` does nothing on the desktop. Detached, so a launcher
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
+        let frame_plugins = plugins.clone();
+        app.hooks.per_frame = Some(Box::new(move |ctx, session| {
+            filmcraft_link::ui::show_translated(ctx, session, &|text| filmcraft_ui_egui::i18n::t(text).to_string());
+            if let Some(host) = &frame_plugins {
+                filmcraft_plugins::ui::frame(host, ctx, session);
+            }
+        }));
+        app.hooks.dialog_label =
+            Some(Box::new(move || filmcraft_link::prompt::dialog_name().or_else(|| plugins.as_ref().and_then(|host| host.dialog_label()))));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
@@ -473,17 +504,17 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.hooks.menu_changed = Some(update);
             app.ui.show_menu_bar = false;
         }
-        if let Some((rx, ready, disabled)) = control {
-            app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            // The token cause is shown in the app as a fully translated sentence (the English
-            // `reason()` stays for the log and the input-only error); a bind failure stays in the
-            // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
-            }
-            // From here the app drains the queue on its first pass: stop rejecting requests.
-            ready.store(true, Ordering::Relaxed);
+        app.hooks.on_exit = Some(Box::new(|| control_server::emit("app.closing", json!({}))));
+        let control_server::Started { requests, ready, tcp_disabled } = control;
+        app = if control_port.is_some() && control_input_only { app.with_control_input_only(requests) } else { app.with_control(requests) };
+        // The token cause is shown in the app as a fully translated sentence (the English
+        // `reason()` stays for the log and the input-only error); a bind failure stays in the
+        // log for now. Port-collision reporting is #3318's rework.
+        if let Some(control_server::DisabledWhy::Token) = &tcp_disabled {
+            app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
         }
+        // From here the app drains the queue on its first pass: stop rejecting requests.
+        ready.store(true, Ordering::Relaxed);
         Ok(Box::new(app))
     })
 }

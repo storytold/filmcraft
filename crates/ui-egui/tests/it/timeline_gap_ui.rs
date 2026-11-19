@@ -187,7 +187,7 @@ fn the_gap_menu_follows_an_edit_point_menu() {
 #[test]
 fn close_gap_can_be_found_assigned_and_run_from_the_shortcut_editor() {
     let (mut d, a, b) = Driver::two_clips();
-    let before = serde_json::to_value(&d.harness.state().session.project).unwrap();
+    let before = serde_json::to_value(&*d.harness.state().session.project).unwrap();
     d.ok("ui.menu.invoke", json!({"id":"app.keyboardShortcuts"}));
     d.frames(4);
     d.ok("ui.click", json!({"id":"shortcuts.search"}));
@@ -206,7 +206,7 @@ fn close_gap_can_be_found_assigned_and_run_from_the_shortcut_editor() {
     d.shot("close-gap-shortcut-assigned");
     d.ok("ui.click", json!({"id":"shortcuts.ok"}));
     d.click_between(a, b, "left");
-    assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), before, "shortcut editing and gap selection do not edit the project");
+    assert_eq!(serde_json::to_value(&*d.harness.state().session.project).unwrap(), before, "shortcut editing and gap selection do not edit the project");
     let undo = d.harness.state().session.history.undo.len();
     d.ok("ui.key", json!({"key":"Alt+Shift+F8"}));
     d.frames(3);
@@ -216,7 +216,7 @@ fn close_gap_can_be_found_assigned_and_run_from_the_shortcut_editor() {
     assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
     d.shot("close-gap-shortcut-result");
     d.ok("engine.execute", json!({"command":"edit.undo","params":{}}));
-    assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), before);
+    assert_eq!(serde_json::to_value(&*d.harness.state().session.project).unwrap(), before);
 }
 
 /// A small gap must not be mistaken for the outer trim handle of an adjacent clip.
@@ -241,7 +241,7 @@ fn right_clicking_a_narrow_gap_opens_its_menu_and_closes_it() {
     assert_eq!(q.audio_tracks[0].items[1].start.0, f48, "linked sound moves with picture");
     assert_eq!(d.gap(), Value::Null);
     assert_eq!(d.harness.state_mut().session.undo().as_deref(), Some("Ripple Delete"));
-    assert_eq!(*d.harness.state().session.project, *before);
+    assert_eq!(**d.harness.state().session.project, *before);
 }
 
 #[test]
@@ -278,6 +278,6 @@ fn a_narrow_gap_menu_keeps_sync_lock_protection() {
     assert!(!session.is_enabled("edit.clear"));
     d.ok("ui.click", json!({"id": "timeline.gapMenu.edit.rippleDelete"}));
     d.frames(3);
-    assert_eq!(*d.harness.state().session.project, *before, "disabled menu cannot move any track");
+    assert_eq!(**d.harness.state().session.project, *before, "disabled menu cannot move any track");
     assert_eq!(d.harness.state().session.history.undo.len(), undo);
 }

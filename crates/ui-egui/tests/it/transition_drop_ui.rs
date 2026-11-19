@@ -178,7 +178,8 @@ fn incompatible_and_locked_tracks_do_not_offer_a_transition_preview() {
         let (track, clip) = (q.tracks(kind)[0].id, q.tracks(kind)[0].items[1].id);
         if locked {
             let s = &mut h.state_mut().session;
-            std::sync::Arc::make_mut(&mut s.project).sequence_mut(s.state.active_sequence.unwrap()).unwrap().track_mut(track).unwrap().locked = true;
+            let seq = s.state.active_sequence.unwrap();
+            s.project_mut().sequence_mut(seq).unwrap().track_mut(track).unwrap().locked = true;
             step(&mut h);
         }
         let to = rect(&h, &format!("timeline.clip.{}", clip.0)).center();

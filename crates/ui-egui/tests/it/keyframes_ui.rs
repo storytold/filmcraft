@@ -502,7 +502,7 @@ fn selected_keyframes_move_together_and_undo_as_one_edit() {
     let lane = d.rect("effectControls.lane");
     let from = center(d.rect(&key_id(&d, &keys[0])));
     let undo = d.harness.state().session.history.undo.len();
-    let before = serde_json::to_value(&d.harness.state().session.project).unwrap();
+    let before = serde_json::to_value(&*d.harness.state().session.project).unwrap();
     d.gesture(from, from + egui::vec2(lane[2] as f32 * 0.15, 0.0), egui::Modifiers::NONE, Some("keyframes-group-preview"));
     let selected = &d.harness.state().ui.keyframe_selection;
     assert_eq!(selected.len(), 3);
@@ -513,11 +513,11 @@ fn selected_keyframes_move_together_and_undo_as_one_edit() {
         assert_eq!(new.param, old.param);
     }
     assert_eq!(d.harness.state().session.history.undo.len(), undo + 1);
-    let after = serde_json::to_value(&d.harness.state().session.project).unwrap();
+    let after = serde_json::to_value(&*d.harness.state().session.project).unwrap();
     d.exec("edit.undo", json!({}));
-    assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), before);
+    assert_eq!(serde_json::to_value(&*d.harness.state().session.project).unwrap(), before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), after);
+    assert_eq!(serde_json::to_value(&*d.harness.state().session.project).unwrap(), after);
 }
 
 /// #1916: with three Scale keyframes selected, the interpolation chosen in the right-click menu

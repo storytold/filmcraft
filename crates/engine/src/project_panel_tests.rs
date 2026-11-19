@@ -200,7 +200,7 @@ fn freeform_positions_are_undoable_and_saved_with_the_project() {
     s.execute("project.freeform.resize", json!({"items": [ids[0].0], "step": 1})).unwrap();
     assert_eq!(pos(&s, ids[0]).2, Some(250.0));
     // saved with the project (item metadata) and back
-    let text = serde_json::to_string(&*s.project).unwrap();
+    let text = serde_json::to_string(&**s.project).unwrap();
     let p2: filmcraft_project::Project = serde_json::from_str(&text).unwrap();
     assert_eq!(p2.item(ids[0]).unwrap().metadata.get(FREEFORM_POS), s.project.item(ids[0]).unwrap().metadata.get(FREEFORM_POS));
     // the Metadata panel doesn't list the bookkeeping keys

@@ -190,12 +190,12 @@ mod tests {
         assert!(csv.contains("\"Review, 日本語\",\"101\",\"早い\",\"First line\r\nSecond, \"\"quoted\"\"\""));
         assert!(csv.find("\"101\"").unwrap() < csv.find("\"100\"").unwrap());
         assert!(csv.contains("\"00:00:02:00\",\"00:00:03:00\",\"24\",\"508032000000\",\"254016000000\",\"24/1\",\"\",\"\"\r\n"));
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
         assert_eq!(serde_json::to_value(&s.state).unwrap(), state);
         assert_eq!(s.history.undo.len(), undo);
         s.undo();
         s.redo();
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
     }
 
     #[test]
@@ -264,14 +264,14 @@ mod tests {
         }
         let id = s.state.active_sequence.unwrap();
         for (start, duration) in [(-1, 0), (0, -1), (i64::MAX, 1)] {
-            Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().markers = vec![marker(100, Tick(start), Tick(duration), "Bad")];
+            s.project_mut().sequence_mut(id).unwrap().markers = vec![marker(100, Tick(start), Tick(duration), "Bad")];
             assert!(s.execute(CMD, json!({"path":"bad.csv"})).is_err());
         }
-        let q = Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+        let q = s.project_mut().sequence_mut(id).unwrap();
         q.markers = vec![marker(100, Tick::ZERO, Tick::ZERO, "Bad")];
         q.settings.frame_rate.num = i64::MAX;
         assert!(s.execute(CMD, json!({"path":"bad.csv"})).is_err());
-        let q = Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+        let q = s.project_mut().sequence_mut(id).unwrap();
         q.settings.frame_rate = FrameRate::FPS_24;
         q.start_timecode = i64::MAX;
         q.markers[0].start = FrameRate::FPS_24.tick_of(1);
@@ -281,7 +281,7 @@ mod tests {
         s.execute(CMD, json!({"path":"recovered.csv"})).unwrap();
     }
     fn q_reset(s: &mut Session, id: filmcraft_project::ItemId) {
-        let q = Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+        let q = s.project_mut().sequence_mut(id).unwrap();
         q.start_timecode = 0;
         q.markers.clear();
     }
@@ -299,7 +299,7 @@ mod tests {
         assert!(!s.is_dirty());
         let before = s.project.clone();
         assert!(s.execute(CMD, json!({"path":"denied.csv"})).unwrap_err().to_string().contains("denied.csv"));
-        assert_eq!(*s.project, *before);
+        assert_eq!(**s.project, *before);
         assert!(!s.is_dirty());
     }
 

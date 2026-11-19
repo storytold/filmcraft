@@ -179,7 +179,7 @@ fn render_clip(s: &Session, seq: ItemId, need: &AudioNeed, sample_rate: u32, bit
     let EssenceKey::Clip(clip_id) = need.key else { return decode(s, need, sample_rate) };
     let (q, track, c) = audio_clip(&s.project, seq, clip_id).ok_or_else(|| EngineError::Other("clip not found".into()))?;
     let c = c.clone();
-    let mut p: Project = (*s.project).clone();
+    let mut p: Project = (**s.project).clone();
     let settings = SequenceSettings { sample_rate, ..q.settings.clone() };
     let rs = p.new_sequence("AAF audio render", settings, 0, 1, None);
     let dur = need.end - need.start;

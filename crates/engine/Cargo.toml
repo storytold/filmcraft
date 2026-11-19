@@ -41,14 +41,24 @@ filmcraft-tts = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+craft-command = { workspace = true }
 log = { workspace = true }
 roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
 
+# Only `CallError`, for `From<CallError> for EngineError` (the orphan rule needs it here). No wasmi, no lifecycle.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-plugin-host = { workspace = true }
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+craft-command = { workspace = true, features = ["testing"] }
+# craft_conformance_wasm: the conformance run with the veto gate in a wasm plug-in (native only).
+filmcraft-plugins = { workspace = true }
+craft-plugin-host = { workspace = true, features = ["wasmi", "deterministic"] }
+wat = "1.262.0"
 tempfile = "3"
 filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-dng = { workspace = true, features = ["writer"] }

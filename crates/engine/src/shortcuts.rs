@@ -438,13 +438,18 @@ fn category_of(id: &str, menu: &[&str]) -> String {
 
 /// Engine commands worth binding: undoable actions that need no required parameters.
 fn bindable(c: &CommandSpec) -> bool {
-    if !c.journal || c.id.starts_with("shortcuts.") || c.id.starts_with("prefs.") || c.id == "trim.tick" {
+    bindable_view(c.journal, c.id, c.shortcut, c.params)
+}
+
+/// Same rule as [`bindable`], on a registry row or a static spec.
+fn bindable_view(journal: bool, id: &str, shortcut: Option<&str>, params: &str) -> bool {
+    if !journal || id.starts_with("shortcuts.") || id.starts_with("prefs.") || id == "trim.tick" {
         return false;
     }
-    if c.shortcut.is_some() {
+    if shortcut.is_some() {
         return true;
     }
-    let body = c.params.trim().trim_start_matches('{').trim_end_matches('}');
+    let body = params.trim().trim_start_matches('{').trim_end_matches('}');
     if body.trim().is_empty() {
         return true;
     }
@@ -532,8 +537,9 @@ impl Shortcuts {
 
     // ---------------------------------------------------------------- commands
 
-    /// Every bindable command (engine + frontend), in registry order.
-    pub fn commands(&self) -> Vec<CommandInfo> {
+    /// Bindable commands from the static table, plus frontend commands.
+    /// Preset building uses this. [`Shortcuts::new`] runs before any plugin is registered.
+    fn commands_static(&self) -> Vec<CommandInfo> {
         let mut v: Vec<CommandInfo> =
             crate::commands::command_specs().iter().filter(|c| bindable(c)).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
         for e in &self.external {
@@ -544,8 +550,29 @@ impl Shortcuts {
         v
     }
 
-    pub fn command(&self, id: &str) -> Option<CommandInfo> {
-        self.commands().into_iter().find(|c| c.id == id)
+    /// Every bindable command in the live registry (built-in and plugin), plus frontend commands.
+    pub fn commands(&self, registry: &craft_command::Registry<Session, EngineError>) -> Vec<CommandInfo> {
+        let mut v = Vec::new();
+        registry.for_each(|view| {
+            if !bindable_view(view.journal, view.id, view.shortcut, view.params) {
+                return;
+            }
+            let menu_refs: Vec<&str> = match view.menu {
+                craft_command::Menu::Static(parts) => parts.to_vec(),
+                craft_command::Menu::Shared(parts) => parts.iter().map(|part| part.as_ref()).collect(),
+            };
+            v.push(CommandInfo::new(view.id, view.label, &menu_refs, view.shortcut));
+        });
+        for e in &self.external {
+            if !v.iter().any(|c| c.id == e.id) {
+                v.push(e.clone());
+            }
+        }
+        v
+    }
+
+    pub fn command(&self, registry: &craft_command::Registry<Session, EngineError>, id: &str) -> Option<CommandInfo> {
+        self.commands(registry).into_iter().find(|c| c.id == id)
     }
 
     fn known(&self, id: &str) -> bool {
@@ -569,7 +596,7 @@ impl Shortcuts {
     /// Default bindings of every known command, plus FilmCraft's panel shortcuts.
     fn base_defaults(&self) -> Vec<Binding> {
         let mut out = Vec::new();
-        for c in self.commands() {
+        for c in self.commands_static() {
             for (k, p) in &c.defaults {
                 out.push(Binding::new(&c.id, k, p.as_deref()));
             }
@@ -743,8 +770,19 @@ impl Shortcuts {
     /// Assign `keys` to `command`. Unless `add`, the command's other shortcuts in that context are
     /// replaced. Unless `keep_conflicts`, the key is taken away from any other command bound to it
     /// in the same context (returned as `reassigned`).
-    pub fn set(&mut self, command: &str, keys: &str, panel: Option<&str>, add: bool, keep_conflicts: bool) -> std::result::Result<Vec<Binding>, String> {
-        if !self.known(command) {
+    ///
+    /// `in_registry` is true when the live registry resolves `command` (built-in or plugin).
+    /// A frontend command in `external` is accepted even when it is not in the registry.
+    pub fn set(
+        &mut self,
+        command: &str,
+        keys: &str,
+        panel: Option<&str>,
+        add: bool,
+        keep_conflicts: bool,
+        in_registry: bool,
+    ) -> std::result::Result<Vec<Binding>, String> {
+        if !(in_registry || self.external.iter().any(|c| c.id == command)) {
             return Err(format!("unknown command `{command}`"));
         }
         let panel = check_panel(panel)?;
@@ -910,11 +948,12 @@ impl Shortcuts {
     }
 
     /// Import a preset file: saved among the custom presets (when there is a data directory) and,
-    /// when `activate`, made the active set.
+    /// when `activate`, made the active set. Every binding is kept verbatim, including one whose
+    /// command id this build does not know (a plugin command that is not loaded yet).
     pub fn import(&mut self, path: &Path, activate: bool) -> std::result::Result<String, String> {
         let f = read_file(path)?;
         let name = import_name(&f.name, path);
-        let bindings: Vec<Binding> = convert(f.bindings, f.platform).into_iter().filter(|b| self.known(&b.command)).collect();
+        let bindings = convert(f.bindings, f.platform);
         if let Some(p) = self.preset_path(&name) {
             let file = PresetFile { format: FILE_FORMAT.into(), version: 1, name: name.clone(), platform: None, modified: false, bindings: bindings.clone() };
             write_file(&p, &file)?;
@@ -1150,7 +1189,7 @@ fn list(s: &Session, p: &Value) -> Value {
     let assigned_only = bool_p(p, "assigned").unwrap_or(false);
     let panel = str_p(p, "panel").and_then(|x| check_panel(Some(x)).ok().flatten());
     let rows: Vec<Value> = sc
-        .commands()
+        .commands(&s.registry)
         .into_iter()
         .filter_map(|c| {
             let bs: Vec<&Binding> = sc.for_command(&c.id).into_iter().filter(|b| panel.is_none() || b.panel.as_deref() == panel).collect();
@@ -1179,11 +1218,11 @@ pub fn commands() -> Vec<CommandSpec> {
                 label: $label,
                 menu: &[],
                 shortcut: None,
+                alt_shortcuts: &[],
                 params: $params,
                 enabled: always,
                 run: $run,
                 journal: $journal,
-                named: crate::commands::NamedKeys::NONE,
             }
         };
     }
@@ -1193,7 +1232,7 @@ pub fn commands() -> Vec<CommandSpec> {
         )),
         sc!("shortcuts.get", "Get Shortcuts of a Command", r#"{"command":id,"platform":str?}"#, false, |s, p| {
             let id = str_p(p, "command").ok_or_else(|| bad("shortcuts.get", "need `command`"))?;
-            let c = s.shortcuts.command(id).ok_or_else(|| bad("shortcuts.get", format!("unknown command `{id}`")))?;
+            let c = s.shortcuts.command(&s.registry, id).ok_or_else(|| bad("shortcuts.get", format!("unknown command `{id}`")))?;
             let plat = platform_p(p);
             let bs: Vec<Value> = s.shortcuts.for_command(id).into_iter().map(|b| s.shortcuts.binding_json(b, plat)).collect();
             Ok(json!({"id": c.id, "label": c.label, "category": c.category, "shortcuts": bs}))
@@ -1201,9 +1240,10 @@ pub fn commands() -> Vec<CommandSpec> {
         sc!("shortcuts.set", "Assign Shortcut", r#"{"command":id,"keys":"Cmd+Shift+K","panel":str?,"add":bool?,"keepConflicts":bool?}"#, true, |s, p| {
             let id = str_p(p, "command").ok_or_else(|| bad("shortcuts.set", "need `command`"))?;
             let keys = str_p(p, "keys").ok_or_else(|| bad("shortcuts.set", "need `keys`"))?;
+            let in_registry = s.registry.resolve(id).is_some();
             let r = s
                 .shortcuts
-                .set(id, keys, str_p(p, "panel"), bool_p(p, "add").unwrap_or(false), bool_p(p, "keepConflicts").unwrap_or(false))
+                .set(id, keys, str_p(p, "panel"), bool_p(p, "add").unwrap_or(false), bool_p(p, "keepConflicts").unwrap_or(false), in_registry)
                 .map_err(err("shortcuts.set"))?;
             let plat = Platform::current();
             let conflicts: Vec<Value> = s.shortcuts.conflicts(plat).into_iter().map(|(c, k, v)| json!({"context": c, "keys": k, "commands": v})).collect();
@@ -1263,7 +1303,8 @@ pub fn commands() -> Vec<CommandSpec> {
         }),
         sc!("shortcuts.import", "Import Keyboard Shortcuts", r#"{"path":str,"activate":bool=true}"#, true, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("shortcuts.import", "need `path`"))?;
-            let name = s.shortcuts.import(Path::new(path), bool_p(p, "activate").unwrap_or(true)).map_err(err("shortcuts.import"))?;
+            let activate = bool_p(p, "activate").unwrap_or(true);
+            let name = s.shortcuts.import(Path::new(path), activate).map_err(err("shortcuts.import"))?;
             Ok(json!({"name": name, "presets": presets_json(s)}))
         }),
         sc!("shortcuts.audit", "Shortcut Audit", "{}", false, |s, _| {

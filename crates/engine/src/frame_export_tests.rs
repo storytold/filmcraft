@@ -8,14 +8,8 @@ use std::sync::Arc;
 fn session() -> (Session, ItemId) {
     let mut s = Session::default();
     s.execute("file.newSequence", json!({"width":128,"height":72,"fps":24})).unwrap();
-    let item = crate::demo::add_generator(
-        Arc::make_mut(&mut s.project),
-        &s.media,
-        GeneratorSource::new(Generator::Demo(DemoScene::Aurora), 128, 72, FrameRate::FPS_24, Tick(5 * TICKS_PER_SECOND)),
-        "Source clip",
-        Label::Iris,
-        None,
-    );
+    let src = GeneratorSource::new(Generator::Demo(DemoScene::Aurora), 128, 72, FrameRate::FPS_24, Tick(5 * TICKS_PER_SECOND));
+    let item = crate::demo::add_generator(std::sync::Arc::make_mut(s.project.write()), &s.media, src, "Source clip", Label::Iris, None);
     s.execute("timeline.place", json!({"item":item.0,"track":"V1"})).unwrap();
     s.execute("source.open", json!({"item":item.0})).unwrap();
     (s, item)
@@ -28,7 +22,7 @@ fn frame_export_selects_the_correct_monitor_time_and_original_media() {
     std::fs::create_dir_all(&dir).unwrap();
     let proxy = dir.join("proxy.png");
     image::RgbaImage::from_pixel(16, 9, image::Rgba([255, 0, 0, 255])).save(&proxy).unwrap();
-    Arc::make_mut(&mut s.project).item_mut(item).unwrap().as_media_mut().unwrap().proxy =
+    s.project_mut().item_mut(item).unwrap().as_media_mut().unwrap().proxy =
         Some(filmcraft_project::MediaRef::File { path: proxy.to_string_lossy().into_owned() });
     s.media.set_use_proxies(true);
     s.state.source_playhead = FrameRate::FPS_24.tick_of(20);
@@ -80,7 +74,7 @@ fn source_frame_export_works_without_an_active_sequence_and_rejects_bad_params()
     ] {
         assert!(s.execute("file.exportFrame", params.clone()).is_err(), "{params}");
     }
-    Arc::make_mut(&mut s.project).item_mut(item).unwrap().as_media_mut().unwrap().info.video = None;
+    s.project_mut().item_mut(item).unwrap().as_media_mut().unwrap().info.video = None;
     assert!(s.execute("file.exportFrame", json!({"target":"source","path":path.to_string_lossy()})).is_err());
     std::fs::remove_file(path).unwrap();
 }
@@ -98,7 +92,7 @@ fn frame_export_snapshots_are_independent_of_later_monitor_selection() {
     assert_eq!(&std::fs::read(&path).unwrap()[..2], b"BM");
     std::fs::remove_file(path).unwrap();
     let seq = s.state.active_sequence.unwrap();
-    Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = FrameRate { num: 1, den: i64::MAX };
+    s.project_mut().sequence_mut(seq).unwrap().settings.frame_rate = FrameRate { num: 1, den: i64::MAX };
     assert!(keyboard::frame_export_target(&s, &json!({})).is_err());
 }
 

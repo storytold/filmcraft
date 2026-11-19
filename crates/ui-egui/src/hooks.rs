@@ -96,6 +96,12 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Runs once per frame with the session, before the panels are drawn (Craft Link's dialogs).
+    pub per_frame: Option<Box<dyn FnMut(&egui::Context, &mut Session)>>,
+    /// Runs when the app exits cleanly (Craft Link tells its peers with `app.closing`).
+    pub on_exit: Option<Box<dyn FnMut()>>,
+    /// Name of a dialog the embedding app draws itself (Craft Link's prompt), for `ui.inspect`'s `dialog`.
+    pub dialog_label: Option<Box<dyn Fn() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.

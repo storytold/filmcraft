@@ -16,9 +16,10 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
 fn harness() -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.newSequence", json!({"name":"Program clip","width":128,"height":72,"fps":24})).unwrap();
+    let media = std::sync::Arc::clone(&s.media);
     let item = filmcraft_engine::demo::add_generator(
-        Arc::make_mut(&mut s.project),
-        &s.media,
+        s.project_mut(),
+        &media,
         filmcraft_media::generators::GeneratorSource::new(
             filmcraft_media::Generator::Demo(filmcraft_media::DemoScene::Aurora),
             128,
@@ -235,7 +236,7 @@ fn exported_frame_timecode_matches_each_monitor_and_stays_captured() {
     ] {
         let mut h = harness();
         let seq = h.state().session.state.active_sequence.unwrap();
-        let settings = &mut Arc::make_mut(&mut h.state_mut().session.project).sequence_mut(seq).unwrap().settings;
+        let settings = &mut h.state_mut().session.project_mut().sequence_mut(seq).unwrap().settings;
         settings.frame_rate = rate;
         settings.drop_frame = drop_frame;
         h.state_mut().session.set_playhead(rate.tick_of(rate.timecode_base() * 65 + 4));

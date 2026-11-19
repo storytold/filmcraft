@@ -43,6 +43,8 @@ filmcraft-scopes = { path = "crates/scopes" }
 filmcraft-export = { path = "crates/export" }
 filmcraft-format = { path = "crates/format" }
 filmcraft-engine = { path = "crates/engine" }
+filmcraft-link = { path = "crates/link" }
+filmcraft-plugins = { path = "crates/plugins" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
 filmcraft-platform = { path = "crates/platform" }
@@ -102,6 +104,13 @@ egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", features = ["egui"] }
 rfd = "0.17"
+# Command registry, Craft Link transport and the plug-in host. The plug-in host lifecycle is native only;
+# the engine takes the crate without features for `CallError`.
+craft-command = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "8bb1adcfb631e32ba7fa32f0417fc0e03287979f" }
+craft-ipc = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "8bb1adcfb631e32ba7fa32f0417fc0e03287979f" }
+craft-plugin-host = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "8bb1adcfb631e32ba7fa32f0417fc0e03287979f", default-features = false }
+craft-plugin-abi = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "8bb1adcfb631e32ba7fa32f0417fc0e03287979f" }
+craft-plugin-ui = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "8bb1adcfb631e32ba7fa32f0417fc0e03287979f" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
