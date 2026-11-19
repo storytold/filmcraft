@@ -74,11 +74,7 @@ fn planes_to_rgba8(planes: &[Vec<u8>], colours: usize, bytes_per_sample: usize, 
         _ => 0,
     };
     let to8 = |v: u32| ((u64::from(v) * 255 + u64::from(max / 2)) / u64::from(max)) as u8;
-    let opacity: Vec<u16> = if alpha {
-        planes[colours].chunks_exact(bytes_per_sample).map(sample).collect()
-    } else {
-        Vec::new()
-    };
+    let opacity: Vec<u16> = if alpha { planes[colours].chunks_exact(bytes_per_sample).map(sample).collect() } else { Vec::new() };
     let mut rgba = vec![255u8; pixels * 4];
     for (c, plane) in planes.iter().take(colours).enumerate() {
         for (i, (px, s)) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(plane.chunks_exact(bytes_per_sample)).enumerate() {
