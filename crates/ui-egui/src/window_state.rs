@@ -211,10 +211,11 @@ impl Tracker {
     pub fn observe(&mut self, ctx: &egui::Context, info: &egui::ViewportInfo) {
         let now = Instant::now();
         let maximized = if cfg!(target_os = "macos") { (self.native_maximized)() } else { Some(info.maximized == Some(true)) };
-        let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor(), maximized) else { return };
-        if self.current != Some(state) {
-            self.current = Some(state);
-            self.save_at = Some(now + SETTLE_TIME);
+        if let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor(), maximized) {
+            if self.current != Some(state) {
+                self.current = Some(state);
+                self.save_at = Some(now + SETTLE_TIME);
+            }
         }
         self.maybe_save(now, ctx);
     }
@@ -322,6 +323,23 @@ mod tests {
         let viewport = state.apply_to(egui::ViewportBuilder::default(), None);
         assert_eq!(viewport.inner_size, Some(egui::vec2(1440.0, 900.0)));
         assert_eq!(viewport.position, (!cfg!(target_os = "windows")).then_some(egui::pos2(120.0, 80.0)));
+    }
+
+    #[test]
+    fn pending_normal_geometry_is_saved_while_window_is_maximized() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(FILE_NAME);
+        let state = WindowState { width: 1440.0, height: 900.0, x: 120.0, y: 80.0, scale_factor: 1.0 };
+        let mut tracker = Tracker::new(path.clone(), None, || Some(true));
+        tracker.current = Some(state);
+        tracker.save_at = Some(Instant::now() - RETRY_TIME);
+
+        let ctx = egui::Context::default();
+        let mut maximized = info(0.0, 0.0, 1600.0, 900.0);
+        maximized.maximized = Some(true);
+        tracker.observe(&ctx, &maximized);
+
+        assert_eq!(WindowState::load(&path), Some(state));
     }
 
     #[test]
