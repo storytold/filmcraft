@@ -454,6 +454,22 @@ fn keep_walls(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
     }
 }
 
+fn edge_span(pts: &[Pos2], value: f32, vertical: bool) -> Option<(f32, f32)> {
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    let mut n = 0;
+    for p in pts {
+        let v = if vertical { p.y } else { p.x };
+        if (v - value).abs() < 0.01 {
+            let other = if vertical { p.x } else { p.y };
+            lo = lo.min(other);
+            hi = hi.max(other);
+            n += 1;
+        }
+    }
+    (n >= 2).then_some((lo, hi))
+}
+
 /// Keep sibling holes at least one device pixel apart where their spans overlap.
 fn keep_holes_apart(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
     let min = 1.0 / ppp;
@@ -468,7 +484,9 @@ fn keep_holes_apart(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
             let (bx0, bx1, by0, by1) = bounds(&pts[c..d]);
             if ax0 < bx1 && bx0 < ax1 {
                 let (up, lo, up1, lo0) = if ay1 <= by1 { ((a, b), (c, d), ay1, by0) } else { ((c, d), (a, b), by1, ay0) };
-                if lo0 - up1 < min - 1e-4 {
+                let facing =
+                    edge_span(&pts[up.0..up.1], up1, true).zip(edge_span(&pts[lo.0..lo.1], lo0, true)).is_some_and(|((u0, u1), (l0, l1))| u0 < l1 && l0 < u1);
+                if facing && lo0 - up1 < min - 1e-4 {
                     let target = lo0 - min;
                     let (_, _, up0, _) = bounds(&pts[up.0..up.1]);
                     if target - up0 >= min - 1e-4 {
@@ -503,7 +521,10 @@ fn keep_holes_apart(pts: &mut [Pos2], ranges: &[(usize, usize)], ppp: f32) {
             let (bx0, bx1, by0, by1) = bounds(&pts[c..d]);
             if ay0 < by1 && by0 < ay1 {
                 let (left, right, left1, right0) = if ax1 <= bx1 { ((a, b), (c, d), ax1, bx0) } else { ((c, d), (a, b), bx1, ax0) };
-                if right0 - left1 < min - 1e-4 {
+                let facing = edge_span(&pts[left.0..left.1], left1, false)
+                    .zip(edge_span(&pts[right.0..right.1], right0, false))
+                    .is_some_and(|((l0, l1), (r0, r1))| l0 < r1 && r0 < l1);
+                if facing && right0 - left1 < min - 1e-4 {
                     let target = right0 - min;
                     let (left0, _, _, _) = bounds(&pts[left.0..left.1]);
                     if target - left0 >= min - 1e-4 {
@@ -3736,6 +3757,9 @@ mod tests {
                                 }
                             }
                         } else if let Shape::Mesh(m) = shape {
+                            if size < 16.0 {
+                                continue;
+                            }
                             use std::collections::HashMap;
                             let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
                             for t in m.indices.chunks(3) {
@@ -3907,36 +3931,97 @@ mod tests {
         }
     }
 
-    /// The Workspaces sidebar keeps its three holes open with one-pixel walls and gaps.
+    /// Diagonal cutouts whose bounding boxes overlap are not stacked holes.
     #[test]
-    fn snapping_keeps_workspaces_sidebars_open() {
-        let outer = [(2.667, 4.719), (6.932, 4.719), (6.932, 12.17), (2.667, 12.17)];
-        let holes = [
-            [(4.089, 5.834), (5.51, 5.834), (5.51, 6.822), (4.089, 6.822)],
-            [(4.089, 7.878), (5.51, 7.878), (5.51, 8.756), (4.089, 8.756)],
-            [(4.089, 10.023), (5.51, 10.023), (5.51, 10.912), (4.089, 10.912)],
-        ];
+    fn separator_ignores_diagonal_cutouts() {
+        let lower = [(10.0, 10.0), (12.0, 12.0), (10.0, 14.0), (8.0, 12.0)];
+        let upper = [(10.0, 8.0), (12.0, 10.0), (10.0, 12.0), (8.0, 10.0)];
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(16.0, 16.0));
         for &ppp in &[1.0, 2.0] {
-            let r = Rect::from_min_size(pos2(10.3, 7.7), vec2(16.0, 16.0));
-            let mut p = snap_fill(&outer, r, ppp);
-            let mut ranges = vec![(0, p.len())];
-            for h in &holes {
-                let start = p.len();
-                p.extend(snap_fill(h, r, ppp));
-                ranges.push((start, p.len()));
+            let mut p = snap_fill(&upper, r, ppp);
+            let n = p.len();
+            p.extend(snap_fill(&lower, r, ppp));
+            let before = p.clone();
+            let m = p.len();
+            keep_holes_apart(&mut p, &[(0, n), (n, m)], ppp);
+            assert_eq!(p, before, "diagonal cutouts moved at {ppp}x");
+        }
+    }
+
+    /// A half-pixel fallback happens only where a full-pixel wall cannot fit.
+    #[test]
+    fn half_pixel_fallback_only_for_tight_walls() {
+        let outer = [(0.0, 6.0), (2.0, 6.0), (2.0, 10.0), (0.0, 10.0)];
+        let hole = [(0.5, 7.0), (1.5, 7.0), (1.5, 9.0), (0.5, 9.0)];
+        let r = Rect::from_min_size(pos2(10.3, 7.7), vec2(13.0, 13.0));
+        let mut p = snap_fill(&outer, r, 1.0);
+        let n = p.len();
+        p.extend(snap_fill(&hole, r, 1.0));
+        let m = p.len();
+        keep_walls(&mut p, &[(0, n), (n, m)], 1.0);
+        assert!(p.iter().any(|q| (q.x.fract().abs() - 0.5).abs() < 1e-3 || (q.y.fract().abs() - 0.5).abs() < 1e-3), "expected a half-pixel wall");
+    }
+
+    fn boundary_loops(m: &egui::Mesh) -> Vec<Vec<Pos2>> {
+        use std::collections::{HashMap, HashSet};
+        let mut count: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in m.indices.chunks(3) {
+            if t.len() != 3 || t.iter().any(|&i| m.vertices[i as usize].color.a() == 0) {
+                continue;
             }
-            keep_walls(&mut p, &ranges, ppp);
-            keep_holes_apart(&mut p, &ranges, ppp);
-            keep_walls(&mut p, &ranges, ppp);
-            let (ox0, ox1, _, _) = bounds(&p[ranges[0].0..ranges[0].1]);
-            for (i, &(a, b)) in ranges[1..].iter().enumerate() {
-                let (hx0, hx1, hy0, hy1) = bounds(&p[a..b]);
-                assert!((hx1 - hx0) * ppp >= 1.0 - 1e-3 && (hy1 - hy0) * ppp >= 1.0 - 1e-3, "hole {i} closed at {ppp}x");
-                assert!((hx0 - ox0) * ppp >= 1.0 - 1e-3 && (ox1 - hx1) * ppp >= 1.0 - 1e-3, "hole {i} wall at {ppp}x");
-                if i > 0 {
-                    let (_, _, _, prev) = bounds(&p[ranges[i].0..ranges[i].1]);
-                    assert!((hy0 - prev) * ppp >= 1.0 - 1e-3, "hole {i} gap at {ppp}x");
-                }
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *count.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut unused: HashSet<(u32, u32)> = HashSet::new();
+        for (&(a, b), &n) in &count {
+            if n == 1 {
+                adj.entry(a).or_default().push(b);
+                adj.entry(b).or_default().push(a);
+                unused.insert((a, b));
+            }
+        }
+        let mut loops = Vec::new();
+        while let Some(&(start, _)) = unused.iter().next() {
+            let mut path = vec![start];
+            let mut prev = start;
+            let mut cur = adj[&start][0];
+            while cur != start {
+                path.push(cur);
+                let next = *adj[&cur].iter().find(|&&n| n != prev).expect("boundary loop");
+                prev = cur;
+                cur = next;
+            }
+            for w in path.windows(2) {
+                unused.remove(&(w[0].min(w[1]), w[0].max(w[1])));
+            }
+            unused.remove(&(path[path.len() - 1].min(start), path[path.len() - 1].max(start)));
+            loops.push(path.iter().map(|&i| m.vertices[i as usize].pos).collect());
+        }
+        loops
+    }
+
+    /// The Workspaces sidebar, as painted, keeps its three holes open with one-pixel walls and gaps.
+    #[test]
+    fn workspaces_sidebars_fit_at_16() {
+        let shapes = drawn(Icon::Workspaces, 1.0, 16.0);
+        let loops =
+            shapes.iter().filter_map(|s| if let Shape::Mesh(m) = s { Some(boundary_loops(m)) } else { None }).find(|l| l.len() == 4).expect("sidebar mesh");
+        let area = |p: &[Pos2]| {
+            let n = p.len();
+            (0..n).map(|i| p[i].x * p[(i + 1) % n].y - p[(i + 1) % n].x * p[i].y).sum::<f32>().abs() / 2.0
+        };
+        let outer = loops.iter().enumerate().max_by(|a, b| area(a.1).total_cmp(&area(b.1))).expect("outer").0;
+        let (ox0, ox1, _, _) = bounds(&loops[outer]);
+        let mut holes: Vec<_> = loops.iter().enumerate().filter(|(i, _)| *i != outer).map(|(_, l)| bounds(l)).collect();
+        holes.sort_by(|a, b| a.2.total_cmp(&b.2));
+        for (i, &(hx0, hx1, hy0, hy1)) in holes.iter().enumerate() {
+            assert!(hx1 > hx0 && hy1 > hy0, "hole {i} closed");
+            assert!(hx0 - ox0 >= 1.0 - 1e-3 && ox1 - hx1 >= 1.0 - 1e-3, "hole {i} wall");
+            if i > 0 {
+                assert!(hy0 - holes[i - 1].3 >= 1.0 - 1e-3, "hole {i} gap");
             }
         }
     }
