@@ -792,6 +792,22 @@ mod tests {
         .clear();
     }
 
+    #[test]
+    fn hot_number_editor_limits_pasted_text_before_processing() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("bounded-hot-number");
+        let mut buf = String::new();
+        let mut draw = |events: Vec<egui::Event>| {
+            let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                hot_number_editor(ui, "Value", id, 0.0, (0.0, 1000.0), "", &mut buf, true);
+            });
+            output.textures_delta.clear();
+        };
+        draw(Vec::new());
+        draw(vec![egui::Event::Paste("9".repeat(1000))]);
+        assert_eq!(buf.len(), 32, "the TextEdit cap applies before the numeric filter processes pasted input");
+    }
+
     /// The queue's progress line is painted digit by digit; a screen reader still reads it whole.
     #[test]
     fn a_tabular_label_is_read_as_its_text() {
