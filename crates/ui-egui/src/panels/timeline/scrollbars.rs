@@ -854,7 +854,7 @@ fn key_binding_name(key: egui::Key) -> String {
 /// modifiers held at that instant as its prefix), or the first mouse button press. Modifier
 /// presses and all releases are skipped -- the chord completes when the key it modifies arrives,
 /// never when a modifier or its release does.
-fn chord_and_button(events: &[egui::Event]) -> Option<String> {
+fn chord_and_button(events: &[egui::Event], fallback_modifiers: egui::Modifiers) -> Option<String> {
     for e in events {
         match e {
             egui::Event::Key { key, modifiers, pressed: true, .. } if !is_modifier_key(*key) => {
@@ -896,6 +896,7 @@ fn chord_and_button(events: &[egui::Event]) -> Option<String> {
                 s.push_str("Scroll");
                 return Some(s);
             }
+            egui::Event::Paste(_) | egui::Event::PasteImage(_) if fallback_modifiers.command => return Some("Ctrl + V".into()),
             _ => {}
         }
     }
@@ -1031,7 +1032,7 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
     let combo_key = egui::Id::unique("timeline-controls-held-modifiers");
     let mods = ctx.input(|i| i.modifiers);
     let count = u8::from(mods.shift) + u8::from(mods.alt) + u8::from(mods.ctrl || mods.mac_cmd);
-    let key_text = ctx.input(|i| chord_and_button(&i.events));
+    let key_text = ctx.input(|i| chord_and_button(&i.events, i.modifiers));
     let combo = if key_text.is_some() {
         ctx.data_mut(|d| d.remove_temp::<String>(combo_key));
         None
@@ -1081,7 +1082,34 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
         }) {
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique("timeline-controls-wheel-delta"), delta));
         }
-        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Key { pressed: true, .. } | egui::Event::Text(_) | egui::Event::MouseWheel { .. })));
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key { pressed: true, .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Paste(_)
+                        | egui::Event::PasteImage(_)
+                )
+            })
+        });
+    }
+}
+
+#[cfg(test)]
+mod slider_clipboard_shortcut_tests {
+    use super::chord_and_button;
+    use egui::{Event, Modifiers};
+
+    #[test]
+    fn paste_event_matches_a_custom_ctrl_v_slider_binding() {
+        assert_eq!(chord_and_button(&[Event::Paste("text".into())], Modifiers::COMMAND), Some("Ctrl + V".into()));
+        assert_eq!(
+            chord_and_button(&[Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([1, 1], egui::Color32::WHITE)))], Modifiers::COMMAND),
+            Some("Ctrl + V".into())
+        );
+        assert_eq!(chord_and_button(&[Event::Paste("text".into())], Modifiers::NONE), None);
     }
 }
 
@@ -1294,9 +1322,14 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
     ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-controls-consumed-frame"), frame_time));
     let track = ui.ctx().data(|d| d.get_temp::<bool>(controls_listen_track_key()).unwrap_or(false));
     let pending_key = egui::Id::unique("tl-controls-pending-click");
-    let key_text = ui.input(|i| chord_and_button(&i.events.iter().filter(|e| matches!(e, egui::Event::Key { .. })).cloned().collect::<Vec<_>>()));
-    let wheel_text =
-        ui.input(|i| i.events.iter().find(|e| matches!(e, egui::Event::MouseWheel { .. })).and_then(|e| chord_and_button(std::slice::from_ref(e))));
+    let key_text = ui.input(|i| {
+        chord_and_button(
+            &i.events.iter().filter(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Paste(_) | egui::Event::PasteImage(_))).cloned().collect::<Vec<_>>(),
+            i.modifiers,
+        )
+    });
+    let wheel_text = ui
+        .input(|i| i.events.iter().find(|e| matches!(e, egui::Event::MouseWheel { .. })).and_then(|e| chord_and_button(std::slice::from_ref(e), i.modifiers)));
     let modifier_key = egui::Id::unique("timeline-controls-modifiers");
     let modifiers = ui.input(|i| i.modifiers);
     let count = u8::from(modifiers.shift) + u8::from(modifiers.alt) + u8::from(modifiers.ctrl || modifiers.mac_cmd);
