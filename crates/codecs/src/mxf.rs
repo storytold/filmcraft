@@ -293,8 +293,8 @@ impl MxfSource {
                 Codec::Vc3 => file
                     .read_sample(&bytes, vi, 0)
                     .ok()
-                    .and_then(|f| filmcraft_dnx::probe(&f).ok())
-                    .map(|h| filmcraft_dnx::cid_name(h.cid))
+                    .and_then(|f| craft_video::dnx::probe(&f).ok())
+                    .map(|h| craft_video::dnx::cid_name(h.cid))
                     .unwrap_or_else(|| "DNxHD/DNxHR".into()),
                 Codec::ProRes { profile } => prores_name(profile).into(),
                 c @ Codec::Avc { .. } => c.name().into(),

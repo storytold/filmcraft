@@ -200,6 +200,19 @@ fn the_software_h264_sei_is_the_static_metadata_laid_out_as_messages() {
     assert_eq!(sei, want);
 }
 
+#[test]
+fn software_h264_keeps_the_filmcraft_encoder_identification() {
+    let s = ExportSettings { format: Format::H264, include_audio: false, ..Default::default() };
+    let mut enc = h264_factory(Format::H264, 64, 64, FrameRate::FPS_24, &s).unwrap().unwrap();
+    let rgba = vec![128u8; 64 * 64 * 4];
+    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &rgba, hdr: None, index: 0 }).unwrap();
+    packets.extend(enc.flush().unwrap());
+    let first = String::from_utf8_lossy(&packets[0].data);
+    let expected = format!("filmcraft-h264enc {}", env!("CARGO_PKG_VERSION"));
+    assert!(first.contains(&format!("{expected} - clean-room H.264 encoder")), "FilmCraft identification missing from first access unit: {first:?}");
+    assert!(!first.contains("craft-h264enc 0.1.0 - clean-room H.264 encoder"), "shared crate default writer leaked into the FilmCraft bitstream");
+}
+
 /// #2142: SDR gets its `colr` box as well (nclc in MOV, nclx in MP4), and no HDR metadata.
 #[test]
 fn sdr_gets_a_colr_box_and_no_hdr_metadata() {
