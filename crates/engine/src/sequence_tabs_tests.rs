@@ -31,6 +31,23 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn opening_a_clean_project_resets_the_previous_projects_view_epoch() {
+    let dir = temp_dir("clean-view-epoch");
+    let path = dir.join("saved.fcproj").to_string_lossy().into_owned();
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    s.view_changed();
+    assert!(s.has_unsaved_changes());
+
+    s.execute("file.open", json!({"path": path})).unwrap();
+
+    assert_eq!(s.saved_view_epoch, s.view_epoch);
+    assert!(!s.has_unsaved_changes(), "the newly opened clean project must not inherit the prior project's pending view epoch");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn close_others_keeps_one_tab_and_shows_it() {
     let (mut s, [main, b, c]) = three_tabs();
     // from the active tab
