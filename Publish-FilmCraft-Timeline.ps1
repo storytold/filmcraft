@@ -1,7 +1,13 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExpectedPushDestination
+)
+
 $ErrorActionPreference = 'Stop'
 
 $repo = $PSScriptRoot
-$expectedRemote = 'https://github.com/TheMiningPickaxe/filmcraft'
+$expectedRemote = $ExpectedPushDestination
 $title = 'Timeline Slider Overhaul Part #1'
 $body = @'
 FIRST COMMIT WHOHOOOOOO! IT'S BEEN SO FUN VIBE CODING!! I CAN'T WAIT TO DO MORE!
@@ -53,35 +59,52 @@ function Assert-NoUnstagedChanges {
     }
 }
 
-if ((Get-Location).Path -ne $repo) {
-    throw "Run this script from the FilmCraft repository folder: $repo"
+function Get-ValidatedPushUrls {
+    $urls = @(& git remote get-url --push --all origin 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $urls.Count -eq 0) {
+        throw 'Could not inspect origin push destinations. Nothing was committed or pushed.'
+    }
+    foreach ($url in $urls) {
+        if ((Normalize-Remote $url) -cne (Normalize-Remote $expectedRemote)) {
+            throw 'An origin push destination does not match the expected destination. Nothing was committed or pushed.'
+        }
+    }
+    return ,$urls
 }
 
-$branch = (& git branch --show-current).Trim()
-if ($branch -ne 'main') {
-    throw "Expected branch 'main'; current branch is '$branch'. No files were committed or pushed."
+function Normalize-Remote([string]$url) {
+    $normalized = $url.Trim()
+    $normalized = $normalized -replace '^https?://(?:[^/@]+(?::[^/@]*)?@)?', ''
+    $normalized = $normalized -replace '^ssh://(?:[^/@]+@)?', ''
+    $normalized = $normalized -replace '^git@', ''
+    $normalized = $normalized -replace '^github\.com[:/]', 'github.com/'
+    $normalized = $normalized.TrimEnd('/') -replace '\.git$', ''
+    return $normalized.ToLowerInvariant()
 }
 
-$remote = (& git remote get-url origin 2>$null)
-if ($LASTEXITCODE -ne 0) {
-	throw 'Could not inspect the origin remote. No files were committed or pushed.'
+Push-Location -LiteralPath $repo
+try {
+$branchOutput = & git branch --show-current 2>$null
+if ($LASTEXITCODE -ne 0 -or $null -eq $branchOutput) {
+	throw 'Could not identify the current branch. No files were committed or pushed.'
 }
-$normalizedRemote = $remote.Trim().TrimEnd('/') -replace '\.git$', ''
-if ($normalizedRemote -ne $expectedRemote) {
-	throw 'The origin remote is not the expected personal FilmCraft fork. No files were committed or pushed.'
+$branch = ([string]$branchOutput).Trim()
+if ([string]::IsNullOrWhiteSpace($branch) -or $branch -in @('main', 'master')) {
+	throw 'Publish from a named feature branch, not main or master. No files were committed or pushed.'
 }
+$pushUrlsBeforeConfirmation = Get-ValidatedPushUrls
 
 Assert-NoUnstagedChanges
 $headBeforeConfirmation = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not identify HEAD before confirmation.' }
 $stagedTreeBeforeConfirmation = (& git write-tree).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not record the staged tree.' }
-$staged = @(& git diff-tree --no-commit-id --name-only -r $headBeforeConfirmation $stagedTreeBeforeConfirmation)
+$staged = @(& git -c core.quotePath=false diff-tree --no-commit-id --no-renames --name-only -r $headBeforeConfirmation $stagedTreeBeforeConfirmation)
 if ($LASTEXITCODE -ne 0) { throw 'Could not list changes from the recorded staged tree.' }
 if ($staged.Count -eq 0) {
     throw 'There are no staged changes. Stage the Timeline files first; this script will not stage files automatically.'
 }
-if ($staged -contains 'AGENTS.md') {
+if (@($staged | Where-Object { $_ -match '(^|/)AGENTS\.md"?$' }).Count -gt 0) {
     throw 'AGENTS.md is staged. Unstage it before publishing; this script will not commit it.'
 }
 
@@ -90,7 +113,7 @@ $staged | ForEach-Object { Write-Host "  $_" }
 Write-Host ''
 Write-Host "Commit title: $title"
 Write-Host ''
-$confirmation = Read-Host 'Type YES to commit these staged files and push main to your GitHub fork'
+$confirmation = Read-Host "Type YES to commit these staged files and push $branch to your GitHub fork"
 if ($confirmation -cne 'YES') {
     Write-Host 'Cancelled. Nothing was committed or pushed.'
     exit 0
@@ -100,16 +123,25 @@ $headNow = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $headNow -ne $headBeforeConfirmation) {
     throw 'HEAD changed after confirmation. Review the repository before committing; nothing was pushed.'
 }
+$branchNow = (& git branch --show-current).Trim()
+if ($LASTEXITCODE -ne 0 -or $branchNow -cne $branch) {
+    throw 'The current branch changed after confirmation. Review the repository before committing; nothing was pushed.'
+}
 $treeNow = (& git write-tree).Trim()
 if ($LASTEXITCODE -ne 0 -or $treeNow -ne $stagedTreeBeforeConfirmation) {
     throw 'The staged tree changed after confirmation. Review the repository before committing; nothing was pushed.'
 }
 Assert-NoUnstagedChanges
+$pushUrlsNow = Get-ValidatedPushUrls
+if ((@($pushUrlsNow) -join "`n") -cne (@($pushUrlsBeforeConfirmation) -join "`n")) {
+    throw 'Origin push destinations changed after confirmation. Review the repository before committing; nothing was pushed.'
+}
 
 $commitBodyPath = Join-Path ([System.IO.Path]::GetTempPath()) ("filmcraft-commit-{0}.txt" -f [guid]::NewGuid())
 try {
-    [System.IO.File]::WriteAllText($commitBodyPath, $body, [System.Text.UTF8Encoding]::new($false))
-    & git commit -m $title --file $commitBodyPath
+    $commitMessage = "$title`n`n$body"
+    [System.IO.File]::WriteAllText($commitBodyPath, $commitMessage, [System.Text.UTF8Encoding]::new($false))
+    & git commit --file $commitBodyPath
     if ($LASTEXITCODE -ne 0) { throw 'Commit failed; nothing was pushed.' }
 } finally {
     Remove-Item -LiteralPath $commitBodyPath -Force -ErrorAction SilentlyContinue
@@ -124,8 +156,15 @@ if ($LASTEXITCODE -ne 0 -or $committedTree -ne $stagedTreeBeforeConfirmation -or
     throw 'The commit does not match the confirmed tree and parent. Review the local commit; nothing was pushed.'
 }
 
-& git push origin "$($commitId):refs/heads/main"
+$pushUrlsBeforePush = Get-ValidatedPushUrls
+if ((@($pushUrlsBeforePush) -join "`n") -cne (@($pushUrlsBeforeConfirmation) -join "`n")) {
+    throw 'Origin push destinations changed before push. The commit is local; nothing was pushed.'
+}
+& git push --no-follow-tags --no-recurse-submodules origin "$($commitId):refs/heads/$branch"
 if ($LASTEXITCODE -ne 0) { throw 'Commit succeeded, but pushing failed. The commit is still local.' }
 
 Write-Host ''
-Write-Host 'Published to https://github.com/TheMiningPickaxe/filmcraft/tree/main'
+Write-Host "Published the confirmed commit to the validated destination branch '$branch'."
+} finally {
+    Pop-Location
+}
