@@ -254,10 +254,23 @@ pub fn record_job(j: JobSample) {
     jobs.push_back(j);
 }
 
-/// The kept jobs that finished at or after `since`; the rest are dropped.
-fn take_jobs_since(since: Option<Instant>) -> Vec<JobSample> {
-    let jobs = std::mem::take(&mut *JOBS.lock().unwrap_or_else(PoisonError::into_inner));
-    jobs.into_iter().filter(|j| since.is_none_or(|s| j.finished >= s)).collect()
+/// The kept jobs that finished in `[since, until)` (an open end where None). Earlier ones are
+/// dropped; later ones stay for the next interval.
+fn take_jobs_between(since: Option<Instant>, until: Option<Instant>) -> Vec<JobSample> {
+    let mut jobs = JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    let all = std::mem::take(&mut *jobs);
+    let mut taken = Vec::new();
+    for j in all {
+        if since.is_some_and(|s| j.finished < s) {
+            continue;
+        }
+        if until.is_some_and(|u| j.finished >= u) {
+            jobs.push_back(j);
+        } else {
+            taken.push(j);
+        }
+    }
+    taken
 }
 
 /// p50 / p95 / max of `v` (sorted in place), or zeros.
@@ -368,7 +381,7 @@ impl PassTimer {
             // idle: no line, and the window restarts with the next active pass; jobs finished
             // while idle (thumbnails) are not part of it
             self.window = Window::default();
-            drop(take_jobs_since(None));
+            drop(take_jobs_between(None, None));
             return;
         }
         self.passes += 1;
@@ -393,12 +406,15 @@ impl PassTimer {
             line += &format!(" causes=[{}]", self.causes.join(" "));
         }
         log::info!(target: TARGET, "{line}");
-        self.add_to_window(now, total, interval, meter, mode);
+        self.add_to_window(began, now, total, interval, meter, mode);
     }
 
-    fn add_to_window(&mut self, now: Instant, total: Duration, interval: Option<Duration>, meter: (u64, u64), mode: &str) {
+    /// Add a pass that ran from `began` to `now`. A window opens at the start of its first pass
+    /// (jobs finishing during that pass belong to it) and closes at the end of the pass that
+    /// completes a second; the next window opens there.
+    fn add_to_window(&mut self, began: Instant, now: Instant, total: Duration, interval: Option<Duration>, meter: (u64, u64), mode: &str) {
         let w = &mut self.window;
-        let start = *w.started.get_or_insert(now);
+        let start = *w.started.get_or_insert(began);
         if w.stages.is_empty() {
             w.stages = vec![Vec::new(); Stage::ALL.len()];
             w.meter = meter;
@@ -417,15 +433,17 @@ impl PassTimer {
         w.exact += u32::from(self.shown.is_some_and(|s| s.exact));
         let span = now.saturating_duration_since(start);
         if span >= Duration::from_secs(1) {
-            let summary = self.window.summary(span, mode, meter);
+            let summary = self.window.summary(span, now, mode, meter);
             log::info!(target: TARGET, "{summary}");
-            self.window = Window::default();
+            // consecutive windows: the next one starts where this one closed
+            self.window = Window { started: Some(now), ..Window::default() };
         }
     }
 }
 
 impl Window {
-    fn summary(&mut self, span: Duration, mode: &str, meter: (u64, u64)) -> String {
+    /// The summary of this window, which closes at `end` (jobs finishing later are kept for the next).
+    fn summary(&mut self, span: Duration, end: Instant, mode: &str, meter: (u64, u64)) -> String {
         let secs = span.as_secs_f64().max(1e-3);
         let gop = filmcraft_codecs::gop_stats() - self.gop;
         let hw = filmcraft_codecs::hw::hw_stats().frames.saturating_sub(self.hw_frames);
@@ -446,7 +464,7 @@ impl Window {
             }
         }
         s += &format!(" | upload {:.1} MB/s", self.upload_bytes as f64 / 1e6 / secs);
-        let jobs = take_jobs_since(self.started);
+        let jobs = take_jobs_between(self.started, Some(end));
         let (n, cancelled) = (jobs.len(), jobs.iter().filter(|j| j.cancelled).count());
         let col = |f: &dyn Fn(&JobSample) -> Duration| -> String {
             let mut v: Vec<f32> = jobs.iter().map(|j| ms(f(j))).collect();
@@ -588,8 +606,15 @@ mod tests {
             jobs.push_back(sample(t0));
             jobs.push_back(sample(later));
         }
-        let kept = take_jobs_since(Some(later));
-        assert_eq!(kept.len(), 1, "the job from before the window is dropped");
-        assert!(JOBS.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "taken jobs are gone");
+        let after = later + Duration::from_millis(5);
+        JOBS.lock().unwrap_or_else(PoisonError::into_inner).push_back(sample(after));
+        let kept = take_jobs_between(Some(later), Some(after));
+        assert_eq!(kept.len(), 1, "only the job inside [since, until) is summarised");
+        assert_eq!(kept.first().map(|j| j.finished), Some(later));
+        // the job after the window's end waits for the next window; the one before it is gone
+        let rest: Vec<Instant> = JOBS.lock().unwrap_or_else(PoisonError::into_inner).iter().map(|j| j.finished).collect();
+        assert_eq!(rest, vec![after]);
+        assert_eq!(take_jobs_between(Some(after), None).len(), 1, "an open end takes the rest");
+        assert!(JOBS.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
     }
 }
