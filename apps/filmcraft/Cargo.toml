@@ -43,6 +43,8 @@ open = "5"
 # graphics/probe.rs: the graphics test start waits for wgpu's adapter and device; graphics.rs's
 # tests enumerate the real adapters with it too (MIT OR Apache-2.0).
 pollster = "1"
+# Safe cross-platform display bounds for validating restored window positions (Apache-2.0).
+display-info = "0.5.10"
 
 [dev-dependencies]
 glob = "0.3"

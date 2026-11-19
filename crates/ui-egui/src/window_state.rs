@@ -6,6 +6,7 @@
 //! on macOS it reapplies position after native creation, which makes the two owners visibly fight.
 
 use serde::{Deserialize, Serialize};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use web_time::Instant;
@@ -43,6 +44,13 @@ pub struct WindowState {
     pub y: f32,
 }
 
+/// Attached display bounds in the same OS logical coordinate space as [`WindowState`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DisplayBounds {
+    pub rect: egui::Rect,
+    pub primary: bool,
+}
+
 impl WindowState {
     /// Read a valid saved rectangle. A missing file is the normal first-launch case; malformed or
     /// hostile state is reported and ignored so the caller uses its safe default.
@@ -50,29 +58,43 @@ impl WindowState {
         match Self::load_result(path) {
             Ok(state) => state,
             Err(error) => {
-                log::warn!("can't restore window state from {}: {error}", path.display());
+                log::warn!("can't restore {FILE_NAME}: {error}");
                 None
             }
         }
     }
 
     fn load_result(path: &Path) -> Result<Option<Self>, String> {
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.to_string()),
         };
-        if metadata.len() > MAX_FILE_BYTES {
+        let mut bytes = Vec::with_capacity(MAX_FILE_BYTES as usize + 1);
+        file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+        if bytes.len() > MAX_FILE_BYTES as usize {
             return Err(format!("file is larger than {MAX_FILE_BYTES} bytes"));
         }
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
         let state: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         state.valid().then_some(state).ok_or_else(|| "rectangle is outside the supported range".to_owned()).map(Some)
     }
 
     /// Apply the saved rectangle before eframe creates its initially hidden native window.
-    pub fn apply_to(self, viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
-        viewport.with_inner_size([self.width, self.height]).with_position([self.x, self.y])
+    pub fn apply_to(self, viewport: egui::ViewportBuilder, displays: Option<&[DisplayBounds]>) -> egui::ViewportBuilder {
+        let viewport = viewport.with_inner_size([self.width, self.height]);
+        match self.position_for(displays) {
+            Some(position) => viewport.with_position(position),
+            None => viewport,
+        }
+    }
+
+    fn position_for(self, displays: Option<&[DisplayBounds]>) -> Option<[f32; 2]> {
+        let Some(displays) = displays else { return Some([self.x, self.y]) };
+        let saved = egui::Rect::from_min_size(egui::pos2(self.x, self.y), egui::vec2(self.width, self.height));
+        if displays.iter().any(|display| saved.intersect(display.rect).area() > 0.0) {
+            return Some([self.x, self.y]);
+        }
+        displays.iter().find(|display| display.primary).or_else(|| displays.first()).map(|display| [display.rect.min.x, display.rect.min.y])
     }
 
     fn valid(self) -> bool {
@@ -88,8 +110,9 @@ impl WindowState {
 
     /// Egui reports viewport rectangles in interface points. Remove interface zoom to retain OS
     /// logical points, so changing FilmCraft's UI scale does not change the native window size.
-    fn from_viewport(info: &egui::ViewportInfo, zoom: f32) -> Option<Self> {
-        if info.minimized == Some(true) || info.maximized == Some(true) || info.fullscreen == Some(true) || !zoom.is_finite() || zoom <= 0.0 {
+    fn from_viewport(info: &egui::ViewportInfo, zoom: f32, native_maximized: bool) -> Option<Self> {
+        let maximized = if cfg!(target_os = "macos") { native_maximized } else { info.maximized == Some(true) };
+        if info.minimized == Some(true) || maximized || info.fullscreen == Some(true) || !zoom.is_finite() || zoom <= 0.0 {
             return None;
         }
         let (Some(outer), Some(inner)) = (info.outer_rect, info.inner_rect) else { return None };
@@ -99,23 +122,29 @@ impl WindowState {
 }
 
 /// Authoritative owner of the last normal rectangle for an interactive desktop session.
-#[derive(Default)]
 pub(crate) struct Tracker {
     path: Option<PathBuf>,
     current: Option<WindowState>,
     saved: Option<WindowState>,
     save_at: Option<Instant>,
+    native_maximized: fn() -> bool,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self { path: None, current: None, saved: None, save_at: None, native_maximized: || false }
+    }
 }
 
 impl Tracker {
-    pub fn new(path: PathBuf, restored: Option<WindowState>) -> Self {
-        Self { path: Some(path), current: restored, saved: restored, save_at: None }
+    pub fn new(path: PathBuf, restored: Option<WindowState>, native_maximized: fn() -> bool) -> Self {
+        Self { path: Some(path), current: restored, saved: restored, save_at: None, native_maximized }
     }
 
     /// Observe native geometry and save it after external and user-driven placement has settled.
     pub fn observe(&mut self, ctx: &egui::Context, info: &egui::ViewportInfo) {
         let now = Instant::now();
-        let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor()) else { return };
+        let Some(state) = WindowState::from_viewport(info, ctx.zoom_factor(), (self.native_maximized)()) else { return };
         if self.current != Some(state) {
             self.current = Some(state);
             self.save_at = Some(now + SETTLE_TIME);
@@ -161,7 +190,7 @@ impl Tracker {
                 true
             }
             Err(error) => {
-                log::warn!("can't save window state to {}: {error}", path.display());
+                log::warn!("can't save {FILE_NAME}: {error}");
                 false
             }
         }
@@ -185,7 +214,7 @@ mod tests {
 
     #[test]
     fn viewport_geometry_removes_interface_zoom() {
-        let state = WindowState::from_viewport(&info(50.0, 25.0, 800.0, 600.0), 1.5);
+        let state = WindowState::from_viewport(&info(50.0, 25.0, 800.0, 600.0), 1.5, false);
         assert_eq!(state, Some(WindowState { width: 1200.0, height: 900.0, x: 75.0, y: 37.5 }));
     }
 
@@ -198,6 +227,8 @@ mod tests {
         assert_eq!(WindowState::load(&path), None);
         std::fs::write(&path, br#"{"width":899,"height":700,"x":0,"y":0}"#).expect("write hostile state");
         assert_eq!(WindowState::load(&path), None);
+        std::fs::write(&path, vec![b' '; MAX_FILE_BYTES as usize + 1]).expect("write oversized state");
+        assert_eq!(WindowState::load(&path), None);
     }
 
     #[test]
@@ -205,13 +236,39 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join(FILE_NAME);
         let state = WindowState { width: 1440.0, height: 900.0, x: 120.0, y: 80.0 };
-        let mut tracker = Tracker::new(path.clone(), None);
+        let mut tracker = Tracker::new(path.clone(), None, || false);
         tracker.current = Some(state);
         tracker.save_now();
         assert_eq!(WindowState::load(&path), Some(state));
 
-        let viewport = state.apply_to(egui::ViewportBuilder::default());
+        let viewport = state.apply_to(egui::ViewportBuilder::default(), None);
         assert_eq!(viewport.inner_size, Some(egui::vec2(1440.0, 900.0)));
         assert_eq!(viewport.position, Some(egui::pos2(120.0, 80.0)));
+    }
+
+    #[test]
+    fn offscreen_position_moves_to_primary_display_before_creation() {
+        let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0 };
+        let displays = [DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true }];
+        let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
+        assert_eq!(viewport.position, Some(egui::pos2(0.0, 0.0)));
+    }
+
+    #[test]
+    fn position_on_attached_secondary_display_is_preserved() {
+        let state = WindowState { width: 1440.0, height: 900.0, x: 2400.0, y: 80.0 };
+        let displays = [
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(2560.0, 1440.0)), primary: false },
+        ];
+        let viewport = state.apply_to(egui::ViewportBuilder::default(), Some(&displays));
+        assert_eq!(viewport.position, Some(egui::pos2(2400.0, 80.0)));
+    }
+
+    #[test]
+    fn native_maximize_does_not_replace_normal_geometry_on_macos() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(WindowState::from_viewport(&info(0.0, 0.0, 1600.0, 900.0), 1.0, true), None);
+        }
     }
 }

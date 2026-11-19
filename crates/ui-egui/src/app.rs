@@ -141,8 +141,8 @@ impl FilmcraftApp {
     }
 
     /// Persist the interactive desktop window's settled rectangle at `path`.
-    pub fn with_window_state(mut self, path: std::path::PathBuf, restored: Option<window_state::WindowState>) -> Self {
-        self.window_state = window_state::Tracker::new(path, restored);
+    pub fn with_window_state(mut self, path: std::path::PathBuf, restored: Option<window_state::WindowState>, native_maximized: fn() -> bool) -> Self {
+        self.window_state = window_state::Tracker::new(path, restored, native_maximized);
         self
     }
 

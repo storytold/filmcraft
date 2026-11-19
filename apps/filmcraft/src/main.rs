@@ -46,8 +46,8 @@ use filmcraft_engine::Session;
 use filmcraft_engine::autosave::{AutosaveConfig, default_data_dir};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::window_state::{
-    DEFAULT_HEIGHT as DEFAULT_WINDOW_HEIGHT, DEFAULT_WIDTH as DEFAULT_WINDOW_WIDTH, FILE_NAME as WINDOW_STATE_FILE, MIN_HEIGHT as MIN_WINDOW_HEIGHT,
-    MIN_WIDTH as MIN_WINDOW_WIDTH, WindowState,
+    DEFAULT_HEIGHT as DEFAULT_WINDOW_HEIGHT, DEFAULT_WIDTH as DEFAULT_WINDOW_WIDTH, DisplayBounds, FILE_NAME as WINDOW_STATE_FILE,
+    MIN_HEIGHT as MIN_WINDOW_HEIGHT, MIN_WIDTH as MIN_WINDOW_WIDTH, WindowState,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -93,7 +93,7 @@ fn main() -> eframe::Result {
     // `--test-graphics-start <mode>`. It creates the device the window would, then exits.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let test_setup = |mode| {
-        let mut options = native_options(false, None);
+        let mut options = native_options(false, None, None);
         graphics::apply(&mut options, mode, eframe::wgpu::Backends::from_env());
         options.wgpu_options.wgpu_setup
     };
@@ -124,6 +124,7 @@ fn main() -> eframe::Result {
     // saved rectangle. The normal app restores one authoritative FilmCraft-owned state file.
     let window_state_path = if launch.control_port.is_none() { data_root.as_ref().map(|dir| dir.join(WINDOW_STATE_FILE)) } else { None };
     let restored_window = window_state_path.as_deref().and_then(WindowState::load);
+    let attached_displays = restored_window.and_then(|_| attached_display_bounds());
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("FilmCraft {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -174,7 +175,7 @@ fn main() -> eframe::Result {
     // A panic in a FilmCraft started again for it saved the next mode for the next launch.
     let mut next_saved = false;
     let started = loop {
-        let mut options = native_options(launch.control_port.is_some(), restored_window);
+        let mut options = native_options(launch.control_port.is_some(), restored_window, attached_displays.as_deref());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
@@ -294,10 +295,10 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
 /// A valid saved rectangle replaces the safe default before eframe creates its hidden native
 /// window. Position is applied exactly once here: a second macOS move after creation would race
 /// external window managers and produce a visible jump (#1994).
-fn native_options(agent: bool, restored: Option<WindowState>) -> eframe::NativeOptions {
+fn native_options(agent: bool, restored: Option<WindowState>, displays: Option<&[DisplayBounds]>) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default().with_title("FilmCraft").with_inner_size([DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT]);
     if let Some(state) = restored {
-        viewport = state.apply_to(viewport);
+        viewport = state.apply_to(viewport, displays);
     }
     eframe::NativeOptions {
         viewport: viewport
@@ -313,6 +314,55 @@ fn native_options(agent: bool, restored: Option<WindowState>) -> eframe::NativeO
             .with_app_id(APP_ID),
         event_loop_builder: agent_event_loop(agent),
         ..Default::default()
+    }
+}
+
+/// Enumerate attached displays before native creation so a rectangle saved on a disconnected
+/// monitor does not reopen permanently off-screen. `display-info` reports CoreGraphics logical
+/// coordinates on macOS and physical coordinates on the other desktop backends.
+fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
+    let displays = match display_info::DisplayInfo::all() {
+        Ok(displays) => displays,
+        Err(error) => {
+            log::warn!("can't validate restored window position against attached displays: {error}");
+            return None;
+        }
+    };
+    Some(
+        displays
+            .into_iter()
+            .filter_map(|display| {
+                #[cfg(target_os = "macos")]
+                let scale: f32 = 1.0;
+                #[cfg(not(target_os = "macos"))]
+                let scale = display.scale_factor;
+                if !scale.is_finite() || scale <= 0.0 {
+                    return None;
+                }
+                let x = display.x as f32 / scale;
+                let y = display.y as f32 / scale;
+                let width = display.width as f32 / scale;
+                let height = display.height as f32 / scale;
+                if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+                    return None;
+                }
+                Some(DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height)), primary: display.is_primary })
+            })
+            .collect(),
+    )
+}
+
+/// `ViewportInfo::maximized` is intentionally not refreshed on macOS because winit's query can
+/// deadlock there. AppKit's main-window signal remains current and is safe on the main UI thread.
+fn native_window_maximized() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return false };
+        objc2_app_kit::NSApplication::sharedApplication(mtm).mainWindow().is_some_and(|window| window.isZoomed())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }
 
@@ -394,7 +444,7 @@ fn app_creator(
         }
         let mut app = FilmcraftApp::new(session);
         if let Some(path) = window_state_path.clone() {
-            app = app.with_window_state(path, restored_window);
+            app = app.with_window_state(path, restored_window, native_window_maximized);
         }
         app.set_startup_update_check(true);
         app.graphics_notice = notice;
@@ -708,11 +758,11 @@ mod tests {
     #[test]
     fn saved_window_state_is_applied_only_when_requested() {
         let state = filmcraft_ui_egui::window_state::WindowState { width: 1280.0, height: 720.0, x: 80.0, y: 60.0 };
-        let restored = super::native_options(false, Some(state));
+        let restored = super::native_options(false, Some(state), None);
         assert_eq!(restored.viewport.inner_size, Some(egui::vec2(1280.0, 720.0)));
         assert_eq!(restored.viewport.position, Some(egui::pos2(80.0, 60.0)));
 
-        let agent = super::native_options(true, None);
+        let agent = super::native_options(true, None, None);
         assert_eq!(agent.viewport.inner_size, Some(egui::vec2(super::DEFAULT_WINDOW_WIDTH, super::DEFAULT_WINDOW_HEIGHT)));
         assert_eq!(agent.viewport.position, None);
     }
