@@ -219,10 +219,7 @@ fn dnxhr_export_roundtrip() {
 /// `burn_captions` or above the caption.
 #[test]
 fn caption_burn_in_h264_ffmpeg_oracle() {
-    let Some(ffmpeg) = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].into_iter().find(|p| std::path::Path::new(p).exists()) else {
-        eprintln!("ffmpeg not found; skipping oracle test");
-        return;
-    };
+    let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("H.264 caption burn-in export") else { return };
     let mut p = Project::new("cap");
     let (w, h) = (640u32, 360u32);
     let g = GeneratorSource::new(Generator::ColorMatte { color: [0.0, 0.0, 0.2, 1.0] }, w, h, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
@@ -269,7 +266,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
         let path = tmp(if burn { "burn.mp4" } else { "noburn.mp4" });
         let s = ExportSettings { format: Format::H264, path: path.clone(), include_audio: false, burn_captions: burn, ..Default::default() };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
-        let out = std::process::Command::new(ffmpeg)
+        let out = std::process::Command::new(&ffmpeg)
             .args(["-v", "error", "-i", &path, "-vf", "select=eq(n\\,12)", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
             .output()
             .unwrap();
@@ -521,8 +518,50 @@ fn gpu_hook_scenarios() {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (24, 0), "{:?}", gpu_render_stats());
+
+    reuse_scenario();
     crate::reset_frame_renderers_for_tests();
 }
+
+/// `gpu_hook_scenarios` case 6 (run from there: the registry is process-global).
+fn reuse_scenario() {
+    // 6. Parts of a larger job (render-preview segments) reuse the renderers the previous part
+    //    built instead of building new ones; a standalone export frees them when it ends, and a
+    //    failed (panicked) pool is never kept.
+    crate::reset_frame_renderers_for_tests();
+    BUILT.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::register_frame_renderer(|| {
+        BUILT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>)
+    });
+    let (p, seq, m) = project();
+    let part = |path: &String, batch: bool| {
+        let mut s = ExportSettings { format: Format::PngSequence, path: path.clone(), part_of_batch: batch, ..Default::default() };
+        s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+        s.gpu_rendering = crate::GpuRendering::Auto;
+        export(&p, seq, &s, &m, &Progress::default()).unwrap()
+    };
+    let built = || BUILT.load(std::sync::atomic::Ordering::SeqCst);
+    part(&tmp("reuse-a.png"), true);
+    let first = built();
+    assert!(first >= 1, "the first part builds its renderers");
+    assert_eq!(crate::idle_renderer_count(), first, "a finished part keeps its renderers");
+    part(&tmp("reuse-b.png"), true);
+    assert_eq!(built(), first, "the next part reuses them instead of building new ones");
+    assert_eq!(std::fs::read(tmp("reuse-a000.png")).unwrap(), std::fs::read(tmp("reuse-b000.png")).unwrap(), "a reused renderer draws the same");
+    part(&tmp("reuse-c.png"), false);
+    assert_eq!(built(), first, "a standalone export also takes the kept ones");
+    assert_eq!(crate::idle_renderer_count(), 0, "and frees every renderer when it ends");
+    part(&tmp("reuse-d.png"), true);
+    crate::release_idle_renderers();
+    assert_eq!(crate::idle_renderer_count(), 0, "the job's end frees them");
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(PanickingRenderer) as Box<dyn FrameRenderer>));
+    part(&tmp("reuse-panic.png"), true);
+    assert_eq!(crate::idle_renderer_count(), 0, "a pool whose renderer panicked is not kept");
+}
+
+static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 static PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
