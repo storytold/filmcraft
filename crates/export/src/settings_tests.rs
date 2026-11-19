@@ -1844,11 +1844,14 @@ fn cqp_validation_rejection_and_summary() {
     let h264_res = super::h264_factory(Format::H264, 64, 36, FrameRate::FPS_24, &s_h264);
     assert!(matches!(h264_res, Some(Err(ExportError::Unsupported(_)))));
 
-    // 5. summary() shows the QP
+    // 5. summary() shows the QP, and H.265 + CQP + HardwareEncoding::Off validates (matching the panel default)
     s_h264.qp = Some(18);
     let summary = s_h264.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert!(summary.video.contains("QP 18"), "{}", summary.video);
-    let s_hevc = ExportSettings { format: Format::Hevc, bitrate_mode: BitrateMode::Cqp, qp: Some(30), ..Default::default() };
+    register_cqp_probe(Format::Hevc, || true);
+    let s_hevc =
+        ExportSettings { format: Format::Hevc, bitrate_mode: BitrateMode::Cqp, hardware_encoding: HardwareEncoding::Off, qp: Some(30), ..Default::default() };
+    assert!(s_hevc.validate().is_ok(), "H.265 CQP should validate with HardwareEncoding::Off (panel hides the toggle)");
     let summary_hevc = s_hevc.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert!(summary_hevc.video.contains("QP 30"), "{}", summary_hevc.video);
 }

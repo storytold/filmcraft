@@ -320,7 +320,14 @@ impl Nvenc {
         let room_for_bframes = codec == Codec::H264 || cfg.keyint > 2;
         let bframes = u32::from(cfg.bframes && cfg.profile != Profile::Baseline && caps.max_bframes >= 1 && room_for_bframes);
         let max_lookahead = 31u32.saturating_sub(bframes);
-        let lookahead = cfg.lookahead.filter(|&la| la > 0).map(|la| la.clamp(1, max_lookahead));
+        let lookahead = if caps.lookahead {
+            cfg.lookahead.filter(|&la| la > 0).map(|la| la.clamp(1, max_lookahead))
+        } else {
+            if cfg.lookahead.is_some_and(|la| la > 0) {
+                log::info!("NVENC GPU does not support lookahead for {codec:?}; continuing without lookahead");
+            }
+            None
+        };
         let ten_bit = cfg.profile == Profile::HevcMain10;
         let params = Params {
             codec,
@@ -794,7 +801,7 @@ mod tests {
             bframes: false,
             ..Default::default()
         };
-        let caps = |ten_bit| Caps { ten_bit, max_bframes: 2, min_size: (130, 128), max_size: (8192, 8192) };
+        let caps = |ten_bit| Caps { ten_bit, lookahead: true, max_bframes: 2, min_size: (130, 128), max_size: (8192, 8192) };
         assert!(check_caps(&caps(true), &cfg(Profile::HevcMain10)).is_ok());
         let e = check_caps(&caps(false), &cfg(Profile::HevcMain10)).unwrap_err();
         assert!(e.contains("10-bit"), "{e}");

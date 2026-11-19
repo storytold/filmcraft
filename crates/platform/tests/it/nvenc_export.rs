@@ -176,8 +176,10 @@ fn cqp_multipass_lookahead_and_spatial_aq_encode_for_h264_and_hevc() {
         if fmt == Format::Hevc && !filmcraft_platform::nvenc::hevc_available() {
             continue;
         }
+        // H.265 hides the Hardware Encoding toggle and defaults to Off in the UI panel.
+        let hw_mode = if fmt == Format::Hevc { HardwareEncoding::Off } else { HardwareEncoding::Auto };
         // 1. CQP at two QPs (18 vs 36)
-        let mut cqp18 = settings(tmp(&dir, &format!("{codec_label}_cqp18.mp4")), HardwareEncoding::Auto);
+        let mut cqp18 = settings(tmp(&dir, &format!("{codec_label}_cqp18.mp4")), hw_mode);
         cqp18.format = fmt;
         cqp18.bitrate_mode = BitrateMode::Cqp;
         cqp18.qp = Some(18);
@@ -186,7 +188,7 @@ fn cqp_multipass_lookahead_and_spatial_aq_encode_for_h264_and_hevc() {
         assert_eq!(hw_encode_stats().frames - b0.frames, 24);
         assert!(r18.warnings.is_empty(), "{codec_label} CQP 18 warnings: {:?}", r18.warnings);
 
-        let mut cqp36 = settings(tmp(&dir, &format!("{codec_label}_cqp36.mp4")), HardwareEncoding::Auto);
+        let mut cqp36 = settings(tmp(&dir, &format!("{codec_label}_cqp36.mp4")), hw_mode);
         cqp36.format = fmt;
         cqp36.bitrate_mode = BitrateMode::Cqp;
         cqp36.qp = Some(36);
@@ -205,7 +207,7 @@ fn cqp_multipass_lookahead_and_spatial_aq_encode_for_h264_and_hevc() {
 
         // 2. VBR 1-pass with multipass / lookahead / spatial AQ off vs on
         for (tag, mp, aq, la) in [("off", false, false, None), ("on", true, true, Some(8))] {
-            let mut vbr = settings(tmp(&dir, &format!("{codec_label}_rc_{tag}.mp4")), HardwareEncoding::Auto);
+            let mut vbr = settings(tmp(&dir, &format!("{codec_label}_rc_{tag}.mp4")), hw_mode);
             vbr.format = fmt;
             vbr.multipass = mp;
             vbr.spatial_aq = aq;

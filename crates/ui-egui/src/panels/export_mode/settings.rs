@@ -617,9 +617,12 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     }
                 });
             });
+            let h264_declined_by_hw = !hevc && (s.h264_profile == filmcraft_engine::export::H264Profile::High10 || s.h264_intra_only || (seq_hdr && !s.sdr));
             let hw_rate_controls_supported = (hevc || s.hardware_encoding == HardwareEncoding::Auto)
+                && !h264_declined_by_hw
                 && filmcraft_engine::export::cqp_available(s.format)
                 && s.bitrate_mode != BitrateMode::Cqp
+                && s.bitrate_mode != BitrateMode::Crf
                 && s.bitrate_mode != BitrateMode::Vbr2Pass;
             if hw_rate_controls_supported {
                 row(ui, t, tl!("Multipass"), |ui| {

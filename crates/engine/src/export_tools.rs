@@ -231,6 +231,42 @@ fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &st
     Ok(())
 }
 
+/// Apply flat bitrate / rate-control override parameters to export settings.
+fn apply_rate_control_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()> {
+    if let Some(v) = crate::commands::checked_u32_p(p, "bitrateKbps", cmd)? {
+        settings.bitrate_kbps = v;
+        settings.adaptive_bitrate = None;
+    }
+    if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
+        settings.max_bitrate_kbps = Some(v);
+    }
+    if let Some(v) = str_p(p, "bitrateMode") {
+        settings.bitrate_mode = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "bitrateMode: cbr | vbr1Pass | vbr2Pass | crf | cqp"))?;
+    }
+    if let Some(v) = f64_p(p, "crf") {
+        settings.crf = v as f32;
+        if p.get("bitrateMode").is_none() {
+            settings.bitrate_mode = BitrateMode::Crf;
+        }
+    }
+    if let Some(v) = crate::commands::checked_u32_p(p, "qp", cmd)? {
+        settings.qp = Some(v);
+        if p.get("bitrateMode").is_none() {
+            settings.bitrate_mode = BitrateMode::Cqp;
+        }
+    }
+    if let Some(v) = bool_p(p, "multipass") {
+        settings.multipass = v;
+    }
+    if let Some(v) = bool_p(p, "spatialAq") {
+        settings.spatial_aq = v;
+    }
+    if let Some(v) = crate::commands::checked_u32_p(p, "lookahead", cmd)? {
+        settings.lookahead = (v > 0).then_some(v);
+    }
+    Ok(())
+}
+
 /// Apply the legacy flat export parameters after preset and nested settings have been resolved.
 fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()> {
     // flat overrides (the original file.exportMedia parameters and a few common ones)
@@ -246,25 +282,10 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = u64_p(p, "quality") {
         settings.quality = v.min(100) as u8;
     }
-    if let Some(v) = crate::commands::checked_u32_p(p, "bitrateKbps", cmd)? {
-        settings.bitrate_kbps = v;
-        settings.adaptive_bitrate = None;
-    }
     if let Some(v) = crate::commands::checked_u32_p(p, "maxThreads", cmd)? {
         settings.max_threads = v;
     }
-    if let Some(v) = crate::commands::checked_u32_p(p, "maxBitrateKbps", cmd)? {
-        settings.max_bitrate_kbps = Some(v);
-    }
-    if let Some(v) = str_p(p, "bitrateMode") {
-        settings.bitrate_mode = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "bitrateMode: cbr | vbr1Pass | vbr2Pass | crf"))?;
-    }
-    if let Some(v) = f64_p(p, "crf") {
-        settings.crf = v as f32;
-        if p.get("bitrateMode").is_none() {
-            settings.bitrate_mode = BitrateMode::Crf;
-        }
-    }
+    apply_rate_control_overrides(settings, p, cmd)?;
     if let Some(v) = crate::commands::checked_u32_p(p, "keyframeDistance", cmd)? {
         settings.keyframe_distance = Some(v);
     }

@@ -136,6 +136,7 @@ pub const NV_ENC_VUI_MATRIX_COEFFS_BT2020_NCL: u32 = 9;
 /// `NV_ENC_CAPS` values (the enum counts from zero in the header's order).
 pub const NV_ENC_CAPS_NUM_MAX_BFRAMES: u32 = 0;
 pub const NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES: u32 = 1;
+pub const NV_ENC_CAPS_SUPPORT_LOOKAHEAD: u32 = 37;
 pub const NV_ENC_CAPS_SUPPORT_10BIT_ENCODE: u32 = 39;
 pub const NV_ENC_CAPS_WIDTH_MAX: u32 = 16;
 pub const NV_ENC_CAPS_HEIGHT_MAX: u32 = 17;

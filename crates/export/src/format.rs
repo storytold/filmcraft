@@ -532,9 +532,6 @@ impl ExportSettings {
         if self.format == Format::Av1 && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("AV1 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
         }
-        if (self.format == Format::Hevc || self.format == Format::Av1) && self.bitrate_mode == BitrateMode::Vbr2Pass {
-            return Err(ExportError::Unsupported(format!("{} export has no two-pass mode: choose CBR, VBR or CQP", self.format.label())));
-        }
         if self.bitrate_mode == BitrateMode::Crf {
             if self.format == Format::Hevc {
                 return Err(ExportError::Unsupported("H.265 export has no CRF mode: choose CBR, VBR or CQP".into()));
@@ -547,7 +544,7 @@ impl ExportSettings {
             }
         }
         if self.bitrate_mode == BitrateMode::Cqp {
-            if self.hardware_encoding == HardwareEncoding::Off || !crate::cqp_available(self.format) {
+            if (self.format == Format::H264 && self.hardware_encoding == HardwareEncoding::Off) || !crate::cqp_available(self.format) {
                 return Err(ExportError::Unsupported(format!(
                     "{} export does not support CQP (constant quantizer) without an active hardware encoder: choose CBR or VBR",
                     self.format.label()
