@@ -1,6 +1,6 @@
 //! Reference Monitor: a second view of the active sequence for comparing shots while grading. It
 //! is either ganged to the Program monitor (follows the playhead) or parked on its own frame,
-//! and shows the picture (Composite Video) or Lumetri Scopes of that frame.
+//! and shows the picture (Composite Video) or Video Scopes of that frame.
 //!
 //! Automation ids: `reference.picture` (once a picture is shown), `reference.timecode`, `reference.stepBack`,
 //! `reference.stepForward`, `reference.matchPlayhead`, `reference.gang`, `reference.display`,
@@ -128,7 +128,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let dr = Rect::from_min_size(pos2(bar.max.x - 150.0, bar.center().y - 11.0), vec2(142.0, 22.0));
     let mut display = st.display;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(dr));
-    let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Lumetri Scopes") };
+    let label = |d: RefDisplay| if d == RefDisplay::Composite { tl!("Composite Video") } else { tl!("Video Scopes") };
     let cb = craft_ui::ComboBox::from_id_salt("reference-display").selected_text(label(display)).width(134.0).show_ui(&mut child, |ui| {
         for d in [RefDisplay::Composite, RefDisplay::Scopes] {
             let r = ui.selectable_value(&mut display, d, label(d));

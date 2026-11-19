@@ -221,9 +221,30 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
-    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
-    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch
+    // Warning asks first, from a menu (`engine.execute` keeps the sequence settings, #1540)
+    if !app.engine_call && matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
+    }
+    // From a menu, a shortcut or `ui.menu.invoke`, a command without parameters opens the dialog
+    // that asks for them. From the control channel's `engine.execute` it does not (#1540): an agent
+    // can neither see nor close a dialog, so the engine command runs with what was given, and
+    // Sequence Settings… answers the settings it would have shown.
+    let menu = !app.engine_call;
+    if !menu && id == "sequence.settings" && (params.is_null() || params.as_object().is_some_and(|m| m.is_empty())) {
+        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+        let seq = app.session.execute("sequence.inspect", json!({})).map_err(|e| e.to_string())?;
+        return Ok(json!({"settings": seq["settings"]}));
+    }
+    // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
+    // Sequence and Color Matte take it when they open); a `bin` of the caller wins, null included
+    // (the engine's root)
+    if matches!(id, "file.newAdjustmentLayer" | "file.newBarsAndTone" | "file.newBlackVideo" | "file.newCountingLeader" | "file.newTransparentVideo")
+        && params.get("bin").is_none()
+        && let Some(bin) = crate::panels::project::shown_bin(app)
+        && let Some(object) = params.as_object_mut()
+    {
+        object.insert("bin".into(), json!(bin));
     }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
@@ -296,7 +317,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             let source = targets_source(app, &params);
             params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
         }
-        if params.get("path").is_none() {
+        if menu && params.get("path").is_none() {
             return crate::panels::frame_export::open(app, ctx, &params);
         }
     }
@@ -334,10 +355,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
         return r;
     }
-    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+    // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
+    if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
+        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
+    {
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
@@ -355,13 +379,16 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+    // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
+    // engine with the parameters given, and answers an error when it needs some. The UI commands
+    // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
         return r;
     }
-    if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+    if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -515,24 +542,24 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(Value::Null);
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
-        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
+        "file.exportAaf" | "file.exportOmf" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
         }
         // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
         // settings (#3365); with a path it exports directly.
-        "captions.export" if params.get("path").is_none() => {
+        "captions.export" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
-        "file.exportMedia" if params.get("path").is_none() => {
+        "file.exportMedia" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.mode = Mode::Export;
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
-        "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.audioGain" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             if app.ui.audio_gain.mode.is_empty() {
                 app.ui.audio_gain.mode = "adjust".into();
@@ -541,19 +568,19 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
+        "clip.interpretFootage" if menu && params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
         }
         // Remix Properties… from the menu opens the dialog; with params it applies directly.
-        "clip.remix.properties" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.remix.properties" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
         // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
         // offers); with params it adds the tracks directly.
-        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.addTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             let seq = app.session.active_sequence();
             let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
@@ -566,7 +593,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             app.dialog = Some(crate::Dialog::AddTracks);
             return Ok(json!({"dialog": "addTracks"}));
         }
-        "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.deleteTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();
             app.dialog = Some(crate::Dialog::DeleteTracks);
@@ -574,18 +601,18 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         // Sequence Settings… from the menu opens the dialog; with params the engine command applies
         // them directly.
-        "sequence.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.settings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
         }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
-        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) => {
-            crate::panels::sequence_settings::open_new(app);
+        "file.newSequence" if menu && (params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some()) => {
+            crate::panels::sequence_settings::open_new(app, crate::panels::project::bin_only(&params));
             return Ok(json!({"dialog": "newSequence"}));
         }
-        "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.colorSettings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
@@ -649,15 +676,16 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.
-    if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
-        || (id == "file.importImageSequence" && params.get("path").is_none())
-        || (id == "file.saveAs" && params.get("path").is_none())
-        || (id == "file.saveCopy" && params.get("path").is_none())
-        || (id == "file.open" && params.get("path").is_none())
-        || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (id == "captions.import" && params.get("path").is_none())
-        || (id == "graphics.newFromFile" && params.get("path").is_none())
-        || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
+    if menu
+        && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
+            || (id == "file.importImageSequence" && params.get("path").is_none())
+            || (id == "file.saveAs" && params.get("path").is_none())
+            || (id == "file.saveCopy" && params.get("path").is_none())
+            || (id == "file.open" && params.get("path").is_none())
+            || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+            || (id == "captions.import" && params.get("path").is_none())
+            || (id == "graphics.newFromFile" && params.get("path").is_none())
+            || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none()))
     {
         return app.file_dialog(id, &params);
     }
@@ -1061,8 +1089,8 @@ pub fn shortcut_text(s: &str) -> String {
 
 /// Parse "Cmd+Shift+K" into the modifiers a chord requires + its key. Off macOS the Control key
 /// is the primary modifier, so `Ctrl` and `Cmd` are one key and both mean `command` (the engine's
-/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and egui's
-/// matching asks only for what the pattern names, so a `Ctrl+…` chord matches a `Cmd+…` binding
+/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and
+/// [`chord_held`] treats Ctrl and Cmd as one key, so a `Ctrl+…` chord matches a `Cmd+…` binding
 /// and the other way round (#245). On a Mac they stay two keys.
 pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     let mut m = egui::Modifiers::NONE;
@@ -1121,10 +1149,75 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     v
 }
 
-/// How many modifiers a chord names: chords naming more are matched first, because egui ignores
-/// extra Shift and Alt when matching a key press.
+/// How many modifiers a chord names: chords naming more are matched first, because a punctuation
+/// or digit key may arrive with an extra Shift or Alt the chord doesn't name (see [`chord_held`]).
 pub fn specificity(m: egui::Modifiers) -> u8 {
     m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8
+}
+
+/// Whether a press of `key` with `held` down is the chord `pattern` (from [`parse_shortcut`]) on
+/// `key`. The held modifiers must be exactly the ones the chord names: Ctrl+Alt+Cmd+N is not
+/// Cmd+Alt+N (File ▸ New ▸ Project), and Cmd+Shift+N is not Cmd+N. egui's own matching
+/// (`Modifiers::matches_logically`, and `matches_exact` too) ignores an extra Ctrl on a Mac, and
+/// `matches_logically` any extra Shift and Alt as well, so a chord the user didn't bind ran a
+/// shorter one instead.
+///
+/// - Off macOS Ctrl and Cmd are one key (a physical Ctrl press carries both `ctrl` and `command`,
+///   and [`parse_shortcut`] reads either as `command`, #245); on a Mac they are two.
+/// - Shift and Alt must match exactly on letters and named keys (arrows, Space, Delete, F-keys…),
+///   where they never change which key arrives. A punctuation or digit key is reached with Shift
+///   or Alt on many layouts (`+` is Shift+= on US, `/` is Shift+7 on German, `[` is Option+5 on a
+///   German Mac, digits need Shift on AZERTY), so there an extra Shift or Alt is allowed, as egui
+///   allows it: Ctrl+Shift+= still arrives as Ctrl+Plus (#2253). [`bindings`] lists the most
+///   specific chords first, so a chord that names that Shift or Alt still wins.
+pub fn chord_held(held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    chord_held_on(cfg!(target_os = "macos"), held, key, pattern)
+}
+
+/// [`chord_held`] for a Mac (`mac`) or another OS, so both are testable on either.
+fn chord_held_on(mac: bool, held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    let cmd = |m: egui::Modifiers| m.command || m.mac_cmd;
+    let primary = if mac { cmd(held) == cmd(pattern) && held.ctrl == pattern.ctrl } else { (cmd(held) || held.ctrl) == (cmd(pattern) || pattern.ctrl) };
+    let glyph = layout_may_add_shift_or_alt(key);
+    let shift = held.shift == pattern.shift || (glyph && held.shift);
+    let alt = held.alt == pattern.alt || (glyph && held.alt);
+    primary && shift && alt
+}
+
+/// Punctuation and digit keys: some keyboard layouts only reach them with Shift or Alt held.
+fn layout_may_add_shift_or_alt(key: egui::Key) -> bool {
+    use egui::Key;
+    matches!(
+        key,
+        Key::Colon
+            | Key::Comma
+            | Key::Backslash
+            | Key::Slash
+            | Key::Pipe
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+            | Key::Backtick
+            | Key::Minus
+            | Key::Period
+            | Key::Plus
+            | Key::Equals
+            | Key::Semicolon
+            | Key::Quote
+            | Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9
+    )
 }
 
 /// The key a US layout reports for `k` with Shift held, when it differs.
@@ -1343,7 +1436,7 @@ pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: Opt
 
 #[cfg(test)]
 mod parse_shortcut_tests {
-    use super::{label_menu_swatch, parse_shortcut};
+    use super::{chord_held, label_menu_swatch, parse_shortcut};
 
     #[test]
     fn edit_label_menu_swatch_uses_current_custom_palette() {
@@ -1370,19 +1463,90 @@ mod parse_shortcut_tests {
         if cfg!(target_os = "macos") {
             assert_eq!((ctrl.ctrl, ctrl.command), (true, false));
             assert_eq!((cmd.ctrl, cmd.command), (false, true));
-            assert!(!ctrl.matches_logically(cmd) && !cmd.matches_logically(ctrl), "two different keys on a Mac");
+            assert!(!chord_held(ctrl, k, cmd) && !chord_held(cmd, k, ctrl), "two different keys on a Mac");
         } else {
             assert_eq!((ctrl.ctrl, ctrl.command), (false, true));
             assert_eq!(ctrl, cmd, "one key off a Mac");
             // what egui-winit reports for the physical key, and a bare `command` as tests send it
             let physical = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
-            assert!(physical.matches_logically(cmd) && physical.matches_logically(ctrl));
-            assert!(egui::Modifiers::COMMAND.matches_logically(ctrl));
+            assert!(chord_held(physical, k, cmd) && chord_held(physical, k, ctrl));
+            assert!(chord_held(egui::Modifiers::COMMAND, k, ctrl));
         }
-        assert!(!parse_shortcut("Z").unwrap().0.matches_logically(cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(parse_shortcut("Z").unwrap().0, k, cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(cmd, k, egui::Modifiers::NONE), "nor the chord for a bare key");
         let (m, k) = parse_shortcut("Cmd+Shift+K").unwrap();
         assert!(m.command && m.shift && !m.alt && k == egui::Key::K);
         assert_eq!(parse_shortcut("+").map(|(_, k)| k), Some(egui::Key::Plus));
+    }
+}
+
+#[cfg(test)]
+mod chord_held_tests {
+    use super::chord_held_on;
+    use egui::{Key, Modifiers};
+
+    /// What egui-winit reports on a Mac for Cmd (`mac_cmd` and `command`) and Control (`ctrl`).
+    const MAC_CMD: Modifiers = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+    /// What egui-winit reports off a Mac for Ctrl: one key, both flags.
+    const PC_CTRL: Modifiers = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+
+    /// The bug: Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N), because egui ignores an extra
+    /// Control on a Mac even in `matches_exact`.
+    #[test]
+    fn an_extra_ctrl_on_a_mac_is_not_the_cmd_chord() {
+        let new_project = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::ALT, Key::N, new_project), "Cmd+Opt+N still runs it");
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::ALT | Modifiers::CTRL, Key::N, new_project));
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::N, Modifiers::COMMAND), "Ctrl+Cmd+N is not Cmd+N");
+        assert!(!chord_held_on(true, MAC_CMD, Key::K, Modifiers::CTRL), "Cmd is not Control on a Mac");
+        assert!(chord_held_on(true, Modifiers::CTRL, Key::K, Modifiers::CTRL));
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::K, Modifiers::COMMAND | Modifiers::CTRL));
+    }
+
+    /// An extra Shift or Alt on a letter or named key is a different chord, on every OS.
+    #[test]
+    fn an_extra_shift_or_alt_on_a_letter_or_named_key_is_another_chord() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(!chord_held_on(mac, cmd | Modifiers::SHIFT, Key::N, Modifiers::COMMAND), "Cmd+Shift+N is not Cmd+N");
+            assert!(!chord_held_on(mac, cmd | Modifiers::ALT | Modifiers::SHIFT, Key::N, Modifiers::COMMAND | Modifiers::ALT));
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::I, Modifiers::NONE), "Alt+I is not I");
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::Delete, Modifiers::NONE), "Shift+Delete is not Delete (#680)");
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::ArrowLeft, Modifiers::NONE));
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::NONE), "Shift+L is its own shuttle key");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::SHIFT));
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::L, Modifiers::SHIFT), "a chord's Shift is required");
+            assert!(chord_held_on(mac, Modifiers::NONE, Key::Space, Modifiers::NONE));
+        }
+    }
+
+    /// Off a Mac Ctrl and Cmd are one key: a Ctrl press (both flags), a bare `command` and a bare
+    /// `ctrl` all match a `Cmd+…`/`Ctrl+…` binding (#245).
+    #[test]
+    fn ctrl_and_cmd_stay_one_key_off_a_mac() {
+        for held in [PC_CTRL, Modifiers::COMMAND, Modifiers::CTRL] {
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::COMMAND), "{held:?}");
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::CTRL), "{held:?}");
+            assert!(!chord_held_on(false, held, Key::Z, Modifiers::NONE), "{held:?} is not a bare Z");
+        }
+        assert!(!chord_held_on(false, Modifiers::NONE, Key::Z, Modifiers::COMMAND));
+    }
+
+    /// Punctuation and digits keep egui's allowance for the Shift or Alt a layout needs to type
+    /// them: Ctrl+Shift+= arrives as Ctrl+Plus (#2253), Shift+; as `:`.
+    #[test]
+    fn punctuation_and_digits_allow_the_shift_or_alt_a_layout_needs() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(chord_held_on(mac, cmd | Modifiers::SHIFT, Key::Plus, Modifiers::COMMAND), "Ctrl+Shift+= is Ctrl+Plus");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Colon, Modifiers::SHIFT));
+            assert!(chord_held_on(mac, Modifiers::ALT, Key::OpenBracket, Modifiers::NONE), "`[` is Option+5 on a German Mac");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Num1, Modifiers::NONE), "digits need Shift on AZERTY");
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::Colon, Modifiers::SHIFT), "a chord's Shift is still required");
+        }
+        // ...but never an extra Ctrl or Cmd
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::Plus, Modifiers::COMMAND));
+        assert!(!chord_held_on(false, PC_CTRL, Key::Plus, Modifiers::NONE));
     }
 }
 

@@ -46,6 +46,35 @@ fn layout() -> Layout {
 }
 
 #[test]
+fn active_tab_underline_follows_selection_even_when_another_tab_is_hovered() {
+    let mut session = Session::default();
+    session.prefs.appearance.accessible_contrast = true;
+    let mut app = FilmcraftApp::new(session);
+    app.ui.dock = layout();
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let underlined = |h: &Harness<'_, FilmcraftApp>, panel: PanelKind| {
+        let tab = rect(h, &format!("panel.tab.{}", panel.id()));
+        h.output().shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if tab.contains(text.pos) && text.galley.text() == panel.title() => {
+                Some(text.galley.job.sections.iter().any(|section| section.format.underline.width > 0.0))
+            }
+            _ => None,
+        })
+    };
+    assert_eq!(underlined(&h, PanelKind::Info), Some(true));
+    assert_eq!(underlined(&h, PanelKind::History), Some(false));
+    click(&mut h, "panel.tab.History");
+    let inactive = rect(&h, "panel.tab.Info").center();
+    h.event(Event::PointerMoved(inactive));
+    step(&mut h);
+    assert_eq!(underlined(&h, PanelKind::Info), Some(false));
+    assert_eq!(underlined(&h, PanelKind::History), Some(true));
+}
+
+#[test]
 fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     let mut layout = layout();
     layout.apply(Action::Close { panel: PanelKind::Project }).unwrap();
@@ -716,6 +745,77 @@ fn clicking_the_active_sequence_tab_focuses_the_timeline() {
     assert_eq!(h.state().ui.focused, PanelKind::Project);
     let active = h.state().session.state.active_sequence.unwrap().0;
     click(&mut h, &format!("timeline.tab.{active}"));
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// Dock `panel` as a tab of `anchor`'s group, in front.
+fn tab_into(h: &mut Harness<'_, FilmcraftApp>, panel: PanelKind, anchor: PanelKind) {
+    let ctx = h.ctx.clone();
+    let action = Action::Move { panel, anchor, placement: Placement::Tab { before: None } };
+    menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({ "panel": panel.id() })).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert!(h.state().ui.dock.is_visible(panel) && same_group(&h.state().ui.dock, panel, anchor));
+}
+
+/// #3653: with another tab in front of the Program monitor, clicking the Timeline (its body or a
+/// sequence tab) brings Program to the front, as in Premiere; the focus stays on the Timeline.
+#[test]
+fn clicking_the_timeline_brings_the_program_monitor_to_the_front() {
+    let mut h = demo_harness();
+    tab_into(&mut h, PanelKind::Properties, PanelKind::Program);
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    click(&mut h, "panel.tab.Project");
+    click(&mut h, "panel.Timeline");
+    let dock = &h.state().ui.dock;
+    assert!(dock.is_visible(PanelKind::Program), "Program stayed behind Properties");
+    assert!(same_group(dock, PanelKind::Program, PanelKind::Properties), "the group changed");
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+
+    click(&mut h, "panel.tab.Properties");
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    let active = h.state().session.state.active_sequence.unwrap().0;
+    click(&mut h, &format!("timeline.tab.{active}"));
+    assert!(h.state().ui.dock.is_visible(PanelKind::Program), "a sequence tab click left Program behind");
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// #3653: Program sharing the Timeline's own group stays behind it, so the Timeline is not hidden
+/// by a click on it.
+#[test]
+fn program_in_the_timeline_group_stays_behind_it() {
+    let mut h = demo_harness();
+    tab_into(&mut h, PanelKind::Program, PanelKind::Timeline);
+    click(&mut h, "panel.tab.Timeline");
+    click(&mut h, "panel.Timeline");
+    assert!(h.state().ui.dock.is_visible(PanelKind::Timeline), "the Timeline was hidden");
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// #3653: a closed Program monitor stays closed when the Timeline is clicked, and a floating one is
+/// left as it is.
+#[test]
+fn clicking_the_timeline_leaves_a_closed_or_floating_program_monitor_alone() {
+    let mut h = demo_harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.close", json!({"panel": "Program"})).unwrap();
+    click(&mut h, "panel.Timeline");
+    assert!(!h.state().ui.dock.contains(&PanelKind::Program), "a click reopened Program");
+
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Program"})).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    let action = Action::Move { panel: PanelKind::Program, anchor: PanelKind::Info, placement: Placement::Tab { before: None } };
+    menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Info"})).unwrap();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!h.state().ui.dock.docked(PanelKind::Program) && !h.state().ui.dock.is_visible(PanelKind::Program));
+    click(&mut h, "panel.Timeline");
+    assert!(h.state().ui.dock.is_visible(PanelKind::Info), "the floating window changed tab");
     assert_eq!(h.state().ui.focused, PanelKind::Timeline);
 }
 

@@ -86,10 +86,11 @@ fn assert_drop_frame_video(p: &Project, s: &Sequence, r: FrameRate) {
     assert_eq!((ts[2].from, ts[2].to, ts[2].start, ts[2].duration), (Some(c.id), None, f(r, 390), f(r, 10)));
     assert_eq!(ts[2].align, TransitionAlign::EndAtCut);
 
-    // media without a source file is offline with its reel as tape name
+    // media without a source file has its reel as tape name, and is missing until relinked,
+    // not made offline (#3997)
     let gm = p.item(g.item).unwrap();
     assert_eq!(gm.metadata.get("Tape Name").map(String::as_str), Some("GULLS"));
-    assert!(gm.as_media().unwrap().offline);
+    assert!(!gm.as_media().unwrap().offline);
 }
 
 fn assert_drop_frame_audio_and_markers(s: &Sequence, r: FrameRate) {
@@ -271,6 +272,20 @@ fn reel_modes_and_per_track() {
     let t = String::from_utf8(bytes).unwrap();
     assert!(t.contains("001  INTERVIE V"), "{t}");
     assert!(t.contains("002  INTERVI2 V"), "{t}");
+}
+
+/// The report names the video tracks an EDL leaves out, not a function no command reaches.
+#[test]
+fn report_names_the_video_tracks_an_edl_leaves_out() {
+    let (mut p, s) = demo_project(FrameRate::FPS_24, false);
+    let (_, rep) = export(&p, s, Format::Edl, &ExportOptions::default()).unwrap();
+    assert!(!rep.mentions("EDLs hold one video track"), "only V1 has clips: {rep}");
+    let a = p.items.values().find(|i| i.name == "city.mp4").unwrap().id;
+    clip(&mut p, s, TrackKind::Video, 1, a, 10..30, 0);
+    clip(&mut p, s, TrackKind::Video, 2, a, 40..60, 0);
+    let (_, rep) = export(&p, s, Format::Edl, &ExportOptions::default()).unwrap();
+    assert!(rep.mentions("EDLs hold one video track; only V1 was exported (not V2, V3)"), "{rep}");
+    assert!(!rep.mentions("export_edl_per_track"), "{rep}");
 }
 
 #[test]
@@ -484,4 +499,17 @@ FCM: NON-DROP FRAME
         }
     }
     assert!(rep.has_warnings(), "{rep}");
+}
+
+/// A sequence start timecode at the end of the i64 range (a hostile project file) overflowed the
+/// record timecodes; they saturate instead.
+#[test]
+fn extreme_start_timecode_exports_without_overflow() {
+    let rate = FrameRate::FPS_25;
+    let mut p = Project::new("p");
+    let a = media(&mut p, "/media/A.mov", true, true, rate);
+    let s = sequence(&mut p, "S", rate, false);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..25, 0);
+    p.sequence_mut(s).unwrap().start_timecode = i64::MAX;
+    assert!(export(&p, s, Format::Edl, &ExportOptions::default()).is_ok());
 }

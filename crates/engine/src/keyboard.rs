@@ -47,7 +47,7 @@ type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, shortcut: Option<&'static str>, params: &'static str, enabled: Enabled, run: Run) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu: &[], shortcut, params, enabled, run, journal: true, named: crate::commands::NamedKeys::NONE }
 }
 
 /// Metadata key holding an item's poster frame (media ticks).

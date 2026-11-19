@@ -1,0 +1,6 @@
+asset: crates/codecs/tests/fixtures/mjpeg-avi1-baseline.jpg
+title: libjpeg-turbo testorig JPEG used as an AVI1 baseline decoder fixture
+author: libjpeg-turbo contributors
+source: https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages (testorig.jpg)
+license: IJG License (README.ijg in the libjpeg-turbo 3.0.0 source distribution)
+added: 2026-11-13

@@ -1,7 +1,7 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), Rename…, and the Close Project and
-//! Quit "save changes?" prompts.
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), Rename…, and the Close Project,
+//! Open Project and Quit "save changes?" prompts.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -12,7 +12,8 @@
 //! - every dialog: `<p>.ok`, `<p>.cancel`, and `<p>.<key>` for each control;
 //! - Paste Attributes `pasteAttributes.*`: `motion`, `opacity`, `timeRemapping`, `volume`,
 //!   `channelVolume`, `panner`, `effects`, `effect.<id>`, `scaleTimes`;
-//! - Remove Attributes `removeAttributes.*`: the same without `scaleTimes`;
+//! - Remove Attributes `removeAttributes.*`: the same without `scaleTimes`, plus `hint` (the line
+//!   that says ticked attributes are removed);
 //! - Offline File `offlineFile.*`: `fileName`, `name`, `tapeName`, `video`, `audio`, `width`,
 //!   `height`, `fps`, `timecode`, `seconds`, `description`;
 //! - Nested Sequence Name `nest.*`: `name`;
@@ -25,9 +26,11 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
-//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `ripple`,
+//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `maintainPitch`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
+//! - Open Project (asked once the project to open is chosen, see [`ask_before_open`])
+//!   `openProject.save`, `openProject.dontSave`, `openProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
@@ -154,7 +157,8 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     if !app.session.is_dirty() {
         return None;
     }
-    app.ui.clip_dialog = Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: Value::Null, error: String::new() });
+    app.ui.clip_dialog =
+        Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: asked_over(&app.session), error: String::new() });
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
@@ -166,7 +170,7 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
-        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
+        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: asked_over(&app.session), error: String::new() });
     }
     true
 }
@@ -176,10 +180,11 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
     let s = &app.session;
     match id {
         "edit.pasteAttributes" | "edit.removeAttributes" => {
-            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) standard effects
+            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) effects that
+            // the command copies or removes (not Essential Sound's, which a ticked box would not remove)
             let mut names: Vec<(String, String)> = Vec::new();
             let mut add = |e: &filmcraft_project::EffectInstance| {
-                if let Some(d) = e.def().filter(|d| !d.intrinsic && !filmcraft_project::graphic::is_layer_id(d.id))
+                if let Some(d) = e.def().filter(|_| filmcraft_engine::clip_ops::is_attribute_effect(e))
                     && !names.iter().any(|n| n.0 == d.id)
                 {
                     names.push((d.id.to_string(), d.name.to_string()));
@@ -276,13 +281,23 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             let speed = it.as_ref().map_or(1.0, |i| i.speed);
             let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
+            let maintain_pitch = it.as_ref().is_some_and(|i| i.maintain_pitch);
             (
-                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "ripple": false, "interpolation": interp.name()}),
-                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
+                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "maintainPitch": maintain_pitch, "ripple": false, "interpolation": interp.name()}),
+                // the setting the checkbox starts at: sent on OK only when changed, so a selection whose
+                // clips differ keeps each clip's own setting unless the checkbox is used
+                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps, "maintainPitch": maintain_pitch}),
             )
         }
+        "file.closeProject" => (json!({}), asked_over(s)),
         _ => (json!({}), Value::Null),
     }
+}
+
+/// The info of the Close Project, Open Project and Quit prompts: the project they are asked over
+/// (`Session::document_epoch`). When another project replaces it, the prompt closes.
+fn asked_over(s: &filmcraft_engine::Session) -> Value {
+    json!({"project": s.document_epoch})
 }
 
 fn format_name(f: AudioChannels) -> &'static str {
@@ -363,6 +378,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.clip_dialog = None;
         return;
     };
+    // a save prompt asked over a project that another one has replaced since (a script opened,
+    // created or closed to it) closes without acting on the new project
+    if d.info["project"].as_u64().is_some_and(|p| p != app.session.document_epoch) {
+        app.ui.clip_dialog = None;
+        return;
+    }
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
@@ -376,6 +397,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
+                // a ticked box means "remove", not "keep on" (#3789: an effect was unticked to turn it off)
+                if d.command == "edit.removeAttributes" {
+                    let hint = tl!("Ticked attributes are removed from the selected clips.");
+                    let r = ui.label(RichText::new(hint).weak());
+                    push(&mut elems, format!("{pre}.hint"), &r, hint);
+                }
                 ui.label(RichText::new(tl!("Video Attributes")).strong());
                 for (k, l) in intrinsic_video() {
                     check(ui, &mut elems, pre, p, k, l, v);
@@ -624,6 +651,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), tl!("Enter a positive duration within the supported speed range."));
                 }
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
+                check(ui, &mut elems, pre, p, "maintainPitch", tl!("Maintain Audio Pitch"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
                 ui.label(RichText::new(tl!("Time Interpolation")).strong());
                 for m in filmcraft_project::TimeInterpolation::ALL {
@@ -714,9 +742,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("save") => {
             if app.session.path.is_some() {
+                // the save failed: the prompt stays, with the reason in the status bar
                 if let Err(e) = app.session.execute("file.save", json!({})) {
                     app.ui.status = e.to_string();
-                    app.ui.clip_dialog = None;
+                    app.ui.clip_dialog = Some(d);
                     return;
                 }
                 leave(app, ctx, &d);
@@ -788,9 +817,19 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     }
     if command == "file.open"
         && let Some(path) = prompt.params["path"].as_str()
-        && let Err(e) = app.session.execute("file.open", json!({"path": path}))
     {
-        app.ui.status = e.to_string();
+        match app.session.execute("file.open", json!({"path": path})) {
+            Ok(_) => edit_after_open(app, prompt),
+            Err(e) => app.ui.status = e.to_string(),
+        }
+    }
+}
+
+/// A Recent row on Home asked (`editAfterOpen`): the project it chose is open, so Home switches to
+/// Edit, as it does when no prompt was needed.
+fn edit_after_open(app: &mut FilmcraftApp, prompt: &ClipDialogDraft) {
+    if prompt.info["editAfterOpen"].as_bool() == Some(true) {
+        app.ui.mode = crate::state::Mode::Edit;
     }
 }
 
@@ -799,7 +838,14 @@ fn finish(d: &ClipDialogDraft) -> Value {
     let mut p = d.params.clone();
     match d.command.as_str() {
         "clip.speedDuration" => {
-            p.as_object_mut().map(|m| m.remove("duration"));
+            if let Some(m) = p.as_object_mut() {
+                m.remove("duration");
+                // Maintain Audio Pitch is sent only when the checkbox changed: left out, every
+                // selected clip keeps its own setting
+                if m.get("maintainPitch") == d.info.get("maintainPitch") {
+                    m.remove("maintainPitch");
+                }
+            }
         }
         "file.newOfflineFile" if p["name"].as_str().is_some_and(str::is_empty) => {
             p.as_object_mut().map(|m| m.remove("name"));
@@ -819,6 +865,30 @@ fn finish(d: &ClipDialogDraft) -> Value {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Speed/Duration seeds Maintain Audio Pitch from the first selected clip; pressing OK without
+    /// touching it must not overwrite the other clips' settings (#1684).
+    #[test]
+    fn speed_duration_sends_maintain_pitch_only_when_the_checkbox_changed() {
+        let mut d = ClipDialogDraft {
+            command: "clip.speedDuration".into(),
+            params: json!({"speed": 200.0, "duration": "00:00:05:00", "reverse": false, "maintainPitch": false, "ripple": false}),
+            info: json!({"maintainPitch": false}),
+            ..Default::default()
+        };
+        let p = finish(&d);
+        assert!(p.get("maintainPitch").is_none(), "unchanged: left out, {p}");
+        assert!(p.get("duration").is_none());
+        assert_eq!(p["speed"], json!(200.0));
+        d.params["maintainPitch"] = json!(true);
+        assert_eq!(finish(&d)["maintainPitch"], json!(true), "turned on: sent");
+        d.info["maintainPitch"] = json!(true);
+        d.params["maintainPitch"] = json!(false);
+        assert_eq!(finish(&d)["maintainPitch"], json!(false), "turned off: sent");
+        // filled without the dialog's defaults (an agent's `ui.set`): sent as given
+        d.info = Value::Null;
+        assert_eq!(finish(&d)["maintainPitch"], json!(false));
+    }
 
     /// Asserts that every undoable engine command that `opens` says opens a dialog of `table` (run
     /// with no parameters) can be bound to a key, unless `except` names it with a reason (#2024).
