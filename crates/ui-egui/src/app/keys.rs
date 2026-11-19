@@ -1,6 +1,17 @@
 use super::{Dialog, FilmcraftApp, PanelKind, dock, dock_ui, json, menus, panels};
 
 impl FilmcraftApp {
+    fn sync_v_down_before_slider_shortcut(&mut self, events: &[egui::Event], modifiers: egui::Modifiers) {
+        // The slider router can consume a press before the general matcher updates this state.
+        // Keep releases for that matcher, which must see the prior held state to avoid replaying
+        // a consumed Ctrl+V as a synthetic Paste.
+        if events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::V, pressed: true, .. }))
+            || (modifiers.command && events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))))
+        {
+            self.v_down = true;
+        }
+    }
+
     fn sync_v_down(&mut self, events: &[egui::Event], modifiers: egui::Modifiers) {
         for event in events {
             match event {
@@ -36,8 +47,11 @@ impl FilmcraftApp {
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
         panels::timeline::sync_slider_bindings(self);
-        panels::timeline::route_slider_shortcut(self, ctx);
         let (events, modifiers) = ctx.input(|i| (i.events.clone(), i.modifiers));
+        // Keep the paste's V state even when a Timeline custom control consumes the clipboard
+        // event before the general shortcut matcher sees it.
+        self.sync_v_down_before_slider_shortcut(&events, modifiers);
+        panels::timeline::route_slider_shortcut(self, ctx);
         if (ctx.egui_wants_keyboard_input() && !divider_focused)
             || self.dialog == Some(Dialog::Shortcuts)
             || self.ui.clip_dialog.is_some()
@@ -74,6 +88,10 @@ impl FilmcraftApp {
             return;
         }
         if self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
+            self.sync_v_down(&events, modifiers);
+            return;
+        }
+        if panels::timeline::custom_control_shortcut_pending_for_events(self, &events, modifiers) {
             self.sync_v_down(&events, modifiers);
             return;
         }
@@ -307,6 +325,20 @@ fn lets_text_field_keep(modifiers: egui::Modifiers, text_focused: bool) -> bool 
 mod clipboard_key_tests {
     use egui::{Event, Key, Modifiers};
 
+    #[test]
+    fn custom_control_paste_keeps_v_state_for_the_later_release() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.sync_v_down(&[Event::Paste("text".into())], Modifiers::COMMAND);
+        let mut input = egui::InputState::default();
+        input.events.push(Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::NONE });
+
+        let fired = app.match_shortcuts(&mut input, false, false, false);
+
+        assert!(fired.is_empty());
+        assert!(!input.events.iter().any(|event| matches!(event, Event::Key { key: Key::V, pressed: true, .. })));
+        assert!(!app.v_down);
+    }
+
     fn keys(events: Vec<Event>, m: Modifiers) -> Vec<(Key, Modifiers)> {
         let mut events = events;
         super::clipboard_events_as_keys(&mut events, m, false);
@@ -392,6 +424,73 @@ mod forwarded_key_tests {
             vec![Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND }],
         );
         assert!(!app.v_down);
+    }
+
+    #[test]
+    fn custom_ctrl_v_paste_does_not_replay_as_a_paste_on_release() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.session.state.timeline_ui.timeline_control_bindings[0] = "Ctrl + V".into();
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![Event::ModifiersChanged(Modifiers::COMMAND), Event::Paste("text".into())],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(app.v_down, "consuming the paste for the custom control must retain its V state");
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND }],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(!app.v_down);
+        assert!(!ctx.input(|input| input.events.iter().any(|event| matches!(event, Event::Key { key: Key::V, pressed: true, .. }))));
+    }
+
+    #[test]
+    fn custom_ctrl_v_key_press_keeps_v_state_when_slider_consumes_the_press() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.session.state.timeline_ui.timeline_control_bindings[0] = "Ctrl + V".into();
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    Event::ModifiersChanged(Modifiers::COMMAND),
+                    Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
+                ],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(app.v_down, "the custom slider binding consumes the press after V state is recorded");
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND }],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(!app.v_down);
+        assert!(!ctx.input(|input| input.events.iter().any(|event| matches!(event, Event::Key { key: Key::V, pressed: true, .. }))));
     }
 }
 
