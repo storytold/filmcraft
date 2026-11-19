@@ -192,12 +192,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
-        let lower = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible);
-        let resp = ui.interact(if lower.is_positive() { lower } else { Rect::NOTHING }, egui::Id::unique(("hdr", r.track.0)), Sense::click());
-        if resp.double_clicked() {
-            let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-            *h = if *h < 50.0 { 64.0 } else { 30.0 };
-        }
+        header_double_click(app, ui, r, hrect, visible);
     }
     // column separator
     ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
@@ -209,6 +204,16 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
     run_track_menu(app, ui, header_menu);
     if let Some(a) = vo_action {
         crate::panels::voiceover::run(app, &ui.ctx().clone(), a);
+    }
+}
+
+/// Double-click the lower header to toggle compact and expanded track heights.
+fn header_double_click(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: &Row, hrect: Rect, visible: Rect) {
+    let lower = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible);
+    let resp = ui.interact(if lower.is_positive() { lower } else { Rect::NOTHING }, egui::Id::unique(("hdr", r.track.0)), Sense::click());
+    if resp.double_clicked() {
+        let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+        *h = if *h < 50.0 { 64.0 } else { 30.0 };
     }
 }
 
