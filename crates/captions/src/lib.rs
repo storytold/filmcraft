@@ -49,8 +49,8 @@ pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: Capt
         .filter(|c| c.end > c.start)
         .map(|c| Caption {
             id: ClipId(alloc()),
-            start: c.start,
-            duration: c.end - c.start,
+            start: filmcraft_time::Tick(c.start.0),
+            duration: filmcraft_time::Tick((c.end - c.start).0),
             text: c.text.clone(),
             speaker: c.speaker.clone(),
             cue_id: c.id.clone(),
@@ -63,15 +63,15 @@ pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: Capt
 
 /// The document for a caption track (for export). `offset` is subtracted from every time (export
 /// of a range starting later than zero).
-pub fn document_from_track(t: &CaptionTrack, offset: Tick) -> Document {
+pub fn document_from_track(t: &CaptionTrack, offset: filmcraft_time::Tick) -> Document {
     Document {
         cues: t
             .captions
             .iter()
             .filter(|c| c.end() > offset)
             .map(|c| Cue {
-                start: (c.start - offset).max(Tick::ZERO),
-                end: c.end() - offset,
+                start: craft_captions::Tick((c.start - offset).max(filmcraft_time::Tick::ZERO).0),
+                end: craft_captions::Tick((c.end() - offset).0),
                 text: c.text.clone(),
                 speaker: c.speaker.clone(),
                 id: c.cue_id.clone(),
