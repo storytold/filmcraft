@@ -2,14 +2,18 @@
 //!
 //! Provides H.264, HEVC (Main / Main 10 HDR), and AV1 (RDNA 3+) encoding on AMD Radeon graphics.
 
-pub mod device;
+#[cfg(test)]
+mod abi_tests;
 pub mod export;
+// The FFI stays inside this module (ADR 0001 rule 3): only the safe session types are exported.
 #[allow(unsafe_code)]
-pub mod ffi;
+mod ffi;
 #[allow(unsafe_code)]
-pub mod session;
+mod session;
 
 use std::sync::{Once, OnceLock};
+
+use filmcraft_export::ColorSignal;
 
 pub use session::{Codec, Config, Packet, Profile, Session};
 
@@ -17,11 +21,6 @@ static HEVC_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static HEVC_HDR_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static AV1_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static AV1_HDR_AVAILABLE: OnceLock<bool> = OnceLock::new();
-
-/// Whether this system has an AMD GPU adapter present.
-pub fn has_device() -> bool {
-    device::Device::has_hardware_device()
-}
 
 /// Whether AMD AMF hardware encoding is available on this system.
 pub fn is_available() -> bool {
@@ -31,8 +30,17 @@ pub fn is_available() -> bool {
 /// Whether this system has an AMD GPU with hardware HEVC encoding.
 pub fn hevc_available() -> bool {
     *HEVC_AVAILABLE.get_or_init(|| {
-        let probe =
-            Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 2000, max_bitrate_kbps: 3000, cbr: false, keyint: 30, profile: Profile::HevcMain };
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::HevcMain,
+            signal: ColorSignal::default(),
+        };
         let res = Session::open(&probe);
         if let Err(why) = &res {
             log::info!("no AMD AMF HEVC encoder: {why}");
@@ -44,8 +52,17 @@ pub fn hevc_available() -> bool {
 /// Whether this system has an AMD GPU with hardware HEVC Main 10 (HDR) encoding.
 pub fn hevc_hdr_available() -> bool {
     *HEVC_HDR_AVAILABLE.get_or_init(|| {
-        let probe =
-            Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 2000, max_bitrate_kbps: 3000, cbr: false, keyint: 30, profile: Profile::HevcMain10 };
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::HevcMain10,
+            signal: ColorSignal::PQ,
+        };
         let res = Session::open(&probe);
         if let Err(why) = &res {
             log::info!("no AMD AMF HEVC Main 10 encoder: {why}");
@@ -57,8 +74,17 @@ pub fn hevc_hdr_available() -> bool {
 /// Whether this system has an AMD GPU with hardware AV1 encoding.
 pub fn av1_available() -> bool {
     *AV1_AVAILABLE.get_or_init(|| {
-        let probe =
-            Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 2000, max_bitrate_kbps: 3000, cbr: false, keyint: 30, profile: Profile::Av1Main };
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::Av1Main,
+            signal: ColorSignal::default(),
+        };
         let res = Session::open(&probe);
         if let Err(why) = &res {
             log::info!("no AMD AMF AV1 encoder: {why}");
@@ -70,8 +96,17 @@ pub fn av1_available() -> bool {
 /// Whether this system has an AMD GPU with hardware AV1 Main 10 (HDR) encoding.
 pub fn av1_hdr_available() -> bool {
     *AV1_HDR_AVAILABLE.get_or_init(|| {
-        let probe =
-            Config { width: 640, height: 360, fps: (30, 1), bitrate_kbps: 2000, max_bitrate_kbps: 3000, cbr: false, keyint: 30, profile: Profile::Av1Main10 };
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::Av1Main10,
+            signal: ColorSignal::PQ,
+        };
         let res = Session::open(&probe);
         if let Err(why) = &res {
             log::info!("no AMD AMF AV1 Main 10 encoder: {why}");

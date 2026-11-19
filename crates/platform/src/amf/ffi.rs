@@ -1,7 +1,35 @@
-//! AMD Advanced Media Framework (AMF) runtime FFI definitions.
-//!
-//! Clean-room implementation based on AMD's open-source AMF SDK headers (MIT license).
-//! `amfrt64.dll` is loaded dynamically at runtime; no AMD SDK is linked.
+// The declarations in this file are transcribed from AMD's AMF SDK headers (`amf/public/include`,
+// AMF SDK v1.5.3, https://github.com/GPUOpen-LibrariesAndSDKs/AMF, commit 57ee0cfb0e1a), which
+// carry this notice:
+//
+// Copyright (c) 2018-2026 Advanced Micro Devices, Inc. All rights reserved.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+//! AMD's Advanced Media Framework (AMF) as the driver's `amfrt64.dll` expects it: the structures,
+//! vtables and constants this backend uses, from the AMF SDK v1.5.3 headers (`core/Factory.h`,
+//! `core/Context.h`, `core/Surface.h`, `core/Plane.h`, `core/Buffer.h`, `core/Variant.h`,
+//! `components/Component.h`, `components/ColorSpace.h`, `components/VideoEncoderVCE.h`,
+//! `components/VideoEncoderHEVC.h`, `components/VideoEncoderAV1.h`). Written from the public
+//! headers; sizes, offsets and constants are checked against a C compiler's by `abi_tests.rs`.
+//! `amfrt64.dll` is loaded at run time; no AMD SDK is linked or bundled. `AMFInit` is asked for
+//! interface version 1.4.0.
 
 #![allow(dead_code)]
 
@@ -35,6 +63,32 @@ pub const AMF_VARIANT_SIZE: i32 = 5;
 pub const AMF_VARIANT_POINT: i32 = 6;
 pub const AMF_VARIANT_RATE: i32 = 7;
 pub const AMF_VARIANT_RATIO: i32 = 8;
+pub const AMF_VARIANT_INTERFACE: i32 = 12;
+
+// AMF_VIDEO_CONVERTER_COLOR_PROFILE_ENUM
+pub const AMF_VIDEO_CONVERTER_COLOR_PROFILE_709: i64 = 1;
+pub const AMF_VIDEO_CONVERTER_COLOR_PROFILE_2020: i64 = 2;
+
+// AMF_COLOR_PRIMARIES_ENUM and AMF_COLOR_TRANSFER_CHARACTERISTIC_ENUM take the H.273 code points
+pub const AMF_COLOR_PRIMARIES_BT709: i64 = 1;
+pub const AMF_COLOR_PRIMARIES_BT2020: i64 = 9;
+pub const AMF_COLOR_TRANSFER_CHARACTERISTIC_BT709: i64 = 1;
+pub const AMF_COLOR_TRANSFER_CHARACTERISTIC_SMPTE2084: i64 = 16;
+pub const AMF_COLOR_TRANSFER_CHARACTERISTIC_ARIB_STD_B67: i64 = 18;
+
+/// `AMFHDRMetadata`: the HDR10 static metadata (chromaticities in 0.00002, luminance in 0.0001 cd/m²).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AmfHdrMetadata {
+    pub red_primary: [u16; 2],
+    pub green_primary: [u16; 2],
+    pub blue_primary: [u16; 2],
+    pub white_point: [u16; 2],
+    pub max_mastering_luminance: u32,
+    pub min_mastering_luminance: u32,
+    pub max_content_light_level: u16,
+    pub max_frame_average_light_level: u16,
+}
 
 // H.264 Output Data Type (AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_ENUM)
 pub const AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR: i64 = 0;
@@ -54,8 +108,6 @@ pub const AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_INTER: i64 = 2;
 pub const AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_SWITCH: i64 = 3;
 pub const AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_SHOW_EXISTING: i64 = 4;
 
-pub const AMD_VENDOR_ID: u32 = 0x1002;
-
 pub const AMF_VIDEO_ENCODER_VCE_AVC: windows::core::PCWSTR = windows::core::w!("AMFVideoEncoderVCE_AVC");
 pub const AMF_VIDEO_ENCODER_HW_HEVC: windows::core::PCWSTR = windows::core::w!("AMFVideoEncoderHW_HEVC");
 pub const AMF_VIDEO_ENCODER_HW_AV1: windows::core::PCWSTR = windows::core::w!("AMFVideoEncoderHW_AV1");
@@ -63,7 +115,9 @@ pub const AMF_VIDEO_ENCODER_HW_AV1: windows::core::PCWSTR = windows::core::w!("A
 pub type AmfInitFn = unsafe extern "C" fn(u64, *mut *mut AmfFactory) -> i32;
 pub type AmfQueryVersionFn = unsafe extern "C" fn(*mut u64) -> i32;
 
-#[repr(C)]
+/// `AMFVariantStruct`: the type tag, then a 16-byte union (its largest members are `AMFRect` and
+/// `AMFFloatVector4D`) that its `amf_int64`, `amf_double` and pointer members make 8-byte aligned.
+#[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub struct AmfVariant {
     pub var_type: i32,
@@ -102,6 +156,13 @@ impl AmfVariant {
         let mut s = Self { var_type: AMF_VARIANT_SIZE, _pad: 0, val: [0; 16] };
         s.val[..4].copy_from_slice(&width.to_ne_bytes());
         s.val[4..8].copy_from_slice(&height.to_ne_bytes());
+        s
+    }
+
+    /// An `AMFInterface*` (here an `AMFBuffer`); the receiver takes its own reference.
+    pub fn interface(p: *mut c_void) -> Self {
+        let mut s = Self { var_type: AMF_VARIANT_INTERFACE, _pad: 0, val: [0; 16] };
+        s.val[..size_of::<usize>()].copy_from_slice(&(p as usize).to_ne_bytes());
         s
     }
 
@@ -334,9 +395,10 @@ pub struct AmfRuntime {
     factory: *mut AmfFactory,
 }
 
-// SAFETY: AMFFactory is thread-safe and free-threaded across worker threads.
+// SAFETY: AMF documents its factory as usable from any thread; the runtime only hands out the
+// pointer and the DLL handle, and neither is freed while the process runs.
 unsafe impl Send for AmfRuntime {}
-// SAFETY: see above.
+// SAFETY: as for `Send`: the factory's methods may be called from several threads at once.
 unsafe impl Sync for AmfRuntime {}
 
 static RUNTIME: OnceLock<Result<AmfRuntime, String>> = OnceLock::new();
@@ -346,19 +408,23 @@ pub fn runtime() -> Result<&'static AmfRuntime, String> {
 }
 
 fn load_runtime() -> Result<AmfRuntime, String> {
-    // SAFETY: loads amfrt64.dll securely from system32.
+    // SAFETY: a static NUL-terminated name, searched only in System32 (no DLL planting from the
+    // working directory); the module is never freed, so pointers into it stay valid.
     let _module = unsafe { LoadLibraryExW(w!("amfrt64.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }.map_err(|e| format!("amfrt64.dll not available: {e}"))?;
 
-    // SAFETY: resolves AMFInit exported symbol with expected signature.
+    // SAFETY: the module handle is live (above) and the name a static NUL-terminated string.
     let p_init = unsafe { GetProcAddress(_module, PCSTR(c"AMFInit".as_ptr().cast())) }.ok_or_else(|| "amfrt64.dll lacks AMFInit symbol".to_string())?;
 
-    // SAFETY: transmuting function pointer of known signature.
+    // SAFETY: `AMFInit` is declared in AMF's `Factory.h` as
+    // `AMF_RESULT AMF_CDECL_CALL AMFInit(amf_uint64 version, amf::AMFFactory **ppFactory)`, which
+    // `AmfInitFn` matches (on x64 there is one calling convention).
     let init_fn: AmfInitFn = unsafe { std::mem::transmute(p_init) };
 
     let mut factory = std::ptr::null_mut();
     // AMF_FULL_VERSION for 1.4.0: (1 << 48) | (4 << 32)
     let full_version = (1u64 << 48) | (4u64 << 32);
-    // SAFETY: calling AMFInit with valid out-pointer.
+    // SAFETY: the function resolved above, with a version constant and a local out-pointer, checked
+    // for null below.
     let res = unsafe { init_fn(full_version, &mut factory) };
     if res != AMF_OK || factory.is_null() {
         return Err(format!("AMFInit failed with code {res}"));

@@ -102,7 +102,11 @@ pub fn register() -> Availability {
     #[cfg(target_os = "windows")]
     {
         static ENCODERS: std::sync::Once = std::sync::Once::new();
-        // Hardware encoders (NVENC and AMD AMF) in front of the software encoder
+        // Hardware encoders in front of the software encoder. Each registration goes in front of
+        // the ones before it, so AMF is asked first; it steps aside for H.264 and H.265 where NVENC
+        // is present (`amf::export::factory`), so a machine with an AMD iGPU as its default adapter
+        // and an NVIDIA card encodes on the card. Asking NVENC first instead would count its
+        // "no NVIDIA GPU" answer as a declined hardware export on every AMD machine.
         ENCODERS.call_once(|| {
             filmcraft_export::register_encoder(nvenc::export::factory);
             filmcraft_export::register_encoder(amf::export::factory);
