@@ -16,7 +16,7 @@ Known issues:
 
 I'll fix these in future commits!
 
-GPT-6 Luna Report:
+Implementation summary:
 
 Timeline zoom controls
 - Added a right-click settings menu to the Timeline zoom slider.
@@ -43,6 +43,16 @@ Verification
 - Release build and app launch were previously verified using a separate Cargo target directory.
 '@
 
+function Assert-NoUnstagedChanges {
+    $unstaged = @(& git diff --name-only)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect unstaged changes. Nothing was committed or pushed.' }
+    $untracked = @(& git ls-files --others --exclude-standard)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect untracked files. Nothing was committed or pushed.' }
+    if (($unstaged.Count + $untracked.Count) -gt 0) {
+        throw 'Unstaged or untracked changes exist. Stage or remove them, then review the staged tree before publishing.'
+    }
+}
+
 if ((Get-Location).Path -ne $repo) {
     throw "Run this script from the FilmCraft repository folder: $repo"
 }
@@ -52,13 +62,22 @@ if ($branch -ne 'main') {
     throw "Expected branch 'main'; current branch is '$branch'. No files were committed or pushed."
 }
 
-$remote = (& git remote get-url origin).Trim().TrimEnd('/') -replace '\.git$', ''
-if ($remote -ne $expectedRemote) {
-    throw "The origin remote is '$remote', not '$expectedRemote'. No files were committed or pushed."
+$remote = (& git remote get-url origin 2>$null)
+if ($LASTEXITCODE -ne 0) {
+	throw 'Could not inspect the origin remote. No files were committed or pushed.'
+}
+$normalizedRemote = $remote.Trim().TrimEnd('/') -replace '\.git$', ''
+if ($normalizedRemote -ne $expectedRemote) {
+	throw 'The origin remote is not the expected personal FilmCraft fork. No files were committed or pushed.'
 }
 
-$staged = @(& git diff --cached --name-only)
-if ($LASTEXITCODE -ne 0) { throw 'Could not inspect staged files.' }
+Assert-NoUnstagedChanges
+$headBeforeConfirmation = (& git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not identify HEAD before confirmation.' }
+$stagedTreeBeforeConfirmation = (& git write-tree).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not record the staged tree.' }
+$staged = @(& git diff-tree --no-commit-id --name-only -r $headBeforeConfirmation $stagedTreeBeforeConfirmation)
+if ($LASTEXITCODE -ne 0) { throw 'Could not list changes from the recorded staged tree.' }
 if ($staged.Count -eq 0) {
     throw 'There are no staged changes. Stage the Timeline files first; this script will not stage files automatically.'
 }
@@ -77,12 +96,35 @@ if ($confirmation -cne 'YES') {
     exit 0
 }
 
-& git commit -m $title -F - <<'COMMIT_BODY'
-$body
-COMMIT_BODY
-if ($LASTEXITCODE -ne 0) { throw 'Commit failed; nothing was pushed.' }
+$headNow = (& git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $headNow -ne $headBeforeConfirmation) {
+    throw 'HEAD changed after confirmation. Review the repository before committing; nothing was pushed.'
+}
+$treeNow = (& git write-tree).Trim()
+if ($LASTEXITCODE -ne 0 -or $treeNow -ne $stagedTreeBeforeConfirmation) {
+    throw 'The staged tree changed after confirmation. Review the repository before committing; nothing was pushed.'
+}
+Assert-NoUnstagedChanges
 
-& git push origin main
+$commitBodyPath = Join-Path ([System.IO.Path]::GetTempPath()) ("filmcraft-commit-{0}.txt" -f [guid]::NewGuid())
+try {
+    [System.IO.File]::WriteAllText($commitBodyPath, $body, [System.Text.UTF8Encoding]::new($false))
+    & git commit -m $title --file $commitBodyPath
+    if ($LASTEXITCODE -ne 0) { throw 'Commit failed; nothing was pushed.' }
+} finally {
+    Remove-Item -LiteralPath $commitBodyPath -Force -ErrorAction SilentlyContinue
+}
+
+$commitId = (& git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not identify the new commit; nothing was pushed.' }
+$committedTree = (& git rev-parse "$commitId^{tree}").Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the new commit tree; nothing was pushed.' }
+$commitParent = (& git rev-parse "$commitId^" 2>$null).Trim()
+if ($LASTEXITCODE -ne 0 -or $committedTree -ne $stagedTreeBeforeConfirmation -or $commitParent -ne $headBeforeConfirmation) {
+    throw 'The commit does not match the confirmed tree and parent. Review the local commit; nothing was pushed.'
+}
+
+& git push origin "$($commitId):refs/heads/main"
 if ($LASTEXITCODE -ne 0) { throw 'Commit succeeded, but pushing failed. The commit is still local.' }
 
 Write-Host ''
