@@ -173,13 +173,6 @@ impl Pen16<'_> {
     /// device pixel sideways, so it draws straight anyway) snap to device pixels so the segment is
     /// drawn crisp; points between slanted segments keep their exact place.
     fn crisp(&self, pts: &[(f32, f32)], closed: bool) -> Vec<Pos2> {
-        self.crisp_impl(pts, closed, true)
-    }
-    /// Like `crisp`, but for fill boundaries: an axis-aligned edge lands on a pixel edge.
-    fn crisp_fill(&self, pts: &[(f32, f32)]) -> Vec<Pos2> {
-        self.crisp_impl(pts, true, false)
-    }
-    fn crisp_impl(&self, pts: &[(f32, f32)], closed: bool, mid: bool) -> Vec<Pos2> {
         let n = pts.len();
         let ppp = self.painter.pixels_per_point();
         let q: Vec<Pos2> = pts.iter().map(|(x, y)| self.p(*x, *y)).collect();
@@ -203,9 +196,14 @@ impl Pen16<'_> {
                     return q;
                 }
                 // across a straight segment: the stroke's middle; along it: a pixel edge, where it ends
-                if mid { self.snap_pos(q, vert, horiz) } else { self.snap_pos(q, false, false) }
+                self.snap_pos(q, vert, horiz)
             })
             .collect()
+    }
+    /// Like `crisp`, but for fill boundaries: an axis-aligned edge lands on a pixel edge, and a
+    /// contour never collapses below one device pixel in either axis.
+    fn crisp_fill(&self, pts: &[(f32, f32)]) -> Vec<Pos2> {
+        snap_fill(pts, self.rect, self.painter.pixels_per_point())
     }
     fn line(&self, pts: &[(f32, f32)]) {
         let v = self.crisp(pts, false);
@@ -325,6 +323,62 @@ impl Pen16<'_> {
         }
         hit
     }
+}
+
+/// Snap a fill contour to device-pixel edges; keep every contour at least one device pixel wide
+/// and high, so a thin slot or bar cannot disappear at 1×.
+fn snap_fill(pts: &[(f32, f32)], rect: Rect, ppp: f32) -> Vec<Pos2> {
+    let s = rect.width().min(rect.height()) / 16.0;
+    let origin = rect.center() - vec2(8.0 * s, 8.0 * s);
+    let screen: Vec<Pos2> = pts.iter().map(|&(x, y)| pos2(origin.x + x * s, origin.y + y * s)).collect();
+    let n = screen.len();
+    if n < 3 {
+        return screen;
+    }
+    let seg = |i: usize, j: usize| {
+        let d = (screen[i] - screen[j]) * ppp;
+        (d.x.abs() < 1.0, d.y.abs() < 1.0)
+    };
+    let c = rect.center();
+    let snap = |v: f32, centre: f32| {
+        let base = (centre * ppp).round();
+        (base + ((v - centre) * ppp).round()) / ppp
+    };
+    let mut out: Vec<Pos2> = (0..n)
+        .map(|i| {
+            let prev = seg((i + n - 1) % n, i);
+            let next = seg(i, (i + 1) % n);
+            if !prev.0 && !prev.1 && !next.0 && !next.1 {
+                return screen[i];
+            }
+            pos2(snap(screen[i].x, c.x), snap(screen[i].y, c.y))
+        })
+        .collect();
+
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for p in &screen {
+        x0 = x0.min(p.x);
+        x1 = x1.max(p.x);
+        y0 = y0.min(p.y);
+        y1 = y1.max(p.y);
+    }
+    if (y1 - y0) * ppp < 1.0 - 1e-4 {
+        let cy = (y0 + y1) / 2.0;
+        let lo = ((cy * ppp - 0.5).round()) / ppp;
+        let hi = lo + 1.0 / ppp;
+        for (i, p) in out.iter_mut().enumerate() {
+            p.y = if screen[i].y <= cy { lo } else { hi };
+        }
+    }
+    if (x1 - x0) * ppp < 1.0 - 1e-4 {
+        let cx = (x0 + x1) / 2.0;
+        let lo = ((cx * ppp - 0.5).round()) / ppp;
+        let hi = lo + 1.0 / ppp;
+        for (i, p) in out.iter_mut().enumerate() {
+            p.x = if screen[i].x <= cx { lo } else { hi };
+        }
+    }
+    out
 }
 
 /// Paint `icon` centred in `rect`.
@@ -941,44 +995,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             ]);
         }
         StepBack => {
-            pen.glyph(1.0, &[
-                &[
-                    (12.0, 4.364), (11.273, 4.364), (11.134, 4.391), (11.016, 4.47), (10.937, 4.588), (10.909, 4.727), (10.909, 10.545), (10.937, 10.685),
-                    (11.016, 10.803), (11.134, 10.881), (11.273, 10.909), (12.0, 10.909), (12.139, 10.881), (12.257, 10.803), (12.336, 10.685),
-                    (12.364, 10.545), (12.364, 4.727), (12.336, 4.588), (12.257, 4.47), (12.139, 4.391),
-                ],
-            ], &[
-                1, 0, 19, 1, 19, 18, 1, 18, 17, 1, 17, 16, 1, 16, 15, 1, 15, 14, 1, 14, 13, 1, 13, 12, 1, 12, 11, 1, 11, 10, 1, 10, 9, 1, 9, 8, 1, 8, 7, 1, 7,
-                6, 1, 6, 5, 1, 5, 4, 1, 4, 3, 1, 3, 2,
-            ]);
-            pen.glyph(1.0, &[
-                &[
-                    (8.921, 4.646), (3.273, 7.636), (8.921, 10.627), (9.064, 10.668), (9.211, 10.648), (9.338, 10.572), (9.424, 10.451), (9.455, 10.305),
-                    (9.455, 4.968), (9.424, 4.822), (9.338, 4.701), (9.211, 4.624), (9.064, 4.605),
-                ],
-            ], &[
-                1, 0, 12, 1, 12, 11, 1, 11, 10, 1, 10, 9, 1, 9, 8, 1, 8, 7, 1, 7, 6, 1, 6, 5, 1, 5, 4, 1, 4, 3, 1, 3, 2,
-            ]);
+            pen.rect_fill(3.5, 3.5, 5.0, 12.5);
+            pen.fill(&[(12.5, 3.5), (6.0, 8.0), (12.5, 12.5)]);
         }
         StepFwd => {
-            pen.glyph(1.0, &[
-                &[
-                    (4.727, 4.364), (5.455, 4.364), (5.594, 4.391), (5.712, 4.47), (5.791, 4.588), (5.818, 4.727), (5.818, 10.545), (5.791, 10.685),
-                    (5.712, 10.803), (5.594, 10.881), (5.455, 10.909), (4.727, 10.909), (4.588, 10.881), (4.47, 10.803), (4.391, 10.685), (4.364, 10.545),
-                    (4.364, 4.727), (4.391, 4.588), (4.47, 4.47), (4.588, 4.391),
-                ],
-            ], &[
-                18, 19, 0, 18, 0, 1, 18, 1, 2, 18, 2, 3, 18, 3, 4, 18, 4, 5, 18, 5, 6, 18, 6, 7, 18, 7, 8, 18, 8, 9, 18, 9, 10, 18, 10, 11, 18, 11, 12, 18, 12,
-                13, 18, 13, 14, 18, 14, 15, 18, 15, 16, 18, 16, 17,
-            ]);
-            pen.glyph(1.0, &[
-                &[
-                    (7.807, 4.646), (13.455, 7.636), (7.807, 10.627), (7.664, 10.668), (7.516, 10.648), (7.389, 10.572), (7.303, 10.451), (7.273, 10.305),
-                    (7.273, 4.968), (7.303, 4.822), (7.389, 4.701), (7.516, 4.624), (7.664, 4.605),
-                ],
-            ], &[
-                11, 12, 0, 11, 0, 1, 11, 1, 2, 11, 2, 3, 11, 3, 4, 11, 4, 5, 11, 5, 6, 11, 6, 7, 11, 7, 8, 11, 8, 9, 11, 9, 10,
-            ]);
+            pen.rect_fill(11.0, 3.5, 12.5, 12.5);
+            pen.fill(&[(3.5, 3.5), (10.0, 8.0), (3.5, 12.5)]);
         }
         GoToIn => {
             pen.line(&[(5.0, 3.0), (4.0, 3.0), (3.5, 3.5), (3.5, 6.0), (3.0, 7.0), (2.0, 8.0), (3.0, 9.0), (3.5, 10.0), (3.5, 12.5), (4.0, 13.0), (5.0, 13.0)]);
@@ -2267,22 +2289,9 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 21, 20, 19, 21, 19, 18, 21, 18, 17, 21, 17, 16, 16, 15, 14, 16, 14, 13, 16, 13, 12, 9, 8, 7, 9, 7, 6, 9, 6, 5, 9, 5, 4, 9, 4, 3, 9, 3, 2, 9, 2,
                 1, 21, 16, 12, 21, 12, 11, 10, 9, 1, 10, 1, 0, 0, 21, 11, 0, 11, 10,
             ]);
-            pen.glyph(1.0, &[
-                &[
-                    (8.283, 12.34), (8.317, 12.371), (8.355, 12.397), (8.397, 12.417), (8.44, 12.432), (8.485, 12.441), (8.532, 12.444), (8.663, 12.42),
-                    (8.777, 12.348), (8.856, 12.239), (8.889, 12.109), (8.889, 7.332), (8.872, 7.247), (8.824, 7.176), (8.753, 7.128), (8.668, 7.111),
-                    (3.891, 7.111), (3.761, 7.144), (3.652, 7.223), (3.58, 7.337), (3.556, 7.468), (3.559, 7.515), (3.568, 7.56), (3.583, 7.603),
-                    (3.603, 7.645), (3.629, 7.683), (3.66, 7.717), (5.343, 9.4), (1.324, 13.419), (1.228, 13.563), (1.194, 13.733), (1.228, 13.903),
-                    (1.324, 14.048), (1.371, 14.094), (1.487, 14.21), (1.638, 14.362), (1.79, 14.513), (1.906, 14.629), (1.952, 14.676), (2.097, 14.772),
-                    (2.267, 14.806), (2.437, 14.772), (2.581, 14.676), (2.879, 14.378), (3.623, 13.634), (4.59, 12.667), (5.558, 11.699), (6.302, 10.955),
-                    (6.6, 10.657),
-                ],
-            ], &[
-                1, 0, 48, 48, 47, 46, 48, 46, 45, 48, 45, 44, 44, 43, 42, 44, 42, 41, 44, 41, 40, 44, 40, 39, 44, 39, 38, 44, 38, 37, 44, 37, 36, 44, 36, 35,
-                44, 35, 34, 44, 34, 33, 44, 33, 32, 44, 32, 31, 44, 31, 30, 44, 30, 29, 44, 29, 28, 44, 28, 27, 27, 26, 25, 27, 25, 24, 27, 24, 23, 27, 23, 22,
-                27, 22, 21, 27, 21, 20, 27, 20, 19, 27, 19, 18, 27, 18, 17, 27, 17, 16, 27, 16, 15, 27, 15, 14, 27, 14, 13, 27, 13, 12, 27, 12, 11, 27, 11, 10,
-                27, 10, 9, 27, 9, 8, 27, 8, 7, 27, 7, 6, 27, 6, 5, 27, 5, 4, 27, 4, 3, 27, 3, 2, 27, 2, 1, 27, 1, 48, 27, 48, 44,
-            ]);
+            // the arrow leaves through the frame's lower-left opening
+            pen.line(&[(7.5, 6.8), (4.2, 10.8)]);
+            pen.fill(&[(1.2, 13.8), (5.7, 12.1), (2.7, 9.5)]);
         }
         Keyframe => {
             pen.glyph(0.231, &[
@@ -3771,6 +3780,20 @@ mod tests {
         }
     }
 
+    /// The Overwrite slot is thinner than one device pixel at 1x; snapping keeps it open.
+    #[test]
+    fn snapping_keeps_a_thin_slot_open() {
+        let slot = [(4.364, 8.727), (10.909, 8.727), (10.909, 9.455), (4.364, 9.455)];
+        for &ppp in &[1.0, 2.0] {
+            let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(16.0, 16.0));
+            let p = snap_fill(&slot, r, ppp);
+            let y0 = p.iter().fold(f32::MAX, |a, q| a.min(q.y));
+            let y1 = p.iter().fold(f32::MIN, |a, q| a.max(q.y));
+            assert!((y1 - y0) * ppp >= 1.0 - 1e-3, "slot height {} px at {ppp}x", (y1 - y0) * ppp);
+            assert!((y0 * ppp).fract().abs() < 1e-3 && (y1 * ppp).fract().abs() < 1e-3, "slot edges off the pixel grid at {ppp}x");
+        }
+    }
+
     /// The glyph-based icons draw triangulated meshes; every index is in range.
     #[test]
     fn glyph_icons_draw_meshes() {
@@ -3789,8 +3812,8 @@ mod tests {
                 icons += 1;
             }
         }
-        // 86 converted designs; Ripple, Rolling and Rate Stretch are hand-drawn.
-        assert_eq!(icons, 83, "glyph-mesh icons");
+        // 86 converted designs; five are hand-drawn or partly hand-drawn.
+        assert_eq!(icons, 81, "glyph-mesh icons");
     }
 
     /// The panel menu mark (≡): three lines, the same two gaps, at every scale.
