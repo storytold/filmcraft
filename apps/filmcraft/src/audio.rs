@@ -38,6 +38,10 @@ pub struct CpalOut {
     hw: AudioHardwarePrefs,
     /// Sequence sample rate for "Attempt to force hardware to document sample rate".
     document_rate: Option<u32>,
+    /// The buffer size the running stream asks for; a restart after a dropout keeps it.
+    buffer: cpal::BufferSize,
+    /// Watches the first moments of a stream for a host that cannot honour a small fixed buffer.
+    delivery: DeliveryCheck,
     /// Status-bar note: the host's default device could not be opened and a fallback device is
     /// in use, or no output device was found (playing without sound).
     note: Option<Note>,
@@ -90,6 +94,68 @@ fn stream_config(hw: &AudioHardwarePrefs, document_rate: Option<u32>, dev: &cpal
             .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
     });
     Ok(exact.unwrap_or(default))
+}
+
+/// The smallest fixed I/O buffer ALSA is asked for. A buffer below the device's period (commonly
+/// 1024 frames at 48 kHz) makes the plug hand over only that many frames per callback, so a
+/// 48 kHz stream plays at half its rate and the played-frame clock drags the picture with it.
+#[cfg(target_os = "linux")]
+const ALSA_PERIOD_FRAMES: u32 = 1024;
+
+/// The fixed I/O buffer to ask `host` for: the setting, raised to [`ALSA_PERIOD_FRAMES`] there.
+/// A device this does not fit is caught by [`DeliveryCheck`] after the stream starts.
+fn requested_buffer_size(want: u32, host: cpal::HostId) -> u32 {
+    #[cfg(target_os = "linux")]
+    if host == cpal::HostId::Alsa {
+        return want.max(ALSA_PERIOD_FRAMES);
+    }
+    let _ = host;
+    want
+}
+
+/// The buffer size for the log: the fixed frames asked for, or the device's own.
+fn buffer_label(buffer: cpal::BufferSize) -> String {
+    match buffer {
+        cpal::BufferSize::Fixed(frames) => format!("{frames}-frame"),
+        cpal::BufferSize::Default => "device".into(),
+    }
+}
+
+/// How long a new stream is watched before its delivery rate is compared with its sample rate.
+const DELIVERY_CHECK: Duration = Duration::from_millis(300);
+
+/// Watches the first moments of a stream: a host that cannot honour a small fixed buffer (ALSA's
+/// plug on a 1024-frame period) delivers only the requested frames per callback, so the stream
+/// plays below its sample rate. Playback's clock is the device's played frames, so the picture
+/// runs slow with it; the stream is then reopened with the device's own buffer size.
+#[derive(Default)]
+struct DeliveryCheck {
+    /// When the watched window began, and the played frames then.
+    started: Option<(Instant, u64)>,
+    /// A correction was already asked for this stream.
+    checked: bool,
+}
+
+impl DeliveryCheck {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether the stream delivered well under `rate` frames a second, once per stream. The
+    /// window is short (a fraction of a second) so the correction comes quickly.
+    fn too_slow(&mut self, now: Instant, played: u64, rate: u32) -> bool {
+        if self.checked || rate == 0 {
+            return false;
+        }
+        let (started, started_frames) = *self.started.get_or_insert((now, played));
+        let elapsed = now.saturating_duration_since(started);
+        if elapsed < DELIVERY_CHECK {
+            return false;
+        }
+        self.checked = true;
+        let delivered = played.saturating_sub(started_frames) as f64 / elapsed.as_secs_f64();
+        delivered < f64::from(rate) * 0.9
+    }
 }
 
 /// Build the output stream for `config`'s sample format, rendering `fill` into it.
@@ -252,6 +318,8 @@ impl CpalOut {
             channels: cfg.as_ref().map_or(2, |c| c.channels()),
             hw: AudioHardwarePrefs::default(),
             document_rate: None,
+            buffer: cpal::BufferSize::Default,
+            delivery: DeliveryCheck::default(),
             note,
             fallback,
         }
@@ -263,8 +331,9 @@ impl CpalOut {
     }
 
     /// Open the configured output device and play `fill` on it. `expect` is the (sample rate,
-    /// channels) a restarted stream must keep: the mixer was set up for them.
-    fn open(&mut self, fill: Arc<Mutex<Fill>>, expect: Option<(u32, u16)>) -> Result<(), String> {
+    /// channels) a restarted stream must keep: the mixer was set up for them. `prefer` is the
+    /// fixed I/O buffer to ask for; `None`, or a size the device does not accept, uses its own.
+    fn open(&mut self, fill: Arc<Mutex<Fill>>, expect: Option<(u32, u16)>, prefer: Option<u32>) -> Result<(), String> {
         let host = host(&self.hw.device_class);
         let DeviceChoice { device: dev, fallback } = output_device(&host, &self.hw.default_output, &self.fallback).ok_or("no output device")?;
         self.note = fallback;
@@ -279,27 +348,39 @@ impl CpalOut {
             return Err(format!("the output device now runs at {} Hz with {} channels", cfg.sample_rate().0, cfg.channels()));
         }
         let mut config: cpal::StreamConfig = cfg.clone().into();
-        if let cpal::SupportedBufferSize::Range { min, max } = cfg.buffer_size()
-            && (*min..=*max).contains(&self.hw.buffer_size)
-        {
-            config.buffer_size = cpal::BufferSize::Fixed(self.hw.buffer_size);
-        }
+        let buffer = match (prefer, cfg.buffer_size()) {
+            (Some(n), cpal::SupportedBufferSize::Range { min, max }) if (*min..=*max).contains(&n) => cpal::BufferSize::Fixed(n),
+            _ => cpal::BufferSize::Default,
+        };
+        config.buffer_size = buffer;
+        self.buffer = buffer;
         self.rate = cfg.sample_rate().0;
         self.channels = cfg.channels();
         let stream = stream_for(&dev, &config, cfg.sample_format(), fill, self.played.clone(), self.health.clone())?;
         stream.play().map_err(|e| e.to_string())?;
         self.stream = Some(stream);
+        log::info!("audio output: {} Hz, {} channels, {} buffer", self.rate, self.channels, buffer_label(buffer));
         Ok(())
     }
 
     /// Replace a dropped stream with a new one on the same mixer, clock and format.
     fn restart(&mut self) -> Result<(), String> {
+        self.restart_as(self.buffer)
+    }
+
+    /// [`restart`](Self::restart) with a different buffer size: used when a fixed buffer turns
+    /// out to make the device deliver less than its sample rate.
+    fn restart_as(&mut self, buffer: cpal::BufferSize) -> Result<(), String> {
         let fill = self.fill.clone().ok_or("nothing is playing")?;
         let expect = (self.rate, self.channels);
         // The old stream (and its audio thread) goes first: only one stream ever runs the mixer.
         self.stream = None;
         self.health.clear_errors();
-        self.open(fill, Some(expect))
+        let prefer = match buffer {
+            cpal::BufferSize::Fixed(n) => Some(n),
+            cpal::BufferSize::Default => None,
+        };
+        self.open(fill, Some(expect), prefer)
     }
 }
 
@@ -425,8 +506,10 @@ impl AudioOut for CpalOut {
         self.played.store(0, Ordering::SeqCst);
         self.health = Arc::new(Health::default());
         self.watchdog.reset(self.epoch.elapsed());
+        self.delivery.reset();
+        let want = requested_buffer_size(self.hw.buffer_size, host(&self.hw.device_class).id());
         let fill = Arc::new(Mutex::new(fill));
-        self.open(fill.clone(), None)?;
+        self.open(fill.clone(), None, Some(want))?;
         self.fill = Some(fill);
         Ok(self.rate)
     }
@@ -436,6 +519,23 @@ impl AudioOut for CpalOut {
     }
     fn recover(&mut self) {
         if self.stream.is_none() || self.health.failed.load(Ordering::SeqCst) {
+            return;
+        }
+        // A fixed buffer the host cannot honour makes the device hand over fewer frames per
+        // callback than its rate needs, so the played-frame clock (playback's master clock)
+        // runs slow and drags the picture with it: ALSA's plug delivered a 48 kHz stream 512
+        // frames every ~21 ms period, i.e. half speed. Reopen with the device's own buffer;
+        // the mixer, the clock and the ring continue.
+        if self.delivery.too_slow(Instant::now(), self.played.load(Ordering::SeqCst), self.rate) {
+            log::warn!(
+                "the audio output delivered less than its {} Hz sample rate (a fixed I/O buffer below the device's period); reopening with the device's own buffer size",
+                self.rate
+            );
+            if let Err(e) = self.restart_as(cpal::BufferSize::Default) {
+                log::warn!("the audio output could not be reopened: {e}");
+                self.stream = None;
+                self.health.failed.store(true, Ordering::SeqCst);
+            }
             return;
         }
         let lost = self.health.lost.swap(false, Ordering::SeqCst);
@@ -679,6 +779,35 @@ mod tests {
         assert!(!needs_rate_search(44_100, 0), "0 is the device default");
         assert!(needs_rate_search(48_000, 44_100), "another rate has to be searched for");
         assert!(needs_rate_search(48_000, 96_000));
+    }
+
+    /// ALSA's plug calls back on its own period (1024 frames at 48 kHz here), whatever fixed
+    /// buffer cpal asks for: asking for 512 then delivered 24,000 frames/s for a 48 kHz stream,
+    /// and playback (on the played-frame clock) ran at half speed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_small_fixed_buffer_is_raised_to_the_alsa_period() {
+        assert_eq!(requested_buffer_size(64, cpal::HostId::Alsa), ALSA_PERIOD_FRAMES);
+        assert_eq!(requested_buffer_size(512, cpal::HostId::Alsa), ALSA_PERIOD_FRAMES);
+        assert_eq!(requested_buffer_size(2_048, cpal::HostId::Alsa), 2_048, "a larger setting is kept");
+    }
+
+    #[test]
+    fn a_stream_delivering_half_its_rate_is_corrected_once() {
+        let mut delivery = DeliveryCheck::default();
+        let t0 = Instant::now();
+        assert!(!delivery.too_slow(t0, 0, 48_000), "the window has not passed");
+        assert!(!delivery.too_slow(t0 + ms(100), 4_800, 48_000), "still measuring");
+        // 7,200 frames in 300 ms is 24 kHz: half the stream's rate, as ALSA's plug delivered.
+        assert!(delivery.too_slow(t0 + ms(300), 7_200, 48_000));
+        assert!(!delivery.too_slow(t0 + ms(600), 8_000, 48_000), "corrected once");
+    }
+
+    #[test]
+    fn a_stream_at_its_rate_is_left_alone() {
+        let mut delivery = DeliveryCheck::default();
+        let t0 = Instant::now();
+        assert!(!delivery.too_slow(t0 + ms(300), 14_400, 48_000), "48 kHz is what the 48 kHz stream needs");
     }
 
     #[test]
