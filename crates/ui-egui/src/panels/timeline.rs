@@ -439,26 +439,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let vh = app.ui.timeline.video_track_h;
     let ah = app.ui.timeline.audio_track_h;
     let mut rows = Vec::new();
-    let (video_tops, _) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
     let target_vh = app.tl.track_anim.map_or(vh, |target| target[0].max(min_v));
-    let max_vs = track_scroll_max(nv as f32 + 1.0 / 3.0, target_vh, video_area.height());
+    let (video_tops, max_vs) = video_row_tops(video_area, nv, vh, target_vh, &mut app.ui.timeline.v_scroll);
     for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
     }
     // a third of a track's height of empty space below the last audio track (space for a new
     // track), the same reveal the video side keeps above its topmost row
-    let current_max_as = track_scroll_max(na as f32 + 1.0 / 3.0, ah, audio_area.height());
-    app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, current_max_as);
     let target_ah = app.tl.track_anim.map_or(ah, |target| target[2].max(min_a));
     let max_as = track_scroll_max(na as f32 + 1.0 / 3.0, target_ah, audio_area.height());
+    app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, max_as);
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
     }
     let (v_scroll, a_scroll) = (app.ui.timeline.v_scroll, app.ui.timeline.a_scroll);
-    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y, v_scroll, a_scroll };
+    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y, video_top: tracks_area.min.y, v_scroll, a_scroll };
     app.tl.layout = Some(layout.clone());
 
     // ---- backgrounds
@@ -1465,6 +1463,7 @@ mod waveform_drag_anchor_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 0.0,
+            video_top: 0.0,
             v_scroll: 0.0,
             a_scroll: 0.0,
         }
@@ -1651,6 +1650,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 200.0,
+            video_top: 100.0,
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
@@ -1695,6 +1695,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y,
+            video_top: content.min.y,
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
@@ -1718,7 +1719,7 @@ mod new_track_tests {
         // video area 0..150 holds V1..V3 exactly; scrolled up as far as it goes
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
         let mut v_scroll = f32::MAX;
-        let (tops, max_vs) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        let (tops, max_vs) = video_row_tops(area, 3, 50.0, 50.0, &mut v_scroll);
         assert!((max_vs - 50.0 / 3.0).abs() < 0.01, "the reveal is a third of a track: {max_vs}");
         assert!((tops[2] - 50.0 / 3.0).abs() < 0.01, "the topmost row leaves a third of a track above it: {:?}", tops);
         let rows = seq
@@ -1741,6 +1742,7 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 150.0,
+            video_top: 0.0,
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
@@ -1750,7 +1752,16 @@ mod new_track_tests {
         assert!((band.max.y - 50.0 / 3.0).abs() < 0.01, "the band is the visible third, never a whole track: {band:?}");
         // scrolled to the bottom, V1..V3 fill the area as before
         let mut v_scroll = 0.0;
-        assert_eq!(video_row_tops(area, 3, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+        assert_eq!(video_row_tops(area, 3, 50.0, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+    }
+
+    #[test]
+    fn growing_track_animation_keeps_scroll_allowed_by_the_target_height() {
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 200.0));
+        let mut v_scroll = 100.0;
+        let (_, max_vs) = video_row_tops(area, 3, 50.0, 100.0, &mut v_scroll);
+        assert!(max_vs >= 100.0);
+        assert_eq!(v_scroll, 100.0, "an intermediate height must not clamp away the destination scroll");
     }
 }
 
