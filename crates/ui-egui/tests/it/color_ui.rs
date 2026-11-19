@@ -726,7 +726,10 @@ fn scopes_follow_a_dragged_color_wheel() {
         let p = c + if i % 2 == 0 { vec2(0.0, reach) } else { vec2(-reach, reach * 0.5) };
         d.harness.event(Event::PointerMoved(p));
         d.frames(1);
-        if scope_mean(&mut d).is_some_and(|m| moved(m, before)) {
+        // a scope update for the first edit must not end the drag before the wheel has had the
+        // edits the assertion below counts, so the revision threshold is part of the exit too
+        let edited = d.app().session.revision > rev + 2;
+        if edited && scope_mean(&mut d).is_some_and(|m| moved(m, before)) {
             followed = true;
             break;
         }
