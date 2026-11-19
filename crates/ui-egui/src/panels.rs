@@ -373,10 +373,12 @@ pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // its elements are registered in the window that draws them
     let outer = std::mem::replace(&mut app.auto.viewport, viewport);
     let mut close = false;
-    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+    // the area and the scroll keep a size and an offset of their own per panel: one menu's measured
+    // width must not cap the next panel's menu, or a short menu shrinks it (#4689)
+    let area = egui::Area::new(id.with(("area", p))).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             let scroll =
-                egui::ScrollArea::vertical().id_salt("panel-menu-scroll").max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt(("panel-menu-scroll", p)).max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
                     // a small window (a floated panel can be narrower than the menu) takes the menu at its width
                     let width = ui.ctx().content_rect().width() - 16.0;
                     ui.set_min_width(190.0_f32.min(width.max(0.0)));
