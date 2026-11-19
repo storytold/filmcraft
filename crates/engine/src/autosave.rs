@@ -1188,6 +1188,11 @@ impl Worker {
 
     fn auto_save(&mut self) -> Result<PathBuf, String> {
         let Some(s) = &self.latest else { return Err("nothing to save".into()) };
+        // A view-only journal entry is not an auto-save version. Keep explicit and periodic saves
+        // aligned so a clean project does not rotate its history for Timeline settings alone.
+        if !s.content_dirty {
+            return Err(String::new());
+        }
         let scratch = crate::project_tools::trusted_scratch(s.project.settings.scratch.auto_save.as_deref(), s.path.as_deref(), &self.prefs.scratch_folders);
         let (dir, name) = match (&s.path, scratch) {
             // Project Settings ▸ Scratch Disks ▸ Project Auto Save
@@ -1449,6 +1454,27 @@ mod worker_failure_tests {
         s.start_autosave(cfg).unwrap();
         s.execute("sequence.addEdit", json!({"seconds": 0.5})).unwrap();
         (s, dir)
+    }
+
+    #[test]
+    fn explicit_auto_save_does_not_rotate_versions_for_a_clean_view_change() {
+        let dir = std::env::temp_dir().join(format!("fc-worker-clean-view-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut prefs = Preferences::default();
+        prefs.auto_save.recovery_journal = false;
+        prefs.save(&dir.join("preferences.json")).unwrap();
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.start_autosave(AutosaveConfig::new(&dir)).unwrap();
+        s.view_changed();
+        s.sync_persistence();
+
+        let result = s.execute("file.autoSaveNow", json!({})).unwrap();
+        assert!(result["path"].is_null(), "a view-only change keeps the explicit autosave no-op result");
+        assert!(!dir.join(names::AUTO_SAVE_DIR).exists(), "a clean view-only snapshot must not create an autosave version");
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn failure_toasts(s: &mut Session) -> usize {
