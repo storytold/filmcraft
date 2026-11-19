@@ -777,8 +777,8 @@ mod tests {
     fn windows_restore_sets_physical_position_outside_the_viewport_builder() {
         let state = filmcraft_ui_egui::window_state::WindowState { width: 1000.0, height: 700.0, x: 1500.0, y: 100.0, scale_factor: 2.0 };
         let displays = [
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
-            DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
+            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0)), primary: true },
+            super::DisplayBounds { rect: egui::Rect::from_min_size(egui::pos2(1920.0, 0.0), egui::vec2(3840.0, 2160.0)), primary: false },
         ];
         let options = super::native_options(false, Some(state), Some(&displays));
 
