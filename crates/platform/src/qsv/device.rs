@@ -198,19 +198,19 @@ mod imp {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let vendor_path = path.join("device/vendor");
-                    if let Ok(vendor) = std::fs::read_to_string(vendor_path) {
-                        if vendor.trim().eq_ignore_ascii_case("0x8086") {
-                            let device_id = std::fs::read_to_string(path.join("device/device"))
-                                .ok()
-                                .and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
-                                .unwrap_or(0);
-                            return Ok(Some(IntelAdapterInfo {
-                                name: "Intel Graphics (Linux DRM/VA-API)".into(),
-                                vendor_id: INTEL_VENDOR_ID,
-                                device_id,
-                                dedicated_video_memory: 0,
-                            }));
-                        }
+                    if let Ok(vendor) = std::fs::read_to_string(vendor_path)
+                        && vendor.trim().eq_ignore_ascii_case("0x8086")
+                    {
+                        let device_id = std::fs::read_to_string(path.join("device/device"))
+                            .ok()
+                            .and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+                            .unwrap_or(0);
+                        return Ok(Some(IntelAdapterInfo {
+                            name: "Intel Graphics (Linux DRM/VA-API)".into(),
+                            vendor_id: INTEL_VENDOR_ID,
+                            device_id,
+                            dedicated_video_memory: 0,
+                        }));
                     }
                 }
             }

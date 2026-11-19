@@ -9,14 +9,9 @@ pub mod session;
 
 use std::sync::OnceLock;
 
-#[cfg(target_os = "windows")]
-use windows::Win32::Media::MediaFoundation::{MFVideoFormat_AV1, MFVideoFormat_HEVC};
-
 use self::device::IntelGpu;
 #[cfg(target_os = "windows")]
-use self::session::find_encoder_activate;
-#[cfg(target_os = "windows")]
-use crate::media_foundation::mft::api;
+use self::session::{Codec, Config, Profile, QsvSession};
 
 static HEVC_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static HEVC_HDR_AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -90,27 +85,30 @@ pub fn warm_av1_probe() {
 }
 
 #[cfg(target_os = "windows")]
-fn probe_codec_hevc(_ten_bit: bool) -> bool {
-    probe_codec_win(MFVideoFormat_HEVC)
+fn probe_codec_hevc(ten_bit: bool) -> bool {
+    let profile = if ten_bit { Profile::HevcMain10 } else { Profile::HevcMain };
+    probe_codec_session(Codec::Hevc, profile, ten_bit)
 }
 
 #[cfg(target_os = "windows")]
-fn probe_codec_av1(_ten_bit: bool) -> bool {
-    probe_codec_win(MFVideoFormat_AV1)
+fn probe_codec_av1(ten_bit: bool) -> bool {
+    let profile = if ten_bit { Profile::Av1Main10 } else { Profile::Av1Main };
+    probe_codec_session(Codec::Av1, profile, ten_bit)
 }
 
 #[cfg(target_os = "windows")]
-fn probe_codec_win(subtype: windows::core::GUID) -> bool {
+fn probe_codec_session(codec: Codec, profile: Profile, ten_bit: bool) -> bool {
     let Ok(Some(_gpu)) = IntelGpu::probe() else {
         return false;
     };
-    let Ok(mf_api) = api() else {
-        return false;
-    };
-    let Ok(Some(_)) = find_encoder_activate(mf_api, subtype) else {
-        return false;
-    };
-    true
+    let cfg = Config { codec, profile, size: (640, 360), rate: filmcraft_time::FrameRate::FPS_24, bitrate_kbps: 2000, keyint: 60, ten_bit };
+    match QsvSession::new(cfg) {
+        Ok(_session) => true,
+        Err(e) => {
+            log::debug!("Intel Quick Sync probe ({codec:?}, ten_bit={ten_bit}) unavailable: {e}");
+            false
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

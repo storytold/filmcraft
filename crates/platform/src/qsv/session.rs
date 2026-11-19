@@ -8,19 +8,27 @@
 use std::collections::VecDeque;
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
+#[cfg(target_os = "windows")]
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MFMediaType_Video, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG,
-    MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_ENUM_HARDWARE_VENDOR_ID_Attribute,
-    MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
-    MFVideoFormat_P010, MFVideoInterlace_Progressive,
+    CODECAPI_AVEncMPVGOPSize, ICodecAPI, IMFActivate, IMFMediaBuffer, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform,
+    MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, METransformDrainComplete, METransformHaveOutput, METransformNeedInput, MF_E_NO_EVENTS_AVAILABLE, MF_E_NOTACCEPTING,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_EVENT_FLAG_NO_WAIT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
+    MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFMediaType_Video,
+    MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
+    MFT_ENUM_HARDWARE_VENDOR_ID_Attribute, MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_NV12,
+    MFVideoFormat_P010, MFVideoInterlace_Progressive, eAVEncAV1VProfile_Main_420_8, eAVEncAV1VProfile_Main_420_10, eAVEncH264VProfile_Base,
+    eAVEncH264VProfile_High, eAVEncH264VProfile_Main, eAVEncH265VProfile_Main_420_8, eAVEncH265VProfile_Main_420_10,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Com::CoTaskMemFree;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_UI4};
 #[cfg(target_os = "windows")]
 use windows::core::{GUID, Interface};
 
@@ -69,6 +77,21 @@ pub enum Profile {
     Av1Main10,
 }
 
+impl Profile {
+    #[cfg(target_os = "windows")]
+    fn mf_profile(self) -> u32 {
+        match self {
+            Self::H264Baseline => eAVEncH264VProfile_Base.0 as u32,
+            Self::H264Main => eAVEncH264VProfile_Main.0 as u32,
+            Self::H264High => eAVEncH264VProfile_High.0 as u32,
+            Self::HevcMain => eAVEncH265VProfile_Main_420_8.0 as u32,
+            Self::HevcMain10 => eAVEncH265VProfile_Main_420_10.0 as u32,
+            Self::Av1Main => eAVEncAV1VProfile_Main_420_8.0 as u32,
+            Self::Av1Main10 => eAVEncAV1VProfile_Main_420_10.0 as u32,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub codec: Codec,
@@ -93,6 +116,9 @@ pub struct Packet {
 pub struct QsvSession {
     _gpu: Arc<IntelGpu>,
     transform: IMFTransform,
+    events: Option<IMFMediaEventGenerator>,
+    provides_samples: bool,
+    sequence_header: Vec<u8>,
     config: Config,
     out_buf_size: u32,
     emitted: i64,
@@ -102,6 +128,45 @@ pub struct QsvSession {
 #[cfg(target_os = "windows")]
 // SAFETY: IMFTransform encoder MFT is free-threaded COM object, operated through &mut methods.
 unsafe impl Send for QsvSession {}
+
+#[cfg(target_os = "windows")]
+fn unlock_async(transform: &IMFTransform) -> Result<Option<IMFMediaEventGenerator>, String> {
+    // SAFETY: COM calls on live transform attributes and cast to IMFMediaEventGenerator when async.
+    unsafe {
+        let Ok(attrs) = transform.GetAttributes() else {
+            return Ok(None);
+        };
+        if attrs.GetUINT32(&MF_TRANSFORM_ASYNC).unwrap_or(0) == 0 {
+            return Ok(None);
+        }
+        attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1).map_err(|e| format!("failed to unlock async Intel encoder MFT: {e}"))?;
+        let events: IMFMediaEventGenerator = transform.cast().map_err(|e| format!("async Intel encoder MFT lacks IMFMediaEventGenerator: {e}"))?;
+        Ok(Some(events))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn read_sequence_header(media_type: &IMFMediaType) -> Vec<u8> {
+    const MAX_SEQ_HEADER_BYTES: usize = 64 * 1024;
+    // SAFETY: plain COM calls reading bounded blob from live IMFMediaType.
+    unsafe {
+        let Ok(len) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) else {
+            return Vec::new();
+        };
+        let len = len as usize;
+        if len == 0 || len > MAX_SEQ_HEADER_BYTES {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; len];
+        let mut written = 0u32;
+        if media_type.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, Some(&mut written)).is_ok() {
+            buf.truncate((written as usize).min(len));
+            buf
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 impl QsvSession {
@@ -116,6 +181,7 @@ impl QsvSession {
 
         // SAFETY: plain COM call on activation object.
         let transform: IMFTransform = unsafe { activate.ActivateObject() }.map_err(|e| format!("cannot activate Intel encoder MFT: {e}"))?;
+        let events = unlock_async(&transform)?;
 
         // Check Direct3D 11 support
         // SAFETY: plain COM call to inspect transform attributes.
@@ -128,7 +194,17 @@ impl QsvSession {
             let _ = transform.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager_param());
         }
 
-        let mut session = Self { _gpu: gpu, transform, config: config.clone(), out_buf_size: 2 * 1024 * 1024, emitted: 0, pending: VecDeque::new() };
+        let mut session = Self {
+            _gpu: gpu,
+            transform,
+            events,
+            provides_samples: false,
+            sequence_header: Vec::new(),
+            config: config.clone(),
+            out_buf_size: 2 * 1024 * 1024,
+            emitted: 0,
+            pending: VecDeque::new(),
+        };
 
         session.configure_media_types(mf_api)?;
 
@@ -136,8 +212,13 @@ impl QsvSession {
         let bytes_per_pixel = if config.ten_bit { 3u64 } else { 2u64 };
         let frame_bound = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bytes_per_pixel).clamp(2 * 1024 * 1024, 64 * 1024 * 1024);
         // SAFETY: plain COM call to inspect output stream buffer requirements after media types are set.
-        let stream_min = unsafe { session.transform.GetOutputStreamInfo(0) }.map(|info| info.cbSize).unwrap_or(0);
-        session.out_buf_size = stream_min.max(u32::try_from(frame_bound).unwrap_or(u32::MAX));
+        if let Ok(info) = unsafe { session.transform.GetOutputStreamInfo(0) } {
+            let flags = info.dwFlags;
+            session.provides_samples = (flags & ((MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32)) != 0;
+            session.out_buf_size = info.cbSize.max(u32::try_from(frame_bound).unwrap_or(u32::MAX));
+        } else {
+            session.out_buf_size = u32::try_from(frame_bound).unwrap_or(u32::MAX);
+        }
 
         // SAFETY: notify streaming messages.
         unsafe {
@@ -148,16 +229,33 @@ impl QsvSession {
         Ok(session)
     }
 
-    fn configure_media_types(&self, mf_api: &MfApi) -> Result<(), String> {
+    fn configure_gop_size(&self) {
+        let Ok(codec_api) = self.transform.cast::<ICodecAPI>() else {
+            return;
+        };
+        let gop = self.config.keyint.max(1);
+        let variant = VARIANT {
+            Anonymous: VARIANT_0 {
+                Anonymous: ManuallyDrop::new(VARIANT_0_0 { vt: VT_UI4, wReserved1: 0, wReserved2: 0, wReserved3: 0, Anonymous: VARIANT_0_0_0 { ulVal: gop } }),
+            },
+        };
+        // SAFETY: ICodecAPI::SetValue receives a stack VT_UI4 VARIANT containing a u32 GOP length.
+        if let Err(e) = unsafe { codec_api.SetValue(&CODECAPI_AVEncMPVGOPSize, &variant) } {
+            log::info!("Intel encoder MFT declined CODECAPI_AVEncMPVGOPSize={gop}: {e}");
+        }
+    }
+
+    fn configure_media_types(&mut self, mf_api: &MfApi) -> Result<(), String> {
         let (w, h) = self.config.size;
         let rate = self.config.rate;
         let bps = self.config.bitrate_kbps.saturating_mul(1000);
 
         // 1. Output Media Type
         let out_type = make_video_type(mf_api, self.config.codec.subtype(), w, h, rate)?;
-        // SAFETY: setting bitrate attribute.
+        // SAFETY: setting bitrate and profile attributes on output media type.
         unsafe {
             out_type.SetUINT32(&MF_MT_AVG_BITRATE, bps).map_err(|e| format!("failed to set output bitrate: {e}"))?;
+            out_type.SetUINT32(&MF_MT_MPEG2_PROFILE, self.config.profile.mf_profile()).map_err(|e| format!("failed to set output profile: {e}"))?;
             self.transform.SetOutputType(0, &out_type, 0).map_err(|e| format!("failed to set encoder output type: {e}"))?;
         }
 
@@ -168,6 +266,13 @@ impl QsvSession {
         unsafe {
             self.transform.SetInputType(0, &in_type, 0).map_err(|e| format!("failed to set encoder input type: {e}"))?;
         }
+
+        self.configure_gop_size();
+
+        // Read codec sequence header exposed by the MFT after output/input configuration.
+        // SAFETY: plain COM query on configured output type.
+        let current = unsafe { self.transform.GetOutputCurrentType(0) }.unwrap_or(out_type);
+        self.sequence_header = read_sequence_header(&current);
 
         Ok(())
     }
@@ -221,67 +326,149 @@ impl QsvSession {
         self.emitted = self.emitted.saturating_add(1);
         self.pending.push_back((pts, dts));
 
-        // SAFETY: ProcessInput on live transform.
-        unsafe {
-            let hr = self.transform.ProcessInput(0, &sample, 0);
-            if let Err(e) = hr {
-                if e.code() == MF_E_NOTACCEPTING {
-                    // Queue is full: drain pending outputs first and retry
-                    let _ = self.drain_outputs();
-                    self.transform.ProcessInput(0, &sample, 0).map_err(|e| format!("Intel encoder ProcessInput failed: {e}"))?;
-                } else {
-                    return Err(format!("Intel encoder ProcessInput failed: {e}"));
-                }
+        if let Some(events) = self.events.clone() {
+            return self.submit_async(mf_api, &events, &sample);
+        }
+
+        // SAFETY: ProcessInput on synchronous live transform.
+        let hr = unsafe { self.transform.ProcessInput(0, &sample, 0) };
+        let mut packets = Vec::new();
+        if let Err(e) = hr {
+            if e.code() == MF_E_NOTACCEPTING {
+                self.drain_sync(mf_api, &mut packets)?;
+                // SAFETY: retry ProcessInput after draining queued outputs.
+                unsafe { self.transform.ProcessInput(0, &sample, 0) }.map_err(|e| format!("Intel encoder ProcessInput failed: {e}"))?;
+            } else {
+                return Err(format!("Intel encoder ProcessInput failed: {e}"));
             }
         }
 
-        self.drain_outputs()
+        self.drain_sync(mf_api, &mut packets)?;
+        Ok(packets)
+    }
+
+    fn submit_async(&mut self, mf_api: &MfApi, events: &IMFMediaEventGenerator, sample: &IMFSample) -> Result<Vec<Packet>, String> {
+        const MAX_EVENTS_PER_INPUT: usize = 4096;
+        let mut packets = Vec::new();
+        let mut fed = false;
+
+        for _ in 0..MAX_EVENTS_PER_INPUT {
+            // SAFETY: blocking wait on encoder event queue for METransformNeedInput / METransformHaveOutput.
+            let event = unsafe { events.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) }.map_err(|e| format!("Intel async GetEvent failed: {e}"))?;
+            // SAFETY: query event type constant.
+            let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async event GetType failed: {e}"))?;
+            if kind == METransformHaveOutput.0 as u32 {
+                let _ = self.pull_one_output(mf_api, &mut packets)?;
+            } else if kind == METransformNeedInput.0 as u32 {
+                // SAFETY: encoder explicitly requested one input sample via METransformNeedInput.
+                unsafe { self.transform.ProcessInput(0, sample, 0) }.map_err(|e| format!("Intel async ProcessInput failed: {e}"))?;
+                fed = true;
+                break;
+            }
+        }
+
+        if !fed {
+            return Err("Intel async encoder did not signal METransformNeedInput within event bound".into());
+        }
+
+        self.drain_async_no_wait(mf_api, events, &mut packets)?;
+        Ok(packets)
+    }
+
+    fn drain_async_no_wait(&mut self, mf_api: &MfApi, events: &IMFMediaEventGenerator, packets: &mut Vec<Packet>) -> Result<(), String> {
+        const MAX_DRAIN_EVENTS: usize = 4096;
+        for _ in 0..MAX_DRAIN_EVENTS {
+            // SAFETY: non-blocking poll of any outputs ready right now.
+            let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                Ok(ev) => ev,
+                Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => break,
+                Err(e) => return Err(format!("Intel async poll failed: {e}")),
+            };
+            // SAFETY: query event type constant.
+            let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async event GetType failed: {e}"))?;
+            if kind == METransformHaveOutput.0 as u32 {
+                let _ = self.pull_one_output(mf_api, packets)?;
+            }
+        }
+        Ok(())
     }
 
     /// Flush remaining buffered packets at stream end.
     pub fn flush(&mut self) -> Result<Vec<Packet>, String> {
+        let mf_api = api()?;
         // SAFETY: ProcessMessage drain.
         unsafe {
             let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
         }
-        self.drain_outputs()
-    }
-
-    fn drain_outputs(&mut self) -> Result<Vec<Packet>, String> {
         let mut packets = Vec::new();
-        let mf_api = api()?;
-
-        loop {
-            let mut out_buffer = MFT_OUTPUT_DATA_BUFFER { dwStreamID: 0, ..Default::default() };
-            // Create sample for output
-            let empty_buffer = make_empty_buffer(mf_api, self.out_buf_size)?;
-            let sample = make_sample_with_buffer(mf_api, &empty_buffer)?;
-            out_buffer.pSample = std::mem::ManuallyDrop::new(Some(sample));
-
-            let mut status = 0u32;
-            // SAFETY: ProcessOutput call.
-            let hr = unsafe { self.transform.ProcessOutput(0, std::slice::from_mut(&mut out_buffer), &mut status) };
-
-            match hr {
-                Ok(()) => {}
-                Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => break,
-                Err(e) => return Err(format!("Intel ProcessOutput failed: {e}")),
-            }
-
-            if let Some(sample) = out_buffer.pSample.as_ref() {
-                // SAFETY: read back sample bytes.
-                let data = unsafe { read_sample_bytes(sample)? };
-                if !data.is_empty() {
-                    let (pending_pts, dts) = self.pending.pop_front().unwrap_or((0, 0));
-                    // SAFETY: read back presentation timestamp from sample if available.
-                    let pts = unsafe { sample.GetSampleTime() }.unwrap_or(pending_pts);
-                    let key = is_key_frame(self.config.codec, &data);
-                    packets.push(Packet { data, key, pts, dts });
+        if let Some(events) = self.events.clone() {
+            let bound = self.pending.len().saturating_mul(16).saturating_add(4096);
+            for _ in 0..bound {
+                // SAFETY: blocking poll during drain until METransformDrainComplete arrives.
+                let event =
+                    unsafe { events.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) }.map_err(|e| format!("Intel async drain GetEvent failed: {e}"))?;
+                // SAFETY: query event type constant.
+                let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async drain GetType failed: {e}"))?;
+                if kind == METransformHaveOutput.0 as u32 {
+                    let _ = self.pull_one_output(mf_api, &mut packets)?;
+                } else if kind == METransformDrainComplete.0 as u32 {
+                    break;
                 }
             }
+            return Ok(packets);
+        }
+        self.drain_sync(mf_api, &mut packets)?;
+        Ok(packets)
+    }
+
+    fn drain_sync(&mut self, mf_api: &MfApi, packets: &mut Vec<Packet>) -> Result<(), String> {
+        const MAX_OUTPUTS: usize = 4096;
+        for _ in 0..MAX_OUTPUTS {
+            if !self.pull_one_output(mf_api, packets)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn pull_one_output(&mut self, mf_api: &MfApi, packets: &mut Vec<Packet>) -> Result<bool, String> {
+        let p_sample = if self.provides_samples {
+            ManuallyDrop::new(None)
+        } else {
+            let empty_buffer = make_empty_buffer(mf_api, self.out_buf_size)?;
+            let sample = make_sample_with_buffer(mf_api, &empty_buffer)?;
+            ManuallyDrop::new(Some(sample))
+        };
+        let mut out_buffer = MFT_OUTPUT_DATA_BUFFER { dwStreamID: 0, pSample: p_sample, dwStatus: 0, pEvents: ManuallyDrop::new(None) };
+
+        let mut status = 0u32;
+        // SAFETY: single output descriptor with owned sample (if caller allocates) and live status pointer.
+        let hr = unsafe { self.transform.ProcessOutput(0, std::slice::from_mut(&mut out_buffer), &mut status) };
+        // SAFETY: fields were initialized above and are extracted once so COM references always drop.
+        let (out_sample, _out_events) = unsafe { (ManuallyDrop::take(&mut out_buffer.pSample), ManuallyDrop::take(&mut out_buffer.pEvents)) };
+
+        match hr {
+            Ok(()) => {}
+            Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(false),
+            Err(e) => return Err(format!("Intel ProcessOutput failed: {e}")),
         }
 
-        Ok(packets)
+        if let Some(sample) = out_sample.as_ref() {
+            // SAFETY: read back sample bytes.
+            let data = unsafe { read_sample_bytes(sample)? };
+            if !data.is_empty() {
+                let (pending_pts, dts) = self.pending.pop_front().unwrap_or((0, 0));
+                // SAFETY: read back presentation timestamp from sample if available.
+                let pts = unsafe { sample.GetSampleTime() }.unwrap_or(pending_pts);
+                let key = is_key_frame(self.config.codec, &data);
+                packets.push(Packet { data, key, pts, dts });
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn sequence_header(&self) -> &[u8] {
+        &self.sequence_header
     }
 
     pub fn codec(&self) -> Codec {
@@ -316,6 +503,10 @@ impl QsvSession {
     /// Flush remaining buffered packets at stream end.
     pub fn flush(&mut self) -> Result<Vec<Packet>, String> {
         Ok(Vec::new())
+    }
+
+    pub fn sequence_header(&self) -> &[u8] {
+        &[]
     }
 
     pub fn codec(&self) -> Codec {
