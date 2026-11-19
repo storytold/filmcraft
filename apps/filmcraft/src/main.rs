@@ -332,10 +332,7 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
         displays
             .into_iter()
             .filter_map(|display| {
-                #[cfg(target_os = "macos")]
-                let scale: f32 = 1.0;
-                #[cfg(not(target_os = "macos"))]
-                let scale = display.scale_factor;
+                let scale = display_coordinate_scale(display.scale_factor);
                 if !scale.is_finite() || scale <= 0.0 {
                     return None;
                 }
@@ -350,6 +347,20 @@ fn attached_display_bounds() -> Option<Vec<DisplayBounds>> {
             })
             .collect(),
     )
+}
+
+/// Display-info reports logical bounds on macOS and Linux, but physical bounds on Windows.
+/// Divide only Windows coordinates to compare them with the viewport's logical position.
+fn display_coordinate_scale(scale_factor: f32) -> f32 {
+    #[cfg(target_os = "windows")]
+    {
+        scale_factor
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = scale_factor;
+        1.0
+    }
 }
 
 /// `ViewportInfo::maximized` is intentionally not refreshed on macOS because winit's query can
@@ -753,6 +764,14 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_bounds_are_normalized_once_by_backend() {
+        let scale_factor = 2.0;
+        let coordinate_scale = super::display_coordinate_scale(scale_factor);
+        let reported_width = if cfg!(target_os = "windows") { 3840.0 } else { 1920.0 };
+        assert_eq!(reported_width / coordinate_scale, 1920.0);
+    }
+
     /// #1994: a saved rectangle replaces the default before native creation; agent windows keep
     /// the default and therefore cannot fight with the interactive user's window manager.
     #[test]
