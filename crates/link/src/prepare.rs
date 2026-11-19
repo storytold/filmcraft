@@ -443,7 +443,7 @@ fn pinned(project: &Project, wanted: &[Need]) -> HashSet<String> {
 /// Limits of this rule. A movie of another project is not durable storage. The render comes back
 /// only while that project's original nest still exists and the user reopens the link through
 /// FilmCraft. If EffectCraft opens or renders that comp on its own after the movie is gone, the
-/// footage is offline there until FilmCraft renders it again.
+/// footage is missing there until FilmCraft renders it again.
 fn prune(dir: &Path, limit: u64, keep: &HashSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(SystemTime, u64, PathBuf, bool)> = entries
