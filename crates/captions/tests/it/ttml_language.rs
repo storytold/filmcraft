@@ -1,6 +1,5 @@
-use filmcraft_captions::{Cue, Document, Format, WriteOptions, document_from_track, parse, track_from_document, write};
+use filmcraft_captions::{Cue, Document, Format, TICKS_PER_SECOND, Tick, WriteOptions, document_from_track, parse, track_from_document, write};
 use filmcraft_project::{CaptionFormat, TrackId};
-use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
 fn cue() -> Cue {
     Cue { start: Tick(TICKS_PER_SECOND), end: Tick(2 * TICKS_PER_SECOND), text: "Olá".into(), ..Default::default() }
@@ -22,7 +21,7 @@ fn ttml_and_dfxp_write_the_track_language() {
     assert_eq!(track.language, "en", "a file with no language keeps the default");
     track.language = "pt-BR".into();
     for format in [Format::Ttml, Format::Dfxp] {
-        let doc = document_from_track(&track, Tick::ZERO);
+        let doc = document_from_track(&track, filmcraft_time::Tick::ZERO);
         let xml = String::from_utf8(write(&doc, format, WriteOptions::default())).unwrap();
         assert!(xml.contains(r#"xml:lang="pt-BR""#), "{format:?}: {xml}");
         // and the language comes back on import
@@ -32,6 +31,6 @@ fn ttml_and_dfxp_write_the_track_language() {
     }
     // a track with no language (projects saved before tracks had one) still writes a valid tag
     track.language.clear();
-    let xml = String::from_utf8(write(&document_from_track(&track, Tick::ZERO), Format::Ttml, WriteOptions::default())).unwrap();
+    let xml = String::from_utf8(write(&document_from_track(&track, filmcraft_time::Tick::ZERO), Format::Ttml, WriteOptions::default())).unwrap();
     assert!(xml.contains(r#"xml:lang="en""#), "{xml}");
 }
