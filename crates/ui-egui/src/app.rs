@@ -131,6 +131,13 @@ impl FilmcraftApp {
             engine_call: false,
             workspaces,
             menu_workspaces: Default::default(),
+            cloud: craft_ui::cloud::CloudFiles::new(),
+            cloud_page: None,
+            share: craft_ui::share::ShareDialog::new(),
+            presence: craft_ui::presence::PresenceBar::new().badges_only(),
+            cloud_sent: Default::default(),
+            share_save_prior_etag: None,
+            ui_ctx: egui::Context::default(),
         }
     }
 
@@ -283,6 +290,7 @@ impl FilmcraftApp {
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
+        craft_ui::cloud::pump(self, ctx);
     }
 
     /// Apply engine events that change the active sequence/view, IME target, toast or project.
@@ -320,6 +328,7 @@ impl FilmcraftApp {
         // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
         // the last UI time (which is stale there), so `now()` never runs behind the host clock.
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
+        self.ui_ctx = ctx.clone();
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
         self.logic_theme(ctx);

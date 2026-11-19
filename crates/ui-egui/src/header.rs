@@ -127,7 +127,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.auto.add("header.workspaceName", wr, &ws);
     p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
     // Community: a labelled Discord button, always one click away.
-    {
+    let discord_left = {
         let label = "Discord";
         let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), Color32::WHITE);
         let w = g.size().x + 34.0;
@@ -137,9 +137,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, 12.0, if resp.hovered() { t.accent_hover } else { t.accent });
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, Color32::WHITE);
         ui.painter().galley(pos2(r.min.x + 25.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
-        // Localized menus and user titles can be wider than English. Use the actual gap.
+        if resp.clicked() {
+            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
+        }
+        r.min.x
+    };
+    // Cloud: account badge. Placed between Discord and the document title so neither overlaps.
+    let cloud_right = draw_cloud_badge(app, ui, rect, discord_left, left_end);
+    // Document title, centred in the gap between the mode tabs and the cloud cluster.
+    {
         let left = left_end + 12.0;
-        let right = r.min.x - 12.0;
+        let right = cloud_right - 12.0;
         if right > left + 40.0 {
             let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
             job.wrap.max_width = right - left;
@@ -152,10 +160,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 galley,
                 t.tab_text_active,
             );
-        }
-
-        if resp.clicked() {
-            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
         }
     }
     let popup_id = egui::Id::unique("workspaces-popup");
@@ -202,6 +206,42 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
     }
+}
+
+/// The cloud account badge and Share button, between Discord and the document title. Nothing
+/// is drawn when no cloud service is configured. Returns the left edge the document title
+/// should stop short of: `discord_left` unchanged when nothing drew, or the cluster's left edge
+/// when it did. The 8 px gap this cluster would otherwise reserve is not charged against the
+/// title on a build with no backend connected.
+fn draw_cloud_badge(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, discord_left: f32, left_end: f32) -> f32 {
+    if !crate::cloud::available(app) {
+        return discord_left;
+    }
+    let cloud_right = discord_left - 8.0;
+    let cloud_w: f32 = 220.0;
+    let cloud_left = (cloud_right - cloud_w).max(left_end + 4.0);
+    let cloud_rect = Rect::from_min_max(pos2(cloud_left, rect.min.y + 4.0), pos2(cloud_right, rect.max.y - 4.0));
+    if cloud_rect.width() <= 32.0 {
+        return discord_left;
+    }
+    let mut cu = ui.new_child(egui::UiBuilder::new().max_rect(cloud_rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    crate::cloud::who(app, &mut cu);
+    if crate::cloud::shares(app) {
+        cu.add_space(6.0);
+        if let Some(fmt) = crate::cloud::share_button(app, &mut cu, &crate::cloud::copies()) {
+            // Chevron "Save a Copy" formats from the Share split button.
+            match fmt.as_str() {
+                "fcpxml" => {
+                    let _ = crate::menus::invoke(app, cu.ctx(), "file.exportFcpxml", serde_json::json!({}));
+                }
+                "aaf" => {
+                    let _ = crate::menus::invoke(app, cu.ctx(), "file.exportAaf", serde_json::json!({}));
+                }
+                _ => app.ui.status = format!("Unknown share copy format: {fmt}"),
+            }
+        }
+    }
+    cloud_left
 }
 
 #[cfg(test)]

@@ -147,6 +147,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    // Cloud storage, behind craft_ui::cloud's CloudApp/CloudBackend contract. Commands exist for
+    // invoke/control; File menu placement is injected by `cloud_menu` only when a backend is
+    // connected, which nothing does yet (also kept out of `external_commands`, below).
+    uic!("file.cloudOpen", "Open from cloud…", [], None),
+    uic!("file.cloudSaveAs", "Save as to cloud…", [], None),
     uic!("help.discord", "Join the ArtCraft Discord…", ["Help"], None),
     uic!("help.website", "ArtCraft Website", ["Help"], None),
     uic!("help.appPage", "FilmCraft on getartcraft.com", ["Help"], None),
@@ -675,6 +680,23 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
         return Ok(Value::Null);
     }
+    if id == "file.cloudOpen" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        app.cloud_page = Some(crate::cloud::CloudPage::Open);
+        return Ok(json!({"page": "open"}));
+    }
+    if id == "file.cloudSaveAs" {
+        if !crate::cloud::available(app) {
+            return Err(crate::cloud::UNAVAILABLE.into());
+        }
+        // Discard any conflict-copy target and suggested name an earlier, abandoned Save As
+        // left behind: this is an ordinary Save As, not the conflict modal's "Save as a copy".
+        crate::cloud::cancel_save_as(app);
+        app.cloud_page = Some(crate::cloud::CloudPage::SaveAs);
+        return Ok(json!({"page": "saveAs"}));
+    }
     // File dialogs for commands that need a path.
     if menu
         && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
@@ -984,6 +1006,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     }
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
+    cloud_menu(&mut v, app);
     v
 }
 
@@ -1000,6 +1023,45 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
         "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
         _ => return None,
     })
+}
+
+/// File ▸ Open from cloud… / Save as to cloud… after Open Recent when a CloudBackend is
+/// connected. Absent (not dimmed) when no backend is set, matching the other Craft apps; no
+/// backend is wired up anywhere in this app yet.
+fn cloud_menu(items: &mut Vec<MenuItem>, app: &FilmcraftApp) {
+    if !crate::cloud::available(app) {
+        return;
+    }
+    let Some(open_at) = items.iter().position(|it| it.id == "file.open") else { return };
+    let mut insert_at = open_at + 1;
+    while insert_at < items.len() && items[insert_at].id.starts_with("file.openRecent.") {
+        insert_at += 1;
+    }
+    if insert_at < items.len() && items[insert_at].id == "file.clearRecent" {
+        insert_at += 1;
+    }
+    let path = vec!["File".into()];
+    items.splice(
+        insert_at..insert_at,
+        [
+            MenuItem {
+                id: "file.cloudOpen".into(),
+                label: app.ui.language.tr("Open from cloud…").to_string(),
+                path: path.clone(),
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+            MenuItem {
+                id: "file.cloudSaveAs".into(),
+                label: app.ui.language.tr("Save as to cloud…").to_string(),
+                path,
+                shortcut: None,
+                enabled: true,
+                checked: None,
+            },
+        ],
+    );
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
@@ -1239,8 +1301,15 @@ fn shifted_key(k: egui::Key) -> Option<egui::Key> {
 /// rebound and resolved alongside engine commands (the `shortcuts.` commands).
 pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     use filmcraft_engine::shortcuts::CommandInfo;
-    let mut v: Vec<CommandInfo> =
-        UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
+    // No build of this app connects a CloudBackend yet, so these two are never reachable; a
+    // bindable shortcut (or an entry in the Keyboard Shortcuts editor) for a command that always
+    // answers UNAVAILABLE is worse than no entry.
+    let mut v: Vec<CommandInfo> = UI_COMMANDS
+        .iter()
+        .filter(|c| !matches!(c.id, "file.cloudOpen" | "file.cloudSaveAs"))
+        .chain(crate::panels::keyboard::COMMANDS)
+        .map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut))
+        .collect();
     for p in PanelKind::ALL {
         v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }
@@ -1593,6 +1662,56 @@ mod tests {
         let reset = ws.iter().position(|it| it.id == "window.workspace.reset");
         assert!(matches!((editing, reset), (Some(e), Some(r)) if e < r), "workspaces come before the layout commands");
         assert!(items.iter().any(|it| it.id == "file.save" && it.path == ["File"]));
+    }
+
+    #[test]
+    fn cloud_menu_entries_require_a_connected_backend() {
+        struct Noop;
+        impl crate::cloud::CloudBackend for Noop {
+            fn submit(&self, _job: crate::cloud::Job, _post: crate::cloud::Post) {}
+        }
+
+        let no_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let items = menu_items(&no_cloud);
+        assert!(items.iter().all(|it| !matches!(it.id.as_str(), "file.cloudOpen" | "file.cloudSaveAs")), "cloud entries must be absent without a backend");
+
+        let mut with_cloud = FilmcraftApp::new(filmcraft_engine::Session::default());
+        with_cloud.cloud.connect(Noop);
+        let items = menu_items(&with_cloud);
+        let open_at = items.iter().position(|it| it.id == "file.open").expect("Open Project");
+        let cloud_open = items.iter().position(|it| it.id == "file.cloudOpen").expect("Open from cloud");
+        let cloud_save = items.iter().position(|it| it.id == "file.cloudSaveAs").expect("Save as to cloud");
+        assert_eq!(items[cloud_open].path, ["File"], "Open from cloud… belongs on the File menu");
+        assert_eq!(items[cloud_save].path, ["File"], "Save as to cloud… belongs on the File menu");
+        // Immediately after Open Recent (its items, then Clear Recent Files, when either is
+        // present on a session with no recents yet), with no other item between the two.
+        let expect_at = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.id.starts_with("file.openRecent.") || it.id == "file.clearRecent")
+            .map(|(i, _)| i)
+            .next_back()
+            .map_or(open_at + 1, |last_recent| last_recent + 1);
+        assert_eq!(cloud_open, expect_at, "Open from cloud… follows Open Recent with nothing between");
+        assert_eq!(cloud_save, cloud_open + 1, "Save as to cloud… immediately follows Open from cloud…");
+    }
+
+    #[test]
+    fn file_cloud_commands_set_cloud_page() {
+        struct Noop;
+        impl crate::cloud::CloudBackend for Noop {
+            fn submit(&self, _job: crate::cloud::Job, _post: crate::cloud::Post) {}
+        }
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        assert!(invoke(&mut app, &ctx, "file.cloudOpen", json!({})).is_err());
+        assert!(app.cloud_page.is_none());
+
+        app.cloud.connect(Noop);
+        invoke(&mut app, &ctx, "file.cloudOpen", json!({})).unwrap();
+        assert_eq!(app.cloud_page, Some(crate::cloud::CloudPage::Open));
+        invoke(&mut app, &ctx, "file.cloudSaveAs", json!({})).unwrap();
+        assert_eq!(app.cloud_page, Some(crate::cloud::CloudPage::SaveAs));
     }
 
     /// #1500: like a native menu bar, while one menu is open hovering another title opens it.

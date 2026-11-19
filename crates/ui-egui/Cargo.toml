@@ -10,7 +10,12 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# The `cloud` feature (set on the workspace dependency) adds the Open/Save pages, share dialog,
+# account badge and presence bar. No app here connects a backend yet, so none of it draws.
 craft-ui = { workspace = true }
+# Vendor-neutral cloud types (Entry, Capability, the Files/Sharing contracts). No IO, no
+# provider name: also buildable for the web.
+craft-cloud = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
