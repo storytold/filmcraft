@@ -684,11 +684,14 @@ fn zoom_slider(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, x: f32, sw:
     // it sizes Icon view's cards, the Freeform canvas and List view's thumbnails (#3774): a List
     // without thumbnails has nothing for it to size
     let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sr).id_salt((pre, "zoom")));
+    // the slider asks for `slider_width` (100 pt by default), which a narrow footer's `sr` cannot
+    // hold: without this it draws past `sr` and over Sort Icons (#4586)
+    sui.spacing_mut().slider_width = sw;
     if v.mode == ViewMode::List && !app.session.prefs.project_panel.thumbnails {
         sui.disable();
     }
     let resp = crate::widgets::accessible_name(sui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
-    app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
+    app.auto.add(&format!("{pre}.iconSize"), resp.rect, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
     let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
     if resp.drag_started() {
