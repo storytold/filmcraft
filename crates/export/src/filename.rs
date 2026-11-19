@@ -4,7 +4,9 @@
 use std::path::Path;
 
 const INVALID_CHARACTERS: &str = "File name cannot contain < > : \" / \\ | ? * or control characters.";
-const MISSING_FILENAME: &str = "Choose an output file name.";
+
+/// Error returned by [`validate_output_path`] when the path has no filename.
+pub const MISSING_FILENAME: &str = "Choose an output file name.";
 
 /// Reject the unsupported filename characters reported for movie exports.
 /// Empty editor text is allowed: Export mode supplies its existing default name.

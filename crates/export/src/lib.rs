@@ -29,7 +29,7 @@ mod raster;
 pub mod settings;
 pub mod still;
 pub use audio_out::LoudnessReport;
-pub use filename::{validate_output_filename, validate_output_path};
+pub use filename::{MISSING_FILENAME, validate_output_filename, validate_output_path};
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};
