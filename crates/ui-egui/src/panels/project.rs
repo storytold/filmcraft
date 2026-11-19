@@ -600,10 +600,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let room = right_start - 6.0 - (x + 8.0) - sort_w;
     if room >= 40.0 {
         x = zoom_slider(app, ui, bar, x, (bar.width() - 300.0).clamp(40.0, 120.0).min(room), v, actions);
-    } else if v.inst == Inst::Main {
+    } else {
         // the slider is left out at this width, so it cannot see the end of a drag it began: end
         // that here, keeping the dragged size on release or the size it started from on Escape
-        end_zoom_drag(app, ui, pre, actions);
+        end_zoom_drag(app, ui, v, actions);
     }
     // Sort Icons (Icon view)
     if v.mode == ViewMode::Icon && x + 24.0 <= right_start - 6.0 {
@@ -727,19 +727,31 @@ fn zoom_slider(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, x: f32, sw:
 /// Ends a Zoom drag that [`zoom_slider`] is not drawn for, because the footer has no room for the
 /// slider (#4586): the size the drag reached is saved as a release does, or with Escape the drag
 /// keeps the size it started from. A drag still under the pointer is left alone until it ends.
-fn end_zoom_drag(app: &mut FilmcraftApp, ui: &egui::Ui, pre: &str, actions: &mut Actions) {
+fn end_zoom_drag(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, actions: &mut Actions) {
     let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
     if ui.input(|i| i.pointer.primary_down()) && !escaped {
         return;
     }
-    let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
-    ui.data_mut(|d| {
-        d.remove_temp::<f32>(orig_id);
-    });
-    if let Some(sz) = app.ui.project_panel.icon_size_drag.take()
-        && !escaped
-    {
-        actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+    let orig_id = egui::Id::unique((&v.prefix, "icon-size-before-drag"));
+    let before = ui.data_mut(|d| d.remove_temp::<f32>(orig_id));
+    match v.inst {
+        Inst::Main => {
+            if let Some(sz) = app.ui.project_panel.icon_size_drag.take()
+                && !escaped
+            {
+                actions.push(("project.view.set".into(), json!({"iconSize": sz})));
+            }
+        }
+        // a bin tab's slider wrote the size it reached into the tab as it went, so a release has
+        // nothing left to save and only Escape has a size to put back
+        Inst::Tab(k) => {
+            if escaped
+                && let Some(before) = before
+                && let Some(tab) = app.ui.project_panel.tabs.get_mut(k)
+            {
+                tab.icon_size = before;
+            }
+        }
     }
 }
 
