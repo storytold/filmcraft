@@ -167,6 +167,10 @@ fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Dr
     move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), 0)
 }
 
+fn move_destination_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32, creates_track: bool) -> bool {
+    move_is_locked(seq, clips, if creates_track { 0 } else { delta })
+}
+
 fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
     clips.iter().any(|clip| {
         seq.find_item(*clip).is_some_and(|(track, _)| {
@@ -782,7 +786,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
                 let offset = offset.max(-first);
                 let (track_delta, new_track) = move_drag_destination(app, seq, layout, p.y, &clips, start_track);
-                let locked = if new_track.is_some() { move_is_locked(seq, &clips, 0) } else { move_is_locked(seq, &clips, track_delta) };
+                let locked = move_destination_is_locked(seq, &clips, track_delta, new_track.is_some());
                 if locked {
                     ctx.set_cursor_icon(CursorIcon::NotAllowed);
                     Some(Drag::Move { clips, grab_tick, start_track, offset: Tick::ZERO, track_delta: 0, new_track: None, copy: mods.alt })
@@ -962,7 +966,27 @@ fn move_drag_destination(
     // Crossing the A/V divider selects the nearest row of the clip's own kind.
     let current_row = layout.row_at(pointer_y).filter(|row| start_row.is_some_and(|start| row.kind == start.kind)).or_else(|| {
         let kind = start_row?.kind;
-        layout.rows.iter().filter(|row| row.kind == kind).min_by(|a, b| (a.rect.center().y - pointer_y).abs().total_cmp(&(b.rect.center().y - pointer_y).abs()))
+        layout
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind)
+            .filter_map(|row| {
+                let shown = layout.shown(row);
+                (shown.height() > 0.0).then_some((row, shown))
+            })
+            .min_by(|(_, a), (_, b)| {
+                let distance = |rect: &Rect| {
+                    if pointer_y < rect.min.y {
+                        rect.min.y - pointer_y
+                    } else if pointer_y >= rect.max.y {
+                        pointer_y - rect.max.y
+                    } else {
+                        0.0
+                    }
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|(row, _)| row)
     });
     let track_delta = match (current_row, start_row) {
         (Some(current), Some(start)) if current.kind == start.kind => current.index as i32 - start.index as i32,
@@ -1645,7 +1669,59 @@ mod marquee_tests {
     fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
         let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0));
-        Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, v_scroll, a_scroll }
+        Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, video_top: content.min.y, v_scroll, a_scroll }
+    }
+
+    #[test]
+    fn new_track_drop_ignores_locked_fallback_track_but_honors_locked_source() {
+        let mut project = filmcraft_project::Project::new("t");
+        let id = project.new_sequence("s", filmcraft_project::SequenceSettings::default(), 2, 1, None);
+        let mut seq = project.sequence(id).cloned().expect("sequence");
+        let source = seq.video_tracks[0].id;
+        let clip = crate::panels::timeline_hit::tests::clip(1, 100.0, 200.0);
+        seq.video_tracks[0].items = vec![clip];
+        seq.video_tracks[1].locked = true;
+
+        assert!(move_destination_is_locked(&seq, &[ClipId(1)], 1, false), "moving onto the locked fallback row is blocked");
+        assert!(!move_destination_is_locked(&seq, &[ClipId(1)], 1, true), "a new-track destination does not inherit the fallback row's lock");
+        seq.track_mut(source).expect("source track").locked = true;
+        assert!(move_destination_is_locked(&seq, &[ClipId(1)], 1, true), "a locked source remains blocked for a new-track drop");
+    }
+
+    #[test]
+    fn clip_drop_fallback_ignores_video_rows_above_the_visible_pane() {
+        let mut project = filmcraft_project::Project::new("t");
+        let id = project.new_sequence("s", filmcraft_project::SequenceSettings::default(), 2, 1, None);
+        let mut seq = project.sequence(id).cloned().expect("sequence");
+        let source = seq.video_tracks[0].id;
+        seq.video_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(1, 100.0, 200.0)];
+
+        let mut layout = layout(0.0, 0.0);
+        layout.content = Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 500.0));
+        layout.video_top = 150.0;
+        layout.split_y = 300.0;
+        layout.rows = vec![
+            Row {
+                track: seq.video_tracks[0].id,
+                kind: TrackKind::Video,
+                index: 0,
+                rect: Rect::from_min_max(pos2(0.0, 200.0), pos2(1000.0, 300.0)),
+                lane: false,
+            },
+            Row {
+                track: seq.video_tracks[1].id,
+                kind: TrackKind::Video,
+                index: 1,
+                rect: Rect::from_min_max(pos2(0.0, 50.0), pos2(1000.0, 150.0)),
+                lane: false,
+            },
+        ];
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+
+        assert_eq!(layout.row_at(145.0).map(|row| row.track), None, "the clipped video row is not a hit target");
+        let (delta, new_track) = move_drag_destination(&app, &seq, &layout, 145.0, &[ClipId(1)], source);
+        assert_eq!(delta, 0, "the nearest-row fallback uses the visible V1 row, not hidden V2");
+        assert!(new_track.is_none(), "a point between the visible pane top and the hidden row is not a new-track target");
     }
 
     /// #2978: V1 scrolled down under the audio tracks, behind A1. A box drawn on A1 takes A1's

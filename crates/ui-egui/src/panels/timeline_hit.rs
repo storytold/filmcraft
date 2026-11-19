@@ -402,6 +402,7 @@ pub(crate) mod tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: TOP + 60.0,
+            video_top: row.min.y,
             v_scroll: 0.0,
             a_scroll: 0.0,
         };

@@ -20,6 +20,8 @@ pub struct Layout {
     pub scroll: f64,
     /// The y of the divider between the video tracks (above) and the audio tracks (below).
     pub split_y: f32,
+    /// Top of the visible video-track pane, below any caption rows.
+    pub video_top: f32,
     /// The vertical scrolls the rows were laid out at; a wheel turn changes the view's own values
     /// before the next frame lays the rows out again (and clamps them).
     pub v_scroll: f32,
@@ -48,7 +50,10 @@ impl Layout {
     pub fn shown(&self, row: &Row) -> Rect {
         let mut r = row.rect;
         match row.kind {
-            TrackKind::Video => r.max.y = r.max.y.min(self.split_y),
+            TrackKind::Video => {
+                r.min.y = r.min.y.max(self.video_top);
+                r.max.y = r.max.y.min(self.split_y);
+            }
             TrackKind::Audio => {
                 r.min.y = r.min.y.max(self.split_y + DIVIDER_H);
                 r.max.y = r.max.y.min(self.content.max.y - MASTER_H);
@@ -88,8 +93,8 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
 /// the topmost row. Also gives the largest `v_scroll`. The scroll range reveals at most a third of
 /// a track's height of empty space above the topmost row: just enough to drop a clip there and to
 /// create a track (#1522's whole empty slot, cut down to what is usable).
-pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
-    let max_vs = track_scroll_max(n as f32 + 1.0 / 3.0, vh, area.height());
+pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, scroll_limit_height: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
+    let max_vs = track_scroll_max(n as f32 + 1.0 / 3.0, scroll_limit_height, area.height());
     *v_scroll = v_scroll.clamp(0.0, max_vs);
     // V1's bottom sits on the area's bottom at v_scroll = 0 and the rows stack up from it
     let tops = (0..n).map(|i| area.max.y - vh - i as f32 * vh + *v_scroll).collect();
