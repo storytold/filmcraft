@@ -4,7 +4,7 @@
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
-paths per platform in [hardware-parity.md](hardware-parity.md). All our codecs are clean-room
+paths per platform in [hardware-parity.md](hardware-parity.md). See [codecs-migration-to-craft-libs.md](codecs-migration-to-craft-libs.md) for details on the shared craft-libs integration. All our codecs are clean-room
 pure Rust from public specifications ([AGENTS.md](../AGENTS.md) §2); ffmpeg is a test oracle only.
 
 Premiere's list comes from Adobe's published supported-formats pages and the names of the
