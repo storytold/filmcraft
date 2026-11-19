@@ -107,27 +107,9 @@ fn merged_alpha(s: &[u8]) -> bool {
     false
 }
 
-/// Expand one PackBits-coded row into `out`, which it must fill exactly.
+/// Expand one strict PackBits row into the already bounded image row without allocating.
 fn unpack(name: &str, src: &[u8], out: &mut [u8]) -> Result<()> {
-    let (mut i, mut o) = (0, 0);
-    while o < out.len() {
-        let n = *src.get(i).ok_or_else(|| err(name, "truncated run-length row"))? as i8;
-        i += 1;
-        if n >= 0 {
-            let k = n as usize + 1;
-            let lit = src.get(i..i + k).ok_or_else(|| err(name, "truncated run-length row"))?;
-            out.get_mut(o..o + k).ok_or_else(|| err(name, "run-length row longer than the picture"))?.copy_from_slice(lit);
-            i += k;
-            o += k;
-        } else if n != -128 {
-            let k = usize::from(n.unsigned_abs()) + 1;
-            let v = *src.get(i).ok_or_else(|| err(name, "truncated run-length row"))?;
-            out.get_mut(o..o + k).ok_or_else(|| err(name, "run-length row longer than the picture"))?.fill(v);
-            i += 1;
-            o += k;
-        }
-    }
-    Ok(())
+    craft_psd::compression::packbits::decode_to_slice(src, out).map_err(|e| err(name, &e.to_string()))
 }
 
 /// Decode the composite image of a Photoshop document to straight-alpha RGBA8.
