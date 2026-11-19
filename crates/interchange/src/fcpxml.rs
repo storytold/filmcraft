@@ -9,6 +9,8 @@
 //! - Rational times (`1001/24000s`) map exactly onto ticks.
 //! - Standalone `video` elements reference the picture of an asset (including still images),
 //!   without importing that asset's audio. Effect-backed generators are reported as unsupported.
+//! - `adjust-conform` (`fit`, the default, and `none`) maps to the clip's scale-to-frame-size flag;
+//!   `fill` is reported and imported as `fit`.
 //! - `adjust-transform` (position in percent of frame height, FCP y-up, counter-clockwise
 //!   rotation), `adjust-blend` (opacity), `adjust-volume` (dB) and their keyframes are mapped;
 //!   constant speed, reverse and freeze frames use a two-point `timeMap`.
@@ -590,7 +592,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         // Connected clips and secondary storylines.
         for c in elements(el) {
-            let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
+            let Some(lane_attr) = c.attribute("lane") else { continue };
+            let Ok(l) = lane_attr.trim().parse::<i32>() else {
+                self.report.warn(format!("<{}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped", c.tag_name().name()));
+                continue;
+            };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
             let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
@@ -636,8 +642,31 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
         let _ = ctx.seq_rate;
+        // no `adjust-conform` means `fit`: the picture is scaled into the frame before any transform
+        let mut conform = true;
+        // a `<clip>` wraps the video it plays, which may carry its own conform; the clip's own overrides it
+        if kind == TrackKind::Video
+            && el.has_tag_name("clip")
+            && let Some(inner) = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "asset-clip") && c.attribute("ref").is_some())
+            && let Some(a) = elements(inner).find(|a| a.has_tag_name("adjust-conform"))
+        {
+            let ty = a.attribute("type").unwrap_or("fit");
+            conform = ty != "none";
+            // the clip's own adjust-conform overrides this and reports for itself
+            if ty == "fill" && !elements(el).any(|c| c.has_tag_name("adjust-conform")) {
+                self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+            }
+        }
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
+                ("adjust-conform", TrackKind::Video) => match a.attribute("type").unwrap_or("fit") {
+                    "none" => conform = false,
+                    "fill" => {
+                        conform = true;
+                        self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+                    }
+                    _ => conform = true,
+                },
                 ("adjust-transform", TrackKind::Video) => {
                     let to_px = move |v: &str| {
                         let (x, y) = pair(v);
@@ -700,6 +729,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
                 _ => {}
             }
+        }
+        if kind == TrackKind::Video {
+            ti.scale_to_frame = conform;
         }
     }
 
@@ -1156,6 +1188,10 @@ impl Exp<'_, '_> {
             if it.speed == 0.0 || it.frame_hold.is_some() { local } else { local + Tick(((t - it.source_in).0 as f64 / it.speed).round() as i64) }
         };
         if kind == TrackKind::Video {
+            // a clip without scale-to-frame keeps its native pixels; an absent element would mean `fit`
+            if !it.scale_to_frame {
+                children.push("<adjust-conform type=\"none\"/>".into());
+            }
             self.transform(it, seq, &to_local, &mut children);
         }
         if let Some(a) = audio.or((kind == TrackKind::Audio).then_some(it)) {
