@@ -3470,7 +3470,8 @@
 	Encoder	Kodlayıcı
 	Hardware (H.265 has no software encoder)	Donanım (H.265'in yazılımsal kodlayıcısı yoktur)
 	Hardware (AV1 has no software encoder)	Donanım (AV1'in yazılımsal kodlayıcısı yoktur)
-	Software (AV1)	Yazılımsal (AV1)
+	Hardware (software AV1 baseline fallback)	Donanım (yazılımsal AV1 temel yedeği)
+	Software (AV1 baseline, DC-only)	Yazılımsal (AV1 temel, yalnızca DC)
 	Text Properties	Metin Özellikleri
 	Text Box Height	Metin Kutusu Yüksekliği
 	Paragraph Text	Paragraf Metni

@@ -18,8 +18,9 @@ pub enum Format {
     /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR.
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
-    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
-    /// where a hardware encoder registers one.
+    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Uses a registered hardware encoder when
+    /// available ([`register_encoder`] / [`register_format_probe`]), falling back to the built-in
+    /// DC-only software baseline encoder (`filmcraft-av1enc`).
     #[serde(rename = "av1", alias = "Av1")]
     Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
