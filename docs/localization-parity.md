@@ -27,10 +27,12 @@ official releases) or an installed system face; without one, switching to Japane
 refused with a message. Simplified Chinese is picked for `zh`, `zh-CN`, `zh-SG`, `zh-Hans`, not
 Traditional locales. Ukrainian uses the bundled Cyrillic interface fonts. Vertical text in titles
 is supported. The interface (egui) shapes each font run with harfrust and has Arabic and Hebrew
-fallback fonts (`crates/ui-egui/src/rtl.rs`), but it has no bidi pass: only captions (timeline
-blocks, the Text panel list when not being edited) are laid out in reading order, and the interface
-itself is never mirrored right to left. The title engine (`crates/text`, harfrust + bidi) lays out
-right to left, but Arabic titles are reported broken (#395).
+fallback fonts (`crates/ui-egui/src/rtl.rs`). Chrome, menus, and docking mirror right to left for
+RTL languages (currently Hebrew via `craft_ui::direction` and `right_to_left`), and captions
+(timeline blocks, the Text panel list when not being edited) are laid out in reading order, while
+custom-painted panels without explicit RTL geometry remain left to right. The title engine
+(`crates/text`, harfrust + bidi) lays out right to left, but Arabic titles are reported broken
+(#395).
 
 ## Status
 
