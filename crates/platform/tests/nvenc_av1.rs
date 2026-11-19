@@ -85,6 +85,88 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
 }
 
 #[test]
+fn av1_default_export_preserves_frame_order_and_timestamps() {
+    use filmcraft_export::{ExportSettings, Format, Multiplexer, Progress, export};
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{FrameRequest, Generator, MediaSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, Tick, TimeRange};
+    use std::sync::Arc;
+
+    filmcraft_platform::register();
+    if !filmcraft_platform::nvenc::av1_available() {
+        eprintln!("SKIPPED: no NVENC AV1 encoder");
+        return;
+    }
+    let ffmpeg = filmcraft_testkit::require_ffmpeg!();
+    let ffprobe = filmcraft_testkit::require_ffprobe!();
+    let rate = FrameRate::FPS_24;
+    let mut p = Project::new("AV1 default B-frame order");
+    let g = GeneratorSource::new(Generator::CountingLeader, 320, 180, rate, rate.tick_of(12));
+    let info = g.info().clone();
+    let clip = p.add_item(
+        &info.name.clone(),
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 1, None);
+    let v = p.make_track_item(clip, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(12)), rate).unwrap();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+    let expected: Vec<Vec<u8>> = (0..12).map(|i| g.video_frame(FrameRequest::full(rate.tick_of(i))).unwrap().to_rgba8()).collect();
+    let mut sources = filmcraft_render::SourceMap::default();
+    sources.0.insert(clip, Arc::new(g));
+    let p = Arc::new(p);
+
+    let path = filmcraft_testkit::temp_path(&filmcraft_testkit::fixtures_dir("nvenc-av1").join("default_order.mp4"));
+    // Default AV1 settings: keyframe_distance: None (keyint 48 > 2, so bframes: true in nvenc::export::config)
+    let settings =
+        ExportSettings { format: Format::Av1, multiplexer: Multiplexer::Mp4, path: path.to_string_lossy().into(), include_audio: false, ..Default::default() };
+    assert_eq!(export(&p, seq, &settings, &sources, &Progress::default()).unwrap().frames, 12);
+
+    let pkt_probe = std::process::Command::new(&ffprobe)
+        .args(["-v", "error", "-show_packets", "-select_streams", "v", "-show_entries", "packet=pts,dts,flags", "-of", "compact"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(pkt_probe.status.success(), "{}", String::from_utf8_lossy(&pkt_probe.stderr));
+    let pkt_text = String::from_utf8_lossy(&pkt_probe.stdout);
+    eprintln!("AV1 default export ffprobe packets:\n{pkt_text}");
+    assert_eq!(pkt_text.lines().filter(|l| !l.is_empty()).count(), 12, "{pkt_text}");
+
+    let ff_out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&path).args(["-f", "null", "-"]).output().unwrap();
+    assert!(ff_out.status.success(), "{}", String::from_utf8_lossy(&ff_out.stderr));
+
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes(&settings.path, bytes).unwrap();
+    let sad = |a: &[u8], b: &[u8]| -> f64 {
+        a.as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<4>().0.iter())
+            .map(|(pa, pb)| f64::from(u32::from(pa[0].abs_diff(pb[0])) + u32::from(pa[1].abs_diff(pb[1])) + u32::from(pa[2].abs_diff(pb[2]))))
+            .sum::<f64>()
+            / (a.len() / 4) as f64
+    };
+    for (i, exp_rgba) in expected.iter().enumerate() {
+        let dec = src.video_frame(FrameRequest::full(rate.tick_of(i as i64))).unwrap().to_rgba8();
+        let own_err = sad(&dec, exp_rgba);
+        let best_match = (0..12).min_by(|&a, &b| sad(&dec, &expected[a]).total_cmp(&sad(&dec, &expected[b]))).unwrap();
+        assert_eq!(best_match, i, "decoded frame {i} matched source {best_match} (own err={own_err:.2})");
+    }
+}
+
+#[test]
 fn main10_encodes_hdr_signal_and_repeated_keyframes() {
     if !filmcraft_platform::nvenc::av1_available() {
         eprintln!("SKIPPED: no NVENC AV1 encoder");

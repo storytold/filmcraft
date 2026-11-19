@@ -30,7 +30,7 @@
 //! offsets are checked against a C compiler's by the generated `abi_tests.rs`.
 //!
 //! API 12.1 is targeted on purpose: it is understood by every driver since 531.x, and the encoder
-//! features used here (H.264 and HEVC, presets, rate control) are the same in later versions.
+//! features used here (H.264, HEVC and AV1, presets, rate control) are the same in later versions.
 //!
 //! FFI module (docs/adr/0001-platform-ffi.md): plain `repr(C)` data, no logic.
 

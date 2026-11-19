@@ -4,7 +4,7 @@
 //! To regenerate, put NVIDIA's MIT-licensed `nvEncodeAPI.h` 12.1 in `ffnvcodec/` next to a program
 //! printing `sizeof` / `alignof` / `offsetof` of the structures of `src/nvenc/ffi.rs`, the constants
 //! and GUIDs it uses and, for the bit-fields of the `flags` words (`offsetof` cannot take those), the
-//! word with that one field set (see docs/testing.md). H.264 and HEVC are both covered.
+//! word with that one field set (see docs/testing.md). H.264, HEVC and AV1 are covered.
 //!
 //! The expectations were generated with MSVC (Windows x64, LLP64) and also hold on Linux x86_64
 //! (LP64), where these tests run too: every field the structures use is a fixed-width integer
@@ -631,6 +631,6 @@ fn av1_layout_and_depth_flags_match_nvidia_api_12_1() {
     assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, filmGrainParams), 96);
     assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved1), 112);
     assert_eq!(offset_of!(NV_ENC_CONFIG_AV1, reserved2), 1056);
-    // C compiler: repeatSeqHdr=1, chromaFormatIDC=1, both depth-minus-8 fields=2.
+    // API 12.1 bit-field layout: repeatSeqHdr=1, chromaFormatIDC=1, both depth-minus-8 fields=2.
     assert_eq!(AV1_REPEAT_SEQ_HDR | (1 << AV1_CHROMA_FORMAT_SHIFT) | (2 << AV1_INPUT_DEPTH_SHIFT) | (2 << AV1_OUTPUT_DEPTH_SHIFT), 0x120a0);
 }
