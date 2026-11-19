@@ -262,7 +262,7 @@ impl FrameStreamInfo {
     }
 
     /// Whether `sample` declares parameters the hardware session was not set up for: an AV1
-    /// sequence header whose picture format (profile, size, colour configuration) differs from
+    /// sequence header whose decoder session format (profile, size, bit depth, monochrome or chroma subsampling) differs from
     /// `av1C`'s, a VP9 key frame of another size, bit depth or chroma format. The decoder then
     /// hands the stream to our software decoder.
     pub fn parameters_changed(&self, sample: &[u8]) -> bool {
@@ -308,6 +308,7 @@ mod tests {
     fn av1_sequence_headers_compare_by_picture_format() {
         let i = info();
         assert_eq!((i.size, i.bit_depth), ((1280, 720), 10));
+        assert_eq!(av1_format(&AV1C), Some((0, 1280, 720, 10, false, 1, 1)));
         assert!(!i.parameters_changed(&AV1C), "the same header");
         // used to send every SVT-AV1 MP4 to the software decoder from its first frame
         assert!(!i.parameters_changed(&IN_BAND), "only coding tool flags differ");
