@@ -1,6 +1,24 @@
 use super::{Dialog, FilmcraftApp, PanelKind, dock, dock_ui, json, menus, panels};
 
 impl FilmcraftApp {
+    fn sync_v_down_before_slider_shortcut(&mut self, events: &[egui::Event], modifiers: egui::Modifiers) {
+        if events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::V, pressed: true, .. }))
+            || (modifiers.command && events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))))
+        {
+            self.v_down = true;
+        }
+    }
+
+    fn sync_v_down(&mut self, events: &[egui::Event], modifiers: egui::Modifiers) {
+        for event in events {
+            match event {
+                egui::Event::Key { key: egui::Key::V, pressed, .. } => self.v_down = *pressed,
+                egui::Event::Paste(_) | egui::Event::PasteImage(_) if modifiers.command => self.v_down = true,
+                _ => {}
+            }
+        }
+    }
+
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
     /// to a focused text field except dock dividers.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -25,7 +43,20 @@ impl FilmcraftApp {
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
+        panels::timeline::sync_slider_bindings(self);
+        let (events, modifiers) = ctx.input(|i| (i.events.clone(), i.modifiers));
+        self.sync_v_down_before_slider_shortcut(&events, modifiers);
+        panels::timeline::route_slider_shortcut(self, ctx);
+        if !ctx.text_edit_focused() && panels::timeline::custom_control_shortcut_pending_for_events(self, &events, modifiers) {
+            self.sync_v_down(&events, modifiers);
+            return;
+        }
         if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+            self.sync_v_down(&events, modifiers);
+            return;
+        }
+        if panels::timeline::controls_listening(ctx) {
+            self.sync_v_down(&events, modifiers);
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -50,11 +81,20 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
+        let modifiers = self.floating_window_modifiers(ctx);
+        if events.is_empty() {
+            return;
+        }
+        if self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
+            self.sync_v_down(&events, modifiers);
+            return;
+        }
+        if panels::timeline::custom_control_shortcut_pending_for_events(self, &events, modifiers) {
+            self.sync_v_down(&events, modifiers);
             return;
         }
         let mut input = egui::InputState::default();
-        input.modifiers = self.floating_window_modifiers(ctx);
+        input.modifiers = modifiers;
         input.events = events;
         if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
@@ -351,6 +391,41 @@ mod forwarded_key_tests {
         let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
         app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
         assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
+    }
+
+    #[test]
+    fn custom_ctrl_v_keeps_held_state_when_the_slider_consumes_the_press() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.session.state.timeline_ui.timeline_control_bindings[0] = "Ctrl + V".into();
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    Event::ModifiersChanged(Modifiers::COMMAND),
+                    Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: true, repeat: false, modifiers: Modifiers::COMMAND },
+                ],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(app.v_down);
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND }],
+                ..Default::default()
+            },
+            |_| app.handle_shortcuts(&ctx),
+        );
+        output.textures_delta.clear();
+        assert!(!app.v_down);
+        assert!(!ctx.input(|input| input.events.iter().any(|event| matches!(event, Event::Key { key: Key::V, pressed: true, .. }))));
     }
 }
 
