@@ -571,9 +571,14 @@ mod lifecycle_synthetic_tests {
         let mut app = FilmcraftApp::new(session);
         app.timeline_view_of = first;
         app.tl.track_anim = Some([100.0, 10.0, 100.0, 10.0]);
+        app.ui.timeline.seen_playhead = first.map(|id| (id, 0.0));
         app.session.execute("sequence.open", serde_json::json!({"item": second})).unwrap();
+        if let Some(id) = first {
+            app.session.events.push(filmcraft_engine::Event::OpenSequence(id));
+        }
         app.logic_session_events();
         assert_eq!(app.tl.track_anim, None);
+        assert_eq!(app.ui.timeline.seen_playhead, None, "the new sequence must not inherit the prior playhead observation");
     }
 
     /// `raw_input_hook` runs before hidden logic ticks too, but those raw events are not fed to
