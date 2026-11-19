@@ -256,11 +256,11 @@ fn a_headless_session_places_the_clip_on_its_next_command() {
 }
 
 #[test]
-fn dlss_enhance_mode_places_normal_blend_full_opacity_clip_above() {
+fn temporal_detail_mode_places_normal_blend_full_opacity_clip_above() {
     let (mut s, seq_id, clip, start, dur) = demo(3);
     let dir = tempfile::tempdir().unwrap();
-    let res = s.execute("clip.opticalFlowOverlay.dlssEnhance", json!({"clips": [clip.0], "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
-    assert_eq!(res["mode"], "dlssEnhance");
+    let res = s.execute("clip.opticalFlowOverlay.temporalDetail", json!({"clips": [clip.0], "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
+    assert_eq!(res["mode"], "temporalDetail");
     assert_eq!(res["reconstructionBackend"], filmcraft_render::flow::CPU_NEURAL_BACKEND);
     assert_eq!(res["reconstructionCpuFrames"], 3);
     assert_eq!(res["overlayCpuFrames"], 3);

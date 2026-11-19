@@ -212,7 +212,7 @@ impl FlowVizRenderer for GpuFlowViz {
     }
 
     fn linear_detail(&mut self, curr: &Image, field: &FlowField, max_motion_px: f32) -> Result<Vec<f32>, String> {
-        self.draw(curr, field, FlowVizMode::DlssEnhance, max_motion_px, true)
+        self.draw(curr, field, FlowVizMode::TemporalDetail, max_motion_px, true)
     }
 }
 
@@ -237,7 +237,7 @@ impl GpuFlowViz {
             return Ok(Vec::new());
         }
         let n = curr.w.saturating_mul(curr.h);
-        let needs_src = matches!(mode, FlowVizMode::KineticGlow | FlowVizMode::DlssEnhance);
+        let needs_src = matches!(mode, FlowVizMode::KineticGlow | FlowVizMode::TemporalDetail);
         if needs_src && curr.px.len() != n.saturating_mul(4) {
             return Err(format!("the {}x{} frame holds {} values", curr.w, curr.h, curr.px.len()));
         }
@@ -246,7 +246,7 @@ impl GpuFlowViz {
             FlowVizMode::HsvWheel => 0,
             FlowVizMode::MotionVectors => 1,
             FlowVizMode::KineticGlow => 2,
-            FlowVizMode::DlssEnhance => 3,
+            FlowVizMode::TemporalDetail => 3,
         };
         let (gw, gh, fw, fh, cells) = cell_bytes(field);
         let mut params = Vec::with_capacity(PARAMS_BYTES);

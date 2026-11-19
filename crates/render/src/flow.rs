@@ -789,7 +789,7 @@ impl FlowVizEncoder {
         if let Some(rgb) = self.draw_on_gpu(curr, |gpu| gpu.linear_detail(curr, field, max_motion_px)) {
             return (rgb, true);
         }
-        let frame = render_flow_viz(curr, field, FlowVizMode::DlssEnhance, max_motion_px);
+        let frame = render_flow_viz(curr, field, FlowVizMode::TemporalDetail, max_motion_px);
         (frame.px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(), false)
     }
 
@@ -813,10 +813,11 @@ impl Default for FlowVizEncoder {
     }
 }
 
-/// Stateful hardware neural frame-reconstruction session (e.g. NVIDIA NGX DLSS Preset K
-/// Transformer on Direct3D 11) for a fixed `(width, height)` frame size.
+/// Stateful hardware temporal-reconstruction session for a fixed `(width, height)` frame size.
+/// No backend ships with FilmCraft yet: [`NeuralEnhancer`] uses [`fuse_temporal_cpu`] unless a
+/// platform registers one with [`register_neural_enhancer`].
 pub trait NeuralSession: Send {
-    /// Backend name (e.g. `"NVIDIA NGX DLSS (Preset K)"`).
+    /// Backend name, for messages.
     fn backend(&self) -> &'static str;
 
     /// Reconstruct / temporally anti-alias `curr` using the dense optical-flow field `field`
@@ -845,8 +846,8 @@ pub fn neural_enhancer_registered() -> bool {
 /// Name [`NeuralEnhancer::backend`] reports for the motion-compensated CPU temporal fallback.
 pub const CPU_NEURAL_BACKEND: &str = "Motion-Compensated Temporal";
 
-/// Motion-compensated temporal reconstruction on the CPU (the reference fallback when hardware
-/// NGX DLSS is absent or declines the frame size): warps `prev` along `field` (`prev -> curr`)
+/// Motion-compensated temporal reconstruction on the CPU (the reference fallback when no hardware
+/// session is registered or it declines the frame size): warps `prev` along `field` (`prev -> curr`)
 /// weighted by flow confidence and photometric agreement so temporal grain is suppressed without
 /// ghosting across disocclusions or brightness changes.
 pub fn fuse_temporal_cpu(prev: Option<&Image>, curr: &Image, field: &FlowField) -> Image {
@@ -880,8 +881,8 @@ pub fn fuse_temporal_cpu(prev: Option<&Image>, curr: &Image, field: &FlowField) 
     out
 }
 
-/// Stateful neural frame enhancer that prefers the registered hardware engine (NVIDIA NGX DLSS
-/// Preset K Transformer) and transparently falls back to [`fuse_temporal_cpu`] if hardware is
+/// Stateful temporal frame enhancer that prefers a registered hardware session and transparently
+/// falls back to [`fuse_temporal_cpu`] if hardware is
 /// absent, declines the frame size, or fails mid-clip.
 pub struct NeuralEnhancer {
     width: usize,
@@ -911,7 +912,7 @@ impl NeuralEnhancer {
         self.hw.is_some()
     }
 
-    /// Name of the active backend (`"NVIDIA NGX DLSS (Preset K)"` or [`CPU_NEURAL_BACKEND`]).
+    /// Name of the active backend (the registered session's, or [`CPU_NEURAL_BACKEND`]).
     pub fn backend(&self) -> &'static str {
         self.hw.as_ref().map_or(CPU_NEURAL_BACKEND, |s| s.backend())
     }
@@ -961,7 +962,7 @@ pub enum FlowVizMode {
     /// Kinetic edge & motion aura: illuminates moving parts of the source frame with directional neon energy.
     KineticGlow,
     /// Temporal reconstruction followed by edge-preserving local contrast enhancement.
-    DlssEnhance,
+    TemporalDetail,
 }
 
 impl FlowVizMode {
@@ -970,7 +971,7 @@ impl FlowVizMode {
             "hsv" | "hsvWheel" | "wheel" => Some(Self::HsvWheel),
             "uv" | "motionVectors" | "vectors" => Some(Self::MotionVectors),
             "glow" | "kineticGlow" | "kinetic" => Some(Self::KineticGlow),
-            "dlss" | "dlssEnhance" | "neural" | "neuralEnhance" => Some(Self::DlssEnhance),
+            "temporalDetail" | "temporal" | "detail" => Some(Self::TemporalDetail),
             _ => None,
         }
     }
@@ -980,7 +981,7 @@ impl FlowVizMode {
             Self::HsvWheel => "hsvWheel",
             Self::MotionVectors => "motionVectors",
             Self::KineticGlow => "kineticGlow",
-            Self::DlssEnhance => "dlssEnhance",
+            Self::TemporalDetail => "temporalDetail",
         }
     }
 
@@ -989,7 +990,7 @@ impl FlowVizMode {
             Self::HsvWheel => "HSV Neon Flow Wheel",
             Self::MotionVectors => "Motion Vectors (UV Pass)",
             Self::KineticGlow => "Kinetic Motion Glow",
-            Self::DlssEnhance => "Temporal Detail Enhancement",
+            Self::TemporalDetail => "Temporal Detail Enhancement",
         }
     }
 }
@@ -1011,7 +1012,7 @@ fn src_rgb_clamped(img: &Image, x: isize, y: isize) -> [f32; 3] {
     [fin(p[0]), fin(p[1]), fin(p[2])]
 }
 
-/// Edge-preserving bilateral local structure & micro-contrast enhancement for `FlowVizMode::DlssEnhance`
+/// Edge-preserving bilateral local structure & micro-contrast enhancement for `FlowVizMode::TemporalDetail`
 /// (reproduced step for step in `flow_viz.wgsl`).
 #[inline]
 fn local_contrast_rgb(curr: &Image, x: isize, y: isize, conf: f32, active: f32) -> [f32; 3] {
@@ -1152,7 +1153,7 @@ pub fn render_flow_viz(curr: &Image, field: &FlowField, mode: FlowVizMode, max_m
                         ];
                     }
                 }
-                FlowVizMode::DlssEnhance => {
+                FlowVizMode::TemporalDetail => {
                     let rgb = local_contrast_rgb(curr, x as isize, y as isize, conf, active);
                     let alpha = curr.px.get((y * w + x) * 4 + 3).copied().filter(|a| a.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0);
                     if alpha > 0.0 {
@@ -1497,14 +1498,14 @@ mod tests {
         let color = [3.0, 1.5, 0.75, 0.5];
         let image = Image::filled(3, 3, color);
         let field = FlowField { w: 1, h: 1, frame_w: 3, frame_h: 3, uv: vec![[0.0; 2]], cost: vec![0], hardware: false };
-        let result = render_flow_viz(&image, &field, FlowVizMode::DlssEnhance, 16.0);
+        let result = render_flow_viz(&image, &field, FlowVizMode::TemporalDetail, 16.0);
         for (actual, expected) in result.get(1, 1).into_iter().zip(color) {
             assert!((actual - expected).abs() < 0.0001, "{actual} vs {expected}");
         }
     }
 
     #[test]
-    fn dlss_enhance_and_neural_enhancer_preserve_colour_and_fall_back_cleanly() {
+    fn temporal_detail_and_neural_enhancer_preserve_colour_and_fall_back_cleanly() {
         let a = texture(48, 32, 0.0, 0.0);
         let b = texture(48, 32, 3.0, -1.0);
         let field = estimate_cpu(&a, &b);
@@ -1513,22 +1514,22 @@ mod tests {
         assert_eq!((fused.w, fused.h), (48, 32));
         assert!(interior_diff(&fused, &b, 4) < 0.05);
 
-        let enhanced = render_flow_viz(&fused, &field, FlowVizMode::DlssEnhance, 16.0);
+        let enhanced = render_flow_viz(&fused, &field, FlowVizMode::TemporalDetail, 16.0);
         assert_eq!((enhanced.w, enhanced.h), (48, 32));
         let p = enhanced.get(24, 16);
-        assert!(p[0] > 0.05 && p[3] == 1.0, "DlssEnhance must produce valid opaque colour: {p:?}");
+        assert!(p[0] > 0.05 && p[3] == 1.0, "TemporalDetail must produce valid opaque colour: {p:?}");
 
         struct FakeNeural {
             calls: usize,
         }
         impl NeuralSession for FakeNeural {
             fn backend(&self) -> &'static str {
-                "Fake NGX DLSS"
+                "Fake hardware"
             }
             fn enhance(&mut self, curr: &Image, _field: &FlowField, _sequential: bool) -> Result<Image, String> {
                 self.calls += 1;
                 if self.calls == 2 {
-                    return Err("ngx lost".into());
+                    return Err("device lost".into());
                 }
                 Ok(curr.clone())
             }
@@ -1536,13 +1537,13 @@ mod tests {
         register_neural_enhancer(|w, h| if (w, h) == (48, 32) { Ok(Box::new(FakeNeural { calls: 0 })) } else { Err("unsupported size".into()) });
         let mut ne = NeuralEnhancer::new(48, 32);
         assert!(ne.is_hardware());
-        assert_eq!(ne.backend(), "Fake NGX DLSS");
+        assert_eq!(ne.backend(), "Fake hardware");
         let (_, on_hw1) = ne.enhance(None, &a, &field);
         assert!(on_hw1);
         let (_, on_hw2) = ne.enhance(Some(&a), &b, &field);
         assert!(!on_hw2, "second call fails and falls back to CPU temporal fusion");
         assert!(!ne.is_hardware());
         assert_eq!(ne.backend(), CPU_NEURAL_BACKEND);
-        assert!(ne.fallback_reason().is_some_and(|r| r.contains("ngx lost")));
+        assert!(ne.fallback_reason().is_some_and(|r| r.contains("device lost")));
     }
 }

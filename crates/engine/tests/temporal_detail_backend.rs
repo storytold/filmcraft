@@ -27,7 +27,7 @@ fn reconstruction_fallback_does_not_count_a_cpu_draw_as_gpu() {
     let (id, cut) = (first.id, first.start + seq.settings.frame_rate.tick_of(3));
     session.execute("timeline.razor", json!({"clip": id.0, "time": cut.0})).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let result = session.execute("clip.opticalFlowOverlay.dlssEnhance", json!({"clips":[id.0], "dir": dir.path(), "wait":true})).unwrap();
+    let result = session.execute("clip.opticalFlowOverlay.temporalDetail", json!({"clips":[id.0], "dir": dir.path(), "wait":true})).unwrap();
     assert_eq!(result["reconstructionHardwareFrames"], 1);
     assert_eq!(result["reconstructionCpuFrames"], 2);
     assert!(result["reconstructionFallbackReason"].as_str().unwrap().contains("injected readback failure"));

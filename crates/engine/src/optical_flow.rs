@@ -58,7 +58,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             // parameterised (any mode): for agents and the timeline menu's enabled check; the menus
             // show the four modes below
             &[],
-            r#"{"clips":[id]?,"mode":"hsvWheel|motionVectors|kineticGlow|dlssEnhance"?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
+            r#"{"clips":[id]?,"mode":"hsvWheel|motionVectors|kineticGlow|temporalDetail"?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
             |s, p| run_overlay(s, p, None),
         ),
         spec(
@@ -83,11 +83,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             |s, p| run_overlay(s, p, Some(FlowVizMode::KineticGlow)),
         ),
         spec(
-            "clip.opticalFlowOverlay.dlssEnhance",
-            FlowVizMode::DlssEnhance.label(),
+            "clip.opticalFlowOverlay.temporalDetail",
+            FlowVizMode::TemporalDetail.label(),
             &["Clip", "Video Options", "Optical Flow Track"],
             r#"{"clips":[id]?,"maxMotion":f64=16,"opacity":f64?,"blendMode":str?,"dir":str?,"wait":bool=false}"#,
-            |s, p| run_overlay(s, p, Some(FlowVizMode::DlssEnhance)),
+            |s, p| run_overlay(s, p, Some(FlowVizMode::TemporalDetail)),
         ),
     ]
 }
@@ -138,7 +138,7 @@ fn parse_blend_index(cmd: &str, name: Option<&str>, mode: FlowVizMode) -> Result
             .ok_or_else(|| bad(cmd, format!("unknown blendMode `{n}`"))),
         None => Ok(match mode {
             FlowVizMode::HsvWheel | FlowVizMode::KineticGlow => Blend::Screen.index(),
-            FlowVizMode::MotionVectors | FlowVizMode::DlssEnhance => Blend::Normal.index(),
+            FlowVizMode::MotionVectors | FlowVizMode::TemporalDetail => Blend::Normal.index(),
         }),
     }
 }
@@ -262,7 +262,7 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
     let mode = match (fixed_mode, str_p(p, "mode")) {
         (Some(m), None) => m,
         (_, Some(m)) => {
-            FlowVizMode::from_name(m).ok_or_else(|| bad(cmd, format!("unknown mode `{m}` (expected hsvWheel, motionVectors, kineticGlow, dlssEnhance)")))?
+            FlowVizMode::from_name(m).ok_or_else(|| bad(cmd, format!("unknown mode `{m}` (expected hsvWheel, motionVectors, kineticGlow, temporalDetail)")))?
         }
         (None, None) => FlowVizMode::HsvWheel,
     };
@@ -273,7 +273,7 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
     }
     let default_opacity = match mode {
         FlowVizMode::HsvWheel | FlowVizMode::KineticGlow => 85.0,
-        FlowVizMode::MotionVectors | FlowVizMode::DlssEnhance => 100.0,
+        FlowVizMode::MotionVectors | FlowVizMode::TemporalDetail => 100.0,
     };
     let opacity = f64_p(p, "opacity").unwrap_or(default_opacity);
     if !opacity.is_finite() || !(0.0..=100.0).contains(&opacity) {
@@ -436,7 +436,7 @@ impl JobCtx {
         }
         // the overlay is drawn and colour-encoded on the GPU when the app registered one
         let mut viz = FlowVizEncoder::new();
-        let mut neural = (self.look.mode == FlowVizMode::DlssEnhance).then(|| NeuralEnhancer::new(fw, fh));
+        let mut neural = (self.look.mode == FlowVizMode::TemporalDetail).then(|| NeuralEnhancer::new(fw, fh));
         if viz.is_gpu() {
             out.viz_gpu_name = Some(viz.backend());
         }
@@ -510,7 +510,7 @@ impl JobCtx {
             Ok(frame)
         });
         // 4444 keeps the UV channels independent and carries source alpha on enhanced clips.
-        let detail = look.mode == FlowVizMode::DlssEnhance;
+        let detail = look.mode == FlowVizMode::TemporalDetail;
         let profile = filmcraft_export::prores_profile(if detail || look.mode == FlowVizMode::MotionVectors { "4444" } else { "standard" });
         let signal = match (detail, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => filmcraft_export::ColorSignal::PQ,

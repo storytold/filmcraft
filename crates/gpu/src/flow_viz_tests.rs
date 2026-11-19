@@ -5,7 +5,7 @@ use super::flow_viz::GpuFlowViz;
 use filmcraft_render::Image;
 use filmcraft_render::flow::{FlowField, FlowVizMode, FlowVizRenderer, encode_flow_viz_cpu};
 
-const MODES: [FlowVizMode; 4] = [FlowVizMode::HsvWheel, FlowVizMode::MotionVectors, FlowVizMode::KineticGlow, FlowVizMode::DlssEnhance];
+const MODES: [FlowVizMode; 4] = [FlowVizMode::HsvWheel, FlowVizMode::MotionVectors, FlowVizMode::KineticGlow, FlowVizMode::TemporalDetail];
 
 /// A frame with smooth colour, values above 1 and below 0 (as effects can leave them).
 fn frame(w: usize, h: usize) -> Image {

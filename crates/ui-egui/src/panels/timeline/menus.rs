@@ -315,7 +315,7 @@ pub(super) fn optical_flow_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 (tl!("HSV Neon Flow Wheel"), "clip.opticalFlowOverlay.hsvWheel"),
                 (tl!("Motion Vectors (UV Pass)"), "clip.opticalFlowOverlay.motionVectors"),
                 (tl!("Kinetic Motion Glow"), "clip.opticalFlowOverlay.kineticGlow"),
-                (tl!("Temporal Detail Enhancement"), "clip.opticalFlowOverlay.dlssEnhance"),
+                (tl!("Temporal Detail Enhancement"), "clip.opticalFlowOverlay.temporalDetail"),
             ] {
                 let b = ui.add_enabled(enabled, egui::Button::new(label));
                 app.auto.add(&format!("timeline.clipMenu.{cmd}"), b.rect, label);
