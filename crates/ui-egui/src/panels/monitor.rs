@@ -132,7 +132,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     let exact = on_screen == Some(key);
     if which == Which::Program {
         app.program_shown = on_screen;
-        app.timing.note_shown(crate::frame_timing::Shown { frame, exact });
+        app.timing.note_shown(crate::frame_timing::Shown { frame, on_screen: on_screen.map(|k| k.frame), exact });
     }
     if !playing && !exact {
         app.monitor_inexact = true;

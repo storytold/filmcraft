@@ -247,7 +247,9 @@ fn adapter_desc(device: &ID3D11Device) -> Option<(String, u32, u32)> {
     Some((String::from_utf16_lossy(desc.Description.get(..len)?), desc.VendorId, desc.DeviceId))
 }
 
-/// The first adapter DXGI lists with these PCI ids.
+/// The one adapter DXGI lists with these PCI ids. Two identical GPUs share them, and wgpu's adapter
+/// info carries no unique identity (such as the DXGI LUID) to tell them apart: then this declines
+/// (the default adapter is used, and the log says why) rather than guess which one renders.
 fn find_adapter(vendor: u32, device: u32) -> Result<IDXGIAdapter, String> {
     // SAFETY: CreateDXGIFactory1 returns an owned interface; EnumAdapters1 is called with indices
     // from 0 up until it fails (DXGI_ERROR_NOT_FOUND past the last adapter); GetDesc1 fills a
@@ -255,15 +257,20 @@ fn find_adapter(vendor: u32, device: u32) -> Result<IDXGIAdapter, String> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("no DXGI factory: {e}"))?;
         // (bounded: a system lists a handful of adapters)
+        let mut found = Vec::new();
         for i in 0..64u32 {
             let Ok(adapter) = factory.EnumAdapters1(i) else { break };
             let Ok(desc) = adapter.GetDesc1() else { continue };
             if desc.VendorId == vendor && desc.DeviceId == device {
-                return adapter.cast::<IDXGIAdapter>().map_err(|e| format!("adapter interface: {e}"));
+                found.push(adapter);
             }
         }
+        match found.as_slice() {
+            [one] => one.cast::<IDXGIAdapter>().map_err(|e| format!("adapter interface: {e}")),
+            [] => Err("no DXGI adapter with those ids".into()),
+            more => Err(format!("{} adapters share those ids, so the renderer's one is not known", more.len())),
+        }
     }
-    Err("no DXGI adapter with those ids".into())
 }
 
 /// Reads decoded surfaces back into system memory through a staging texture it keeps between

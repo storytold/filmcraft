@@ -99,8 +99,11 @@ pub struct GpuCompositor {
     pub cpu_adjustments: u64,
     /// Total bytes uploaded (stats).
     pub uploaded_bytes: u64,
-    /// Where the CPU time of the last [`composite_prepared`](Self::composite_prepared) went.
+    /// Where the CPU time of the last [`composite_prepared`](Self::composite_prepared) went,
+    /// measured only while [`measure`](Self::measure) is on (zeros otherwise).
     pub last_timing: CompositeTiming,
+    /// Measure [`last_timing`](Self::last_timing): off by default, so compositing reads no clocks.
+    pub measure: bool,
 }
 
 /// CPU-side wall time of one composite, by stage (the frame-timing log). The GPU executes the
@@ -457,6 +460,7 @@ impl GpuCompositor {
             cpu_adjustments: 0,
             uploaded_bytes: 0,
             last_timing: CompositeTiming::default(),
+            measure: false,
         }
     }
 
@@ -787,7 +791,11 @@ impl GpuCompositor {
         let out_view = Self::target(&self.device, &mut self.output, w, h, OUTPUT_FORMAT, wgpu::TextureUsages::COPY_SRC);
         // Layers whose effects the GPU stage can't run (no stage on this device, or a working image
         // larger than a texture) are rendered on the CPU here and drawn as plain RGBA layers.
-        let t_fx = web_time::Instant::now();
+        // stage boundaries, read only while measuring
+        let mark = |on: bool| on.then(web_time::Instant::now);
+        let since =
+            |a: Option<web_time::Instant>, b: Option<web_time::Instant>| a.zip(b).map_or(std::time::Duration::ZERO, |(a, b)| b.saturating_duration_since(a));
+        let t_fx = mark(self.measure);
         let max_side = self.device.limits().max_texture_dimension_2d;
         let cpu_fx: Vec<Option<PlanLayer>> = layers
             .iter()
@@ -802,8 +810,8 @@ impl GpuCompositor {
             .collect();
         let resolved: Vec<&PlanLayer> = layers.iter().zip(&cpu_fx).map(|(l, c)| c.as_ref().unwrap_or(l)).collect();
         let layers = resolved;
-        let t_upload = web_time::Instant::now();
-        self.last_timing.cpu_fx += t_upload.duration_since(t_fx);
+        let t_upload = mark(self.measure);
+        self.last_timing.cpu_fx += since(t_fx, t_upload);
         let bytes0 = self.uploaded_bytes;
         let keys: Vec<(usize, u32, u32)> = layers
             .iter()
@@ -815,9 +823,11 @@ impl GpuCompositor {
                 self.upload(&l.frame, p)
             })
             .collect();
-        let t_record = web_time::Instant::now();
-        self.last_timing.upload += t_record.duration_since(t_upload);
-        self.last_timing.upload_bytes += self.uploaded_bytes.saturating_sub(bytes0);
+        let t_record = mark(self.measure);
+        self.last_timing.upload += since(t_upload, t_record);
+        if self.measure {
+            self.last_timing.upload_bytes += self.uploaded_bytes.saturating_sub(bytes0);
+        }
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
@@ -981,10 +991,10 @@ impl GpuCompositor {
             pass.draw(0..3, 0..1);
         }
         let commands = enc.finish();
-        let t_submit = web_time::Instant::now();
-        self.last_timing.record += t_submit.duration_since(t_record);
+        let t_submit = mark(self.measure);
+        self.last_timing.record += since(t_record, t_submit);
         self.queue.submit([commands]);
-        self.last_timing.submit += t_submit.elapsed();
+        self.last_timing.submit += since(t_submit, mark(self.measure));
         (if resolve { out_view } else { accum_view }, (w, h))
     }
 
@@ -998,9 +1008,11 @@ impl GpuCompositor {
     ) -> (wgpu::TextureView, (u32, u32)) {
         let cpu = |c: &mut Self| {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            let t0 = web_time::Instant::now();
+            let t0 = c.measure.then(web_time::Instant::now);
             let image = FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan));
-            c.last_timing.cpu_transition += t0.elapsed();
+            if let Some(t0) = t0 {
+                c.last_timing.cpu_transition += t0.elapsed();
+            }
             // (`render_plan`, not `composite_prepared`: that would reset this composite's timing)
             c.render_plan(&image, None, true, true)
         };

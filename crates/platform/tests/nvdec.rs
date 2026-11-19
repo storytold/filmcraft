@@ -210,7 +210,18 @@ fn camera_clips_are_bit_exact_with_the_software_decoder() {
             hw.reset();
             sw.reset();
             let stop = (k + 17).min(end);
-            assert_same(&format!("{name} from sample {k}"), &decode_all(hw.as_mut(), &s.samples[k..stop]), &decode_all(sw.as_mut(), &s.samples[k..stop]));
+            let mut a = decode_all(hw.as_mut(), &s.samples[k..stop]);
+            let mut b = decode_all(sw.as_mut(), &s.samples[k..stop]);
+            // as in `bit_exact_with_the_software_decoder`: after a seek to a non-IDR H.264 I picture
+            // (open GOP) the pictures shown before it are concealed differently
+            let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+            if info.codec == NalCodec::H264 && !info.nal_types(&s.samples[k].0).contains(&5) {
+                let start = s.samples[k].1;
+                a.retain(|f| f.pts >= start);
+                b.retain(|f| f.pts >= start);
+            }
+            assert!(!a.is_empty(), "{name}: pictures after seeking to {k}");
+            assert_same(&format!("{name} from sample {k}"), &a, &b);
         }
         assert!(hw.name().starts_with("NVDEC"), "{name}: stayed in hardware ({})", hw.name());
         eprintln!("{name}: {} pictures bit-exact", a.len());

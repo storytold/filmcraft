@@ -79,6 +79,25 @@ pub(crate) mod cuda {
     type Pop = unsafe extern "C" fn(*mut *mut c_void) -> i32;
     type CopyToHost = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
 
+    /// Load a library of NVIDIA's display driver: on Windows from `System32` only, never from the
+    /// current or the application's directory (the other driver loads in this crate do the same),
+    /// so a planted copy is not loaded on a machine without the driver.
+    ///
+    /// # Safety
+    /// Loading runs the library's initialisation code: only for NVIDIA's own driver libraries.
+    pub(crate) unsafe fn load_driver_library(name: &str) -> Result<libloading::Library, libloading::Error> {
+        #[cfg(target_os = "windows")]
+        {
+            // SAFETY: as the caller's; the flag only narrows where Windows looks for `name`.
+            unsafe { libloading::os::windows::Library::load_with_flags(name, libloading::os::windows::LOAD_LIBRARY_SEARCH_SYSTEM32).map(Into::into) }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // SAFETY: as the caller's.
+            unsafe { libloading::Library::new(name) }
+        }
+    }
+
     /// The CUDA driver library NVIDIA's display driver installs.
     #[cfg(target_os = "linux")]
     const LIBRARY: &str = "libcuda.so.1";
@@ -108,7 +127,7 @@ pub(crate) mod cuda {
             // SAFETY: CUDA driver API signatures from NVIDIA's public Driver API reference.
             // Resolve all symbols before retaining; keep the library alive until after release.
             unsafe {
-                let library = libloading::Library::new(LIBRARY).map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
+                let library = load_driver_library(LIBRARY).map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
                 let init: libloading::Symbol<Init> = library.get(b"cuInit\0").map_err(|e| e.to_string())?;
                 let get: libloading::Symbol<GetDevice> = library.get(b"cuDeviceGet\0").map_err(|e| e.to_string())?;
                 let retain: libloading::Symbol<Retain> = library.get(b"cuDevicePrimaryCtxRetain\0").map_err(|e| e.to_string())?;

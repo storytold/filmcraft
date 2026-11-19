@@ -1003,9 +1003,9 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
                         loading = filmcraft_media::pending::take();
                         if !job.cancel.load(Ordering::Relaxed) && !loading {
                             // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let t0 = Instant::now();
+                            let t0 = timed.then(Instant::now);
                             let prepared = filmcraft_gpu::prepare(&plan);
-                            prepare_time = t0.elapsed();
+                            prepare_time = t0.map_or(Duration::ZERO, |t| t.elapsed());
                             sh.plans.lock().unwrap_or_else(PoisonError::into_inner).insert(job.key, GpuPlan { plan, prepared });
                         }
                         pv
@@ -1062,6 +1062,7 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
             source: SOURCE_TIME.with(|s| s.get()).0,
             prepare: prepare_time,
             gop: filmcraft_codecs::gop::trace::take(),
+            finished: Instant::now(),
         });
     }
     if profiling {

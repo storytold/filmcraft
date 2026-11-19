@@ -57,6 +57,8 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
+        // the compositor reads its stage clocks only while the frame-timing log is on
+        g.compositor.measure = crate::frame_timing::enabled();
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
             (view.clone(), size)

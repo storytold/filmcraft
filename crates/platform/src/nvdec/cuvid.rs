@@ -44,7 +44,8 @@ impl Api {
         // SAFETY: symbols have the signatures in NVIDIA's public headers. The caller
         // retains the returned library until all handles using these pointers are destroyed.
         unsafe {
-            let library = libloading::Library::new(LIBRARY).map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
+            // (Windows: from System32 only, see `load_driver_library`)
+            let library = crate::nvenc::device::cuda::load_driver_library(LIBRARY).map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
             let api = Self {
                 caps: *library.get(b"cuvidGetDecoderCaps\0").map_err(|e| e.to_string())?,
                 create_decoder: *library.get(b"cuvidCreateDecoder\0").map_err(|e| e.to_string())?,

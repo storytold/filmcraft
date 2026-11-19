@@ -37,6 +37,8 @@ pub const ENV: &str = "FILMCRAFT_FRAME_TIMING";
 pub const TARGET: &str = "filmcraft::frame_timing";
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Bumped every time the log is turned on: a [`PassTimer`] from an earlier session starts over.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Whether the log is on.
 pub fn enabled() -> bool {
@@ -48,6 +50,9 @@ pub fn set_enabled(on: bool) {
     let was = ENABLED.swap(on, Ordering::Relaxed);
     filmcraft_codecs::gop::trace::set_enabled(on);
     if was != on {
+        if on {
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
         JOBS.lock().unwrap_or_else(PoisonError::into_inner).clear();
         log::info!(target: TARGET, "frame timing {}", if on { "on" } else { "off" });
     }
@@ -134,8 +139,22 @@ impl Stage {
 pub struct Shown {
     /// The frame due.
     pub frame: i64,
-    /// Its exact picture was on screen (otherwise a nearby frame was held).
+    /// The frame whose picture was on screen: the one due, a nearby one held while it renders, or
+    /// None (no picture yet).
+    pub on_screen: Option<i64>,
+    /// The picture on screen is the exact one due (same frame, size and revision).
     pub exact: bool,
+}
+
+impl Shown {
+    /// `f=12 exact`, `f=12 held=11`, `f=12 none`.
+    pub fn text(&self) -> String {
+        match (self.exact, self.on_screen) {
+            (true, _) => format!("f={} exact", self.frame),
+            (false, Some(s)) => format!("f={} held={s}", self.frame),
+            (false, None) => format!("f={} none", self.frame),
+        }
+    }
 }
 
 /// The timings of the current UI pass and the summary window (owned by the app, UI thread only).
@@ -154,6 +173,8 @@ pub struct PassTimer {
     last_playhead: Option<i64>,
     passes: u64,
     window: Window,
+    /// The [`GENERATION`] this timer measures for.
+    generation: u64,
 }
 
 /// Samples of the passes and jobs since the last summary.
@@ -184,6 +205,8 @@ pub struct JobSample {
     pub source: Duration,
     pub prepare: Duration,
     pub gop: filmcraft_codecs::gop::trace::RequestTrace,
+    /// When the job finished: a summary takes only the jobs of its own interval.
+    pub finished: Instant,
 }
 
 impl JobSample {
@@ -216,17 +239,25 @@ impl JobSample {
     }
 }
 
-/// Jobs finished since the last summary (bounded: a stalled UI thread can't make it grow).
-static JOBS: Mutex<Vec<JobSample>> = Mutex::new(Vec::new());
+/// Jobs finished since the last summary, newest last (bounded: a stalled UI thread can't make it
+/// grow; when full, the oldest goes).
+static JOBS: Mutex<std::collections::VecDeque<JobSample>> = Mutex::new(std::collections::VecDeque::new());
 const MAX_JOBS: usize = 4096;
 
 /// Log a finished frame job and keep it for the next summary (called on workers while enabled).
 pub fn record_job(j: JobSample) {
     log::info!(target: TARGET, "{}", j.line());
     let mut jobs = JOBS.lock().unwrap_or_else(PoisonError::into_inner);
-    if jobs.len() < MAX_JOBS {
-        jobs.push(j);
+    if jobs.len() >= MAX_JOBS {
+        jobs.pop_front();
     }
+    jobs.push_back(j);
+}
+
+/// The kept jobs that finished at or after `since`; the rest are dropped.
+fn take_jobs_since(since: Option<Instant>) -> Vec<JobSample> {
+    let jobs = std::mem::take(&mut *JOBS.lock().unwrap_or_else(PoisonError::into_inner));
+    jobs.into_iter().filter(|j| since.is_none_or(|s| j.finished >= s)).collect()
 }
 
 /// p50 / p95 / max of `v` (sorted in place), or zeros.
@@ -250,6 +281,11 @@ impl PassTimer {
     pub fn begin_logic(&mut self) {
         if !enabled() {
             return;
+        }
+        let generation = GENERATION.load(Ordering::Relaxed);
+        if self.generation != generation {
+            // timing was (re)started: nothing measured before applies (gap, dt, the window)
+            *self = PassTimer { generation, ..Default::default() };
         }
         self.stages = Default::default();
         self.upload_bytes = 0;
@@ -329,15 +365,17 @@ impl PassTimer {
         self.prev_began = Some(began);
         self.prev_end = Some(now);
         if mode.is_empty() {
-            // idle: no line, and the window restarts with the next active pass
+            // idle: no line, and the window restarts with the next active pass; jobs finished
+            // while idle (thumbnails) are not part of it
             self.window = Window::default();
+            drop(take_jobs_since(None));
             return;
         }
         self.passes += 1;
         let total = now.saturating_duration_since(began);
         let mut line = format!("pass #{} {mode}", self.passes);
         if let Some(s) = self.shown {
-            line += &format!(" f={} {}", s.frame, if s.exact { "exact" } else { "held" });
+            line += &format!(" {}", s.text());
         }
         for stage in Stage::ALL {
             let d = self.stages[stage.index()];
@@ -408,7 +446,7 @@ impl Window {
             }
         }
         s += &format!(" | upload {:.1} MB/s", self.upload_bytes as f64 / 1e6 / secs);
-        let jobs = std::mem::take(&mut *JOBS.lock().unwrap_or_else(PoisonError::into_inner));
+        let jobs = take_jobs_since(self.started);
         let (n, cancelled) = (jobs.len(), jobs.iter().filter(|j| j.cancelled).count());
         let col = |f: &dyn Fn(&JobSample) -> Duration| -> String {
             let mut v: Vec<f32> = jobs.iter().map(|j| ms(f(j))).collect();
@@ -487,6 +525,7 @@ mod tests {
             source: Duration::from_millis(12),
             prepare: Duration::from_millis(5),
             gop: filmcraft_codecs::gop::trace::RequestTrace { misses: 1, samples: 2, decode: Duration::from_millis(11), ..Default::default() },
+            finished: Instant::now(),
         };
         assert_eq!(j.plan(), Duration::from_millis(3));
         let line = j.line();
@@ -511,5 +550,46 @@ mod tests {
         t.end_pass(true, 10, (0, 0));
         assert_eq!(t.passes, 0);
         assert!(t.began.is_none());
+    }
+
+    #[test]
+    fn the_pass_line_names_the_frame_on_screen() {
+        assert_eq!(Shown { frame: 12, on_screen: Some(12), exact: true }.text(), "f=12 exact");
+        assert_eq!(Shown { frame: 12, on_screen: Some(11), exact: false }.text(), "f=12 held=11");
+        // the right frame at an older revision or size is held too, not exact
+        assert_eq!(Shown { frame: 12, on_screen: Some(12), exact: false }.text(), "f=12 held=12");
+        assert_eq!(Shown { frame: 12, on_screen: None, exact: false }.text(), "f=12 none");
+    }
+
+    #[test]
+    fn a_summary_takes_only_jobs_from_its_own_interval() {
+        // (JOBS is process-wide; this test owns it only while timing is off, its default)
+        if enabled() {
+            return;
+        }
+        let sample = |finished| JobSample {
+            frame: 1,
+            prio: 0,
+            prefetch: false,
+            cancelled: false,
+            preview: false,
+            wait: Duration::ZERO,
+            total: Duration::ZERO,
+            source: Duration::ZERO,
+            prepare: Duration::ZERO,
+            gop: Default::default(),
+            finished,
+        };
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(5);
+        {
+            let mut jobs = JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+            jobs.clear();
+            jobs.push_back(sample(t0));
+            jobs.push_back(sample(later));
+        }
+        let kept = take_jobs_since(Some(later));
+        assert_eq!(kept.len(), 1, "the job from before the window is dropped");
+        assert!(JOBS.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "taken jobs are gone");
     }
 }
