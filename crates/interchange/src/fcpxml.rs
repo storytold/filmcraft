@@ -9,6 +9,8 @@
 //! - Rational times (`1001/24000s`) map exactly onto ticks.
 //! - Standalone `video` elements reference the picture of an asset (including still images),
 //!   without importing that asset's audio. Effect-backed generators are reported as unsupported.
+//! - `adjust-conform` (`fit`, the default, and `none`) maps to the clip's scale-to-frame-size flag;
+//!   `fill` is reported and imported as `fit`.
 //! - `adjust-transform` (position in percent of frame height, FCP y-up, counter-clockwise
 //!   rotation), `adjust-blend` (opacity), `adjust-volume` (dB) and their keyframes are mapped;
 //!   constant speed, reverse and freeze frames use a two-point `timeMap`.
@@ -145,11 +147,12 @@ struct Imp<'a, 'i, 'r> {
     media_nodes: HashMap<String, Node<'a, 'i>>,
     media_items: HashMap<String, ItemId>,
     media_active: HashSet<String>,
-    /// Compound clips left out because the chain was too deep.
+    /// Traversals cut short by either the media-chain or XML-layout depth limit.
     depth_hits: usize,
-    /// Media imported incomplete (a nested one below it was left out), by id: the nesting depth
-    /// it was imported at. Reached again at a shallower depth it is imported again.
-    media_truncated_at: HashMap<String, usize>,
+    /// Media imported incomplete (a nested one below it was left out), by id: the
+    /// (media-chain, XML-layout) depths it was imported at. Retry when neither depth is
+    /// worse and at least one is shallower; both limits must still be respected.
+    media_truncated_at: HashMap<String, (usize, usize)>,
     /// Re-imports of truncated media still allowed.
     reimports_left: usize,
     effects: HashMap<String, String>,
@@ -331,7 +334,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if let Some(i) = self.media_items.get(id) {
             // Imported with a nested one cut off: import it again (into the same item) where that
             // one now fits.
-            let shallower = self.media_truncated_at.get(id).is_some_and(|d| depth < *d) && !self.media_active.contains(id);
+            let shallower =
+                self.media_truncated_at.get(id).is_some_and(|&(media, xml)| depth <= media && self.depth <= xml && (depth < media || self.depth < xml))
+                    && !self.media_active.contains(id);
             if !shallower || self.reimports_left == 0 {
                 return Some(*i);
             }
@@ -359,7 +364,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         self.media_active.remove(id);
         self.media_items.insert(id.into(), item);
         if self.depth_hits > hits_before {
-            self.media_truncated_at.insert(id.into(), depth);
+            self.media_truncated_at.insert(id.into(), (depth, self.depth));
         } else {
             self.media_truncated_at.remove(id);
         }
@@ -392,7 +397,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Lay out a storyline, refusing nesting past [`MAX_XML_DEPTH`].
     fn storyline(&mut self, seq: &mut Sequence, ctx: &Ctx, spine: Node<'a, 'i>, origin: Tick, lane: i32, primary: bool) {
         if self.depth >= MAX_XML_DEPTH {
-            self.report.warn(format!("XML storylines are nested more than {MAX_XML_DEPTH} deep; deeper clips were skipped"));
+            self.depth_hits += 1;
+            self.report.warn(format!("XML storylines are nested too deeply (more than {MAX_XML_DEPTH}); deeper clips were skipped"));
             return;
         }
         self.depth += 1;
@@ -462,7 +468,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Lay out one element, refusing nesting past [`MAX_XML_DEPTH`].
     fn element(&mut self, seq: &mut Sequence, ctx: &Ctx, el: Node<'a, 'i>, t0: Tick, lane: i32, primary: bool) -> (Tick, Option<filmcraft_project::ClipId>) {
         if self.depth >= MAX_XML_DEPTH {
-            self.report.warn(format!("XML elements are nested more than {MAX_XML_DEPTH} deep; deeper clips were skipped"));
+            self.depth_hits += 1;
+            self.report.warn(format!("XML elements are nested too deeply (more than {MAX_XML_DEPTH}); deeper clips were skipped"));
             return (t0, None);
         }
         self.depth += 1;
@@ -585,7 +592,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         // Connected clips and secondary storylines.
         for c in elements(el) {
-            let Some(l) = c.attribute("lane").and_then(|l| l.parse::<i32>().ok()) else { continue };
+            let Some(lane_attr) = c.attribute("lane") else { continue };
+            let Ok(l) = lane_attr.trim().parse::<i32>() else {
+                self.report.warn(format!("<{}> has lane \"{lane_attr}\", which is not a lane a sequence can have; skipped", c.tag_name().name()));
+                continue;
+            };
             let off = attr_time(c, "offset").unwrap_or(Tick::ZERO);
             let ct0 = t0 + (off - local_start);
             let clane = if lane > 0 && l > 0 { lane.saturating_add(l) } else { l };
@@ -631,8 +642,31 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
         let _ = ctx.seq_rate;
+        // no `adjust-conform` means `fit`: the picture is scaled into the frame before any transform
+        let mut conform = true;
+        // a `<clip>` wraps the video it plays, which may carry its own conform; the clip's own overrides it
+        if kind == TrackKind::Video
+            && el.has_tag_name("clip")
+            && let Some(inner) = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "asset-clip") && c.attribute("ref").is_some())
+            && let Some(a) = elements(inner).find(|a| a.has_tag_name("adjust-conform"))
+        {
+            let ty = a.attribute("type").unwrap_or("fit");
+            conform = ty != "none";
+            // the clip's own adjust-conform overrides this and reports for itself
+            if ty == "fill" && !elements(el).any(|c| c.has_tag_name("adjust-conform")) {
+                self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+            }
+        }
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
+                ("adjust-conform", TrackKind::Video) => match a.attribute("type").unwrap_or("fit") {
+                    "none" => conform = false,
+                    "fill" => {
+                        conform = true;
+                        self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+                    }
+                    _ => conform = true,
+                },
                 ("adjust-transform", TrackKind::Video) => {
                     let to_px = move |v: &str| {
                         let (x, y) = pair(v);
@@ -695,6 +729,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
                 _ => {}
             }
+        }
+        if kind == TrackKind::Video {
+            ti.scale_to_frame = conform;
         }
     }
 
@@ -1151,6 +1188,10 @@ impl Exp<'_, '_> {
             if it.speed == 0.0 || it.frame_hold.is_some() { local } else { local + Tick(((t - it.source_in).0 as f64 / it.speed).round() as i64) }
         };
         if kind == TrackKind::Video {
+            // a clip without scale-to-frame keeps its native pixels; an absent element would mean `fit`
+            if !it.scale_to_frame {
+                children.push("<adjust-conform type=\"none\"/>".into());
+            }
             self.transform(it, seq, &to_local, &mut children);
         }
         if let Some(a) = audio.or((kind == TrackKind::Audio).then_some(it)) {

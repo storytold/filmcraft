@@ -102,6 +102,19 @@ fn negatives_and_decimals() {
 }
 
 #[test]
+fn hyphen_inside_a_name_is_not_minus() {
+    for s in ["COVID-19", "F-16", "B-52", "Windows-11", "Route-66", "pre-2020"] {
+        let tokens = normalize(s, Lang::EnUs).unwrap();
+        assert!(!tokens.contains(&Token::Word("minus".into())), "{s:?} produced minus: {tokens:?}");
+    }
+    assert!(words("Temp: -5", Lang::EnUs).ends_with("minus five"));
+    assert!(words("(-5)", Lang::EnUs).contains("minus five"));
+    for s in ["x=-5", "\"-5\"", ",-5", "Temp:-5"] {
+        assert!(words(s, Lang::EnUs).contains("minus five"), "{s:?} lost its sign");
+    }
+}
+
+#[test]
 fn ordinals() {
     assert_eq!(words("1st", Lang::EnUs), "first");
     assert_eq!(words("2nd", Lang::EnUs), "second");
