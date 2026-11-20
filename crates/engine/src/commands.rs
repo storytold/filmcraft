@@ -132,16 +132,30 @@ fn has_clips_or_captions(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() { Err("no clips or captions selected".into()) } else { Ok(()) }
 }
-/// Clips or captions selected (Clear / Ripple Delete work on either).
-fn has_any_selection(s: &Session) -> std::result::Result<(), String> {
+/// Clear can also join a selected through edit.
+fn has_clear_selection(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if s.state.selection.is_empty() && s.state.caption_selection.is_empty() && s.state.transition_selection.is_empty() && s.state.gap_selection.is_none() {
-        Err("nothing selected".into())
+        if selected_through_cut(s).is_some() { Ok(()) } else { Err("nothing selected to clear".into()) }
     } else if s.state.transition_selection.is_empty() {
         gap_closable(s)
     } else {
         Ok(())
     }
+}
+
+/// A selected cut and its linked edit points form a single Delete Cut target.
+fn selected_through_cut(s: &Session) -> Option<(ClipId, ClipId)> {
+    let q = s.active_sequence()?;
+    let first = s.state.edit_points.first()?;
+    let (left, right) = crate::trim::roll_pair(q, first)?;
+    let (track, a) = q.find_item(left)?;
+    let (_, b) = q.find_item(right)?;
+    if q.track(track)?.locked || !edit::through::is_through_edit(a, b) {
+        return None;
+    }
+    let pairs = linked_roll_pairs(q, left, right, s.state.linked_selection);
+    s.state.edit_points.iter().all(|ep| crate::trim::roll_pair(q, ep).is_some_and(|pair| pairs.contains(&pair))).then_some((left, right))
 }
 /// The selected captions a Clear / Ripple Delete can still take after the clip edit: the ripple of
 /// a clip removes the captions of sync-locked caption tracks that lay inside its range, and
@@ -2146,7 +2160,7 @@ fn build() -> Vec<CommandSpec> {
             ["Edit"],
             Some("Backspace"),
             r#"{"clips":[id]?,"clip":id?} (explicit clips work without a selection)"#,
-            has_any_selection,
+            has_clear_selection,
             |s, p| {
                 let target = target_clips_p(s, p, "edit.clear")?;
                 if target.is_none() && s.state.selection.is_empty() {
@@ -2162,6 +2176,12 @@ fn build() -> Vec<CommandSpec> {
                         return ripple_delete_gap(s, g);
                     }
                     let caps = s.state.caption_selection.clone();
+                    if caps.is_empty() && !s.state.edit_points.is_empty() {
+                        let (left, right) = selected_through_cut(s).ok_or_else(|| bad("edit.clear", "select a single through cut to delete"))?;
+                        let result = s.execute("sequence.joinThroughEdits", json!({"cut": [left.0, right.0]}))?;
+                        s.state.edit_points.clear();
+                        return Ok(result);
+                    }
                     return crate::captions::delete(s, &caps, false);
                 }
                 // An Alt selection is already exact; explicit targets keep the command's linked behavior.
