@@ -93,7 +93,7 @@ test process, so a trapped regression cannot count as a pass.
 ## 2. ffmpeg oracle tests
 
 ffmpeg and ffprobe are **external processes** used to generate fixtures and to check results. They
-are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
+are never linked or shipped ([clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)).
 
 - The tools are found by `filmcraft-testkit` (a dev-dependency-only crate, `crates/testkit`), in
   this order: `FILMCRAFT_FFMPEG` / `FILMCRAFT_FFPROBE` (explicit paths; a wrong path is an error),
