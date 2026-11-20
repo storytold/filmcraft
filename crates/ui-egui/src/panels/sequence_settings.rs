@@ -7,19 +7,18 @@
 //!
 //! What it changes (one `sequence.settings` command, one undo step): Timebase, Frame Size (with
 //! "Scale motion effects proportionally when changing frame size", on by default), drop-frame or
-//! non-drop-frame timecode for the NTSC rates, audio Channel Format and Sample Rate, Maximum Render
+//! non-drop-frame timecode for the NTSC rates (or the Feet + Frames 16mm / 35mm and Frames display formats), audio Channel Format and Sample Rate, Maximum Render
 //! Quality, and the Color Management tab (working colour space, wide gamut, auto tone map).
 //!
 //! Premiere settings FilmCraft has no equivalent for yet are shown greyed out with their current
 //! value and a "not supported yet" hint, rather than editable and silently ignored: Editing Mode,
-//! Pixel Aspect Ratio (rendered, and set by New Sequence From Clip, but not editable here yet), Fields, the Frames and Feet + Frames display
-//! formats, Number of Channels, audio Display Format, the Video Previews format, codec and size,
+//! Pixel Aspect Ratio (rendered, and set by New Sequence From Clip, but not editable here yet), Fields, Number of Channels, audio Display Format, the Video Previews format, codec and size,
 //! Maximum Bit Depth, and the VR Properties tab. Composite in Linear Color is shown on and greyed:
 //! FilmCraft always composites in linear light.
 //!
 //! Automation ids (`sequenceSettings.` + …): `tab.general`, `tab.color`, `tab.vr`; General:
 //! `name`, `editingMode`, `timebase` (+ `timebase.option.<num>/<den>` while open), `width`, `height`,
-//! `aspect`, `scaleMotion`, `par`, `fields`, `videoDisplay` (+ `videoDisplay.option.<df|ndf|tc>`),
+//! `aspect`, `scaleMotion`, `par`, `fields`, `videoDisplay` (+ `videoDisplay.option.<df|ndf|tc|feet16|feet35|frames>`),
 //! `channelFormat` (+ `channelFormat.option.<Stereo|Mono|5.1|Adaptive>`), `channels`, `sampleRate`
 //! (+ `sampleRate.option.<hz>`), `audioDisplay`, `previewFormat`, `previewCodec`, `previewWidth`,
 //! `previewHeight`, `maxBitDepth`, `maxRenderQuality`, `linearColor`; Color Management:
@@ -28,7 +27,7 @@
 
 use filmcraft_color::WorkingSpace;
 use filmcraft_project::{AudioChannels, SequenceSettings};
-use filmcraft_time::FrameRate;
+use filmcraft_time::{FrameRate, TimeDisplay};
 use serde_json::{Map, Value, json};
 
 use crate::FilmcraftApp;
@@ -77,6 +76,7 @@ pub fn open(app: &mut FilmcraftApp) {
         tab: "general".into(),
         name,
         new_sequence: false,
+        bin: None,
         video_tracks: 3,
         audio_tracks: 3,
         fps_num: st.frame_rate.num,
@@ -85,6 +85,7 @@ pub fn open(app: &mut FilmcraftApp) {
         height: st.height,
         scale_motion: true,
         drop_frame: st.drop_frame && st.frame_rate.supports_drop_frame(),
+        display: st.display,
         mix: mix_name(st.audio_master).into(),
         sample_rate: st.sample_rate,
         max_render_quality: st.max_render_quality,
@@ -97,12 +98,13 @@ pub fn open(app: &mut FilmcraftApp) {
 
 /// File ▸ New ▸ Sequence…: the dialog as New Sequence, from the default settings, named like
 /// `file.newSequence` would name it, with three video and three audio tracks.
-pub fn open_new(app: &mut FilmcraftApp) {
+pub fn open_new(app: &mut FilmcraftApp, bin: Option<Option<u64>>) {
     let st = SequenceSettings::default();
     let n = app.session.project.sequences().count() + 1;
     app.ui.sequence_settings = SequenceSettingsDraft {
         tab: "general".into(),
         new_sequence: true,
+        bin: bin.unwrap_or_else(|| crate::panels::project::shown_bin(app)),
         video_tracks: 3,
         audio_tracks: 3,
         fps_num: st.frame_rate.num,
@@ -111,6 +113,7 @@ pub fn open_new(app: &mut FilmcraftApp) {
         height: st.height,
         scale_motion: true,
         drop_frame: st.drop_frame && st.frame_rate.supports_drop_frame(),
+        display: st.display,
         mix: mix_name(st.audio_master).into(),
         sample_rate: st.sample_rate,
         max_render_quality: st.max_render_quality,
@@ -136,12 +139,15 @@ fn new_sequence_params(d: &SequenceSettingsDraft) -> (Map<String, Value>, Map<St
     p.insert("fps".into(), json!(rate(d).as_f64()));
     p.insert("sampleRate".into(), json!(d.sample_rate));
     p.insert("mix".into(), json!(d.mix));
+    if let Some(bin) = d.bin {
+        p.insert("bin".into(), json!(bin));
+    }
     p.insert("video".into(), json!(d.video_tracks.min(256)));
     p.insert("audio".into(), json!(d.audio_tracks.min(256)));
     // what's left: only the settings `file.newSequence` has no parameter for
     let after = SequenceSettings { frame_rate: rate(d), width: d.width, height: d.height, sample_rate: d.sample_rate, ..Default::default() };
     let mut rest = changes(d, &after, name);
-    rest.retain(|k, _| matches!(k.as_str(), "dropFrame" | "maxRenderQuality"));
+    rest.retain(|k, _| matches!(k.as_str(), "dropFrame" | "videoDisplay" | "maxRenderQuality"));
     (p, rest)
 }
 
@@ -231,6 +237,9 @@ fn changes(d: &SequenceSettingsDraft, cur: &SequenceSettings, cur_name: &str) ->
     let df = d.drop_frame && r.supports_drop_frame();
     if df != (cur.drop_frame && cur.frame_rate.supports_drop_frame()) {
         p.insert("dropFrame".into(), json!(df));
+    }
+    if d.display != cur.display {
+        p.insert("videoDisplay".into(), json!(d.display.id()));
     }
     if d.mix != mix_name(cur.audio_master) {
         p.insert("mix".into(), json!(d.mix));
@@ -351,18 +360,26 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
         row(ui, label_w, "Display Format:", true, |ui| {
             let r = rate(d);
             let formats = timecode_formats(r);
+            let film = d.display != TimeDisplay::Timecode;
             let chosen = if r.supports_drop_frame() { if d.drop_frame { "df" } else { "ndf" } } else { "tc" };
-            let shown = formats.iter().find(|(id, _)| *id == chosen).map(|(_, l)| l.clone()).unwrap_or_default();
+            let shown =
+                if film { t(d.display.label()).to_string() } else { formats.iter().find(|(id, _)| *id == chosen).map(|(_, l)| l.clone()).unwrap_or_default() };
             let resp = craft_ui::ComboBox::from_id_salt("seq-settings-video-display").selected_text(&shown).width(list_w).show_ui(ui, |ui| {
                 for (id, label) in &formats {
-                    let o = ui.selectable_label(*id == chosen, label);
+                    let o = ui.selectable_label(!film && *id == chosen, label);
                     if o.clicked() {
                         d.drop_frame = *id == "df";
+                        d.display = TimeDisplay::Timecode;
                     }
                     elems.push((format!("sequenceSettings.videoDisplay.option.{id}"), o.rect, label.clone()));
                 }
-                for label in ["Feet + Frames 16mm", "Feet + Frames 35mm", "Frames"] {
-                    ui.add_enabled(false, egui::Button::selectable(false, t(label))).on_disabled_hover_text(t(NOT_YET));
+                for display in [TimeDisplay::Feet16, TimeDisplay::Feet35, TimeDisplay::Frames] {
+                    let label = t(display.label()).to_string();
+                    let o = ui.selectable_label(d.display == display, &label);
+                    if o.clicked() {
+                        d.display = display;
+                    }
+                    elems.push((format!("sequenceSettings.videoDisplay.option.{}", display.id()), o.rect, label));
                 }
             });
             elems.push(("sequenceSettings.videoDisplay".into(), resp.response.rect, shown));
@@ -610,6 +627,9 @@ mod tests {
             json!({"name":"Shorts","width":1080,"height":1920,"fps":24_000.0/1001.0,"sampleRate":48_000,"mix":"Stereo","video":2,"audio":4})
         );
         assert!(rest.is_empty(), "everything else is the default: {rest:?}");
+        // a sequence made while the Project panel shows a bin lands in it
+        let (p, _) = new_sequence_params(&SequenceSettingsDraft { new_sequence: true, bin: Some(7), ..Default::default() });
+        assert_eq!(p.get("bin"), Some(&json!(7)));
         // what file.newSequence has no parameter for follows on the new sequence; a blank name
         // lets the command name it
         let d = SequenceSettingsDraft {

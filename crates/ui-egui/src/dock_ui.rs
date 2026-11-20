@@ -218,12 +218,12 @@ impl FilmcraftApp {
     }
 
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
-    /// egui `Modal` shown last frame, the Save changes? prompt of Quit or Close Project, or a
-    /// native file dialog. egui's `Modal` blocks input only in the main window, so the dock area
-    /// blocks its native windows meanwhile.
+    /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
+    /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
+    /// the dock area blocks its native windows meanwhile.
     fn modal_open(&self, ctx: &egui::Context) -> bool {
         matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
-            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject"))
+            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
             || self.native_dialog_open()
             || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
@@ -272,6 +272,7 @@ impl FilmcraftApp {
             seqs,
             seq_width,
             tokens: t,
+            active_tab: None,
             seq_actions: Vec::new(),
             menu: None,
             seq_menu_viewport: egui::ViewportId::ROOT,
@@ -478,6 +479,8 @@ struct FilmContent<'a> {
     /// The width the sequence tabs take in the Timeline's tab strip.
     seq_width: f32,
     tokens: Tokens,
+    /// The active panel and the UI that draws its tab strip, set before the tab labels are laid out.
+    active_tab: Option<(egui::Id, PanelKind)>,
     seq_actions: Vec<SeqAction>,
     /// The ≡ button clicked: its panel and where its menu opens.
     menu: Option<(PanelKind, egui::Pos2, egui::ViewportId)>,
@@ -541,9 +544,10 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// With no sequence open, the Timeline's tab says so.
-    fn label(&mut self, _ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, _color: egui::Color32) -> egui::WidgetText {
-        if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label().into() } else { logical.into() }
+    /// Underline the selected tab without changing its accessible name or the labels in menus.
+    fn label(&mut self, ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
+        let label = if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label() } else { logical.to_owned() };
+        if self.active_tab == Some((ui.unique_id(), *panel)) { egui::RichText::new(label).color(color).underline().into() } else { label.into() }
     }
 
     /// FilmCraft's own panel items head a tab's context menu, as in its ≡ menu; craft-ui adds
@@ -583,6 +587,8 @@ impl DockContent<PanelKind> for FilmContent<'_> {
 
     /// The ≡ panel menu of the group's shown panel; for the Timeline, its sequence tabs first.
     fn group_header(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
+        // The header is a child of the UI craft-ui uses to draw the group's tabs.
+        self.active_tab = ui.stack().parent.as_ref().map(|strip| (strip.unique_id, *active));
         let t = self.tokens;
         let header = ui.max_rect();
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
