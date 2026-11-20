@@ -703,6 +703,11 @@ fn select_all_in_the_search_box_selects_its_text() {
     d.ok("ui.type", json!({"text": "stool"}));
     d.frames(2);
     assert_eq!(d.app().ui.project_search, "stool");
+    d.snapshot("project-search-toolbar", Some("panel.Project"));
+
+    d.click("project.find");
+    assert!(d.has("find.ok"), "the Find criteria dialog opens");
+    assert_eq!(d.app().ui.project_search, "stool", "the Find criteria leave the quick search in place");
 }
 
 #[test]
