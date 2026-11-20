@@ -9,7 +9,7 @@ pub fn unpack(bytes: &[u8], w: usize, h: usize, spp: usize, bits: u32, big_endia
     craft_raw::dng_lines::unpack(bytes, w, h, spp, bits, big_endian).map_err(error)
 }
 
-fn error(e: craft_raw::dng_lines::Error) -> Error {
+pub(crate) fn error(e: craft_raw::dng_lines::Error) -> Error {
     match e {
         craft_raw::dng_lines::Error::NotTiff => Error::NotDng,
         craft_raw::dng_lines::Error::Truncated => Error::Truncated,
