@@ -313,7 +313,11 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     for id in ["colorMatte.color", "colorMatte.name", "colorMatte.width", "colorMatte.height", "colorMatte.seconds", "colorMatte.ok"] {
         assert!(d.has(id), "{id}");
     }
-    d.ok("ui.set", json!({"menuDialog": {"color": "#ff8000", "name": "Orange"}}));
+    d.ok("ui.set", json!({"menuDialog": {"color": "#2040c0", "name": "Orange"}}));
+    d.click("colorMatte.color.hex");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.harness.input_mut().events.push(egui::Event::Paste("#ff8000".into()));
+    d.frames(2);
     d.click("colorMatte.ok");
     assert!(!d.dialog_open());
     let orange = d.item_named("Orange");
@@ -323,8 +327,28 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     assert_eq!(d.menu("project.matteColor")["dialog"], "matteColor");
     assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["color"], "#ff8000");
     assert!(d.has("matteColor.color"));
-    d.ok("ui.set", json!({"menuDialog": {"color": "#2040c0"}}));
+    d.click("matteColor.color.hex");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "2040"}));
+    d.frames(2);
     d.click("matteColor.ok");
+    assert!(d.dialog_open(), "incomplete hex leaves the dialog open");
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["color"], "2040");
+    assert_eq!(matte_color(&mut d, orange), "#ff8000");
+
+    d.click("matteColor.color.hex");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "2040c0"}));
+    d.frames(2);
+    d.click("matteColor.ok");
+    assert_eq!(matte_color(&mut d, orange), "#2040c0");
+
+    d.menu("project.matteColor");
+    d.click("matteColor.color.hex");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "#aabbcc"}));
+    d.frames(2);
+    d.click("matteColor.cancel");
     assert_eq!(matte_color(&mut d, orange), "#2040c0");
     // without a Color Matte selected there is nothing to change
     let seq = d.app().session.state.active_sequence.unwrap().0;
