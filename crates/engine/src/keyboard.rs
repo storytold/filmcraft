@@ -195,25 +195,23 @@ fn extend_edit(s: &mut Session, next: bool) -> Result<Value> {
     if ops.is_empty() {
         return Err(EngineError::Other("no edit point on the targeted tracks".into()));
     }
+    let reach: Vec<Option<crate::handles::Reach>> = ops.iter().map(|(l, r, d)| crate::handles::Reach::of_cut(s, *l, *r, *d)).collect();
     let label = if next { "Extend Next Edit To Playhead" } else { "Extend Previous Edit To Playhead" };
-    s.edit_sequence(label, |q, ctx, _| {
+    let applied = s.edit_sequence(label, |q, ctx, _| {
+        let mut applied = Vec::new();
         for (l, r, d) in &ops {
-            match (l, r) {
-                (Some(l), Some(r)) => {
-                    edit::roll(q, *l, *r, *d, ctx)?;
-                }
-                (Some(l), None) => {
-                    edit::trim(q, *l, edit::Edge::Out, edit::TrimMode::Regular, *d, ctx)?;
-                }
-                (None, Some(r)) => {
-                    edit::trim(q, *r, edit::Edge::In, edit::TrimMode::Regular, *d, ctx)?;
-                }
-                (None, None) => {}
-            }
+            applied.push(match (l, r) {
+                (Some(l), Some(r)) => edit::roll(q, *l, *r, *d, ctx)?,
+                (Some(l), None) => edit::trim(q, *l, edit::Edge::Out, edit::TrimMode::Regular, *d, ctx)?,
+                (None, Some(r)) => edit::trim(q, *r, edit::Edge::In, edit::TrimMode::Regular, *d, ctx)?,
+                (None, None) => Tick::ZERO,
+            });
         }
-        Ok(())
+        Ok(applied)
     })?;
-    Ok(json!({"edits": ops.len()}))
+    // `applied` says how far each edit point moved (0 when its media or a clip's length stopped it)
+    let short: Vec<Value> = ops.iter().zip(&reach).zip(&applied).filter_map(|(((_, _, d), r), a)| r.as_ref()?.short(s, *d, *a)).collect();
+    Ok(json!({"edits": ops.len(), "applied": applied.iter().map(|d| d.0).collect::<Vec<_>>(), "short": short}))
 }
 
 /// Nudge the selection (with linked partners) by `frames` along the timeline (overwrite).
