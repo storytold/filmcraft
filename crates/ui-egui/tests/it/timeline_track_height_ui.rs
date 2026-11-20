@@ -57,11 +57,6 @@ impl Driver {
         self.harness.state()
     }
 
-    fn heights(&self) -> (f32, f32) {
-        let v = &self.app().ui.timeline;
-        (v.video_track_h, v.audio_track_h)
-    }
-
     /// Drag from the middle of the element `id` by `dy` points.
     fn drag(&mut self, id: &str, fy: f32, dy: f32) {
         let v = self.ok("ui.elements", json!({"prefix": id}));
@@ -76,41 +71,67 @@ impl Driver {
         let seq = self.app().session.active_sequence().unwrap();
         (format!("V{}", seq.video_tracks.len()), format!("A{}", seq.audio_tracks.len()))
     }
+
+    /// The `(top, height)` of every video row, V1 first, as the Timeline laid them out this frame.
+    /// This is the one geometry the headers and the clips both read.
+    fn video_bands(&self) -> Vec<(f32, f32)> {
+        let l = self.app().tl.layout.as_ref().expect("the timeline is laid out");
+        let nv = self.app().session.active_sequence().unwrap().video_tracks.len();
+        l.rows.iter().take(nv).map(|r| (r.rect.min.y, r.rect.height())).collect()
+    }
+
+    /// The `(top, height)` of every audio row, A1 first, as the Timeline laid them out this frame.
+    fn audio_bands(&self) -> Vec<(f32, f32)> {
+        let l = self.app().tl.layout.as_ref().expect("the timeline is laid out");
+        let nv = self.app().session.active_sequence().unwrap().video_tracks.len();
+        l.rows.iter().skip(nv).map(|r| (r.rect.min.y, r.rect.height())).collect()
+    }
 }
 
 #[test]
-fn the_top_edge_of_the_highest_video_track_resizes_the_video_tracks() {
+fn the_top_edge_of_a_video_track_resizes_that_track_alone() {
     let mut d = Driver::demo();
-    let (top, _) = d.labels();
-    let (v0, a0) = d.heights();
-    // dragging the outer edge up makes the video tracks taller, as the line below it does
-    d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, -15.0);
-    let (v1, a1) = d.heights();
-    assert!(v1 > v0 + 5.0, "video tracks grow: {v0} -> {v1}");
-    assert_eq!(a1, a0, "audio tracks are left alone");
-    // and down makes them shorter again
-    d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, 15.0);
-    assert!(d.heights().0 < v1 - 5.0);
-    // the line below it still works the same way
-    let v2 = d.heights().0;
-    d.drag(&format!("timeline.track.{top}.resize"), 0.5, -15.0);
-    assert!(d.heights().0 > v2 + 5.0);
+    let before = d.video_bands();
+    assert!(before.len() >= 2, "the demo project has at least two video tracks");
+    // the video block is anchored at the divider and grows upward, so V1's moving edge is its top one
+    d.drag("timeline.track.V1.resize", 0.5, -15.0);
+    let after = d.video_bands();
+    assert!(after[0].1 > before[0].1 + 5.0, "V1 grows: {} -> {}", before[0].1, after[0].1);
+    for i in 1..after.len() {
+        let (was, now) = (before[i].1, after[i].1);
+        assert!((now - was).abs() < 0.6, "V{} keeps its own height: {was} -> {now}", i + 1);
+    }
+    // and the rows still share one bottom edge: each one ends where the row below it starts
+    for i in 1..after.len() {
+        let (ends, starts) = (after[i].0 + after[i].1, after[i - 1].0);
+        assert!((ends - starts).abs() < 0.6, "V{} ends at {ends} but the row below starts at {starts}", i + 1);
+    }
+    // dragging it back down makes it shorter again
+    let grown = after[0].1;
+    d.drag("timeline.track.V1.resize", 0.5, 15.0);
+    assert!(d.video_bands()[0].1 < grown - 5.0);
 }
 
 #[test]
-fn the_bottom_edge_of_the_last_audio_track_resizes_the_audio_tracks_from_either_side_of_the_line() {
+fn the_bottom_edge_of_an_audio_track_resizes_that_track_from_either_side_of_the_line() {
     let mut d = Driver::demo();
     let (_, last) = d.labels();
     let id = format!("timeline.track.{last}.resize");
-    let (v0, a0) = d.heights();
+    let before = d.audio_bands();
+    let n = before.len();
     // from just past the line, in the empty space below the last track
     d.drag(&id, 0.9, 15.0);
-    let (v1, a1) = d.heights();
-    assert!(a1 > a0 + 5.0, "audio tracks grow: {a0} -> {a1}");
-    assert_eq!(v1, v0, "video tracks are left alone");
+    let after = d.audio_bands();
+    let (was, now) = (before[n - 1].1, after[n - 1].1);
+    assert!(now > was + 5.0, "the last audio track grows: {was} -> {now}");
+    for i in 0..n - 1 {
+        let (was, now) = (before[i].1, after[i].1);
+        assert!((now - was).abs() < 0.6, "A{} keeps its own height: {was} -> {now}", i + 1);
+    }
     // and from just inside it
+    let grown = after[n - 1].1;
     d.drag(&id, 0.1, -15.0);
-    assert!(d.heights().1 < a1 - 5.0);
+    assert!(d.audio_bands()[n - 1].1 < grown - 5.0);
 }
 
 /// Every shape drawn this frame, flattened.
@@ -141,7 +162,7 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     let (top, _) = d.labels();
     let separator = d.app().tokens.separator;
     let ruler = rect_of(&mut d, "timeline.ruler");
-    let top_edge = rect_of(&mut d, &format!("timeline.track.{top}.resizeTop"));
+    let top_edge = rect_of(&mut d, &format!("timeline.track.{top}.resize"));
     let seq = d.app().session.active_sequence().unwrap();
     let tracks = seq.video_tracks.len() + seq.audio_tracks.len();
     // horizontal separator lines across the track area (the headers' own lines start left of the ruler)
