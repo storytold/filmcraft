@@ -480,7 +480,7 @@ pub struct UiState {
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
     pub expanded_fx: Vec<String>,
-    /// Effects panel: the Lumetri Presets folder shown as a thumbnail grid (wide panel).
+    /// Effects panel: the Color Grading Presets folder shown as a thumbnail grid (wide panel).
     #[serde(default)]
     pub lumetri_grid_folder: Option<String>,
     /// Collapsed effect sections in Effect Controls ("clip:index").
@@ -497,7 +497,7 @@ pub struct UiState {
     #[serde(default = "shown")]
     pub show_status_bar: bool,
     pub dark: bool,
-    /// Lumetri scopes visible in the Program monitor area.
+    /// Color Grading scopes visible in the Program monitor area.
     pub show_scopes: bool,
     /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden. Only
     /// `view.fullScreenProgram` turns it on, so it is not part of the saved state.
@@ -641,7 +641,7 @@ pub struct UiState {
     /// `panels::graphics_templates`.
     #[serde(default)]
     pub gfx_templates: crate::panels::graphics_templates::GfxTemplatesState,
-    /// Lumetri Scopes, Timecode, Events, Progress and Reference Monitor settings. See
+    /// Video Scopes, Timecode, Events, Progress and Reference Monitor settings. See
     /// `panels::panel_state`.
     #[serde(default)]
     pub panels: crate::panels::panel_state::PanelsState,

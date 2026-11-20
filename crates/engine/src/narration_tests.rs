@@ -158,6 +158,30 @@ fn editing_to_longer_speech_keeps_the_clip_length_and_the_whole_speech() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The folder of the previous file comes from the stored path as media access resolves it: one it
+/// refuses (a URL here) picks no folder, and the edit goes to the generated-media folder.
+#[test]
+fn editing_next_to_a_refused_stored_path_uses_the_generated_media_folder() {
+    let mut s = demo();
+    let dir = tmp("refused");
+    let r = s.execute("tts.create", json!({"text": "Hi.", "time": 0, "dir": dir})).unwrap();
+    let c0 = clip(&s, r["clip"].as_u64().unwrap());
+    let url = "jar:narration.wav".to_string();
+    s.edit("relink", |pr, _| {
+        if let Some(filmcraft_project::ItemKind::Media(m)) = pr.item_mut(c0.item).map(|it| &mut it.kind) {
+            m.media = filmcraft_project::MediaRef::File { path: url.clone() };
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.media.add_stored_paths([url.clone()], Some(&format!("{dir}/p.fcproj")));
+    let e = s.execute("tts.edit", json!({"clip": c0.id.0, "text": "Hi. And more."})).unwrap();
+    let path = e["path"].as_str().unwrap();
+    assert!(!path.starts_with("jar:") && std::path::Path::new(path).is_file(), "{path}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn editing_to_shorter_speech_pads_the_file_with_exact_silence() {
     let mut s = demo();
@@ -394,6 +418,48 @@ fn natural_voices_are_listed_and_explain_what_is_missing() {
     if !cfg!(feature = "neural-voices") && !v["package"]["installed"].as_bool().unwrap() {
         let e = s.execute("tts.downloadVoices", json!({})).unwrap_err().to_string();
         assert!(e.contains("not available in this build"), "{e}");
+    }
+}
+
+/// Starts `tts.downloadVoices` and cancels it before the 336 MB model lands. Run with
+/// `FILMCRAFT_DATA_DIR` set to a throwaway directory so a cancelled fetch cannot write into a
+/// real user models folder.
+#[cfg(feature = "neural-voices")]
+#[test]
+#[ignore = "starts a real download; run with FILMCRAFT_DATA_DIR in a throwaway directory"]
+fn download_voices_is_accepted_when_the_build_includes_natural_voices() {
+    let data = std::env::var_os("FILMCRAFT_DATA_DIR").expect("set FILMCRAFT_DATA_DIR to a throwaway directory");
+    let _ = std::fs::create_dir_all(&data);
+    let mut s = demo();
+    assert!(crate::narration::natural_voices_available());
+    let v = s.execute("tts.voices", json!({})).unwrap();
+    assert_eq!(v["package"]["available"], true);
+    if v["package"]["installed"].as_bool() == Some(true) {
+        let r = s.execute("tts.downloadVoices", json!({})).unwrap();
+        assert_eq!(r["installed"], true);
+        return;
+    }
+    let r = s.execute("tts.downloadVoices", json!({ "wait": false })).expect("download should be accepted in a neural-voices build");
+    assert_eq!(r["installed"], false, "{r}");
+    let job = r["job"].as_u64().expect("job id");
+    s.execute("jobs.cancel", json!({ "job": job })).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    loop {
+        let done = {
+            let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+            let result = j.result.lock().unwrap();
+            if let Some(Err(e)) = result.as_ref() {
+                assert!(!e.contains("not available in this build"), "{e}");
+                true
+            } else {
+                result.is_some()
+            }
+        };
+        if done {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "download job did not finish after cancel");
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 

@@ -10,7 +10,7 @@
 # Swedish video-editing vocabulary (spår, spelmarkör, sekvens, bin, snitt, nyckelbildruta,
 # undertext, rendera…). No proprietary localisation resource, string table or product UI was
 # consulted or copied, and no other FilmCraft catalog was translated from; add entries the same
-# way. Product, technology and format names (FilmCraft, ArtCraft, Lumetri, ProRes, LUFS, H.264…)
+# way. Product, technology and format names (FilmCraft, ArtCraft, ProRes, LUFS, H.264…)
 # keep their spelling, as do key-cap names (Shift, Alt, Ctrl, Cmd, Opt, Esc).
 # Labels use sentence case; commands are imperatives; Delete = Radera, Remove = Ta bort,
 # Clear = Rensa; decimals use a comma and frame rates are written bild/s (29,97 bild/s).
@@ -196,8 +196,8 @@
 	Refresh Changed Media	Uppdatera ändrad media
 	Linked Selection	Länkad markering
 	Lock Guides	Lås stödlinjer
-	Lumetri Color	Lumetri-färg
-	Lumetri Scopes	Lumetri-scope
+	Color Grading	Färggradering
+	Video Scopes	Videoskop
 	Magnification	Förstoring
 	Make Offline…	Gör offline…
 	Make Subclip…	Skapa delklipp…
@@ -890,7 +890,7 @@
 	Clip Volume	Klippvolym
 	(no clip selected)	(inget klipp markerat)
 	Master · {name}	Huvud · {name}
-	Add Lumetri Color to clip	Lägg till Lumetri-färg på klippet
+	Add Color Grading to clip	Lägg till färggradering i klippet
 	Input LUT	Ingångs-LUT
 	Color	Färg
 	Temperature	Temperatur
@@ -1668,7 +1668,7 @@
 	Elliptical	Elliptisk
 	Emboss	Relief
 	Enable HSL Secondary	Aktivera HSL-sekundär
-	Enable Mercury Transmit	Aktivera Mercury Transmit
+	Enable External Video Output	Aktivera extern videoutgång
 	Enable ProRes hardware accelerated encoding, if available	Aktivera hårdvaruaccelererad ProRes-kodning om tillgänglig
 	Enable clip and XMP metadata linking	Aktivera länkning av klipp- och XMP-metadata
 	Enable developer mode	Aktivera utvecklarläge
@@ -1736,7 +1736,7 @@
 	Focus Size	Fokusstorlek
 	Fold Motion	Vikrörelse
 	Foldback	Återvikning
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Färghanteringsparametrarna finns på fliken Inställningar i panelen Lumetri-färg.
+	For color management parameters, go to the Settings tab in the Color Grading panel.	Öppna fliken Inställningar i panelen Färggradering för färghanteringsparametrar.
 	Format	Format
 	Four Scopes (RGB, 8 bit)	Fyra scope (RGB, 8 bitar)
 	Four Scopes (YUV, float, no clamp)	Fyra scope (YUV, flyttal, ingen begränsning)
@@ -2007,7 +2007,7 @@
 	Luma Key	Lumanyckel
 	Luma Source	Lumakälla
 	Luma and Chroma	Luma och kroma
-	Lumetri Presets	Lumetri-förinställningar
+	Color Grading Presets	Förinställningar för färggradering
 	Luminance	Luminans
 	Luminance Threshold	Luminanströskel
 	Luminosity	Luminositet
@@ -3129,7 +3129,6 @@
 	Left align text	Vänsterjustera text
 	Looping GIF, 640×360 at 15 fps	Loopande GIF, 640×360 i 15 bild/s
 	Lower First	Undre fält först
-	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
 	MXF OP1a	MXF OP1a
@@ -3591,6 +3590,7 @@
 	The default graphics are used from the next start.	Standardgrafiken används från och med nästa start.
 	DirectX 12 only	Endast DirectX 12
 	software rendering	programvarurendering
+	integrated GPU	integrerad GPU
 	Label Color Presets	Förinställningar för etikettfärger
 	{name} (Modified)	{name} (ändrad)
 	Revert to the preset's colors and names	Återgå till förinställningens färger och namn
@@ -3745,3 +3745,9 @@
 	H.264 High 10 Intra	H.264 High 10 Intra
 	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 bitar 4:2:0) i sekvensens storlek, konstant kvalitet CRF 16, AAC 320 kbit/s; en 10-bitars master
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bitar 4:2:0, varje bildruta en nyckelbildruta), CRF 12, AAC 320 kbit/s; ett redigeringsvänligt mellanformat
+	List Color Grading Presets	Lista förinställningar för färggradering
+	Apply Color Grading Preset	Tillämpa förinställning för färggradering
+	Color Grading Preset Thumbnails	Miniatyrer för färggraderingsförinställningar
+	Toggle Color Grading Section	Växla färggraderingsavsnitt
+	Color Grading Section	Färggraderingsavsnitt
+	Read Video Scopes	Läs av videoskop
