@@ -125,7 +125,8 @@ fn the_global_height_commands_reach_a_track_with_its_own_height() {
     d.frames(3);
     let minimized = d.video_bands();
     let small = minimized[0].1;
-    assert!((small - own).abs() > 2.0, "V1 followed the command: {own} -> {small}");
+    // minimizing has to make it shorter, not merely different: 39 -> 50 must fail too
+    assert!(small < own - 2.0, "V1 got shorter: {own} -> {small}");
     for (i, b) in minimized.iter().enumerate() {
         assert!((b.1 - small).abs() < 0.6, "V{} is {} tall, V1 is {small}", i + 1, b.1);
     }
