@@ -226,3 +226,15 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Essential Sound duration timecode
+
+Music Duration accepts HH:MM:SS:FF using the active sequence frame rate and drop-frame setting.
+Click to type (compact right-aligned digits also work) or drag to change by frames. Enter applies
+once; clicking Apply commits the typed field before applying. Editing does not move the playhead.
+Invalid or over-one-hour input never applies. Advanced contains the supported Segments and
+Variations controls. Strict phrase matching and alternative durations are intentionally deferred
+to the search change; this panel does not expose unsupported controls or promise suggestions.
+An uncommitted target stays editable while the clip is unchanged. Changes to the remix target,
+Segments, Variations or clip duration elsewhere (Timeline, Undo/Redo, commands) refresh the
+field and controls and clear stale input/errors, including when the field was actively being edited.
