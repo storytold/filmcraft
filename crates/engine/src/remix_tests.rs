@@ -198,6 +198,47 @@ fn remixed_out_trim_keeps_requested_duration_and_audio() {
 }
 
 #[test]
+fn remix_levels_measure_only_the_selected_source_channel() {
+    let (mut m, _) = music();
+    for (i, sample) in m[0].iter_mut().enumerate() {
+        let beat = i / (SR as usize / 2);
+        *sample *= if beat % 7 < 3 { 0.1 } else { 1.0 };
+    }
+    for sample in &mut m[1] {
+        *sample *= 0.2;
+    }
+    let (mut s, c) = session(&m, None);
+    s.edit_sequence("Select source channel", |q, _, _| {
+        q.find_item_mut(c).unwrap().1.source_channels = vec![1];
+        Ok(())
+    })
+    .unwrap();
+
+    let response = s.execute("clip.remix", json!({"clip":c.0,"seconds":46.0})).unwrap();
+    let clip = item(&s, c);
+    let remix = filmcraft_render::remix::Remix::of(&clip).unwrap();
+    let plan = remix.plan_at(SR);
+    let source = s.source(clip.item).unwrap();
+    let period = f64::from(SR) * 60.0 / response["bpm"].as_f64().unwrap();
+    assert!(plan.pieces.len() > 1);
+    let calculate = |selected: bool| {
+        let mut levels = dsp::match_levels(&plan, SR, period, &mut |start, count| {
+            let audio = source.audio_stream(clip.audio_stream, start, count, SR).ok()?;
+            Some(if selected { vec![audio.channels[1].clone()] } else { audio.channels })
+        })
+        .unwrap();
+        levels.span = Tick::from_units(levels.span, i64::from(SR)).0;
+        levels
+    };
+    let played = calculate(true);
+    let all = calculate(false);
+    assert_ne!(played, all, "the channels must provide different measurement evidence");
+    let actual = remix.levels.unwrap();
+    assert_eq!(actual.joins, played.joins);
+    assert!((actual.span - played.span).abs() <= Tick::from_units(1, i64::from(SR)).0);
+}
+
+#[test]
 fn long_extension_survives_the_optional_level_matching_limit() {
     let (m, _) = dsp::test_music(SR, 120.0, 15, 3);
     let (mut s, c) = session(&m, None);

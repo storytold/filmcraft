@@ -439,9 +439,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     if w == 2 {
         // a 5.1 source (or a six-channel pick) folds down with ITU-R BS.775, as the Mix and the
         // Source Monitor do: picking its first two channels would drop C (dialogue) and surrounds
-        if let Some(six) = source_51_fold(item, buf.channel_count()) {
-            let picked: Vec<&[f32]> = six.iter().filter_map(|&c| buf.channels.get(c).map(Vec::as_slice)).collect();
-            let conv = chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear);
+        if let Some(conv) = fold_source_to_stereo(item, &buf) {
             for (dst, ch) in out.iter_mut().zip(&conv) {
                 let m = n.min(ch.len());
                 dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -468,9 +466,26 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     out
 }
 
+fn fold_source_to_stereo(item: &TrackItem, audio: &AudioBuffer) -> Option<Vec<Vec<f32>>> {
+    let six = source_51_fold(item, audio.channel_count())?;
+    let picked: Vec<&[f32]> = six.iter().filter_map(|&c| audio.channels.get(c).map(Vec::as_slice)).collect();
+    Some(chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear))
+}
+
+/// Source channels as heard on the target track for remix seam measurement.
+pub fn seam_measurement_channels(item: &TrackItem, audio: AudioBuffer, track_width: usize) -> Vec<Vec<f32>> {
+    if track_width == 2
+        && let Some(folded) = fold_source_to_stereo(item, &audio)
+    {
+        return folded;
+    }
+    let picked = played_channels(item, audio.channel_count(), track_width);
+    audio.channels.into_iter().enumerate().filter_map(|(index, channel)| picked.contains(&index).then_some(channel)).collect()
+}
+
 /// The source channels (of `available`) a clip plays on a track of `w` channels (2 or 6), as
 /// [`raw_channels`] picks them: a six-channel fold-down, its [`source_pair`], or its [`source_51`]
-/// channels. Maintain Audio Pitch aligns its grains on these and stretches only these.
+/// channels. Maintain Audio Pitch and Remix seam analysis both use this selection.
 pub(crate) fn played_channels(item: &TrackItem, available: usize, w: usize) -> Vec<usize> {
     let mut v = if w == 2 {
         source_51_fold(item, available).unwrap_or_else(|| {

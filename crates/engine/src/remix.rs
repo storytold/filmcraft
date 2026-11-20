@@ -127,7 +127,8 @@ fn analysis(s: &Session, item: ItemId, source_in: Tick, dur: Tick) -> Result<Arc
 fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f64) -> Result<(Tick, Remix, Arc<Analysis>)> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let sr = seq.settings.sample_rate.max(1) as i64;
-    let (_, it) = seq.find_item(c).ok_or_else(|| EngineError::Other("no such clip".into()))?;
+    let (track, it) = seq.find_item(c).ok_or_else(|| EngineError::Other("no such clip".into()))?;
+    let width = filmcraft_render::mixer::width_of(seq.track(track).ok_or_else(|| EngineError::Other("no such track".into()))?.channels);
     let old = filmcraft_render::remix::Remix::of(it);
     let original = old.as_ref().map(|r| r.original).unwrap_or(it.duration);
     let a = analysis(s, it.item, it.source_in, original)?;
@@ -136,7 +137,8 @@ fn make_plan(s: &Session, c: ClipId, target: Tick, segments: f64, variations: f6
     let source = s.source(it.item).ok_or_else(|| EngineError::Other("the clip's media is offline".into()))?;
     let base = it.source_in.to_units_floor(sr);
     let levels = dsp::match_levels(&plan, sr as u32, a.period, &mut |start, count| {
-        source.audio_stream(it.audio_stream, base.checked_add(start)?, count, sr as u32).ok().map(|b| b.channels)
+        let audio = source.audio_stream(it.audio_stream, base.checked_add(start)?, count, sr as u32).ok()?;
+        Some(filmcraft_render::audio::seam_measurement_channels(it, audio, width))
     })
     .map(|mut levels| {
         levels.span = Tick::from_units(levels.span, sr).0;

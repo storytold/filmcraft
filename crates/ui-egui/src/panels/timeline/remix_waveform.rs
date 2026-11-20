@@ -1,8 +1,10 @@
 //! Clip-relative waveform peaks rendered through the same Remix reader as playback.
 //! Each arrangement has its own bounded background cache; source peaks stay unchanged.
 
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use web_time::{Duration, Instant};
 
 use filmcraft_media::MediaSource;
 use filmcraft_project::{ItemId, ParamValue, TrackItem};
@@ -14,6 +16,7 @@ const BUCKET: usize = 256;
 const MAX_PEAKS: usize = 2_000_000;
 const MAX_CACHED: usize = 16;
 const MAX_CACHED_PEAKS: usize = 4_000_000;
+const FIRST_RETRY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
@@ -64,56 +67,136 @@ pub(super) struct Peaks {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct Cache {
-    entries: Arc<Mutex<HashMap<Key, Option<Peaks>>>>,
-    pending: Arc<Mutex<Vec<Key>>>,
+pub(super) struct Cache(Arc<Mutex<CacheState>>);
+
+#[derive(Default)]
+struct CacheState {
+    frame: u64,
+    visible: HashSet<Key>,
+    visible_peaks: usize,
+    entries: HashMap<Key, Entry>,
 }
 
-/// None while the current plan is being generated: never display the old plan's waveform.
-pub(super) fn request(app: &mut FilmcraftApp, ctx: &egui::Context, item: &TrackItem) -> Option<Peaks> {
-    let key = Key::of(item)?;
-    let cache = app.tl.remix_waveforms.clone();
-    if let Some(have) = cache.entries.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return have.clone();
+enum Entry {
+    Pending { failures: u32 },
+    RetryAt { when: Instant, failures: u32 },
+    Ready(Peaks),
+}
+
+impl Key {
+    fn peak_count(&self) -> usize {
+        (filmcraft_time::Tick(self.duration).to_units_floor(i64::from(SR)) as usize).div_ceil(BUCKET)
     }
-    let source = app.session.source(item.item)?;
-    {
-        let mut pending = cache.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pending.contains(&key) || pending.len() >= 2 {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            return None;
+}
+
+impl CacheState {
+    fn admit(&mut self, frame: u64, key: &Key) -> bool {
+        if frame != self.frame {
+            self.frame = frame;
+            self.visible.clear();
+            self.visible_peaks = 0;
         }
-        pending.push(key.clone());
+        if self.visible.contains(key) {
+            return true;
+        }
+        let count = key.peak_count();
+        if self.visible.len() >= MAX_CACHED || self.visible_peaks + count > MAX_CACHED_PEAKS {
+            return false;
+        }
+        self.visible.insert(key.clone());
+        self.visible_peaks += count;
+        true
+    }
+
+    fn reserve(&mut self, key: &Key) -> bool {
+        if self.entries.values().filter(|entry| matches!(entry, Entry::Pending { .. })).count() >= 2 {
+            return false;
+        }
+        if !self.entries.contains_key(key) {
+            while self.entries.len() >= MAX_CACHED || self.entries.keys().map(Key::peak_count).sum::<usize>() + key.peak_count() > MAX_CACHED_PEAKS {
+                let victim = self.entries.iter().find(|(k, entry)| !self.visible.contains(*k) && !matches!(entry, Entry::Pending { .. }));
+                let Some((victim, _)) = victim else { return false };
+                let victim = victim.clone();
+                self.entries.remove(&victim);
+            }
+        }
+        let failures = match self.entries.get(key) {
+            Some(Entry::RetryAt { failures, .. }) => *failures,
+            _ => 0,
+        };
+        self.entries.insert(key.clone(), Entry::Pending { failures });
+        true
+    }
+
+    fn finish(&mut self, key: Key, result: Option<Peaks>) {
+        let Some(Entry::Pending { failures }) = self.entries.get(&key) else { return };
+        let entry = match result {
+            Some(peaks) => Entry::Ready(peaks),
+            None => Entry::RetryAt { when: Instant::now() + FIRST_RETRY * (1 << (*failures).min(5)), failures: failures.saturating_add(1) },
+        };
+        self.entries.insert(key, entry);
+    }
+}
+
+pub(super) enum Waveform {
+    Source,
+    Pending,
+    Ready(Peaks),
+}
+
+pub(super) fn request(app: &mut FilmcraftApp, ctx: &egui::Context, item: &TrackItem) -> Waveform {
+    let Some(key) = Key::of(item) else {
+        // The playback reader uses linear audio when the stored plan cannot be parsed.
+        return if filmcraft_render::remix::is_remixed(item) && filmcraft_render::remix::Remix::of(item).is_some_and(|remix| !remix.is_empty()) {
+            Waveform::Pending
+        } else {
+            Waveform::Source
+        };
+    };
+    let cache = app.tl.remix_waveforms.clone();
+    let frame = ctx.cumulative_frame_nr();
+    let now = Instant::now();
+    let source;
+    {
+        let mut state = cache.0.lock().unwrap_or_else(|e| e.into_inner());
+        // The same visible keys claim the same bounded budget on every stationary frame.
+        // An overflow clip cannot evict another admitted clip and start a repaint loop.
+        if !state.admit(frame, &key) {
+            return Waveform::Pending;
+        }
+        match state.entries.get(&key) {
+            Some(Entry::Ready(peaks)) => return Waveform::Ready(peaks.clone()),
+            Some(Entry::Pending { .. }) => return Waveform::Pending,
+            Some(Entry::RetryAt { when: retry, .. }) if *retry > now => {
+                ctx.request_repaint_after(retry.saturating_duration_since(now));
+                return Waveform::Pending;
+            }
+            _ => {}
+        }
+        let Some(online) = app.session.source(item.item) else { return Waveform::Pending };
+        source = online;
+        if !state.reserve(&key) {
+            // The outstanding jobs request a repaint when they release their slots.
+            return Waveform::Pending;
+        }
     }
     let item = item.clone();
-    let ctx = ctx.clone();
+    let repaint = ctx.clone();
     #[cfg(not(target_arch = "wasm32"))]
-    let retry = (cache.clone(), key.clone());
+    let (retry_cache, retry_key) = (cache.clone(), key.clone());
     let run = move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_peaks(&*source, &item))).ok().flatten();
-        {
-            let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
-            let incoming = result.as_ref().map_or(0, |p| p.values.len());
-            while !entries.is_empty()
-                && (entries.len() >= MAX_CACHED || entries.values().flatten().map(|p| p.values.len()).sum::<usize>() + incoming > MAX_CACHED_PEAKS)
-            {
-                let oldest = entries.keys().next().cloned();
-                if let Some(oldest) = oldest {
-                    entries.remove(&oldest);
-                }
-            }
-            entries.insert(key.clone(), result);
-        }
-        cache.pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != key);
-        ctx.request_repaint();
+        cache.0.lock().unwrap_or_else(|e| e.into_inner()).finish(key, result);
+        repaint.request_repaint();
     };
     #[cfg(not(target_arch = "wasm32"))]
     if std::thread::Builder::new().name("remix-waveform".into()).spawn(run).is_err() {
-        retry.0.pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != retry.1);
+        retry_cache.0.lock().unwrap_or_else(|e| e.into_inner()).finish(retry_key, None);
+        ctx.request_repaint_after(FIRST_RETRY);
     }
     #[cfg(target_arch = "wasm32")]
     run();
-    None
+    Waveform::Pending
 }
 
 fn render_peaks(source: &dyn MediaSource, item: &TrackItem) -> Option<Peaks> {
@@ -125,8 +208,18 @@ fn render_peaks(source: &dyn MediaSource, item: &TrackItem) -> Option<Peaks> {
     while position < total {
         // A multiple of the peak bucket, so block boundaries never shift peak positions.
         let count = (BUCKET * 750).min(total - position);
-        let buffer =
-            filmcraft_render::remix::read(item, &|start, count| source.audio_stream(item.audio_stream, start, count, SR).ok(), position as i64, count, SR)?;
+        let failed = Cell::new(false);
+        let read = |start, count| match source.audio_stream(item.audio_stream, start, count, SR) {
+            Ok(audio) => Some(audio),
+            Err(_) => {
+                failed.set(true);
+                None
+            }
+        };
+        let buffer = filmcraft_render::remix::read(item, &read, position as i64, count, SR)?;
+        if failed.get() {
+            return None;
+        }
         let channel = buffer.channels.first()?;
         for bucket in channel.chunks(BUCKET) {
             let range = bucket.iter().fold((0f32, 0f32), |(lo, hi), &x| (lo.min(x), hi.max(x)));
@@ -145,7 +238,9 @@ mod tests {
     use filmcraft_render::remix::{Remix, TickPiece};
     use filmcraft_time::Tick;
 
-    struct Source(filmcraft_media::MediaInfo);
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Source(filmcraft_media::MediaInfo, AtomicBool);
     impl MediaSource for Source {
         fn info(&self) -> &filmcraft_media::MediaInfo {
             &self.0
@@ -157,6 +252,9 @@ mod tests {
             self.audio_stream(0, start, frames, sr)
         }
         fn audio_stream(&self, stream: usize, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+            if self.1.swap(false, Ordering::Relaxed) {
+                return Err(filmcraft_media::MediaError::NoStream("audio"));
+            }
             let samples = (0..frames)
                 .map(|k| {
                     let value = match start + k as i64 {
@@ -173,16 +271,19 @@ mod tests {
     }
 
     fn source() -> Source {
-        Source(filmcraft_media::MediaInfo {
-            name: "levels.wav".into(),
-            kind: filmcraft_media::MediaKind::Movie,
-            duration: Tick::from_units(1536, i64::from(SR)),
-            video: None,
-            audio_streams: Vec::new(),
-            container: "wav".into(),
-            start_timecode: None,
-            file_size: None,
-        })
+        Source(
+            filmcraft_media::MediaInfo {
+                name: "levels.wav".into(),
+                kind: filmcraft_media::MediaKind::Movie,
+                duration: Tick::from_units(1536, i64::from(SR)),
+                video: None,
+                audio_streams: Vec::new(),
+                container: "wav".into(),
+                start_timecode: None,
+                file_size: None,
+            },
+            AtomicBool::new(false),
+        )
     }
 
     fn item(pieces: &[(i64, i64)], fade: i64) -> TrackItem {
@@ -204,6 +305,54 @@ mod tests {
         }
         .store(&mut item);
         item
+    }
+
+    #[test]
+    fn stationary_view_stops_starting_jobs_at_capacity() {
+        let item = item(&[(0, 512), (1024, 512)], 64);
+        let template = Key::of(&item).unwrap();
+        let keys: Vec<_> = (0..=MAX_CACHED).map(|id| Key { item: ItemId(id as u64), ..template.clone() }).collect();
+        let mut cache = CacheState::default();
+        let mut started = 0;
+        let peaks = render_peaks(&source(), &item).unwrap();
+        for frame in 1..=MAX_CACHED as u64 + 2 {
+            for key in &keys {
+                if cache.admit(frame, key) && !cache.entries.contains_key(key) && cache.reserve(key) {
+                    cache.finish(key.clone(), Some(peaks.clone()));
+                    started += 1;
+                }
+            }
+        }
+        assert_eq!(started, MAX_CACHED);
+        let newly_visible = keys.last().unwrap();
+        assert!(cache.admit(MAX_CACHED as u64 + 3, newly_visible));
+        assert!(cache.reserve(newly_visible));
+        assert_eq!(cache.entries.len(), MAX_CACHED);
+    }
+
+    #[test]
+    fn transient_read_error_does_not_become_a_silent_waveform() {
+        let source = source();
+        let item = item(&[(0, 512), (1024, 512)], 64);
+        let key = Key::of(&item).unwrap();
+        let mut cache = CacheState::default();
+        assert!(cache.admit(1, &key) && cache.reserve(&key));
+        source.1.store(true, Ordering::Relaxed);
+        let failed = render_peaks(&source, &item);
+        assert!(failed.is_none());
+        cache.finish(key.clone(), failed);
+        assert!(matches!(cache.entries.get(&key), Some(Entry::RetryAt { when, failures: 1 }) if *when > Instant::now()));
+        assert!(render_peaks(&source, &item).unwrap().maximum > 0.0);
+    }
+
+    #[test]
+    fn malformed_plan_uses_the_source_waveform() {
+        let mut item = item(&[(0, 512), (1024, 512)], 64);
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        assert!(matches!(request(&mut app, &ctx, &item), Waveform::Pending));
+        item.effect_mut("remix").unwrap().params.insert("plan".into(), filmcraft_project::Param::new(ParamValue::Text("broken".into())));
+        assert!(matches!(request(&mut app, &ctx, &item), Waveform::Source));
     }
 
     #[test]

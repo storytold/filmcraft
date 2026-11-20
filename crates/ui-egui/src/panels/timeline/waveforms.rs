@@ -9,23 +9,24 @@ pub(super) fn waveform_zone_height(body_height: f32) -> f32 {
 }
 
 pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
-    let remixed = filmcraft_render::remix::is_remixed(it);
-    let (peaks, remix_maximum) = if remixed {
-        let Some(rendered) = remix_waveform::request(app, p.ctx(), it) else { return };
-        (rendered.values, Some(rendered.maximum))
-    } else {
-        let Some(source) = request_peaks(app, it.item, it.audio_stream) else { return };
-        (source, None)
-    };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
     let zone_h = waveform_zone_height(body.height());
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
-    if clip.width() <= 0.0 {
+    if !clip.is_positive() {
         return;
     }
+    let (peaks, remix_maximum) = match remix_waveform::request(app, p.ctx(), it) {
+        remix_waveform::Waveform::Ready(rendered) => (rendered.values, Some(rendered.maximum)),
+        remix_waveform::Waveform::Pending => return,
+        remix_waveform::Waveform::Source => {
+            let Some(source) = request_peaks(app, it.item, it.audio_stream) else { return };
+            (source, None)
+        }
+    };
+    let remixed = remix_maximum.is_some();
     let key = Arc::as_ptr(&peaks) as usize;
     let peak = remix_maximum.unwrap_or_else(|| match app.tl.peak_max.get(&pkey) {
         Some(&(k, v)) if k == key => v,
