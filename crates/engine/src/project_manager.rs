@@ -11,6 +11,7 @@
 //! runs as a background job; the project file is written last, with the outputs' fingerprints.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
@@ -77,6 +78,7 @@ struct Work {
     /// Consolidate: the media range to write; None = copy the file.
     range: Option<TimeRange>,
     proxy: Option<(String, String)>,
+    additional_frames: Vec<(String, PathBuf)>,
 }
 
 /// Plan, estimate and (unless `dryRun`) run the Project Manager.
@@ -91,6 +93,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let handles = u64_p(p, "handles").unwrap_or(30) as i64;
     let include_proxies = bool_p(p, "includeProxies").unwrap_or(!consolidate) && !consolidate;
     let include_previews = bool_p(p, "includePreviews").unwrap_or(false);
+    let portable = bool_p(p, "portable").unwrap_or(false);
     let pr: &'static Preset =
         preset(str_p(p, "preset").unwrap_or(crate::proxies::DEFAULT_TRANSCODE_PRESET)).ok_or_else(|| bad("file.projectManager", "unknown preset"))?;
     let seqs: Vec<ItemId> = match p.get("sequences").and_then(Value::as_array) {
@@ -146,7 +149,23 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         let stem = file.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("media-{}", id.0));
         let ext = file.extension().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let transcode = consolidate && matches!(m.info.kind, MediaKind::Movie | MediaKind::AudioOnly) && ranges.contains_key(&id);
-        let (out, range) = if transcode {
+        let mut additional_frames = Vec::new();
+        let (out, range) = if portable && m.info.kind == MediaKind::ImageSequence {
+            let folder = dest_dir.join("Image sequences").join(id.0.to_string());
+            let frame_name = |path: &str| {
+                Path::new(path).file_name().map(|name| folder.join(name)).ok_or_else(|| EngineError::Other(format!("{path}: missing frame filename")))
+            };
+            let frames = crate::media_pool::image_sequence_frames(&source_path, &*s.services)?;
+            for frame in frames.into_iter().skip(1).flatten() {
+                let bytes = s.services.file_size(&frame).unwrap_or(0);
+                original_bytes += bytes;
+                result_bytes += bytes;
+                let target = frame_name(&frame)?;
+                additional_frames.push((frame, target));
+            }
+            result_bytes += size;
+            (frame_name(&source_path)?.to_string_lossy().into_owned(), None)
+        } else if transcode {
             let rate = m.frame_rate();
             let (lo, hi) = ranges[&id];
             let a = rate.snap((lo - fd_handles(rate)).max(Tick::ZERO));
@@ -177,7 +196,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             },
             _ => None,
         };
-        work.push(Work { item: id, src_path: source_path, out, range, proxy });
+        work.push(Work { item: id, src_path: source_path, out, range, proxy, additional_frames });
     }
     let previews = s.path.as_deref().map(crate::previews::dir_for_project).filter(|d| include_previews && d.is_dir());
     if let Some(d) = &previews {
@@ -213,7 +232,10 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let total: u64 = work
         .iter()
-        .map(|w| w.range.map_or(1, |r| proj.item(w.item).and_then(|i| i.as_media()).map_or(1, |m| crate::proxies::frame_count(m, Some(r)))))
+        .map(|w| {
+            w.additional_frames.len() as u64
+                + w.range.map_or(1, |r| proj.item(w.item).and_then(|i| i.as_media()).map_or(1, |m| crate::proxies::frame_count(m, Some(r))))
+        })
         .sum::<u64>()
         + 1;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
@@ -224,7 +246,13 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let services = s.services.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
-        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), JobEnv { project_path: &project_path, pr, prog: &prog, services: &*services });
+        let r = execute(
+            proj,
+            work,
+            sources,
+            previews.map(|d| (d, prev_dst)),
+            JobEnv { project_path: &project_path, portable, pr, prog: &prog, services: &*services },
+        );
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
             path: project_path.clone(),
@@ -259,9 +287,41 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
 /// What a consolidate job runs against, apart from the project and its work list.
 struct JobEnv<'a> {
     project_path: &'a str,
+    portable: bool,
     pr: &'a Preset,
     prog: &'a filmcraft_export::Progress,
     services: &'a dyn crate::Services,
+}
+
+fn portable_reference(project_path: &Path, file: &Path) -> std::result::Result<String, String> {
+    let root = project_path.parent().ok_or("The backup project has no folder.")?;
+    let relative = file.strip_prefix(root).map_err(|_| "The backup would reference media outside its folder.")?;
+    if relative.as_os_str().is_empty() || !relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+        return Err("The backup contains an invalid media path.".into());
+    }
+    Ok(relative.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/"))
+}
+
+fn copy_source(from: &Path, to: &Path, portable: bool, prog: &filmcraft_export::Progress) -> std::result::Result<u64, String> {
+    let copy = || -> std::io::Result<u64> {
+        if !portable {
+            return std::fs::copy(from, to);
+        }
+        let mut reader = std::fs::File::open(from)?;
+        let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+        let mut buffer = vec![0; 256 * 1024];
+        let mut bytes = 0;
+        while !prog.cancel.load(Ordering::Relaxed) {
+            let n = reader.read(&mut buffer)?;
+            if n == 0 {
+                return Ok(bytes);
+            }
+            writer.write_all(&buffer[..n])?;
+            bytes += n as u64;
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"))
+    };
+    copy().map_err(|error| if prog.cancel.load(Ordering::Relaxed) { "cancelled".into() } else { format!("copying {}: {error}", from.display()) })
 }
 
 fn execute(
@@ -271,7 +331,13 @@ fn execute(
     previews: Option<(PathBuf, PathBuf)>,
     env: JobEnv<'_>,
 ) -> std::result::Result<u64, String> {
-    let JobEnv { project_path, pr, prog, services } = env;
+    let JobEnv { project_path, portable, pr, prog, services } = env;
+    let stored = |file: &str| -> std::result::Result<String, String> {
+        if !portable {
+            return Ok(file.to_string());
+        }
+        portable_reference(Path::new(project_path), Path::new(file))
+    };
     let mut bytes = 0;
     let openers = filmcraft_codecs::openers();
     for w in &work {
@@ -284,8 +350,12 @@ fn execute(
         }
         match w.range {
             None => {
-                bytes += std::fs::copy(&w.src_path, &w.out).map_err(|e| format!("copying {}: {e}", w.src_path))?;
+                bytes += copy_source(Path::new(&w.src_path), Path::new(&w.out), portable, prog)?;
                 prog.done.fetch_add(1, Ordering::Relaxed);
+                for (from, to) in &w.additional_frames {
+                    bytes += copy_source(Path::new(from), to, portable, prog)?;
+                    prog.done.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Some(r) => {
                 let m = proj.item(w.item).and_then(|i| i.as_media()).cloned().ok_or("item vanished")?;
@@ -305,23 +375,25 @@ fn execute(
             }
         }
         if let Some((from, to)) = &w.proxy {
-            bytes += std::fs::create_dir_all(Path::new(to).parent().unwrap_or(Path::new(".")))
-                .and_then(|_| std::fs::copy(from, to))
-                .map_err(|e| format!("copying {from}: {e}"))?;
+            std::fs::create_dir_all(Path::new(to).parent().unwrap_or(Path::new("."))).map_err(|e| format!("copying {from}: {e}"))?;
+            bytes += copy_source(Path::new(from), Path::new(to), portable, prog)?;
         }
         let identity = crate::relink::identity_of(services, &w.out).ok();
         if let Some(mm) = proj.item_mut(w.item).and_then(|i| i.as_media_mut()) {
-            mm.media = MediaRef::File { path: w.out.clone() };
+            mm.media = MediaRef::File { path: stored(&w.out)? };
             mm.offline = false;
             mm.identity = identity;
             mm.proxy = match (&w.proxy, w.range) {
-                (Some((_, to)), None) => Some(MediaRef::File { path: to.clone() }),
+                (Some((_, to)), None) => Some(MediaRef::File { path: stored(to)? }),
                 _ => None,
             };
         }
     }
     if let Some((from, to)) = previews {
         bytes += copy_dir(&from, &to).map_err(|e| format!("copying previews: {e}"))?;
+    }
+    if prog.cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
     }
     let data = filmcraft_format::encode(&proj, false);
     filmcraft_format::atomic_write(Path::new(project_path), &data).map_err(|e| format!("{project_path}: {e}"))?;
@@ -406,7 +478,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Project Manager…",
         menu: &["File"],
         shortcut: None,
-        params: r#"{"destination":str,"mode":"collect|consolidate","sequences":[id]?,"excludeUnused":bool=true,"handles":frames=30,"preset":"prores_lt|prores_hq|h264|…","includeProxies":bool,"includePreviews":bool=false,"projectName":str?,"dryRun":bool=false,"overwrite":bool=false,"wait":bool=false}"#,
+        params: r#"{"destination":str,"mode":"collect|consolidate","sequences":[id]?,"excludeUnused":bool=true,"handles":frames=30,"preset":"prores_lt|prores_hq|h264|…","includeProxies":bool,"includePreviews":bool=false,"portable":bool=false,"projectName":str?,"dryRun":bool=false,"overwrite":bool=false,"wait":bool=false}"#,
         enabled: |s| if s.project.sequences().next().is_some() { Ok(()) } else { Err("the project has no sequences".into()) },
         run,
         journal: false,
@@ -417,6 +489,19 @@ pub fn commands() -> Vec<CommandSpec> {
 #[cfg(all(test, unix))]
 mod folder_walk_tests {
     use super::*;
+
+    #[test]
+    fn portable_references_follow_the_project_folder() {
+        let project = Path::new("/backup/original/Edit.fcproj");
+        let proxy = Path::new("/backup/original/Proxies/Shot.mp4");
+        let stored = portable_reference(project, proxy).unwrap();
+        assert_eq!(stored, "Proxies/Shot.mp4");
+        let moved = Path::new("/backup/moved/Edit.fcproj");
+        let resolved = crate::doc_path::resolve(&stored, Some(moved)).unwrap();
+        assert_eq!(Path::new(&resolved), Path::new("/backup/moved/Proxies/Shot.mp4"));
+        assert!(portable_reference(project, Path::new("/backup/elsewhere/Shot.mp4")).is_err());
+        assert!(portable_reference(project, Path::new("/backup/original/../Shot.mp4")).is_err());
+    }
 
     #[test]
     fn links_back_to_an_ancestor_are_not_walked() {

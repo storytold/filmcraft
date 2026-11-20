@@ -480,6 +480,64 @@ fn builtin(
 pub fn builtin_templates() -> Vec<GraphicsTemplate> {
     let mut v = Vec::new();
 
+    {
+        let end = Tick::from_seconds_f64(0.42);
+        let mut name = text(1, "Name", "Alex Morgan", (152.0, 870.0), 59.0, "Bold");
+        let mut role = text(2, "Role", "Creative Director", (154.0, 932.0), 37.0, "Regular");
+        let mut accent = shape(3, "Accent", 0, (113.0, 884.0), (10.0, 112.0), 0x39cfb5);
+        for (layer, x, y) in [(&mut name, 152.0, 870.0), (&mut role, 154.0, 932.0), (&mut accent, 113.0, 884.0)] {
+            if let Some(position) = layer.params.get_mut("position") {
+                position.put_keyframe(Tick::ZERO, ParamValue::Vec2(Vec2::new(x - 88.0, y)));
+                position.put_keyframe(end, ParamValue::Vec2(Vec2::new(x, y)));
+            }
+            if let Some(opacity) = layer.params.get_mut("opacity") {
+                opacity.put_keyframe(Tick::ZERO, ParamValue::Float(0.0));
+                opacity.put_keyframe(end, ParamValue::Float(100.0));
+            }
+        }
+        let mut template = builtin(
+            "lower-third-slide",
+            "Lower Third – Slide In",
+            "Lower Thirds",
+            "An animated name, role and accent rule.",
+            5,
+            vec![accent, name, role],
+            vec![
+                ctl("name", "Name", 1, "text"),
+                ctl("role", "Role", 2, "text"),
+                ctl("font", "Font", 1, "font"),
+                ctl("accent_color", "Accent Color", 3, "fill_color"),
+            ],
+        );
+        template.graphic.intro = end;
+        template.graphic.design_duration = template.duration;
+        v.push(template);
+    }
+    {
+        let mut track = shape(1, "Track", 0, (960.0, 1020.0), (1560.0, 18.0), 0x172a38);
+        set(&mut track, "corner_radius", ParamValue::Float(9.0));
+        let mut fill = shape(2, "Progress", 0, (181.0, 1020.0), (2.0, 18.0), 0x40ddd0);
+        set(&mut fill, "corner_radius", ParamValue::Float(9.0));
+        let end = Tick::from_seconds_f64(4.95);
+        if let Some(size) = fill.params.get_mut("size") {
+            size.put_keyframe(Tick::ZERO, ParamValue::Vec2(Vec2::new(2.0, 18.0)));
+            size.put_keyframe(end, ParamValue::Vec2(Vec2::new(1560.0, 18.0)));
+        }
+        if let Some(position) = fill.params.get_mut("position") {
+            position.put_keyframe(Tick::ZERO, ParamValue::Vec2(Vec2::new(181.0, 1020.0)));
+            position.put_keyframe(end, ParamValue::Vec2(Vec2::new(960.0, 1020.0)));
+        }
+        v.push(builtin(
+            "progress-bar",
+            "Progress Bar",
+            "Generators",
+            "A five-second progress overlay with editable colours.",
+            5,
+            vec![track, fill],
+            vec![ctl("track_color", "Track Color", 1, "fill_color"), ctl("progress_color", "Progress Color", 2, "fill_color")],
+        ));
+    }
+
     // Lower third: a slab that grows with the name, a small accent square and a role line.
     {
         let mut slab = shape(1, "Slab", 0, (400.0, 900.0), (560.0, 150.0), 0x1d4ed8);
@@ -703,6 +761,29 @@ pub fn builtin_templates() -> Vec<GraphicsTemplate> {
         t.graphic.roll = Roll { mode: RollMode::CrawlLeft, start_off_screen: true, end_off_screen: true, ..Default::default() };
         v.push(t);
     }
+    let mut card = shape(1, "Card", 0, (540.0, 1430.0), (864.0, 255.0), 0x101c30);
+    set(&mut card, "opacity", ParamValue::Float(94.0));
+    let accent = shape(2, "Accent", 0, (130.0, 1430.0), (13.0, 255.0), 0x7ee4cc);
+    let name = text(3, "Name", "Alex Morgan", (176.0, 1414.0), 69.0, "Bold");
+    let mut detail = text(4, "Detail", "FIELD NOTES", (177.0, 1503.0), 40.0, "Medium");
+    set(&mut detail, "fill_color", rgb(0x7ee4cc));
+    let mut portrait = builtin(
+        "portrait-title-card",
+        "Portrait Title Card",
+        "Titles",
+        "A name and detail card framed for vertical video.",
+        5,
+        vec![card, accent, name, detail],
+        vec![
+            ctl("name", "Name", 3, "text"),
+            ctl("detail", "Detail", 4, "text"),
+            ctl("card_color", "Card Color", 1, "fill_color"),
+            ctl("accent_color", "Accent Color", 2, "fill_color"),
+            ctl("font", "Font", 3, "font"),
+        ],
+    );
+    portrait.canvas = [1080, 1920];
+    v.push(portrait);
     v
 }
 

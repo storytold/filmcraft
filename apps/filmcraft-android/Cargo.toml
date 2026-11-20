@@ -1,0 +1,50 @@
+[package]
+name = "filmcraft-android"
+description = "FilmCraft on Android: eframe mobile runner, wgpu (Vulkan/GLES), touch controls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+
+[lib]
+crate-type = ["cdylib"]
+
+# The in-app file browser is plain egui and is built (and tested) on every target.
+[dependencies]
+filmcraft-ui-egui = { workspace = true }
+egui = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+filmcraft-engine = { workspace = true }
+filmcraft-format = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-platform = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-text = { workspace = true }
+filmcraft-time = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+android_logger = "0.14"
+android-activity = { version = "0.6", features = ["native-activity"] }
+cpal = "0.16"
+getrandom = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+log = { workspace = true }
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+subtle = "2"
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

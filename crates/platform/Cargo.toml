@@ -33,6 +33,10 @@ filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
 
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.21"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"

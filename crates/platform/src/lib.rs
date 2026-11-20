@@ -4,7 +4,8 @@
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`). Today that is VideoToolbox on macOS for H.264
 //! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2; Media Foundation / DXVA on
-//! Windows; NVDEC ([`nvdec`], NVIDIA's driver) and VA-API ([`vaapi`]) on Linux for H.264 and HEVC; on other systems (and on
+//! Windows; MediaCodec on Android for eligible 8-bit H.264 and HEVC streams; NVDEC ([`nvdec`], NVIDIA's driver)
+//! and VA-API ([`vaapi`]) on Linux for H.264 and HEVC; on other systems (and on
 //! Linux with neither) registration does nothing and reports [`Availability::Unavailable`]. It also registers a
 //! hardware H.264 encoder factory (`filmcraft_export::register_encoder`) that only acts when an
 //! export asks for it (`ExportSettings::hardware_encoding` = `Auto`), see [`hardware_encode`]; on
@@ -28,6 +29,22 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android_codec_encode;
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android_decode;
+#[cfg(target_os = "android")]
+pub mod android_downloads;
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+mod android_media;
+#[cfg(target_os = "android")]
+pub mod android_picker;
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+pub mod android_ui;
 // Used by the Windows (and, for `biplanar`, Linux) decoders; compiled everywhere so their tests run
 // on every system.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -64,10 +81,32 @@ pub enum Availability {
     Unavailable(&'static str),
 }
 
+/// Make the app's JVM available to MediaCodec workers and register Android media factories.
+#[cfg(target_os = "android")]
+pub fn register_android(app: &android_activity::AndroidApp) -> Availability {
+    match android_media::initialize(app) {
+        Ok(()) => register(),
+        Err(reason) => {
+            log::warn!("Android MediaCodec is unavailable: {reason}");
+            Availability::Unavailable("could not attach to the Android Java VM")
+        }
+    }
+}
+
 /// Register the platform's hardware video decoders (call once at startup; repeated calls are
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    #[cfg(target_os = "android")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            filmcraft_codecs::register_video_decoder(android_decode::factory);
+            filmcraft_export::register_encoder(android_codec_encode::factory);
+            filmcraft_codecs::hw::set_hw_backend("Android MediaCodec");
+        });
+        Availability::Available("Android MediaCodec")
+    }
     #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
     filmcraft_export::register_encoder(nvenc::export::factory);
     #[cfg(target_os = "macos")]
@@ -132,7 +171,7 @@ pub fn register() -> Availability {
         }
         available
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
     {
         Availability::Unavailable("no hardware video decoder for this system yet")
     }
@@ -140,6 +179,10 @@ pub fn register() -> Availability {
 
 /// Whether [`register`] has put a hardware decoder factory in front of our decoders.
 pub fn registered() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        filmcraft_codecs::video_decoder_registered(android_decode::factory)
+    }
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::video_decoder_registered(videotoolbox_factory)
@@ -156,7 +199,7 @@ pub fn registered() -> bool {
         }
         filmcraft_codecs::video_decoder_registered(vaapi_factory)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
     {
         false
     }
@@ -165,6 +208,10 @@ pub fn registered() -> bool {
 /// Whether this system's hardware decoder takes the stream of `entry` (whatever the Hardware
 /// decoding setting says): diagnostics and tests.
 pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        android_decode::supports(entry)
+    }
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok()).is_some_and(|info| videotoolbox::VtDecoder::new(info).is_ok())
@@ -183,7 +230,7 @@ pub fn hardware_decoder_for(entry: &filmcraft_isobmff::SampleEntry) -> bool {
             vaapi::VaDecoder::new(info).is_ok()
         })
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
     {
         let _ = entry;
         false

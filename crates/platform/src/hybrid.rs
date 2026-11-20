@@ -25,9 +25,47 @@ const EMITTED_MAX: usize = 4096;
 /// samples, but an invalid stream can still make one sample produce many decoded pictures.
 const REPLAY_OUTPUT_MAX: usize = 4096;
 
+/// Some Android codecs can fail while draining their last reordered pictures.
+#[cfg(target_os = "android")]
+pub(crate) trait FallibleFlush: VideoDecoder {
+    fn try_flush(&mut self) -> Result<Vec<DecodedFrame>>;
+}
+
+enum Hardware {
+    Standard(Box<dyn VideoDecoder>),
+    #[cfg(target_os = "android")]
+    Fallible(Box<dyn FallibleFlush>),
+}
+
+impl Hardware {
+    fn decoder(&self) -> &dyn VideoDecoder {
+        match self {
+            Self::Standard(decoder) => decoder.as_ref(),
+            #[cfg(target_os = "android")]
+            Self::Fallible(decoder) => decoder.as_ref(),
+        }
+    }
+
+    fn decoder_mut(&mut self) -> &mut dyn VideoDecoder {
+        match self {
+            Self::Standard(decoder) => decoder.as_mut(),
+            #[cfg(target_os = "android")]
+            Self::Fallible(decoder) => decoder.as_mut(),
+        }
+    }
+
+    fn drain(&mut self) -> Result<Vec<DecodedFrame>> {
+        match self {
+            Self::Standard(decoder) => Ok(decoder.flush()),
+            #[cfg(target_os = "android")]
+            Self::Fallible(decoder) => decoder.try_flush(),
+        }
+    }
+}
+
 /// A hardware decoder with a transparent software fallback.
 pub struct HybridDecoder {
-    hw: Option<Box<dyn VideoDecoder>>,
+    hw: Option<Hardware>,
     sw: Option<Box<dyn VideoDecoder>>,
     entry: SampleEntry,
     info: StreamInfo,
@@ -46,7 +84,15 @@ pub struct HybridDecoder {
 impl HybridDecoder {
     /// Wrap `hw`, a decoder for `entry` (whose stream is described by `info`).
     pub fn new(hw: Box<dyn VideoDecoder>, entry: SampleEntry, info: impl Into<StreamInfo>) -> Self {
-        let info = info.into();
+        Self::with_hardware(Hardware::Standard(hw), entry, info.into())
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn with_fallible_flush(hw: Box<dyn FallibleFlush>, entry: SampleEntry, info: impl Into<StreamInfo>) -> Self {
+        Self::with_hardware(Hardware::Fallible(hw), entry, info.into())
+    }
+
+    fn with_hardware(hw: Hardware, entry: SampleEntry, info: StreamInfo) -> Self {
         filmcraft_codecs::hw::note_hw_session();
         Self {
             hw: Some(hw),
@@ -148,9 +194,9 @@ impl HybridDecoder {
     /// call's, while the pictures replayed before it are kept for the next output.
     fn fall_back(&mut self, err: CodecError) -> Result<Vec<DecodedFrame>> {
         let Some(mut hw) = self.hw.take() else { return Err(err) };
-        log::warn!("{} failed ({err}); continuing with the software decoder", hw.name());
+        log::warn!("{} failed ({err}); continuing with the software decoder", hw.decoder().name());
         filmcraft_codecs::hw::note_hw_fallback();
-        for f in hw.flush() {
+        for f in hw.decoder_mut().flush() {
             if !self.emitted.contains(&f.pts) {
                 self.carry.insert(f.pts, f);
             }
@@ -203,7 +249,7 @@ impl VideoDecoder for HybridDecoder {
         let Some(hw) = self.hw.as_mut() else {
             return Err(CodecError::Decode("no decoder".into()));
         };
-        match hw.decode(sample, pts) {
+        match hw.decoder_mut().decode(sample, pts) {
             Ok(out) => {
                 filmcraft_codecs::hw::note_hw_frames(out.len());
                 self.note_emitted(&out);
@@ -214,21 +260,29 @@ impl VideoDecoder for HybridDecoder {
     }
 
     fn flush(&mut self) -> Vec<DecodedFrame> {
+        let mut out = Vec::new();
         if let Some(hw) = self.hw.as_mut() {
-            let out = hw.flush();
-            filmcraft_codecs::hw::note_hw_frames(out.len());
-            self.note_emitted(&out);
-            return out;
+            match hw.drain() {
+                Ok(frames) => {
+                    filmcraft_codecs::hw::note_hw_frames(frames.len());
+                    self.note_emitted(&frames);
+                    return frames;
+                }
+                Err(err) => match self.fall_back(err) {
+                    Ok(replayed) => out = replayed,
+                    Err(replay_err) => log::warn!("Could not drain the hardware replay: {replay_err}"),
+                },
+            }
         }
         let frames = self.sw.as_mut().map(|d| d.flush()).unwrap_or_default();
-        let mut out = self.merge(frames);
+        out.extend(self.merge(frames));
         out.extend(std::mem::take(&mut self.carry).into_values());
         out
     }
 
     fn reset(&mut self) {
         if let Some(hw) = self.hw.as_mut() {
-            hw.reset();
+            hw.decoder_mut().reset();
         }
         if let Some(sw) = self.sw.as_mut() {
             sw.reset();
@@ -242,7 +296,7 @@ impl VideoDecoder for HybridDecoder {
 
     fn name(&self) -> &str {
         match (&self.hw, &self.sw) {
-            (Some(hw), _) => hw.name(),
+            (Some(hw), _) => hw.decoder().name(),
             (None, Some(sw)) => sw.name(),
             (None, None) => "hardware decoder",
         }

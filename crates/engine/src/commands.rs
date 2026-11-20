@@ -1765,6 +1765,28 @@ fn build() -> Vec<CommandSpec> {
             new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
         }),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
+        cmd!(
+            "file.newColorGradient",
+            "Color Gradient",
+            [],
+            None,
+            r##"{"start":"#rrggbb","end":"#rrggbb","horizontal":bool=false,"seconds":f64=5,"bin":binId?}"##,
+            always,
+            |s, p| {
+                let color = |key| {
+                    str_p(p, key)
+                        .and_then(filmcraft_color::parse_hex)
+                        .map(|[r, g, b, _]| [r, g, b])
+                        .ok_or_else(|| bad("file.newColorGradient", format!("`{key}` must be #rrggbb")))
+                };
+                let seconds = f64_p(p, "seconds").unwrap_or(5.0);
+                if !(0.1..=600.0).contains(&seconds) {
+                    return Err(bad("file.newColorGradient", "duration must be between 0.1 and 600 seconds"));
+                }
+                let g = Generator::ColorGradient { start: color("start")?, end: color("end")?, horizontal: p["horizontal"].as_bool().unwrap_or(false) };
+                new_generator(s, g, "Color Gradient", Label::Lavender, p)
+            }
+        ),
         cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::CountingLeader,

@@ -1,0 +1,3 @@
+# Licensed build inputs for Android. Paths use the same format as the craft-fonts manifest.
+Barlow Condensed | Bold | fonts/barlowcondensed/BarlowCondensed-Bold.ttf | Latn | OFL-1.1 | fonts/barlowcondensed/OFL.txt | e476562ec9c1e16cf16475895b511f08c804f438cc9a9f80a44ea50a0eeb5b65 | https://raw.githubusercontent.com/google/fonts/cc5661d43cd4f9aad5567033a8e15ca28dc35c86/ofl/barlowcondensed
+Atkinson Hyperlegible | Regular | fonts/atkinsonhyperlegible/AtkinsonHyperlegible-Regular.ttf | Latn | OFL-1.1 | fonts/atkinsonhyperlegible/OFL.txt | 7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669 | https://raw.githubusercontent.com/google/fonts/cc5661d43cd4f9aad5567033a8e15ca28dc35c86/ofl/atkinsonhyperlegible

@@ -149,6 +149,16 @@ fn file_name(path: &str) -> String {
 }
 
 impl MediaPool {
+    /// Keep the project's path policy and configured sources while a review renders in its own cache.
+    pub fn for_review(&self) -> Self {
+        Self {
+            stored: RwLock::new(self.stored.read().unwrap_or_else(PoisonError::into_inner).clone()),
+            openers: RwLock::new(self.openers.read().unwrap_or_else(PoisonError::into_inner).clone()),
+            use_proxies: AtomicBool::new(self.use_proxies.load(Ordering::Relaxed)),
+            ..Self::default()
+        }
+    }
+
     pub fn register_opener(&self, o: Opener) {
         self.openers.write().unwrap_or_else(PoisonError::into_inner).push(o);
     }

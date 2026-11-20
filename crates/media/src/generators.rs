@@ -53,6 +53,11 @@ pub enum Generator {
     ColorMatte {
         color: [f32; 4],
     },
+    ColorGradient {
+        start: [f32; 3],
+        end: [f32; 3],
+        horizontal: bool,
+    },
     BlackVideo,
     TransparentVideo,
     CountingLeader,
@@ -69,6 +74,7 @@ impl Generator {
         match self {
             Generator::BarsAndTone => "Bars and Tone".into(),
             Generator::ColorMatte { .. } => "Color Matte".into(),
+            Generator::ColorGradient { .. } => "Color Gradient".into(),
             Generator::BlackVideo => "Black Video".into(),
             Generator::TransparentVideo => "Transparent Video".into(),
             Generator::CountingLeader => "Universal Counting Leader".into(),
@@ -330,6 +336,24 @@ pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate
             let c = [(color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8, (color[3] * 255.0) as u8];
             px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.copy_from_slice(&c));
         }
+        Generator::ColorGradient { start, end, horizontal } => {
+            if wu != 0 && hu != 0 {
+                let last = if *horizontal { wu } else { hu }.saturating_sub(1).max(1);
+                for (y, row) in px.chunks_exact_mut(wu * 4).enumerate() {
+                    let pixel = |position: usize| {
+                        let f = position as f32 / last as f32;
+                        to8(std::array::from_fn(|i| start[i] * (1.0 - f) + end[i] * f))
+                    };
+                    if *horizontal {
+                        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                            *p = pixel(x);
+                        }
+                    } else {
+                        row.as_chunks_mut::<4>().0.fill(pixel(y));
+                    }
+                }
+            }
+        }
         Generator::BlackVideo => px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.copy_from_slice(&[0, 0, 0, 255])),
         Generator::TransparentVideo | Generator::Tone { .. } => {}
         Generator::CountingLeader => leader(&mut px, wu, hu, t, frame, rate),
@@ -582,6 +606,19 @@ fn demo_pixel(scene: DemoScene, u: f32, v: f32, aspect: f32, t: f32) -> [f32; 3]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gradient_hits_both_endpoints_in_either_direction() {
+        for horizontal in [false, true] {
+            let gradient = Generator::ColorGradient { start: [1.0, 0.0, 0.0], end: [0.0, 0.0, 1.0], horizontal };
+            let frame = render(&gradient, 3, 3, 0.0, 0, FrameRate::FPS_25).unwrap();
+            let pixels = frame.as_chunks::<4>().0;
+            assert_eq!(pixels[0], [255, 0, 0, 255]);
+            assert_eq!(pixels[4], [127, 0, 127, 255]);
+            assert_eq!(pixels[8], [0, 0, 255, 255]);
+            assert_eq!(pixels[2], if horizontal { pixels[8] } else { pixels[0] });
+        }
+    }
 
     #[test]
     fn deterministic_and_scaled() {

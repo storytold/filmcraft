@@ -21,13 +21,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.header_bg);
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, Color32::BLACK));
-    let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
-    if drag.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+    #[cfg(not(target_os = "android"))]
+    {
+        let drag = ui.interact(rect, egui::Id::unique("header-drag"), Sense::click_and_drag());
+        if drag.drag_started_by(egui::PointerButton::Primary) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+        }
     }
     let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
     // Home
@@ -100,12 +103,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.mode = Mode::Export;
     }
     // Quick Export: a popup with File Name & Location, a preset list and Export (Premiere 26)
-    let qx = rect.max.x - 14.0 - 4.0 * 38.0; // the fifth button from the right
-    if btn(ui, Icon::Export, "quickExport", tl!("Quick Export"), app).clicked() {
-        app.ui.export.quick_open = !app.ui.export.quick_open;
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("quick-export-toggled"), true));
+    #[cfg(not(target_os = "android"))]
+    {
+        let qx = rect.max.x - 14.0 - 4.0 * 38.0; // the fifth button from the right
+        if btn(ui, Icon::Export, "quickExport", tl!("Quick Export"), app).clicked() {
+            app.ui.export.quick_open = !app.ui.export.quick_open;
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("quick-export-toggled"), true));
+        }
+        crate::panels::export_mode::quick_export(app, ui.ctx(), pos2(qx - 340.0, rect.max.y + 4.0));
     }
-    crate::panels::export_mode::quick_export(app, ui.ctx(), pos2(qx - 340.0, rect.max.y + 4.0));
     // Appearance Mode: click for the next one (Auto, Light, Dark); the icon shows the current one.
     let (icon, mode) = match app.session.prefs.appearance.appearance_mode.as_str() {
         "auto" => (Icon::Monitor, tl!("Sync with system")),
