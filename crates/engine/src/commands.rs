@@ -2461,7 +2461,7 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 let sel = with_links(s, &clips_p(s, p));
-                s.edit_sequence("Speed/Duration", |q, ctx, _| {
+                s.edit_sequence("Speed/Duration", |q, ctx, st| {
                     // a clip and its linked partners on other tracks change as one edit, so a ripple
                     // moves the later clips once
                     let place = |q: &filmcraft_project::Sequence, c: ClipId| q.find_item(c).map(|(t, i)| (t, i.link));
@@ -2484,7 +2484,21 @@ fn build() -> Vec<CommandSpec> {
                         if unlocked.is_empty() {
                             return Err(edit::EditError::Locked.into());
                         }
+                        // where the later material starts and how far it moves: set_speed_group ripples
+                        // from the first member's old end by the largest change in a member's length
+                        let lens = |q: &filmcraft_project::Sequence| -> Vec<Tick> {
+                            unlocked.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.duration)).collect()
+                        };
+                        let from = unlocked.first().and_then(|c| q.find_item(*c)).map(|(_, i)| i.end());
+                        let before = lens(q);
                         edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
+                        if ripple
+                            && st.ripple_sequence_markers
+                            && let Some(from) = from
+                            && let Some(shift) = lens(q).iter().zip(&before).map(|(a, b)| *a - *b).max()
+                        {
+                            crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
+                        }
                     }
                     for c in &sel {
                         // a linked partner on a locked track keeps its speed (above) and how its sound

@@ -196,3 +196,27 @@ fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
     assert!(flag(&s, picture), "the picture's own setting changes");
     assert!(!flag(&s, sound), "the locked sound keeps its setting");
 }
+
+/// With Ripple Sequence Markers on, a ripple speed change moves the markers on the later clips
+/// with them: later by the added length when slower, earlier when faster. A marker before the
+/// clip stays, and so does every marker when Ripple Edit is off.
+#[test]
+fn speed_with_ripple_ripples_sequence_markers() {
+    for (speed, ripple) in [(50, true), (200, true), (50, false)] {
+        let mut s = Session::default();
+        let [_, (picture2, _), (picture3, _)] = three_clips(&mut s);
+        s.state.ripple_sequence_markers = true;
+        let f = |n: i64| s.sequence_rate().tick_of(n);
+        let (early, late) = (f(10), f(120));
+        for (name, at) in [("early", early), ("late", late)] {
+            s.execute("markers.add", json!({"time": at.0, "name": name})).unwrap();
+        }
+        let next_before = range(&s, picture3).0;
+        s.execute("clip.speedDuration", json!({"clips": [picture2.0], "speed": speed, "ripple": ripple})).unwrap();
+        let moved = range(&s, picture3).0 - next_before;
+        let q = s.active_sequence().unwrap();
+        let at = |name: &str| q.markers.iter().find(|m| m.name == name).map(|m| m.start);
+        assert_eq!(at("early"), Some(early), "speed {speed}, ripple {ripple}: a marker before the clip stays");
+        assert_eq!(at("late"), Some(late + moved), "speed {speed}, ripple {ripple}: a later marker moves as far as the next clip");
+    }
+}
