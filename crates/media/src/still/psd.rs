@@ -7,7 +7,7 @@
 //! resource 1057 says the image data is not the real composite), PSB, bitmap, indexed, CMYK,
 //! multichannel, duotone, Lab, 32-bit and ZIP-compressed documents are refused.
 
-use craft_psd::merged::Merged;
+use craft_psd::merged::{EncodedRows, Merged};
 use craft_psd::resources::ids;
 use craft_psd::{ColorMode, Header, Version};
 
@@ -16,7 +16,7 @@ use crate::{MediaError, Result};
 
 /// Largest side the format allows.
 const MAX_SIDE: u32 = 30_000;
-/// Largest picture we decode (each pixel takes 4 bytes as RGBA8, plus 2 for the transparency).
+/// Largest picture we decode (4 bytes per RGBA8 pixel, plus bounded row buffers).
 const MAX_PIXELS: usize = 1 << 28;
 /// Most channels the format allows.
 const MAX_CHANNELS: usize = 56;
@@ -71,7 +71,26 @@ fn validate_header(name: &str, h: &Header) -> Result<(usize, usize)> {
     Ok((colours, bytes_per_sample))
 }
 
-fn planes_to_rgba8(planes: &[Vec<u8>], colours: usize, bytes_per_sample: usize, alpha: bool, pixels: usize) -> (Vec<u8>, bool) {
+fn rows_to_rgba8(name: &str, rows: &EncodedRows<'_>, h: &Header, colours: usize, alpha: bool) -> Result<(Vec<u8>, bool)> {
+    let bytes_per_sample = usize::from(h.depth / 8);
+    let width = h.width as usize;
+    let pixels = width.checked_mul(h.height as usize).ok_or_else(|| err(name, "picture size overflow"))?;
+    let len = pixels.checked_mul(4).ok_or_else(|| err(name, "RGBA size overflow"))?;
+    let used = colours + usize::from(alpha);
+    // At most four cursors and four decoded rows. Do not keep full decoded planes or a
+    // full-resolution alpha copy beside the RGBA result.
+    let mut cursors = Vec::new();
+    let mut buffers = Vec::new();
+    for c in 0..used {
+        cursors.push(rows.channel(c).map_err(|e| err(name, &e.to_string()))?);
+        let mut row = Vec::new();
+        row.try_reserve_exact(rows.row_bytes()).map_err(|_| err(name, "cannot allocate decoded row"))?;
+        row.resize(rows.row_bytes(), 0);
+        buffers.push(row);
+    }
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(len).map_err(|_| err(name, "cannot allocate RGBA image"))?;
+    rgba.resize(len, 255);
     let max: u32 = if bytes_per_sample == 1 { 255 } else { 65_535 };
     let sample = |s: &[u8]| match *s {
         [v] => u16::from(v),
@@ -79,29 +98,41 @@ fn planes_to_rgba8(planes: &[Vec<u8>], colours: usize, bytes_per_sample: usize, 
         _ => 0,
     };
     let to8 = |v: u32| ((u64::from(v) * 255 + u64::from(max / 2)) / u64::from(max)) as u8;
-    let opacity: Vec<u16> = if alpha { planes[colours].chunks_exact(bytes_per_sample).map(sample).collect() } else { Vec::new() };
-    let mut rgba = vec![255u8; pixels * 4];
-    for (c, plane) in planes.iter().take(colours).enumerate() {
-        for (i, (px, s)) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(plane.chunks_exact(bytes_per_sample)).enumerate() {
-            let mut v = u32::from(sample(s));
-            if let Some(&a) = opacity.get(i) {
-                let a = u32::from(a);
-                // stored = colour * a + white * (1 - a), rounded
-                if a > 0 && a < max {
-                    let (v64, a64, m64) = (u64::from(v), u64::from(a), u64::from(max));
-                    v = ((v64 + a64).saturating_sub(m64) * m64 + a64 / 2).checked_div(a64).unwrap_or(0).min(m64) as u32;
+    let mut has_alpha = false;
+    for output in rgba.chunks_exact_mut(width * 4) {
+        for (cursor, row) in cursors.iter_mut().zip(&mut buffers) {
+            cursor
+                .next_row()
+                .map_err(|e| err(name, &e.to_string()))?
+                .ok_or_else(|| err(name, "missing composite row"))?
+                .decode_to_slice(row)
+                .map_err(|e| err(name, &e.to_string()))?;
+        }
+        for (c, row) in buffers.iter().take(colours).enumerate() {
+            for (i, (px, s)) in output.as_chunks_mut::<4>().0.iter_mut().zip(row.chunks_exact(bytes_per_sample)).enumerate() {
+                let mut v = u32::from(sample(s));
+                if alpha {
+                    let at = i * bytes_per_sample;
+                    // The selected alpha buffer has the same validated width and depth as
+                    // each colour row. Keep native 16-bit alpha until unblending is finished.
+                    let a = u32::from(sample(&buffers[colours][at..at + bytes_per_sample]));
+                    // stored = colour * a + white * (1 - a), rounded
+                    if a > 0 && a < max {
+                        let (v64, a64, m64) = (u64::from(v), u64::from(a), u64::from(max));
+                        v = ((v64 + a64).saturating_sub(m64) * m64 + a64 / 2).checked_div(a64).unwrap_or(0).min(m64) as u32;
+                    }
+                    px[3] = to8(a);
+                    has_alpha |= px[3] < 255;
                 }
-                px[3] = to8(a);
-            }
-            if colours == 1 {
-                px[..3].fill(to8(v));
-            } else if let Some(d) = px.get_mut(c) {
-                *d = to8(v);
+                if colours == 1 {
+                    px[..3].fill(to8(v));
+                } else if let Some(d) = px.get_mut(c) {
+                    *d = to8(v);
+                }
             }
         }
     }
-    let has_alpha = alpha && rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
-    (rgba, has_alpha)
+    Ok((rgba, has_alpha))
 }
 
 /// Decode the composite image of a Photoshop document to straight-alpha RGBA8.
@@ -110,7 +141,7 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
         return Err(err(name, "not a Photoshop document"));
     }
     let header = Header::from_bytes(b).map_err(|e| err(name, &e.to_string()))?;
-    let (colours, bytes_per_sample) = validate_header(name, &header)?;
+    let (colours, _) = validate_header(name, &header)?;
     let merged = Merged::open(b, MAX_PIXELS as u64).map_err(|e| err(name, &e.to_string()))?;
     if merged.head.resource(ids::VERSION_INFO).and_then(|r| r.data.get(4)).is_some_and(|&v| v == 0) {
         return Err(MediaError::Unsupported(format!(
@@ -125,9 +156,10 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
     let h = &merged.head.header;
     let alpha = usize::from(h.channels) > colours && merged.transparency;
     let used = colours + usize::from(alpha);
-    let planes = merged.read_planes(used).map_err(|e| err(name, &e.to_string()))?;
-    let pixels = (h.width as usize) * (h.height as usize);
-    let (rgba, has_alpha) = planes_to_rgba8(&planes, colours, bytes_per_sample, alpha, pixels);
+    // Validate selected encoded payload extents before allocating the final image. The app
+    // supports at most MAX_SIDE 16-bit samples per row; the shared view allocates no planes.
+    let rows = merged.encoded_rows(used, MAX_SIDE as usize * 2).map_err(|e| err(name, &e.to_string()))?;
+    let (rgba, has_alpha) = rows_to_rgba8(name, &rows, h, colours, alpha)?;
     Ok(Raster { width: h.width, height: h.height, rgba, has_alpha })
 }
 
