@@ -1,4 +1,4 @@
-//! An NVENC (H.264 or HEVC) encode session: the driver library, the device it is opened on, the
+//! An NVENC (H.264, HEVC, or AV1) encode session: the driver library, the device it is opened on, the
 //! encoder configuration, and the input / output buffers (every call into the driver).
 //!
 //! FFI module (docs/adr/0001-platform-ffi.md): every `unsafe` block has a `// SAFETY:` comment, the
@@ -7,23 +7,39 @@
 use std::ffi::{CStr, c_void};
 use std::sync::OnceLock;
 
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
+
 use super::device::Device;
 use super::ffi::{
-    CreateInstanceFn, Guid, H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS,
-    HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD, HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn,
-    NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX, NV_ENC_CAPS_HEIGHT_MIN,
-    NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_WIDTH_MAX, NV_ENC_CAPS_WIDTH_MIN,
-    NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER, NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER,
-    NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT, NV_ENC_H264_ENTROPY_CODING_MODE_CABAC,
-    NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID, NV_ENC_HEVC_CUSIZE_AUTOSELECT,
-    NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_LEVEL_AUTOSELECT,
-    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS,
-    NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID,
-    NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_HEVC_MAIN,
-    NV_ENC_TUNING_INFO_HIGH_QUALITY, NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709,
-    NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED, NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
+    AV1_CHROMA_FORMAT_MASK, AV1_CHROMA_FORMAT_SHIFT, AV1_DISABLE_SEQ_HDR, AV1_ENABLE_INTRA_REFRESH, AV1_ENABLE_TIMING_INFO, AV1_INPUT_PIXEL_BIT_DEPTH_MASK,
+    AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT, AV1_OUTPUT_ANNEX_B, AV1_PIXEL_BIT_DEPTH_MASK, AV1_PIXEL_BIT_DEPTH_SHIFT, AV1_REPEAT_SEQ_HDR, CreateInstanceFn, Guid,
+    H264_OUTPUT_AUD, H264_REPEAT_SPSPPS, HEVC_CHROMA_FORMAT_MASK, HEVC_CHROMA_FORMAT_SHIFT, HEVC_DISABLE_SPSPPS, HEVC_ENABLE_INTRA_REFRESH, HEVC_OUTPUT_AUD,
+    HEVC_PIXEL_BIT_DEPTH_MASK, HEVC_PIXEL_BIT_DEPTH_SHIFT, HEVC_REPEAT_SPSPPS, Handle, MaxSupportedVersionFn, NV_ENC_AV1_PART_SIZE_AUTOSELECT,
+    NV_ENC_AV1_PROFILE_MAIN_GUID, NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_YUV420_10BIT, NV_ENC_CAPS_HEIGHT_MAX,
+    NV_ENC_CAPS_HEIGHT_MIN, NV_ENC_CAPS_NUM_MAX_BFRAMES, NV_ENC_CAPS_PARAM, NV_ENC_CAPS_PARAM_VER, NV_ENC_CAPS_SUPPORT_10BIT_ENCODE, NV_ENC_CAPS_WIDTH_MAX,
+    NV_ENC_CAPS_WIDTH_MIN, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_CONFIG_VER,
+    NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_BITSTREAM_BUFFER_VER, NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_INPUT_BUFFER_VER, NV_ENC_ERR_NEED_MORE_INPUT,
+    NV_ENC_H264_ENTROPY_CODING_MODE_CABAC, NV_ENC_H264_PROFILE_BASELINE_GUID, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_H264_PROFILE_MAIN_GUID,
+    NV_ENC_HEVC_CUSIZE_AUTOSELECT, NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_HEVC_PROFILE_MAIN10_GUID, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER,
+    NV_ENC_LEVEL_AUTOSELECT, NV_ENC_LEVEL_AV1_AUTOSELECT, NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_LOCK_INPUT_BUFFER,
+    NV_ENC_LOCK_INPUT_BUFFER_VER, NV_ENC_MEMORY_HEAP_SYSMEM_CACHED, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
+    NV_ENC_PARAMS_RC_CBR, NV_ENC_PARAMS_RC_VBR, NV_ENC_PIC_FLAG_EOS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT_FRAME, NV_ENC_PRESET_CONFIG,
+    NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P5_GUID, NV_ENC_RC_PARAMS_VER, NV_ENC_SEI_PAYLOAD, NV_ENC_SEQUENCE_PARAM_PAYLOAD,
+    NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER, NV_ENC_SUCCESS, NV_ENC_TIER_AV1_0, NV_ENC_TIER_HEVC_MAIN, NV_ENC_TUNING_INFO_HIGH_QUALITY,
+    NV_ENC_VUI_COLOR_PRIMARIES_BT709, NV_ENC_VUI_MATRIX_COEFFS_BT709, NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709, NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED,
+    NV_ENCODE_API_FUNCTION_LIST, NV_ENCODE_API_FUNCTION_LIST_VER, NVENCAPI_VERSION, NvStatus,
 };
+
+// The Direct3D 11 zero-copy input path only exists on Windows.
+#[cfg(target_os = "windows")]
+use super::ffi::{
+    NV_ENC_BUFFER_USAGE_INPUT_IMAGE, NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX, NV_ENC_MAP_INPUT_RESOURCE, NV_ENC_MAP_INPUT_RESOURCE_VER, NV_ENC_REGISTER_RESOURCE,
+    NV_ENC_REGISTER_RESOURCE_VER,
+};
+
+#[cfg(target_os = "windows")]
+pub(crate) use win_gpu::{GpuPool, GpuSurface, import_wgpu_target};
 
 /// The driver's entry points (loaded once).
 struct Api {
@@ -106,6 +122,7 @@ fn load() -> Result<Api, String> {
 pub enum Codec {
     H264,
     Hevc,
+    Av1,
 }
 
 impl Codec {
@@ -113,6 +130,7 @@ impl Codec {
         match self {
             Codec::H264 => NV_ENC_CODEC_H264_GUID,
             Codec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+            Codec::Av1 => NV_ENC_CODEC_AV1_GUID,
         }
     }
 }
@@ -204,6 +222,10 @@ pub enum Submitted {
 struct Slot {
     input: *mut c_void,
     output: *mut c_void,
+    #[cfg(target_os = "windows")]
+    mapped_input: *mut c_void,
+    #[cfg(target_os = "windows")]
+    gpu_hold: Option<Arc<GpuSurface>>,
 }
 
 /// An initialised encoder with its buffers.
@@ -226,6 +248,8 @@ pub struct Session {
     /// Pictures submitted, and the distance between IDR pictures (to know which pictures get the SEI).
     submitted: u64,
     gop: u64,
+    #[cfg(target_os = "windows")]
+    gpu_pool: Option<Arc<GpuPool>>,
 }
 
 // SAFETY: an encoder session and its buffers are driver objects used from one thread at a time (the
@@ -249,6 +273,20 @@ fn status(what: &str, s: NvStatus, enc: Handle, api: &Api) -> String {
         Some(d) => format!("{what} failed ({s}): {d}"),
         None => format!("{what} failed ({s})"),
     }
+}
+
+/// The `NV_ENC_BUFFER_FORMAT_*` a picture mapped from a registered GPU surface has to be encoded
+/// with: the session's own, unless the driver reports another one. The encoder's buffers, and the
+/// conversion it makes of them, were configured for `session`; a picture in another format would be
+/// read with the wrong layout, so such an input is refused (the caller then falls back to the RGBA
+/// readback). A driver that reports 0 (`NV_ENC_BUFFER_FORMAT_UNDEFINED`) has no opinion, and the
+/// session's format is the answer.
+#[cfg(any(target_os = "windows", test))]
+fn mapped_input_format(driver: u32, session: u32) -> Result<u32, String> {
+    if driver == 0 || driver == session {
+        return Ok(session);
+    }
+    Err(format!("the driver mapped the GPU input surface as buffer format {driver}, but this encoder was initialised for {session}"))
 }
 
 impl Session {
@@ -294,6 +332,8 @@ impl Session {
             sei_array: Box::new([]),
             submitted: 0,
             gop: 1,
+            #[cfg(target_os = "windows")]
+            gpu_pool: None,
         })
     }
 
@@ -309,7 +349,12 @@ impl Session {
                 let mut v = 0i32;
                 let s = f(self.enc, codec.guid(), &mut p, &mut v);
                 if s != NV_ENC_SUCCESS {
-                    return Err(status(if codec == Codec::Hevc { "querying the HEVC encoder" } else { "querying the encoder" }, s, self.enc, self.api));
+                    let msg = match codec {
+                        Codec::Hevc => "querying the HEVC encoder",
+                        Codec::Av1 => "querying the AV1 encoder",
+                        Codec::H264 => "querying the encoder",
+                    };
+                    return Err(status(msg, s, self.enc, self.api));
                 }
                 Ok(v.max(0) as u32)
             }
@@ -367,6 +412,7 @@ impl Session {
             cfg.profileGUID = match (p.codec, p.profile) {
                 (Codec::Hevc, _) if p.ten_bit => NV_ENC_HEVC_PROFILE_MAIN10_GUID,
                 (Codec::Hevc, _) => NV_ENC_HEVC_PROFILE_MAIN_GUID,
+                (Codec::Av1, _) => NV_ENC_AV1_PROFILE_MAIN_GUID,
                 (Codec::H264, 0) => NV_ENC_H264_PROFILE_BASELINE_GUID,
                 (Codec::H264, 1) => NV_ENC_H264_PROFILE_MAIN_GUID,
                 (Codec::H264, _) => NV_ENC_H264_PROFILE_HIGH_GUID,
@@ -437,6 +483,36 @@ impl Session {
                     vui.numUnitInTicks = 0;
                     vui.timeScale = 0;
                 }
+                Codec::Av1 => {
+                    let a = &mut cfg.encodeCodecConfig.av1Config;
+                    a.level = NV_ENC_LEVEL_AV1_AUTOSELECT;
+                    a.tier = NV_ENC_TIER_AV1_0;
+                    a.minPartSize = NV_ENC_AV1_PART_SIZE_AUTOSELECT;
+                    a.maxPartSize = NV_ENC_AV1_PART_SIZE_AUTOSELECT;
+                    a.idrPeriod = p.gop.max(1);
+                    // Low-overhead OBU stream (outputAnnexBFormat = 0), sequence header in-band on
+                    // keyframes via av1C + random access, 8-bit 4:2:0 limited range.
+                    a.flags &= !(AV1_OUTPUT_ANNEX_B
+                        | AV1_ENABLE_TIMING_INFO
+                        | AV1_DISABLE_SEQ_HDR
+                        | AV1_REPEAT_SEQ_HDR
+                        | AV1_ENABLE_INTRA_REFRESH
+                        | AV1_CHROMA_FORMAT_MASK
+                        | AV1_INPUT_PIXEL_BIT_DEPTH_MASK
+                        | AV1_PIXEL_BIT_DEPTH_MASK);
+                    a.flags |= 1 << AV1_CHROMA_FORMAT_SHIFT;
+                    if p.ten_bit {
+                        a.flags |= (2 << AV1_INPUT_PIXEL_BIT_DEPTH_SHIFT) | (2 << AV1_PIXEL_BIT_DEPTH_SHIFT);
+                    }
+                    a.maxNumRefFramesInDPB = 0;
+                    a.numTileColumns = 0;
+                    a.numTileRows = 0;
+                    a.colorPrimaries = u32::from(p.signal.primaries);
+                    a.transferCharacteristics = u32::from(p.signal.transfer);
+                    a.matrixCoefficients = u32::from(p.signal.matrix);
+                    a.colorRange = 0;
+                    a.chromaSamplePosition = 0;
+                }
             }
 
             let mut init: Box<NV_ENC_INITIALIZE_PARAMS> = Box::new(std::mem::zeroed());
@@ -445,9 +521,15 @@ impl Session {
             init.presetGUID = NV_ENC_PRESET_P5_GUID;
             init.encodeWidth = p.width;
             init.encodeHeight = p.height;
-            let (sn, sd) = p.sar.unwrap_or((1, 1));
-            init.darWidth = p.width.saturating_mul(sn.max(1));
-            init.darHeight = p.height.saturating_mul(sd.max(1));
+            if p.codec == Codec::Av1 {
+                // For AV1, darWidth/darHeight are render width/height.
+                init.darWidth = p.width;
+                init.darHeight = p.height;
+            } else {
+                let (sn, sd) = p.sar.unwrap_or((1, 1));
+                init.darWidth = p.width.saturating_mul(sn.max(1));
+                init.darHeight = p.height.saturating_mul(sd.max(1));
+            }
             init.frameRateNum = p.fps.0;
             init.frameRateDen = p.fps.1;
             init.enablePTD = 1;
@@ -496,7 +578,14 @@ impl Session {
                 }
                 return Err(status("creating an output buffer", s, self.enc, self.api));
             }
-            self.slots.push(Slot { input: i.inputBuffer, output: o.bitstreamBuffer });
+            self.slots.push(Slot {
+                input: i.inputBuffer,
+                output: o.bitstreamBuffer,
+                #[cfg(target_os = "windows")]
+                mapped_input: std::ptr::null_mut(),
+                #[cfg(target_os = "windows")]
+                gpu_hold: None,
+            });
         }
         Ok(())
     }
@@ -504,6 +593,24 @@ impl Session {
     /// Number of buffer slots.
     pub fn slots(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Pre-allocate and register a pool of shared D3D11 RGBA8 surfaces for zero-copy GPU input.
+    #[cfg(target_os = "windows")]
+    pub fn enable_gpu_input(&mut self, count: usize) -> Result<Arc<GpuPool>, String> {
+        if let Some(pool) = &self.gpu_pool {
+            return Ok(Arc::clone(pool));
+        }
+        if self.fmt != NV_ENC_BUFFER_FORMAT_ABGR {
+            return Err("zero-copy GPU input requires ABGR/RGBA8 format".into());
+        }
+        let (w, h) = self.size;
+        if w == 0 || h == 0 {
+            return Err("zero-copy GPU input requires an initialised encoder".into());
+        }
+        let pool = win_gpu::create_pool(&self._device, self.enc, self.api, self.fmt, (w, h), count)?;
+        self.gpu_pool = Some(Arc::clone(&pool));
+        Ok(pool)
     }
 
     /// The parameter sets as one Annex B byte string (SPS and PPS; VPS, SPS and PPS for HEVC).
@@ -533,11 +640,8 @@ impl Session {
     pub fn submit(&mut self, slot: usize, pts: u64, fill: impl FnOnce(Locked<'_>)) -> Result<Submitted, String> {
         let s = self.slots.get(slot).ok_or("no such buffer slot")?;
         let (input, output) = (s.input, s.output);
-        let (lock, unlock, encode) = (
-            self.api.list.nvEncLockInputBuffer.ok_or("no nvEncLockInputBuffer")?,
-            self.api.list.nvEncUnlockInputBuffer.ok_or("no nvEncUnlockInputBuffer")?,
-            self.api.list.nvEncEncodePicture.ok_or("no nvEncEncodePicture")?,
-        );
+        let (lock, unlock) =
+            (self.api.list.nvEncLockInputBuffer.ok_or("no nvEncLockInputBuffer")?, self.api.list.nvEncUnlockInputBuffer.ok_or("no nvEncUnlockInputBuffer")?);
         let (w, h) = self.size;
         // SAFETY: the buffer handle is one this session created. `LockInputBuffer` returns a
         // writable block of `pitch * h * 3 / 2` bytes (NV12 or P010: luma rows then chroma rows, the pitch
@@ -560,19 +664,93 @@ impl Session {
             let rows = (l.pitch as usize).saturating_mul(h as usize);
             let len = if self.fmt == NV_ENC_BUFFER_FORMAT_ABGR { rows } else { rows.saturating_mul(3) / 2 };
             fill(Locked { data: std::slice::from_raw_parts_mut(l.bufferDataPtr.cast::<u8>(), len), pitch: l.pitch as usize });
+            filmcraft_frame::transfers::record_encode_upload(len as u64);
             let st = unlock(self.enc, input);
             if st != NV_ENC_SUCCESS {
                 return Err(status("unlocking an input buffer", st, self.enc, self.api));
             }
             l.pitch
         };
+        self.encode_picture(input, output, pitch, self.fmt, pts)
+    }
+
+    /// Map a registered GPU surface for slot `slot` and submit it with timestamp `pts`.
+    #[cfg(target_os = "windows")]
+    pub fn submit_gpu(&mut self, slot: usize, pts: u64, surf: &Arc<GpuSurface>) -> Result<Submitted, String> {
+        let Some(pool) = &self.gpu_pool else {
+            return Err("zero-copy GPU input is not enabled on this encoder".into());
+        };
+        if !surf.belongs_to(pool) {
+            return Err("GPU input surface does not belong to this encoder session".into());
+        }
+        if (surf.width(), surf.height()) != self.size {
+            return Err(format!("GPU input {}x{} does not match encoder {}x{}", surf.width(), surf.height(), self.size.0, self.size.1));
+        }
+        let registered = surf.registered_ptr().ok_or("GPU input surface is no longer registered")?;
+        let s = self.slots.get(slot).ok_or("no such buffer slot")?;
+        if !s.mapped_input.is_null() {
+            return Err("buffer slot already holds a mapped GPU input".into());
+        }
+        let output = s.output;
+        let map_fn = self.api.list.nvEncMapInputResource.ok_or("no nvEncMapInputResource")?;
+        // SAFETY: zeroed parameter block with its version; `registered` is a valid resource registered
+        // with `self.enc` and protected by `surf` + `pool` lifetimes until `nvEncUnmapInputResource`.
+        let (mapped, driver_fmt) = unsafe {
+            let mut m: NV_ENC_MAP_INPUT_RESOURCE = std::mem::zeroed();
+            m.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+            m.registeredResource = registered;
+            let st = map_fn(self.enc, &mut m);
+            if st != NV_ENC_SUCCESS {
+                return Err(status("mapping a GPU input surface", st, self.enc, self.api));
+            }
+            if m.mappedResource.is_null() {
+                return Err("mapping a GPU input surface: the driver returned a null resource".into());
+            }
+            (m.mappedResource, m.mappedBufferFmt)
+        };
+        let fmt = match mapped_input_format(driver_fmt, self.fmt) {
+            Ok(fmt) => fmt,
+            Err(why) => {
+                // the driver's format is one this encoder cannot be handed the picture in: release
+                // the mapping (the caller falls back to the RGBA readback path)
+                if let Some(unmap) = self.api.list.nvEncUnmapInputResource {
+                    // SAFETY: `mapped` was just returned by `nvEncMapInputResource` on `self.enc`.
+                    unsafe {
+                        let _ = unmap(self.enc, mapped);
+                    }
+                }
+                return Err(why);
+            }
+        };
+        if let Some(slot_mut) = self.slots.get_mut(slot) {
+            slot_mut.mapped_input = mapped;
+            slot_mut.gpu_hold = Some(Arc::clone(surf));
+        }
+        let res = self.encode_picture(mapped, output, self.size.0, fmt, pts);
+        if res.is_err() {
+            if let Some(unmap) = self.api.list.nvEncUnmapInputResource {
+                // SAFETY: `mapped` was just returned by `nvEncMapInputResource` on `self.enc`.
+                unsafe {
+                    let _ = unmap(self.enc, mapped);
+                }
+            }
+            if let Some(slot_mut) = self.slots.get_mut(slot) {
+                slot_mut.mapped_input = std::ptr::null_mut();
+                slot_mut.gpu_hold = None;
+            }
+        }
+        res
+    }
+
+    fn encode_picture(&mut self, input: *mut c_void, output: *mut c_void, pitch: u32, fmt: u32, pts: u64) -> Result<Submitted, String> {
+        let encode = self.api.list.nvEncEncodePicture.ok_or("no nvEncEncodePicture")?;
+        let (w, h) = self.size;
         // IDR pictures (every `gop` pictures from the first, in submission = display order) carry the SEI messages
         let idr = !self.sei_array.is_empty() && self.submitted.is_multiple_of(self.gop);
         self.submitted = self.submitted.saturating_add(1);
-        // SAFETY: a zeroed parameter block with its version; the buffers are this session's. The SEI
-        // descriptor array and the payload bytes it points to are heap blocks owned by `self`, which
-        // stay allocated (and unmoved) until the session is dropped, so they outlive this call and
-        // whatever time the driver keeps the picture queued.
+        // SAFETY: a zeroed parameter block with its version; `input` and `output` belong to this
+        // session (or are mapped for `slot` until `read`). The SEI descriptor array and payload bytes
+        // stay allocated until the session is dropped.
         let st = unsafe {
             let mut e: NV_ENC_PIC_PARAMS = std::mem::zeroed();
             if idr {
@@ -586,7 +764,7 @@ impl Session {
             e.inputPitch = pitch;
             e.inputBuffer = input;
             e.outputBitstream = output;
-            e.bufferFmt = self.fmt;
+            e.bufferFmt = fmt;
             e.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
             e.inputTimeStamp = pts;
             e.inputDuration = 1;
@@ -623,31 +801,66 @@ impl Session {
         // SAFETY: a zeroed parameter block with its version and a buffer of this session; after a
         // successful lock `bitstreamBufferPtr` addresses `bitstreamSizeInBytes` readable bytes until
         // `UnlockBitstream`, and they are copied before it.
-        unsafe {
+        // The result is held, not returned, until the mapped GPU input below is released: an early
+        // `return Err` here would leave `mapped_input` set, so the slot would be handed out twice.
+        let out: Result<Output, String> = unsafe {
             let mut l: NV_ENC_LOCK_BITSTREAM = std::mem::zeroed();
             l.version = NV_ENC_LOCK_BITSTREAM_VER;
             l.outputBitstream = output;
             let st = lock(self.enc, &mut l);
             if st != NV_ENC_SUCCESS {
-                return Err(status("reading a bitstream", st, self.enc, self.api));
+                Err(status("reading a bitstream", st, self.enc, self.api))
+            } else {
+                let n = l.bitstreamSizeInBytes as usize;
+                let data = if l.bitstreamBufferPtr.is_null() || n == 0 {
+                    Vec::new()
+                } else {
+                    std::slice::from_raw_parts(l.bitstreamBufferPtr.cast::<u8>(), n).to_vec()
+                };
+                let out = Output { data, pts: l.outputTimeStamp, pic_type: l.pictureType };
+                let st = unlock(self.enc, output);
+                if st != NV_ENC_SUCCESS { Err(status("releasing a bitstream", st, self.enc, self.api)) } else { Ok(out) }
             }
-            let n = l.bitstreamSizeInBytes as usize;
-            let data =
-                if l.bitstreamBufferPtr.is_null() || n == 0 { Vec::new() } else { std::slice::from_raw_parts(l.bitstreamBufferPtr.cast::<u8>(), n).to_vec() };
-            let out = Output { data, pts: l.outputTimeStamp, pic_type: l.pictureType };
-            let st = unlock(self.enc, output);
-            if st != NV_ENC_SUCCESS {
-                return Err(status("releasing a bitstream", st, self.enc, self.api));
+        };
+        #[cfg(target_os = "windows")]
+        if let Some(s) = self.slots.get_mut(slot) {
+            if !s.mapped_input.is_null() {
+                if let Some(unmap) = self.api.list.nvEncUnmapInputResource {
+                    // SAFETY: `mapped_input` was returned by `nvEncMapInputResource` on `self.enc`
+                    // and the corresponding bitstream was just locked & unlocked.
+                    unsafe {
+                        let _ = unmap(self.enc, s.mapped_input);
+                    }
+                }
+                s.mapped_input = std::ptr::null_mut();
             }
-            Ok(out)
+            s.gpu_hold = None;
         }
+        out
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // SAFETY: every handle was created by this session and is destroyed once, buffers first.
+        // SAFETY: every handle was created by this session and is destroyed once: unmap active
+        // mapped inputs and unregister external resources before destroying input/output buffers and
+        // closing the encoder session.
         unsafe {
+            #[cfg(target_os = "windows")]
+            {
+                for s in &mut self.slots {
+                    if !s.mapped_input.is_null() {
+                        if let Some(unmap) = self.api.list.nvEncUnmapInputResource {
+                            let _ = unmap(self.enc, s.mapped_input);
+                        }
+                        s.mapped_input = std::ptr::null_mut();
+                    }
+                    s.gpu_hold = None;
+                }
+                if let Some(pool) = self.gpu_pool.take() {
+                    win_gpu::unregister_pool(self.enc, self.api, &pool);
+                }
+            }
             for s in self.slots.drain(..) {
                 if let Some(d) = self.api.list.nvEncDestroyInputBuffer {
                     d(self.enc, s.input);
@@ -660,5 +873,301 @@ impl Drop for Session {
                 d(self.enc);
             }
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod win_gpu {
+    use super::{
+        Api, Device, Handle, NV_ENC_BUFFER_USAGE_INPUT_IMAGE, NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX, NV_ENC_REGISTER_RESOURCE, NV_ENC_REGISTER_RESOURCE_VER,
+        NV_ENC_SUCCESS, status,
+    };
+    use std::any::Any;
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC,
+        D3D11_USAGE_DEFAULT, ID3D11Texture2D,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
+    use windows::Win32::Graphics::Dxgi::{DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIResource1};
+    use windows::core::Interface;
+
+    static NEXT_SURFACE_ID: AtomicU64 = AtomicU64::new(1);
+
+    struct SharedEntry {
+        _tex: ID3D11Texture2D,
+        handle: HANDLE,
+        registered: *mut c_void,
+        id: u64,
+    }
+
+    struct PoolState {
+        entries: Vec<SharedEntry>,
+        free: Vec<usize>,
+        alive: bool,
+    }
+
+    impl Drop for PoolState {
+        fn drop(&mut self) {
+            for e in self.entries.drain(..) {
+                // SAFETY: `e.handle` is a valid Win32 NT handle created via `CreateSharedHandle`.
+                unsafe {
+                    let _ = CloseHandle(e.handle);
+                }
+            }
+        }
+    }
+
+    pub(super) struct GpuPoolInner {
+        width: u32,
+        height: u32,
+        state: Mutex<PoolState>,
+    }
+
+    // SAFETY: D3D11 device has multithread protection enabled and `PoolState` is behind a Mutex;
+    // textures and handles may be held and dropped on any worker thread.
+    unsafe impl Send for GpuPoolInner {}
+    // SAFETY: see above.
+    unsafe impl Sync for GpuPoolInner {}
+
+    /// Pool of pre-allocated D3D11 RGBA8 shared textures registered with an NVENC session.
+    pub struct GpuPool(Arc<GpuPoolInner>);
+
+    /// An acquired GPU surface ticket; dropping it returns the slot to the pool, unless the
+    /// surface was retired.
+    pub struct GpuSurface {
+        pool: Arc<GpuPoolInner>,
+        index: usize,
+        id: u64,
+        width: u32,
+        height: u32,
+        /// Zero-copy rendering was submitted into this surface without the GPU confirming it
+        /// finished: its contents are undefined and the work may still be writing into it, so the
+        /// slot is left out of the pool for good instead of feeding another picture.
+        retired: AtomicBool,
+    }
+
+    impl Drop for GpuSurface {
+        fn drop(&mut self) {
+            if self.retired.load(Ordering::Relaxed) {
+                return;
+            }
+            let mut g = self.pool.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if g.alive && self.index < g.entries.len() {
+                g.free.push(self.index);
+            }
+        }
+    }
+
+    impl GpuSurface {
+        pub fn id(&self) -> u64 {
+            self.id
+        }
+
+        pub fn width(&self) -> u32 {
+            self.width
+        }
+
+        pub fn height(&self) -> u32 {
+            self.height
+        }
+
+        /// Take the slot out of the pool: the GPU may still be writing into this surface.
+        pub(crate) fn retire(&self) {
+            self.retired.store(true, Ordering::Relaxed);
+        }
+
+        pub(super) fn belongs_to(&self, pool: &GpuPool) -> bool {
+            Arc::ptr_eq(&self.pool, &pool.0)
+        }
+
+        pub(super) fn registered_ptr(&self) -> Option<*mut c_void> {
+            let g = self.pool.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !g.alive {
+                return None;
+            }
+            let e = g.entries.get(self.index)?;
+            (e.id == self.id && !e.registered.is_null()).then_some(e.registered)
+        }
+    }
+
+    impl GpuPool {
+        pub fn acquire(&self, width: u32, height: u32) -> Option<Arc<GpuSurface>> {
+            if (width, height) != (self.0.width, self.0.height) {
+                return None;
+            }
+            let mut g = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !g.alive {
+                return None;
+            }
+            let index = g.free.pop()?;
+            let id = g.entries.get(index)?.id;
+            Some(Arc::new(GpuSurface { pool: Arc::clone(&self.0), index, id, width, height, retired: AtomicBool::new(false) }))
+        }
+    }
+
+    pub(super) fn create_pool(device: &Device, enc: Handle, api: &Api, fmt: u32, (w, h): (u32, u32), count: usize) -> Result<Arc<GpuPool>, String> {
+        let reg_fn = api.list.nvEncRegisterResource.ok_or("no nvEncRegisterResource")?;
+        let d3d = device.d3d11();
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
+        };
+        struct PoolGuard<'a> {
+            enc: Handle,
+            api: &'a Api,
+            state: PoolState,
+        }
+        impl Drop for PoolGuard<'_> {
+            fn drop(&mut self) {
+                unregister_entries(self.enc, self.api, &mut self.state.entries);
+            }
+        }
+        let mut guard = PoolGuard { enc, api, state: PoolState { entries: Vec::with_capacity(count), free: Vec::new(), alive: true } };
+        for _ in 0..count {
+            let mut tex: Option<ID3D11Texture2D> = None;
+            // SAFETY: valid D3D11 texture descriptor and out-pointer on live multithread-protected device.
+            unsafe { d3d.CreateTexture2D(&desc, None, Some(&mut tex)) }.map_err(|e| format!("cannot create shared D3D11 RGBA8 texture: {e}"))?;
+            let tex = tex.ok_or("no shared D3D11 texture")?;
+            let res: IDXGIResource1 = tex.cast().map_err(|e| format!("no IDXGIResource1 on shared texture: {e}"))?;
+            // SAFETY: `tex` was created with `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`.
+            let handle = unsafe { res.CreateSharedHandle(None, (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0, None) }
+                .map_err(|e| format!("CreateSharedHandle failed: {e}"))?;
+            // SAFETY: zeroed register struct with its version; `tex` is a live D3D11 2D texture on the
+            // same device NVENC uses.
+            let registered = unsafe {
+                let mut r: NV_ENC_REGISTER_RESOURCE = std::mem::zeroed();
+                r.version = NV_ENC_REGISTER_RESOURCE_VER;
+                r.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+                r.width = w;
+                r.height = h;
+                r.pitch = 0;
+                r.subResourceIndex = 0;
+                r.resourceToRegister = tex.as_raw();
+                r.bufferFormat = fmt;
+                r.bufferUsage = NV_ENC_BUFFER_USAGE_INPUT_IMAGE;
+                let s = reg_fn(enc, &mut r);
+                if s != NV_ENC_SUCCESS || r.registeredResource.is_null() {
+                    let _ = CloseHandle(handle);
+                    return Err(status("registering a GPU input surface", s, enc, api));
+                }
+                r.registeredResource
+            };
+            let id = NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed);
+            guard.state.entries.push(SharedEntry { _tex: tex, handle, registered, id });
+        }
+        let mut state = std::mem::replace(&mut guard.state, PoolState { entries: Vec::new(), free: Vec::new(), alive: false });
+        state.free = (0..state.entries.len()).rev().collect();
+        Ok(Arc::new(GpuPool(Arc::new(GpuPoolInner { width: w, height: h, state: Mutex::new(state) }))))
+    }
+
+    fn unregister_entries(enc: Handle, api: &Api, entries: &mut [SharedEntry]) {
+        if let Some(unreg) = api.list.nvEncUnregisterResource {
+            for e in entries {
+                if !e.registered.is_null() {
+                    // SAFETY: `e.registered` was registered against `enc` by `nvEncRegisterResource`.
+                    unsafe {
+                        let _ = unreg(enc, e.registered);
+                    }
+                    e.registered = std::ptr::null_mut();
+                }
+            }
+        }
+    }
+
+    pub(super) fn unregister_pool(enc: Handle, api: &Api, pool: &GpuPool) {
+        let mut g = pool.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        g.alive = false;
+        g.free.clear();
+        unregister_entries(enc, api, &mut g.entries);
+    }
+
+    /// Import a [`GpuSurface`] D3D11 shared handle into a Vulkan [`wgpu::Device`] as an
+    /// `Rgba8Unorm` render-attachment texture (`filmcraft_gpu::register_export_target_importer`).
+    pub fn import_wgpu_target(device: &wgpu::Device, target: &dyn Any, w: u32, h: u32) -> Option<wgpu::Texture> {
+        let surf = target.downcast_ref::<GpuSurface>()?;
+        if (surf.width, surf.height) != (w, h) {
+            return None;
+        }
+        if !device.features().contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32) {
+            return None;
+        }
+        let g = surf.pool.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !g.alive {
+            return None;
+        }
+        let entry = g.entries.get(surf.index)?;
+        if entry.id != surf.id {
+            return None;
+        }
+        let handle = entry.handle;
+        let hal_desc = wgpu::hal::TextureDescriptor {
+            label: Some("nvenc-export-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUses::COLOR_TARGET,
+            memory_flags: wgpu::hal::MemoryFlags::empty(),
+            view_formats: Vec::new(),
+        };
+        let hal_tex = {
+            // SAFETY: `device` is active; only Vulkan devices return `Some`.
+            let hal_dev = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }?;
+            // SAFETY: `handle` is held alive by `g` (PoolState Mutex) for a D3D11 `DXGI_FORMAT_R8G8B8A8_UNORM`
+            // texture matching `hal_desc`.
+            match unsafe { hal_dev.texture_from_d3d11_shared_handle(handle, &hal_desc) } {
+                Ok(t) => t,
+                Err(why) => {
+                    static LOGGED: AtomicBool = AtomicBool::new(false);
+                    if !LOGGED.swap(true, Ordering::Relaxed) {
+                        log::warn!("Vulkan NVENC export target import unavailable ({why:?}); falling back to readback");
+                    }
+                    return None;
+                }
+            }
+        };
+        drop(g);
+        let wgpu_desc = wgpu::TextureDescriptor {
+            label: Some("nvenc-export-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        };
+        // SAFETY: `hal_tex` was just imported on `device` with matching `wgpu_desc`.
+        Some(unsafe { device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(hal_tex, &wgpu_desc, wgpu::TextureUses::UNINITIALIZED) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mapped_gpu_input_takes_the_sessions_format() {
+        // the driver's answer agrees with the encoder (ABGR is what the zero-copy pool is registered in)
+        assert_eq!(mapped_input_format(NV_ENC_BUFFER_FORMAT_ABGR, NV_ENC_BUFFER_FORMAT_ABGR), Ok(NV_ENC_BUFFER_FORMAT_ABGR));
+        // 0 (undefined) is "no opinion": the session's format is used, as before
+        assert_eq!(mapped_input_format(0, NV_ENC_BUFFER_FORMAT_ABGR), Ok(NV_ENC_BUFFER_FORMAT_ABGR));
+        // a different format is refused instead of being handed to an ABGR encoder
+        let why = mapped_input_format(NV_ENC_BUFFER_FORMAT_NV12, NV_ENC_BUFFER_FORMAT_ABGR).expect_err("NV12 input into an ABGR encoder must be refused");
+        assert!(why.contains(&NV_ENC_BUFFER_FORMAT_NV12.to_string()), "{why}");
+        assert!(why.contains(&NV_ENC_BUFFER_FORMAT_ABGR.to_string()), "{why}");
     }
 }

@@ -53,14 +53,20 @@ const X265_MAIN10: &[&str] = &[
 /// AV1 where ffmpeg has libaom but not SVT-AV1 (the Windows builds): slower to encode, same role.
 const AV1_AOM: &[&str] = &["-c:v", "libaom-av1", "-crf", "35", "-b:v", "0", "-cpu-used", "8", "-row-mt", "1", "-g", "48", "-pix_fmt", "yuv420p"];
 const PRORES: &[&str] = &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"];
+const DNXHR: &[&str] = &["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"];
 
 const SPECS: &[Spec] = &[
-    // Playback scenarios (also used by `bench_playback`).
+    // Playback scenarios (also used by `bench_playback` and `bench_s1_s7`).
     Spec { name: "a1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=20,noise=alls=6:allf=t", secs: 20, audio: true, codec: X264 },
     Spec { name: "b1080.mp4", src: "mandelbrot=s=1920x1080:r=24000/1001,trim=duration=20,noise=alls=6:allf=t", secs: 20, audio: false, codec: X264 },
     Spec { name: "c1080.mp4", src: "smptehdbars=s=1920x1080:r=24000/1001:d=20,noise=alls=10:allf=t+u", secs: 20, audio: false, codec: X264 },
+    Spec { name: "hevc_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265 },
+    Spec { name: "av1_1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: AV1 },
+    Spec { name: "prores_1080.mov", src: "testsrc2=s=1920x1080:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: PRORES },
+    Spec { name: "dnxhr_1080.mov", src: "testsrc2=s=1920x1080:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: DNXHR },
     Spec { name: "a2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X264 },
     Spec { name: "hevc2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265 },
+    Spec { name: "hevc10_2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265_MAIN10 },
     Spec { name: "vp92160.webm", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: VP9 },
     Spec { name: "av12160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: AV1 },
     // Decode-speed matrix: 1080p (5 s) and 2160p (3 s) per codec, same picture content (ProRes

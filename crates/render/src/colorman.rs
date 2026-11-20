@@ -59,11 +59,25 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
 /// whose working → monitor transform is the identity. None for log media (camera-gamut
 /// compression), RGB frames and other pipelines, which [`decode`] converts on the CPU.
 pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> Option<Arc<InputTransform>> {
-    if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
+    if !pipe.is_plain()
+        || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. } | filmcraft_frame::PixelData::GpuSurface(_))
+    {
         return None;
     }
     let t = input_transform(cs, frame.color.range, pipe, source_peak_nits(project, item));
     t.gpu_params().map(|_| t)
+}
+
+/// Like [`decode`], returning `Err` if a GPU-resident frame fails CPU readback instead of
+/// substituting transparent pixels.
+pub fn try_decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> Result<Image, String> {
+    if let Some(cpu) = frame.try_materialize_cpu()? {
+        if matches!(cpu.data, filmcraft_frame::PixelData::GpuSurface(_)) {
+            return Err("GPU surface readback returned another GPU surface".to_string());
+        }
+        return Ok(decode(project, item, &cpu, n, pipe));
+    }
+    Ok(decode(project, item, frame, n, pipe))
 }
 
 /// Decode a frame of `item` (box-decimated by `n`) into the working space of `pipe`.

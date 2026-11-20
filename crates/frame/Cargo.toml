@@ -12,5 +12,6 @@ workspace = true
 [dependencies]
 filmcraft-color = { workspace = true }
 filmcraft-time = { workspace = true }
+log = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

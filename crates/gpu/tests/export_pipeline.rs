@@ -30,6 +30,79 @@ impl FrameRenderer for GpuFrameRenderer {
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
     }
+
+    fn plan_preparer(&self) -> Option<filmcraft_export::PlanPreparer> {
+        Some(self.0.plan_preparer())
+    }
+
+    fn render_planned(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Option<filmcraft_render::Image> {
+        self.0.render_planned(plan, prep)
+    }
+
+    fn render_planned_rgba8(&mut self, plan: &filmcraft_render::plan::FramePlan, prep: Option<&dyn std::any::Any>) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_planned_rgba8(plan, prep)
+    }
+
+    fn render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn filmcraft_export::GpuEncodeInput,
+    ) -> filmcraft_export::GpuFrame {
+        use filmcraft_export::GpuFrame;
+        match self.0.render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height()) {
+            filmcraft_gpu::SurfaceRender::Rendered => GpuFrame::Rendered,
+            filmcraft_gpu::SurfaceRender::NoImport => GpuFrame::NoImport,
+            filmcraft_gpu::SurfaceRender::Unconfirmed => GpuFrame::Unconfirmed,
+            filmcraft_gpu::SurfaceRender::Unavailable => GpuFrame::Unavailable,
+        }
+    }
+
+    fn try_render(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> filmcraft_export::Result<Option<filmcraft_render::Image>> {
+        self.0.try_render(project, seq, t, opts, sources).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+    ) -> filmcraft_export::Result<Option<filmcraft_render::Image>> {
+        self.0.try_render_planned(plan, prep).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned_rgba8(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+    ) -> filmcraft_export::Result<Option<(u32, u32, Vec<u8>)>> {
+        self.0.try_render_planned_rgba8(plan, prep).map_err(filmcraft_export::ExportError::Encode)
+    }
+
+    fn try_render_planned_gpu(
+        &mut self,
+        plan: &filmcraft_render::plan::FramePlan,
+        prep: Option<&dyn std::any::Any>,
+        target: &dyn filmcraft_export::GpuEncodeInput,
+    ) -> filmcraft_export::Result<filmcraft_export::GpuFrame> {
+        use filmcraft_export::GpuFrame;
+        match self
+            .0
+            .try_render_planned_surface(plan, prep, target.as_any(), target.id(), target.width(), target.height())
+            .map_err(filmcraft_export::ExportError::Encode)?
+        {
+            filmcraft_gpu::SurfaceRender::Rendered => Ok(GpuFrame::Rendered),
+            filmcraft_gpu::SurfaceRender::NoImport => Ok(GpuFrame::NoImport),
+            filmcraft_gpu::SurfaceRender::Unconfirmed => Ok(GpuFrame::Unconfirmed),
+            filmcraft_gpu::SurfaceRender::Unavailable => Ok(GpuFrame::Unavailable),
+        }
+    }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and
@@ -172,4 +245,177 @@ fn gpu_export_matches_cpu_and_counts() {
     let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
     assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
     assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
+
+    // Verify SDR RGBA8 fast path with post-readback VideoLimiter matches CPU export parity
+    // and records 4 B/px readback instead of 8 B/px Rgba16Float + convert_ns.
+    let (p, seq, m) = project_with(256, 144, false);
+    let mut s_lim = ExportSettings { format: Format::PngSequence, path: base.join("lim-cpu").to_string_lossy().into_owned(), ..Default::default() };
+    s_lim.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    s_lim.effects.video_limiter.enabled = true;
+    s_lim.effects.video_limiter.min_percent = 10.0;
+    s_lim.effects.video_limiter.max_percent = 80.0;
+    s_lim.gpu_rendering = GpuRendering::Off;
+    export(&p, seq, &s_lim, &m, &Progress::default()).unwrap();
+
+    s_lim.path = base.join("lim-gpu").to_string_lossy().into_owned();
+    s_lim.gpu_rendering = GpuRendering::Auto;
+    let prev_convert = filmcraft_gpu::export_renderer::timing::get().convert;
+    let prev_readback = filmcraft_frame::transfers::snapshot().export_readback_bytes;
+    export(&p, seq, &s_lim, &m, &Progress::default()).unwrap();
+    let convert_delta = filmcraft_gpu::export_renderer::timing::get().convert - prev_convert;
+    let readback_delta = filmcraft_frame::transfers::snapshot().export_readback_bytes - prev_readback;
+    assert!(convert_delta.is_zero(), "RGBA8 fast path must skip f16->f32 CPU conversion: {convert_delta:?}");
+    assert_eq!(readback_delta, 2 * 256 * 144 * 4, "RGBA8 fast path must read 4 B/px");
+    for f in ["000", "001"] {
+        assert_parity(&png(base, "lim-cpu", &format!("img{f}.png")), &png(base, "lim-gpu", &format!("img{f}.png")), &format!("limiter RGBA8 frame {f}"));
+    }
+
+    // Verify a source whose GpuSurface fails both zero-copy import and CPU readback aborts
+    // export with Err instead of silently falling back to CPU transparent/black pixels.
+    #[derive(Debug)]
+    struct FailingGpuSurface;
+    impl filmcraft_frame::GpuSurface for FailingGpuSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn id(&self) -> usize {
+            0xBAD_50FC
+        }
+        fn gpu_bytes(&self) -> u64 {
+            64 * 64 * 4
+        }
+        fn bits(&self) -> u32 {
+            8
+        }
+        fn chroma(&self) -> filmcraft_frame::Chroma {
+            filmcraft_frame::Chroma::C444
+        }
+        fn to_cpu(&self) -> Result<filmcraft_frame::PixelData, String> {
+            Err("synthetic source gpu surface readback failure".to_string())
+        }
+    }
+    struct FailingGpuSource {
+        info: filmcraft_media::MediaInfo,
+    }
+    impl MediaSource for FailingGpuSource {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.info
+        }
+        fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            Ok(Arc::new(filmcraft_frame::VideoFrame {
+                width: 64,
+                height: 64,
+                data: filmcraft_frame::PixelData::GpuSurface(Arc::new(FailingGpuSurface)),
+                color: filmcraft_color::ColorInfo::REC709,
+                par: (1, 1),
+                pts: req.time,
+            }))
+        }
+        fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Err(filmcraft_media::MediaError::NoStream("audio"))
+        }
+    }
+    let fail_g = GeneratorSource::new(
+        Generator::ColorMatte { color: [1.0, 0.0, 0.0, 1.0] },
+        64,
+        64,
+        filmcraft_time::FrameRate::FPS_24,
+        filmcraft_time::Tick(2 * TICKS_PER_SECOND),
+    );
+    let mut fail_proj = filmcraft_project::Project::new("fail-readback");
+    let fail_info = fail_g.info().clone();
+    let fail_item = fail_proj.add_item(
+        "failing-gpu-source",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(fail_g.generator.clone()),
+            info: fail_info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let fail_seq = fail_proj.new_sequence(
+        "s",
+        SequenceSettings { width: 64, height: 64, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() },
+        1,
+        1,
+        None,
+    );
+    let fail_clip = fail_proj
+        .make_track_item(
+            fail_item,
+            TrackKind::Video,
+            filmcraft_time::Tick::ZERO,
+            TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(1)),
+            filmcraft_time::FrameRate::FPS_24,
+        )
+        .unwrap();
+    fail_proj.sequence_mut(fail_seq).unwrap().video_tracks[0].items.push(fail_clip);
+    let mut fail_sources = SourceMap::default();
+    fail_sources.0.insert(fail_item, Arc::new(FailingGpuSource { info: fail_info }));
+    let fail_dir = base.join("fail-gpu-readback");
+    std::fs::create_dir_all(&fail_dir).unwrap();
+    let mut s_fail = ExportSettings { format: Format::PngSequence, path: fail_dir.join("img.png").to_string_lossy().into_owned(), ..Default::default() };
+    s_fail.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(1)));
+    s_fail.gpu_rendering = GpuRendering::Auto;
+    let fail_proj = Arc::new(fail_proj);
+    let res = export(&fail_proj, fail_seq, &s_fail, &fail_sources, &Progress::default());
+    assert!(
+        matches!(res, Err(filmcraft_export::ExportError::Encode(ref msg)) if msg.contains("synthetic source gpu surface readback failure")),
+        "export must fail rather than emit black pixels when GPU surface readback fails: {res:?}"
+    );
+    assert!(!fail_dir.join("img000.png").exists(), "failed GPU surface readback must not write output frames");
+
+    // Same failing GPU source with an opacity mask on the clip: skips the GPU source path
+    // (`gpu_chain` returns `None`) and goes through planning's `item_layer` decode path.
+    let mut masked_proj = (*fail_proj).clone();
+    let masked_clip = &mut masked_proj.sequence_mut(fail_seq).unwrap().video_tracks[0].items[0];
+    let mask = filmcraft_project::Mask::new("m", filmcraft_project::MaskPath::rect(0.0, 0.0, 32.0, 32.0));
+    masked_clip.effect_mut("opacity").unwrap().masks.push(mask);
+    let masked_dir = base.join("fail-masked-gpu-readback");
+    std::fs::create_dir_all(&masked_dir).unwrap();
+    let mut s_masked = ExportSettings { format: Format::PngSequence, path: masked_dir.join("img.png").to_string_lossy().into_owned(), ..Default::default() };
+    s_masked.range = s_fail.range;
+    s_masked.gpu_rendering = GpuRendering::Auto;
+    let masked_res = export(&Arc::new(masked_proj), fail_seq, &s_masked, &fail_sources, &Progress::default());
+    assert!(
+        matches!(masked_res, Err(filmcraft_export::ExportError::Encode(ref msg)) if msg.contains("synthetic source gpu surface readback failure")),
+        "opacity-masked export must fail when GPU surface readback fails: {masked_res:?}"
+    );
+    assert!(!masked_dir.join("img000.png").exists(), "failed masked GPU surface readback must not write output frames");
+
+    // Same failing GPU source under a CPU-only adjustment effect: clears the GPU pool via
+    // `is_cpu_frame` and must propagate the readback error through `try_render_sequence`.
+    let mut cpu_fx_proj = (*fail_proj).clone();
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let adj = cpu_fx_proj.add_item(
+        "adj",
+        Label::Iris,
+        ItemKind::AdjustmentLayer { width: 64, height: 64, rate: r, duration: filmcraft_time::Tick(TICKS_PER_SECOND) },
+        None,
+    );
+    let mut over =
+        cpu_fx_proj.make_track_item(adj, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, r.tick_of(1)), r).unwrap();
+    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
+    let v2 = filmcraft_project::TrackId(cpu_fx_proj.alloc_id());
+    let seq_mut = cpu_fx_proj.sequence_mut(fail_seq).unwrap();
+    seq_mut.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "V2".into()));
+    seq_mut.video_tracks[1].items.push(over);
+    let cpu_fx_dir = base.join("fail-cpu-fx-readback");
+    std::fs::create_dir_all(&cpu_fx_dir).unwrap();
+    let mut s_cpu_fx = ExportSettings { format: Format::PngSequence, path: cpu_fx_dir.join("img.png").to_string_lossy().into_owned(), ..Default::default() };
+    s_cpu_fx.range = s_fail.range;
+    s_cpu_fx.gpu_rendering = GpuRendering::Auto;
+    let cpu_fx_res = export(&Arc::new(cpu_fx_proj), fail_seq, &s_cpu_fx, &fail_sources, &Progress::default());
+    assert!(
+        matches!(cpu_fx_res, Err(filmcraft_export::ExportError::Encode(ref msg)) if msg.contains("synthetic source gpu surface readback failure")),
+        "CPU-only effect export must fail when GPU surface readback fails: {cpu_fx_res:?}"
+    );
+    assert!(!cpu_fx_dir.join("img000.png").exists(), "failed CPU-fallback readback must not write output frames");
 }
