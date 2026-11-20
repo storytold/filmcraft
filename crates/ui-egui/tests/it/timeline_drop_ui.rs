@@ -167,7 +167,9 @@ fn still_dropped_on_empty_timeline_creates_a_sequence() {
     assert!(h.state().session.active_sequence().is_none());
     drop_on_empty_timeline(&mut h, &still("drop_still_empty_timeline.png"));
     assert_eq!(h.state().session.project.items.len(), 2, "still plus the new sequence");
-    assert!(h.state().session.active_sequence().is_some(), "status: {}", h.state().ui.status);
+    let s = &h.state().session;
+    let sequence = s.state.active_sequence.expect("a sequence opens after the drop");
+    assert_eq!(s.project.item(sequence).unwrap().name, "drop_still_empty_timeline");
     assert_eq!(clip_counts(&h), (1, 0), "status: {}", h.state().ui.status);
 }
 

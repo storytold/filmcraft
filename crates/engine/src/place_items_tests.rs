@@ -71,6 +71,25 @@ fn items_are_checked() {
     assert!(ends(&s).is_empty());
 }
 
+#[test]
+fn new_sequence_defaults_to_the_first_source_name() {
+    let mut s = Session::default();
+    let first = s.execute("file.newOfflineFile", json!({"fileName": "Interview.take 2.MP4"})).unwrap()["item"].as_u64().unwrap();
+    let second = s.execute("file.newOfflineFile", json!({"fileName": "Second.mov"})).unwrap()["item"].as_u64().unwrap();
+    let renamed = s.execute("file.newOfflineFile", json!({"fileName": "Camera.mov", "name": "Interview.v2"})).unwrap()["item"].as_u64().unwrap();
+    for (params, expected) in [
+        (json!({"fromItems": [first, second]}), "Interview.take 2"),
+        (json!({"fromItem": second}), "Second"),
+        (json!({"fromItem": renamed}), "Interview.v2"),
+        (json!({"fromItem": first, "name": "Explicit.mp4"}), "Explicit.mp4"),
+        (json!({}), "Sequence 05"),
+    ] {
+        let made = s.execute("file.newSequence", params).unwrap();
+        let id = ItemId(made["sequence"].as_u64().unwrap());
+        assert_eq!(s.project.item(id).unwrap().name, expected);
+    }
+}
+
 /// A new sequence from several items is one undo step: the sequence and its clips go together.
 #[test]
 fn new_sequence_from_items_is_one_undo_step() {
