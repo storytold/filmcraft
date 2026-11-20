@@ -10,6 +10,7 @@
 //! | `sequence.showThroughEdits` | Sequence ▸ Show Through Edits | |
 //! | `sequence.joinThroughEdits` | (clip and edit point context menus) Join Through Edits | |
 //! | `sequence.throughEdits` | query: the through edits of the active sequence | |
+//! | `sequence.check` | query: short clips, picture and sound holes, empty stretches and jump cuts (`sequence_check`) | |
 //! | `sequence.showDuplicateFrameMarkers` | (Timeline Display Settings) Show Duplicate Frame Markers | |
 //! | `sequence.duplicateFrames` | query: the duplicate frame markers of the active sequence | |
 //! | `sequence.makeSubsequence` | Sequence ▸ Make Subsequence | Shift+U |
@@ -149,6 +150,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                             .collect(),
                     ))
                 }),
+                query("sequence.check", "Check Sequence", crate::sequence_check::PARAMS, crate::sequence_check::run),
                 spec("sequence.makeSubsequence", "Make Subsequence", &["Sequence"], Some("Shift+U"), r#"{"name":str?}"#, has_seq, make_subsequence),
             ],
         ),
