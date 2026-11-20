@@ -199,6 +199,53 @@ fn loudness_ranges_and_offline_media_use_the_requested_sequence() {
 }
 
 #[test]
+fn loudness_reports_failed_audio_reads_as_unreadable() {
+    use filmcraft_frame::{AudioBuffer, VideoFrame};
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource};
+
+    struct FailingAudio(MediaInfo);
+
+    impl MediaSource for FailingAudio {
+        fn info(&self) -> &MediaInfo {
+            &self.0
+        }
+
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(MediaError::NoStream("video"))
+        }
+
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<AudioBuffer> {
+            Err(MediaError::Decode("synthetic read failure".into()))
+        }
+    }
+
+    let mut s = session("Stereo", "Standard");
+    let samples = tone(1);
+    place(&mut s, &samples, 1, "A1");
+    let (item, clip) = place(&mut s, &samples, 1, "A2");
+    let original = s.media.source_for(&s.project, item, &*s.services).unwrap();
+    s.media.insert(item, Arc::new(FailingAudio(original.info().clone())));
+
+    for target in ["mix", "track", "clips"] {
+        let v = s.execute(QUERY, json!({"of":target,"track":"A2","clips":[clip.0]})).unwrap();
+        let report = v["clips"].get(0).unwrap_or(&v);
+        assert_eq!(report["samplePeakDbfs"].is_number(), target == "mix");
+        let offline = v["offlineMedia"].as_array().unwrap();
+        assert_eq!(offline.len(), 1, "{target}: {v}");
+        assert_eq!(offline[0]["item"], item.0);
+        assert_eq!(offline[0]["status"], "unreadable");
+        assert_eq!(offline[0]["path"], "/A2.wav");
+        assert_eq!(offline[0]["error"], "decode error: synthetic read failure");
+    }
+
+    assert!(s.media.offline_status(item).is_none());
+    s.media.insert(item, original);
+    let fixed = s.execute(QUERY, json!({"of":"track","track":"A2"})).unwrap();
+    assert!(fixed["integratedLufs"].is_number());
+    assert_eq!(fixed["offlineMedia"], json!([]));
+}
+
+#[test]
 fn loudness_rejects_invalid_inputs() {
     let mut s = session("Stereo", "Standard");
     for params in [

@@ -137,8 +137,8 @@ using Auto-Match's clip signal before Volume, including active proxies. Mono cli
 When `range`, `startSeconds` and `endSeconds` are omitted, the range is `entire`. Supplying
 either seconds field without `range` selects `custom`, which requires both seconds fields.
 `range` also accepts `inOut` and `workArea`. For a clip, a subrange measures only its overlap
-with the clip. Results include `start` / `end` in timeline ticks, `seconds`, nulls for unavailable
-measurements, and `offlineMedia`.
+with the clip. Results include `start` / `end` in timeline ticks, `seconds`, and nulls for
+unavailable measurements. `offlineMedia` includes any used source whose audio could not be read.
 
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media

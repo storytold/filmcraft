@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use filmcraft_audio_dsp::channels::{self as chans, Layout, Mixdown};
 use filmcraft_frame::AudioBuffer;
-use filmcraft_media::SharedSource;
+use filmcraft_media::{MediaError, MediaSource, SharedSource};
 use filmcraft_project::{AudioChannels, ItemId, Project, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
@@ -45,6 +45,10 @@ pub fn isolated_sources(sources: &dyn SourceProvider) -> impl SourceProvider + '
     impl SourceProvider for ScopedSources<'_> {
         fn source(&self, item: ItemId) -> Option<SharedSource> {
             self.inner.source(item)
+        }
+
+        fn audio_read_failed(&self, item: ItemId, error: &MediaError) {
+            self.inner.audio_read_failed(item, error);
         }
 
         fn audio_render_cache(&self) -> &RenderCache {
@@ -268,7 +272,8 @@ fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), clip_window, w, cache)
+        let read = |start, frames| read_media_audio(item, &*src, Window { start, frames, sr }, sources);
+        effected(item, &read, clip_window, w, cache)
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -372,6 +377,11 @@ fn effected(item: &TrackItem, src: SourceAudio, window: Window, w: usize, cache:
     if audio_fx::has_effects(item) { audio_fx::process_with_cache(item, window, &read, &cache.clip_effects) } else { read(window.start, window.frames) }
 }
 
+fn read_media_audio(item: &TrackItem, source: &dyn MediaSource, window: Window, sources: &dyn SourceProvider) -> Option<AudioBuffer> {
+    let Window { start, frames, sr } = window;
+    source.audio_stream(item.audio_stream, start, frames, sr).inspect_err(|error| sources.audio_read_failed(item.item, error)).ok()
+}
+
 /// One clip's own signal for timeline samples `[start, start + frames)` (sequence rate): clip gain
 /// and clip effects, without Volume / Channel Volume / Panner, transitions or Mute (silence outside
 /// the clip). Loudness Auto-Match and ducking analyse this. `None` when the clip has no audio
@@ -388,7 +398,7 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let read = |m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok();
+        let read = |start, frames| read_media_audio(item, &*src, Window { start, frames, sr }, sources);
         let buf = effected(item, &read, Window { start: a0, frames: n, sr }, 2, sources.audio_render_cache());
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
