@@ -244,6 +244,8 @@ pub(super) static CATEGORIES: &[Category] = &[
                 true,
             ),
             f("general.atStartup", "At Startup", Kind::Choice(STARTUP), true),
+            #[cfg(not(target_arch = "wasm32"))]
+            b("general.checkForUpdatesAtStartup", "Automatically check for updates at startup", false),
             f("general.whenOpeningProject", "When Opening a Project", Kind::Choice(OPENING), false),
             Row::Group(
                 "Bins",
