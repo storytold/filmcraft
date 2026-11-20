@@ -50,6 +50,11 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+
+    /// Audio history available to the renderer while reading this source.
+    fn audio_render_cache(&self) -> &audio::RenderCache {
+        audio::shared_cache()
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {

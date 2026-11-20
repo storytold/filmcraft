@@ -8,7 +8,7 @@
 //! the chain ahead of its output.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use filmcraft_audio_dsp::AudioEffect;
 use filmcraft_project::{EffectInstance, TrackItem};
@@ -312,10 +312,8 @@ struct Chain {
 
 type Key = (u64, u64, u32, usize);
 
-fn cache() -> &'static Mutex<HashMap<Key, Vec<Chain>>> {
-    static C: OnceLock<Mutex<HashMap<Key, Vec<Chain>>>> = OnceLock::new();
-    C.get_or_init(Default::default)
-}
+#[derive(Default)]
+pub(crate) struct EffectCache(Mutex<HashMap<Key, Vec<Chain>>>);
 
 fn structure_hash(item: &TrackItem) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -355,10 +353,21 @@ fn run(chain: &mut Chain, item: &TrackItem, in0: i64, input: &mut [Vec<f32>], sr
 /// raw planar audio (2 channels, or 6 on a 5.1 track) for timeline samples `[x0, x0 + len)`
 /// (silence outside the clip).
 pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, usize) -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    let window = crate::audio::Window { start: a0, frames: n, sr };
+    process_with_cache(item, window, read, &crate::audio::shared_cache().clip_effects)
+}
+
+pub(crate) fn process_with_cache(
+    item: &TrackItem,
+    window: crate::audio::Window,
+    read: &dyn Fn(i64, usize) -> Vec<Vec<f32>>,
+    cache: &EffectCache,
+) -> Vec<Vec<f32>> {
+    let crate::audio::Window { start: a0, frames: n, sr } = window;
     let width = read(a0, 0).len().max(1);
     let key = (item.id.0, structure_hash(item), sr, width);
     let taken = {
-        let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = cache.0.lock().unwrap_or_else(|e| e.into_inner());
         c.get_mut(&key).and_then(|v| v.iter().position(|ch| ch.next_out == a0).map(|i| v.swap_remove(i)))
     };
     let (mut chain, mut input, skip) = match taken {
@@ -387,7 +396,7 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
     run(&mut chain, item, in0, &mut input, sr);
     chain.next_out = a0 + n as i64;
     let out: Vec<Vec<f32>> = input.iter().map(|c| c[skip..].to_vec()).collect();
-    let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = cache.0.lock().unwrap_or_else(|e| e.into_inner());
     let v = c.entry(key).or_default();
     v.push(chain);
     if v.len() > 4 {

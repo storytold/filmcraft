@@ -134,9 +134,11 @@ integrated, momentary and short-term loudness, loudness range, sample peak and t
 `of: "track"` takes a track ID or name such as `A1` and meters the strip before its destination bus.
 `of: "clips"` returns a reading per audio clip ID (or the selected audio clips in the active sequence),
 using Auto-Match's clip signal before Volume, including active proxies. Mono clips count as one channel.
-`range` defaults to `entire` and also accepts `inOut`, `workArea` or `custom` with the two seconds
-fields. For a clip, a specified subrange measures only its overlap with the clip. Results include
-`start` / `end` in timeline ticks, `seconds`, nulls for unavailable measurements, and `offlineMedia`.
+When `range`, `startSeconds` and `endSeconds` are omitted, the range is `entire`. Supplying
+either seconds field without `range` selects `custom`, which requires both seconds fields.
+`range` also accepts `inOut` and `workArea`. For a clip, a subrange measures only its overlap
+with the clip. Results include `start` / `end` in timeline ticks, `seconds`, nulls for unavailable
+measurements, and `offlineMedia`.
 
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media

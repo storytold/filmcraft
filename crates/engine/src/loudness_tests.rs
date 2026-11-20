@@ -125,6 +125,45 @@ fn loudness_track_stops_before_the_destination_bus_and_clip_ranges_are_intersect
 }
 
 #[test]
+fn loudness_mix_does_not_reuse_another_projects_effect_tail() {
+    assert_measurement_has_own_effect_state("mix");
+}
+
+#[test]
+fn loudness_track_does_not_reuse_another_projects_effect_tail() {
+    assert_measurement_has_own_effect_state("track");
+}
+
+#[test]
+fn loudness_clips_do_not_reuse_another_projects_effect_tail() {
+    assert_measurement_has_own_effect_state("clips");
+}
+
+fn assert_measurement_has_own_effect_state(target: &str) {
+    // Two projects assign the same track and clip IDs to different source media.
+    let setup = |samples: &[f32]| {
+        let mut s = session("Stereo", "Standard");
+        let (_, clip) = place(&mut s, samples, 1, "A1");
+        if target == "clips" {
+            s.execute("effects.apply", json!({"effect":"studio_reverb", "clips":[clip.0]})).unwrap();
+        } else {
+            s.execute("mixer.addInsert", json!({"strip":"A1", "effect":"studio_reverb"})).unwrap();
+        }
+        (s, clip)
+    };
+    let samples = tone(1);
+    let (mut audible, first_clip) = setup(&samples);
+    let (mut silent, second_clip) = setup(&vec![0.0; samples.len()]);
+    assert_eq!(first_clip, second_clip);
+    let measure = |session: &mut Session, clip: ClipId, start: u32, end: u32| {
+        let report = session.execute(QUERY, json!({"of":target, "track":"A1", "clips":[clip.0], "startSeconds":start, "endSeconds":end})).unwrap();
+        report["clips"].get(0).unwrap_or(&report)["samplePeakDbfs"].clone()
+    };
+    assert!(measure(&mut audible, first_clip, 0, 1).is_number());
+    assert_eq!(measure(&mut silent, second_clip, 1, 2), Value::Null);
+}
+
+#[test]
 fn loudness_ranges_and_offline_media_use_the_requested_sequence() {
     let mut s = session("Stereo", "Standard");
     let (item, clip) = place(&mut s, &tone(1), 1, "A1");
@@ -174,6 +213,8 @@ fn loudness_rejects_invalid_inputs() {
         json!({"of":"clips", "clips":[999]}),
         json!({"range":"workArea"}),
         json!({"range":"custom", "startSeconds":1.0}),
+        json!({"startSeconds":1.0}),
+        json!({"endSeconds":1.0}),
         json!({"range":"custom", "startSeconds":-1.0, "endSeconds":1.0}),
         json!({"range":"custom", "startSeconds":0, "endSeconds":1e60}),
     ] {

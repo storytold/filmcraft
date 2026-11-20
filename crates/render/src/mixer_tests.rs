@@ -1,6 +1,6 @@
 //! Mixer graph tests: gain and pan laws, automation, solo/mute, sends, latency, identity, speed.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
@@ -849,10 +849,12 @@ fn a_stretch_too_long_for_one_read_falls_back_to_varispeed() {
         Some(AudioBuffer::silence(48_000, 2, n))
     };
     // 200 000 output samples at 100× read 20 million source samples, more than 2^24
-    assert!(crate::stretch::read(&item, &src, 0, 200_000, 48_000, 2).is_none());
+    let cache = Mutex::default();
+    let window = |frames| crate::audio::Window { start: 0, frames, sr: 48_000 };
+    assert!(crate::stretch::read(&item, &src, window(200_000), 2, &cache).is_none());
     assert_eq!(reads.get(), 0, "the source is not read");
     // a short read of the same clip is stretched
-    assert!(crate::stretch::read(&item, &src, 0, 4_800, 48_000, 2).is_some());
+    assert!(crate::stretch::read(&item, &src, window(4_800), 2, &cache).is_some());
 }
 
 #[test]
@@ -916,11 +918,13 @@ fn stretched_clip(id: u64, speed: f64, reverse: bool) -> filmcraft_project::Trac
 
 /// Timeline samples `[a0, a0 + total)` of `item` read with `stretch::read` in blocks of `block`.
 fn stretched(item: &filmcraft_project::TrackItem, src: &dyn Fn(i64, usize) -> Option<AudioBuffer>, a0: i64, total: usize, block: usize) -> Vec<Vec<f32>> {
+    let cache = &crate::audio::shared_cache().stretch;
     let mut out = vec![Vec::new(), Vec::new()];
     let mut at = a0;
     while ((at - a0) as usize) < total {
         let n = block.min(total - (at - a0) as usize);
-        let b = crate::stretch::read(item, src, at, n, 48_000, 2).expect("stretched");
+        let window = crate::audio::Window { start: at, frames: n, sr: 48_000 };
+        let b = crate::stretch::read(item, src, window, 2, cache).expect("stretched");
         for (o, c) in out.iter_mut().zip(&b.channels) {
             o.extend_from_slice(c);
         }

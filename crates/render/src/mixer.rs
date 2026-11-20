@@ -608,10 +608,8 @@ fn build_state(plan: &Plan, sr: u32) -> Option<GraphState> {
     Some(GraphState { next_out: 0, strips, latency })
 }
 
-fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
-    static C: OnceLock<Mutex<HashMap<u64, Vec<GraphState>>>> = OnceLock::new();
-    C.get_or_init(Default::default)
-}
+#[derive(Default)]
+pub(crate) struct GraphCache(Mutex<HashMap<u64, Vec<GraphState>>>);
 
 /// Keys of graphs [`build_state`] refused (same key and sample rate: same refusal).
 fn refused_graphs() -> &'static Mutex<std::collections::HashSet<u64>> {
@@ -931,8 +929,9 @@ fn mix_plan(
 ) -> AudioBuffer {
     let crate::audio::Window { start, frames, sr } = window;
     let key = plan.structure_hash(sr);
+    let cache = &sources.audio_render_cache().mixer.0;
     let taken = {
-        let mut c = lock(cache());
+        let mut c = lock(cache);
         c.get_mut(&key).and_then(|v| v.iter().position(|g| g.next_out == start).map(|i| v.swap_remove(i)))
     };
     let (mut st, skip) = match taken {
@@ -1028,7 +1027,7 @@ fn mix_plan(
     }
     st.next_out = start + frames as i64;
     {
-        let mut c = lock(cache());
+        let mut c = lock(cache);
         let v = c.entry(key).or_default();
         v.push(st);
         if v.len() > 4 {

@@ -82,6 +82,7 @@ impl AudioOut {
 
     /// Meter before normalization and limiting, in the exact delivery channel layout.
     fn input_meter(&self, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<LoudnessMeter> {
+        let sources = filmcraft_render::audio::isolated_sources(sources);
         let mut meter = LoudnessMeter::new(self.sr as f64, self.channels);
         let mut pos = self.out;
         while pos < self.end {
@@ -89,7 +90,7 @@ impl AudioOut {
                 return Err(ExportError::Cancelled);
             }
             let n = (self.end - pos).min(self.sr as i64) as usize;
-            let buf = self.mix(pos, n, sources);
+            let buf = self.mix(pos, n, &sources);
             let refs: Vec<&[f32]> = buf.iter().map(Vec::as_slice).collect();
             meter.process(&refs);
             pos += n as i64;

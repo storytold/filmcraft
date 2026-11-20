@@ -275,12 +275,13 @@ pub fn clip_loudness(item: &TrackItem, sr: u32, sources: &dyn SourceProvider) ->
 pub(crate) fn clip_meter(item: &TrackItem, range: TimeRange, sr: u32, sources: &dyn SourceProvider) -> Option<LoudnessMeter> {
     let a0 = range.start.to_units_floor(sr as i64);
     let a1 = range.end().to_units_floor(sr as i64);
-    let mono = filmcraft_render::audio::clip_is_mono(item, sources)?;
+    let sources = filmcraft_render::audio::isolated_sources(sources);
+    let mono = filmcraft_render::audio::clip_is_mono(item, &sources)?;
     let mut meter = LoudnessMeter::new(sr as f64, if mono { 1 } else { 2 });
     let mut pos = a0;
     while pos < a1 {
         let n = (a1 - pos).min(sr as i64) as usize;
-        let [l, r] = filmcraft_render::audio::clip_signal(item, pos, n, sr, sources)?;
+        let [l, r] = filmcraft_render::audio::clip_signal(item, pos, n, sr, &sources)?;
         if mono {
             let m: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
             meter.process(&[&m]);
