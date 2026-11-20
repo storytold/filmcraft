@@ -5265,6 +5265,39 @@ pub fn inspect_project(s: &Session) -> Value {
     })
 }
 
+/// A clip effect for `sequence.inspect`. A Warp Stabilizer also says where its analysis stands:
+/// `{"state": "done" | "analyzing" | "queued" | "waiting" | "unreadable", "framesAnalyzed": n,
+/// "totalFrames": n}`, with `progress` (0 to 1) while it runs and `position` (1: next) while it is
+/// queued. The app queues every enabled one of the open project; elsewhere (headless) one waits
+/// until a frame of the clip is rendered.
+fn effect_json(
+    project: &filmcraft_project::Project,
+    q: &filmcraft_project::Sequence,
+    clip: &filmcraft_project::TrackItem,
+    e: &filmcraft_project::EffectInstance,
+) -> Value {
+    let mut v = json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()});
+    if e.effect == "warp_stabilizer" {
+        use filmcraft_render::vfx::AnalysisPhase;
+        let a = filmcraft_render::vfx::stabilizer_state(project, q, clip, e);
+        let state = match a.phase {
+            AnalysisPhase::Done => "done",
+            AnalysisPhase::Running => "analyzing",
+            AnalysisPhase::Queued => "queued",
+            AnalysisPhase::Waiting => "waiting",
+            AnalysisPhase::Unreadable => "unreadable",
+        };
+        v["analysis"] = json!({"state": state, "framesAnalyzed": a.analyzed, "totalFrames": a.total});
+        if let Some(position) = a.position {
+            v["analysis"]["position"] = json!(position);
+        }
+        if a.phase == AnalysisPhase::Running {
+            v["analysis"]["progress"] = json!(a.analyzed as f64 / a.total.max(1) as f64);
+        }
+    }
+    v
+}
+
 pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence) -> Value {
     let rate = q.settings.frame_rate;
     let tr = |t: &filmcraft_project::Track| {
@@ -5276,7 +5309,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
                 "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse, "maintainPitch": i.maintain_pitch,
                 "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
                 "enabled": i.enabled, "link": i.link, "label": i.label.name(), "customLabelColor": i.custom_label_color,
-                "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
+                "effects": i.effects.iter().map(|e| effect_json(&s.project, q, i, e)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "align": filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::alignment(x, b.1, rate.frame_duration()).id()), "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
         })

@@ -503,6 +503,27 @@ fn media_cache_location_policy_and_clean() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Delete… removes the Warp Stabilizer analyses with the rest of the cache, in either file
+/// format (the first one is no longer read, so nothing else would remove it).
+#[test]
+fn media_cache_clean_deletes_stabilizer_analyses_of_both_formats() {
+    let dir = tmp_dir("prefs-cache-stab");
+    let mut s = Session::default();
+    s.start_autosave(crate::autosave::AutosaveConfig::new(dir.join("data"))).unwrap();
+    let cache = s.media_cache_dir().unwrap();
+    let stab = settings::stabilizer_root(&cache);
+    std::fs::create_dir_all(&stab).unwrap();
+    let old = stab.join("0123456789abcdef.stab");
+    let new = stab.join("fedcba9876543210.stab");
+    std::fs::write(&old, [b"FCSTAB\x00\x01".as_slice(), &[0u8; 64]].concat()).unwrap();
+    std::fs::write(&new, [b"FCSTAB\x00\x02".as_slice(), &[0u8; 64]].concat()).unwrap();
+    let r = s.execute("mediaCache.clean", json!({})).unwrap();
+    assert!(!old.exists() && !new.exists(), "both formats deleted: {r}");
+    assert_eq!(r["files"], 2);
+    s.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #2772: a custom media cache location is a folder the user picked (the home folder, a footage
 /// folder), so the policy and "Delete…" work in a folder of FilmCraft's own inside it and leave
 /// everything else alone; neither a symlink inside the cache nor one in place of it is followed.

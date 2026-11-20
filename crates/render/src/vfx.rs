@@ -35,7 +35,10 @@ use crate::effects::FxCtx;
 use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
-pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub use temporal::{
+    AnalysisPhase, AnalysisState, StabilizerPath, analysis_wanted_elsewhere, clear_analysis_queue, clear_stabilizer_cache, giving_way, set_analysis_queue,
+    set_stabilizer_cache_dir, stabilizer_analysed, stabilizer_keys, stabilizer_path, stabilizer_progress, stabilizer_state, without_waiting_for_analysis,
+};
 pub(crate) use text::film_time_format;
 
 /// What an effect may know about the clip beyond its own pixels.
@@ -72,6 +75,33 @@ pub trait FxEnv: Sync {
     fn source_size(&self) -> (u32, u32);
     /// Identity of the clip and its source range (cache key for analyses).
     fn clip_key(&self) -> u64;
+    /// Where the clip's frames lie among its source's, independent of where the clip sits on the
+    /// timeline (see [`AnalysisSpan`]). Warp Stabilizer analyses are shared by every clip with the
+    /// same [`AnalysisSpan::source`], in any session, and kept on disk when there is a
+    /// [`set_stabilizer_cache_dir`] folder. `None` (nested sequences, generators, media without an
+    /// identity) keeps analyses in memory, by [`FxEnv::clip_key`].
+    fn analysis_span(&self) -> Option<AnalysisSpan> {
+        None
+    }
+    /// The clip's raw picture `k` sequence frames from its start at `scale` × its source size: the
+    /// frames an analysis reads ([`FxEnv::source_frame`] at that time, exactly).
+    fn analysis_frame(&self, k: usize, scale: f32) -> Option<Image> {
+        self.source_frame(k as f64 / self.frame_rate().max(1.0) - self.clip_offset(), scale)
+    }
+}
+
+/// A clip's frames among its source's, for sharing analyses between clips of one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisSpan {
+    /// The source and how its frames are read: the file's size and content fingerprint, the
+    /// picture size, the sequence's frame rate and colour pipeline (with the clip's colour-space
+    /// override and peak brightness), and the frame grid the clip's frames fall on.
+    /// Clips with the same bytes read frames of one grid, frame `k` of the clip being grid frame
+    /// `first + k`. A clip whose frames depend on its own in or out point (reversed, frame-held,
+    /// blended) has bytes of its own that also name its source range, and `first` 0.
+    pub source: Vec<u8>,
+    /// The grid frame of the clip's first frame.
+    pub first: i64,
 }
 
 /// The environment of a track item being rendered by [`crate::item_layer`].
@@ -185,18 +215,259 @@ impl FxEnv for ItemEnv<'_> {
         crate::source_size(self.project, self.item.item).unwrap_or((self.seq.settings.width, self.seq.settings.height))
     }
     fn clip_key(&self) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for v in [
-            self.item.item.0,
-            self.item.start.0 as u64,
-            self.item.duration.0 as u64,
-            self.item.source_in.0 as u64,
-            self.item.speed.to_bits(),
-            self.item.reverse as u64,
-        ] {
-            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+        clip_key_of(self.item)
+    }
+    fn analysis_span(&self) -> Option<AnalysisSpan> {
+        analysis_span(self.project, self.seq, self.item)
+    }
+    fn analysis_frame(&self, k: usize, scale: f32) -> Option<Image> {
+        let t = Tick(self.item.start.0.saturating_add(self.seq.settings.frame_rate.tick_of(i64::try_from(k).ok()?).0));
+        crate::base_layer(self.project, self.seq, self.item, t, self.opts, self.sources, scale.clamp(1.0 / 64.0, 1.0))
+    }
+}
+
+/// [`FxEnv::clip_key`] of a track item.
+pub(crate) fn clip_key_of(item: &TrackItem) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in [item.item.0, item.start.0 as u64, item.duration.0 as u64, item.source_in.0 as u64, item.speed.to_bits(), item.reverse as u64] {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// [`FxEnv::analysis_span`] of a media clip. Frame `k` of a clip shows source time `source_in + k ×
+/// step`, step being the sequence's frame duration times the clip's speed. When that is a whole
+/// number of ticks, the clip plays forward at a constant speed and nothing but the source time
+/// makes its picture (Frame Sampling, no frame hold), clips whose in points differ by whole steps
+/// read the same frames: the grid is named by the step and the in point's phase in it. Otherwise
+/// the clip's own range is named too. The picture size (rotation turns it), pixel aspect, frame
+/// rate interpretation, Scale to Frame Size and colour management (the sequence's pipeline, the
+/// clip's colour-space override and peak brightness) are part of both.
+pub(crate) fn analysis_span(project: &Project, seq: &Sequence, item: &TrackItem) -> Option<AnalysisSpan> {
+    let filmcraft_project::ItemKind::Media(m) = &project.item(item.item)?.kind else { return None };
+    let id = m.identity?;
+    let (w, h) = crate::source_size(project, item.item)?;
+    let par = m.interpret.par.map_or(0, |(a, b)| (a as u64) << 32 | b as u64);
+    let interpolation = match item.time_interpolation {
+        filmcraft_project::TimeInterpolation::FrameSampling => 0,
+        filmcraft_project::TimeInterpolation::FrameBlending => 1,
+        filmcraft_project::TimeInterpolation::OpticalFlow => 2,
+    };
+    let rate = seq.settings.frame_rate;
+    // the pictures are colour managed into the sequence's working space before they are tracked
+    let colour = serde_json::to_vec(&(&seq.settings.color, &m.interpret.color_space, crate::colorman::source_peak_nits(project, item.item).map(f32::to_bits)))
+        .map_or(0, |b| temporal::store_fnv(&b));
+    let common = [
+        id.size,
+        id.fingerprint,
+        item.scale_to_frame as u64,
+        m.interpret.frame_rate.map_or(0, |r| r.as_f64().to_bits()),
+        par,
+        (w as u64) << 32 | h as u64,
+        rate.as_f64().to_bits(),
+        item.speed.to_bits(),
+        colour,
+    ];
+    let frame = rate.frame_duration().0;
+    // frame boundaries at exact multiples of the frame duration (every common rate)
+    let exact = frame > 0 && rate.tick_of(1_000_000).0 == frame.saturating_mul(1_000_000);
+    let step = frame as f64 * item.speed;
+    let grid = (exact
+        && !item.reverse
+        && item.frame_hold.is_none()
+        && item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling
+        && item.speed.is_finite()
+        && item.speed > 0.0
+        && (step - step.round()).abs() < 1e-6
+        && (1.0..9e15).contains(&step.round()))
+    .then_some(step.round() as i64);
+    let bytes = |tag: u8, fields: &[u64]| -> Vec<u8> { std::iter::once(tag).chain(common.iter().chain(fields).flat_map(|v| v.to_le_bytes())).collect() };
+    Some(match grid {
+        Some(step) => {
+            let phase = item.source_in.0.rem_euclid(step);
+            AnalysisSpan { source: bytes(1, &[step as u64, phase as u64]), first: item.source_in.0.div_euclid(step) }
         }
-        h
+        None => {
+            let own = [item.source_in.0 as u64, item.duration.0 as u64, item.reverse as u64, item.frame_hold.map_or(u64::MAX, |t| t.0 as u64), interpolation];
+            AnalysisSpan { source: bytes(0, &own), first: 0 }
+        }
+    })
+}
+
+/// An enabled Warp Stabilizer on a clip, for analysing a project's clips ahead of time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StabilizerClip {
+    /// Its analysis key (as [`stabilizer_keys`] and [`without_waiting_for_analysis`] give them).
+    pub key: u64,
+    pub sequence: filmcraft_project::ItemId,
+    pub clip: filmcraft_project::ClipId,
+    /// Index of the effect in the clip's effects.
+    pub effect: usize,
+    /// Where the clip is on its sequence's timeline.
+    pub start: Tick,
+    pub end: Tick,
+    /// Nothing of the clip can be seen: its track is off, or opaque clips on the tracks above
+    /// cover the whole frame for all of its time ([`covers_frame`]). It is analysed last.
+    pub hidden: bool,
+}
+
+/// Every enabled Warp Stabilizer on an enabled clip of `project`: the sequence `first` (the one
+/// the user is looking at) first, then the others by name, each in timeline order (by start,
+/// then track).
+pub fn stabilizer_clips(project: &Project, first: Option<filmcraft_project::ItemId>) -> Vec<StabilizerClip> {
+    let mut seqs: Vec<(filmcraft_project::ItemId, String)> =
+        project.sequences().filter(|p| matches!(p.kind, filmcraft_project::ItemKind::Sequence(_))).map(|p| (p.id, p.name.to_lowercase())).collect();
+    seqs.sort_by(|a, b| (Some(a.0) != first).cmp(&(Some(b.0) != first)).then_with(|| a.1.cmp(&b.1)).then(a.0.0.cmp(&b.0.0)));
+    let mut out = Vec::new();
+    for (id, _) in seqs {
+        let Some(seq) = project.sequence(id) else { continue };
+        let mut clips: Vec<(Tick, usize, StabilizerClip)> = Vec::new();
+        for (track, t) in seq.video_tracks.iter().enumerate() {
+            for item in t.items.iter().filter(|i| i.enabled) {
+                let mut hidden = None;
+                for (index, e) in item.effects.iter().enumerate().filter(|(_, e)| e.effect == "warp_stabilizer" && e.enabled) {
+                    let key = temporal::effect_key(project, seq, item, e).clip;
+                    let hidden = *hidden.get_or_insert_with(|| !t.enabled || covered(project, seq, track, item.start, item.end()));
+                    clips.push((
+                        item.start,
+                        track,
+                        StabilizerClip { key, sequence: id, clip: item.id, effect: index, start: item.start, end: item.end(), hidden },
+                    ));
+                }
+            }
+        }
+        clips.sort_by_key(|c| (c.0, c.1));
+        out.extend(clips.into_iter().map(|c| c.2));
+    }
+    out
+}
+
+/// Whether the analysis of `c` is settled already (kept in memory or on disk, or no frame of the
+/// clip could be read), without running one. Reads at most the source's analysis file.
+pub fn stabilizer_ready(project: &Project, c: &StabilizerClip) -> bool {
+    let Some(seq) = project.sequence(c.sequence) else { return false };
+    let Some((_, item)) = seq.find_item(c.clip) else { return false };
+    item.effects.get(c.effect).is_some_and(|e| temporal::ready(project, seq, item, e))
+}
+
+/// How [`analyse_stabilizer`] ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisRun {
+    /// Analysed, or no frame of the clip could be read (it stays unstabilised).
+    Settled,
+    /// Stopped first, keeping what it read: cancelled, or given way to a render
+    /// ([`giving_way`]). It goes on when asked again.
+    Stopped,
+    /// It ended without a path for another reason (the clip is gone, the analysis failed).
+    Failed,
+}
+
+/// Whether clips on the tracks above `track` of `seq` cover the whole frame from `start` to `end`.
+fn covered(project: &Project, seq: &Sequence, track: usize, start: Tick, end: Tick) -> bool {
+    let mut spans: Vec<(Tick, Tick)> = Vec::new();
+    for t in seq.video_tracks.iter().skip(track + 1).filter(|t| t.enabled) {
+        for c in t.items.iter().filter(|c| c.start < end && c.end() > start && covers_frame(project, seq, c)) {
+            // a transition mixes the clip with another (or with nothing)
+            let mut from = c.start;
+            let mut to = c.end();
+            for tr in t.transitions.iter().filter(|tr| tr.from == Some(c.id) || tr.to == Some(c.id)) {
+                let r = tr.range();
+                if tr.to == Some(c.id) {
+                    from = from.max(r.end());
+                }
+                if tr.from == Some(c.id) {
+                    to = to.min(r.start);
+                }
+            }
+            if from < to {
+                spans.push((from, to));
+            }
+        }
+    }
+    spans.sort();
+    let mut at = start;
+    for (from, to) in spans {
+        if from > at {
+            return false;
+        }
+        at = at.max(to);
+        if at >= end {
+            return true;
+        }
+    }
+    at >= end
+}
+
+/// Whether `c` hides everything under it whenever it is shown: an enabled clip of a media file
+/// with no alpha (not a generator, nested sequence, graphic or adjustment layer), at full
+/// opacity in Normal mode, with nothing but fixed Motion and Opacity (no other effect, mask or
+/// keyframe), placed so that it fills the frame. Anything else might let the clips under it
+/// show, and doesn't count.
+pub(crate) fn covers_frame(project: &Project, seq: &Sequence, c: &TrackItem) -> bool {
+    if !c.enabled {
+        return false;
+    }
+    let Some(pi) = project.item(c.item) else { return false };
+    if !matches!(pi.kind, filmcraft_project::ItemKind::Media(_) | filmcraft_project::ItemKind::Subclip { .. }) {
+        return false;
+    }
+    let Some((_, m, _)) = project.resolve_media(c.item) else { return false };
+    if m.offline || !matches!(m.media, filmcraft_project::MediaRef::File { .. }) || m.info.video.as_ref().is_none_or(|v| v.has_alpha) {
+        return false;
+    }
+    for e in &c.effects {
+        // Time Remapping only chooses the frame shown
+        if !e.enabled || e.effect == "time_remap" {
+            continue;
+        }
+        if !matches!(e.effect.as_str(), "motion" | "opacity") || e.is_animated() || !e.masks.is_empty() {
+            return false;
+        }
+    }
+    let (op, bl) = crate::opacity_blend(c, c.start);
+    if op < 1.0 || bl != crate::Blend::Normal {
+        return false;
+    }
+    let Some(src) = crate::source_size(project, c.item) else { return false };
+    let mm = crate::motion_matrix(seq, c, src, crate::source_par(project, c.item), c.start);
+    if mm.b.abs() > 1e-9 || mm.c.abs() > 1e-9 {
+        return false;
+    }
+    let (x0, x1) = (mm.e, mm.a * src.0 as f64 + mm.e);
+    let (y0, y1) = (mm.f, mm.d * src.1 as f64 + mm.f);
+    let (w, h) = (seq.settings.width as f64, seq.settings.height as f64);
+    // even a fraction of a pixel short of an edge lets the clip under it show along it
+    let e = 1e-6;
+    x0.min(x1) <= e && x0.max(x1) >= w - e && y0.min(y1) <= e && y0.max(y1) >= h - e
+}
+
+/// Analyse (or finish analysing) the Warp Stabilizer `c` of `project` without rendering a frame,
+/// under the calling thread's cancel flag.
+pub fn analyse_stabilizer(project: &Project, c: &StabilizerClip, sources: &dyn SourceProvider) -> AnalysisRun {
+    let Some(seq) = project.sequence(c.sequence) else { return AnalysisRun::Failed };
+    let Some((_, item)) = seq.find_item(c.clip) else { return AnalysisRun::Failed };
+    let Some(e) = item.effects.get(c.effect) else { return AnalysisRun::Failed };
+    let tc = String::new();
+    let env = ItemEnv {
+        project,
+        seq,
+        item,
+        t: item.start,
+        opts: RenderOptions::default(),
+        sources,
+        want: 1.0,
+        layer_size: (1, 1),
+        layer_to_output: Affine::IDENTITY,
+        tc: &tc,
+    };
+    let method = if chv(e, "method") == 0 { filmcraft_project::TrackMethod::Position } else { filmcraft_project::TrackMethod::PositionScaleRotation };
+    let (path, gave_way) = temporal::noting_give_way(|| stabilizer_path(&env, 0.0, method, bv(e, "detailed")));
+    if path.is_some() || stabilizer_analysed(temporal::effect_key(project, seq, item, e).clip) {
+        AnalysisRun::Settled
+    } else if gave_way || filmcraft_media::cancel::cancelled() {
+        AnalysisRun::Stopped
+    } else {
+        AnalysisRun::Failed
     }
 }
 
