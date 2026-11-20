@@ -68,12 +68,16 @@ impl AudioInput for FailedInput {
 #[test]
 fn a_failed_recording_save_keeps_the_take_for_retry() {
     let (mut s, track, index) = demo();
+    let capture_active = s.voiceover.capture_status();
+    assert!(!capture_active());
     s.execute("playhead.set", json!({"seconds":0})).unwrap();
     s.execute("audio.voiceover.start", json!({"track":track, "preroll":0})).unwrap();
+    assert!(capture_active());
     let dir = tmp("save-retry");
     std::fs::write(&dir, b"not a directory").unwrap();
     assert!(s.execute("audio.voiceover.stop", json!({"time":sec(1.0),"dir":dir})).is_err());
     assert!(s.voiceover.recording(), "failed save must retain the recording for retry");
+    assert!(!capture_active(), "output mute ends when the input stops, before saving");
     assert!(s.execute("audio.voiceover.sync", json!({"time":sec(1.5)})).is_err(), "playback must not discard an unsaved take");
     std::fs::remove_file(&dir).unwrap();
     let result = s.execute("audio.voiceover.stop", json!({"time":sec(2.0),"dir":dir})).unwrap();

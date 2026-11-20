@@ -2108,6 +2108,7 @@
 	Multitap Delay	マルチタップディレイ
 	Music	音楽
 	Mute input during timeline recording	タイムラインでの録音中は入力をミュートする
+	Mute sequence playback during timeline recording	タイムラインでの録音中はシーケンスの再生音をミュートする
 	Name	名前
 	Narrow	狭い
 	Neon Color	ネオンの色
