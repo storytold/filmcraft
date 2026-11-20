@@ -596,7 +596,8 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             e.enabled = Some(available);
         }
         if available && resp.clicked() {
-            actions.push(("transcript.generate".into(), json!({})));
+            // the recognition runs on a worker thread: the window stays responsive
+            actions.push(("transcript.generate".into(), json!({"background": true})));
         } else if !available {
             resp.on_hover_text(note);
         }

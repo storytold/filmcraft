@@ -569,6 +569,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Background transcriptions whose transcripts are added when they finish.
+    pub transcript_jobs: Vec<transcript::PendingTranscribe>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -678,6 +680,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            transcript_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -776,6 +779,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        transcript::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -849,6 +853,9 @@ impl Session {
         // `poll_persistence`: apply background mask tracking before each command (#3302)
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
+        }
+        if self.exec_depth == 0 && !self.transcript_jobs.is_empty() {
+            transcript::poll(self);
         }
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
