@@ -272,6 +272,12 @@
 	Remove Attributes…	Quitar atributos…
 	Remove Filler Words	Quitar muletillas
 	Remove Pauses	Quitar pausas
+	Remove Silence…	Quitar silencios…
+	Remove Silence	Quitar silencios
+	Auto threshold (from each clip's noise floor and speech level)	Umbral automático (del ruido de fondo y el nivel de voz de cada clip)
+	Minimum pause:	Pausa mínima:
+	Keep before and after:	Conservar antes y después:
+	Noise threshold:	Umbral de ruido:
 	Remove Unused	Quitar no utilizados
 	Rename…	Cambiar nombre…
 	Render Audio	Procesar audio
