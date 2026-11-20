@@ -4,6 +4,7 @@ mod cyclic_subclips;
 mod edl;
 mod fcp7;
 mod fcpxml;
+mod fcpxml_conform;
 mod file_urls;
 mod fuzz;
 mod media_marker_export;

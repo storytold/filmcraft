@@ -46,6 +46,35 @@ fn layout() -> Layout {
 }
 
 #[test]
+fn active_tab_underline_follows_selection_even_when_another_tab_is_hovered() {
+    let mut session = Session::default();
+    session.prefs.appearance.accessible_contrast = true;
+    let mut app = FilmcraftApp::new(session);
+    app.ui.dock = layout();
+    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let underlined = |h: &Harness<'_, FilmcraftApp>, panel: PanelKind| {
+        let tab = rect(h, &format!("panel.tab.{}", panel.id()));
+        h.output().shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if tab.contains(text.pos) && text.galley.text() == panel.title() => {
+                Some(text.galley.job.sections.iter().any(|section| section.format.underline.width > 0.0))
+            }
+            _ => None,
+        })
+    };
+    assert_eq!(underlined(&h, PanelKind::Info), Some(true));
+    assert_eq!(underlined(&h, PanelKind::History), Some(false));
+    click(&mut h, "panel.tab.History");
+    let inactive = rect(&h, "panel.tab.Info").center();
+    h.event(Event::PointerMoved(inactive));
+    step(&mut h);
+    assert_eq!(underlined(&h, PanelKind::Info), Some(false));
+    assert_eq!(underlined(&h, PanelKind::History), Some(true));
+}
+
+#[test]
 fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     let mut layout = layout();
     layout.apply(Action::Close { panel: PanelKind::Project }).unwrap();

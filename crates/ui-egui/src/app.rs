@@ -39,6 +39,9 @@ impl FilmcraftApp {
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,
+            scrub_out: None,
+            scrub_rate: None,
+            scrub_sequence: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
             // Unsaved changes left by a session that died are offered first thing.
@@ -125,6 +128,7 @@ impl FilmcraftApp {
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,
+            engine_call: false,
             workspaces,
             menu_workspaces: Default::default(),
         }
@@ -499,8 +503,10 @@ impl eframe::App for FilmcraftApp {
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
-    /// state, and shut the session down so its recovery journal is flushed or removed.
+    /// state, shut the session down so its recovery journal is flushed or removed, and start an
+    /// update that waits for the exit.
     fn on_exit(&mut self) {
+        self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {
@@ -509,6 +515,8 @@ impl eframe::App for FilmcraftApp {
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
+        // An update waiting for the exit starts its install helper now.
+        crate::updates_ui::exiting(self);
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
