@@ -166,18 +166,21 @@ fn src_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
 
 /// The flow grid as `(dx, dy, confidence, 0)` per cell, sampled as `FlowField::sample_px` sees it
 /// (missing cells are still, cost becomes confidence; an empty grid is one still cell). Values
-/// that are not finite become 0.
-fn cell_bytes(field: &FlowField) -> (u32, u32, f32, f32, Vec<u8>) {
+/// that are not finite become 0. A grid larger than `max_bytes` (the device's buffer limit) is an
+/// error before anything is allocated: `FlowField`'s sizes are public and may be anything.
+pub(crate) fn cell_bytes(field: &FlowField, max_bytes: u64) -> Result<(u32, u32, f32, f32, Vec<u8>), String> {
     let fin = |v: f32| if v.is_finite() { v } else { 0.0 };
     if field.w == 0 || field.h == 0 || field.frame_w == 0 || field.frame_h == 0 {
         let mut b = Vec::with_capacity(16);
         for v in [0.0f32, 0.0, 1.0, 0.0] {
             b.extend_from_slice(&v.to_le_bytes());
         }
-        return (1, 1, 1.0, 1.0, b);
+        return Ok((1, 1, 1.0, 1.0, b));
     }
-    let n = field.w.saturating_mul(field.h);
-    let mut b = vec![0u8; n.saturating_mul(16)];
+    let too_large = || format!("a {}x{} flow grid is larger than this GPU's buffers", field.w, field.h);
+    let (Ok(gw), Ok(gh)) = (u32::try_from(field.w), u32::try_from(field.h)) else { return Err(too_large()) };
+    let len = field.w.checked_mul(field.h).and_then(|n| n.checked_mul(16)).filter(|&b| u64::try_from(b).is_ok_and(|b| b <= max_bytes)).ok_or_else(too_large)?;
+    let mut b = vec![0u8; len];
     b.par_chunks_mut(16).enumerate().for_each(|(i, o)| {
         let uv = field.uv.get(i).copied().unwrap_or([0.0; 2]);
         let c = field.cost.get(i).copied().unwrap_or(0);
@@ -188,7 +191,7 @@ fn cell_bytes(field: &FlowField) -> (u32, u32, f32, f32, Vec<u8>) {
             }
         }
     });
-    (field.w as u32, field.h as u32, field.frame_w as f32, field.frame_h as f32, b)
+    Ok((gw, gh, field.frame_w as f32, field.frame_h as f32, b))
 }
 
 /// Linear RGBA floats as little-endian bytes (values that are not finite become 0).
@@ -248,7 +251,8 @@ impl GpuFlowViz {
             FlowVizMode::KineticGlow => 2,
             FlowVizMode::TemporalDetail => 3,
         };
-        let (gw, gh, fw, fh, cells) = cell_bytes(field);
+        let limits = self.device.limits();
+        let (gw, gh, fw, fh, cells) = cell_bytes(field, limits.max_storage_buffer_binding_size.min(limits.max_buffer_size))?;
         let mut params = Vec::with_capacity(PARAMS_BYTES);
         for v in [w, h, gw, gh] {
             params.extend_from_slice(&v.to_le_bytes());

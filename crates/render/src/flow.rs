@@ -513,8 +513,7 @@ impl FlowField {
         if self.w == 0 || self.h == 0 {
             return ([0.0; 2], 1.0);
         }
-        let x = x.clamp(0, self.w as i64 - 1) as usize;
-        let y = y.clamp(0, self.h as i64 - 1) as usize;
+        let (x, y) = (clamp_index(x, self.w), clamp_index(y, self.h));
         let i = y.saturating_mul(self.w).saturating_add(x);
         let uv = self.uv.get(i).copied().unwrap_or([0.0; 2]);
         let c = self.cost.get(i).copied().unwrap_or(0);
@@ -530,21 +529,32 @@ impl FlowField {
         }
         let sx = self.w as f32 / self.frame_w as f32;
         let sy = self.h as f32 / self.frame_h as f32;
-        let gx = (if px.is_finite() { px } else { 0.0 }) * sx - 0.5;
-        let gy = (if py.is_finite() { py } else { 0.0 }) * sy - 0.5;
+        // clamped to the grid before the integer conversion: a huge finite coordinate would
+        // saturate to `i64::MAX` and overflow below; inside the grid the weights are unchanged
+        let gx = ((if px.is_finite() { px } else { 0.0 }) * sx - 0.5).clamp(0.0, (self.w - 1) as f32);
+        let gy = ((if py.is_finite() { py } else { 0.0 }) * sy - 0.5).clamp(0.0, (self.h - 1) as f32);
         let (x0, y0) = (gx.floor(), gy.floor());
         let (fx, fy) = (gx - x0, gy - y0);
         let (x0, y0) = (x0 as i64, y0 as i64);
+        // saturating: a grid wider than `i64::MAX` puts `x0` at `i64::MAX`
+        let (x1, y1) = (x0.saturating_add(1), y0.saturating_add(1));
         let (a, ca) = self.cell_at(x0, y0);
-        let (b, cb) = self.cell_at(x0 + 1, y0);
-        let (c, cc) = self.cell_at(x0, y0 + 1);
-        let (d, cd) = self.cell_at(x0 + 1, y0 + 1);
+        let (b, cb) = self.cell_at(x1, y0);
+        let (c, cc) = self.cell_at(x0, y1);
+        let (d, cd) = self.cell_at(x1, y1);
         let lerp = |p: f32, q: f32, t: f32| p + (q - p) * t;
         let dx = lerp(lerp(a[0], b[0], fx), lerp(c[0], d[0], fx), fy);
         let dy = lerp(lerp(a[1], b[1], fx), lerp(c[1], d[1], fx), fy);
         let conf = lerp(lerp(ca, cb, fx), lerp(cc, cd, fx), fy);
         ([dx, dy], conf.clamp(0.0, 1.0))
     }
+}
+
+/// `v` clamped to `0..len` (`len > 0`). Clamping in `usize` keeps the bounds from crossing when
+/// a public size exceeds `i64::MAX` (where `len as i64 - 1` turns negative and `clamp` panics).
+#[inline]
+fn clamp_index(v: i64, len: usize) -> usize {
+    usize::try_from(v).unwrap_or(0).min(len.saturating_sub(1))
 }
 
 /// Stateful hardware optical-flow session for a fixed frame size (`width` × `height`).
@@ -603,13 +613,17 @@ pub fn image_to_luma8(img: &Image) -> Vec<u8> {
 pub fn estimate_cpu(prev: &Image, curr: &Image) -> FlowField {
     let (w, h) = (prev.w, prev.h);
     let n = w.saturating_mul(h).saturating_mul(4);
+    // A rejected pair gets one still cell: it samples like a full zero grid (`sample_px` scales
+    // by the frame size and clamps to the grid), and its size does not follow the rejected,
+    // possibly hostile, dimensions.
+    let still = || FlowField { w: 1, h: 1, frame_w: w.max(1), frame_h: h.max(1), uv: vec![[0.0; 2]], cost: vec![0], hardware: false };
     if (w, h) != (curr.w, curr.h) || w == 0 || h == 0 || prev.px.len() != n || curr.px.len() != n {
-        return FlowField::zero(w, h);
+        return still();
     }
     let s = w.div_ceil(WORK_W).max(1);
     let (pa, pb) = (pyramid(work_luma(prev, s)), pyramid(work_luma(curr, s)));
     let (Some(ga), Some(gb), Some(f01)) = (pa.first(), pb.first(), dense_flow(&pa, &pb)) else {
-        return FlowField::zero(w, h);
+        return still();
     };
     let sf = s as f32;
     let cells = f01.w.saturating_mul(f01.h);
@@ -864,12 +878,16 @@ pub fn fuse_temporal_cpu(prev: Option<&Image>, curr: &Image, field: &FlowField) 
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             let ([dx, dy], conf) = field.sample_px(px, py);
             let (dx, dy) = (if dx.is_finite() { dx } else { 0.0 }, if dy.is_finite() { dy } else { 0.0 });
-            let warped = p.sample_bilinear_clamped(px - dx, py - dy);
+            let (wx, wy) = (px - dx, py - dy);
+            // a pixel that came in from outside the previous frame has no history there: the
+            // clamped fetch would blend in the old edge pixel instead
+            let inside = wx >= 0.0 && wy >= 0.0 && wx <= w as f32 && wy <= h as f32;
+            let warped = p.sample_bilinear_clamped(wx, wy);
             let lc = luma([c[0], c[1], c[2], c[3]]);
             let lw = luma(warped);
             let diff = (lc - lw).abs();
             let photo_agree = if diff.is_finite() { 1.0 / (1.0 + (diff / 0.06).powi(2)) } else { 0.0 };
-            let blend = (0.28 * conf.clamp(0.0, 1.0) * photo_agree).clamp(0.0, 0.35);
+            let blend = if inside { (0.28 * conf.clamp(0.0, 1.0) * photo_agree).clamp(0.0, 0.35) } else { 0.0 };
             for k in 0..3 {
                 let ck = if c[k].is_finite() { c[k] } else { 0.0 };
                 let wk = if warped[k].is_finite() { warped[k] } else { ck };
@@ -1002,8 +1020,7 @@ fn src_rgb_clamped(img: &Image, x: isize, y: isize) -> [f32; 3] {
     if img.w == 0 || img.h == 0 {
         return [0.0; 3];
     }
-    let cx = x.clamp(0, img.w as isize - 1) as usize;
-    let cy = y.clamp(0, img.h as isize - 1) as usize;
+    let (cx, cy) = (clamp_index(x as i64, img.w), clamp_index(y as i64, img.h));
     let i = cy.saturating_mul(img.w).saturating_add(cx).saturating_mul(4);
     let Some(p) = img.px.get(i..i + 3) else {
         return [0.0; 3];
@@ -1545,5 +1562,71 @@ mod tests {
         assert!(!ne.is_hardware());
         assert_eq!(ne.backend(), CPU_NEURAL_BACKEND);
         assert!(ne.fallback_reason().is_some_and(|r| r.contains("device lost")));
+    }
+
+    #[test]
+    fn sampling_far_outside_the_grid_returns_the_edge_cell() {
+        // a huge finite coordinate saturated to i64::MAX and `x0 + 1` overflowed (a panic in debug)
+        let field = FlowField { w: 1, h: 1, frame_w: 1, frame_h: 1, uv: vec![[3.0, -2.0]], cost: vec![0], hardware: false };
+        for (x, y) in [(f32::MAX, 0.5), (0.5, f32::MAX), (f32::MIN, f32::MIN), (f32::MAX, f32::MAX)] {
+            assert_eq!(field.sample_px(x, y), ([3.0, -2.0], 1.0), "({x}, {y})");
+        }
+        // inside the grid the weights are what they were
+        let two = FlowField { w: 2, h: 1, frame_w: 2, frame_h: 1, uv: vec![[0.0, 0.0], [4.0, 0.0]], cost: vec![0, 0], hardware: false };
+        assert_eq!(two.sample_px(1.0, 0.5).0, [2.0, 0.0]);
+        assert_eq!(two.sample_px(-5.0, 0.5).0, [0.0, 0.0]);
+        assert_eq!(two.sample_px(9.0, 0.5).0, [4.0, 0.0]);
+    }
+
+    #[test]
+    fn a_rejected_pair_gets_a_compact_still_field() {
+        // the declared size of an inconsistent image used to size the zero field (an allocation panic)
+        let bad = Image { w: usize::MAX, h: 1, px: Vec::new() };
+        let f = estimate_cpu(&bad, &bad);
+        assert_eq!((f.w, f.h, f.uv.len(), f.cost.len()), (1, 1, 1, 1));
+        assert_eq!((f.frame_w, f.frame_h), (usize::MAX, 1));
+        assert_eq!(f.sample_px(12.0, 0.5).0, [0.0, 0.0]);
+        let (a, b) = (Image::new(8, 4), Image::new(4, 8));
+        let f = estimate_cpu(&a, &b);
+        assert_eq!((f.w, f.h, f.frame_w, f.frame_h), (1, 1, 8, 4));
+    }
+
+    #[test]
+    fn temporal_fusion_keeps_pixels_that_moved_in_from_outside_the_previous_frame() {
+        // red before, green now, at the same luma: everything moved two pixels to the right, so the
+        // two left columns show what the previous frame did not have
+        let (w, h) = (8, 4);
+        let (red, green) = ([0.6f32, 0.0, 0.0, 1.0], [0.0f32, 0.6 * 0.2126 / 0.7152, 0.0, 1.0]);
+        let fill = |c: [f32; 4]| {
+            let mut img = Image::new(w, h);
+            for p in img.px.as_chunks_mut::<4>().0 {
+                *p = c;
+            }
+            img
+        };
+        let (prev, curr) = (fill(red), fill(green));
+        let field = FlowField { w, h, frame_w: w, frame_h: h, uv: vec![[2.0, 0.0]; w * h], cost: vec![0; w * h], hardware: false };
+        let out = fuse_temporal_cpu(Some(&prev), &curr, &field);
+        for y in 0..h {
+            for x in 0..2 {
+                assert_eq!(out.get(x, y), green, "({x}, {y}) came in from outside and keeps its own colour");
+            }
+            assert!(out.get(5, y)[0] > 0.0, "inside the previous frame the history still blends in");
+        }
+    }
+
+    #[test]
+    fn a_grid_wider_than_i64_samples_and_draws_without_panicking() {
+        // public sizes: a grid wider than i64::MAX made the signed clamp bounds cross, and the
+        // neighbour index overflow, on the CPU drawing path the GPU falls back to
+        let huge = FlowField { w: usize::MAX, h: usize::MAX, frame_w: 4, frame_h: 4, uv: Vec::new(), cost: Vec::new(), hardware: false };
+        assert_eq!(huge.sample_px(2.0, 2.0).0, [0.0, 0.0]);
+        let frame = Image::new(4, 4);
+        for mode in [FlowVizMode::HsvWheel, FlowVizMode::MotionVectors, FlowVizMode::KineticGlow, FlowVizMode::TemporalDetail] {
+            let out = render_flow_viz(&frame, &huge, mode, 16.0);
+            assert_eq!((out.w, out.h), (4, 4));
+        }
+        let rgb = FlowVizEncoder::new().encode(&frame, &huge, FlowVizMode::HsvWheel, 16.0).0;
+        assert_eq!(rgb.len(), 4 * 4 * 3);
     }
 }

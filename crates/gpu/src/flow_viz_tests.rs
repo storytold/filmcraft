@@ -39,6 +39,10 @@ fn field(frame_w: usize, frame_h: usize, grid: usize) -> FlowField {
 
 fn max_diff(a: &[f32], b: &[f32]) -> (f32, usize) {
     assert_eq!(a.len(), b.len());
+    // `NaN > m` is false: without this a NaN result would compare as a perfect match
+    if let Some(i) = a.iter().zip(b).position(|(p, q)| !p.is_finite() || !q.is_finite()) {
+        panic!("value {i} is not finite: {} vs {}", a[i], b[i]);
+    }
     a.iter().zip(b).enumerate().fold((0.0, 0), |(m, at), (i, (p, q))| if (p - q).abs() > m { ((p - q).abs(), i) } else { (m, at) })
 }
 
@@ -130,4 +134,20 @@ fn linear_detail_keeps_hdr_before_encoding() {
             assert!((value - expected).abs() < TOLERANCE);
         }
     }
+}
+
+#[test]
+fn an_oversized_flow_grid_is_an_error_not_an_allocation_panic() {
+    // `FlowField`'s sizes are public: the grid upload used to be allocated before any size check
+    let huge = FlowField { w: usize::MAX, h: 1, frame_w: 8, frame_h: 8, uv: Vec::new(), cost: Vec::new(), hardware: false };
+    assert!(super::flow_viz::cell_bytes(&huge, u64::MAX).is_err());
+    let wide = FlowField { w: 1 << 20, h: 1 << 20, ..huge.clone() };
+    assert!(super::flow_viz::cell_bytes(&wide, 1 << 30).is_err());
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter: skipped the device half of the test");
+        return;
+    };
+    let mut gpu = GpuFlowViz::with_device(&dev, &q, "test".into()).unwrap();
+    let r = gpu.encode(&Image::new(8, 8), &huge, FlowVizMode::HsvWheel, 16.0);
+    assert!(r.is_err(), "{r:?}");
 }

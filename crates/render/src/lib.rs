@@ -118,10 +118,11 @@ pub fn render_sequence(project: &Project, seq_id: ItemId, t: Tick, opts: RenderO
     render_seq(project, seq, t, opts, sources)
 }
 
-/// Render only video track `track_index` (`0` = V1) of `seq_id` at timeline time `t`.
+/// Render only video track `track_index` (`0` = V1) of `seq_id` at timeline time `t`. Sequence
+/// captions are not part of any track, so they are never burnt in here, whatever `opts` asks.
 pub fn render_sequence_track(project: &Project, seq_id: ItemId, track_index: usize, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Image {
     let Some(seq) = project.sequence(seq_id) else { return Image::new(1, 1) };
-    render_seq_tracks(project, seq, t, opts, sources, Some(track_index))
+    render_seq_tracks(project, seq, t, RenderOptions { captions: false, ..opts }, sources, Some(track_index))
 }
 
 fn render_seq(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Image {

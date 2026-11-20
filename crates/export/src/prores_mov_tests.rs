@@ -88,3 +88,19 @@ fn hdr_4444_preserves_highlights_signal_and_partial_alpha_in_the_file() {
         assert_eq!(frame.color.transfer, signal.transfer);
     }
 }
+
+#[test]
+fn a_matrix_the_converter_does_not_implement_is_refused() {
+    use crate::{ColorSignal, ProResMovFormat, ProResMovFrame, encode_prores_mov_frames};
+    for matrix in [0u8, 5, 6, 10, 255] {
+        let format = ProResMovFormat { profile: Profile::Standard, signal: ColorSignal { primaries: 1, transfer: 1, matrix }, alpha: false };
+        let frames = vec![Ok(ProResMovFrame { rgb: grey(48, 32, 0.5), alpha: None })];
+        let r = encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, frames);
+        assert!(matches!(r, Err(ExportError::Unsupported(_))), "matrix {matrix}");
+    }
+    for matrix in [1u8, 9] {
+        let format = ProResMovFormat { profile: Profile::Standard, signal: ColorSignal { primaries: 1, transfer: 1, matrix }, alpha: false };
+        let frames = vec![Ok(ProResMovFrame { rgb: grey(48, 32, 0.5), alpha: None })];
+        assert!(encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, frames).is_ok(), "matrix {matrix}");
+    }
+}

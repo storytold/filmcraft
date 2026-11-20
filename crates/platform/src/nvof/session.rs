@@ -585,7 +585,10 @@ impl Session {
         // `NV_OF_FLOW_VECTOR`: two `i16`
         buffers.flow = Some(alloc_buffer(of, handle, gw, gh, 4, NV_OF_BUFFER_USAGE_OUTPUT, NV_OF_BUFFER_FORMAT_SHORT2)?);
         if has_cost {
-            buffers.cost = alloc_buffer(of, handle, gw, gh, 1, NV_OF_BUFFER_USAGE_COST, NV_OF_BUFFER_FORMAT_UINT8).ok();
+            // `nvOFInit` enabled cost output, so `nvOFExecute` needs this buffer: without it the
+            // session is not usable, and the estimator falls back to the CPU (the buffers above are
+            // released by `Buffers::drop`, with the context still current)
+            buffers.cost = Some(alloc_buffer(of, handle, gw, gh, 1, NV_OF_BUFFER_USAGE_COST, NV_OF_BUFFER_FORMAT_UINT8)?);
         }
         drop(guard);
 

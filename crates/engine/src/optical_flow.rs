@@ -23,13 +23,13 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use filmcraft_project::{ClipId, ItemId, ParamValue, Project, TrackId, TrackKind};
+use filmcraft_project::{ClipId, ItemId, ParamValue, Project, Track, TrackId, TrackItem, TrackKind};
 use filmcraft_render::flow::{CPU_FLOW_BACKEND, FlowEstimator, FlowVizEncoder, FlowVizMode, NeuralEnhancer};
 use filmcraft_render::{Blend, Image, RenderOptions, render_sequence_track};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, bad, bool_p, clips_p, f64_p, has_seq, str_p};
+use crate::commands::{CommandSpec, bad, bool_p, f64_p, has_seq, str_p, target_clips_p};
 use crate::{EngineError, Result, Session};
 
 /// Most frames one job renders over all its clips (an hour at 60 fps). A project can store any
@@ -92,10 +92,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
     ]
 }
 
-fn video_clips(s: &Session, p: &Value) -> Vec<ClipId> {
-    let Some(q) = s.active_sequence() else { return Vec::new() };
+/// The video clips to render: the `clip` / `clips` the caller named (a malformed target is an
+/// error, never the selection), or the selection when it named none.
+fn video_clips(s: &Session, p: &Value, cmd: &str) -> Result<Vec<ClipId>> {
+    let named = target_clips_p(s, p, cmd)?;
+    let Some(q) = s.active_sequence() else { return Ok(Vec::new()) };
     let mut seen = BTreeSet::new();
-    clips_p(s, p).into_iter().filter(|c| seen.insert(*c) && q.video_tracks.iter().any(|t| t.item(*c).is_some())).collect()
+    let clips = named.unwrap_or_else(|| s.state.selection.clone());
+    Ok(clips.into_iter().filter(|c| seen.insert(*c) && q.video_tracks.iter().any(|t| t.item(*c).is_some())).collect())
 }
 
 pub(crate) fn can_optical_flow_overlay(s: &Session) -> std::result::Result<(), String> {
@@ -125,7 +129,8 @@ fn find_free_video_track_above(p: &Project, seq_id: ItemId, above_track_idx: usi
         .iter()
         .enumerate()
         .skip(above_track_idx.saturating_add(1))
-        .find(|(_, t)| !t.locked && !t.items.iter().any(|it| it.start < range.end() && range.start < it.end()))
+        // a disabled (eye off) track would hide the overlay from the program output
+        .find(|(_, t)| !t.locked && t.enabled && !t.items.iter().any(|it| it.start < range.end() && range.start < it.end()))
         .map(|(_, t)| t.id)
 }
 
@@ -152,13 +157,40 @@ struct Look {
     blend: u32,
 }
 
+/// What decides the frames rendered for a clip. Placement is refused when any of it changed
+/// while the job ran (the clip moved to another track, was moved, trimmed or slipped, or its
+/// speed changed). The track is named by its stable id, so adding an unrelated track is fine.
+#[derive(Clone, Debug, PartialEq)]
+struct SourceKey {
+    track: TrackId,
+    item: ItemId,
+    start: Tick,
+    dur: Tick,
+    source_in: Tick,
+    speed_bits: u64,
+    reverse: bool,
+    frame_hold: Option<Tick>,
+}
+
+fn source_key(track: &Track, it: &TrackItem) -> SourceKey {
+    SourceKey {
+        track: track.id,
+        item: it.item,
+        start: it.start,
+        dur: it.duration,
+        source_in: it.source_in,
+        speed_bits: it.speed.to_bits(),
+        reverse: it.reverse,
+        frame_hold: it.frame_hold,
+    }
+}
+
 /// One clip to render, planned on the session's thread.
 #[derive(Clone, Debug)]
 struct Work {
     clip: ClipId,
     track_index: usize,
-    start: Tick,
-    dur: Tick,
+    key: SourceKey,
     frames: i64,
     path: String,
 }
@@ -167,8 +199,7 @@ struct Work {
 #[derive(Clone, Debug)]
 struct Rendered {
     clip: ClipId,
-    start: Tick,
-    dur: Tick,
+    key: SourceKey,
     path: String,
     /// The file's bytes when the host keeps files in memory (web); otherwise it is read from disk.
     bytes: Option<Arc<[u8]>>,
@@ -233,6 +264,9 @@ pub struct PendingFlow {
     look: Look,
     /// `Session::document_epoch` when the job started: ids mean something else in another project.
     epoch: u64,
+    /// The sequence frame rate and size the frames were rendered at.
+    rate: FrameRate,
+    size: (usize, usize),
     results: Arc<Mutex<Option<Outcome>>>,
     /// The hardware backend's name, for messages.
     hw_name: Arc<Mutex<String>>,
@@ -254,7 +288,7 @@ fn frames_for(dur: Tick, fd: Tick) -> Option<i64> {
 fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> Result<Value> {
     let cmd = "clip.opticalFlowOverlay";
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let clips = video_clips(s, p);
+    let clips = video_clips(s, p, cmd)?;
     if clips.is_empty() {
         return Err(bad(cmd, "select a video clip"));
     }
@@ -282,7 +316,8 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
     let blend = parse_blend_index(cmd, str_p(p, "blendMode"), mode)?;
     let look = Look { mode, max_motion: max_motion as f32, opacity: opacity as f32, blend };
 
-    if s.flow_jobs.iter().any(|j| j.seq == seq_id) {
+    // a job left over from a replaced document cannot be placed here (see `apply`), so it does not block
+    if s.flow_jobs.iter().any(|j| j.seq == seq_id && j.epoch == s.document_epoch) {
         return Err(EngineError::Other("an optical-flow track is already being generated for this sequence".into()));
     }
 
@@ -307,7 +342,7 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
     {
         let seq = s.project.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         for clip in &clips {
-            let Some((track_index, it)) = seq.video_tracks.iter().enumerate().find_map(|(ti, tr)| tr.item(*clip).map(|it| (ti, it))) else {
+            let Some((track_index, track, it)) = seq.video_tracks.iter().enumerate().find_map(|(ti, tr)| tr.item(*clip).map(|it| (ti, tr, it))) else {
                 continue;
             };
             let frames = frames_for(it.duration, fd).ok_or_else(|| bad(cmd, format!("clip {} has no duration", clip.0)))?;
@@ -320,14 +355,12 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
             }
             let item_name = s.project.item(it.item).map(|i| i.name.as_str()).unwrap_or("Clip");
             let stem = std::path::Path::new(item_name).file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("Clip");
-            work.push((*clip, track_index, it.start, it.duration, frames, format!("{stem} ({})", mode.label())));
+            work.push((*clip, track_index, source_key(track, it), frames, format!("{stem} ({})", mode.label())));
         }
     }
     let work: Vec<Work> = work
         .into_iter()
-        .map(|(clip, track_index, start, dur, frames, base)| {
-            unique_mov_path(s, &dir, &base, &mut taken).map(|path| Work { clip, track_index, start, dur, frames, path })
-        })
+        .map(|(clip, track_index, key, frames, base)| unique_mov_path(s, &dir, &base, &mut taken).map(|path| Work { clip, track_index, key, frames, path }))
         .collect::<Result<_>>()?;
     if work.is_empty() {
         return Err(bad(cmd, "select a video clip"));
@@ -374,24 +407,26 @@ fn run_overlay(s: &mut Session, p: &Value, fixed_mode: Option<FlowVizMode>) -> R
         prog.finished.store(true, Ordering::Relaxed);
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
-    s.jobs.push(job);
-    s.flow_jobs.push(PendingFlow { job: id, seq: seq_id, look, epoch: s.document_epoch, results, hw_name });
+    let pending = PendingFlow { job: id, seq: seq_id, look, epoch: s.document_epoch, rate, size: (w, h), results, hw_name };
 
     let wait = bool_p(p, "wait").unwrap_or(false);
     if wait || cfg!(target_arch = "wasm32") {
+        let failed = job.result.clone();
+        s.jobs.push(job);
         run();
-        let failed = s.jobs.iter().find(|j| j.id == id).and_then(|j| lock(&j.result).clone()).and_then(|r| r.err());
-        let pos = s.flow_jobs.iter().position(|j| j.job == id);
-        let pending = pos.map(|i| s.flow_jobs.remove(i));
-        if let Some(e) = failed {
+        if let Some(e) = lock(&failed).clone().and_then(|r| r.err()) {
             return Err(EngineError::Other(e));
         }
-        let pending = pending.ok_or_else(|| EngineError::Other("the optical-flow job vanished".into()))?;
-        let mut v = apply(s, pending)?;
+        // the caller waited for this result: select what it placed
+        let mut v = apply(s, pending, true)?;
         v["job"] = json!(id);
         return Ok(v);
     }
+    // the records go in only once the worker exists: a worker that never started could never
+    // finish them, and the pending job would block this sequence for the rest of the session
     std::thread::Builder::new().name("filmcraft-optical-flow".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    s.jobs.push(job);
+    s.flow_jobs.push(pending);
     Ok(json!({"job": id, "frames": total, "mode": mode.id()}))
 }
 
@@ -409,7 +444,10 @@ struct JobCtx {
 
 impl JobCtx {
     fn render(&self, track_index: usize, t: Tick) -> Image {
-        render_sequence_track(&self.project, self.seq, track_index, t, RenderOptions::default(), &self.provider)
+        // Temporal Detail keeps working-space light and applies the sequence's output transform
+        // itself when it encodes; the other looks draw on the display-referred picture.
+        let working_output = self.look.mode == FlowVizMode::TemporalDetail;
+        render_sequence_track(&self.project, self.seq, track_index, t, RenderOptions { working_output, ..RenderOptions::default() }, &self.provider)
     }
 
     /// Render every clip; on failure or Cancel, delete what was written.
@@ -419,7 +457,9 @@ impl JobCtx {
             match self.render_clip(w, prog, hw_name, &mut out) {
                 Ok(r) => out.clips.push(r),
                 Err(e) => {
-                    remove_files(self.in_memory, out.clips.iter().map(|r| r.path.as_str()).chain([w.path.as_str()]));
+                    // `render_clip` deletes its own file when it fails after creating it; a path it
+                    // could not create may be another job's output and is left alone
+                    remove_files(self.in_memory, out.clips.iter().map(|r| r.path.as_str()));
                     return Err(if prog.cancel.load(Ordering::Relaxed) { "Stopped: nothing was changed".to_string() } else { e });
                 }
             }
@@ -451,7 +491,7 @@ impl JobCtx {
             if prog.cancel.load(Ordering::Relaxed) {
                 return Err(filmcraft_export::ExportError::Cancelled);
             }
-            let t = w.start + Tick(fi.saturating_mul(fd.0));
+            let t = w.key.start + Tick(fi.saturating_mul(fd.0));
             let curr = match ahead.take() {
                 Some(img) => img,
                 None => self.render(w.track_index, t),
@@ -461,7 +501,7 @@ impl JobCtx {
             let field = match prev.as_ref() {
                 Some(p) => est.estimate(p, &curr),
                 None if w.frames > 1 => {
-                    let next = self.render(w.track_index, (w.start + fd).min(w.start + w.dur - Tick(1)));
+                    let next = self.render(w.track_index, (w.key.start + fd).min(w.key.start + w.key.dur - Tick(1)));
                     let f = est.estimate(&curr, &next);
                     ahead = Some(next);
                     f
@@ -528,9 +568,16 @@ impl JobCtx {
         } else {
             // a new file only: the name was checked to be free, and nothing else may be overwritten
             let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&w.path).map_err(|e| format!("{}: {e}", w.path))?;
-            let (buf, _) =
-                filmcraft_export::encode_prores_mov_frames(std::io::BufWriter::new(file), w32, h32, self.rate, format, frames).map_err(|e| e.to_string())?;
-            buf.into_inner().map_err(|e| format!("{}: {}", w.path, e.error()))?.sync_all().map_err(|e| format!("{}: {e}", w.path))?;
+            // from here on the file is this job's: delete it on any failure
+            let write = || -> std::result::Result<(), String> {
+                let (buf, _) = filmcraft_export::encode_prores_mov_frames(std::io::BufWriter::new(file), w32, h32, self.rate, format, frames)
+                    .map_err(|e| e.to_string())?;
+                buf.into_inner().map_err(|e| format!("{}: {}", w.path, e.error()))?.sync_all().map_err(|e| format!("{}: {e}", w.path))
+            };
+            if let Err(e) = write() {
+                remove_files(false, [w.path.as_str()]);
+                return Err(e);
+            }
             None
         };
         out.hardware_frames += hw;
@@ -550,7 +597,7 @@ impl JobCtx {
         {
             out.viz_fallback = Some(why.to_string());
         }
-        Ok(Rendered { clip: w.clip, start: w.start, dur: w.dur, path: w.path.clone(), bytes })
+        Ok(Rendered { clip: w.clip, key: w.key.clone(), path: w.path.clone(), bytes })
     }
 }
 
@@ -576,14 +623,36 @@ pub fn poll(s: &mut Session) {
             continue;
         }
         let pj = s.flow_jobs.remove(i);
-        if let Err(e) = apply(s, pj) {
+        // a background completion leaves the selection alone: the user may have selected other
+        // clips meanwhile, and the command about to run (Delete…) acts on them
+        if let Err(e) = apply(s, pj, false) {
             s.error_toast("clip.opticalFlowOverlay", format!("Optical Flow Track: {e}"));
         }
     }
 }
 
-/// Place a finished job's clips, all or nothing.
-fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
+/// Record a placement that did not happen in the job's result, so `jobs.list` does not report a
+/// job whose clips were never placed as a success.
+fn fail_job(s: &Session, id: u64, why: &str) {
+    if let Some(j) = s.jobs.iter().find(|j| j.id == id) {
+        *lock(&j.progress.status) = why.to_string();
+        *lock(&j.progress.error) = Some(why.to_string());
+        *lock(&j.result) = Some(Err(why.to_string()));
+    }
+}
+
+/// Place a finished job's clips, all or nothing, and record the outcome in the job. `select`
+/// selects the placed clips (only when the caller waited for them).
+fn apply(s: &mut Session, pj: PendingFlow, select: bool) -> Result<Value> {
+    let id = pj.job;
+    let r = place_job(s, pj, select);
+    if let Err(e) = &r {
+        fail_job(s, id, &e.to_string());
+    }
+    r
+}
+
+fn place_job(s: &mut Session, pj: PendingFlow, select: bool) -> Result<Value> {
     let Some(out) = lock(&pj.results).take() else {
         // failed or stopped: the worker already reported it and deleted its files
         return Ok(json!({"clips": []}));
@@ -593,17 +662,27 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
     let discard = |out: &Outcome| remove_files(in_memory, out.clips.iter().map(|r| r.path.as_str()));
     if cancelled {
         discard(&out);
+        fail_job(s, pj.job, "Stopped: nothing was changed");
         return Ok(json!({"clips": []}));
     }
     if pj.epoch != s.document_epoch {
         discard(&out);
         return Err(EngineError::Other("the project was replaced while the track was rendering; nothing was changed".into()));
     }
-    let (before, undo, redo) = (s.project.clone(), s.history.undo.clone(), s.history.redo.clone());
-    let n0 = s.history.undo.len();
-    match place_all(s, pj.seq, pj.look, &out) {
+    // the clips hold one picture per frame of the grid they were rendered on
+    let Some(seq) = s.project.sequence(pj.seq) else {
+        discard(&out);
+        return Err(EngineError::Other("the sequence was deleted while the track was rendering; nothing was changed".into()));
+    };
+    if (seq.settings.frame_rate, filmcraft_render::output_size(seq, 1.0)) != (pj.rate, pj.size) {
+        discard(&out);
+        return Err(EngineError::Other("the sequence's frame rate or frame size changed while the track was rendering; nothing was changed".into()));
+    }
+    // a failed placement leaves the project, its undo history and its saved state as they were
+    let (was_clean, merge_key) = (!s.is_dirty(), s.history.merge_key.clone());
+    // one undo step however many imports and placements, even when the history is full
+    match s.edit_group(LABEL, |s| place_all(s, pj.seq, pj.look, &out)) {
         Ok(created) => {
-            crate::clip_ops::collapse_history(s, n0, LABEL);
             let backend = out.backend(&lock(&pj.hw_name));
             if let Some(why) = &out.fallback {
                 log::warn!("optical flow fell back to {CPU_FLOW_BACKEND}: {why}");
@@ -611,7 +690,7 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
             if let Some(why) = &out.viz_fallback {
                 log::warn!("optical-flow overlay drawn on the CPU: {why}");
             }
-            if s.state.active_sequence == Some(pj.seq) {
+            if select && s.state.active_sequence == Some(pj.seq) {
                 s.state.selection = created.iter().map(|(c, _)| *c).collect();
             }
             let display_backend = out.reconstruction_backend().unwrap_or_else(|| backend.clone());
@@ -637,41 +716,35 @@ fn apply(s: &mut Session, pj: PendingFlow) -> Result<Value> {
             }))
         }
         Err(e) => {
-            // take back every step made above, whatever the history limit dropped meanwhile
-            s.project = before;
-            s.history.undo = undo;
-            s.history.redo = redo;
-            s.history.merge_key = None;
-            s.fix_state();
-            s.bump();
+            // `edit_group` restored the project, the selection and the undo / redo lists
+            s.history.merge_key = merge_key;
+            if was_clean {
+                s.saved_revision = s.revision;
+            }
             discard(&out);
             Err(e)
         }
     }
 }
 
-/// Import and place every rendered clip; the caller rolls back on error.
+/// Import and place every rendered clip; the caller (`Session::edit_group`) rolls back on error.
 fn place_all(s: &mut Session, seq_id: ItemId, look: Look, out: &Outcome) -> Result<Vec<(ClipId, ItemId)>> {
     let mut created = Vec::new();
     for r in &out.clips {
         let track_idx = {
             let seq = s.project.sequence(seq_id).ok_or(EngineError::NoSequence)?;
-            seq.video_tracks
-                .iter()
-                .enumerate()
-                .find_map(|(ti, tr)| tr.item(r.clip).filter(|it| it.start == r.start && it.duration == r.dur).map(|_| ti))
-                .ok_or_else(|| {
-                    EngineError::Other(format!("clip {} was moved, trimmed or deleted while its track was rendering; nothing was changed", r.clip.0))
-                })?
+            seq.video_tracks.iter().enumerate().find_map(|(ti, tr)| tr.item(r.clip).filter(|it| source_key(tr, it) == r.key).map(|_| ti)).ok_or_else(|| {
+                EngineError::Other(format!("clip {} was moved, trimmed, slipped or deleted while its track was rendering; nothing was changed", r.clip.0))
+            })?
         };
         let media_item = match &r.bytes {
             Some(b) => crate::commands::import_bytes(s, &r.path, b.clone(), None)?,
             None => crate::commands::import_streamed(s, &r.path, None)?,
         };
         let rate = s.project.sequence(seq_id).ok_or(EngineError::NoSequence)?.settings.frame_rate;
-        let range = TimeRange::new(r.start, r.dur);
+        let range = TimeRange::new(r.key.start, r.key.dur);
         let free = find_free_video_track_above(&s.project, seq_id, track_idx, range);
-        let (start, dur) = (r.start, r.dur);
+        let (start, dur) = (r.key.start, r.key.dur);
         let clip = s.edit(LABEL, |pr, _st| {
             let mut it = pr
                 .make_track_item(media_item, TrackKind::Video, start, TimeRange::new(Tick::ZERO, dur), rate)
@@ -691,6 +764,12 @@ fn place_all(s: &mut Session, seq_id: ItemId, look: Look, out: &Outcome) -> Resu
             let target = match (free, new_track) {
                 (Some(t), _) => t,
                 (None, Some(t)) => {
+                    if seq.video_tracks.len() >= crate::sequence_tools::MAX_TRACKS {
+                        return Err(EngineError::Other(format!(
+                            "no free video track above the clip, and the sequence already has {} video tracks",
+                            crate::sequence_tools::MAX_TRACKS
+                        )));
+                    }
                     seq.video_tracks.push(filmcraft_project::Track::new(t, TrackKind::Video, "Video 0".to_string()));
                     crate::sequence_tools::renumber(&mut seq.video_tracks, "Video");
                     t

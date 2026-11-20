@@ -610,6 +610,11 @@ pub fn encode_prores_mov_frames<W: std::io::Write + std::io::Seek>(
     if alpha && chroma != ChromaFormat::Yuv444 {
         return Err(ExportError::Unsupported("ProRes alpha requires a 4444 profile".into()));
     }
+    // `ColorSignal::kr_kb` converts with BT.709 or BT.2020 coefficients only: tagging any other
+    // matrix would tell readers to decode with coefficients the samples were not made with
+    if !matches!(signal.matrix, 1 | 9) {
+        return Err(ExportError::Unsupported(format!("ProRes colour matrix {} is not supported (BT.709 = 1, BT.2020 = 9)", signal.matrix)));
+    }
     let mut cfg = EncoderConfig::new(profile, w, h);
     cfg.encode_alpha = alpha;
     cfg.color = craft_video::prores::ColorInfo { primaries: signal.primaries, transfer: signal.transfer, matrix: signal.matrix };
