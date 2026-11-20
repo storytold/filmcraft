@@ -259,6 +259,32 @@ fn lumetri_curves_grow_with_the_panel() {
     assert!(r[2] > 400.0, "curve width {r:?}");
 }
 
+/// A Color Grading panel too narrow for the RGB channel buttons and the plot's eyedropper side
+/// by side keeps the eyedropper on its own line, inside the panel and clear of the buttons.
+#[test]
+fn lumetri_curve_eyedropper_clears_the_channel_buttons() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.ok("ui.set", json!({"focused": "LumetriColor"}));
+    d.frames(3);
+    d.click("lumetri.section.Curves");
+    d.frames(3);
+    // narrower than the four channel buttons plus the eyedropper at the plot's right edge
+    d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": "LumetriColor", "rect": [40, 40, 120, 700]}}));
+    d.frames(4);
+    let eye = d.element("lumetri.param.curve_luma.eyedropper").expect("the eyedropper is shown");
+    let panel = d.element("panel.LumetriColor").expect("the panel body");
+    assert!(eye[0] >= panel[0] && eye[0] + eye[2] <= panel[0] + panel[2], "the eyedropper {eye:?} leaves the panel {panel:?}");
+    for id in ["curve_luma", "curve_red", "curve_green", "curve_blue"] {
+        let button = d.element(&format!("lumetri.curve.channel.{id}")).unwrap_or_else(|| panic!("channel {id} is missing"));
+        let overlap = eye[0] < button[0] + button[2] && button[0] < eye[0] + eye[2] && eye[1] < button[1] + button[3] && button[1] < eye[1] + eye[3];
+        assert!(!overlap, "the eyedropper {eye:?} covers the {id} channel button {button:?}");
+    }
+}
+
 #[test]
 fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let mut d = Driver::demo();
@@ -323,6 +349,113 @@ fn apply_match_from_the_color_wheels_section() {
     d.click("lumetri.match.apply");
     let ui = d.ok("ui.inspect", json!({}));
     assert!(ui.to_string().contains("reference frame is inside"), "{ui}");
+}
+
+/// A curve value from `sequence.inspect`, whose params are Debug strings: `Curve([[x, y], …])`.
+fn curve_points(v: &Value) -> Vec<(f64, f64)> {
+    let s = v.as_str().expect("curve value is a Debug string");
+    let Some(inner) = s.strip_prefix("Curve([").and_then(|s| s.strip_suffix("])")) else { return Vec::new() };
+    if inner.is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split("], [")
+        .map(|p| {
+            let p = p.trim_matches(|c| c == '[' || c == ']');
+            let mut it = p.split(", ");
+            (it.next().unwrap().parse().unwrap(), it.next().unwrap().parse().unwrap())
+        })
+        .collect()
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-3
+}
+
+#[test]
+fn curve_eyedropper_adds_points_from_the_program_picture() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(2);
+    d.click("lumetri.section.Curves");
+    assert!(d.ids("lumetri.param").iter().any(|i| i == "lumetri.param.curve_luma.eyedropper"), "eyedropper button missing");
+    let value = |d: &mut Driver| lumetri(d, clip)["params"]["curve_luma"]["value"].clone();
+    let before = curve_points(&value(&mut d));
+    assert_eq!(before.len(), 2, "a fresh Luma curve is the identity endpoints: {before:?}");
+    let old = value(&mut d);
+    d.click("lumetri.param.curve_luma.eyedropper");
+    d.frames(2);
+    d.click("program.picture");
+    for _ in 0..200 {
+        if value(&mut d) != old {
+            break;
+        }
+        d.frames(1);
+    }
+    let pts = curve_points(&value(&mut d));
+    assert!((4..=5).contains(&pts.len()), "the eyedropper added three points to the identity curve: {pts:?}");
+    // the identity endpoints survive
+    assert!(close(pts[0].0, 0.0) && close(pts[0].1, 0.0) && close(pts.last().unwrap().0, 1.0) && close(pts.last().unwrap().1, 1.0), "{pts:?}");
+    let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    assert!(xs.windows(2).all(|w| w[0] <= w[1]), "sorted by x: {xs:?}");
+    // the added points are level (same y) and the centre one sits on the identity line y = x
+    let mid = &pts[1..pts.len() - 1];
+    let y = mid[0].1;
+    assert!(mid.iter().all(|p| (p.1 - y).abs() < 1e-4), "the added points are level: {pts:?}");
+    assert!(mid.iter().any(|p| (p.0 - y).abs() < 1e-3), "the centre point is on the identity line: {pts:?}");
+}
+
+/// Arm the Luma curve's eyedropper, click the middle of the Program picture and wait for the
+/// points it adds.
+fn curve_pick(d: &mut Driver, clip: u64) -> Vec<(f64, f64)> {
+    let old = lumetri(d, clip)["params"]["curve_luma"]["value"].clone();
+    d.click("lumetri.param.curve_luma.eyedropper");
+    d.frames(2);
+    d.click("program.picture");
+    for _ in 0..200 {
+        if lumetri(d, clip)["params"]["curve_luma"]["value"] != old {
+            break;
+        }
+        d.frames(1);
+    }
+    curve_points(&lumetri(d, clip)["params"]["curve_luma"]["value"])
+}
+
+/// The pick has to read the tone that *enters* the curve (its x axis), not the tone it produces:
+/// sampling the displayed frame puts the points where the curve's output lands, so they would
+/// adjust a different range of tones than the one clicked.
+#[test]
+fn curve_eyedropper_samples_the_curves_input_not_its_output() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(2);
+    d.click("lumetri.section.Curves");
+    // on the identity curve a tone reads the same going in and out, so the added centre (x == y,
+    // between the endpoints) gives the x the click maps to
+    let first = curve_pick(&mut d, clip);
+    let x = first
+        .iter()
+        .filter(|p| !close(p.0, 0.0) && !close(p.0, 1.0))
+        .find(|p| close(p.0, p.1))
+        .map(|p| p.0)
+        .unwrap_or_else(|| panic!("no point on the identity curve at the sampled tone: {first:?}"));
+    assert!((0.01..0.99).contains(&x), "the demo frame's tone is off the axes' ends: {first:?}");
+    // a curve that moves every tone away from where it enters
+    let (curve, moved) = if x < 0.5 { (vec![[0.0, 0.3], [1.0, 1.0]], 0.3 + 0.7 * x) } else { (vec![[0.0, 0.0], [1.0, 0.7]], 0.7 * x) };
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "curve_luma", "value": curve}));
+    d.frames(2);
+    assert!((moved - x).abs() > 0.15, "the curve moves the clicked tone: {x} -> {moved}");
+    let pts = curve_pick(&mut d, clip);
+    let centre =
+        pts.iter().find(|p| close(p.0, x)).unwrap_or_else(|| panic!("no point at the tone {x} that was clicked (the curve puts it at {moved}): {pts:?}"));
+    assert!(close(centre.1, moved), "the point sits on the curve at that tone: {pts:?}");
+    assert!(close(pts.first().unwrap().0, 0.0) && close(pts.last().unwrap().0, 1.0), "the curve's endpoints survive: {pts:?}");
 }
 
 impl Driver {

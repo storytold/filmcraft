@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::native_dialogs::FileDialog;
+use crate::state::{CurveAxis, Eyedropper};
 use crate::theme::Tokens;
 use crate::widgets::HotNumberOptions;
 
@@ -130,10 +131,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             sub(ui, &t, tl!("RGB Curves"));
             let key = egui::Id::unique("lumetri-curve-channel");
             let mut ch: usize = ui.data(|d| d.get_temp(key)).unwrap_or(0);
-            ui.horizontal(|ui| {
-                for (i, c) in
-                    [Color32::WHITE, Color32::from_rgb(230, 70, 70), Color32::from_rgb(80, 200, 90), Color32::from_rgb(80, 130, 250)].iter().enumerate()
-                {
+            let channels = [
+                ("curve_luma", Color32::WHITE),
+                ("curve_red", Color32::from_rgb(230, 70, 70)),
+                ("curve_green", Color32::from_rgb(80, 200, 90)),
+                ("curve_blue", Color32::from_rgb(80, 130, 250)),
+            ];
+            let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W / 2.0;
+            ui.horizontal_wrapped(|ui| {
+                for (i, (cid, c)) in channels.iter().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 6.0, *c);
                     if ch == i {
@@ -142,15 +148,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if resp.clicked() {
                         ch = i;
                     }
+                    app.auto.add(&format!("lumetri.curve.channel.{cid}"), r, "Channel");
                 }
+                // the eyedropper sits at the plot's right edge, kept inside the visible panel;
+                // a panel too narrow for the buttons and it takes it on the next line instead
+                let inset = ui.max_rect().left() - ui.clip_rect().left();
+                let target = (scale_x - CURVE_EYEDROPPER_BTN / 2.0).min(ui.clip_rect().right() - inset - CURVE_EYEDROPPER_BTN);
+                let spacing = ui.spacing().item_spacing.x;
+                if target > ui.cursor().min.x + spacing {
+                    ui.add_space(target - ui.cursor().min.x - spacing);
+                } else {
+                    ui.end_row();
+                }
+                let (r, _) = ui.allocate_exact_size(vec2(CURVE_EYEDROPPER_BTN, CURVE_EYEDROPPER_BTN), Sense::hover());
+                let (cid, _) = channels.get(ch).copied().unwrap_or(channels[0]);
+                curve_eyedropper(ui, app, cid, clip, idx, &t, r.center());
             });
             ui.data_mut(|d| d.insert_temp(key, ch));
-            let (id, col) = [
-                ("curve_luma", Color32::WHITE),
-                ("curve_red", Color32::from_rgb(230, 70, 70)),
-                ("curve_green", Color32::from_rgb(80, 200, 90)),
-                ("curve_blue", Color32::from_rgb(80, 130, 250)),
-            ][ch];
+            let (id, col) = channels.get(ch).copied().unwrap_or(channels[0]);
             let r = curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
             auto_rows.push((format!("lumetri.curve.{id}"), r, "Curve"));
             if hdr {
@@ -165,7 +180,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("luma_vs_sat", tl!("Luma vs Sat")),
                 ("sat_vs_sat", tl!("Sat vs Sat")),
             ] {
-                ui.label(egui::RichText::new(label).color(t.text_dim));
+                let scale_x = ui.max_rect().left() + curve_width(ui) - CURVE_SCALE_W;
+                let row = ui.label(egui::RichText::new(label).color(t.text_dim)).rect;
+                curve_eyedropper(ui, app, id, clip, idx, &t, pos2(scale_x, row.center().y));
                 let r = curve_editor(ui, &e, id, true, Color32::WHITE, &t, &mut actions, clip, idx);
                 auto_rows.push((format!("lumetri.curve.{id}"), r, label));
             }
@@ -514,25 +531,214 @@ fn lerp_col(a: Color32, b: Color32, f: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// Curve editor: drag points, click the curve to add, double-click a point to remove. Returns its
-/// rectangle (its automation element, `lumetri.curve.<param>`).
+/// Horizontal distance between the eyedropper's centre point and its two neighbours, in curve X
+/// units (the whole axis is 0..1). Kept as a named constant so the spread is easy to tune.
+pub(crate) const CURVE_EYEDROPPER_SPREAD: f32 = 0.05;
+
+/// Width of the vertical colour scale drawn on the right of every curve, matching the height of
+/// the horizontal hue scale under the hue curves.
+const CURVE_SCALE_W: f32 = 6.0;
+
+/// Maximum square size of the curve editor. Wider panels keep the established vertical scale
+/// while giving the plot more horizontal room.
+const CURVE_MAX_SIZE: f32 = 260.0;
+
+/// Share of the panel width a curve plot fills: the rest is the gutter that keeps the panel's
+/// floating scroll bar off the plot's vertical colour scale.
+const CURVE_WIDTH_FRAC: f32 = 0.95;
+
+/// Width of a curve plot in `ui`, leaving the scroll-bar gutter on the right.
+fn curve_width(ui: &egui::Ui) -> f32 {
+    (ui.available_width() * CURVE_WIDTH_FRAC).max(1.0)
+}
+
+/// Height of the horizontal hue strip drawn under the hue curves; the vertical scale stops above
+/// it so the two meet at the corner (an L) instead of running alongside each other.
+const CURVE_HUE_STRIP_H: f32 = 6.0;
+
+/// Edge length of the eyedropper button drawn over the vertical scale, at the curve label's height.
+const CURVE_EYEDROPPER_BTN: f32 = 18.0;
+
+/// The X (input) axis each curve id samples along, if the eyedropper supports it.
+fn curve_axis(id: &str) -> Option<CurveAxis> {
+    Some(match id {
+        "curve_luma" => CurveAxis::Luma,
+        "curve_red" => CurveAxis::Channel(0),
+        "curve_green" => CurveAxis::Channel(1),
+        "curve_blue" => CurveAxis::Channel(2),
+        "hue_vs_sat" | "hue_vs_hue" | "hue_vs_luma" => CurveAxis::Hue,
+        "luma_vs_sat" => CurveAxis::Lightness,
+        "sat_vs_sat" => CurveAxis::Saturation,
+        _ => return None,
+    })
+}
+
+/// The X (input) position a pixel's grading signal maps to on `axis`'s curve. `signal` is the
+/// space the curve stage works in: display-encoded sRGB in SDR, PQ / HLG normalised to the curves'
+/// HDR Range in HDR (above 1 for highlights above it). HDR hue, lightness and saturation come from
+/// the signal scaled into 0…1 the way the hue / sat curves see it (`within_unit` in
+/// `filmcraft_render::effects`); the luma and channel curves sample the signal itself.
+pub(crate) fn curve_signal_x(axis: CurveAxis, signal: [f32; 3], hdr: bool) -> f32 {
+    match axis {
+        CurveAxis::Luma => filmcraft_color::luma709(signal[0], signal[1], signal[2]),
+        CurveAxis::Channel(i) => signal.get(i as usize).copied().unwrap_or(signal[0]),
+        CurveAxis::Hue | CurveAxis::Lightness | CurveAxis::Saturation => {
+            let v = filmcraft_color::within_unit(signal, hdr);
+            let hsl = filmcraft_color::rgb_to_hsl(v[0], v[1], v[2]);
+            match axis {
+                CurveAxis::Hue => hsl[0],
+                CurveAxis::Lightness => hsl[2],
+                _ => hsl[1],
+            }
+        }
+    }
+}
+
+/// The height an empty curve plots and samples at. The hue-axis curves (Hue vs Sat, Hue vs Hue and
+/// Hue vs Luma), Luma vs Sat and Sat vs Sat are neutral at 0.5 — an unchanged shift or saturation —
+/// while the master and RGB curves are identity; `None` means identity (y = x).
+fn curve_empty_height(axis: CurveAxis) -> Option<f32> {
+    match axis {
+        CurveAxis::Hue | CurveAxis::Lightness | CurveAxis::Saturation => Some(0.5),
+        CurveAxis::Luma | CurveAxis::Channel(_) => None,
+    }
+}
+
+/// The curve's value at `x` (0..1), evaluated with the same monotone-cubic LUT the curve is drawn
+/// and rendered with. The hue curves wrap one period left and right; every other axis is straight.
+fn curve_value_at(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if pts.is_empty() {
+        return curve_empty_height(axis).unwrap_or(x);
+    }
+    let wrapping = axis == CurveAxis::Hue;
+    let lut = if wrapping { filmcraft_render::effects::hue_lut(pts, 128) } else { filmcraft_render::effects::vs_sat_lut(pts, 128) }
+        .unwrap_or_else(|| filmcraft_render::effects::curve_lut(pts, 128));
+    // linear interpolation between LUT samples, like the render's own curve sampling, so the
+    // centre point lands exactly on the drawn curve (identity stays identity)
+    let p = x * (lut.len() - 1) as f32;
+    let i = (p as usize).min(lut.len().saturating_sub(1));
+    let j = (i + 1).min(lut.len() - 1);
+    lut[i] + (lut[j] - lut[i]) * (p - i as f32)
+}
+
+/// The three control points a curve eyedropper adds at `x`: the centre point on the current curve,
+/// and two neighbours at the same height, `CURVE_EYEDROPPER_SPREAD` away on either side, so that
+/// dragging the centre lifts only that range. Neighbours clamp into 0..1.
+pub(crate) fn curve_eyedropper_points(pts: &[[f32; 2]], x: f32, axis: CurveAxis) -> Vec<[f32; 2]> {
+    // the curve's domain is 0..1: an HDR pick above HDR Range lands on its top
+    let x = x.clamp(0.0, 1.0);
+    let y = curve_value_at(pts, x, axis);
+    let mut out = vec![[(x - CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y], [x, y], [(x + CURVE_EYEDROPPER_SPREAD).clamp(0.0, 1.0), y]];
+    out.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    out
+}
+
+/// Hue vs Hue's axis is a hue shift: the renderer applies `output = input + stored − 0.5`, so what
+/// a plotted value means depends on the input hue. The gradient uses this to show the output hue
+/// each height produces for the input hue `x` under the cursor. The other curves store an absolute
+/// value and need no such conversion.
+fn hue_absolute(x: f32, y: f32) -> f32 {
+    (x + y - 0.5).rem_euclid(1.0)
+}
+
+/// The colour the vertical scale shows at height `v` (0 at the bottom, 1 at the top) for `id`'s
+/// curve: the luma and saturation curves black→white, each RGB channel black→its channel colour.
+/// Hue vs Hue's gradient is dynamic: `hue_x` (the hue under the cursor) centres it, so the middle is
+/// that hue and both edges are its opposite — the scale slides as the cursor moves and never wraps.
+fn curve_scale_col(id: &str, col: Color32, v: f32, hue_x: f32) -> Color32 {
+    let to_col = |rgb: [f32; 3]| Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8);
+    match id {
+        "hue_vs_hue" => to_col(filmcraft_color::hsl_to_rgb(hue_absolute(hue_x, v), 0.8, 0.5)),
+        "curve_luma" | "hue_vs_luma" | "hue_vs_sat" | "luma_vs_sat" | "sat_vs_sat" => lerp_col(Color32::BLACK, Color32::WHITE, v),
+        _ => lerp_col(Color32::BLACK, col, v),
+    }
+}
+
+/// The curve's eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels); the
+/// pick adds three control points around the sampled value. `center` places the button over the
+/// vertical scale, at the curve label's height.
+fn curve_eyedropper(ui: &mut egui::Ui, app: &mut FilmcraftApp, id: &str, clip: ClipId, idx: usize, t: &Tokens, center: Pos2) {
+    let Some(axis) = curve_axis(id) else { return };
+    let target = Eyedropper { clip: clip.0, effect: idx, param: id.to_string(), mask: None, curve: Some(axis) };
+    let armed = app.ui.eyedropper.as_ref() == Some(&target);
+    let btn = Rect::from_center_size(center, vec2(CURVE_EYEDROPPER_BTN, CURVE_EYEDROPPER_BTN));
+    let br = ui.interact(btn, egui::Id::unique(("curve-eyedropper", clip.0, id)), Sense::click());
+    let p = ui.painter();
+    if br.is_pointer_button_down_on() {
+        p.rect_filled(btn, t.radius_sm, t.pressed);
+    } else if br.hovered() {
+        p.rect_filled(btn, t.radius_sm, t.hover);
+    }
+    let icol = if armed {
+        t.icon_active
+    } else if br.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(p, btn.shrink(CURVE_EYEDROPPER_BTN * 0.2), Icon::Eyedropper, icol);
+    app.auto.add(&format!("lumetri.param.{id}.eyedropper"), btn, "Eyedropper");
+    let br = br.on_hover_text(tl!("Eyedropper (pick a color from the Program monitor)"));
+    if br.clicked() {
+        if armed {
+            crate::panels::monitor::disarm_eyedropper(app, ui.ctx());
+        } else {
+            app.ui.eyedropper = Some(target);
+        }
+    }
+}
+
+/// Curve editor: drag points, click the curve to add, double-click a point to remove. On the right
+/// it draws the vertical colour scale of the curve's output axis. Returns its rectangle (its
+/// automation element, `lumetri.curve.<param>`).
 #[allow(clippy::too_many_arguments)]
 fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col: Color32, t: &Tokens, actions: &mut Actions, clip: ClipId, idx: usize) -> Rect {
     let pts: Vec<[f32; 2]> = e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default();
-    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), not taller than 420 px
-    let w = ui.available_width().max(1.0);
-    let h = if hue { w * 0.45 } else { w }.min(420.0);
-    let (area, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
+    // as wide as the panel (it stayed 260 px wide in a wide panel, #1658), the plot leaving the
+    // vertical colour scale's gutter on the right
+    let w = curve_width(ui);
+    let side = w.min(CURVE_MAX_SIZE);
+    let h = if hue { side * 0.45 } else { side };
+    let (area, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    let plot = Rect::from_min_max(area.min, pos2(area.max.x - CURVE_SCALE_W, area.max.y));
+    // hue curves put a horizontal hue strip under the plot: the vertical scale stops above it so
+    // they meet at the corner (an L) instead of overlapping
+    let scale = Rect::from_min_max(pos2(plot.max.x, area.min.y), if hue { pos2(area.max.x, plot.max.y - CURVE_HUE_STRIP_H) } else { area.max });
+    let resp = ui.interact(plot, egui::Id::unique(("curve-plot", clip.0, id)), Sense::click_and_drag());
+    // Hue vs Hue's gradient is centred on the hue under the cursor. The last value is kept in
+    // memory so the scale does not jump back when the pointer leaves the plot.
+    let hue_key = egui::Id::unique(("curve-scale-hue", clip.0, id));
+    let scale_hue = if id == "hue_vs_hue" {
+        let x = resp
+            .interact_pointer_pos()
+            .or_else(|| resp.hover_pos())
+            .map_or_else(|| ui.data(|d| d.get_temp(hue_key)).unwrap_or(0.5), |s| ((s.x - plot.min.x) / plot.width()).clamp(0.0, 1.0));
+        ui.data_mut(|d| d.insert_temp(hue_key, x));
+        x
+    } else {
+        0.0
+    };
     let p = ui.painter();
-    p.rect_filled(area, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
+    p.rect_filled(plot, 2.0, Color32::from_rgb(0x16, 0x16, 0x16));
+    // vertical colour scale: the curve's output axis, bottom (0) to top (1)
+    for i in 0..32 {
+        let f0 = i as f32 / 32.0;
+        let f1 = (i + 1) as f32 / 32.0;
+        p.rect_filled(
+            Rect::from_min_max(pos2(scale.min.x, scale.max.y - f1 * scale.height()), pos2(scale.max.x, scale.max.y - f0 * scale.height())),
+            0.0,
+            curve_scale_col(id, col, (f0 + f1) / 2.0, scale_hue),
+        );
+    }
     for i in 1..4 {
         let f = i as f32 / 4.0;
         p.line_segment(
-            [pos2(area.min.x + area.width() * f, area.min.y), pos2(area.min.x + area.width() * f, area.max.y)],
+            [pos2(plot.min.x + plot.width() * f, plot.min.y), pos2(plot.min.x + plot.width() * f, plot.max.y)],
             Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
         );
         p.line_segment(
-            [pos2(area.min.x, area.min.y + area.height() * f), pos2(area.max.x, area.min.y + area.height() * f)],
+            [pos2(plot.min.x, plot.min.y + plot.height() * f), pos2(plot.max.x, plot.min.y + plot.height() * f)],
             Stroke::new(1.0, Color32::from_rgb(0x2a, 0x2a, 0x2a)),
         );
     }
@@ -544,18 +750,22 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
             let c = Color32::from_rgb((rgb[0] * 255.0) as u8, (rgb[1] * 255.0) as u8, (rgb[2] * 255.0) as u8);
             p.rect_filled(
                 Rect::from_min_max(
-                    pos2(area.min.x + area.width() * f0, area.max.y - 6.0),
-                    pos2(area.min.x + area.width() * (f0 + 1.0 / n as f32) + 0.5, area.max.y),
+                    pos2(plot.min.x + plot.width() * f0, plot.max.y - CURVE_HUE_STRIP_H),
+                    pos2(plot.min.x + plot.width() * (f0 + 1.0 / n as f32) + 0.5, plot.max.y),
                 ),
                 0.0,
                 c,
             );
         }
     }
-    let to_screen = |q: [f32; 2]| pos2(area.min.x + q[0] * area.width(), area.max.y - q[1] * area.height());
-    let from_screen = |s: Pos2| [((s.x - area.min.x) / area.width()).clamp(0.0, 1.0), ((area.max.y - s.y) / area.height()).clamp(0.0, 1.0)];
-    // curve polyline
-    let draw_pts: Vec<[f32; 2]> = if hue && pts.is_empty() { vec![[0.0, 0.5], [1.0, 0.5]] } else { pts.clone() };
+    let to_screen = |q: [f32; 2]| pos2(plot.min.x + q[0] * plot.width(), plot.max.y - q[1] * plot.height());
+    let from_screen = |s: Pos2| [((s.x - plot.min.x) / plot.width()).clamp(0.0, 1.0), ((plot.max.y - s.y) / plot.height()).clamp(0.0, 1.0)];
+    // curve polyline: the plotted value is the stored one, so Hue vs Hue is a flat middle line when
+    // neutral, like the other curves, and its line is always continuous. An empty curve is drawn
+    // at its neutral height (0.5 for the hue, Luma vs Sat and Sat vs Sat curves), not on the
+    // identity diagonal.
+    let draw_pts: Vec<[f32; 2]> =
+        if pts.is_empty() { curve_axis(id).and_then(curve_empty_height).map_or_else(Vec::new, |y| vec![[0.0, y], [1.0, y]]) } else { pts.clone() };
     // the hue curves wrap around red; Luma vs Sat and Sat vs Sat do not (same LUTs as the render)
     let lut = match (hue, id.starts_with("hue_vs_")) {
         (true, true) => filmcraft_render::effects::hue_lut(&pts, 128),
@@ -757,7 +967,11 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
 
 #[cfg(test)]
 mod tests {
-    use super::without_point;
+    use super::*;
+
+    fn close(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
 
     #[test]
     fn a_curve_point_is_removed_by_position_not_by_list_order() {
@@ -769,5 +983,133 @@ mod tests {
         // hue curves wrap around: any point can go
         assert_eq!(without_point(&pts, 0, true), Some(vec![[1.0, 1.0], [0.5, 0.7]]));
         assert_eq!(without_point(&pts, 7, false), None);
+    }
+
+    #[test]
+    fn curve_signal_x_maps_sdr_pixels_to_each_axis() {
+        // SDR picks arrive as display-encoded sRGB bytes
+        let sdr = |axis, rgb: [u8; 3]| curve_signal_x(axis, rgb.map(|v| f32::from(v) / 255.0), false);
+        let red = [255, 0, 0];
+        assert!(close(sdr(CurveAxis::Channel(0), red), 1.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Channel(1), red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Channel(2), red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Hue, red), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Saturation, red), 1.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Lightness, red), 0.5, 1e-6));
+        assert!(close(sdr(CurveAxis::Luma, red), 0.2126, 1e-3));
+        // white is neutral: hue and saturation collapse to 0, lightness is 1
+        let white = [255, 255, 255];
+        assert!(close(sdr(CurveAxis::Saturation, white), 0.0, 1e-6));
+        assert!(close(sdr(CurveAxis::Lightness, white), 1.0, 1e-6));
+        // green sits a third of the way round the hue wheel
+        let green = [0, 255, 0];
+        assert!(close(sdr(CurveAxis::Hue, green), 1.0 / 3.0, 1e-4));
+    }
+
+    /// HDR picks use the curve stage's grading signal, not the display picture: channels and luma
+    /// see a highlight above HDR Range as x > 1, and the hue / sat curves see it scaled into 0…1.
+    #[test]
+    fn curve_signal_x_reads_hdr_signals_like_the_curve_stage() {
+        let highlight = [2.0, 1.0, 0.5];
+        assert!(close(curve_signal_x(CurveAxis::Channel(0), highlight, true), 2.0, 1e-6));
+        assert!(close(curve_signal_x(CurveAxis::Luma, highlight, true), 0.2126 * 2.0 + 0.7152 + 0.0722 * 0.5, 1e-5));
+        // `within_unit` scales by the largest channel when it is above 1
+        let scaled = [1.0, 0.5, 0.25];
+        for axis in [CurveAxis::Hue, CurveAxis::Lightness, CurveAxis::Saturation] {
+            assert!(close(curve_signal_x(axis, highlight, true), curve_signal_x(axis, scaled, true), 1e-6), "{axis:?}");
+        }
+    }
+
+    #[test]
+    fn curve_eyedropper_points_are_three_on_the_curve() {
+        // an empty hue curve is neutral at 0.5, with neighbours CURVE_EYEDROPPER_SPREAD away
+        let pts = curve_eyedropper_points(&[], 0.5, CurveAxis::Hue);
+        assert_eq!(pts.len(), 3);
+        assert!(pts.windows(2).all(|w| w[0][0] <= w[1][0]), "sorted by x: {pts:?}");
+        assert!(pts.iter().all(|q| q[1] == 0.5), "neutral: {pts:?}");
+        let s = CURVE_EYEDROPPER_SPREAD;
+        assert!(close(pts[0][0], 0.5 - s, 1e-5) && close(pts[1][0], 0.5, 1e-5) && close(pts[2][0], 0.5 + s, 1e-5), "{pts:?}");
+        // an empty RGB curve is identity: the centre lands exactly on the line y = x
+        let pts = curve_eyedropper_points(&[], 0.5, CurveAxis::Luma);
+        assert_eq!(pts.len(), 3);
+        assert!(close(pts[1][1], 0.5, 1e-5), "on the identity line: {pts:?}");
+        // neighbours clamp into 0..1 at the edges
+        let pts = curve_eyedropper_points(&[], 0.0, CurveAxis::Luma);
+        assert!(pts.iter().all(|q| (0.0..=1.0).contains(&q[0])), "{pts:?}");
+        // a coordinate above the curve's domain (an HDR highlight) lands on its top
+        let pts = curve_eyedropper_points(&[], 2.0, CurveAxis::Luma);
+        assert!(close(pts[1][0], 1.0, 1e-6), "{pts:?}");
+    }
+
+    /// Luma vs Sat and Sat vs Sat are neutral at 0.5 where they have no points (an unchanged
+    /// saturation), on a straight axis: the pick lands on the flat middle, not the identity
+    /// diagonal, while master and RGB curves still sample their identity.
+    #[test]
+    fn empty_vs_sat_curves_are_neutral_and_do_not_wrap() {
+        for axis in [CurveAxis::Lightness, CurveAxis::Saturation] {
+            for x in [0.0, 0.2, 0.5, 0.9] {
+                let pts = curve_eyedropper_points(&[], x, axis);
+                assert!(pts.iter().all(|q| close(q[1], 0.5, 1e-6)), "{axis:?} at {x}: {pts:?}");
+            }
+            // non-wrapping: beyond its outermost points the curve stays flat instead of repeating
+            let pts = [[0.2, 0.9], [0.8, 0.1]];
+            assert!(close(curve_value_at(&pts, 0.0, axis), 0.9, 1e-6), "{axis:?} stays flat left of its points");
+            assert!(close(curve_value_at(&pts, 1.0, axis), 0.1, 1e-6), "{axis:?} stays flat right of its points");
+        }
+        for axis in [CurveAxis::Luma, CurveAxis::Channel(1)] {
+            assert!(close(curve_value_at(&[], 0.2, axis), 0.2, 1e-6), "{axis:?} is identity when empty");
+        }
+    }
+
+    /// The Hue vs Hue gradient is centred on the hue under the cursor: the middle is that hue (no
+    /// shift) and both edges are its opposite (±180°), so it slides with the cursor and never wraps.
+    #[test]
+    fn the_hue_vs_hue_scale_follows_the_hue_under_the_cursor() {
+        let red = 0.0;
+        assert!(close(hue_absolute(red, 0.5), red, 1e-6), "the middle is the cursor's hue");
+        assert!(close(hue_absolute(red, 0.0), 0.5, 1e-6), "the bottom is its opposite");
+        assert!(close(hue_absolute(red, 1.0), 0.5, 1e-6), "and so is the top");
+        // move the cursor to blue and the whole scale slides with it
+        let blue = 240.0 / 360.0;
+        assert!(close(hue_absolute(blue, 0.5), blue, 1e-6), "the middle follows the cursor");
+        assert!(close(hue_absolute(blue, 0.75), 0.25 + blue, 1e-6), "a quarter turn up is +90°");
+        // before the pointer has been over the plot the middle is the neutral 0.5 hue
+        assert!(close(hue_absolute(0.5, 0.5), 0.5, 1e-6));
+    }
+
+    /// The plotted curve is the stored shift, so a hue curve needs no conversion: neutral is the
+    /// flat middle (like the other curves) and the line is continuous.
+    #[test]
+    fn a_hue_vs_hue_point_is_the_shift_the_renderer_applies() {
+        // red (input hue 0) becomes blue with the shift 0.5 − 120/360, and that is where the dot is
+        let blue = 240.0 / 360.0;
+        let dot = 0.5 - 120.0 / 360.0;
+        assert!(close(hue_absolute(0.0, dot), blue, 1e-6), "the dot sits at the blue height for a red cursor");
+        assert!(close((0.0f32 + dot - 0.5).rem_euclid(1.0), blue, 1e-6), "and the renderer agrees");
+        // the neutral curve is the flat middle, so it plots as a horizontal line
+        let neutral = curve_eyedropper_points(&[], 0.5, CurveAxis::Hue);
+        assert!(neutral.iter().all(|q| close(q[1], 0.5, 1e-6)), "{neutral:?}");
+    }
+
+    /// The scale gradient of each curve family: luma and saturation curves run black → white, an RGB
+    /// channel runs black → its channel colour, and Hue vs Hue is the dynamic one.
+    #[test]
+    fn the_scale_gradient_matches_each_curve_family() {
+        let green = Color32::from_rgb(80, 200, 90);
+        let col = |id: &str, v: f32| curve_scale_col(id, green, v, 0.0);
+        for id in ["curve_luma", "hue_vs_luma", "hue_vs_sat", "luma_vs_sat", "sat_vs_sat"] {
+            assert_eq!(col(id, 0.0), Color32::BLACK, "{id}");
+            assert_eq!(col(id, 1.0), Color32::WHITE, "{id}");
+            assert_eq!(col(id, 0.5), Color32::from_rgb(127, 127, 127), "{id} is grey in the middle");
+        }
+        // an RGB channel runs from black to the channel colour it is drawn with
+        assert_eq!(col("curve_red", 0.0), Color32::BLACK);
+        assert_eq!(col("curve_red", 1.0), green);
+        // Hue vs Hue is dynamic instead: for a red cursor the middle is red (not grey)
+        let mid = curve_scale_col("hue_vs_hue", green, 0.5, 0.0);
+        assert!(mid.r() > 200 && mid.g() < 60 && mid.b() < 60, "red in the middle for a red cursor: {mid:?}");
+        // ...and it follows the cursor: a blue cursor puts blue in the middle
+        let mid = curve_scale_col("hue_vs_hue", green, 0.5, 240.0 / 360.0);
+        assert!(mid.b() > 200 && mid.r() < 60, "blue in the middle for a blue cursor: {mid:?}");
     }
 }

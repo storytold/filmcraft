@@ -16,7 +16,7 @@ pub mod lut;
 pub mod spaces;
 pub mod transform;
 
-pub use grade::GradeSpace;
+pub use grade::{GradeSpace, within_unit};
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
 pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};

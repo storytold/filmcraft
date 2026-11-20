@@ -625,12 +625,9 @@ pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> Gra
 /// highlights instead of clipping them. SDR signals are clamped as before.
 #[inline]
 fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
-    if !hdr {
-        return f(v.map(|q| q.clamp(0.0, 1.0)));
-    }
-    let m = v[0].max(v[1]).max(v[2]).max(1.0);
-    let o = f(v.map(|q| (q / m).max(0.0)));
-    o.map(|q| q * m)
+    let m = if hdr { v[0].max(v[1]).max(v[2]).max(1.0) } else { 1.0 };
+    let o = f(filmcraft_color::within_unit(v, hdr));
+    if hdr { o.map(|q| q * m) } else { o }
 }
 
 /// The luma (encoded, 0..1) down to which the Color Grading highlight / shadow lift scales a pixel by
@@ -1137,6 +1134,26 @@ mod tests {
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
+    }
+
+    /// Hue vs Hue stores a shift around the neutral middle: the curve's value minus 0.5, in turns
+    /// (±180°). A flat curve at 0.5 − 120/360 is a −120° shift, so red (input hue 0) renders blue;
+    /// a flat 0.5 curve is no shift and leaves red unchanged.
+    #[test]
+    fn hue_vs_hue_stores_a_shift_so_red_renders_blue() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("hue_vs_hue").unwrap().value = ParamValue::Curve(vec![[0.0, 0.5 - 120.0 / 360.0], [1.0, 0.5 - 120.0 / 360.0]]);
+        let mut img = Image::filled(1, 1, [1.0, 0.0, 0.0, 1.0]);
+        apply(&mut img, &e, &cx());
+        let rgb = [img.px[0], img.px[1], img.px[2]];
+        assert!(rgb[2] > 0.99 && rgb[0] < 0.01 && rgb[1] < 0.01, "red became {rgb:?} (want blue)");
+        // the neutral middle is no shift
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("hue_vs_hue").unwrap().value = ParamValue::Curve(vec![[0.0, 0.5], [1.0, 0.5]]);
+        let mut img = Image::filled(1, 1, [1.0, 0.0, 0.0, 1.0]);
+        apply(&mut img, &e, &cx());
+        let rgb = [img.px[0], img.px[1], img.px[2]];
+        assert!(rgb[0] > 0.99 && rgb[1] < 0.01 && rgb[2] < 0.01, "red changed to {rgb:?}");
     }
 
     /// #2094: at and above the luma floor (0.02 encoded, about 5/255) the lift is exactly what it

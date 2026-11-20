@@ -25,6 +25,18 @@ use crate::{REFERENCE_WHITE_NITS, hlg_inverse_oetf, hlg_oetf, linear_to_srgb, pq
 /// mastering peak.
 pub const DEFAULT_HDR_WHITE_NITS: f32 = 1000.0;
 
+/// A grading signal scaled into 0…1 for a stage defined on unit values (HSL, LUTs): SDR clamps,
+/// HDR divides by the largest channel when it is above 1, so a highlight above HDR White (or the
+/// curves' HDR Range) keeps its hue instead of clipping. Shared by the render's grade stages and
+/// the curve eyedropper, which samples the same coordinate.
+pub fn within_unit(v: [f32; 3], hdr: bool) -> [f32; 3] {
+    if !hdr {
+        return v.map(|q| q.clamp(0.0, 1.0));
+    }
+    let m = v[0].max(v[1]).max(v[2]).max(1.0);
+    v.map(|q| (q / m).max(0.0))
+}
+
 /// The signal a grading operation works on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GradeSpace {
