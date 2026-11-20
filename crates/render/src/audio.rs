@@ -374,7 +374,7 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
 
 /// A sequence's sample rate as the mixer runs it: a damaged project can claim any rate, and the
 /// request sizing in [`nested_mix`] and the mixing in `mixer::mix_graph_at` must agree.
-pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
+pub fn bounded_sample_rate(rate: u32) -> u32 {
     rate.clamp(1_000, 768_000)
 }
 
