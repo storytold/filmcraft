@@ -10,7 +10,7 @@
 //!
 //! This crate is the first stage of the text pipeline; the grapheme-to-phoneme step
 //! (P2b) consumes its words. It is pure Rust, depends only on `serde` and
-//! `thiserror`, and never crashes on hostile input (see `AGENTS.md` §0): input over
+//! `thiserror`, and never crashes on hostile input (see `AGENTS.md` rule 13): input over
 //! 1 MiB is a [`NormalizeError::TooLong`], oversized numbers are read digit by digit,
 //! and malformed pause markers fall back to plain text rather than erroring.
 //!
