@@ -207,6 +207,17 @@ impl Span {
     }
 }
 
+/// The parts of `range` (frames, end exclusive) that no earlier range in `claimed` covers; they
+/// are added to `claimed`. Bounded by the number of transitions on one track.
+fn unclaimed(range: (i64, i64), claimed: &mut Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    let mut pieces = vec![range];
+    for &(c0, c1) in claimed.iter() {
+        pieces = pieces.into_iter().flat_map(|(a, b)| [(a, b.min(c0)), (a.max(c1), b)]).filter(|(a, b)| a < b).collect();
+    }
+    claimed.extend(pieces.iter().copied());
+    pieces
+}
+
 fn is_adjustment(project: &Project, it: &TrackItem) -> bool {
     project.item(it.item).is_some_and(|i| matches!(i.kind, ItemKind::AdjustmentLayer { .. }))
 }
@@ -232,12 +243,19 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
         }
         // A transition plays both of its clips over its whole length, into their handles (the
         // compositor and `render::audio` draw and mix each side that is enabled), so its frames
-        // are seen or heard while one side renders, even past that clip's own end.
+        // are seen or heard while one side renders, even past that clip's own end. Where video
+        // transitions overlap, the compositor draws only the first in the track's list, so each
+        // frame counts for that one; the audio mix plays every transition.
+        let mut claimed: Vec<(i64, i64)> = Vec::new();
         for x in &tr.transitions {
-            let (start, end) = frames_of(rate, x.start, x.end());
+            let whole = frames_of(rate, x.start, x.end());
+            let pieces = if tr.kind == TrackKind::Video { unclaimed(whole, &mut claimed) } else { vec![whole] };
             for side in [x.from, x.to].into_iter().flatten() {
                 let Some(it) = tr.item(side) else { continue };
-                if seen_or_heard(project, q, tr, it) {
+                if !seen_or_heard(project, q, tr, it) {
+                    continue;
+                }
+                for &(start, end) in &pieces {
                     let s = Span { clip: it.id, start, end };
                     if tr.kind == TrackKind::Video { picture.push(s) } else { sound.push(s) }
                 }
@@ -361,8 +379,13 @@ fn jump_cuts(project: &Project, q: &Sequence, rate: FrameRate, out: &mut Vec<Fin
                 continue;
             }
             let Some(skip) = source_skip(a, b) else { continue };
+            // a clip shorter than a frame between two samples is never shown, so neither is the cut
+            let ((a0, a1), (b0, b1)) = (frames(rate, a), frames(rate, b));
+            if a0 >= a1 || b0 >= b1 {
+                continue;
+            }
             // the first frame that shows the incoming clip, as export samples it
-            let frame = frame_from(rate, b.start);
+            let frame = b0;
             out.push(Finding {
                 check: "jumpCut",
                 severity: "info",

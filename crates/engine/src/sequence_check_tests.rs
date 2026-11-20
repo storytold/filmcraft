@@ -367,3 +367,55 @@ fn an_off_grid_jump_cut_is_at_the_first_frame_of_the_incoming_clip() {
     assert_eq!(v1.len(), 1, "{r:#}");
     assert_eq!(v1[0]["frame"], 49, "frame 48 still samples the outgoing clip");
 }
+
+/// Where two video transitions overlap, the compositor draws only the first one, so the second
+/// one's enabled side is seen only from where the first ends.
+#[test]
+fn overlapping_video_transitions_count_only_the_one_drawn() {
+    let (mut s, bars, matte) = fresh();
+    let a = place(&mut s, matte, "V1", 0, 0, 48)[0];
+    let b = place(&mut s, matte, "V1", 48, 0, 48)[0];
+    place(&mut s, matte, "V1", 96, 0, 48); // C, enabled
+    s.execute("timeline.place", json!({"item": bars, "track": "A1", "time": 0, "duration": f(&s, 144).0})).unwrap();
+    s.execute("sequence.applyVideoTransition", json!({"clip": a, "edge": "out", "frames": 24, "align": "center"})).unwrap();
+    s.execute("sequence.applyVideoTransition", json!({"clip": b, "edge": "out", "frames": 24, "align": "center"})).unwrap();
+    // stretch them so they overlap: A→B over 24–72, B→C over 60–132
+    let (f24, f48, f60, f72) = (f(&s, 24), f(&s, 48), f(&s, 60), f(&s, 72));
+    s.edit_sequence("test", |q, _, _| {
+        let tr = &mut q.video_tracks[0];
+        tr.transitions.sort_by_key(|x| x.start);
+        assert_eq!(tr.transitions.len(), 2);
+        (tr.transitions[0].start, tr.transitions[0].duration) = (f24, f48);
+        (tr.transitions[1].start, tr.transitions[1].duration) = (f60, f72);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    let r = check(&mut s, json!({"checks": ["pictureHole"]}));
+    let holes = of(&r, "pictureHole");
+    assert_eq!(holes.len(), 1, "{r:#}");
+    assert_eq!((holes[0]["startFrame"].as_i64(), holes[0]["endFrame"].as_i64()), (Some(0), Some(72)), "C shows from where A→B ends: {r:#}");
+}
+
+/// A clip shorter than a frame that no frame samples shows nothing, so the cut into it is no
+/// jump cut, and no finding points past the end of the sequence.
+#[test]
+fn a_jump_into_a_clip_no_frame_samples_is_not_reported() {
+    let (mut s, bars, _) = fresh();
+    let a = place(&mut s, bars, "V1", 0, 0, 48);
+    let b = place(&mut s, bars, "V1", 48, 60, 1);
+    let half = Tick(s.sequence_rate().frame_duration().0 / 2);
+    s.edit_sequence("test", |q, _, _| {
+        q.find_item_mut(ClipId(a[0])).unwrap().1.duration += half;
+        let right = q.find_item_mut(ClipId(b[0])).unwrap().1;
+        right.start += half;
+        right.duration -= half;
+        right.source_in += half;
+        Ok(())
+    })
+    .unwrap();
+    let r = check(&mut s, json!({"checks": ["jumpCut"]}));
+    let v1: Vec<Value> = of(&r, "jumpCut").into_iter().filter(|j| j["track"] == "V1").collect();
+    assert!(v1.is_empty(), "{r:#}");
+    assert_eq!(r["durationFrames"], 49);
+}
