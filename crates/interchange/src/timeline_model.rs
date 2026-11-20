@@ -74,7 +74,7 @@ fn to_effect(effect: &film::EffectInstance) -> Result<shared::EffectInstance, se
         })
         .collect::<Result<_, serde_json::Error>>()?;
     // Shared OTIO emits extension fields after the shared fields; retain FilmCraft's effect-only data.
-    let ext = serde_json::json!({"masks": effect.masks, "post_fader": effect.post_fader, "essential": effect.essential, "layer": effect.layer});
+    let ext = serde_json::json!({"masks": effect.masks, "post_fader": effect.post_fader, "essential": effect.essential, "layer": effect.layer, "analysis": effect.analysis});
     Ok(shared::EffectInstance { effect: effect.effect.clone(), enabled: effect.enabled, params, ext: Some(serde_json::to_string(&ext)?) })
 }
 
@@ -108,6 +108,7 @@ fn from_effect(effect: &shared::EffectInstance) -> Result<film::EffectInstance, 
         post_fader: ext.get("post_fader").and_then(serde_json::Value::as_bool).unwrap_or(false),
         essential: ext.get("essential").and_then(serde_json::Value::as_bool).unwrap_or(false),
         layer: ext.get("layer").and_then(|v| serde_json::from_value(v.clone()).ok()),
+        analysis: ext.get("analysis").and_then(|v| serde_json::from_value(v.clone()).ok()),
     })
 }
 
@@ -1167,6 +1168,7 @@ mod tests {
             post_fader: false,
             essential: false,
             layer: None,
+            analysis: None,
         };
         effect.post_fader = true;
         let mut param = film::Param::new(film::ParamValue::Curve(vec![[0.25, 0.75]]));
