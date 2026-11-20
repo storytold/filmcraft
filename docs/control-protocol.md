@@ -133,7 +133,7 @@ integrated, momentary and short-term loudness, loudness range, sample peak and t
 `of: "mix"` (default) uses the saved Mix layout before export normalization.
 `of: "track"` takes a track ID or name such as `A1` and meters the strip before its destination bus.
 `of: "clips"` returns a reading per audio clip ID (or the selected audio clips in the active sequence),
-using clip gain and effects before Volume. Mono clips are measured as one channel.
+using Auto-Match's clip signal before Volume, including active proxies. Mono clips count as one channel.
 `range` defaults to `entire` and also accepts `inOut`, `workArea` or `custom` with the two seconds
 fields. For a clip, a specified subrange measures only its overlap with the clip. Results include
 `start` / `end` in timeline ticks, `seconds`, nulls for unavailable measurements, and `offlineMedia`.

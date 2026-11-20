@@ -37,7 +37,13 @@ pub(crate) fn measure(s: &Session, p: &Value) -> Result<Value> {
     };
     let (range, _) = export_tools::range_param(s, &s.project, id, Some(&json!(mode)), &bounds, CMD)?;
     let range = range.ok_or_else(|| bad(CMD, "give a start and an end for a custom range"))?;
-    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone()).own_sources().recording();
+    let provider = if of == "clips" {
+        // Match Auto-Match's source choice, including audio from enabled proxies.
+        s.media.provider(s.project.clone(), s.services.clone())
+    } else {
+        s.media.full_res_provider(s.project.clone(), s.services.clone()).own_sources()
+    };
+    let provider = provider.recording();
     let mut result = match of {
         "mix" => {
             let summary = filmcraft_export::measure_mix_loudness(s.project.clone(), id, range, &provider).map_err(|e| bad(CMD, e.to_string()))?;

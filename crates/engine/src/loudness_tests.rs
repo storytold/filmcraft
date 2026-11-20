@@ -180,3 +180,30 @@ fn loudness_rejects_invalid_inputs() {
         assert!(s.execute(QUERY, params.clone()).is_err(), "accepted {params}");
     }
 }
+
+#[test]
+fn loudness_clip_and_auto_match_measure_the_same_enabled_proxy() {
+    let mut s = session("Stereo", "Standard");
+    let temp = tempfile::tempdir().unwrap();
+    let original_path = temp.path().join("Original.wav");
+    let proxy_path = temp.path().join("Proxy.wav");
+    let original = tone(1);
+    let proxy: Vec<_> = original.iter().map(|v| v * 0.25).collect();
+    for (path, samples) in [(&original_path, original), (&proxy_path, proxy)] {
+        std::fs::write(path, filmcraft_export::write_wav(&samples, 1, SR, SampleFormat::Float32).unwrap()).unwrap();
+    }
+
+    let media = s.execute("file.import", json!({"paths":[original_path]})).unwrap()["items"][0].as_u64().unwrap();
+    let clip = s.execute("timeline.place", json!({"item":media,"audioTrack":"A1","seconds":0})).unwrap()["clips"][0].as_u64().unwrap();
+    let original_mix = s.execute(QUERY, json!({})).unwrap()["integratedLufs"].as_f64().unwrap();
+    s.execute("media.attachProxies", json!({"item":media,"path":proxy_path})).unwrap();
+    s.execute("media.toggleProxies", json!({"enabled":true})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips":[clip],"type":"dialogue"})).unwrap();
+
+    let query = s.execute(QUERY, json!({"of":"clips","clips":[clip]})).unwrap();
+    let matched = s.execute("essentialSound.autoMatch", json!({"clips":[clip]})).unwrap();
+    close(query["clips"][0]["integratedLufs"].as_f64().unwrap(), matched["clips"][0]["measuredLufs"].as_f64().unwrap());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.media.use_proxies());
+    close(s.execute(QUERY, json!({})).unwrap()["integratedLufs"].as_f64().unwrap(), original_mix);
+}
