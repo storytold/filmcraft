@@ -311,6 +311,47 @@ impl MediaPool {
         self.resolve(p, item, services, false)
     }
 
+    /// The size the file behind a still item decodes to, and the orientation its
+    /// decoder applies, probed from the file's headers alone
+    /// ([`filmcraft_media::still::probe_geometry`]): no picture is decoded and the pool
+    /// retains no source for the item, so a caller deciding from geometry alone (the
+    /// load-time still migration) never pulls a decoded frame into the pool. `None`
+    /// when the item is not a still, was made offline, or its file cannot be probed.
+    /// Like [`Self::full_res_source`] this reads the original file, never a proxy,
+    /// follows the same path policy ([`Self::follow_media`]), and refuses a file over
+    /// [`PROBE_WHOLE_FILE_MAX`], the bound [`Self::probe_file`] sets for looking at a
+    /// file without importing it.
+    pub fn still_geometry(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<(u32, u32, image::metadata::Orientation)> {
+        let (_, m, _) = p.resolve_media(item)?;
+        if m.offline || m.info.kind != filmcraft_media::MediaKind::Still {
+            return None;
+        }
+        match &m.media {
+            // A generator has no file to probe: its source reports the stored size,
+            // which is what resolving it would say.
+            MediaRef::Generator(_) => m.info.video.as_ref().map(|v| (v.width, v.height, image::metadata::Orientation::NoTransforms)),
+            MediaRef::File { path } => {
+                let file = self.follow_media(path).ok()?;
+                let bytes: Vec<u8> = if let Some(r) = services.reader(&file) {
+                    let r = r.ok()?;
+                    if r.len() > PROBE_WHOLE_FILE_MAX {
+                        return None;
+                    }
+                    let mut b = vec![0u8; usize::try_from(r.len()).ok()?];
+                    r.read_at(0, &mut b).ok()?;
+                    b
+                } else {
+                    let b = services.read_file(&file).ok()?;
+                    if (b.len() as u64) > PROBE_WHOLE_FILE_MAX {
+                        return None;
+                    }
+                    b
+                };
+                filmcraft_media::still::probe_geometry(&file_name(&file), &bytes)
+            }
+        }
+    }
+
     fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let it = p.item(item)?;

@@ -26,7 +26,9 @@ use crate::{MediaPool, Services};
 
 /// Swap the stored size of every legacy still in `p` and transpose the Motion anchor of
 /// each clip placed from one. Runs while a project is installed, before it is presented,
-/// so no undo step is created.
+/// so no undo step is created. The file behind a still is only probed for the size and
+/// orientation its decoder reports ([`MediaPool::still_geometry`]): installing a project
+/// never decodes a picture for this, and the pool retains no source for the still.
 pub fn migrate_legacy_still_sizes(p: &mut Project, pool: &MediaPool, services: &dyn Services) {
     let legacy: Vec<(ItemId, Orientation)> = p
         .items
@@ -41,13 +43,8 @@ pub fn migrate_legacy_still_sizes(p: &mut Project, pool: &MediaPool, services: &
                 return None;
             }
             let stored = (v.width, v.height);
-            let src = pool.full_res_source(p, *id, services)?;
-            let info = src.info();
-            if info.kind != MediaKind::Still {
-                return None;
-            }
-            let sv = info.video.as_ref()?;
-            ((sv.width, sv.height) == (stored.1, stored.0)).then_some((*id, src.still_orientation()))
+            let (w, h, orientation) = pool.still_geometry(p, *id, services)?;
+            ((w, h) == (stored.1, stored.0)).then_some((*id, orientation))
         })
         .collect();
     for (id, orientation) in legacy {
@@ -87,8 +84,21 @@ fn turn_point(x: f64, y: f64, stored: (u32, u32), orientation: Orientation) -> (
 /// pixels and does not move. Clips placed from a subclip of the still keep the
 /// subclip's id, so they are transposed too: anything that resolves to the still
 /// through [`Project::resolve_media`] is one of its clips.
+///
+/// One saved value is not a point in the still's coordinates at all. A build from
+/// before the subclip source-size fix had no size for a subclip, so placing one
+/// resolved the anchor against a 1920 x 1080 fallback frame and saved its centre,
+/// [`LEGACY_SUBCLIP_DEFAULT_ANCHOR`]: for a 40 x 20 still that point sits far outside
+/// the picture, and turning it like a stored point throws it further out still. On a
+/// clip placed from a subclip, an anchor still holding exactly that value with no
+/// keyframes is that saved default, so it migrates to the upright centre instead.
+/// An anchor the user edited or keyframed is a control they set deliberately and
+/// turns like any other point; a direct placement never holds the fallback value as
+/// a default, because it baked the still's own centre, which turns to the upright
+/// centre on its own.
 fn transpose_anchors(p: &mut Project, item: ItemId, stored: (u32, u32), orientation: Orientation) {
     let targets: HashSet<ItemId> = p.items.keys().filter(|id| p.resolve_media(**id).is_some_and(|(m, _, _)| m == item)).copied().collect();
+    let centre = (f64::from(stored.1) / 2.0, f64::from(stored.0) / 2.0);
     for it in p.items.values_mut() {
         let ItemKind::Sequence(q) = &mut it.kind else { continue };
         for t in std::sync::Arc::make_mut(q).tracks_mut(TrackKind::Video) {
@@ -100,7 +110,7 @@ fn transpose_anchors(p: &mut Project, item: ItemId, stored: (u32, u32), orientat
                     if e.effect == "motion"
                         && let Some(param) = e.param_mut("anchor")
                     {
-                        transpose_point(param, stored, orientation);
+                        transpose_point(param, stored, orientation, (ti.item != item).then_some(centre));
                     }
                 }
             }
@@ -108,7 +118,21 @@ fn transpose_anchors(p: &mut Project, item: ItemId, stored: (u32, u32), orientat
     }
 }
 
-fn transpose_point(param: &mut Param, stored: (u32, u32), orientation: Orientation) {
+/// The centre of the 1920 x 1080 fallback frame a build from before the subclip
+/// source-size fix resolved a subclip placement's anchor against (see
+/// [`transpose_anchors`]).
+const LEGACY_SUBCLIP_DEFAULT_ANCHOR: (f64, f64) = (960.0, 540.0);
+
+fn transpose_point(param: &mut Param, stored: (u32, u32), orientation: Orientation, subclip_centre: Option<(f64, f64)>) {
+    if let Some(centre) = subclip_centre
+        && param.keyframes.is_empty()
+        && let ParamValue::Vec2(v) = &mut param.value
+        && (v.x, v.y) == LEGACY_SUBCLIP_DEFAULT_ANCHOR
+    {
+        v.x = centre.0;
+        v.y = centre.1;
+        return;
+    }
     fn transpose(value: &mut ParamValue, stored: (u32, u32), orientation: Orientation) {
         if let ParamValue::Vec2(v) = value
             && !v.x.is_nan()

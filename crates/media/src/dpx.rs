@@ -91,6 +91,14 @@ impl Components {
     }
 }
 
+/// The size [`decode`] reports for this file, from its header alone: the shared crate's
+/// probe reads the header and checks the frame fits within the same limits, without
+/// decoding a pixel.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let info = craft_dpx::probe(bytes, &Limits::default()).ok()?;
+    Some((info.width, info.height, Orientation::NoTransforms))
+}
+
 /// Decode the first image element of a DPX file to straight-alpha RGBA8, top row first.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     if !sniff(bytes) {

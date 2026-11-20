@@ -32,6 +32,33 @@ pub fn sniff(bytes: &[u8]) -> bool {
     num(tags::PHOTOMETRIC) == Some(6) && matches!(num(tags::COMPRESSION).unwrap_or(1), 1 | 32773)
 }
 
+/// The size [`decode`] reports for this file and the orientation it applies, from the
+/// image directory alone: the stored ImageWidth and ImageLength, turned by the same
+/// single-SHORT Orientation policy [`decode`] keeps, without decoding a pixel. `None`
+/// when the directory or either size cannot be read, or the picture is past the pixel
+/// ceiling [`decode`] enforces.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let (t, first) = Tiff::new(bytes).ok()?;
+    let (ifd, _) = t.read_ifd(first, 0).ok()?;
+    let width = u32::try_from(first_uint(&t, ifd.get(tags::IMAGE_WIDTH)?)?).ok()?;
+    let height = u32::try_from(first_uint(&t, ifd.get(tags::IMAGE_LENGTH)?)?).ok()?;
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return None;
+    }
+    let orientation = ifd
+        .get(274)
+        .filter(|e| e.ty == Type::Short && e.count == 1)
+        .and_then(|e| t.uint(e).ok())
+        .and_then(|v| u8::try_from(v).ok())
+        .and_then(Orientation::from_exif)
+        .unwrap_or(Orientation::NoTransforms);
+    let (width, height) = match orientation {
+        Orientation::Rotate90 | Orientation::Rotate90FlipH | Orientation::Rotate270 | Orientation::Rotate270FlipH => (height, width),
+        _ => (width, height),
+    };
+    Some((width, height, orientation))
+}
+
 /// Decode with the shared codec and retain the app's colour and orientation policy.
 pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     let bad = |what: &str| MediaError::Decode(format!("{name}: YCbCr TIFF: {what}"));

@@ -99,6 +99,58 @@ fn exif_orientation(bytes: &[u8]) -> Orientation {
     probe().unwrap_or(Orientation::NoTransforms)
 }
 
+/// Whether `orientation` turns the picture onto its side (the four transposing EXIF
+/// values), so the size it reports is the stored size swapped.
+fn transposes(orientation: Orientation) -> bool {
+    matches!(orientation, Orientation::Rotate90 | Orientation::Rotate90FlipH | Orientation::Rotate270 | Orientation::Rotate270FlipH)
+}
+
+/// The size [`StillSource::decode`] would report for the still `name` in `bytes`, and
+/// the orientation its decoder would apply, read from the file's headers alone: no
+/// picture is decoded and nothing is retained, so a caller that only needs to compare
+/// geometry (the engine's load-time still migration) never pays for a decode. The
+/// dispatch mirrors the open path, format by format, and each format's answer comes
+/// from the same header its decoder reads. `None` when the file is not a still we
+/// open or its geometry cannot be read without decoding: Radiance HDR, whose
+/// resolution line only its decoder reads. An HDR picture is never turned by its
+/// decoder, so its stored size is the size an import recorded; skipping it here can
+/// only miss a file that changed size on disk after it was imported.
+pub fn probe_geometry(name: &str, bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    if exr::sniff(bytes) {
+        return exr::geometry(name, bytes);
+    }
+    if hdr::sniff(bytes) {
+        return None;
+    }
+    if dng::sniff(bytes) {
+        return dng::geometry(bytes);
+    }
+    if crate::dpx::sniff(bytes) {
+        return crate::dpx::geometry(bytes);
+    }
+    if crate::tga::sniff(name, bytes) {
+        return crate::tga::geometry(bytes);
+    }
+    if psd::sniff(bytes) {
+        return psd::geometry(bytes);
+    }
+    if ycbcr_tiff::sniff(bytes) {
+        return ycbcr_tiff::geometry(bytes);
+    }
+    if !sniff(name, bytes) {
+        return None;
+    }
+    // The remaining formats decode through the image crate: dimensions and EXIF
+    // Orientation from its headers, under the same pixel ceiling the decode enforces.
+    if check_pixel_count(name, bytes).is_err() {
+        return None;
+    }
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()?;
+    let orientation = exif_orientation(bytes);
+    let (w, h) = if transposes(orientation) { (h, w) } else { (w, h) };
+    Some((w, h, orientation))
+}
+
 pub struct StillSource {
     info: MediaInfo,
     frame: Arc<VideoFrame>,

@@ -15,6 +15,19 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     Ok(Raster { width: image.width, height: image.height, rgba: image.rgba, has_alpha: image.has_alpha, orientation: Orientation::NoTransforms })
 }
 
+/// The size [`decode`] reports for this file, from its header alone: width and height
+/// are little-endian u16s at bytes 12 and 14, whatever the colour map or image type say.
+/// `None` for a header too short to hold them, a zero side, or a picture past the pixel
+/// ceiling [`decode`] enforces.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let w = u16::from_le_bytes([*bytes.get(12)?, *bytes.get(13)?]);
+    let h = u16::from_le_bytes([*bytes.get(14)?, *bytes.get(15)?]);
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > craft_tga::Limits::default().max_pixels {
+        return None;
+    }
+    Some((u32::from(w), u32::from(h), Orientation::NoTransforms))
+}
+
 /// Film's Targa ceiling is the 2^28-pixel limit alone, as with its previous decoder: the shared
 /// default 256 MiB byte budget would refuse pictures from about 38 million 24-bit pixels. The
 /// budget covers four stored bytes and four RGBA bytes per pixel plus the largest colour map.

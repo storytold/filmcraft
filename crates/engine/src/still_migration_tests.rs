@@ -154,6 +154,31 @@ fn set_anchor(s: &mut Session, placed: ItemId, x: f64, y: f64, kx: f64, ky: f64)
     .unwrap();
 }
 
+/// Set the placed clip's Motion anchor value, leaving its keyframes alone.
+fn set_anchor_value(s: &mut Session, placed: ItemId, x: f64, y: f64) {
+    s.edit("set an anchor value", |p, _| {
+        for it in p.items.values_mut() {
+            let ItemKind::Sequence(q) = &mut it.kind else { continue };
+            for t in std::sync::Arc::make_mut(q).tracks_mut(filmcraft_project::TrackKind::Video) {
+                for ti in &mut t.items {
+                    if ti.item != placed {
+                        continue;
+                    }
+                    for e in &mut ti.effects {
+                        if e.effect == "motion"
+                            && let Some(param) = e.param_mut("anchor")
+                        {
+                            param.value = ParamValue::Vec2(Vec2::new(x, y));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
 fn placed_anchor_keyframes(s: &Session, item: ItemId) -> Vec<(f64, f64)> {
     for q in s.project.items.values().filter_map(|i| match &i.kind {
         ItemKind::Sequence(q) => Some(q),
@@ -275,6 +300,58 @@ fn a_clip_placed_from_a_subclip_is_migrated_too() {
     assert_eq!(stored_size(&s, item), (20, 40));
     assert_eq!(placed_anchor(&s, sub), (14.0, 4.0), "a clip placed from a subclip of the still turns its anchor too");
     assert_eq!(placed_anchor_keyframes(&s, sub), vec![(5.0, 30.0)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_subclip_saved_with_the_fallback_anchor_is_recentred() {
+    // The saved state a build from before the subclip source-size fix wrote: placing a
+    // subclip had no size for it, so the anchor was resolved against a 1920 x 1080
+    // fallback frame and saved as its centre, (960, 540) — not a point in the still's
+    // coordinates at all. (The current build places the subclip against the still's own
+    // size, so the fixture puts the saved value back, as `legacy_built` does for the
+    // stored size.) Turning (960, 540) like a stored point of a 40 x 20 still would
+    // land it at (-520, 960); as the frame centre it belongs at the upright centre.
+    let dir = tmp_dir("still-migration-subclip-fallback");
+    let (mut s, item) = legacy_built(&dir, 6);
+    let rate = FrameRate::FPS_29_97;
+    s.execute("source.open", json!({"item": item.0})).unwrap();
+    s.execute("project.setMarks", json!({"item": item.0, "in": rate.tick_of(0).0, "out": rate.tick_of(24).0})).unwrap();
+    let r = s.execute("clip.makeSubclip", json!({})).unwrap();
+    let sub = ItemId(r["item"].as_u64().unwrap());
+    s.execute("timeline.place", json!({"item": sub.0, "track": "V1", "seconds": 5.0})).unwrap();
+    set_anchor_value(&mut s, sub, 960.0, 540.0);
+    let proj = dir.join("legacy.fcproj");
+    s.execute("file.save", json!({"path": proj.to_string_lossy()})).unwrap();
+    let mut s = reopen(&proj);
+    assert_eq!(stored_size(&s, item), (20, 40));
+    assert_eq!(placed_anchor(&s, sub), (10.0, 20.0), "the fallback centre migrates to the upright centre");
+    // Idempotent: the migrated project, saved and reopened, changes nothing.
+    let proj = dir.join("migrated.fcproj");
+    s.execute("file.save", json!({"path": proj.to_string_lossy()})).unwrap();
+    let s = reopen(&proj);
+    assert_eq!(stored_size(&s, item), (20, 40));
+    assert_eq!(placed_anchor(&s, sub), (10.0, 20.0), "reopening the migrated project leaves the anchor where the migration put it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn opening_a_project_probes_stills_without_caching_a_source() {
+    // The migration decides from the file's headers alone: opening a project, current
+    // or legacy, must not pull the still's decoded picture into the media pool.
+    let dir = tmp_dir("still-migration-no-decode-current");
+    let png = dir.join("photo.png");
+    oriented_png(&png, 40, 20, 6);
+    let mut s = Session::default();
+    let proj = dir.join("current.fcproj");
+    let item = import_place_save(&mut s, &png, &proj);
+    let s = reopen(&proj);
+    assert!(s.media.cached(item).is_none(), "opening a current project cached a decoded source for its still");
+    let _ = std::fs::remove_dir_all(&dir);
+    let dir = tmp_dir("still-migration-no-decode-legacy");
+    let (s, item) = legacy_project(&dir, 6);
+    assert_eq!(stored_size(&s, item), (20, 40), "the legacy still was migrated");
+    assert!(s.media.cached(item).is_none(), "the migration cached a decoded source for the still");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

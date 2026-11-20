@@ -58,6 +58,14 @@ pub struct Decoded {
     pub pixel_format: String,
 }
 
+/// The size [`still`] reports for this file, from its header alone: the display
+/// window, which is the frame the decoder produces.
+pub fn geometry(name: &str, bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let h = header(name, bytes).ok()?;
+    let (w, height) = h.display.size()?;
+    Some((u32::try_from(w).ok()?, u32::try_from(height).ok()?, Orientation::NoTransforms))
+}
+
 /// Open an EXR file as a still.
 pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
     let d = decode(name, bytes)?;

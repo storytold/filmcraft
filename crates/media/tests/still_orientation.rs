@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use filmcraft_media::sequence::{FrameLoader, ImageSequenceSource};
-use filmcraft_media::still::{Raster, decode_raster};
+use filmcraft_media::still::{Raster, decode_raster, probe_geometry};
 use filmcraft_media::{FrameRequest, MediaSource, open_bytes};
 use filmcraft_time::{FrameRate, Tick};
 use image::ImageEncoder;
@@ -365,4 +365,24 @@ fn damaged_oriented_files_fail_without_panicking() {
     let sof = huge.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     huge[sof + 5..sof + 9].copy_from_slice(&[0xFF; 4]);
     assert!(decode_raster("huge.jpg", &huge).is_err());
+}
+
+/// The engine's load-time still migration decides from `probe_geometry` alone, so the
+/// probe must report exactly what the decode reports — the upright size and the
+/// orientation applied — for every orientation-bearing format, without decoding.
+#[test]
+fn probe_geometry_agrees_with_the_decode() {
+    for o in 1..=8u16 {
+        let cases: [(&str, Vec<u8>); 5] = [
+            ("photo.jpg", jpeg(Some(orientation_exif(o)))),
+            ("photo.png", png(o)),
+            ("photo.webp", webp(o)),
+            ("photo.tif", rgb_tiff(o)),
+            ("ycbcr.tif", ycbcr_tiff(o)),
+        ];
+        for (name, bytes) in cases {
+            let r = decode_raster(name, &bytes).unwrap();
+            assert_eq!(probe_geometry(name, &bytes), Some((r.width, r.height, r.orientation)), "{name} orientation {o}");
+        }
+    }
 }
