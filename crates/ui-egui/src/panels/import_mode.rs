@@ -16,9 +16,21 @@ const CARD_MAX_W: f32 = 320.0;
 const CARD_H: f32 = 150.0;
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    ui.painter().rect_filled(rect, app.tokens.radius, app.tokens.panel_bg);
+    // Scrolls when wrapped cards, Recent and Community run past the bottom of a short window.
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt("import-mode"));
+    egui::ScrollArea::vertical().id_salt("import-mode-scroll").auto_shrink([false, false]).show(&mut body, |ui| {
+        let page_rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0));
+        let h = page(app, ui, page_rect);
+        // reserve the page's height for the scroll range without adding a widget over the cards
+        ui.advance_cursor_after_rect(Rect::from_min_size(page_rect.min, vec2(page_rect.width(), h)));
+    });
+}
+
+/// Paints the page from `rect.min`, `rect.width()` wide, and returns its height.
+fn page(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) -> f32 {
     let t = app.tokens;
     let avail = (rect.width() - 2.0 * MARGIN).max(0.0);
-    ui.painter().rect_filled(rect, t.radius, t.panel_bg);
     ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, tl!("Import"), Tokens::semibold(22.0), t.text);
     let intro = ui.painter().layout(
         tl!("Add media to your project. Drop files or folders anywhere in the window, or choose a source below.").to_string(),
@@ -96,6 +108,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         x = r.max.x + 12.0;
     }
+    let h = by + 34.0 + MARGIN - rect.min.y;
+    if h.is_finite() { h.max(0.0) } else { 0.0 }
 }
 
 /// How many source cards fit on a row of `avail` points (1 to `n`), and their shared width:
