@@ -7,6 +7,7 @@
 //! flip a pixel whose blend lands on its 0.5 threshold.
 
 use super::*;
+use filmcraft_frame::Chroma;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
@@ -19,7 +20,7 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let adapter = checked_gpu_result(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())), required)?;
     let info = adapter.get_info();
     eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
-    checked_gpu_result(pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())), required)
+    checked_gpu_result(pollster::block_on(adapter.request_device(&crate::device_descriptor(&adapter))), required)
 }
 
 // Test-only policy: local machines may lack an adapter, but the CI software-GPU leg must

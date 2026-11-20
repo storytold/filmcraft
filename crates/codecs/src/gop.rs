@@ -34,6 +34,8 @@ pub struct GopStats {
     pub decode_ns: u64,
     /// Non-reference samples left out while catching up (frames already late).
     pub skipped: u64,
+    /// Late requests for a skipped sample answered with nothing instead of a decoder restart.
+    pub dropped: u64,
     /// Frames decoded in draft mode (reduced-resolution playback, [`VideoDecoder::set_draft`]).
     pub draft: u64,
     /// Pictures decoders output (hardware and software; [`crate::hw::hw_stats`] counts the
@@ -61,6 +63,7 @@ static DECODED: AtomicU64 = AtomicU64::new(0);
 static EVICTED: AtomicU64 = AtomicU64::new(0);
 static DECODE_NS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
+static DROPPED: AtomicU64 = AtomicU64::new(0);
 static DRAFT: AtomicU64 = AtomicU64::new(0);
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 
@@ -87,6 +90,7 @@ pub fn gop_stats() -> GopStats {
         evicted: EVICTED.load(Ordering::Relaxed),
         decode_ns: DECODE_NS.load(Ordering::Relaxed),
         skipped: SKIPPED.load(Ordering::Relaxed),
+        dropped: DROPPED.load(Ordering::Relaxed),
         draft: DRAFT.load(Ordering::Relaxed),
         frames: FRAMES.load(Ordering::Relaxed),
     }
@@ -103,6 +107,7 @@ impl std::ops::Sub for GopStats {
             evicted: self.evicted - o.evicted,
             decode_ns: self.decode_ns - o.decode_ns,
             skipped: self.skipped - o.skipped,
+            dropped: self.dropped - o.dropped,
             draft: self.draft - o.draft,
             frames: self.frames - o.frames,
         }
@@ -198,6 +203,26 @@ struct State {
     start: usize,
     /// Highest pts the running decoder has output since it started (pictures leave in pts order).
     out_max: i64,
+    /// A thread is decoding ahead for playback ([`GopCache::pump`]) with the decoder taken out
+    /// of this state while a sample decodes; requests for the pictures to come wait on
+    /// [`Shared::cv`] instead of decoding.
+    pump: bool,
+    /// A request with time to spare (paused, scrubbing, an export) waits for playback decoding
+    /// to stop: it stops at the next sample and does not start again until that request is done.
+    pump_stop: bool,
+    /// The request whose thread decodes ahead has its own answer (its frame, or the run went
+    /// past it) and decodes on for the requests to come. It returns that answer only when the
+    /// run ends: see `pump_pass`.
+    pump_served: bool,
+    /// A playing request for a picture on its way waits to take the run over, so that the
+    /// request decoding ahead returns its frame: the run ends at the next sample and the waiting
+    /// request starts the next one, with the decoder where it is.
+    pump_pass: bool,
+    /// The latest playing request, which playback decoding follows.
+    play: Option<Play>,
+    /// Frames (by pts) requests are waiting for in [`GopCache::await_pump`], with how many:
+    /// never evicted from under them.
+    waiting: BTreeMap<i64, u32>,
     /// Decoded frames by presentation pts (bounded).
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     /// The cached frames that were decoded in draft mode: served to draft requests only.
@@ -222,6 +247,10 @@ impl State {
     /// Give up the decoder (and the spare intra decoders): the next request that has to decode
     /// makes a new one and restarts at a sync sample. Returned so they are dropped off the lock.
     fn release_decoder(&mut self, pool: &Pool) -> Vec<Box<dyn VideoDecoder>> {
+        if self.pump {
+            // playback decoding has the decoder out and is using this state
+            return Vec::new();
+        }
         let mut out = std::mem::take(&mut self.spare);
         if let Some(d) = self.decoder.take() {
             pool.decoders.fetch_sub(1, Ordering::Relaxed);
@@ -257,6 +286,21 @@ impl State {
         };
         Some(Taken { pts, frame: frame.clone(), raw: self.raw.contains(&pts) })
     }
+}
+
+/// A playing request ([`filmcraft_media::cancel::playing`]): the sample wanted, the pts before
+/// which frames are late (the playhead), and when it came.
+#[derive(Clone, Copy)]
+struct Play {
+    i: usize,
+    late: i64,
+    at: Instant,
+}
+
+/// What a request found when playback decoding was running: its frame, or the state to go on with.
+enum Awaited<'a> {
+    Frame(Taken),
+    Go(MutexGuard<'a, State>),
 }
 
 /// A cached frame handed to a request, `raw` while it still waits for [`GopCache::finish`].
@@ -345,6 +389,8 @@ struct Pool {
 /// The part of a [`GopCache`] its pool reaches.
 struct Shared {
     state: Mutex<State>,
+    /// Signalled when playback decoding stored pictures or stopped (see [`State::pump`]).
+    cv: std::sync::Condvar,
     pool: Arc<Pool>,
 }
 
@@ -532,6 +578,41 @@ const MIN_FRAMES: usize = 64;
 /// In particular, untrusted VP9 `show_existing_frame` samples must not turn the small-frame
 /// reserve above into an unbounded number of full-resolution copies.
 const FRAME_CACHE_CEILING: usize = 384 << 20;
+/// While playing, the playing source's cache holds this many frames whatever their size (within
+/// [`PLAY_CACHE_CEILING`]): the pictures a frame-threaded decoder has in flight (`threads + 2`,
+/// up to 18), the frames the frame server asks for ahead of the playhead (14) and a few behind
+/// it. [`FRAME_CACHE_CEILING`] alone holds 11 pictures of 4K 4:2:2 10-bit (33 MB each): the
+/// playback decoding run ([`GopCache::pump`]) stopped as "full" while its pipeline was still
+/// filling, the decoder drained between runs, and frames were evicted before the playhead
+/// reached them, so their requests were dropped (FX3 XAVC S 4K 50p: 194 of 400 frames shown,
+/// 373 decoded, 347 evicted, 70 dropped).
+const PLAY_FRAMES: usize = 40;
+/// ... and never more than this, so a source of huge frames (8K) keeps a bounded cache.
+const PLAY_CACHE_CEILING: usize = 1536 << 20;
+/// A wanted sample at most this many samples past what a running decoder has been fed is
+/// decoded even for a request that was cancelled meanwhile: playback that has fallen a little
+/// behind a sequential (long-GOP) decoder still gets these frames, late, instead of nothing,
+/// and the pictures the decoder has in flight are delivered rather than thrown away. Further
+/// ahead, a seek, or a picture of its own (intra) is only worth decoding while someone still
+/// wants the frame.
+const NEAR_SAMPLES: usize = 8;
+/// Playback decodes ahead of the latest playing request by up to this many samples
+/// ([`GopCache::pump`]): a frame-threaded decoder outputs a picture only `threads + 2` samples
+/// after it was fed, and the frames after the request are the next ones wanted.
+const PUMP_AHEAD: usize = 24;
+/// Playback decoding stops this long after the last playing request (playback stopped or left
+/// for another clip).
+const PUMP_IDLE: Duration = Duration::from_millis(300);
+/// Playback decoding keeps its output this many samples past the playhead: while it is behind
+/// that, the non-reference samples on the way are left out (those frames are dropped) so the
+/// decoder catches up instead of delivering every frame late. A frame-threaded decoder
+/// outputs a picture only `threads + 2` samples after it was fed, which is counted in.
+const PUMP_LEAD: usize = 2;
+/// A playing request for a sample the running decoder passed at most this many samples ago
+/// (skipped as late, or evicted) is dropped: seeking back would restart the decoder and refill
+/// its pipeline, during which nothing is delivered, so playback would stall again at once.
+/// Further back the playhead jumped (a loop): the request seeks.
+const DROP_BEHIND: usize = 64;
 
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
@@ -648,6 +729,12 @@ impl GopCache {
                 next: usize::MAX,
                 start: 0,
                 out_max: i64::MIN,
+                pump: false,
+                pump_stop: false,
+                pump_served: false,
+                pump_pass: false,
+                play: None,
+                waiting: BTreeMap::new(),
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
                 raw: Default::default(),
@@ -656,6 +743,7 @@ impl GopCache {
                 pin: i64::MIN,
                 background: false,
             }),
+            cv: std::sync::Condvar::new(),
             pool: pool.clone(),
         });
         pool.register(&shared);
@@ -733,10 +821,12 @@ impl GopCache {
         done
     }
 
-    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
-    fn cache_budget(&self, frame_bytes: usize) -> usize {
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it;
+    /// `playing` adds the playback window of [`PLAY_FRAMES`].
+    fn cache_budget(&self, frame_bytes: usize, playing: bool) -> usize {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+        let play = if playing { PLAY_FRAMES.saturating_mul(frame_bytes).min(PLAY_CACHE_CEILING) } else { 0 };
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve).max(play)
     }
 
     /// Cache a frame [`Self::finish`] has been applied to ([`Self::store`] marks a raw one after).
@@ -750,7 +840,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.cache_budget(f.byte_size());
+        let budget = self.cache_budget(f.byte_size(), st.play.is_some());
         let before = st.bytes;
         st.bytes += f.byte_size();
         st.raw.remove(&pts);
@@ -761,22 +851,28 @@ impl GopCache {
         // Evict frames far from the request (pin), not the newest decode. A frame-threaded
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
         // wanted picture and walk the GOP again.
-        let pivot = if st.pin != i64::MIN { st.pin } else { pts };
+        // playing: the frames behind the playhead were shown (or dropped); those ahead are wanted
+        let playhead = st.play.map(|p| p.late).filter(|l| *l != i64::MIN);
+        let pivot = playhead.unwrap_or(if st.pin != i64::MIN { st.pin } else { pts });
         while st.bytes > budget && st.frames.len() > 1 {
             let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
-            let mut victim = if pivot - first > last - pivot { first } else { last };
-            if victim == pivot || victim == pts {
+            let keep = |p: i64| p == pivot || p == pts || st.waiting.contains_key(&p);
+            let mut victim = if (playhead.is_some() && first < pivot) || pivot - first > last - pivot { first } else { last };
+            if keep(victim) {
                 victim = if victim == first { last } else { first };
-                if victim == pivot || victim == pts {
-                    // both ends are the request and the new decode: an interior frame goes,
-                    // or a reordered batch would stay cached far above the budget
-                    // (the ends are `pivot` and `pts`, so the interior frame farthest from `pivot` is the one next to the other end)
-                    let mut interior = st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last)));
-                    let k = if pivot == first { interior.next_back() } else { interior.next() };
-                    if let Some((&k, _)) = k {
+                if keep(victim) {
+                    // both ends are kept (the request, the new decode, a frame a request waits
+                    // for): an interior frame goes, or a reordered batch would stay cached far
+                    // above the budget. Of the interior frames nothing keeps, the one farthest
+                    // from `pivot` on the side eviction prefers.
+                    let low_first = (playhead.is_some() && first < pivot) || pivot - first > last - pivot;
+                    let mut interior =
+                        st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last))).map(|(&k, _)| k).filter(|&k| !keep(k));
+                    let k = if low_first { interior.next() } else { interior.next_back() };
+                    if let Some(k) = k {
                         victim = k;
-                    } else if pts != pivot {
-                        // only the request and the new decode remain: the new decode goes, the request stays
+                    } else if pts != pivot && !st.waiting.contains_key(&pts) {
+                        // only kept frames remain: the new decode goes, the request stays
                         victim = pts;
                     } else {
                         break;
@@ -891,6 +987,14 @@ impl GopCache {
             return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
+        if filmcraft_media::cancel::beside_playback() && !filmcraft_media::cancel::playing() && (st.pump || st.play.is_some_and(|p| p.at.elapsed() < PUMP_IDLE))
+        {
+            // A view beside the play (the scopes, a thumbnail) asked for a frame that playback's
+            // decoder does not hold: it goes without. Decoding it would stop the playback run and
+            // seek the decoder away from the playhead, and every frame after it would come late.
+            filmcraft_media::cancel::give_up();
+            return Err(CodecError::Cancelled);
+        }
         if !background {
             st.background = false;
         } else if st.decoder.is_none() {
@@ -900,6 +1004,21 @@ impl GopCache {
             // made for a thumbnail (few threads): a monitor gets a full one
             released.extend(st.release_decoder(&self.shared.pool));
         }
+        let playing = filmcraft_media::cancel::playing() && !st.intra;
+        if playing {
+            // no catch-up hint (the preroll, before the clock runs): nothing is late
+            st.play = Some(Play { i, late: late_before.unwrap_or(i64::MIN), at: Instant::now() });
+        } else {
+            // a request with time to spare (paused, scrubbing, an export) stops playback decoding
+            st.play = None;
+            st.pump_stop |= st.pump;
+        }
+        if st.pump {
+            st = match self.await_pump(st, s, i, want_pts, draft, playing)? {
+                Awaited::Frame(t) => return Ok(t),
+                Awaited::Go(st) => st,
+            };
+        }
         if st.decoder.is_none() {
             let d = s.make_decoder()?;
             st.intra = d.intra_only();
@@ -908,28 +1027,231 @@ impl GopCache {
             self.shared.pool.decoders.fetch_add(1, Ordering::Relaxed);
         }
         released.extend(self.shared.pool.trim_decoders(&self.shared));
+        if playing && Self::passed(&st, i, want_pts) {
+            return Self::dropped();
+        }
         // Nothing cached: the work ahead (possibly a seek and a GOP of decoding) is only worth it
-        // while someone still wants the frame.
-        if filmcraft_media::cancel::cancelled() {
+        // while someone still wants the frame, unless it is a few samples of a running decoder
+        // (`NEAR_SAMPLES`).
+        let near = !st.intra && st.next != usize::MAX && st.start <= i && i < st.next.saturating_add(NEAR_SAMPLES);
+        if !near && filmcraft_media::cancel::cancelled() {
             return Err(CodecError::Cancelled);
         }
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
+        }
+        if playing && !st.pump_stop {
+            Self::position(&mut st, s, i, want_pts)?;
+            st.pump = true;
+            drop(st);
+            // off the lock: see `pump`
+            return isolated(|| self.pump(s, i, want_pts, draft));
         }
         // with the lock held: see `isolated`
         let st = &mut *st;
         isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
     }
 
+    /// Whether the running decoder passed sample `i` recently without leaving its frame (skipped
+    /// as late, or evicted): see [`DROP_BEHIND`]. A sample fed but still in the decoder's
+    /// pipeline (its pts past the pictures output so far) is on its way, not passed.
+    fn passed(st: &State, i: usize, want_pts: i64) -> bool {
+        st.next != usize::MAX && st.start <= i && i < st.next && want_pts <= st.out_max && st.next - i <= DROP_BEHIND
+    }
+
+    /// A playing request's frame is dropped: the request gives up (its result is not cached)
+    /// and playback shows the latest frame it has.
+    fn dropped() -> crate::Result<Taken> {
+        filmcraft_media::cancel::give_up();
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+        Err(CodecError::Cancelled)
+    }
+
+    /// Another thread decodes ahead for playback ([`Self::pump`]): a playing request gets its
+    /// frame when produced, is dropped when the decoder passed it, and otherwise returns at once
+    /// as pending (`filmcraft_media::pending`: the frame server asks again next refresh), so
+    /// it does not hold a worker while the picture is in the decoder's pipeline. Once the thread
+    /// decoding ahead has its own frame, the request takes the run over instead (it waits for
+    /// the sample being decoded, then decodes on itself): that thread's frame is due, and it
+    /// can only return it when its run ends. Any other request waits for playback decoding to
+    /// stop (it has, by setting `play` to None).
+    fn await_pump<'a>(
+        &self,
+        st: MutexGuard<'a, State>,
+        s: &dyn VideoSamples,
+        i: usize,
+        want_pts: i64,
+        draft: bool,
+        playing: bool,
+    ) -> crate::Result<Awaited<'a>> {
+        let mut st = st;
+        *st.waiting.entry(want_pts).or_default() += 1;
+        let r = loop {
+            // the frame first: the pump may have stored it right before it stopped
+            if let Some(frame) = st.cached(want_pts, draft).cloned() {
+                break Ok(Some(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) }));
+            }
+            if !st.pump {
+                break Ok(None);
+            }
+            if playing {
+                if Self::passed(&st, i, want_pts) {
+                    break Self::dropped().map(Some);
+                }
+                // the decoder will produce it (the pump follows this request): asked again later
+                let coming = st.start <= i && decode_start(s, i) <= st.next.saturating_add(CONTINUE_THROUGH);
+                if coming && !st.pump_served {
+                    filmcraft_media::pending::mark();
+                    break Err(CodecError::Cancelled);
+                }
+                // (served: this request takes the run over when it ends, at the next sample)
+                st.pump_pass |= coming;
+                // out of the run's reach: the pump stops for it (it is the latest request)
+            }
+            let (guard, _) = self.shared.cv.wait_timeout(st, Duration::from_millis(20)).unwrap_or_else(PoisonError::into_inner);
+            st = guard;
+        };
+        if let Some(n) = st.waiting.get_mut(&want_pts) {
+            *n -= 1;
+            if *n == 0 {
+                st.waiting.remove(&want_pts);
+            }
+        }
+        match r? {
+            Some(t) => Ok(Awaited::Frame(t)),
+            None => Ok(Awaited::Go(st)),
+        }
+    }
+
+    /// Decode ahead for playback: feed the decoder sample by sample with the lock released while
+    /// a sample decodes (cache hits and the requests waiting for the pictures get through),
+    /// skipping the non-reference samples of frames the latest playing request says are late,
+    /// until that request stops coming ([`PUMP_IDLE`]), asks for a frame outside this run, or
+    /// is [`PUMP_AHEAD`] samples behind, or until another playing request takes the run over
+    /// (`State::pump_pass`) once the wanted frame is ready. Positioned by [`Self::position`];
+    /// `State::pump` is set. Returns the wanted frame, dropped if the run passed it meanwhile.
+    fn pump(&self, s: &dyn VideoSamples, i: usize, want_pts: i64, draft: bool) -> crate::Result<Taken> {
+        /// Ends the run when it does not reach its own end (a decoder panicked): `State::pump`
+        /// left set would keep every later request for an uncached frame waiting for a run that
+        /// no longer exists, and the monitors of this source blank. The decoder, lost or in an
+        /// unknown state, is given up: the next request makes a new one.
+        struct Unfinished<'a> {
+            shared: &'a Shared,
+            ended: bool,
+        }
+        impl Drop for Unfinished<'_> {
+            fn drop(&mut self) {
+                if self.ended {
+                    return;
+                }
+                let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+                st.pump = false;
+                st.pump_stop = false;
+                st.pump_served = false;
+                st.pump_pass = false;
+                if st.decoder.is_none() {
+                    // taken out for the sample that panicked and dropped with it
+                    self.shared.pool.decoders.fetch_sub(1, Ordering::Relaxed);
+                }
+                let released = st.release_decoder(&self.shared.pool);
+                drop(st);
+                self.shared.cv.notify_all();
+                // (off the lock: dropping a decoder can block)
+                drop(released);
+            }
+        }
+        // declared before the lock guard: on a panic the lock is released before this ends the run
+        let mut run = Unfinished { shared: &self.shared, ended: false };
+        let n = s.count();
+        let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // the wanted frame, held once produced: the cache may evict it before the run ends
+        let mut own: Option<Taken> = None;
+        let result = loop {
+            let Some(play) = st.play else { break Ok(()) };
+            if own.is_none() {
+                own = st.cached(want_pts, draft).cloned().map(|frame| Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
+            }
+            let done = own.is_some() || (i < st.next && want_pts <= st.out_max);
+            st.pump_served = done;
+            let reach = play.i >= st.start && decode_start(s, play.i) <= st.next.saturating_add(CONTINUE_THROUGH);
+            // enough frames past the request for the cache to hold (more would evict them)
+            let full = {
+                let frame_bytes = st.frames.values().next().map_or(0, |f| f.byte_size()).max(1);
+                let from = if play.late != i64::MIN { play.late } else { s.pts(play.i) };
+                let ahead = st.frames.range(from..).count();
+                ahead.saturating_add(1).saturating_mul(frame_bytes) >= self.cache_budget(frame_bytes, true)
+            };
+            let over = done && (play.at.elapsed() > PUMP_IDLE || st.next > play.i.saturating_add(PUMP_AHEAD) || full);
+            if st.pump_stop || st.next >= n || !reach || over || (done && st.pump_pass) || (!done && st.next > i.saturating_add(64)) {
+                break Ok(());
+            }
+            let k = st.next;
+            let data = match s.read(k) {
+                Ok(d) => d,
+                Err(e) => break Err(e),
+            };
+            // Behind the playhead (`play.late`), or so close that the pictures still in the
+            // decoder's pipeline would come out behind it: leave out the non-reference samples.
+            let behind = play.late != i64::MIN
+                && s.sample_at(play.late).is_some_and(|late_i| {
+                    let in_flight = st.next.saturating_sub(s.sample_at(st.out_max).map_or(st.next, |o| o + 1));
+                    k < late_i.saturating_add(in_flight).saturating_add(PUMP_LEAD)
+                });
+            if k != i && k != play.i && behind && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
+                st.next += 1;
+                SKIPPED.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let Some(mut d) = st.decoder.take() else { break Err(CodecError::Decode("no video decoder".into())) };
+            d.set_draft(draft);
+            drop(st);
+            let out = timed(|| d.decode(&data, s.pts(k)));
+            st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            st.decoder = Some(d);
+            match out {
+                Ok(out) => {
+                    st.next += 1;
+                    DECODED.fetch_add(1, Ordering::Relaxed);
+                    // (the wanted frame is taken from the cache below, exact or not at all)
+                    let _ = self.store_output(&mut st, out, want_pts);
+                    self.shared.cv.notify_all();
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        if result.is_ok() && own.is_none() && st.cached(want_pts, draft).is_none() && st.next >= n {
+            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
+            let _ = self.store_output(&mut st, out, want_pts);
+            st.next = usize::MAX;
+        }
+        st.pump = false;
+        st.pump_stop = false;
+        st.pump_served = false;
+        st.pump_pass = false;
+        run.ended = true;
+        self.shared.cv.notify_all();
+        result?;
+        if let Some(t) = own {
+            return Ok(t);
+        }
+        if let Some(frame) = st.cached(want_pts, draft).cloned() {
+            return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
+        }
+        // not produced (a request with time to spare interrupted the run, or the stream ended):
+        // dropped; never a neighbouring frame, which the frame cache would keep as this one
+        Self::dropped()
+    }
+
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
-    fn decode_until(&self, st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>, draft: bool) -> crate::Result<Taken> {
+    /// Position the decoder for sample `i`: continue the running decoder when it has passed the
+    /// wanted sample's sync sample and either has not reached the sample yet or has been fed it
+    /// without outputting it yet (a frame-threaded decoder holds many pictures in flight).
+    /// Otherwise the frame was evicted or lies in another GOP: restart at the sync sample. A run
+    /// that started after `key` (at the random-access picture of a wanted leading picture) left
+    /// the picture out.
+    fn position(st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64) -> crate::Result<()> {
         let n = s.count();
         let mut key = decode_start(s, i);
-        // Continue the running decoder when it has passed the wanted sample's sync sample and
-        // either has not reached the sample yet or has been fed it without outputting it yet
-        // (a frame-threaded decoder holds many pictures in flight). Otherwise the frame was
-        // evicted or lies in another GOP: restart at the sync sample. A run that started after
-        // `key` (at the random-access picture of a wanted leading picture) left the picture out.
         let running = st.next != usize::MAX && st.next <= n && st.start <= key;
         // Decoding on through a short stretch into the next GOP is cheaper than a restart, and
         // playback wants those frames anyway.
@@ -945,6 +1267,12 @@ impl GopCache {
             st.start = key;
             st.out_max = i64::MIN;
         }
+        Ok(())
+    }
+
+    fn decode_until(&self, st: &mut State, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>, draft: bool) -> crate::Result<Taken> {
+        let n = s.count();
+        Self::position(st, s, i, want_pts)?;
         let limit = (i.max(st.next) + 64).min(n);
         let late = late_before.unwrap_or(i64::MIN).min(want_pts);
         let Some(decoder) = st.decoder.as_mut() else {
@@ -961,8 +1289,9 @@ impl GopCache {
             }
         };
         while st.next < limit {
-            if filmcraft_media::cancel::cancelled() {
-                // The decoder state stays consistent (`next`, `out_max`): a later request continues.
+            // Giving up (not within `NEAR_SAMPLES` of the wanted sample) leaves the decoder state
+            // consistent (`next`, `out_max`): a later request continues.
+            if i.saturating_sub(st.next) > NEAR_SAMPLES && filmcraft_media::cancel::cancelled() {
                 return Err(CodecError::Cancelled);
             }
             let k = st.next;

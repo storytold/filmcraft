@@ -419,3 +419,24 @@ fn fs_full(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
     return vec4(select(hi, lo, c <= vec3(0.0031308)), 1.0);
 }
+
+// --- Waking the GPU (`GpuCompositor::wake`): a fixed amount of arithmetic per fragment, drawn
+// with `vs_full` into a small target. Nothing reads the result; the loop is bounded by the
+// compositor (`WAKE_ITERATIONS_MAX`).
+struct Wake {
+    iterations: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
+};
+
+@group(0) @binding(0) var<uniform> wake: Wake;
+
+@fragment
+fn fs_wake(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    var v = vec4(pos.x * 1e-3, pos.y * 1e-3, 0.5, 0.25);
+    for (var i = 0u; i < wake.iterations; i = i + 1u) {
+        v = fma(v, vec4(0.999, 1.001, 0.998, 1.002), vec4(1e-4, -1e-4, 2e-4, -2e-4));
+    }
+    return fract(v);
+}

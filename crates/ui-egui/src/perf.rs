@@ -39,6 +39,11 @@ pub fn stats(app: &FilmcraftApp) -> Value {
             "adjustments": g.compositor.gpu_adjustments,
             "cpuAdjustments": g.compositor.cpu_adjustments,
             "submitMs": g.last_ms,
+            "wakeIterations": g.compositor.wake_stats().1,
+            "planeTexturesCreated": g.compositor.uploader().created().0,
+            "stagingCreated": g.compositor.uploader().created().1,
+            "stagingFree": g.compositor.uploader().free_staging(),
+            "pooledTextures": g.compositor.uploader().pooled(),
         })
     });
     // the Program monitor's picture against what is due: how far a drag or a scrub is ahead of it
@@ -48,7 +53,7 @@ pub fn stats(app: &FilmcraftApp) -> Value {
         "projectRevision": app.session.revision,
         "playheadFrame": app.session.active_sequence().map(|q| q.settings.frame_rate.frame_at(app.session.playhead())),
     });
-    v["ui"] = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }});
+    v["ui"] = json!({"fps": app.fps, "frameMs": if app.fps > 0.0 { 1000.0 / app.fps as f64 } else { 0.0 }, "passes": app.pass_log});
     v["process"] = json!({"cpuS": crate::frames::process_cpu_time().map(|d| d.as_secs_f64())});
     v
 }

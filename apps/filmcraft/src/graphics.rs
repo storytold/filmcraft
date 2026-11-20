@@ -534,6 +534,14 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
     let WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup else {
         return;
     };
+    // The compositor's optional features (normalised 16-bit textures: a 10-bit frame uploads as
+    // it is) on top of eframe's descriptor, where the adapter has them.
+    let base = create.device_descriptor.clone();
+    create.device_descriptor = Arc::new(move |adapter: &wgpu::Adapter| {
+        let mut d = base(adapter);
+        d.required_features |= filmcraft_gpu::optional_features(adapter);
+        d
+    });
     // Nothing draws or dispatches indirectly, so wgpu's check of indirect arguments only costs a
     // compute shader when the device is created, one that Metal can't compile on an Intel Iris
     // Pro: the device is lost and the window never opens. `WGPU_VALIDATION_INDIRECT_CALL=1` turns

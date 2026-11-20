@@ -100,6 +100,7 @@ impl FilmcraftApp {
         self.source_playback.range_start = start;
         self.source_playback.item = Some(item);
         self.source_playback.shown = time;
+        self.frames.play_starts();
         self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
         self.start_source_audio(0.0);
@@ -335,6 +336,8 @@ impl FilmcraftApp {
                 self.ui.status = e.to_string();
                 return;
             }
+            // (a new round: the frames dropped in the one before are asked for again)
+            self.frames.play_starts();
             let time = self.session.state.source_playhead;
             self.source_playback.shown = time;
             self.source_playback.clock.anchor_tick = time;
