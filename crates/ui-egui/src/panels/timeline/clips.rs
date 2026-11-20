@@ -253,6 +253,9 @@ pub(super) fn draw_clip(
     if kind == TrackKind::Audio && app.ui.timeline.show_waveforms && w > 3.0 {
         draw_waveform(app, p, body, it, Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2));
     }
+    if kind == TrackKind::Audio {
+        draw_remix_splices(app, p, body, it);
+    }
     let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
     // name band (View ▸ the wrench menu's Show Video Names / Show Audio Names)
     // a hidden name keeps the multicam angle and the speed, which say something the name does not
@@ -295,7 +298,10 @@ pub(super) fn draw_clip(
     // corner triangles where the clip reaches the media's first/last frame (no handles)
     let media_dur = app.session.project.item(it.item).map(|i| i.duration());
     let no_head = it.source_in <= Tick::ZERO;
-    let no_tail = media_dur.is_some_and(|d| d.0 > 0 && it.source_out() >= d - rate.frame_duration());
+    let no_tail = it.remix_output_duration().map_or_else(
+        || media_dur.is_some_and(|d| d.0 > 0 && it.source_out() >= d - rate.frame_duration()),
+        |output| it.duration >= output - rate.frame_duration(),
+    );
     let tri = 5.0;
     if no_head && w > 12.0 {
         clip_p.add(egui::Shape::convex_polygon(
@@ -357,5 +363,60 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+/// Original procedural markers, drawn from the persisted output plan rather than
+/// source timestamps. They are visual only and do not intercept timeline gestures.
+fn draw_remix_splices(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, item: &TrackItem) {
+    if item.duration.0 <= 0 || body.width() < 4.0 || body.height() < 10.0 || !filmcraft_render::remix::is_remixed(item) {
+        return;
+    }
+    let Some(remix) = filmcraft_render::remix::Remix::of(item) else { return };
+    if remix.pieces.len() > 33 {
+        return;
+    }
+    let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.min.y + 16.0f32.min(body.height() * 0.35)), pos2(body.max.x - 1.0, body.max.y - 2.0))
+        .intersect(p.clip_rect());
+    if !area.is_positive() {
+        return;
+    }
+    let painter = p.with_clip_rect(area);
+    let mut position = 0i64;
+    for (index, piece) in remix.pieces.iter().take(remix.pieces.len().saturating_sub(1)).enumerate() {
+        if piece.len.0 <= 0 {
+            return;
+        }
+        let Some(next) = position.checked_add(piece.len.0) else { return };
+        position = next;
+        if position <= 0 || position >= item.duration.0 {
+            continue;
+        }
+        let x = body.min.x + (position as f64 / item.duration.0 as f64 * f64::from(body.width())) as f32;
+        if !x.is_finite() || x < area.min.x || x > area.max.x {
+            continue;
+        }
+        let top = (body.min.y + 16.0f32.min(body.height() * 0.35)).max(area.min.y);
+        let bottom = area.max.y;
+        let shadow = Color32::from_black_alpha(190);
+        let ink = Color32::from_rgb(255, 236, 173);
+        let mut y = top + 5.0;
+        // Bound work independently of malformed or extremely tall track geometry.
+        for _ in 0..512 {
+            if y >= bottom {
+                break;
+            }
+            let end = (y + 3.0).min(bottom);
+            painter.line_segment([pos2(x, y), pos2(x, end)], Stroke::new(3.0, shadow));
+            painter.line_segment([pos2(x, y), pos2(x, end)], Stroke::new(1.2, ink));
+            y += 5.0;
+        }
+        painter.circle_filled(pos2(x, top + 2.5), 3.2, shadow);
+        painter.circle_filled(pos2(x, top + 2.5), 2.0, ink);
+        app.auto.add(
+            &format!("timeline.remixJoint.{}.{index}", item.id.0),
+            Rect::from_min_max(pos2(x - 3.0, top), pos2(x + 3.0, bottom)).intersect(area),
+            &format!("Remix splice {}: {:.3} s", index + 1, Tick(position).seconds()),
+        );
     }
 }
