@@ -184,7 +184,7 @@ fn split_or_disabled_linked_roll_leaves_audio_alone() {
 
 fn demo() -> Session {
     let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    s.execute("file.openDemoProject", json!({})).expect("ok");
     for t in ["V2", "V3", "A2", "A3"] {
         let _ = s.execute("timeline.setTrack", json!({"track": t, "syncLock": false}));
     }
@@ -193,7 +193,7 @@ fn demo() -> Session {
 
 /// V1 clips as (id, start, end).
 fn v1(s: &Session) -> Vec<(u64, Tick, Tick)> {
-    s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| (i.id.0, i.start, i.end())).collect()
+    s.active_sequence().expect("ok").video_tracks[0].items.iter().map(|i| (i.id.0, i.start, i.end())).collect()
 }
 
 /// Whole frames covered by `secs` of real time at the sequence rate.
@@ -204,7 +204,7 @@ fn frames(s: &Session, secs: f64) -> i64 {
 /// Select the cut between V1 clips 0 and 1 as `kind` (roll / ripple out of clip 0).
 fn select_first_cut(s: &mut Session, kind: &str) -> (u64, Tick) {
     let c = v1(s);
-    s.execute("trim.selectEditPoint", json!({"clip": c[0].0, "edge": "out", "kind": kind})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": c[0].0, "edge": "out", "kind": kind})).expect("ok");
     (c[0].0, c[0].2)
 }
 
@@ -215,35 +215,35 @@ fn dynamic_roll_forward_is_one_undo_step() {
     let rate = s.sequence_rate();
     let undo0 = s.history.undo.len();
     let journal0 = s.journal.len();
-    let dur0 = s.active_sequence().unwrap().duration();
-    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 10.0})).unwrap();
+    let dur0 = s.active_sequence().expect("ok").duration();
+    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 10.0})).expect("ok");
     // live: the cut moves with the clock, no history yet
-    s.execute("trim.tick", json!({"clock": 10.5})).unwrap();
-    let mid = v1(&s).into_iter().find(|c| c.0 == left).unwrap();
+    s.execute("trim.tick", json!({"clock": 10.5})).expect("ok");
+    let mid = v1(&s).into_iter().find(|c| c.0 == left).expect("ok");
     assert_eq!(mid.2, cut + rate.tick_of(frames(&s, 0.5)), "half a second of roll");
     assert_eq!(s.playhead(), mid.2, "the Program monitor follows the edit");
     assert_eq!(s.history.undo.len(), undo0, "no undo step while trimming");
-    let info = s.execute("trim.monitor", json!({})).unwrap();
+    let info = s.execute("trim.monitor", json!({})).expect("ok");
     assert_eq!(info["dynamic"]["offsetFrames"], json!(frames(&s, 0.5)), "{info}");
     assert_eq!(info["outShift"], json!(frames(&s, 0.5)));
     assert_eq!(info["inShift"], json!(frames(&s, 0.5)), "roll moves both sides");
     // K commits
-    let r = s.execute("trim.shuttleStop", json!({"clock": 11.0})).unwrap();
+    let r = s.execute("trim.shuttleStop", json!({"clock": 11.0})).expect("ok");
     assert_eq!(r["committed"], json!(true), "{r}");
     assert_eq!(r["offsetFrames"], json!(frames(&s, 1.0)));
-    let after = v1(&s).into_iter().find(|c| c.0 == left).unwrap();
+    let after = v1(&s).into_iter().find(|c| c.0 == left).expect("ok");
     assert_eq!(after.2, cut + rate.tick_of(frames(&s, 1.0)));
-    assert_eq!(s.active_sequence().unwrap().duration(), dur0, "roll keeps the duration");
+    assert_eq!(s.active_sequence().expect("ok").duration(), dur0, "roll keeps the duration");
     assert_eq!(s.history.undo.len(), undo0 + 1, "exactly one undo step");
-    assert_eq!(s.history.undo.last().unwrap().0, "Dynamic Rolling Edit");
+    assert_eq!(s.history.undo.last().expect("ok").0, "Dynamic Rolling Edit");
     assert!(
         s.journal[journal0..].iter().all(|(id, _)| id.starts_with("trim.")),
         "live updates are not journaled as separate edits: {:?}",
         &s.journal[journal0..]
     );
     assert!(s.trim_play.dynamic.is_none());
-    s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut, "undo restores the cut in one step");
+    s.execute("edit.undo", json!({})).expect("ok");
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut, "undo restores the cut in one step");
 }
 
 #[test]
@@ -251,27 +251,27 @@ fn pressing_l_again_doubles_speed_and_j_reverses() {
     let mut s = demo();
     let (left, cut) = select_first_cut(&mut s, "roll");
     let rate = s.sequence_rate();
-    let r = s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).unwrap();
+    let r = s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).expect("ok");
     assert_eq!(r["speed"], json!(1.0));
-    let r = s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.5})).unwrap();
+    let r = s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.5})).expect("ok");
     assert_eq!(r["speed"], json!(2.0));
     // 0.5 s at 1× + 0.5 s at 2×
     let a = frames(&s, 0.5);
-    s.execute("trim.tick", json!({"clock": 1.0})).unwrap();
+    s.execute("trim.tick", json!({"clock": 1.0})).expect("ok");
     let expect = a + frames(&s, 1.0);
-    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut + rate.tick_of(expect));
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut + rate.tick_of(expect));
     // J: reverse at 1×
-    let r = s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 1.0})).unwrap();
+    let r = s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 1.0})).expect("ok");
     assert_eq!(r["speed"], json!(-1.0));
-    s.execute("trim.tick", json!({"clock": 1.25})).unwrap();
+    s.execute("trim.tick", json!({"clock": 1.25})).expect("ok");
     let back = expect - frames(&s, 0.25);
-    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut + rate.tick_of(back));
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut + rate.tick_of(back));
     // slow (Shift+J / Shift+L) = quarter speed
-    let r = s.execute("trim.shuttle", json!({"direction": "forward", "slow": true, "clock": 1.25})).unwrap();
+    let r = s.execute("trim.shuttle", json!({"direction": "forward", "slow": true, "clock": 1.25})).expect("ok");
     assert_eq!(r["speed"], json!(0.25));
-    let r = s.execute("trim.shuttleStop", json!({"clock": 2.25})).unwrap();
+    let r = s.execute("trim.shuttleStop", json!({"clock": 2.25})).expect("ok");
     assert_eq!(r["offsetFrames"], json!(back + frames(&s, 0.25)));
-    assert_eq!(s.history.undo.last().unwrap().0, "Dynamic Rolling Edit");
+    assert_eq!(s.history.undo.last().expect("ok").0, "Dynamic Rolling Edit");
 }
 
 #[test]
@@ -280,24 +280,24 @@ fn dynamic_ripple_backward_shortens_and_stops_at_a_limit() {
     let (clip, end0) = select_first_cut(&mut s, "ripple");
     let rate = s.sequence_rate();
     let start0 = v1(&s)[0].1;
-    let v1_end = |s: &Session| v1(s).last().unwrap().2;
+    let v1_end = |s: &Session| v1(s).last().expect("ok").2;
     let dur0 = v1_end(&s);
-    s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 0.0})).unwrap();
-    s.execute("trim.tick", json!({"clock": 0.25})).unwrap();
+    s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 0.0})).expect("ok");
+    s.execute("trim.tick", json!({"clock": 0.25})).expect("ok");
     let n = frames(&s, 0.25);
     assert_eq!(v1(&s)[0].2, end0 - rate.tick_of(n));
     assert_eq!(v1_end(&s), dur0 - rate.tick_of(n), "ripple pulls later material in");
     // keep going for a minute: the clip can't get shorter than one frame
-    s.execute("trim.tick", json!({"clock": 600.0})).unwrap();
-    let info = s.execute("trim.monitor", json!({})).unwrap();
+    s.execute("trim.tick", json!({"clock": 600.0})).expect("ok");
+    let info = s.execute("trim.monitor", json!({})).expect("ok");
     assert_eq!(info["dynamic"]["atLimit"], json!(true), "{info}");
     assert_eq!(info["dynamic"]["speed"], json!(0.0));
-    let c = v1(&s).into_iter().find(|c| c.0 == clip).unwrap();
+    let c = v1(&s).into_iter().find(|c| c.0 == clip).expect("ok");
     assert_eq!(c.2 - c.1, rate.frame_duration(), "held at the one-frame limit");
     assert_eq!(c.1, start0);
-    let r = s.execute("trim.shuttleStop", json!({})).unwrap();
+    let r = s.execute("trim.shuttleStop", json!({})).expect("ok");
     assert_eq!(r["label"], json!("Dynamic Ripple Trim"));
-    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).expect("ok");
     assert_eq!(v1_end(&s), dur0);
 }
 
@@ -330,26 +330,26 @@ fn another_command_commits_first_and_cancel_restores() {
     let mut s = demo();
     let (left, cut) = select_first_cut(&mut s, "roll");
     let undo0 = s.history.undo.len();
-    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).unwrap();
-    s.execute("trim.tick", json!({"clock": 0.5})).unwrap();
+    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).expect("ok");
+    s.execute("trim.tick", json!({"clock": 0.5})).expect("ok");
     // Undo mid-trim: the dynamic trim is committed, then undone as a single step
-    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).expect("ok");
     assert!(s.trim_play.dynamic.is_none());
-    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut);
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut);
     assert_eq!(s.history.undo.len(), undo0);
-    assert_eq!(s.history.redo.last().unwrap().0, "Dynamic Rolling Edit");
+    assert_eq!(s.history.redo.last().expect("ok").0, "Dynamic Rolling Edit");
     // Esc cancels without an undo step (and restores the counters)
-    let shift0 = s.execute("trim.monitor", json!({})).unwrap()["outShift"].clone();
-    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).unwrap();
-    s.execute("trim.tick", json!({"clock": 0.5})).unwrap();
-    assert_ne!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut);
-    s.execute("trim.cancelDynamic", json!({})).unwrap();
-    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut);
+    let shift0 = s.execute("trim.monitor", json!({})).expect("ok")["outShift"].clone();
+    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).expect("ok");
+    s.execute("trim.tick", json!({"clock": 0.5})).expect("ok");
+    assert_ne!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut);
+    s.execute("trim.cancelDynamic", json!({})).expect("ok");
+    assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).expect("ok").2, cut);
     assert_eq!(s.history.undo.len(), undo0);
-    assert_eq!(s.execute("trim.monitor", json!({})).unwrap()["outShift"], shift0);
+    assert_eq!(s.execute("trim.monitor", json!({})).expect("ok")["outShift"], shift0);
     // K with nothing moved commits nothing
-    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).unwrap();
-    let r = s.execute("trim.shuttleStop", json!({"clock": 0.0})).unwrap();
+    s.execute("trim.shuttle", json!({"direction": "forward", "clock": 0.0})).expect("ok");
+    let r = s.execute("trim.shuttleStop", json!({"clock": 0.0})).expect("ok");
     assert_eq!(r["committed"], json!(false));
     assert_eq!(s.history.undo.len(), undo0);
 }
@@ -359,31 +359,31 @@ fn play_around_loops_preroll_to_postroll() {
     let mut s = demo();
     let (_, cut) = select_first_cut(&mut s, "roll");
     let rate = s.sequence_rate();
-    s.execute("prefs.set", json!({"values": {"playback.prerollSeconds": 1.0, "playback.postrollSeconds": 0.5}})).unwrap();
-    let r = s.execute("trim.playAround", json!({"clock": 100.0})).unwrap();
+    s.execute("prefs.set", json!({"values": {"playback.prerollSeconds": 1.0, "playback.postrollSeconds": 0.5}})).expect("ok");
+    let r = s.execute("trim.playAround", json!({"clock": 100.0})).expect("ok");
     let start = rate.snap(cut - Tick::from_seconds_f64(1.0));
     let end = rate.snap(cut + Tick::from_seconds_f64(0.5));
     assert_eq!(r["start"], json!(start.0));
     assert_eq!(r["end"], json!(end.0));
     assert_eq!(s.playhead(), start);
-    s.execute("trim.tick", json!({"clock": 101.0})).unwrap();
+    s.execute("trim.tick", json!({"clock": 101.0})).expect("ok");
     assert_eq!(s.playhead(), rate.snap(start + Tick::from_seconds_f64(1.0)));
     // loops: 1.5 s later we're back at the start + (elapsed mod length)
     let len = (end - start).seconds();
     let el = 1.75 % len;
-    s.execute("trim.tick", json!({"clock": 101.75})).unwrap();
+    s.execute("trim.tick", json!({"clock": 101.75})).expect("ok");
     assert_eq!(s.playhead(), rate.snap(start + Tick::from_seconds_f64(el)));
     // trim buttons keep the loop running; other commands stop it
-    s.execute("trim.forward", json!({})).unwrap();
+    s.execute("trim.forward", json!({})).expect("ok");
     assert!(s.trim_play.around.is_some());
-    s.execute("markers.add", json!({})).unwrap();
+    s.execute("markers.add", json!({})).expect("ok");
     assert!(s.trim_play.around.is_none());
     // playhead mode
-    s.execute("prefs.set", json!({"key": "trim.playheadDeterminesLoop", "value": true})).unwrap();
-    s.execute("playhead.set", json!({"time": (cut + rate.tick_of(48)).0})).unwrap();
-    let r = s.execute("trim.playAround", json!({"clock": 0.0, "loop": false})).unwrap();
+    s.execute("prefs.set", json!({"key": "trim.playheadDeterminesLoop", "value": true})).expect("ok");
+    s.execute("playhead.set", json!({"time": (cut + rate.tick_of(48)).0})).expect("ok");
+    let r = s.execute("trim.playAround", json!({"clock": 0.0, "loop": false})).expect("ok");
     assert_eq!(r["start"], json!(rate.snap(cut + rate.tick_of(48) - Tick::from_seconds_f64(1.0)).0));
-    s.execute("trim.tick", json!({"clock": 5.0})).unwrap();
+    s.execute("trim.tick", json!({"clock": 5.0})).expect("ok");
     assert!(s.trim_play.around.is_none(), "one-shot play-around stops at the postroll");
 }
 
@@ -391,22 +391,22 @@ fn play_around_loops_preroll_to_postroll() {
 fn trim_monitor_sides_and_shift_counters() {
     let mut s = demo();
     let c = v1(&s);
-    s.execute("trim.selectEditPoint", json!({"clip": c[1].0, "edge": "in", "kind": "ripple"})).unwrap();
-    let info = s.execute("trim.monitor", json!({})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": c[1].0, "edge": "in", "kind": "ripple"})).expect("ok");
+    let info = s.execute("trim.monitor", json!({})).expect("ok");
     assert_eq!(info["outgoing"]["clip"], json!(c[0].0), "{info}");
     assert_eq!(info["incoming"]["clip"], json!(c[1].0));
     assert_eq!(info["outgoing"]["time"], json!((c[0].2 - s.sequence_rate().frame_duration()).0), "outgoing shows its last frame");
     assert_eq!(info["incoming"]["time"], json!(c[1].1));
     assert_eq!(info["edge"], json!("in"));
-    s.execute("prefs.set", json!({"key": "trim.largeTrimOffset", "value": 3})).unwrap();
-    s.execute("trim.forwardMany", json!({})).unwrap();
-    s.execute("trim.forward", json!({})).unwrap();
-    let info = s.execute("trim.monitor", json!({})).unwrap();
+    s.execute("prefs.set", json!({"key": "trim.largeTrimOffset", "value": 3})).expect("ok");
+    s.execute("trim.forwardMany", json!({})).expect("ok");
+    s.execute("trim.forward", json!({})).expect("ok");
+    let info = s.execute("trim.monitor", json!({})).expect("ok");
     assert_eq!(info["inShift"], json!(4), "large offset 3 + 1: {info}");
     assert_eq!(info["outShift"], json!(0), "a ripple In trim leaves the outgoing side alone");
     // a new selection starts new counters
-    s.execute("trim.selectEditPoint", json!({"clip": c[1].0, "edge": "in", "kind": "roll"})).unwrap();
-    assert_eq!(s.execute("trim.monitor", json!({})).unwrap()["inShift"], json!(0));
+    s.execute("trim.selectEditPoint", json!({"clip": c[1].0, "edge": "in", "kind": "roll"})).expect("ok");
+    assert_eq!(s.execute("trim.monitor", json!({})).expect("ok")["inShift"], json!(0));
     // Apply Default Transitions to Selection at the edit point
     let r = s.execute("trim.applyDefaultTransition", json!({})).unwrap();
     assert_eq!(r["transitions"].as_array().unwrap().len(), 2, "picture and linked sound: {r}");
@@ -418,9 +418,9 @@ fn trim_monitor_sides_and_shift_counters() {
 #[test]
 fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
     let mut s = demo();
-    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).expect("ok");
     let rate = s.sequence_rate();
-    let q = s.active_sequence().unwrap();
+    let q = s.active_sequence().expect("ok");
     // a clip on V1 and the overlay on V2 that overlap in time but end at different frames
     let mut found = None;
     for a in &q.video_tracks[0].items {
@@ -432,41 +432,41 @@ fn extend_to_playhead_moves_each_unequal_out_point_to_the_playhead() {
         }
     }
     let (a, b, ph) = found.expect("demo has overlapping clips on V1 and V2 with different ends");
-    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
-    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).unwrap();
-    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).unwrap();
-    s.execute("trim.extendToPlayhead", json!({})).unwrap();
-    let q = s.active_sequence().unwrap();
-    assert_eq!(q.find_item(a).unwrap().1.end(), ph);
-    assert_eq!(q.find_item(b).unwrap().1.end(), ph);
+    s.execute("playhead.set", json!({"time": ph.0})).expect("ok");
+    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).expect("ok");
+    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).expect("ok");
+    s.execute("trim.extendToPlayhead", json!({})).expect("ok");
+    let q = s.active_sequence().expect("ok");
+    assert_eq!(q.find_item(a).expect("ok").1.end(), ph);
+    assert_eq!(q.find_item(b).expect("ok").1.end(), ph);
 }
 
 /// #914: Trim by Frames on two selected edit points is one undo (and redo) step.
 #[test]
 fn multipoint_trim_by_frames_is_one_undo_step() {
     let mut s = demo();
-    s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
+    s.execute("sequence.linkedSelection", json!({"on": false})).expect("ok");
     let c = v1(&s);
     let (a, b) = (c[0], c[1]);
-    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).unwrap();
-    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).unwrap();
+    s.execute("trim.selectEditPoint", json!({"clip": a.0, "edge": "out", "kind": "trim"})).expect("ok");
+    s.execute("trim.selectEditPoint", json!({"clip": b.0, "edge": "out", "kind": "trim", "add": true})).expect("ok");
     let undo0 = s.history.undo.len();
     let d = s.sequence_rate().tick_of(-1);
-    s.execute("trim.nudge", json!({"frames": -1})).unwrap();
-    let q = s.active_sequence().unwrap();
-    let a1 = q.find_item(ClipId(a.0)).unwrap().1.end();
-    let b1 = q.find_item(ClipId(b.0)).unwrap().1.end();
+    s.execute("trim.nudge", json!({"frames": -1})).expect("ok");
+    let q = s.active_sequence().expect("ok");
+    let a1 = q.find_item(ClipId(a.0)).expect("ok").1.end();
+    let b1 = q.find_item(ClipId(b.0)).expect("ok").1.end();
     assert_eq!(a1, a.2 + d);
     assert_eq!(b1, b.2 + d);
     assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for both clips");
-    s.execute("edit.undo", json!({})).unwrap();
-    let q = s.active_sequence().unwrap();
-    assert_eq!(q.find_item(ClipId(a.0)).unwrap().1.end(), a.2);
-    assert_eq!(q.find_item(ClipId(b.0)).unwrap().1.end(), b.2);
-    s.execute("edit.redo", json!({})).unwrap();
-    let q = s.active_sequence().unwrap();
-    assert_eq!(q.find_item(ClipId(a.0)).unwrap().1.end(), a1);
-    assert_eq!(q.find_item(ClipId(b.0)).unwrap().1.end(), b1);
+    s.execute("edit.undo", json!({})).expect("ok");
+    let q = s.active_sequence().expect("ok");
+    assert_eq!(q.find_item(ClipId(a.0)).expect("ok").1.end(), a.2);
+    assert_eq!(q.find_item(ClipId(b.0)).expect("ok").1.end(), b.2);
+    s.execute("edit.redo", json!({})).expect("ok");
+    let q = s.active_sequence().expect("ok");
+    assert_eq!(q.find_item(ClipId(a.0)).expect("ok").1.end(), a1);
+    assert_eq!(q.find_item(ClipId(b.0)).expect("ok").1.end(), b1);
 }
 
 /// #653: the delta the Timeline previews while an edge is dragged is the one `timeline.trim`
@@ -475,14 +475,95 @@ fn multipoint_trim_by_frames_is_one_undo_step() {
 #[test]
 fn trim_delta_stops_at_the_end_of_the_media() {
     let mut s = demo();
-    let last = *v1(&s).last().unwrap();
+    let last = *v1(&s).last().expect("ok");
     let clip = ClipId(last.0);
     let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
-    let shown = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).unwrap();
+    let shown = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).expect("ok");
     assert!(Tick::ZERO < shown && shown < far, "clamped to the media left after the clip: {shown:?}");
-    let r = s.execute("timeline.trim", json!({"clip": last.0, "edge": "out", "mode": "regular", "delta": far.0})).unwrap();
+    let r = s.execute("timeline.trim", json!({"clip": last.0, "edge": "out", "mode": "regular", "delta": far.0})).expect("ok");
     assert_eq!(r["delta"], json!(shown.0), "the preview and the trim agree");
     let small = s.sequence_rate().frame_duration();
-    let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
+    let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).expect("ok");
     assert_eq!(back, -small, "a trim within the media is not clamped");
+}
+
+/// Two clips on their own video track, 48 frames each with a 48-frame gap between them: the
+/// fixture for trims that act on a whole selection.
+fn spaced_clips() -> (Session, ClipId, ClipId) {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Group trim", "video": 1, "audio": 0})).expect("ok");
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).expect("a video item").id;
+    for n in 0..2 {
+        s.execute("timeline.place", json!({"item": item.0, "frame": 96 * n, "duration": rate.tick_of(48).0})).expect("ok");
+    }
+    let ids: Vec<ClipId> = v1(&s).iter().map(|c| ClipId(c.0)).collect();
+    (s, ids[0], ids[1])
+}
+
+/// The Out-edge handle each clip has left, as `timeline.trim` would apply it on its own.
+fn out_handle(s: &Session, clip: ClipId, far: Tick) -> Tick {
+    commands::trim_delta(s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).expect("ok")
+}
+
+/// A marquee selection trims as one group: dragging one edge moves every selected clip's Out edge
+/// by the same delta, in one edit step, so a single undo puts the whole group back.
+#[test]
+fn a_selection_trims_together_as_one_undo_step() {
+    let (mut s, a, b) = spaced_clips();
+    let far = s.sequence_rate().tick_of(240);
+    let want = out_handle(&s, a, far).min(out_handle(&s, b, far));
+    assert!(want > Tick::ZERO, "the fixture has an Out handle on both clips");
+    let clip = |s: &Session, c: ClipId| s.active_sequence().expect("ok").find_item(c).expect("ok").1.clone();
+    let (before_a, before_b) = (clip(&s, a), clip(&s, b));
+    let undo0 = s.history.undo.len();
+    let shown = commands::trim_delta_group(&s, &[a, b], filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, want, false).expect("ok");
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "regular", "delta": want.0})).expect("ok");
+    assert_eq!(Tick(r["delta"].as_i64().expect("ok")), shown, "the preview and the trim agree");
+    assert_eq!(shown, want, "the group moves by the delta both clips can take");
+    for (id, before) in [(a, &before_a), (b, &before_b)] {
+        let now = clip(&s, id);
+        assert_eq!(now.duration, before.duration + want, "every selected clip grows by the same delta");
+        assert_eq!(now.start, before.start, "an Out trim leaves the start where it was");
+    }
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step for the whole group");
+    s.execute("edit.undo", json!({})).expect("ok");
+    assert_eq!(clip(&s, a).duration, before_a.duration);
+    assert_eq!(clip(&s, b).duration, before_b.duration);
+    s.execute("edit.redo", json!({})).expect("ok");
+    assert_eq!(clip(&s, a).duration, before_a.duration + want);
+    assert_eq!(clip(&s, b).duration, before_b.duration + want);
+}
+
+/// The group stops where the first clip has to: a delta past one clip's handle is clamped for the
+/// whole group, so no clip overlaps its neighbour and none runs past its media.
+#[test]
+fn a_group_trim_stops_where_the_first_clip_has_to() {
+    let (mut s, a, b) = spaced_clips();
+    let far = s.sequence_rate().tick_of(240);
+    let want = out_handle(&s, a, far).min(out_handle(&s, b, far));
+    let r = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "regular", "delta": far.0})).expect("ok");
+    assert_eq!(Tick(r["delta"].as_i64().expect("ok")), want, "clamped for the whole group, not per clip");
+    let q = s.active_sequence().expect("ok");
+    let (_, ca) = q.find_item(a).expect("ok");
+    let (_, cb) = q.find_item(b).expect("ok");
+    assert!(ca.end() <= cb.start, "the trimmed neighbour does not overlap the next clip");
+}
+
+/// A ripple moves the rest of the track, so it still trims one clip (and its links) at a time.
+#[test]
+fn a_ripple_trim_still_takes_one_clip() {
+    let (mut s, a, b) = spaced_clips();
+    let e = s.execute("timeline.trim", json!({"clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": 2})).expect_err("refused");
+    assert!(e.to_string().contains("ripple trim"), "{e}");
+    s.execute("timeline.trim", json!({"clip": a.0, "edge": "out", "mode": "ripple", "deltaFrames": 2})).expect("one clip still ripples");
+}
+
+/// A malformed group never silently trims something else: an id of no clip in the active sequence
+/// is a bad parameter (#65's rule for explicit targets).
+#[test]
+fn a_group_trim_refuses_clip_ids_it_does_not_know() {
+    let (mut s, a, _) = spaced_clips();
+    let e = s.execute("timeline.trim", json!({"clips": [a.0, 999_999], "edge": "out", "mode": "regular", "deltaFrames": 2})).expect_err("refused");
+    assert!(e.to_string().contains("999999"), "{e}");
 }

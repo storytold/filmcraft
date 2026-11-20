@@ -905,6 +905,41 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
     Ok(d)
 }
 
+/// The delta a trim of a whole group (a marquee selection) can apply: [`clamp_trim_linked`], and in
+/// overwrite mode also the group itself, so a group trim never eats another selected clip — the
+/// edge stops where the next selected clip starts instead of overwriting it.
+fn clamp_trim_group(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, ctx: &edit::EditCtx) -> Result<Tick> {
+    let mut d = clamp_trim_linked(q, clips, edge, mode, delta, ctx)?;
+    if mode != TrimMode::Overwrite || clips.len() < 2 || d == Tick::ZERO {
+        return Ok(d);
+    }
+    for c in clips {
+        let Some((tid, it)) = q.find_item(*c) else { continue };
+        for o in clips.iter().filter(|o| **o != *c) {
+            let Some((otid, other)) = q.find_item(*o) else { continue };
+            if otid != tid {
+                continue;
+            }
+            match edge {
+                Edge::Out if d > Tick::ZERO && other.start >= it.end() => {
+                    let room = other.start - it.end();
+                    if room < d {
+                        d = room;
+                    }
+                }
+                Edge::In if d < Tick::ZERO && other.end() <= it.start => {
+                    let room = it.start - other.end();
+                    if room < -d {
+                        d = -room;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(d)
+}
+
 /// The delta `timeline.trim` would apply for `delta`, without editing anything: the Timeline's
 /// trim drag shows this, so the edge stops at the end of the media or the neighbouring clip
 /// instead of following the pointer past it (#653).
@@ -915,13 +950,20 @@ pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: 
 /// [`trim_delta`] for a trim that, with `linked` false (Alt held), leaves the clip's linked
 /// partners alone (#3300).
 pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
+    trim_delta_group(s, &[clip], edge, mode, delta, linked)
+}
+
+/// [`trim_delta`] for a trim of a whole group of clips (a marquee selection dragged by one of its
+/// edges): `delta` clamped by every clip's media and neighbours, so the preview stops where the
+/// release will stop. With `linked` true each clip's linked partners join the group.
+pub fn trim_delta_group(s: &Session, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
-    clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
+    let group = if linked { with_links(s, clips) } else { clips.to_vec() };
+    clamp_trim_group(q, &group, edge, mode, delta, &ctx)
 }
 
 /// `clip` and, unless `p` has `"linked": false` (Alt held), its linked partners.
@@ -3395,31 +3437,72 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
+            r#"{"clip":id,"clips":[id]?,"edge":"in|out","mode":"regular|ripple|overwrite","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
             has_seq,
             |s, p| {
-                let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
+                // A marquee selection trims as one group: every listed clip's edge moves by the
+                // same delta, clamped so none runs past its media and none eats a neighbour it
+                // may not, all inside one edit step so a single undo puts the whole group back.
+                let explicit = match p.get("clips") {
+                    None => None,
+                    Some(v) => {
+                        let arr = v.as_array().ok_or_else(|| bad("timeline.trim", "`clips` must be an array of clip ids"))?;
+                        if arr.is_empty() {
+                            return Err(bad("timeline.trim", "`clips` must name at least one clip id"));
+                        }
+                        let ids: Vec<ClipId> = arr
+                            .iter()
+                            .map(|v| v.as_u64().map(ClipId).ok_or_else(|| bad("timeline.trim", "`clips` elements must be integer clip ids")))
+                            .collect::<Result<_>>()?;
+                        let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+                        if let Some(missing) = ids.iter().find(|id| q.find_item(**id).is_none()) {
+                            return Err(bad("timeline.trim", format!("no clip {} in the active sequence", missing.0)));
+                        }
+                        Some(ids)
+                    }
+                };
+                let c = clip_p(p, "clip")
+                    .or_else(|| explicit.as_ref().and_then(|v| v.first().copied()))
+                    .ok_or_else(|| bad("timeline.trim", "need `clip` or `clips`"))?;
                 let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
-                let mode = if str_p(p, "mode") == Some("ripple") { TrimMode::Ripple } else { TrimMode::Regular };
+                let mode = match str_p(p, "mode") {
+                    Some("ripple") => TrimMode::Ripple,
+                    Some("overwrite") => TrimMode::Overwrite,
+                    _ => TrimMode::Regular,
+                };
                 let d = p
                     .get("delta")
                     .and_then(Value::as_i64)
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links_p(s, p, c);
+                let linked = bool_p(p, "linked").unwrap_or(true);
+                // a ripple moves the rest of the track, so it still trims one clip at a time
+                if explicit.as_ref().is_some_and(|list| list.len() > 1) && mode == TrimMode::Ripple {
+                    return Err(bad("timeline.trim", "a ripple trim moves one clip (and its linked partners) at a time"));
+                }
+                let clips = match &explicit {
+                    Some(list) if linked => with_links(s, list),
+                    Some(list) => list.clone(),
+                    None => with_links_p(s, p, c),
+                };
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
                     s.command_origin = Some(crate::trim::RIPPLE_TRIM_ORIGIN.to_string());
                 }
-                let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
+                let label = match mode {
+                    TrimMode::Ripple => "Ripple Trim",
+                    TrimMode::Overwrite => "Overwrite Trim",
+                    TrimMode::Regular => "Trim",
+                };
+                let (applied, overwritten) = s.edit_sequence(label, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
                     }
                     let before = q.find_item(c).map(|(_, i)| i.range());
                     // clamp across all linked partners, then apply the common delta
-                    let mut dd = clamp_trim_linked(q, &clips, edge, mode, d, ctx)?;
+                    let mut dd = clamp_trim_group(q, &clips, edge, mode, d, ctx)?;
                     if mode == TrimMode::Ripple {
                         // the clip and its linked partners ripple as one edit
                         let mut group = vec![c];
@@ -3439,19 +3522,34 @@ fn build() -> Vec<CommandSpec> {
                             };
                             crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
                         }
+                        Ok((dd, Vec::new()))
+                    } else if mode == TrimMode::Overwrite {
+                        // the clip and its linked partners eat their neighbours as one edit; one
+                        // link map keeps neighbours that get split linked to their partners
+                        let group: Vec<ClipId> =
+                            clips.iter().copied().filter(|id| q.find_item(*id).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| !tr.locked))).collect();
+                        if group.is_empty() {
+                            return Err(edit::EditError::Locked.into());
+                        }
+                        let (_, overwritten) = edit::trim_overwrite_group(q, &group, edge, dd, ctx)?;
+                        Ok((dd, overwritten))
                     } else {
+                        let mut applied_any = false;
                         for c in &clips {
                             match edit::trim(q, *c, edge, mode, dd, ctx) {
                                 Err(edit::EditError::Locked) => continue,
                                 Err(e) => return Err(e.into()),
-                                Ok(_) => {}
+                                Ok(_) => applied_any = true,
                             }
                         }
+                        if !applied_any {
+                            return Err(edit::EditError::Locked.into());
+                        }
+                        Ok((dd, Vec::new()))
                     }
-                    Ok(dd)
-                });
+                })?;
                 s.command_origin = outer;
-                Ok(json!({"delta": applied?.0}))
+                Ok(json!({"delta": applied.0, "overwritten": overwritten.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
         // ================= Trim mode =================
