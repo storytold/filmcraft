@@ -842,11 +842,11 @@ fn apv_mp4_and_raw_bitstream_decode() {
     use filmcraft_isobmff::{ApvConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
 
     let (w, h) = (64u32, 32u32);
-    let mut fr = filmcraft_apv::Frame::new(w, h, filmcraft_apv::ChromaFormat::Yuv422, 10, false);
+    let mut fr = craft_video::apv::Frame::new(w, h, craft_video::apv::ChromaFormat::Yuv422, 10, false);
     for (i, y) in fr.y.iter_mut().enumerate() {
         *y = if (i as u32 % w) < w / 2 { 850 } else { 150 };
     }
-    let mut enc = filmcraft_apv::Encoder::new(filmcraft_apv::Profile::P422_10, w, h).expect("encoder");
+    let mut enc = craft_video::apv::Encoder::new(craft_video::apv::Profile::P422_10, w, h).expect("encoder");
     let au = enc.encode_raw_au(&fr).expect("encode_raw_au");
     let apvc = ApvConfig::parse(&enc.decoder_config_record()).expect("parse apvC");
 

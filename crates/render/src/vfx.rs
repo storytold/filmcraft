@@ -109,7 +109,8 @@ impl FxEnv for ItemEnv<'_> {
         let src = crate::source_size(self.project, self.item.item).unwrap_or((1, 1));
         let cx = FxCtx {
             t: self.item.effect_time_at(t2),
-            px_scale: img.w as f32 / src.0.max(1) as f32,
+            px_scale: (img.w as f32 / src.0.max(1) as f32).min(crate::MAX_EFFECT_PX_SCALE),
+            mask_scale: img.w as f32 / src.0.max(1) as f32,
             seconds: (t2 - self.item.start).seconds(),
             timecode: self.tc,
             clip_name: &self.item.name,

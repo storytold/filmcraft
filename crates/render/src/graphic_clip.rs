@@ -237,14 +237,40 @@ fn over_linear_gradient(px: &mut [f32], msk: &Mask, grad: &LinearGradient, lb: [
     });
 }
 
-/// Group text runs by their effective colour, including unstyled text (run 0).
-fn color_groups(color: [f32; 4], overrides: &[Option<[f32; 4]>]) -> Vec<([f32; 4], Vec<u16>)> {
+/// The style runs that own at least one glyph or decoration (run 0, the base style, always counts).
+/// Runs without any cannot paint, so they must not cost a colour group and its full-size mask.
+fn used_runs(layout: &Layout) -> Vec<bool> {
+    let mut used = vec![false; layout.glyphs.iter().map(|g| g.run).chain(layout.underline_runs.iter().copied()).max().map_or(1, |m| m as usize + 1)];
+    used[0] = true;
+    for r in layout.glyphs.iter().map(|g| g.run).chain(layout.underline_runs.iter().copied()) {
+        used[r as usize] = true;
+    }
+    used
+}
+
+/// Most colour groups (each a full-size mask and a pass over it) painted for one layer: about a
+/// billion pixel visits. Groups past it are not painted.
+fn max_groups(cover: &Mask) -> usize {
+    ((1usize << 30) / cover.w.saturating_mul(cover.h).max(1)).max(1)
+}
+
+/// Group text runs by their effective colour, including unstyled text (run 0). Only `used` runs
+/// are grouped, at most `max` groups.
+fn color_groups(color: [f32; 4], overrides: &[Option<[f32; 4]>], used: &[bool], max: usize) -> Vec<([f32; 4], Vec<u16>)> {
     let mut groups: Vec<([f32; 4], Vec<u16>)> = Vec::new();
+    let mut index: HashMap<[u32; 4], usize> = HashMap::new();
     for (r, col) in std::iter::once(color).chain(overrides.iter().map(|c| c.unwrap_or(color))).enumerate() {
         let Ok(run) = u16::try_from(r) else { break };
-        match groups.iter_mut().find(|g| g.0 == col) {
-            Some(g) => g.1.push(run),
-            None => groups.push((col, vec![run])),
+        if !used.get(r).copied().unwrap_or(false) {
+            continue;
+        }
+        match index.get(&col.map(f32::to_bits)) {
+            Some(&g) => groups[g].1.push(run),
+            None if groups.len() < max => {
+                index.insert(col.map(f32::to_bits), groups.len());
+                groups.push((col, vec![run]));
+            }
+            None => {}
         }
     }
     groups
@@ -256,7 +282,7 @@ fn paint_solid(px: &mut [f32], cover: &Mask, color: [f32; 4], text: Option<&Layo
         over_mask(px, cover, premul_linear(color));
         return;
     };
-    for (col, runs) in color_groups(color, run_fills) {
+    for (col, runs) in color_groups(color, run_fills, &used_runs(layout), max_groups(cover)) {
         let mut m_run = Mask::new(cover.w, cover.h);
         for r in runs {
             render::draw_run(layout, m, &mut m_run, origin, Some(r));
@@ -303,14 +329,17 @@ impl StrokeCoverage<'_> {
             return StrokePlan { groups: vec![StrokeGroup { style: stroke.style, runs: Vec::new() }], whole: Some(self.mask(self.cover, &stroke.style)) };
         }
         let mut groups: Vec<StrokeGroup> = Vec::new();
+        let used = self.text.map(used_runs).unwrap_or_default();
+        let max = max_groups(self.cover);
         for (r, style) in std::iter::once(stroke.style).chain(stroke.runs.iter().copied()).enumerate() {
             let Ok(run) = u16::try_from(r) else { break };
-            if !style.active() {
+            if !style.active() || !used.get(r).copied().unwrap_or(false) {
                 continue;
             }
-            match groups.iter_mut().find(|g| g.style == style) {
-                Some(g) => g.runs.push(run),
-                None => groups.push(StrokeGroup { style, runs: vec![run] }),
+            match groups.iter().position(|g| g.style == style) {
+                Some(g) => groups[g].runs.push(run),
+                None if groups.len() < max => groups.push(StrokeGroup { style, runs: vec![run] }),
+                None => {}
             }
         }
         StrokePlan { groups, whole: None }
@@ -354,12 +383,18 @@ fn paint_mixed_gradient(input: MixedGradient<'_>) {
     let mut grad_mask = Mask::new(cover.w, cover.h);
     render::draw_run(layout, transform, &mut grad_mask, origin, Some(0));
     let mut solids: Vec<([f32; 4], Vec<u16>)> = Vec::new();
+    let used = used_runs(layout);
+    let max = max_groups(cover);
     for (i, fill) in run_fills.iter().enumerate() {
-        let run = (i + 1) as u16;
+        let Ok(run) = u16::try_from(i + 1) else { break };
+        if !used.get(i + 1).copied().unwrap_or(false) {
+            continue; // owns no glyph: nothing to paint
+        }
         if let Some(col) = fill {
-            match solids.iter_mut().find(|g| g.0 == *col) {
-                Some(g) => g.1.push(run),
-                None => solids.push((*col, vec![run])),
+            match solids.iter().position(|g| g.0 == *col) {
+                Some(g) => solids[g].1.push(run),
+                None if solids.len() < max => solids.push((*col, vec![run])),
+                None => {}
             }
         } else {
             render::draw_run(layout, transform, &mut grad_mask, origin, Some(run));

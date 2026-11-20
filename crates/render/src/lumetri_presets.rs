@@ -223,6 +223,7 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
     let cx = FxCtx {
         t: Tick::ZERO,
         px_scale: w as f32 / 1920.0,
+        mask_scale: w as f32 / 1920.0,
         seconds: 0.0,
         timecode: "",
         clip_name: "",

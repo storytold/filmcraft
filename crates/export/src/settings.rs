@@ -198,6 +198,7 @@ impl ExrCompression {
         }
     }
     /// The value of the OpenEXR `compression` attribute.
+    #[cfg(test)]
     pub(crate) fn code(self) -> u8 {
         match self {
             ExrCompression::None => 0,
@@ -207,6 +208,7 @@ impl ExrCompression {
         }
     }
     /// Scan lines per chunk.
+    #[cfg(test)]
     pub(crate) fn lines(self) -> usize {
         if self == ExrCompression::Zip { 16 } else { 1 }
     }
@@ -280,6 +282,15 @@ pub enum SampleFormat {
 }
 
 impl SampleFormat {
+    pub(crate) fn shared(self) -> craft_audio::pcm_export::SampleFormat {
+        match self {
+            Self::Int16 => craft_audio::pcm_export::SampleFormat::Int16,
+            Self::Int24 => craft_audio::pcm_export::SampleFormat::Int24,
+            Self::Int32 => craft_audio::pcm_export::SampleFormat::Int32,
+            Self::Float32 => craft_audio::pcm_export::SampleFormat::Float32,
+        }
+    }
+
     pub const ALL: [SampleFormat; 4] = [SampleFormat::Int16, SampleFormat::Int24, SampleFormat::Int32, SampleFormat::Float32];
 
     pub fn bits(self) -> u16 {
@@ -312,21 +323,13 @@ impl SampleFormat {
     /// One mix sample as a signed integer of this size, clipped at full scale (0 for
     /// [`SampleFormat::Float32`], which is never quantised). Not-a-number becomes silence.
     pub fn quantise(self, s: f32) -> i32 {
-        // f32 products for 16 and 24 bit (the bytes every earlier export wrote); f64 for 32 bit,
-        // whose full scale 2^31 - 1 f32 cannot hold. NaN casts to 0, the casts saturate.
-        let s = s.clamp(-1.0, 1.0);
-        match self {
-            SampleFormat::Int16 => (s * 32_767.0).round() as i32,
-            SampleFormat::Int24 => (s * 8_388_607.0).round() as i32,
-            SampleFormat::Int32 => (f64::from(s) * 2_147_483_647.0).round() as i32,
-            SampleFormat::Float32 => 0,
-        }
+        self.shared().quantise(s)
     }
 
     /// One mix sample as stored by [`SampleFormat::Float32`]: as it is, NaN as silence and
     /// infinities as the largest finite values.
     pub fn float(s: f32) -> f32 {
-        if s.is_nan() { 0.0 } else { s.clamp(f32::MIN, f32::MAX) }
+        craft_audio::pcm_export::SampleFormat::float(s)
     }
 }
 
@@ -523,7 +526,7 @@ impl ExportSettings {
     pub fn supports_alpha(&self) -> bool {
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
-            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
+            Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == craft_video::prores::ChromaFormat::Yuv444,
             _ => false,
         }
     }
@@ -573,9 +576,9 @@ impl ExportSettings {
     /// nearest one above, 48 kHz above 48 kHz), mono or stereo (5.1 is folded to stereo), and the
     /// Layer III bit rate nearest at or below the setting.
     pub fn mp3_stream(&self, seq_sr: u32) -> (u32, u32, u32) {
-        let rate = filmcraft_mp3enc::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
+        let rate = craft_audio::mp3::nearest_sample_rate(self.audio.sample_rate.unwrap_or(seq_sr));
         let channels = if self.audio.channels <= 1 { 1 } else { 2 };
-        let kbps = filmcraft_mp3enc::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
+        let kbps = craft_audio::mp3::nearest_bitrate(rate, self.audio.bitrate_kbps).unwrap_or(128);
         (rate, channels, kbps)
     }
 
@@ -642,9 +645,9 @@ impl ExportSettings {
             }
             Format::Apv => {
                 let bpp = match crate::apv_profile(&self.apv_profile) {
-                    filmcraft_apv::Profile::P422_12 => 3.6,
-                    filmcraft_apv::Profile::P444_10 => 4.2,
-                    filmcraft_apv::Profile::P444_12 | filmcraft_apv::Profile::P4444_10 | filmcraft_apv::Profile::P4444_12 => 5.0,
+                    craft_video::apv::Profile::P422_12 => 3.6,
+                    craft_video::apv::Profile::P444_10 => 4.2,
+                    craft_video::apv::Profile::P444_12 | craft_video::apv::Profile::P4444_10 | craft_video::apv::Profile::P4444_12 => 5.0,
                     _ => 3.0,
                 };
                 px * fps * bpp
@@ -736,7 +739,7 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::ProRes => {
-                    use filmcraft_prores::Profile;
+                    use craft_video::prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",
