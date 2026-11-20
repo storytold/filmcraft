@@ -18,6 +18,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.magnification.<fit\|10\|25\|50\|75\|100\|150\|200\|400\|800\|1600>` | View ▸ Magnification and the zoom dropdown | 100% = one frame pixel per screen pixel. The mouse wheel (or a pinch) over a monitor zooms about the pointer, from Fit too, within 10%–1600%; drag with the middle mouse button, or with the Hand tool, to pan; Fit resets both. Each monitor keeps its own zoom and pan |
 | `view.showRulers`, `view.showGuides`, `view.lockGuides`, `view.clearGuides` | View | toggles take `{"enabled": bool}` |
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
+| `view.editGuide`, `view.removeGuide` | Guide context menu | pass a zero-based `guide` index. Edit takes `color: [r,g,b]` and/or `opacity` from 0 to 1. Guides must be unlocked |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
