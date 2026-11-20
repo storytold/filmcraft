@@ -536,6 +536,31 @@ fn frame_hold_options_add_frame_hold_and_hold_segment() {
     assert!(s.execute("clip.insertFrameHoldSegment", json!({})).is_err(), "no clip under the playhead");
 }
 
+/// With Ripple Sequence Markers on, Insert Frame Hold Segment moves the markers at and after the
+/// playhead by the segment's length, like every other insert; a marker before it stays.
+#[test]
+fn insert_frame_hold_segment_ripples_sequence_markers() {
+    let mut s = demo();
+    s.state.ripple_sequence_markers = true;
+    let rate = s.sequence_rate();
+    let c = v1(&s)[0].clone();
+    let t = c.start + rate.tick_of(12);
+    let marks = [("before", t - rate.tick_of(1)), ("at", t), ("later", t + rate.tick_of(5))];
+    for (name, at) in marks {
+        s.execute("markers.add", json!({"time": at.0, "name": name})).unwrap();
+    }
+    s.execute("playhead.set", json!({"time": t.0})).unwrap();
+    select(&mut s, &[c.id.0]);
+    let r = s.execute("clip.insertFrameHoldSegment", json!({})).unwrap();
+    let len = clip(&s, r["clip"].as_u64().unwrap()).duration;
+    let q = s.active_sequence().unwrap();
+    for (name, was) in marks {
+        let now = q.markers.iter().find(|m| m.name == name).map(|m| m.start);
+        let want = if was < t { was } else { was + len };
+        assert_eq!(now, Some(want), "marker {name} keeps its place on the material");
+    }
+}
+
 #[test]
 fn field_options_and_time_interpolation_are_stored() {
     let mut s = demo();
