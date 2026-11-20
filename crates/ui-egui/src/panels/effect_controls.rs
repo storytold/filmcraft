@@ -967,8 +967,7 @@ fn param_value_widget(
                 Some(crate::panels::lumetri::LutPick::Lut(r)) => set = Some(json!(r)),
                 Some(crate::panels::lumetri::LutPick::Browse) => {
                     let (param, clip, mask, label) = (pd.id.to_string(), clip.0, mask, pd.label);
-                    app.pick_ui(crate::native_dialogs::FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
-                        let Some(path) = paths.into_iter().next() else { return };
+                    crate::panels::lumetri::browse_luts(app, move |app, path| {
                         // importing into the LUT library and setting the parameter undo as one step
                         let r = app.session.edit_group(label, |s| {
                             let r = s.execute("lut.import", json!({"path": path}))?["ref"].clone();
