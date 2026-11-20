@@ -479,6 +479,10 @@ pub fn seam_measurement_channels(item: &TrackItem, audio: AudioBuffer, track_wid
     {
         return folded;
     }
+    if track_width != 2 {
+        // Every output pick contributes to the measurement, including repeated sources.
+        return source_51(item, audio.channel_count()).into_iter().filter_map(|index| audio.channels.get(index).cloned()).collect();
+    }
     let picked = played_channels(item, audio.channel_count(), track_width);
     audio.channels.into_iter().enumerate().filter_map(|(index, channel)| picked.contains(&index).then_some(channel)).collect()
 }
@@ -563,6 +567,17 @@ mod tests {
     fn ramp(m: i64, len: usize) -> Option<AudioBuffer> {
         let ch: Vec<f32> = (0..len as i64).map(|k| (m + k) as f32 / 1e6).collect();
         Some(AudioBuffer { sample_rate: 48_000, channels: vec![ch.clone(), ch] })
+    }
+
+    #[test]
+    fn remix_seam_measurement_keeps_repeated_surround_picks() {
+        let mut it = item(1.0);
+        it.source_channels = vec![1, 0, 1, 1, 1, 1];
+        let source = |_: i64, _: usize| Some(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25], vec![0.75]] });
+        let expected = vec![vec![0.75], vec![0.25], vec![0.75], vec![0.75], vec![0.75], vec![0.75]];
+        assert_eq!(raw_channels(&it, &source, 0, 1, 48_000, 6), expected);
+        let audio = source(0, 1).unwrap();
+        assert_eq!(seam_measurement_channels(&it, audio, 6), expected);
     }
 
     #[test]
