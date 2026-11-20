@@ -7,8 +7,11 @@
 //! - **Picture** comes from an enabled clip on a video track whose output (eye) is on that is not
 //!   an adjustment layer (the compositor skips disabled clips, `plan.rs` skips a track whose output
 //!   is off, and an adjustment layer only changes what is under it).
-//! - **Sound** comes from an enabled clip on an audio track that is heard: not muted and, while any
-//!   audio track is soloed, soloed itself (the preview mix's rule in `crates/render/src/preview.rs`).
+//! - **Sound** comes from an enabled clip on an audio track the Mix hears, as the export's mixer
+//!   graph decides it (`filmcraft_render::mixer::heard_tracks`): not solo-muted (soloing a submix
+//!   keeps the tracks feeding it), and routed to the Mix through strips that are not muted. A muted
+//!   track still sends through its pre-fader sends; a muted send carries nothing. A mute that is
+//!   automated counts as not muted for the whole sequence.
 //! - A **transition** shows or plays each of its clips that does so over its whole length, into
 //!   the clip's handles, so its frames count even past the end of that clip.
 //!
@@ -31,9 +34,9 @@
 //! Checking a transition against its clips' media handles (`transitionHandles` in #4257) needs the
 //! media's length and is not done yet: asking for it is an "unsupported" error, not an empty list.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, Track, TrackItem, TrackKind};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, Track, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
@@ -74,16 +77,17 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let q = s.project.sequence(id).ok_or_else(|| bad(CMD, format!("item {} is not a sequence", id.0)))?;
     let rate = q.settings.frame_rate;
     let duration = filmcraft_export::frame_span(rate, TimeRange::new(Tick::ZERO, q.duration())).1;
+    let heard = filmcraft_render::mixer::heard_tracks(q);
     let mut found: Vec<Finding> = Vec::new();
     let on = |c: &str| checks.contains(&c);
     if on("shortClip") {
         short_clips(q, rate, min_frames, &mut found);
     }
     if on("pictureHole") || on("soundHole") || on("emptyStretch") {
-        coverage(&s.project, q, rate, duration, &checks, &mut found);
+        coverage(&s.project, q, &heard, rate, duration, &checks, &mut found);
     }
     if on("jumpCut") {
-        jump_cuts(&s.project, q, rate, &mut found);
+        jump_cuts(&s.project, q, &heard, rate, &mut found);
     }
     found.sort_by_key(|f| (f.frame, CHECKS.iter().position(|c| *c == f.check), f.order));
     let warnings = found.iter().filter(|f| f.severity == "warning").count();
@@ -166,14 +170,15 @@ fn frames(rate: FrameRate, it: &TrackItem) -> (i64, i64) {
     frames_of(rate, it.start, it.end())
 }
 
-/// Whether a clip shows (video) or plays (audio) on its track, as the renderer decides it.
-fn seen_or_heard(project: &Project, q: &Sequence, tr: &Track, it: &TrackItem) -> bool {
+/// Whether a clip shows (video) or plays (audio) on its track, as the renderer decides it;
+/// `heard` is the audio tracks the Mix hears.
+fn seen_or_heard(project: &Project, heard: &HashSet<TrackId>, tr: &Track, it: &TrackItem) -> bool {
     if !it.enabled {
         return false;
     }
     match tr.kind {
         TrackKind::Video => tr.enabled && !is_adjustment(project, it),
-        TrackKind::Audio => !tr.muted && (tr.solo || !q.audio_tracks.iter().any(|t| t.solo)),
+        TrackKind::Audio => heard.contains(&tr.id),
     }
 }
 
@@ -224,7 +229,7 @@ fn is_adjustment(project: &Project, it: &TrackItem) -> bool {
 
 /// Picture, sound and empty-stretch findings: one sweep over the frames where what is seen or
 /// heard changes.
-fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, checks: &[&str], out: &mut Vec<Finding>) {
+fn coverage(project: &Project, q: &Sequence, heard: &HashSet<TrackId>, rate: FrameRate, duration: i64, checks: &[&str], out: &mut Vec<Finding>) {
     let span = |it: &TrackItem| {
         let (start, end) = frames(rate, it);
         Span { clip: it.id, start, end }
@@ -235,7 +240,7 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
     let mut silent = Vec::new();
     for tr in q.all_tracks() {
         for it in &tr.items {
-            match (seen_or_heard(project, q, tr, it), tr.kind) {
+            match (seen_or_heard(project, heard, tr, it), tr.kind) {
                 (true, TrackKind::Video) => picture.push(span(it)),
                 (true, TrackKind::Audio) => sound.push(span(it)),
                 (false, _) => silent.push(span(it)),
@@ -252,7 +257,7 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
             let pieces = if tr.kind == TrackKind::Video { unclaimed(whole, &mut claimed) } else { vec![whole] };
             for side in [x.from, x.to].into_iter().flatten() {
                 let Some(it) = tr.item(side) else { continue };
-                if !seen_or_heard(project, q, tr, it) {
+                if !seen_or_heard(project, heard, tr, it) {
                     continue;
                 }
                 for &(start, end) in &pieces {
@@ -371,11 +376,11 @@ fn source_skip(a: &TrackItem, b: &TrackItem) -> Option<Tick> {
 
 /// Jump cuts between clips that are seen or heard (a cut nobody sees is not one). Linked picture
 /// and sound cut together give a finding on each track.
-fn jump_cuts(project: &Project, q: &Sequence, rate: FrameRate, out: &mut Vec<Finding>) {
+fn jump_cuts(project: &Project, q: &Sequence, heard: &HashSet<TrackId>, rate: FrameRate, out: &mut Vec<Finding>) {
     for (name, order, tr) in named_tracks(q) {
         for w in tr.items.windows(2) {
             let [a, b] = w else { continue };
-            if !(seen_or_heard(project, q, tr, a) && seen_or_heard(project, q, tr, b)) {
+            if !(seen_or_heard(project, heard, tr, a) && seen_or_heard(project, heard, tr, b)) {
                 continue;
             }
             let Some(skip) = source_skip(a, b) else { continue };

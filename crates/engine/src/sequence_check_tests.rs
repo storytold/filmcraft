@@ -419,3 +419,57 @@ fn a_jump_into_a_clip_no_frame_samples_is_not_reported() {
     assert!(v1.is_empty(), "{r:#}");
     assert_eq!(r["durationFrames"], 49);
 }
+
+/// Sound counts as heard only when the mixer graph carries it to the Mix: a muted submix silences
+/// what is routed to it, while a muted track's pre-fader send keeps sending.
+#[test]
+fn sound_routed_to_a_muted_submix_is_not_heard() {
+    let (mut s, bars, _) = fresh();
+    place(&mut s, bars, "V1", 0, 0, 24); // V1 + A1, 0–24
+    s.execute("mixer.addSubmix", json!({})).unwrap();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "output": "S1"})).unwrap();
+    assert!(of(&check(&mut s, json!({})), "soundHole").is_empty(), "A1 reaches the Mix through S1");
+
+    s.execute("mixer.setStrip", json!({"strip": "S1", "muted": true})).unwrap();
+    let r = check(&mut s, json!({}));
+    let silent = of(&r, "soundHole");
+    assert_eq!(silent.len(), 1, "S1 is muted, so A1 is not heard: {r:#}");
+    assert_eq!((silent[0]["startFrame"].as_i64(), silent[0]["endFrame"].as_i64()), (Some(0), Some(24)));
+
+    // A1 muted, its output back on the Mix, a pre-fader send into a second, unmuted submix
+    s.execute("mixer.addSubmix", json!({})).unwrap();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "output": "Mix", "muted": true})).unwrap();
+    s.execute("mixer.addSend", json!({"strip": "A1", "target": "S2", "preFader": true})).unwrap();
+    assert!(of(&check(&mut s, json!({})), "soundHole").is_empty(), "the pre-fader send is before A1's mute");
+    s.execute("mixer.setSend", json!({"strip": "A1", "send": 0, "preFader": false})).unwrap();
+    assert_eq!(of(&check(&mut s, json!({})), "soundHole").len(), 1, "a post-fader send is after A1's mute");
+    s.execute("mixer.setSend", json!({"strip": "A1", "send": 0, "preFader": true, "muted": true})).unwrap();
+    assert_eq!(of(&check(&mut s, json!({})), "soundHole").len(), 1, "a muted send carries nothing");
+}
+
+/// Soloing a submix keeps the tracks that feed it and silences the rest, as the mixer does.
+#[test]
+fn a_soloed_submix_keeps_only_the_tracks_feeding_it() {
+    let (mut s, bars, matte) = fresh();
+    place(&mut s, matte, "V1", 0, 0, 48);
+    let ids = |s: &mut Session, track: &str, at: i64| {
+        let t = f(s, at).0;
+        let d = f(s, 24).0;
+        s.execute("timeline.place", json!({"item": bars, "track": track, "time": t, "duration": d})).unwrap()["clips"][0].as_u64().unwrap()
+    };
+    ids(&mut s, "A1", 0);
+    ids(&mut s, "A2", 24);
+    s.execute("mixer.addSubmix", json!({})).unwrap();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "output": "S1"})).unwrap();
+    assert!(of(&check(&mut s, json!({})), "soundHole").is_empty());
+
+    s.execute("mixer.setStrip", json!({"strip": "S1", "solo": true})).unwrap();
+    let r = check(&mut s, json!({}));
+    let silent = of(&r, "soundHole");
+    assert_eq!(silent.len(), 1, "A2 does not feed the soloed S1: {r:#}");
+    assert_eq!((silent[0]["startFrame"].as_i64(), silent[0]["endFrame"].as_i64()), (Some(24), Some(48)));
+
+    s.execute("mixer.setStrip", json!({"strip": "A2", "soloSafe": true})).unwrap();
+    let r = check(&mut s, json!({}));
+    assert!(of(&r, "soundHole").is_empty(), "a solo-safe track stays heard: {r:#}");
+}
