@@ -73,7 +73,7 @@ FilmCraft is a Rust video editor (workspace edition 2024). Run it with `cargo ru
 - **Commands and automation:** commands live in `crates/engine`; UI, CLI, control channel and MCP dispatch by command id. Each interactive widget registers an automation id.
 - **Attribution:** each asset `X` has a sidecar `X.attribution` and a row in `ATTRIBUTION.md`; `cargo xtask assets` checks both. Code-drawn assets live in `crates/ui-egui/src/icons.rs`, `crates/media` and `crates/render`. The ArtCraft brand marks in `docs/brand/` use `LicenseRef-ArtCraft-Trademark`.
 - **Fonts:** the optional build input `CRAFT_FONTS_DIR` (a craft-fonts checkout) feeds `crates/text/build.rs`; unset, the build uses bundled and system fonts.
-- **Corpora and fixtures:** shared real-file corpora are in `storytold/photocraft-corpus`, fetched pinned by commit and sha256 with `cargo xtask corpus`. Generated fixtures go to `target/fixtures/`.
+- **Corpora and fixtures:** large real-file corpora go in `storytold/photocraft-corpus`, fetched pinned by commit and sha256-verified, not into this repository; FilmCraft has no fetch command yet. `cargo xtask fixtures` generates media fixtures with ffmpeg into `target/fixtures/`.
 - **Credits:** `docs/contributors.md`; `contributors/people.toml` holds names people chose.
 - **Notes and work lists:** `plan/` is an optional gitignored notebook. Public lists: `ROADMAP.md`, `docs/gaps.md`, `docs/agents.md`. Commit subjects start with a task id (`M2.4: CABAC residual decoding`).
 - **Docs:** `CONTRIBUTING.md`, `docs/contributing.md`, `docs/architecture.md`, `docs/testing.md`, `docs/agents.md`, `docs/control-protocol.md`.
