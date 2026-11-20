@@ -220,3 +220,43 @@ fn speed_with_ripple_ripples_sequence_markers() {
         assert_eq!(at("late"), Some(late + moved), "speed {speed}, ripple {ripple}: a later marker moves as far as the next clip");
     }
 }
+
+/// A ripple speed-up deletes the markers over the part of the clip's old range it no longer
+/// covers, as a ripple trim of its Out point does. The second clip runs 48–96, so at 200% it ends
+/// at 72: markers at 72 and 95 go, 71 stays and 96 moves to 72.
+#[test]
+fn speed_up_with_ripple_deletes_markers_over_the_removed_tail() {
+    let mut s = Session::default();
+    let [_, (picture2, _), _] = three_clips(&mut s);
+    s.state.ripple_sequence_markers = true;
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    for n in [71, 72, 95, 96] {
+        s.execute("markers.add", json!({"time": f(n).0, "name": format!("m{n}")})).unwrap();
+    }
+    s.execute("clip.speedDuration", json!({"clips": [picture2.0], "speed": 200, "ripple": true})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let marks: Vec<_> = q.markers.iter().map(|m| (m.name.as_str(), m.start)).collect();
+    assert_eq!(marks, [("m71", f(71)), ("m96", f(72))], "71 stays, 72 and 95 go, 96 moves back 24 frames");
+}
+
+/// With Ripple Sequence Markers off, a ripple speed change still moves the later clips but leaves
+/// every marker where it was.
+#[test]
+fn speed_with_ripple_and_marker_ripple_off_leaves_markers() {
+    let mut s = Session::default();
+    let [_, (picture2, _), (picture3, _)] = three_clips(&mut s);
+    s.state.ripple_sequence_markers = false;
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let (early, late) = (f(10), f(120));
+    for (name, at) in [("early", early), ("late", late)] {
+        s.execute("markers.add", json!({"time": at.0, "name": name})).unwrap();
+    }
+    let next_before = range(&s, picture3).0;
+    s.execute("clip.speedDuration", json!({"clips": [picture2.0], "speed": 50, "ripple": true})).unwrap();
+    assert_eq!(range(&s, picture3).0 - next_before, f(48), "the next clip moves 48 frames later");
+    let q = s.active_sequence().unwrap();
+    let at = |name: &str| q.markers.iter().find(|m| m.name == name).map(|m| m.start);
+    assert_eq!((at("early"), at("late")), (Some(early), Some(late)), "both markers stay");
+}
