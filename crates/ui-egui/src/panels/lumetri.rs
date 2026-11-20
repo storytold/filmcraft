@@ -347,7 +347,7 @@ pub(crate) fn browse_luts(app: &mut FilmcraftApp, apply_one: impl FnOnce(&mut Fi
             [] => {}
             [path] => apply_one(app, path),
             _ => match app.session.execute("lut.import", json!({"paths": paths})) {
-                Ok(result) => app.ui.status = tlf!("Imported {n} LUTs", n = result["imported"]).into(),
+                Ok(result) => app.ui.status = tlf!("Imported {n} LUTs", n = result["imported"]),
                 Err(e) => app.ui.status = e.to_string(),
             },
         }
