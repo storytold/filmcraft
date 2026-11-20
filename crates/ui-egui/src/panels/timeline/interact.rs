@@ -1,11 +1,11 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_scroll, min_pps, new_track_at};
+use super::layout::{Layout, max_pps, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead, snap_transition};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, hit_secondary, json, marker_at,
-    marker_under_pointer, pos2, selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
+    selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -167,6 +167,10 @@ fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Dr
     move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), 0)
 }
 
+fn move_destination_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32, creates_track: bool) -> bool {
+    move_is_locked(seq, clips, if creates_track { 0 } else { delta })
+}
+
 fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
     clips.iter().any(|clip| {
         seq.find_item(*clip).is_some_and(|(track, _)| {
@@ -247,47 +251,134 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
-/// Wheel input over the Timeline, as in Premiere Pro on macOS (checked in 26.5.2): the wheel
-/// moves the tracks under the pointer, Cmd + wheel the Timeline sideways, Option + wheel
-/// zooms about the pointer.
+/// Wheel input over the Timeline: the wheel scrolls the Timeline in time (up = backwards),
+/// Shift+wheel does the same a lot faster, Ctrl+wheel moves the tracks up and down and
+/// Option+wheel zooms about the pointer.
+// Keep the mutually exclusive wheel gestures together so one event only changes one view axis.
+#[allow(clippy::cognitive_complexity)]
 fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &Layout, seq: &Sequence) {
     let ctx = ui.ctx().clone();
-    // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
-    //   wheel            the tracks under the pointer, up and down
-    //   Cmd + wheel      the Timeline, sideways
+    // ---- wheel:
+    //   wheel            the Timeline in time (up = backwards); Inverted controls flips it
+    //   Shift + wheel    the same, a lot faster
+    //   Ctrl + wheel     the tracks under the pointer, up and down
     //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
-    // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
+    // wheel. A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+    // time; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
+        // While a zoom-bar drag is going on the wheel belongs to the zoom bar: the track area
+        // below must not pan or scroll underneath the grab. The same for a track slider grab.
+        && !matches!(app.tl.drag, Some(Drag::ZoomBar { .. }))
+        && !app.tl.track_slider_dragging
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
-            let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
+        if w.command && w.shift && !w.alt {
+            return;
+        }
+        let inv = app.session.state.timeline_ui.inverted_controls;
+        // macOS delivers Shift+wheel sideways (delta.x only): treat it as the wheel's own axis
+        let wdy = if w.delta.y == 0.0 { w.delta.x } else { w.delta.y };
+        let extra = &app.session.state.timeline_ui.timeline_control_bindings;
+        let wheel_name =
+            format!("{}{}{}Scroll", if w.command { "Ctrl + " } else { "" }, if w.shift { "Shift + " } else { "" }, if w.alt { "Alt + " } else { "" });
+        let track_height_binding = extra.first().is_none_or(String::is_empty);
+        let track_height_wheel = if track_height_binding { w.shift && !w.command && !w.alt } else { extra.first().is_some_and(|s| s == &wheel_name) };
+        let fast_scroll = extra.get(1).is_some_and(|s| !s.is_empty() && s == &wheel_name);
+        if track_height_wheel && !fast_scroll && wdy != 0.0 {
+            let video = p.y < layout.split_y;
+            let (height, scroll, window, slots) = if video {
+                (
+                    &mut app.ui.timeline.video_track_h,
+                    &mut app.ui.timeline.v_scroll,
+                    (layout.split_y - layout.content.min.y - seq.caption_tracks.len() as f32 * super::super::timeline_captions::ROW_H).max(1.0),
+                    seq.video_tracks.len() as f32 + 1.0 / 3.0,
+                )
+            } else {
+                (
+                    &mut app.ui.timeline.audio_track_h,
+                    &mut app.ui.timeline.a_scroll,
+                    (layout.content.max.y - layout.split_y - 39.0).max(1.0),
+                    seq.audio_tracks.len() as f32 + 1.0 / 3.0,
+                )
+            };
+            let min = super::scrollbars::track_min_height(window, slots);
+            let max = 220.0f32.max(min * 2.0);
+            let factor = (wdy / 600.0).clamp(-0.3, 0.3) * if inv { -1.0 } else { 1.0 };
+            let old_max = (slots * *height - window).max(0.0);
+            let fraction = if old_max > 0.0 { (*scroll / old_max).clamp(0.0, 1.0) } else { 0.0 };
+            *height = (*height * (1.0 + factor)).clamp(min, max);
+            *scroll = fraction * (slots * *height - window).max(0.0);
+            return;
+        }
+        let track_scroll_binding = extra.get(2).map_or("", String::as_str);
+        let zoom_binding = extra.get(3).map_or("", String::as_str);
+        let default_track_scroll = w.command && !w.shift && !w.alt;
+        let default_zoom = w.alt && !w.command && !w.shift;
+        let track_scroll = if track_scroll_binding.is_empty() { default_track_scroll } else { track_scroll_binding == wheel_name };
+        let zoom_scroll = if zoom_binding.is_empty() { default_zoom } else { zoom_binding == wheel_name };
+        if (default_track_scroll && !track_scroll && !zoom_scroll) || (default_zoom && !zoom_scroll && !track_scroll) {
+            return;
+        }
+        // Ctrl + Shift + wheel zooms about the pointer, and Inverted controls turns that around
+        if (w.pinch - 1.0).abs() > 1e-4 || (zoom_scroll && wdy != 0.0) {
+            let f = if (w.pinch - 1.0).abs() > 1e-4 {
+                w.pinch as f64
+            } else {
+                let mut d = wdy;
+                if inv {
+                    d = -d;
+                }
+                (1.0_f64 + f64::from(d) * 0.01).clamp(0.5, 2.0)
+            };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
+            v.target_pps = (v.target_pps * f).clamp(
+                min_pps(seq.duration().seconds(), layout.content.width()).min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())),
+                max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()),
+            );
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
-            let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
-            let sideways = if w.delta.x.abs() > w.delta.y.abs() {
-                Some(w.delta.x)
-            } else if wheel_sideways || w.shift {
-                Some(w.delta.y)
+            // A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+            // time. The wheel itself does the same -- up = backwards in time -- and with Shift a
+            // lot faster; Ctrl + wheel moves the tracks up and down. Settings ▸ Timeline ▸
+            // Timeline Mouse Scrolling "Horizontal" swaps those two.
+            if track_scroll && !default_track_scroll {
+                if p.y < layout.split_y {
+                    app.ui.timeline.v_scroll += if inv { -w.delta.y } else { w.delta.y };
+                } else {
+                    app.ui.timeline.a_scroll -= if inv { -w.delta.y } else { w.delta.y };
+                }
+                return;
+            }
+            let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
+            let time = if fast_scroll {
+                Some(wdy * 10.0)
+            } else if w.shift {
+                None
+            } else if w.command == swap {
+                Some(wdy)
             } else {
                 None
             };
+            // a sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+            // time -- but Shift+wheel keeps its 10x speed even when macOS reports it sideways
+            let sideways = if w.delta.x.abs() > w.delta.y.abs() && !w.shift { Some(w.delta.x) } else { time };
             match sideways {
                 Some(d) => {
+                    // Inverted controls: the wheel scrolls the Timeline the other way in time
+                    let sign = if app.session.state.timeline_ui.inverted_controls { -1.0 } else { 1.0 };
                     let v = &mut app.ui.timeline;
                     let limit = max_scroll(seq.duration().seconds(), layout.content.width(), v.pps);
-                    v.target_scroll = (v.target_scroll - d as f64 / v.pps).clamp(0.0, limit);
+                    v.target_scroll = (v.target_scroll - sign * d as f64 / v.pps).clamp(0.0, limit);
                     v.scroll = v.target_scroll;
                 }
                 // up and down: the video tracks above the divider, the audio tracks below it (the
-                // lowest video track is at the bottom, so wheeling up brings higher ones in)
-                None if p.y < layout.split_y => app.ui.timeline.v_scroll += w.delta.y,
-                None => app.ui.timeline.a_scroll -= w.delta.y,
+                // lowest video track is at the bottom, so wheeling up brings higher ones in).
+                // Inverted controls turns both around too.
+                None if p.y < layout.split_y => app.ui.timeline.v_scroll += if inv { -w.delta.y } else { w.delta.y },
+                None => app.ui.timeline.a_scroll -= if inv { -w.delta.y } else { w.delta.y },
             }
         }
     }
@@ -340,7 +431,7 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 _ => CursorIcon::Default,
             }
         };
-        ctx.set_cursor_icon(cur);
+        ctx.set_cursor_icon(if app.tl.zoombar_point_cursor { CursorIcon::PointingHand } else { cur });
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
@@ -434,7 +525,11 @@ fn start_drag(
         (Tool::Zoom, _) => {
             if resp.clicked() {
                 let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
+                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(
+                    min_pps(seq.duration().seconds(), layout.content.width())
+                        .min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())),
+                    max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()),
+                );
                 app.tl.zoom_anchor = Some((t.seconds(), p.x));
             }
             None
@@ -690,23 +785,14 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let s1 = snap(app, seq, layout, first + raw, &clips) - first;
                 let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
                 let offset = offset.max(-first);
-                let cur_row = layout.row_at(p.y);
-                let start_row = layout.rows.iter().find(|r| r.track == start_track);
-                let track_delta = match (cur_row, start_row) {
-                    (Some(c), Some(s)) if c.kind == s.kind => c.index as i32 - s.index as i32,
-                    _ => 0,
-                };
-                if move_is_locked(seq, &clips, track_delta) {
+                let (track_delta, new_track) = move_drag_destination(app, seq, layout, p.y, &clips, start_track);
+                let locked = move_destination_is_locked(seq, &clips, track_delta, new_track.is_some());
+                if locked {
                     ctx.set_cursor_icon(CursorIcon::NotAllowed);
                     Some(Drag::Move { clips, grab_tick, start_track, offset: Tick::ZERO, track_delta: 0, new_track: None, copy: mods.alt })
                 } else {
                     // A linked or multitrack selection gets one destination per source track.
-                    let new_track = start_row
-                        .filter(|_| clips.iter().all(|c| seq.find_item(*c).is_some_and(|(tid, _)| seq.track(tid).is_some_and(|t| !t.locked))))
-                        .and_then(|s| {
-                            let (vh, ah) = (app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h);
-                            new_track_at(seq, layout, p.y, vh, ah).filter(|(kind, _)| *kind == s.kind)
-                        });
+                    let track_delta = if new_track.is_some() { 0 } else { track_delta };
                     Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, new_track, copy: mods.alt })
                 }
             }
@@ -807,18 +893,113 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
         ) {
             ctx.set_cursor_icon(CursorIcon::ResizeColumn);
         }
-        // auto-scroll when dragging near the edges
-        if !matches!(app.tl.drag, Some(Drag::Pan { .. }) | Some(Drag::ZoomBar { .. }) | Some(Drag::Volume(_))) {
+        // auto-scroll when dragging a CLIP near the edges -- a marquee box or a trim/remix handle
+        // is anchored to the pointer and must never have the view slide out from under it. It runs
+        // every frame for as long as the pointer sits in an edge zone -- a stationary hand scrolls
+        // too, so the frame is asked for here (without it the view only moved whenever some other
+        // input happened to repaint). The ramp runs over a long stretch (80 pt at the right edge,
+        // 40 at the left), so it stays gentle well before the edge, and tops out at 9 pt per
+        // 1/60 s on it.
+        if matches!(app.tl.drag, Some(Drag::Move { .. })) {
+            let dt = f64::from(ui.input(|i| i.stable_dt).clamp(1.0 / 240.0, 1.0 / 15.0));
+            let base = 9.0 * dt * 60.0 / app.ui.timeline.pps.max(1e-9);
+            let right_zone = 80.0f32;
+            let left_zone = 40.0f32;
+            let over_right = ((p.x - (layout.content.max.x - right_zone)) / right_zone).clamp(0.0, 1.0);
+            let over_left = (((layout.content.min.x + left_zone) - p.x) / left_zone).clamp(0.0, 1.0);
             let v = &mut app.ui.timeline;
-            if p.x > layout.content.max.x - 20.0 {
-                v.target_scroll += 6.0 / v.pps;
+            if over_right > 0.0 {
+                v.target_scroll += base * f64::from(over_right);
                 v.scroll = v.target_scroll;
-            } else if p.x < layout.content.min.x + 10.0 && v.scroll > 0.0 {
-                v.target_scroll = (v.target_scroll - 6.0 / v.pps).max(0.0);
+                ctx.request_repaint();
+            } else if over_left > 0.0 && v.scroll > 0.0 {
+                v.target_scroll = (v.target_scroll - base * f64::from(over_left)).max(0.0);
                 v.scroll = v.target_scroll;
+                ctx.request_repaint();
+            }
+            // the same ramp up and down the tracks: dragging a clip past the top or bottom of its
+            // own pane moves that pane's track slider (the video clips scroll the video slider,
+            // audio clips theirs), so a drag can reach tracks that are off screen
+            if let Some(Drag::Move { clips, start_track, .. }) = app.tl.drag.clone() {
+                let video = clips
+                    .first()
+                    .and_then(|c| seq.find_item(*c).and_then(|(tid, _)| seq.track(tid)))
+                    .or_else(|| seq.track(start_track))
+                    .is_some_and(|t| t.kind == TrackKind::Video);
+                let (top, bottom) =
+                    if video { (layout.content.min.y, layout.split_y) } else { (layout.split_y + super::DIVIDER_H, layout.content.max.y - super::MASTER_H) };
+                // only past the pane's own edges (above it / below it), ramped over 24 pt
+                let up = ((top - p.y) / 24.0).clamp(0.0, 1.0);
+                let down = ((p.y - bottom) / 24.0).clamp(0.0, 1.0);
+                if up > 0.0 {
+                    let s = (f64::from(up.min(1.0).powi(2)) * 360.0 * dt).max(0.0) as f32;
+                    if video {
+                        app.ui.timeline.v_scroll = (app.ui.timeline.v_scroll + s).max(0.0);
+                    } else {
+                        app.ui.timeline.a_scroll = (app.ui.timeline.a_scroll - s).max(0.0);
+                    }
+                    ctx.request_repaint();
+                } else if down > 0.0 {
+                    let s = (f64::from(down.min(1.0).powi(2)) * 360.0 * dt).max(0.0) as f32;
+                    if video {
+                        app.ui.timeline.v_scroll = (app.ui.timeline.v_scroll - s).max(0.0);
+                    } else {
+                        app.ui.timeline.a_scroll += s;
+                    }
+                    ctx.request_repaint();
+                }
             }
         }
     }
+}
+
+/// Resolve the row or new track under a dragged clip, keeping it in its source track kind.
+fn move_drag_destination(
+    app: &FilmcraftApp,
+    seq: &Sequence,
+    layout: &Layout,
+    pointer_y: f32,
+    clips: &[ClipId],
+    start_track: TrackId,
+) -> (i32, Option<(TrackKind, Rect)>) {
+    let start_row = layout.rows.iter().find(|row| row.track == start_track);
+    // Crossing the A/V divider selects the nearest row of the clip's own kind.
+    let current_row = layout.row_at(pointer_y).filter(|row| start_row.is_some_and(|start| row.kind == start.kind)).or_else(|| {
+        let kind = start_row?.kind;
+        layout
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind)
+            .filter_map(|row| {
+                let shown = layout.shown(row);
+                (shown.height() > 0.0).then_some((row, shown))
+            })
+            .min_by(|(_, a), (_, b)| {
+                let distance = |rect: &Rect| {
+                    if pointer_y < rect.min.y {
+                        rect.min.y - pointer_y
+                    } else if pointer_y >= rect.max.y {
+                        pointer_y - rect.max.y
+                    } else {
+                        0.0
+                    }
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|(row, _)| row)
+    });
+    let track_delta = match (current_row, start_row) {
+        (Some(current), Some(start)) if current.kind == start.kind => current.index as i32 - start.index as i32,
+        _ => 0,
+    };
+    // Determine a new track before applying the nearby row's lock; that row is not the destination.
+    let new_track = start_row
+        .filter(|_| clips.iter().all(|clip| seq.find_item(*clip).is_some_and(|(id, _)| seq.track(id).is_some_and(|track| !track.locked))))
+        .and_then(|start| {
+            let (video_height, audio_height) = (app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h);
+            new_track_at(seq, layout, pointer_y, video_height, audio_height).filter(|(kind, _)| *kind == start.kind)
+        });
+    (track_delta, new_track)
 }
 
 /// Release: commit exactly one command for the drag that just ended, or drop it when the
@@ -1285,14 +1466,15 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let on_gap = match hit_secondary(seq, layout, p) {
+        let on_gap = match hit(seq, layout, p) {
             Hit::Empty { track } => app.session.execute("timeline.selectGap", json!({"track": track.0, "time": layout.tick_at(p.x).0})).is_ok(),
             _ => false,
         };
         ctx.data_mut(|d| d.insert_temp(gap_menu_id, on_gap));
-        // A fresh right-click must not inherit an earlier cut's menu, even past the last clip
-        // where there is no bounded gap. The clip branch below sets this click's target.
-        ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        if on_gap {
+            // not the edit point menu of a cut right-clicked before
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        }
     }
     // on a marker of the ruler, the marker menu instead (right-clicking a marker selects it first)
     let marker_menu_id = egui::Id::unique("timeline.markerMenu.target");
@@ -1319,7 +1501,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Hit::Clip { clip, edge, track } = hit_secondary(seq, layout, p)
+        && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
     {
         ctx.data_mut(|d| d.insert_temp(menu_clip_id, clip));
         let target = edge.and_then(|e| EditPointTarget::at(seq, track, clip, e).map(|t| (t, e)));
@@ -1344,81 +1526,129 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
     resp.context_menu(|ui| {
         // a long menu scrolls instead of running off the bottom of the screen (#2852)
+        let unhide_bar = app.session.state.timeline_ui.zoom_bar_hidden;
         let max_height = (ui.ctx().content_rect().height() - 16.0).max(0.0);
         egui::ScrollArea::vertical().id_salt("clip-menu-scroll").max_height(max_height).min_scrolled_height(max_height).show(ui, |ui| {
             ui.set_min_width(220.0);
             if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
                 marker_menu(app, &ctx, ui, marker);
-                return;
-            }
-            if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
+            } else if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
                 ruler_menu(app, &ctx, ui);
-                return;
-            }
-            if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
+            } else if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
                 edit_point_menu(app, &ctx, ui, seq, target);
-                return;
-            }
-            if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
+            } else if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
                 gap_menu(app, &ctx, ui);
-                return;
-            }
-            let sel = app.session.state.selection.clone();
-            let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
-            let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
-            let linked = picked.iter().any(|it| it.link.is_some());
-            let mut first = true;
-            for group in CLIP_MENU {
-                if !std::mem::take(&mut first) {
-                    ui.separator();
-                }
-                for &(label, cmd) in *group {
-                    if cmd == "edit.label" {
-                        ui.add_enabled_ui(!picked.is_empty(), |ui| {
-                            let menu = ui.menu_button(crate::i18n::t(label), |ui| {
-                                // the user's label names and colours, as in Edit ▸ Label (#786)
-                                let labels = app.session.prefs.labels.clone();
-                                for l in filmcraft_project::Label::ALL {
-                                    if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
-                                        if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
-                                            app.ui.status = error.to_string();
+            } else {
+                let sel = app.session.state.selection.clone();
+                let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+                let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+                let linked = picked.iter().any(|it| it.link.is_some());
+                let mut first = true;
+                for group in CLIP_MENU {
+                    if !std::mem::take(&mut first) {
+                        ui.separator();
+                    }
+                    for &(label, cmd) in *group {
+                        if cmd == "edit.label" {
+                            ui.add_enabled_ui(!picked.is_empty(), |ui| {
+                                let menu = ui.menu_button(crate::i18n::t(label), |ui| {
+                                    // the user's label names and colours, as in Edit ▸ Label (#786)
+                                    let labels = app.session.prefs.labels.clone();
+                                    for l in filmcraft_project::Label::ALL {
+                                        if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
+                                            if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
+                                                app.ui.status = error.to_string();
+                                            }
+                                            ui.close();
                                         }
-                                        ui.close();
+                                    }
+                                    // the project's saved custom colours: the same picker the
+                                    // markers use, so a clip can take any colour in the palette
+                                    super::super::custom_colors::menu(
+                                        app,
+                                        ui,
+                                        json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
+                                        "timeline.clipMenu.label",
+                                    );
+                                });
+                                app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
+                            });
+                            continue;
+                        }
+                        if cmd == "clip.multicam" {
+                            multicam_menu(app, ui, &picked);
+                            continue;
+                        }
+                        let label = match cmd {
+                            "clip.enable" if all_enabled => tl!("✓ Enable"),
+                            "clip.link" if linked => tl!("Unlink"),
+                            _ => crate::i18n::t(label),
+                        };
+                        let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                        app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                        if r.clicked() {
+                            match crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                                // Unlink (#220): the clips were selected together because they were linked;
+                                // keep only the one right-clicked, so it can be dragged away from the others
+                                Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
+                                    if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
+                                        && app.session.state.selection.contains(&clip)
+                                    {
+                                        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                                     }
                                 }
-                                super::super::custom_colors::menu(app, ui,
-                                    json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
-                                    "timeline.clipMenu.label");
-                            });
-                            app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
-                        });
-                        continue;
-                    }
-                    if cmd == "clip.multicam" {
-                        multicam_menu(app, ui, &picked);
-                        continue;
-                    }
-                    let label = match cmd {
-                        "clip.enable" if all_enabled => tl!("✓ Enable"),
-                        "clip.link" if linked => tl!("Unlink"),
-                        _ => crate::i18n::t(label),
-                    };
-                    let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
-                    if r.clicked() {
-                        match crate::menus::invoke(app, &ctx, cmd, json!({})) {
-                            // Unlink (#220): the clips were selected together because they were linked;
-                            // keep only the one right-clicked, so it can be dragged away from the others
-                            Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
-                                if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
-                                    && app.session.state.selection.contains(&clip)
-                                {
-                                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
-                                }
+                                Ok(_) => {}
+                                Err(e) => app.ui.status = e,
                             }
-                            Ok(_) => {}
-                            Err(e) => app.ui.status = e,
+                            ui.close();
                         }
+                    }
+                }
+            }
+            // Timeline Slider Settings / Track Slider Settings and the Unhide rows: the list's
+            // last rows under a divider, each only while its own sliders are hidden; they scroll
+            // away with the menu like every other row
+            let unhide_tracks = app.session.state.timeline_ui.track_slider_hidden;
+            if unhide_bar || unhide_tracks {
+                ui.separator();
+                if unhide_bar {
+                    let r = ui.button(tl!("Timeline Slider Settings"));
+                    app.auto.add("timeline.zoomBarSettings", r.rect, "Timeline Slider Settings");
+                    if r.clicked() {
+                        // the same settings popup as right-clicking the bar itself, in its default
+                        // state (no flyout or colour picker left over from last time)
+                        super::scrollbars::zoombar_state_reset(&ctx);
+                        app.tl.zoombar_settings_pos = Some(r.rect.min);
+                        // the two settings menus are mutually exclusive
+                        app.tl.track_slider_settings_pos = None;
+                        ui.close();
+                    }
+                }
+                if unhide_tracks {
+                    let r = ui.button(tl!("Track Slider Settings"));
+                    app.auto.add("timeline.trackSliderSettings", r.rect, "Track Slider Settings");
+                    if r.clicked() {
+                        super::scrollbars::track_slider_state_reset(&ctx);
+                        app.tl.track_slider_settings_pos = Some(r.rect.min);
+                        // the two settings menus are mutually exclusive
+                        app.tl.zoombar_settings_pos = None;
+                        super::scrollbars::close_zoombar_popup(&ctx);
+                        ui.close();
+                    }
+                }
+                if unhide_bar {
+                    let r = ui.button(tl!("Unhide Timeline Slider"));
+                    app.auto.add("timeline.unhideZoomBar", r.rect, "Unhide Timeline Slider");
+                    if r.clicked() {
+                        crate::panels::timeline::set_zoombar_hidden(app, &ctx, false);
+                        ui.close();
+                    }
+                }
+                if unhide_tracks {
+                    let r = ui.button(tl!("Unhide Track Slider"));
+                    app.auto.add("timeline.unhideTrackSlider", r.rect, "Unhide Track Slider");
+                    if r.clicked() {
+                        crate::panels::timeline::set_track_slider_hidden(app, &ctx, false);
                         ui.close();
                     }
                 }
@@ -1439,7 +1669,59 @@ mod marquee_tests {
     fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
         let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0));
-        Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, v_scroll, a_scroll }
+        Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, video_top: content.min.y, v_scroll, a_scroll }
+    }
+
+    #[test]
+    fn new_track_drop_ignores_locked_fallback_track_but_honors_locked_source() {
+        let mut project = filmcraft_project::Project::new("t");
+        let id = project.new_sequence("s", filmcraft_project::SequenceSettings::default(), 2, 1, None);
+        let mut seq = project.sequence(id).cloned().expect("sequence");
+        let source = seq.video_tracks[0].id;
+        let clip = crate::panels::timeline_hit::tests::clip(1, 100.0, 200.0);
+        seq.video_tracks[0].items = vec![clip];
+        seq.video_tracks[1].locked = true;
+
+        assert!(move_destination_is_locked(&seq, &[ClipId(1)], 1, false), "moving onto the locked fallback row is blocked");
+        assert!(!move_destination_is_locked(&seq, &[ClipId(1)], 1, true), "a new-track destination does not inherit the fallback row's lock");
+        seq.track_mut(source).expect("source track").locked = true;
+        assert!(move_destination_is_locked(&seq, &[ClipId(1)], 1, true), "a locked source remains blocked for a new-track drop");
+    }
+
+    #[test]
+    fn clip_drop_fallback_ignores_video_rows_above_the_visible_pane() {
+        let mut project = filmcraft_project::Project::new("t");
+        let id = project.new_sequence("s", filmcraft_project::SequenceSettings::default(), 2, 1, None);
+        let mut seq = project.sequence(id).cloned().expect("sequence");
+        let source = seq.video_tracks[0].id;
+        seq.video_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(1, 100.0, 200.0)];
+
+        let mut layout = layout(0.0, 0.0);
+        layout.content = Rect::from_min_max(pos2(0.0, 100.0), pos2(1000.0, 500.0));
+        layout.video_top = 150.0;
+        layout.split_y = 300.0;
+        layout.rows = vec![
+            Row {
+                track: seq.video_tracks[0].id,
+                kind: TrackKind::Video,
+                index: 0,
+                rect: Rect::from_min_max(pos2(0.0, 200.0), pos2(1000.0, 300.0)),
+                lane: false,
+            },
+            Row {
+                track: seq.video_tracks[1].id,
+                kind: TrackKind::Video,
+                index: 1,
+                rect: Rect::from_min_max(pos2(0.0, 50.0), pos2(1000.0, 150.0)),
+                lane: false,
+            },
+        ];
+        let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+
+        assert_eq!(layout.row_at(145.0).map(|row| row.track), None, "the clipped video row is not a hit target");
+        let (delta, new_track) = move_drag_destination(&app, &seq, &layout, 145.0, &[ClipId(1)], source);
+        assert_eq!(delta, 0, "the nearest-row fallback uses the visible V1 row, not hidden V2");
+        assert!(new_track.is_none(), "a point between the visible pane top and the hidden row is not a new-track target");
     }
 
     /// #2978: V1 scrolled down under the audio tracks, behind A1. A box drawn on A1 takes A1's
