@@ -207,6 +207,10 @@ mod tests {
         use std::time::Duration;
 
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let schema = app.session.execute("prefs.schema", serde_json::json!({"category": "general"})).unwrap();
+        let fields = schema["categories"][0]["fields"].as_array().expect("General fields");
+        let update = fields.iter().find(|field| field["key"] == "general.checkForUpdatesAtStartup").expect("startup update preference");
+        assert_eq!(update["wired"], true, "the schema identifies the preference as implemented");
         app.set_startup_update_check(true);
         assert!(app.updates_rt.startup_check, "a desktop launch keeps the default check");
         app.session.execute("prefs.set", serde_json::json!({"key": "general.checkForUpdatesAtStartup", "value": false})).unwrap();
