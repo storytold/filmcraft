@@ -131,6 +131,8 @@ pub struct GlyphMask {
 
 type GKey = (FaceId, u32, u32, u8, bool, bool);
 
+const HORIZONTAL_PHASES: u8 = 4;
+
 /// No single glyph mask may consume more than this much memory. Larger glyphs are filled directly
 /// into the caller's clipped destination instead of first allocating their complete bounds.
 const MAX_GLYPH_MASK_BYTES: usize = 16 << 20;
@@ -162,13 +164,14 @@ fn glyph_mask_bounds(path: &Path) -> Option<(i32, i32, usize, usize)> {
 /// Rasterise glyph `g` at pixel size `px` with horizontal phase `frac` (0..1, quantised to ¼).
 pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     let size_q = (px * 8.0).round().max(1.0) as u32;
-    let frac_q = ((frac.rem_euclid(1.0) * 4.0).round() as u8) % 4;
+    let phases = f32::from(HORIZONTAL_PHASES);
+    let frac_q = ((frac.rem_euclid(1.0) * phases).round() as u8) % HORIZONTAL_PHASES;
     let key = (g.face, g.id, size_q, frac_q, g.synth_bold, g.synth_italic);
     if let Some(v) = glyph_cache().lock().unwrap_or_else(PoisonError::into_inner).entries.get(&key) {
         return v.clone();
     }
     let px = size_q as f32 / 8.0;
-    let fq = frac_q as f32 / 4.0;
+    let fq = f32::from(frac_q) / phases;
     let gg = Glyph { x: 0.0, y: 0.0, size: px, ..*g };
     let path = glyph_path(&gg, &[1.0, 0.0, 0.0, 1.0, fq, 0.0]);
     let Some((left, top, w, h)) = glyph_mask_bounds(&path) else {
@@ -241,14 +244,19 @@ pub fn draw_run(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32), run: 
     let keep = |r: u16| run.is_none_or(|x| x == r);
     if is_axis_uniform(m) {
         let s = m[0];
+        let phases = f32::from(HORIZONTAL_PHASES);
         for g in l.glyphs.iter().filter(|g| keep(g.run)) {
             let (x, y) = apply(m, g.x, g.y);
             let px = g.size * s;
             if px < 0.5 {
                 continue;
             }
-            let xi = x.floor();
-            if let Some(gm) = glyph_mask(g, px, x - xi) {
+            // Round the position before splitting it so a phase that wraps to zero
+            // also advances the whole-pixel origin.
+            let left = x.floor();
+            let snapped_x = left + ((x - left) * phases).round() / phases;
+            let xi = snapped_x.floor();
+            if let Some(gm) = glyph_mask(g, px, snapped_x - xi) {
                 out.add(&gm.mask, xi as i32 + gm.left - ox, y.round() as i32 + gm.top - oy);
             } else {
                 // A huge glyph's mask would be mostly clipped away. Rasterise its outline straight
@@ -328,6 +336,26 @@ mod tests {
         let slow = rasterize(&l, &[a.cos(), a.sin(), -a.sin(), a.cos(), 20.25, 60.0]);
         let (fi, si) = (ink(&fast.0), ink(&slow.0));
         assert!((fi - si).abs() / fi < 0.02, "{fi} vs {si}");
+    }
+
+    #[test]
+    fn cached_glyph_x_carries_when_the_quarter_pixel_phase_wraps() {
+        let layout = layout("H", &TextStyle { size: 40.0, ..Default::default() }, &ParagraphStyle::default());
+        let centroid = |pen_x: f32| {
+            let (mask, left, _) = rasterize(&layout, &at(pen_x - layout.glyphs[0].x, 60.0));
+            let total = ink(&mask);
+            assert!(total > 0.0);
+            mask.a.chunks_exact(mask.w).flat_map(|row| row.iter().enumerate()).map(|(col, coverage)| (left as f32 + col as f32) * coverage).sum::<f32>() / total
+        };
+
+        // On either side of zero, the final phase must round to the next whole pixel.
+        for boundary in [-1.0, 24.0] {
+            let previous = centroid(boundary - 0.25);
+            let rounded = centroid(boundary - 0.1);
+            let exact = centroid(boundary);
+            assert!((rounded - exact).abs() < 0.01, "at {boundary}: {rounded} vs {exact}");
+            assert!((rounded - previous - 0.25).abs() < 0.09, "at {boundary}: step {}", rounded - previous);
+        }
     }
 
     #[test]
