@@ -1,4 +1,4 @@
-//! Hot numbers (the blue values in Properties, Effect Controls, the Audio Clip Mixer and Lumetri),
+//! Hot numbers (the blue values in Properties, Effect Controls, the Audio Clip Mixer and Color Grading),
 //! driven headless through the control channel: once a click turns one into a text field, Left and
 //! Right move the caret inside it (#3372) instead of moving focus out, which committed the value.
 
@@ -120,6 +120,25 @@ fn arrow_keys_move_the_caret_instead_of_committing() {
     assert_eq!(d.playhead(), playhead);
 }
 
+/// Up/Down step the value in a number field in Properties (#4094) and do not reach the Timeline's
+/// Up/Down keys (previous/next edit point).
+#[test]
+fn up_and_down_step_the_value_and_not_the_playhead() {
+    let mut d = Driver::demo();
+    let clip = d.text_layer();
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 12.5}}));
+    let playhead = d.playhead();
+    d.ok("ui.click", json!({"id": "graphics.prop.rotation"}));
+    d.ok("ui.key", json!({"key": "Up"}));
+    assert_eq!(d.rotation(clip), 13.5, "Up adds one");
+    d.ok("ui.key", json!({"key": "Shift+Down"}));
+    assert_eq!(d.rotation(clip), 3.5, "Shift+Down subtracts ten");
+    d.ok("ui.type", json!({"text": "40"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    assert_eq!(d.rotation(clip), 40.0, "the stepped value was still selected, so typing replaced it");
+    assert_eq!(d.playhead(), playhead, "the arrows do not move the playhead");
+}
+
 /// Control input reaches a window in the background: egui sees it focused only on the frames that
 /// carry the input, and the frames between must not take the field's focus again.
 #[test]
@@ -177,4 +196,136 @@ fn arrow_keys_move_the_caret_in_the_source_text() {
     d.ok("ui.type", json!({"text": "X"}));
     assert_eq!(text(&d), "abXc");
     assert_eq!(d.playhead(), playhead, "the arrows do not step the playhead");
+}
+
+/// Up/Down in a hot number's text field step the value (#4094), driven on the widget alone.
+mod arrow_step {
+    use egui::{Event, Key, Modifiers};
+    use egui_kittest::Harness;
+    use filmcraft_ui_egui::theme::{ThemeKind, Tokens};
+    use filmcraft_ui_egui::widgets::{HotNumberOptions, hot_number};
+
+    struct Field {
+        value: f64,
+        /// Every value the field reported, in order.
+        changes: Vec<f64>,
+    }
+
+    /// A field already in its text editor with `typed` in it, over `range`.
+    fn editing(value: f64, typed: &str, range: (f64, f64), decimals: usize) -> Harness<'static, Field> {
+        let typed = typed.to_owned();
+        let mut h = Harness::builder().with_size(egui::vec2(200.0, 60.0)).build_ui_state(
+            move |ui, f: &mut Field| {
+                let id = egui::Id::unique("hot");
+                let t = Tokens::for_kind(ThemeKind::Dark);
+                if ui.data(|d| d.get_temp::<bool>(id.with("seeded"))).is_none() {
+                    ui.data_mut(|d| {
+                        d.insert_temp(id.with("seeded"), true);
+                        d.insert_temp(id.with("editing"), typed.clone());
+                        d.insert_temp(id.with("select-all"), true);
+                    });
+                }
+                let (_, nv) = hot_number(ui, "Exposure", id, f.value, HotNumberOptions::new(0.01, range, decimals, "", &t));
+                if let Some(v) = nv {
+                    f.value = v;
+                    f.changes.push(v);
+                }
+            },
+            Field { value, changes: vec![] },
+        );
+        h.run_steps(4);
+        h
+    }
+
+    fn press(h: &mut Harness<'static, Field>, key: Key, modifiers: Modifiers) {
+        h.input_mut().events.push(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+        h.run_steps(2);
+        h.step();
+    }
+
+    #[test]
+    fn a_wide_range_steps_by_one_with_shift_ten_and_command_a_tenth() {
+        let mut h = editing(12.5, "12.5", (-36000.0, 36000.0), 1);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 13.5);
+        press(&mut h, Key::ArrowDown, Modifiers::NONE);
+        press(&mut h, Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(h.state().value, 11.5);
+        press(&mut h, Key::ArrowUp, Modifiers::SHIFT);
+        assert_eq!(h.state().value, 21.5);
+        press(&mut h, Key::ArrowDown, Modifiers::COMMAND);
+        assert_eq!(h.state().value, 21.4);
+    }
+
+    #[test]
+    fn a_narrow_range_steps_by_the_last_shown_digit() {
+        let mut h = editing(0.5, "0.50", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 0.51);
+        press(&mut h, Key::ArrowUp, Modifiers::SHIFT);
+        assert_eq!(h.state().value, 0.61, "Shift is ten steps");
+        press(&mut h, Key::ArrowDown, Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.609, "Command is a tenth of a step");
+    }
+
+    #[test]
+    fn the_value_stays_selected_so_typing_replaces_it() {
+        let mut h = editing(0.5, "0.50", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        h.input_mut().events.push(Event::Text("3".into()));
+        h.run_steps(2);
+        press(&mut h, Key::Enter, Modifiers::NONE);
+        assert_eq!(h.state().value, 3.0);
+    }
+
+    #[test]
+    fn stepping_stops_at_the_range_and_a_typed_calculation_is_stepped_from_its_result() {
+        let mut h = editing(4.99, "4.99", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 5.0);
+        assert_eq!(h.state().changes, [5.0], "the press at the limit applies nothing");
+        let mut h = editing(0.0, "1+1", (0.0, 100.0), 0);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 3.0);
+    }
+
+    #[test]
+    fn a_calculation_in_a_narrow_range_steps_by_the_digits_of_its_result() {
+        // 0.5+0.25 = 0.75: two digits, so the step is 0.01 (not 0.0001 from the text)
+        let mut h = editing(0.0, "0.5+0.25", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 0.76);
+        // a whole-number result steps by one
+        let mut h = editing(0.0, "1.5*2", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(h.state().value, 4.0, "3 is a whole number: step 1");
+    }
+
+    #[test]
+    fn command_steps_a_six_decimal_value_by_a_tenth_of_its_last_digit() {
+        // the base step of 0.123456 is 0.000001, so the fine step is 0.0000001: the result keeps
+        // the seventh digit instead of rounding back to the typed value
+        let mut h = editing(0.123456, "0.123456", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::MAC_CMD | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.1234561, "Command+Up on macOS");
+        // Ctrl is the fine modifier elsewhere: egui reports it as `ctrl` and `command`
+        let mut h = editing(0.123456, "0.123456", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowDown, Modifiers::CTRL | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.1234559, "Ctrl+Down on Linux and Windows");
+    }
+
+    #[test]
+    fn shift_command_steps_by_ten_like_the_drag() {
+        let mut h = editing(0.5, "0.50", (-5.0, 5.0), 2);
+        press(&mut h, Key::ArrowUp, Modifiers::SHIFT | Modifiers::COMMAND);
+        assert_eq!(h.state().value, 0.6);
+    }
+
+    #[test]
+    fn text_that_is_not_a_number_is_left_alone() {
+        let mut h = editing(3.0, "abc", (0.0, 100.0), 0);
+        press(&mut h, Key::ArrowUp, Modifiers::NONE);
+        assert!(h.state().changes.is_empty());
+    }
 }
