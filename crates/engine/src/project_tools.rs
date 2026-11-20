@@ -662,6 +662,7 @@ fn list_templates(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(Value::Array(v))
 }
 
+/// Load and rename a template into a fresh document with media paths rooted at the template file.
 fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let t = str_p(p, "template").ok_or_else(|| bad("file.newProjectFromTemplate", "need `template`"))?;
     let path = if t.ends_with(".fcproj") || t.contains('/') || t.contains('\\') {
@@ -677,6 +678,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
     proj.name = name.clone();
     proj.root.name = name;
+    s.media = std::sync::Arc::new(s.media.fresh_for_project());
     s.project = std::sync::Arc::new(proj);
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -688,8 +690,6 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     if s.path.take().is_some() {
         s.previews.reset_temp();
     }
-    s.media.clear();
-    s.media.clear_stored();
     s.media.add_stored(&s.project, Some(path.as_str()));
     s.revision += 1;
     s.saved_revision = s.revision;

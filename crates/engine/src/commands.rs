@@ -1593,6 +1593,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             crate::masks::discard_jobs(s);
+            s.media = std::sync::Arc::new(s.media.fresh_for_project());
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1609,7 +1610,9 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"name": name, "revision": s.revision}))
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
-            let (p, seq) = crate::demo::demo_project(&s.media);
+            let media = std::sync::Arc::new(s.media.fresh_for_project());
+            let (p, seq) = crate::demo::demo_project(&media);
+            s.media = media;
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -5364,9 +5367,7 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
-    let proxies = s.media.use_proxies();
-    s.media = std::sync::Arc::new(crate::MediaPool::default());
-    s.media.set_use_proxies(proxies);
+    s.media = std::sync::Arc::new(s.media.fresh_for_project());
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());

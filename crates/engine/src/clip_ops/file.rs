@@ -215,10 +215,12 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": id.0}))
 }
 
+/// Close the document after the unsaved-work check, giving the replacement document its own media pool.
 pub(super) fn close_project(s: &mut Session, p: &Value) -> Result<Value> {
     if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
+    s.media = std::sync::Arc::new(s.media.fresh_for_project());
     s.project = std::sync::Arc::new(Project::new("Untitled"));
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);

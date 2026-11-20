@@ -179,7 +179,17 @@ fn close_commands_and_templates() {
     assert!(s.execute("file.closeAllProjects", json!({})).is_err(), "dirty: needs force");
     s.execute("file.closeAllProjects", json!({"force": true})).unwrap();
     assert!(s.project.items.is_empty());
+    fn custom_opener(_: &str, _: std::sync::Arc<[u8]>) -> Option<filmcraft_media::Result<filmcraft_media::SharedSource>> {
+        None
+    }
+    s.media.register_opener(custom_opener);
+    s.media.set_use_proxies(true);
+    let previous_media = s.media.clone();
+    let opener_count = previous_media.openers.read().unwrap_or_else(|e| e.into_inner()).len();
     s.execute("file.newProjectFromTemplate", json!({"template": path, "name": "Ep 2"})).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&previous_media, &s.media), "an in-flight reader must retain the previous project's pool");
+    assert!(s.media.use_proxies());
+    assert_eq!(s.media.openers.read().unwrap_or_else(|e| e.into_inner()).len(), opener_count);
     assert!(s.project.items.values().any(|i| i.name == "Main Edit"));
     assert_eq!(s.project.items.len(), n);
     assert_eq!(s.project.name, "Ep 2");

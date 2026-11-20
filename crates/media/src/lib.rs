@@ -34,7 +34,7 @@ pub use cache::FrameCache;
 pub use generators::{DemoScene, Generator};
 pub use reader::{ByteReader, ReaderOpener, SharedReader};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum MediaError {
     #[error("unsupported media: {0}")]
     Unsupported(String),
