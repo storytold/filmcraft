@@ -608,6 +608,21 @@ mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())).replace("\r\n", "\n")
     }
 
+    #[test]
+    fn macos_project_type_is_declared_as_a_filmcraft_document() {
+        let plist = macos_packaging("Info.plist.in");
+        let (association, declaration) = plist.split_once("<key>UTExportedTypeDeclarations</key>").unwrap();
+        let (_, conformance) = declaration.split_once("<key>UTTypeConformsTo</key>").unwrap();
+        let (conformance, _) = conformance.split_once("</array>").unwrap();
+
+        assert!(conformance.contains("<string>public.data</string>"));
+        assert!(conformance.contains("<string>public.content</string>"));
+        assert!(!conformance.contains("<string>public.json</string>"), "JSON conformance selects the system text preview");
+        assert!(declaration.contains("<key>UTTypeIconFile</key>\n      <string>FilmCraft</string>"));
+        assert!(declaration.contains("<string>fcproj</string>"));
+        assert!(association.contains("<key>LSItemContentTypes</key>\n      <array>\n        <string>ai.storyteller.filmcraft.project</string>"));
+    }
+
     /// Voice-over recording needs both halves on macOS: the usage string (else the permission
     /// prompt never appears) and the hardened-runtime audio-input entitlement (else the input is
     /// blocked). Regression test for #659.
