@@ -2788,6 +2788,7 @@ dependencies = [
  "craft-update",
  "eframe",
  "egui",
+ "egui-winit",
  "egui_extras",
  "egui_kittest",
  "filmcraft-audio-dsp",

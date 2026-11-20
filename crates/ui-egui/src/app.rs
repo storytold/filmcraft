@@ -443,7 +443,7 @@ impl eframe::App for FilmcraftApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.native_window_focused = Some(raw_input.focused);
         if let Some(info) = raw_input.viewports.get(&egui::ViewportId::ROOT) {
-            self.window_geometry.observe(info);
+            self.window_geometry.observe(info, ctx.zoom_factor());
         }
         capture::note_raw_geometry(self, ctx, raw_input);
         #[cfg(target_os = "macos")]
@@ -511,14 +511,16 @@ impl eframe::App for FilmcraftApp {
         false
     }
 
-    /// Soon after the window is moved or resized, so its geometry is recorded before a maximize
-    /// keeps the old one (see [`crate::window_geometry`]); eframe's 30 s otherwise.
+    /// Soon after the window is moved or resized, so little is lost if the app ends without its
+    /// closing save (see [`crate::window_geometry`]); eframe's 30 s otherwise.
     fn auto_save_interval(&self) -> std::time::Duration {
         self.window_geometry.interval()
     }
 
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        self.window_geometry.saved();
+    /// eframe has just written its window record; while maximized that holds an older normal
+    /// geometry, so the one seen last replaces it.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.window_geometry.record(storage);
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
