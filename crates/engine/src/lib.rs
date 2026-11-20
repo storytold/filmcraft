@@ -1530,6 +1530,8 @@ mod track_params_tests;
 #[cfg(test)]
 mod transcript_tests;
 #[cfg(test)]
+mod trim_overwrite_tests;
+#[cfg(test)]
 mod trim_tests;
 #[cfg(test)]
 mod vfx_tests;
