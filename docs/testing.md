@@ -46,7 +46,7 @@ stays a binary of its own in `tests/`. Select one file's tests with its module p
 | Program monitor while dragging | `crates/ui-egui/tests/it/perf_ui.rs` | headless: a parameter changed on every UI pass (a value dragged in Effect Controls or Properties) and a backward scrub leave the Program monitor's picture at most one step behind (it shows the frame asked for the pass before while the frame due renders; it used to freeze until the mouse rested); a frame still rendering is kept when the same frame is asked for at a newer revision, so frames slower than a refresh (CPU effects) are shown too; `perf.stats` reports the picture's frame and revision against the playhead and the project |
 | Performance | `*/tests/{,it/}perf.rs` (`#[ignore]`) | §5 |
 
-Commit `*.proptest-regressions` files so failing cases are re-run.
+Turn a failing generated case into a named test instead of committing a `*.proptest-regressions` file ([testing.md](https://github.com/storytold/craft-contrib/blob/main/standards/testing.md)).
 
 ### 32-bit parser regressions
 
@@ -93,7 +93,7 @@ test process, so a trapped regression cannot count as a pass.
 ## 2. ffmpeg oracle tests
 
 ffmpeg and ffprobe are **external processes** used to generate fixtures and to check results. They
-are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
+are never linked or shipped ([clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)).
 
 - The tools are found by `filmcraft-testkit` (a dev-dependency-only crate, `crates/testkit`), in
   this order: `FILMCRAFT_FFMPEG` / `FILMCRAFT_FFPROBE` (explicit paths; a wrong path is an error),

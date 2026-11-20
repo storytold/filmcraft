@@ -1,7 +1,7 @@
 # Attribution
 
 Every non-code asset in FilmCraft, with its author, source and licence. Each file listed here also has
-a `<file>.attribution` sidecar with full details. The rules are in [AGENTS.md](AGENTS.md) §1: no Adobe
+a `<file>.attribution` sidecar with full details. The rules are in [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md): no Adobe
 iconography, images or other Adobe assets; open licences only; every asset attributed.
 `cargo xtask assets` checks that this index and the sidecars cover every asset in the repository.
 
@@ -148,7 +148,7 @@ carry each font's licence as `OFL-<family>.txt`.
 The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. They are not open source and
 are not covered by the project licence; they may be used only unmodified and only in the context of
 FilmCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt). Forks and modified versions must
-remove them (AGENTS.md §1.8).
+remove them (`AGENTS.md`, `## This repository`: attribution).
 
 | File | Author | Source | Licence |
 |---|---|---|---|
