@@ -773,7 +773,9 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             Drag::Trim { clip, clips, edge, mode, from, linked, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
-                let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
+                // every clip the trim moves is left out of the snap candidates: its edge is about to
+                // move with the drag, so snapping to it would freeze the group
+                let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &clips);
                 // a regular trim stops at the end of the media (or the neighbour) of every clip it
                 // trims, so the group stops where its shortest clip or closest neighbour says (#653,
                 // #1926). A ripple trim previews on the grabbed clip alone, as it commits.

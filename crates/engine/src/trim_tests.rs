@@ -584,3 +584,32 @@ fn timeline_trim_clips_ignores_a_repeated_id() {
     let now = s.active_sequence().unwrap().find_item(v1).unwrap().1;
     assert_eq!(now.duration, rate.tick_of(38), "the repeated id must not trim the clip twice");
 }
+
+/// #1926 review: a ripple trim closes the cut, so a selected neighbour on the same track cannot
+/// ride along. Trimming it by the same delta would keep its start, end it at the new cut and leave
+/// a gap, and everything after it would shift by one trim length instead of the total.
+#[test]
+fn timeline_ripple_trim_clips_leaves_no_gap_behind_the_cut() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Ripple multi", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    // A on 0..48 frames and B butted against it on 48..96
+    for frame in [0, 48] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": "V1", "frame": frame, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(48).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let ids: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    assert_eq!(ids.len(), 2, "two clips, one butted against the other");
+    let (a, b) = (ids[0], ids[1]);
+    // both selected, and A's Out edge is the one being dragged
+    s.execute("timeline.trim", json!({"clip": a.0, "clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (qa, qb) = (q.find_item(a).unwrap().1, q.find_item(b).unwrap().1);
+    assert_eq!(qa.end(), rate.tick_of(38), "the grabbed clip is the one that trims");
+    assert_eq!(qb.duration, rate.tick_of(48), "the selected neighbour is not trimmed by the ripple");
+    assert_eq!(qb.start, qa.end(), "no gap: the neighbour follows the cut");
+}

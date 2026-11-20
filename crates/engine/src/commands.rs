@@ -3460,6 +3460,13 @@ fn build() -> Vec<CommandSpec> {
                     }
                     _ => with_links_p(s, p, c),
                 };
+                // A ripple trim moves everything after the cut, so a selected neighbour on the same
+                // track cannot ride along: it would keep its start, end at the new cut and leave a
+                // gap, and the clips after it would shift by one trim length instead of the total.
+                // The ripple therefore stays on the grabbed clip and its linked partners, which is
+                // what it did before a multi-selection could trim (#1926).
+                let ripple_group = if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[c]) } else { vec![c] };
+                let clamped: &[ClipId] = if mode == TrimMode::Ripple { &ripple_group } else { &clips };
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
@@ -3470,12 +3477,11 @@ fn build() -> Vec<CommandSpec> {
                         return Err(edit::EditError::Locked.into());
                     }
                     let before = q.find_item(c).map(|(_, i)| i.range());
-                    // clamp across all linked partners, then apply the common delta
-                    let mut dd = clamp_trim_linked(q, &clips, edge, mode, d, ctx)?;
+                    // clamp across the clips this edit applies to, then apply the common delta
+                    let mut dd = clamp_trim_linked(q, clamped, edge, mode, d, ctx)?;
                     if mode == TrimMode::Ripple {
                         // the clip and its linked partners ripple as one edit
-                        let mut group = vec![c];
-                        group.extend(clips.iter().copied().filter(|o| *o != c));
+                        let mut group = ripple_group.clone();
                         group.retain(|id| q.find_item(*id).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| !tr.locked)));
                         if group.is_empty() {
                             return Err(edit::EditError::Locked.into());
