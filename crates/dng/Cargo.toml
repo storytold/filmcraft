@@ -14,6 +14,10 @@ writer = []
 # serde derives on the raw settings (`ProcessOptions`) for UI state and project files.
 serde = ["dep:serde"]
 
+[[example]]
+name = "bench"
+required-features = ["writer", "threads"]
+
 [dependencies]
 craft-tiff = { workspace = true }
 craft-raw = { workspace = true, features = ["line-dng"] }

@@ -359,7 +359,8 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
         s.media.allow(&p.cand.path);
     }
     for (item, path, src) in sources {
-        s.media.insert_file(item, &path, src);
+        let raw = s.project.item(item).and_then(|it| it.as_media()).and_then(|clip| clip.interpret.raw);
+        s.media.insert_reopened_file(item, &path, src, raw);
     }
     let gone: Vec<ItemId> = plans.iter().map(|p| p.item).collect();
     s.offline.missing.retain(|i| !gone.contains(i));
