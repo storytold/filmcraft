@@ -151,6 +151,100 @@ pub fn probe_geometry(name: &str, bytes: &[u8]) -> Option<(u32, u32, Orientation
     Some((w, h, orientation))
 }
 
+/// Bounded `Read + Seek` adapter over a [`crate::ByteReader`], capping cumulative bytes
+/// read so a damaged header cannot force an unbounded read.
+struct BoundedReader<'a> {
+    inner: &'a dyn crate::ByteReader,
+    pos: u64,
+    remaining: u64,
+}
+
+impl<'a> BoundedReader<'a> {
+    fn new(inner: &'a dyn crate::ByteReader, budget: u64) -> Self {
+        Self { inner, pos: 0, remaining: budget }
+    }
+}
+
+impl std::io::Read for BoundedReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let avail = self.inner.len().saturating_sub(self.pos);
+        let want = (buf.len() as u64).min(avail).min(self.remaining) as usize;
+        if want == 0 {
+            return if avail == 0 { Ok(0) } else { Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "still header probe exceeded read budget")) };
+        }
+        self.inner.read_at(self.pos, &mut buf[..want])?;
+        self.pos += want as u64;
+        self.remaining -= want as u64;
+        Ok(want)
+    }
+}
+
+impl std::io::Seek for BoundedReader<'_> {
+    fn seek(&mut self, style: std::io::SeekFrom) -> std::io::Result<u64> {
+        let len = self.inner.len();
+        let next = match style {
+            std::io::SeekFrom::Start(n) => i128::from(n),
+            std::io::SeekFrom::End(n) => i128::from(len) + i128::from(n),
+            std::io::SeekFrom::Current(n) => i128::from(self.pos) + i128::from(n),
+        };
+        if next < 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before start"));
+        }
+        self.pos = u64::try_from(next).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow"))?;
+        Ok(self.pos)
+    }
+}
+
+/// Like [`probe_geometry`], reading only bounded header bytes from `r` instead of
+/// requiring the whole file in memory. Large stills (e.g. >64 MiB uncompressed TIFFs,
+/// even with an IFD at the end of the file) are probed via `Read + Seek` without
+/// reading pixel data or rejecting by total file size.
+pub fn probe_geometry_reader(name: &str, r: &dyn crate::ByteReader) -> Option<(u32, u32, Orientation)> {
+    const SNIFF_MAX: u64 = 64 * 1024;
+    const HEADER_PREFIX_MAX: u64 = 1024 * 1024;
+    const HEADER_READ_BUDGET: u64 = 16 * 1024 * 1024;
+
+    let len = r.len();
+    if len <= SNIFF_MAX {
+        let mut buf = vec![0u8; usize::try_from(len).ok()?];
+        r.read_at(0, &mut buf).ok()?;
+        return probe_geometry(name, &buf);
+    }
+
+    let mut prefix = vec![0u8; SNIFF_MAX as usize];
+    r.read_at(0, &mut prefix).ok()?;
+    if hdr::sniff(&prefix) {
+        return None;
+    }
+    if exr::sniff(&prefix)
+        || dng::sniff(&prefix)
+        || crate::dpx::sniff(&prefix)
+        || crate::tga::sniff(name, &prefix)
+        || psd::sniff(&prefix)
+        || ycbcr_tiff::sniff(&prefix)
+    {
+        let cap = usize::try_from(len.min(HEADER_PREFIX_MAX)).ok()?;
+        if cap > prefix.len() {
+            prefix.resize(cap, 0);
+            r.read_at(0, &mut prefix).ok()?;
+        }
+        return probe_geometry(name, &prefix);
+    }
+    if !sniff(name, &prefix) {
+        return None;
+    }
+
+    let mut dec =
+        image::ImageReader::new(std::io::BufReader::new(BoundedReader::new(r, HEADER_READ_BUDGET))).with_guessed_format().ok()?.into_decoder().ok()?;
+    let (w, h) = dec.dimensions();
+    if u64::from(w) * u64::from(h) > MAX_PIXELS {
+        return None;
+    }
+    let orientation = dec.orientation().ok().unwrap_or(Orientation::NoTransforms);
+    let (w, h) = if transposes(orientation) { (h, w) } else { (w, h) };
+    Some((w, h, orientation))
+}
+
 pub struct StillSource {
     info: MediaInfo,
     frame: Arc<VideoFrame>,

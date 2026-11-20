@@ -44,7 +44,8 @@ pub fn migrate_legacy_still_sizes(p: &mut Project, pool: &MediaPool, services: &
             }
             let stored = (v.width, v.height);
             let (w, h, orientation) = pool.still_geometry(p, *id, services)?;
-            ((w, h) == (stored.1, stored.0)).then_some((*id, orientation))
+            let transposing = matches!(orientation, Orientation::Rotate90 | Orientation::Rotate90FlipH | Orientation::Rotate270 | Orientation::Rotate270FlipH);
+            (transposing && (w, h) == (stored.1, stored.0)).then_some((*id, orientation))
         })
         .collect();
     for (id, orientation) in legacy {
