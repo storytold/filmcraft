@@ -454,11 +454,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         }
         return out;
     }
-    // 5.1 track: pick or upmix the source channels
-    let picked: Vec<&[f32]> = source_51(item, buf.channel_count()).iter().map(|&c| buf.channels[c].as_slice()).collect();
-    let layout = Layout::from_channels(picked.len());
-    let conv =
-        if picked.len() == 6 { picked.iter().map(|c| c.to_vec()).collect() } else { chans::convert(&picked, layout, Layout::Surround51, Mixdown::FrontRear) };
+    let conv = source_to_surround(item, &buf);
     for (dst, ch) in out.iter_mut().zip(&conv) {
         let m = n.min(ch.len());
         dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -472,6 +468,19 @@ fn fold_source_to_stereo(item: &TrackItem, audio: &AudioBuffer) -> Option<Vec<Ve
     Some(chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear))
 }
 
+fn source_to_surround(item: &TrackItem, audio: &AudioBuffer) -> Vec<Vec<f32>> {
+    if audio.channels.is_empty() {
+        return Vec::new();
+    }
+    // Keep one entry per output pick, including repeated source channels.
+    let picked: Vec<&[f32]> = source_51(item, audio.channel_count()).into_iter().map(|index| audio.channels[index].as_slice()).collect();
+    if picked.len() == 6 {
+        picked.iter().map(|samples| samples.to_vec()).collect()
+    } else {
+        chans::convert(&picked, Layout::from_channels(picked.len()), Layout::Surround51, Mixdown::FrontRear)
+    }
+}
+
 /// Source channels as heard on the target track for remix seam measurement.
 pub fn seam_measurement_channels(item: &TrackItem, audio: AudioBuffer, track_width: usize) -> Vec<Vec<f32>> {
     if track_width == 2
@@ -480,8 +489,7 @@ pub fn seam_measurement_channels(item: &TrackItem, audio: AudioBuffer, track_wid
         return folded;
     }
     if track_width != 2 {
-        // Every output pick contributes to the measurement, including repeated sources.
-        return source_51(item, audio.channel_count()).into_iter().filter_map(|index| audio.channels.get(index).cloned()).collect();
+        return source_to_surround(item, &audio);
     }
     let picked = played_channels(item, audio.channel_count(), track_width);
     audio.channels.into_iter().enumerate().filter_map(|(index, channel)| picked.contains(&index).then_some(channel)).collect()
@@ -570,14 +578,21 @@ mod tests {
     }
 
     #[test]
-    fn remix_seam_measurement_keeps_repeated_surround_picks() {
+    fn remix_seam_measurement_matches_surround_playback() {
         let mut it = item(1.0);
-        it.source_channels = vec![1, 0, 1, 1, 1, 1];
         let source = |_: i64, _: usize| Some(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25], vec![0.75]] });
-        let expected = vec![vec![0.75], vec![0.25], vec![0.75], vec![0.75], vec![0.75], vec![0.75]];
-        assert_eq!(raw_channels(&it, &source, 0, 1, 48_000, 6), expected);
-        let audio = source(0, 1).unwrap();
-        assert_eq!(seam_measurement_channels(&it, audio, 6), expected);
+        let cases = [
+            (vec![1], [0.0, 0.0, 0.75, 0.0, 0.0, 0.0]),
+            (vec![1, 0], [0.75, 0.25, 0.0, 0.0, 0.0, 0.0]),
+            (vec![1, 0, 1, 1, 1, 1], [0.75, 0.25, 0.75, 0.75, 0.75, 0.75]),
+        ];
+        for (picks, outputs) in cases {
+            it.source_channels = picks;
+            let expected: Vec<_> = outputs.into_iter().map(|sample| vec![sample]).collect();
+            let playback = raw_channels(&it, &source, 0, 1, 48_000, 6);
+            assert_eq!(playback, expected);
+            assert_eq!(seam_measurement_channels(&it, source(0, 1).unwrap(), 6), playback);
+        }
     }
 
     #[test]
