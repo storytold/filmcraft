@@ -7,9 +7,11 @@
 //! ```
 //!
 //! - **Versioning.** [`SCHEMA_VERSION`] is the version this build writes. Older files are upgraded on
-//!   load by a chain of single-step migrations ([`MIGRATIONS`]: v1→v2, v2→v3, …) operating on the
-//!   JSON document, so every historical shape only needs one small function. Newer files are refused
-//!   with [`FormatError::TooNew`] instead of being half-read (and later overwritten with data loss).
+//!   load by a chain of single-step migrations (v1→v2, v2→v3, …) operating on the JSON document, so
+//!   every historical shape only needs one small function. Newer files are refused with
+//!   [`FormatError::TooNew`] instead of being half-read (and later overwritten with data loss).
+//!   The shared `craft-fcproj-format` grammar owns v1→v17; this crate appends FilmCraft's own
+//!   v17→v18 step.
 //! - **Atomic saves.** [`atomic_write`] writes a temp file in the destination directory, fsyncs it,
 //!   renames it over the target and fsyncs the directory: a crash or power cut during a save leaves
 //!   either the old file or the new one, never a torn mix.
@@ -41,6 +43,9 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: Warp Stabilizer analyses (`EffectInstance::analysis`), so a stabilised clip stays
+//!   stabilised after reopening the project. No-op step; older builds would drop the analysis and
+//!   the clip would render unstabilised.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -48,12 +53,16 @@ pub mod atomic;
 pub mod autosave;
 
 use filmcraft_project::{Project, ProjectView};
-#[cfg(test)]
 use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new};
 
-pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
+pub use craft_fcproj_format::{FORMAT_ID, FormatError, Migration, OLDEST_SCHEMA, detect_version};
+
+/// The schema version this build writes (and the newest it reads).
+///
+/// The shared grammar stops at v17 and this crate carries FilmCraft's own v18 step on top.
+pub const SCHEMA_VERSION: u32 = craft_fcproj_format::SCHEMA_VERSION + 1;
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
@@ -99,7 +108,10 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    let env = craft_fcproj_format::EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
+    let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
+    // Serializing plain data (string keys, finite numbers or null) cannot fail.
+    r.unwrap_or_default()
 }
 
 /// Read a project file (any supported schema).
@@ -107,7 +119,18 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
+    let doc: Value = serde_json::from_slice(bytes)
+        .map_err(|e| if e.is_syntax() || e.is_eof() { FormatError::Corrupt(e.to_string()) } else { FormatError::NotAProject(e.to_string()) })?;
+    let found = detect_version(&doc)?;
+    check_supported(found)?;
+    if found == SCHEMA_VERSION {
+        // Fast path: deserialize straight into the model.
+        let env: craft_fcproj_format::EnvelopeIn<Project> = serde_json::from_value(doc).map_err(|e| FormatError::Corrupt(e.to_string()))?;
+        return validate_loaded(loaded(env, found));
+    }
+    let doc = migrate_to_current(doc, found)?;
+    let env: craft_fcproj_format::EnvelopeIn<Project> =
+        serde_json::from_value(doc).map_err(|e| FormatError::Corrupt(format!("after upgrading from schema v{found}: {e}")))?;
     validate_loaded(loaded(env, found))
 }
 
@@ -178,13 +201,64 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
     Ok(loaded)
 }
 
+fn check_supported(found: u32) -> Result<(), FormatError> {
+    if found > SCHEMA_VERSION {
+        return Err(FormatError::TooNew { found, supported: SCHEMA_VERSION });
+    }
+    if found < OLDEST_SCHEMA {
+        return Err(FormatError::TooOld { found, oldest: OLDEST_SCHEMA });
+    }
+    Ok(())
+}
+
+/// Run `table` from schema `from` up to `table.len() + 1`, stamping `schema_version` after each step.
+pub fn migrate_with(table: &[Migration], mut doc: Value, from: u32) -> Result<Value, FormatError> {
+    let target = table.len() as u32 + 1;
+    if from > target {
+        return Err(FormatError::TooNew { found: from, supported: target });
+    }
+    if from == 0 {
+        return Err(FormatError::TooOld { found: 0, oldest: 1 });
+    }
+    for v in from..target {
+        let step = table[(v - 1) as usize];
+        doc = step(doc).map_err(|msg| FormatError::Migration { from: v, msg })?;
+        match doc.as_object_mut() {
+            Some(o) => {
+                o.insert("schema_version".into(), Value::from(v + 1));
+            }
+            None => return Err(FormatError::Migration { from: v, msg: "migration produced a non-object document".into() }),
+        }
+    }
+    Ok(doc)
+}
+
+/// Upgrade an older document to the schema this build writes: the shared grammar runs v1→v17,
+/// then FilmCraft's own v17→v18 step records the Warp Stabilizer analyses.
+fn migrate_to_current(mut doc: Value, from: u32) -> Result<Value, FormatError> {
+    doc = craft_fcproj_format::migrate_with(craft_fcproj_format::MIGRATIONS, doc, from)?;
+    doc = v17_to_v18(doc).map_err(|msg| FormatError::Migration { from: 17, msg })?;
+    match doc.as_object_mut() {
+        Some(o) => {
+            o.insert("schema_version".into(), Value::from(18));
+        }
+        None => return Err(FormatError::Migration { from: 17, msg: "migration produced a non-object document".into() }),
+    }
+    Ok(doc)
+}
+
+/// v17 → v18: Warp Stabilizer analyses saved with the effect. Existing data needs no change.
+fn v17_to_v18(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
     }
 
     #[test]

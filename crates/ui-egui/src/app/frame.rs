@@ -71,6 +71,7 @@ impl FilmcraftApp {
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
         }
+        panels::keyboard::apply_pending_monitor_fullscreen(&ctx);
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
@@ -171,11 +172,15 @@ impl FilmcraftApp {
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let verb = if job.label.starts_with("Rendering") {
+                    crate::i18n::t(&job.label).to_string()
+                } else if let Some(clip) = job.label.strip_prefix("Stabilizing ") {
+                    format!("{} {clip}", tl!("Stabilizing"))
+                } else {
+                    tl!("Exporting").to_string()
+                };
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
-                // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
-                // moves the start of the text
                 let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
                 let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
                 panels::JobText { job: job.id, at: now, text, label, width }
