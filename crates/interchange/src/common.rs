@@ -437,7 +437,6 @@ impl Builder {
         self.media.get(key).copied()
     }
 
-    #[cfg(test)]
     pub fn register_media(&mut self, key: &str, id: ItemId) {
         self.media.insert(key.to_string(), id);
     }
@@ -453,7 +452,6 @@ impl Builder {
         id
     }
 
-    #[cfg(test)]
     pub fn generator_media(&mut self, key: &str, name: &str, g: Generator, spec: &MediaSpec, bin: Option<BinId>) -> ItemId {
         if let Some(id) = self.media.get(key) {
             return *id;

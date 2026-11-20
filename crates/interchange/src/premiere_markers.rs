@@ -1,0 +1,155 @@
+//! Marker mapping from contributor-authored project XML. `MarkerOwner/Markers@ObjectRef` points
+//! to a markers object whose `Markers` list entries point (`Second@ObjectRef`) to `Marker`
+//! objects holding one `DVAMarker` JSON record. Original work, MIT OR Apache-2.0.
+use super::xml::{child, child_text};
+use super::{referred, spend, warning};
+use crate::{Report, Result};
+use filmcraft_project::{Label, Marker, MarkerId, MarkerKind};
+use filmcraft_time::Tick;
+use roxmltree::{Node, NodeId};
+use serde_json::Value;
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
+
+const MAX_MARKERS: usize = 10_000;
+const MAX_RECORD_BYTES: usize = 64 * 1024;
+/// The longest URL a marker edit accepts (`marker.edit`, the Marker panel's URL field).
+const MAX_URL_BYTES: usize = 8192;
+
+/// Master clip markers, read once per master clip however many clips use it, and kept until the
+/// first use that takes them. A clip the import skips only reads them, so it cannot take them from
+/// a later clip that is kept.
+#[derive(Default)]
+pub(super) struct MasterMarkers(HashMap<NodeId, Option<Vec<Marker>>>);
+
+impl MasterMarkers {
+    /// Read `master`'s markers if no use read them yet, leaving them for a later use to take.
+    pub(super) fn read<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<()> {
+        self.decode(master, ids, work, report, context)?;
+        Ok(())
+    }
+
+    /// `master`'s markers, read on its first use; none once an earlier use took them.
+    pub(super) fn take<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<Vec<Marker>> {
+        let Some(owner) = self.decode(master, ids, work, report, context)? else { return Ok(Vec::new()) };
+        Ok(self.0.get_mut(&owner).and_then(Option::take).unwrap_or_default())
+    }
+
+    /// The element holding `master`'s markers (the `Clip` of the first clip it lists), whose markers
+    /// are read on the first call; none for a master clip without clips.
+    fn decode<'a, 'i>(
+        &mut self,
+        master: Node<'a, 'i>,
+        ids: &BTreeMap<&str, Node<'a, 'i>>,
+        work: &mut usize,
+        report: &mut Report,
+        context: &str,
+    ) -> Result<Option<NodeId>> {
+        let first = child(master, "Clips").and_then(|c| c.children().find(Node::is_element));
+        let Some(owner) = referred(first, ids, "ObjectRef").and_then(|c| child(c, "Clip")) else { return Ok(None) };
+        if let Entry::Vacant(slot) = self.0.entry(owner.id()) {
+            spend(work, owner)?;
+            slot.insert(Some(read(owner, ids, work, report, context)?));
+        }
+        Ok(Some(owner.id()))
+    }
+}
+
+/// The markers of `owner` (a `Sequence`, or the `Clip` element of a master clip's clip), sorted
+/// by start. Ids are left at zero for the caller to allocate.
+pub(super) fn read<'a, 'i>(
+    owner: Node<'a, 'i>,
+    ids: &BTreeMap<&str, Node<'a, 'i>>,
+    work: &mut usize,
+    report: &mut Report,
+    context: &str,
+) -> Result<Vec<Marker>> {
+    let Some(list) = referred(child(owner, "MarkerOwner").and_then(|m| child(m, "Markers")), ids, "ObjectRef") else { return Ok(Vec::new()) };
+    spend(work, list)?;
+    let mut out = Vec::new();
+    for entry in child(list, "Markers").into_iter().flat_map(|l| l.children()).filter(Node::is_element) {
+        let Some(marker) = referred(child(entry, "Second"), ids, "ObjectRef") else { continue };
+        spend(work, marker)?;
+        if out.len() >= MAX_MARKERS {
+            warning(report, format!("{context}: more than {MAX_MARKERS} markers; the rest were skipped"));
+            break;
+        }
+        let Some((marker, url_dropped)) = child_text(marker, "DVAMarker").filter(|r| r.len() <= MAX_RECORD_BYTES).and_then(record) else {
+            warning(report, format!("{context}: a marker could not be read; marker skipped"));
+            continue;
+        };
+        if url_dropped {
+            let name = &marker.name;
+            warning(report, format!("{context}: marker {name} URL is over {MAX_URL_BYTES} bytes or has control characters; left in the original snapshot"));
+        }
+        out.push(marker);
+    }
+    out.sort_by_key(|m| m.start);
+    Ok(out)
+}
+
+/// A cue-point colour is stored as `0xAABBGGRR`.
+fn color(value: u64) -> Label {
+    let rgb = [(value & 0xff) as i32, ((value >> 8) & 0xff) as i32, ((value >> 16) & 0xff) as i32];
+    let distance = |label: &Label| label.marker_rgb().iter().zip(rgb).map(|(c, v)| (i32::from(*c) - v).pow(2)).sum::<i32>();
+    Label::ALL.iter().copied().min_by_key(distance).unwrap_or(Label::Green)
+}
+
+/// The marker, and whether its stored URL (`mLocation`) was dropped for exceeding what a marker
+/// edit accepts. A kept URL is text, as an OTIO import keeps it: opening it must still pass
+/// `filmcraft_project::marker_web_url`.
+fn record(json: &str) -> Option<(Marker, bool)> {
+    let root: Value = serde_json::from_str(json).ok()?;
+    let m = root.get("DVAMarker")?;
+    let ticks = |key: &str| -> Option<i64> {
+        let t = m.get(key)?.get("ticks")?;
+        t.as_i64().or_else(|| t.as_str()?.trim().parse().ok())
+    };
+    let text = |key: &str| m.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let start = ticks("mStartTime").unwrap_or(0).clamp(0, Tick::MAX.0);
+    let duration = ticks("mDuration").unwrap_or(0).clamp(0, Tick::MAX.0 - start);
+    let kind = match m.get("mType").and_then(Value::as_str).unwrap_or("Comment") {
+        "Chapter" => MarkerKind::Chapter,
+        "Segmentation" => MarkerKind::Segmentation,
+        "WebLink" => MarkerKind::WebLink,
+        "FlashCuePoint" | "FlashCue" => MarkerKind::FlashCue,
+        _ => MarkerKind::Comment,
+    };
+    let cue = m
+        .get("mCuePointList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("mValue").and_then(Value::as_str))
+        .filter_map(|v| serde_json::from_str::<Value>(v).ok())
+        .find_map(|v| v.get("color").and_then(Value::as_u64));
+    let location = m.get("mLocation").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let keep = location.len() <= MAX_URL_BYTES && !location.chars().any(char::is_control);
+    let marker = Marker {
+        id: MarkerId(0),
+        start: Tick(start),
+        duration: Tick(duration),
+        name: text("mName"),
+        comment: text("mComment"),
+        kind,
+        color: cue.map(color).unwrap_or(Label::Green),
+        url: if keep { location.to_string() } else { String::new() },
+        author: String::new(),
+        custom_color: None,
+    };
+    Some((marker, !keep))
+}

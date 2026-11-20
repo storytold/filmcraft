@@ -54,17 +54,8 @@ impl FilmcraftApp {
         // Say why a drop did not fully import (a folder without media, an unsupported file), as the
         // Import dialog does.
         match &imported {
-            Ok(v) => {
-                if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
-                    self.ui.status = errs.iter().filter_map(|e| e.as_str()).collect::<Vec<_>>().join("; ");
-                } else if let Some(presets) = v["presets"].as_array().filter(|p| !p.is_empty()) {
-                    // dropped preset files land in the Presets bin: open it and say how many
-                    if !self.ui.expanded_fx.iter().any(|k| k == "Presets") {
-                        self.ui.expanded_fx.push("Presets".to_string());
-                    }
-                    self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
-                }
-            }
+            // Errors, presets and a Premiere project's warnings, as the Import dialog shows them.
+            Ok(v) => super::files::show_import_result(self, v),
             Err(e) => self.ui.status = e.to_string(),
         }
         if let Ok(v) = imported
