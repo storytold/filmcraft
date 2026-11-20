@@ -165,6 +165,18 @@ Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Slip Monitor** (`crates/engine/src/slip.rs`, `crates/ui-egui/src/panels/slip_monitor.rs`): while the
+Slip tool (Y) drags a clip, the Program monitor shows the slipped clip's new first and last frames
+large, side by side, with the previous clip's last frame and the next clip's first frame half size
+above their outer corners (ids `slipMonitor.previous`, `.in`, `.out`, `.next`, their `…Timecode`
+labels, `slipMonitor.offsetTimecode` (`+00:00:05:20`) and `slipMonitor.offset` (`Slip: +25 frames`)). `timeline.slipPreview
+{clip, delta|deltaFrames}` returns what `timeline.slip` with the same params would do without
+editing anything: `previous` / `in` / `out` / `next` (null where no clip touches it; each with
+`mediaTime`, `mediaFrame`, `sourceTimecode`), `shown` (the linked picture when the dragged clip is
+sound), `delta` (the slip after clamping at the media's ends), `offsetFrames`, `atLimit` and `clips`
+(each slipped clip's new `sourceIn` / `sourceOut`). Linked partners are clamped together, as
+`timeline.slip` does them.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now
