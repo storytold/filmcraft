@@ -993,6 +993,39 @@ fn ripple_trim_to_playhead_q_w() {
     assert_eq!(s.playhead(), start2, "playhead parks on the new edit");
 }
 
+/// The active sequence's markers named in `names`, as (name, start), in time order.
+fn marker_times(s: &Session, names: &[&str]) -> Vec<(String, Tick)> {
+    s.active_sequence().unwrap().markers.iter().filter(|m| names.contains(&m.name.as_str())).map(|m| (m.name.clone(), m.start)).collect()
+}
+
+/// With Ripple Sequence Markers on, Q and W move later markers back with the clips, as Extract
+/// does, and the markers in the removed range go with it.
+#[test]
+fn ripple_trim_to_playhead_ripples_sequence_markers() {
+    for next in [true, false] {
+        let mut s = demo_unlocked();
+        s.state.ripple_sequence_markers = true;
+        let rate = s.sequence_rate();
+        let (_, start, end) = v1(&s)[1];
+        let ph = start + rate.tick_of(6);
+        // the removed range touches the playhead: it starts there (W) or ends there (Q), and lies
+        // within the clip, so these three are before it, inside it and after it
+        let inside = if next { ph } else { ph - rate.tick_of(1) };
+        for (name, t) in [("before", start - rate.tick_of(1)), ("inside", inside), ("after", end + rate.tick_of(5))] {
+            s.execute("markers.add", json!({"time": t.0, "name": name})).unwrap();
+        }
+        s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+        let r = s.execute(if next { "trim.rippleNext" } else { "trim.ripplePrevious" }, json!({})).unwrap();
+        let removed = Tick(r["range"][1].as_i64().unwrap()) - Tick(r["range"][0].as_i64().unwrap());
+        assert!(removed > Tick::ZERO, "next = {next}: something was removed");
+        assert_eq!(
+            marker_times(&s, &["before", "inside", "after"]),
+            vec![("before".to_string(), start - rate.tick_of(1)), ("after".to_string(), end + rate.tick_of(5) - removed)],
+            "next = {next}: the later marker moves back by the removed length and the one inside it goes"
+        );
+    }
+}
+
 #[test]
 fn interchange_roundtrip_through_files() {
     let dir = std::env::temp_dir().join(format!("fc-ix-{}", std::process::id()));
