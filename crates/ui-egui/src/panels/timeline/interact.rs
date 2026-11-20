@@ -44,8 +44,12 @@ pub(super) fn preview_drag(
                 edited.insert(*clip, e);
             }
         }
-        Drag::Trim { clip, edge, delta, linked, .. } => {
-            let ids = if *linked { filmcraft_engine::commands::with_links(&app.session, &[*clip]) } else { vec![*clip] };
+        Drag::Trim { clip, clips, edge, mode, delta, linked, .. } => {
+            // only a regular trim covers the whole selection: a ripple trim shifts what follows on
+            // every track it touches, and doing that for several selected clips at once needs rules
+            // of its own, so it stays on the grabbed clip and its linked partners
+            let base: Vec<ClipId> = if *mode == filmcraft_edit::TrimMode::Regular { clips.clone() } else { vec![*clip] };
+            let ids = if *linked { filmcraft_engine::commands::with_links(&app.session, &base) } else { base };
             for c in ids {
                 if let Some((_, it)) = seq.find_item(c) {
                     moved(it, *edge, *delta);
@@ -172,16 +176,30 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
         .collect()
 }
 
+/// The clips a trim drag applies to: the whole selection when the grabbed edge belongs to a
+/// selected clip, so a multi-selection trims together the way a move does (#1926). A clip that is
+/// not part of the selection trims alone, and Alt (which already drops the linked partners) keeps
+/// the drag on the clip under the pointer.
+fn trim_clips(app: &FilmcraftApp, clip: ClipId, alt: bool) -> Vec<ClipId> {
+    let sel = &app.session.state.selection;
+    if !alt && sel.len() > 1 && sel.contains(&clip) { sel.clone() } else { vec![clip] }
+}
+
 /// A move previews the same track-lock restrictions as its eventual edit.
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
-    let clips = match drag {
+    // `expand` is false for a drag that started with Alt held: it leaves the linked partners alone,
+    // so a partner on a locked track must not reject the drag
+    let (clips, expand) = match drag {
         Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
-        Drag::Trim { clip, .. } | Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
-        Drag::Roll { left, right, .. } => vec![*left, *right],
+        Drag::Trim { clips, linked, .. } => (clips.clone(), *linked),
+        Drag::Stretch { clip, linked, .. } => (vec![*clip], *linked),
+        Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => (vec![*clip], true),
+        Drag::Roll { left, right, .. } => (vec![*left, *right], true),
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
         _ => return false,
     };
-    move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), 0)
+    let clips = if expand { filmcraft_engine::commands::with_links(session, &clips) } else { clips };
+    move_is_locked(seq, &clips, 0)
 }
 
 fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
@@ -517,8 +535,24 @@ fn start_drag(
             None
         }
         (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt },
+            EdgeKind::Trim => Drag::Trim {
+                clip,
+                clips: trim_clips(app, clip, mods.alt),
+                edge,
+                mode: filmcraft_edit::TrimMode::Regular,
+                delta: Tick::ZERO,
+                from: t,
+                linked: !mods.alt,
+            },
+            EdgeKind::Ripple => Drag::Trim {
+                clip,
+                clips: trim_clips(app, clip, mods.alt),
+                edge,
+                mode: filmcraft_edit::TrimMode::Ripple,
+                delta: Tick::ZERO,
+                from: t,
+                linked: !mods.alt,
+            },
             EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
             EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
             EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
@@ -737,12 +771,19 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                     Some(Drag::Move { clips, grab_tick, start_track, offset, track_delta, new_track, copy: mods.alt })
                 }
             }
-            Drag::Trim { clip, edge, mode, from, linked, .. } => seq.find_item(clip).map(|(_, it)| {
+            Drag::Trim { clip, clips, edge, mode, from, linked, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
-                // stop at the end of the media (or the neighbour), as the trim on release will (#653)
-                let delta = filmcraft_engine::commands::trim_delta_linked(&app.session, clip, edge, mode, target - base, linked).unwrap_or(target - base);
-                Drag::Trim { clip, edge, mode, delta, from, linked }
+                // a regular trim stops at the end of the media (or the neighbour) of every clip it
+                // trims, so the group stops where its shortest clip or closest neighbour says (#653,
+                // #1926). A ripple trim previews on the grabbed clip alone, as it commits.
+                let delta = if mode == filmcraft_edit::TrimMode::Regular {
+                    filmcraft_engine::commands::trim_delta_clips(&app.session, &clips, edge, mode, target - base, linked)
+                } else {
+                    filmcraft_engine::commands::trim_delta_linked(&app.session, clip, edge, mode, target - base, linked)
+                }
+                .unwrap_or(target - base);
+                Drag::Trim { clip, clips, edge, mode, delta, from, linked }
             }),
             Drag::Remix { clip, from, .. } => seq.find_item(clip).map(|(_, it)| {
                 let target = rate.snap_nearest(it.end() + (t_here - from)).max(it.start + rate.frame_duration());
@@ -878,18 +919,38 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     let moves: Vec<Value> = clips
                         .iter()
                         .filter(|c| seen.insert(**c))
-                        .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
+                        .filter_map(|c| {
+                            seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0}))
+                        })
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
                     let copying = copy || mods.alt;
                     let captions = track_select_drag_captions(app, copying, mods.command);
-                    Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
+                    Some(
+                        app.session
+                            .execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})),
+                    )
                 }
-                Drag::Trim { clip, edge, mode, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
-                    "timeline.trim",
-                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0, "linked": linked}),
+                Drag::Trim { clip, clips, edge, mode, delta, linked, .. } if delta != Tick::ZERO => {
+                    // the grabbed clip and every other selected clip trim by the same delta, so a
+                    // multi-selection trims together the way a move does (#1926). Ripple is left out
+                    // on purpose: it also moves what follows on each track, and doing that for
+                    // several selected clips at once needs rules of its own
+                    let many = if mode == filmcraft_edit::TrimMode::Regular { Some(clips.iter().map(|c| c.0).collect::<Vec<u64>>()) } else { None };
+                    let params = match many {
+                        Some(targets) => {
+                            json!({"clip": clip.0, "clips": targets, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": "regular", "delta": delta.0, "linked": linked})
+                        }
+                        None => {
+                            json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": "ripple", "delta": delta.0, "linked": linked})
+                        }
+                    };
+                    Some(app.session.execute("timeline.trim", params))
+                }
+                Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
+                    "timeline.rateStretch",
+                    json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}),
                 )),
-                Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}))),
                 Drag::Remix { clip, delta, .. } if delta != Tick::ZERO => {
                     let d = seq.find_item(clip).map(|(_, it)| it.duration + delta).unwrap_or(Tick::ZERO);
                     Some(app.session.execute("clip.remix", json!({"clip": clip.0, "duration": d.0})))
@@ -898,7 +959,8 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                 Drag::Slip { clip, delta, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.slip", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Slide { clip, delta } if delta != Tick::ZERO => Some(app.session.execute("timeline.slide", json!({"clip": clip.0, "delta": delta.0}))),
                 Drag::Transition { id, start, duration, .. } => {
-                    let moved = seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
+                    let moved =
+                        seq.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == id)).is_some_and(|x| (x.start, x.duration) != (start, duration));
                     moved.then(|| app.session.execute("sequence.setTransition", json!({"transition": id.0, "start": start.0, "duration": duration.0})))
                 }
                 Drag::WorkArea { start, end, .. } => {

@@ -943,6 +943,19 @@ pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, 
     clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
 }
 
+/// [`trim_delta`] for a whole multi-selection: the delta every listed clip can apply together,
+/// clamped by each one's media and neighbours. A clip with less media or a closer neighbour than
+/// the rest stops the drag for all of them, so the group keeps its relative timing (#1926).
+pub fn trim_delta_clips(s: &Session, clips: &[ClipId], edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
+    let starts = |id: ItemId| crate::media_start(&s.project, id);
+    let mut next = s.project.next_id;
+    let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
+    let clips = if linked { with_links(s, clips) } else { clips.to_vec() };
+    clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
+}
+
 /// `clip` and, unless `p` has `"linked": false` (Alt held), its linked partners.
 fn with_links_p(s: &Session, p: &Value, clip: ClipId) -> Vec<ClipId> {
     if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[clip]) } else { vec![clip] }
@@ -3418,7 +3431,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
+            r#"{"clip":id,"clips":[id]?,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -3430,7 +3443,23 @@ fn build() -> Vec<CommandSpec> {
                     .map(Tick)
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
-                let clips = with_links_p(s, p, c);
+                // `clips` carries a whole multi-selection from the Timeline, so every selected clip
+                // trims by the same delta, the way a multi-selection moves (#1926). Without it the
+                // trim stays on the grabbed clip and its linked partners. Repeated ids are dropped
+                // first: the regular branch applies the delta once per entry, so `[A, A]` would trim
+                // A twice.
+                let listed: Option<Vec<ClipId>> = p.get("clips").and_then(Value::as_array).map(|l| l.iter().filter_map(Value::as_u64).map(ClipId).collect());
+                let clips = match listed {
+                    Some(mut l) if !l.is_empty() => {
+                        let mut seen = std::collections::HashSet::with_capacity(l.len());
+                        l.retain(|id| seen.insert(*id));
+                        if !l.contains(&c) {
+                            l.push(c);
+                        }
+                        if bool_p(p, "linked").unwrap_or(true) { with_links(s, &l) } else { l }
+                    }
+                    _ => with_links_p(s, p, c),
+                };
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
