@@ -26,6 +26,25 @@ fn close(a: f32, b: f32, tol: f32) -> bool {
     (a - b).abs() <= tol
 }
 
+#[test]
+fn track_renderers_keep_effect_history_with_their_source() {
+    let mut signal = Rig::new(&[|i, c| if (0..SR).contains(&i) { noise(i, c) } else { 0.0 }]);
+    let mut silent = Rig::new(&[|_, _| 0.0]);
+    for rig in [&mut signal, &mut silent] {
+        rig.track(0).effects.push(filmcraft_project::find_effect("studio_reverb").unwrap().instance());
+    }
+    let signal_seq = signal.p.sequence(signal.seq).unwrap();
+    let silent_seq = silent.p.sequence(silent.seq).unwrap();
+    let track = signal_seq.audio_tracks[0].id;
+    assert_eq!(track, silent_seq.audio_tracks[0].id);
+
+    let signal_render = mixer::track_renderer(&signal.p, signal_seq, track, &signal.map).unwrap();
+    let silent_render = mixer::track_renderer(&silent.p, silent_seq, track, &silent.map).unwrap();
+    assert!(signal_render(0, SR as usize).channels.iter().flatten().any(|s| s.abs() > 0.01));
+    assert!(silent_render(SR, SR as usize).channels.iter().flatten().all(|s| *s == 0.0));
+    assert!(signal_render(SR, SR as usize).channels.iter().flatten().any(|s| s.abs() > 0.001));
+}
+
 /// The renderer must request the stream selected by each clip, rather than reading stream zero
 /// twice when a container item has clips on two audio tracks.
 #[test]

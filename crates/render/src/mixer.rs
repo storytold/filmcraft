@@ -890,13 +890,20 @@ pub fn mix_graph(project: &Project, seq: &Sequence, start: i64, frames: usize, s
     mix_graph_at(project, seq, start, frames, sources, live, 0)
 }
 
-/// Render the main output of an audio track after its inserts, fader and panner, before
-/// the destination bus's processing. Live controls are excluded.
-pub fn mix_track(project: &Project, seq: &Sequence, track: TrackId, start: i64, frames: usize, sources: &dyn SourceProvider) -> Option<AudioBuffer> {
+/// Create a render pass for one audio track's output before its destination bus. The pass
+/// includes inserts, fader and panner, and owns the audio history for the given sources.
+/// Call the returned renderer with the starting sample at the sequence rate and a frame count.
+pub fn track_renderer<'a>(
+    project: &'a Project,
+    seq: &'a Sequence,
+    track: TrackId,
+    sources: &'a dyn SourceProvider,
+) -> Option<impl Fn(i64, usize) -> AudioBuffer + 'a> {
     let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
     let ovs = HashMap::new();
     let plan = Plan::build(seq, &ovs).isolate_track(track)?;
-    Some(mix_plan(project, plan, crate::audio::Window { start, frames, sr }, sources, None, 0, &ovs))
+    let sources = crate::audio::isolated_sources(sources);
+    Some(move |start, frames| mix_plan(project, &plan, crate::audio::Window { start, frames, sr }, &sources, None, 0, &ovs))
 }
 
 /// [`mix_graph`] for a sequence `depth` nests down from the one being mixed (see
@@ -915,12 +922,12 @@ pub(crate) fn mix_graph_at(
     let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
-    mix_plan(project, plan, crate::audio::Window { start, frames, sr }, sources, live, depth, &ovs)
+    mix_plan(project, &plan, crate::audio::Window { start, frames, sr }, sources, live, depth, &ovs)
 }
 
 fn mix_plan(
     project: &Project,
-    plan: Plan<'_>,
+    plan: &Plan<'_>,
     window: crate::audio::Window,
     sources: &dyn SourceProvider,
     live: Option<&LiveMix>,
@@ -943,7 +950,7 @@ fn mix_plan(
             if lock(refused_graphs()).contains(&key) {
                 return refused();
             }
-            let Some(st) = build_state(&plan, sr) else {
+            let Some(st) = build_state(plan, sr) else {
                 let mut r = lock(refused_graphs());
                 if r.len() >= 64 {
                     r.clear();
@@ -985,7 +992,7 @@ fn mix_plan(
             } else {
                 silent(s.width, total)
             };
-            Some(run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs }))
+            Some(run_strip(plan, si, ss, input, StripRun { x0, skip, sr, ovs }))
         })
         .collect();
     let deliver = |o: StripOut, si: usize, bus: &mut Vec<Option<Bus>>, meters: &mut Vec<(TrackId, Vec<f32>)>| {
@@ -1020,7 +1027,7 @@ fn mix_plan(
             out = input;
             break;
         }
-        let o = run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs });
+        let o = run_strip(plan, si, ss, input, StripRun { x0, skip, sr, ovs });
         if let Some(fin) = deliver(o, si, &mut bus, &mut meters) {
             out = fin;
         }

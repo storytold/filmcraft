@@ -114,14 +114,14 @@ fn overlap(clip: &TrackItem, range: TimeRange) -> Option<TimeRange> {
 }
 
 fn track_summary(project: &Project, seq: &Sequence, track: TrackId, range: TimeRange, sources: &dyn SourceProvider) -> Option<LoudnessSummary> {
-    let sources = filmcraft_render::audio::isolated_sources(sources);
+    let render = filmcraft_render::mixer::track_renderer(project, seq, track, sources)?;
     let sr = i64::from(filmcraft_render::audio::bounded_sample_rate(seq.settings.sample_rate));
     let mut pos = range.start.to_units_floor(sr);
     let end = range.end().to_units_floor(sr);
     let mut meter = None;
     while pos < end {
         let frames = (end - pos).min(sr);
-        let audio = filmcraft_render::mixer::mix_track(project, seq, track, pos, frames as usize, &sources)?;
+        let audio = render(pos, frames as usize);
         let meter = meter.get_or_insert_with(|| LoudnessMeter::new(f64::from(audio.sample_rate), audio.channels.len()));
         let channels: Vec<&[f32]> = audio.channels.iter().map(Vec::as_slice).collect();
         meter.process(&channels);
