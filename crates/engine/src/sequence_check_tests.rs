@@ -205,6 +205,8 @@ fn bad_parameters_are_errors() {
         json!({"minFrames": "3"}),
         json!({"item": bars}),
         json!({"item": u64::MAX}),
+        // a fractional id is not truncated to a sequence
+        json!({"item": s.state.active_sequence.unwrap().0 as f64 + 0.5}),
         json!({"item": "V1"}),
     ] {
         let e = s.execute("sequence.check", p.clone());
@@ -320,4 +322,48 @@ fn an_empty_stretch_names_the_captions_over_it() {
     assert_eq!((empty[0]["startFrame"].as_i64(), empty[0]["endFrame"].as_i64()), (Some(24), Some(72)));
     assert_eq!(sorted(&empty[0], "captions"), vec![cap]);
     assert!(empty[0].get("atEnd").is_none());
+}
+
+/// A transition shows its enabled side over its whole length, into that clip's handles, so a
+/// disabled clip after a dissolve leaves nothing seen only from the transition's end.
+#[test]
+fn a_transition_shows_its_enabled_side_past_the_cut() {
+    let (mut s, _, matte) = fresh();
+    let a = place(&mut s, matte, "V1", 0, 0, 48);
+    let b = place(&mut s, matte, "V1", 48, 0, 48);
+    s.execute("sequence.applyVideoTransition", json!({"clip": a[0], "edge": "out", "frames": 24, "align": "center"})).unwrap();
+    s.execute("clip.enable", json!({"clips": b})).unwrap();
+    let r = check(&mut s, json!({"checks": ["soundHole", "emptyStretch"]}));
+    let silent = of(&r, "soundHole");
+    assert_eq!(silent.len(), 1, "{r:#}");
+    assert_eq!((silent[0]["startFrame"].as_i64(), silent[0]["endFrame"].as_i64()), (Some(0), Some(60)), "{r:#}");
+    assert_eq!(sorted(&silent[0], "videoClips"), a, "each clip named once");
+    let empty = of(&r, "emptyStretch");
+    assert_eq!(empty.len(), 1, "{r:#}");
+    assert_eq!((empty[0]["startFrame"].as_i64(), empty[0]["endFrame"].as_i64(), empty[0]["atEnd"].as_bool()), (Some(60), Some(96), Some(true)));
+    assert_eq!(sorted(&empty[0], "before"), a);
+    assert_eq!(sorted(&empty[0], "clips"), b);
+}
+
+/// A jump cut off the frame grid is reported at the first frame that shows the incoming clip.
+#[test]
+fn an_off_grid_jump_cut_is_at_the_first_frame_of_the_incoming_clip() {
+    let (mut s, bars, _) = fresh();
+    let a = place(&mut s, bars, "V1", 0, 0, 48);
+    let b = place(&mut s, bars, "V1", 48, 60, 48);
+    let half = Tick(s.sequence_rate().frame_duration().0 / 2);
+    // move the cut half a frame later, both sides in one edit
+    s.edit_sequence("test", |q, _, _| {
+        q.find_item_mut(ClipId(a[0])).unwrap().1.duration += half;
+        let right = q.find_item_mut(ClipId(b[0])).unwrap().1;
+        right.start += half;
+        right.duration -= half;
+        right.source_in += half;
+        Ok(())
+    })
+    .unwrap();
+    let r = check(&mut s, json!({"checks": ["jumpCut"]}));
+    let v1: Vec<Value> = of(&r, "jumpCut").into_iter().filter(|j| j["track"] == "V1").collect();
+    assert_eq!(v1.len(), 1, "{r:#}");
+    assert_eq!(v1[0]["frame"], 49, "frame 48 still samples the outgoing clip");
 }

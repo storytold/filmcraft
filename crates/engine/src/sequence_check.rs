@@ -9,6 +9,8 @@
 //!   is off, and an adjustment layer only changes what is under it).
 //! - **Sound** comes from an enabled clip on an audio track that is heard: not muted and, while any
 //!   audio track is soloed, soloed itself (the preview mix's rule in `crates/render/src/preview.rs`).
+//! - A **transition** shows or plays each of its clips that does so over its whole length, into
+//!   the clip's handles, so its frames count even past the end of that clip.
 //!
 //! Frames are in the sequence rate, end exclusive. A frame belongs to a clip when the clip covers
 //! the frame's start, as export samples it, so a clip trimmed off the frame grid still lines up
@@ -31,11 +33,11 @@
 
 use std::collections::BTreeMap;
 
-use filmcraft_project::{ClipId, ItemKind, Project, Sequence, Track, TrackItem, TrackKind};
+use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, Track, TrackItem, TrackKind};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
-use crate::commands::{bad, item_p};
+use crate::commands::bad;
 use crate::{EngineError, Result, Session};
 
 const CMD: &str = "sequence.check";
@@ -66,7 +68,8 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let min_frames = min_frames_p(p)?;
     let id = match p.get("item") {
         None | Some(Value::Null) => s.state.active_sequence.ok_or(EngineError::NoSequence)?,
-        Some(_) => item_p(p, "item").ok_or_else(|| bad(CMD, "`item` must be a sequence id"))?,
+        // an exact id only: `7.5` is not sequence 7
+        Some(v) => v.as_u64().map(ItemId).ok_or_else(|| bad(CMD, "`item` must be a sequence id"))?,
     };
     let q = s.project.sequence(id).ok_or_else(|| bad(CMD, format!("item {} is not a sequence", id.0)))?;
     let rate = q.settings.frame_rate;
@@ -227,6 +230,19 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
                 (false, _) => silent.push(span(it)),
             }
         }
+        // A transition plays both of its clips over its whole length, into their handles (the
+        // compositor and `render::audio` draw and mix each side that is enabled), so its frames
+        // are seen or heard while one side renders, even past that clip's own end.
+        for x in &tr.transitions {
+            let (start, end) = frames_of(rate, x.start, x.end());
+            for side in [x.from, x.to].into_iter().flatten() {
+                let Some(it) = tr.item(side) else { continue };
+                if seen_or_heard(project, q, tr, it) {
+                    let s = Span { clip: it.id, start, end };
+                    if tr.kind == TrackKind::Video { picture.push(s) } else { sound.push(s) }
+                }
+            }
+        }
     }
     // captions over a stretch: shown when the caption track's output is on, but no picture of
     // their own, so they are named and do not fill it
@@ -275,7 +291,17 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
             _ => runs.push((a, b, state.0, state.1)),
         }
     }
-    let ids = |spans: &[Span], keep: &dyn Fn(&Span) -> bool| spans.iter().filter(|s| keep(s)).map(|s| s.clip.0).collect::<Vec<_>>();
+    // a clip can have a span of its own and one per transition it is in: each is named once
+    let unique = |ids: &mut dyn Iterator<Item = u64>| {
+        let mut v: Vec<u64> = Vec::new();
+        for id in ids {
+            if !v.contains(&id) {
+                v.push(id);
+            }
+        }
+        v
+    };
+    let ids = |spans: &[Span], keep: &dyn Fn(&Span) -> bool| unique(&mut spans.iter().filter(|s| keep(s)).map(|s| s.clip.0));
     for (a, b, pic, snd) in runs {
         let (check, json) = match (pic, snd) {
             (true, true) => continue,
@@ -289,8 +315,8 @@ fn coverage(project: &Project, q: &Sequence, rate: FrameRate, duration: i64, che
             ),
             (false, false) => {
                 let shown: Vec<&Span> = picture.iter().chain(&sound).collect();
-                let before: Vec<u64> = shown.iter().filter(|s| s.end == a && s.start < a).map(|s| s.clip.0).collect();
-                let after: Vec<u64> = shown.iter().filter(|s| s.start == b && s.end > b).map(|s| s.clip.0).collect();
+                let before = unique(&mut shown.iter().filter(|s| s.end == a && s.start < a).map(|s| s.clip.0));
+                let after = unique(&mut shown.iter().filter(|s| s.start == b && s.end > b).map(|s| s.clip.0));
                 let mut j = json!({
                     "check": "emptyStretch", "severity": "warning", "startFrame": a, "endFrame": b, "before": before, "after": after,
                     "captions": captions_in(a, b),
@@ -335,7 +361,8 @@ fn jump_cuts(project: &Project, q: &Sequence, rate: FrameRate, out: &mut Vec<Fin
                 continue;
             }
             let Some(skip) = source_skip(a, b) else { continue };
-            let frame = rate.frame_at(b.start);
+            // the first frame that shows the incoming clip, as export samples it
+            let frame = frame_from(rate, b.start);
             out.push(Finding {
                 check: "jumpCut",
                 severity: "info",
