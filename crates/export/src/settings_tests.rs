@@ -263,6 +263,14 @@ fn jpeg_targa_and_dpx_sequences() {
         }
         // the top-left pixel is the top row (Targa is stored bottom-up), and all of it is blue
         assert!(out.stdout.as_chunks::<4>().0.iter().all(|p| p[2] > 100 && p[0] < 20), "{first}");
+        // FilmCraft's own import (craft-dpx, and the Targa reader) reads the frame as ffmpeg does
+        if matches!(fmt, Format::TgaSequence | Format::DpxSequence) {
+            let ours = filmcraft_media::still::decode_raster(&first, &bytes).unwrap();
+            assert_eq!((ours.width, ours.height), (64, 36), "{first}");
+            assert_eq!(ours.rgba.len(), out.stdout.len(), "{first}: import and ffmpeg frame sizes differ");
+            let worst = ours.rgba.iter().zip(&out.stdout).map(|(&a, &b)| a.abs_diff(b)).max().unwrap_or(0);
+            assert!(worst <= 1, "{first}: import differs from ffmpeg by {worst}");
+        }
     }
     assert!(jpeg_sizes[0] > jpeg_sizes[1], "quality 95 must be larger than quality 20: {jpeg_sizes:?}");
 }
