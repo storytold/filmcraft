@@ -24,7 +24,11 @@ pub(super) fn with_floor(a: &Analysis, target: i64, floor: f32) -> Vec<Plan> {
         let distance = |p: &Plan| (p.len().abs_diff(target) as f64 / bucket).round() as u64;
         distance(a).cmp(&distance(b)).then(sb.total_cmp(sa)).then(a.len().cmp(&b.len()))
     };
-    let mut candidates = vec![(1.0f32, Plan::identity(a.len, fade))];
+    let identity = Plan::identity(a.len, fade);
+    let mut candidates = Vec::new();
+    if identity.is_playable() {
+        candidates.push((1.0f32, identity));
+    }
     let mut insert = |score, plan: Plan| {
         // Replayed middle pieces must satisfy playback bounds too.
         if !plan.is_playable() {
@@ -112,6 +116,9 @@ pub(super) fn with_floor(a: &Analysis, target: i64, floor: f32) -> Vec<Plan> {
         for (i, &outgoing) in a.beats.iter().enumerate() {
             for &(incoming, score) in &edges[i] {
                 for count in 1..=8 {
+                    if count > 1 && outgoing - incoming < minimum {
+                        break;
+                    }
                     let mut pieces = vec![Piece { src: 0, len: outgoing }];
                     for _ in 1..count {
                         pieces.push(Piece { src: incoming, len: outgoing - incoming });

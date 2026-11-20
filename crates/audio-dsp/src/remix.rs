@@ -689,15 +689,18 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
         return Err(RemixError::TooShort);
     }
     match arrange::arrange(a, target, params) {
-        // Keep main's bounded long-extension behavior when the optional phrase search is
-        // outside its duration budget. Strict matching never silently takes this fallback.
-        Err(RemixError::TargetTooLong) if target <= MAX_OUTPUT_SAMPLES => long_extension_plan(a, target, params),
+        // Ordinary extensions may fall back when reserving the outro leaves no usable
+        // arrangement or when the target exceeds the phrase search budget.
+        Err(RemixError::TargetTooLong | RemixError::TargetTooShort) if target > a.len && target <= MAX_OUTPUT_SAMPLES => {
+            let plan = long_extension_plan(a, target, params)?;
+            if plan.is_playable() { Ok(plan) } else { Err(RemixError::TargetTooShort) }
+        }
         result => result,
     }
 }
 
-// This is the upstream non-strict planner, retained only for extensions beyond the phrase
-// search budget. It does not reserve a closing suffix: very long extensions can replay it.
+// The upstream fallback for ordinary extensions does not reserve a closing suffix.
+// Strict matching never uses it.
 // A finite joint count prevents degenerate sources from making it loop forever.
 const MAX_PLAN_JOINTS: usize = 1024;
 

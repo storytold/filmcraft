@@ -306,6 +306,49 @@ mod tests {
         assert_eq!(arrange(&a, 26_000, Params { segments: f64::NAN, variations: 50.0 }), Err(RemixError::InvalidInput));
     }
     #[test]
+    fn ordinary_extension_can_fall_back_when_outro_reservation_blocks_it() {
+        let mut a = grid();
+        a.len = 6_000;
+        a.beats.truncate(12);
+        a.sim.resize(144, 1.0);
+        a.sim.fill(1.0);
+        a.melody_sim.resize(144, 1.0);
+        a.melody_present.resize(12, false);
+        a.melody_present.fill(false);
+        a.levels.resize(12, 1.0);
+        a.levels.fill(1.0);
+        let params = Params { segments: 0.0, variations: 100.0 };
+        assert_eq!(arrange(&a, 8_500, params), Err(RemixError::TargetTooShort));
+        let fallback = super::super::plan(&a, 8_500, params).unwrap();
+        assert_eq!(fallback.len(), 8_500);
+        assert!(fallback.is_playable());
+        assert!(super::super::plan_with_melody_floor(&a, 8_500, params, 0.5).is_err());
+    }
+
+    #[test]
+    fn alternatives_respect_identity_and_repeated_piece_limits() {
+        let mut a = grid();
+        a.len = super::super::MAX_OUTPUT_SAMPLES + 1;
+        assert!(super::super::melodic_alternatives(&a, a.len).is_empty());
+
+        a = grid();
+        a.beats = (0..64).map(|i| 200 + 400 * i).collect();
+        a.melody_present.fill(true);
+        // Only four-index seams match. Each jump spans 1,600 samples, so one
+        // jump is usable but replaying it would create a too-short middle piece.
+        a.melody_sim.fill(0.0);
+        let m = a.beats.len();
+        for i in 4..m {
+            a.melody_sim[i * m + i - 4] = 1.0;
+            a.melody_sim[(i - 4) * m + i] = 1.0;
+        }
+        a.sim.fill(1.0);
+        let plans = super::super::melodic_alternatives(&a, a.len + 3_200);
+        assert!(plans.iter().any(|p| p.pieces.len() > 1));
+        assert!(plans.iter().all(|p| p.pieces.len() < 3 || p.pieces[1..p.pieces.len() - 1].iter().all(|piece| piece.len >= 2_000)));
+    }
+
+    #[test]
     fn extensions_keep_the_closing_phrase_once() {
         let a = grid();
         let closing_start = a.len - (16.0 * a.period).min(a.len as f64 * 0.35) as i64;

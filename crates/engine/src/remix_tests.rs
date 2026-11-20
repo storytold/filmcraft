@@ -207,6 +207,9 @@ fn strict_phrase_matching_leaves_an_unsuitable_target_unchanged() {
     for choice in alternatives {
         let result = s.execute("clip.remix", json!({"clip":c.0,"seconds":choice["seconds"],"matchMelody":true})).unwrap();
         assert_eq!(result["applied"], true);
+        let beat_seconds = 60.0 / result["bpm"].as_f64().unwrap();
+        let requested = choice["seconds"].as_f64().unwrap();
+        assert!((item(&s, c).duration.seconds() - requested).abs() <= beat_seconds);
         assert_eq!(item(&s, c).speed, 1.0);
         s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
     }
