@@ -261,6 +261,11 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     if tl.get("fit").and_then(Value::as_bool) == Some(true) {
         app.ui.timeline.fit_pending = true;
     }
+    // the two heights are the default for every track, so a per-track height set from the header
+    // would keep a track away from the requested size: the overrides go with the default
+    if tl.get("videoTrackHeight").or_else(|| tl.get("audioTrackHeight")).is_some() {
+        app.ui.timeline.track_heights.clear();
+    }
     if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
         app.ui.timeline.video_track_h = v as f32;
     }

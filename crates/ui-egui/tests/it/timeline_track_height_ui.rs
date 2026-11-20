@@ -112,6 +112,35 @@ fn the_top_edge_of_a_video_track_resizes_that_track_alone() {
     assert!(d.video_bands()[0].1 < grown - 5.0);
 }
 
+/// The commands that resize every track have to reach the ones with their own height too, or
+/// "Minimize All Tracks" would only move the tracks that never got their own.
+#[test]
+fn the_global_height_commands_reach_a_track_with_its_own_height() {
+    let mut d = Driver::demo();
+    d.drag("timeline.track.V1.resize", 0.5, -15.0);
+    let own = d.video_bands()[0].1;
+    assert!(own > 30.0, "V1 got its own height: {own}");
+    // Minimize All Tracks leaves no track behind
+    d.ok("ui.menu.invoke", json!({"command": "timeline.minimizeAllTracks"}));
+    d.frames(3);
+    let minimized = d.video_bands();
+    let small = minimized[0].1;
+    assert!((small - own).abs() > 2.0, "V1 followed the command: {own} -> {small}");
+    for (i, b) in minimized.iter().enumerate() {
+        assert!((b.1 - small).abs() < 0.6, "V{} is {} tall, V1 is {small}", i + 1, b.1);
+    }
+    // Expand All Tracks takes every track up, own heights included
+    d.ok("ui.menu.invoke", json!({"command": "timeline.expandAllTracks"}));
+    d.frames(3);
+    let expanded = d.video_bands()[0].1;
+    assert!(expanded > small + 5.0, "all tracks grow: {small} -> {expanded}");
+    // and pressing it again brings back the own height the toggle collapsed
+    d.ok("ui.menu.invoke", json!({"command": "timeline.expandAllTracks"}));
+    d.frames(3);
+    let back = d.video_bands()[0].1;
+    assert!((back - own).abs() < 0.6, "the second press restores V1's own height: {back} vs {own}");
+}
+
 #[test]
 fn the_bottom_edge_of_an_audio_track_resizes_that_track_from_either_side_of_the_line() {
     let mut d = Driver::demo();

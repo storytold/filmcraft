@@ -259,11 +259,14 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if ui.button(tl!("Expand All Tracks")).clicked() {
         app.ui.timeline.video_track_h = 64.0;
         app.ui.timeline.audio_track_h = 64.0;
+        // every track takes the new height, the ones with their own included
+        app.ui.timeline.track_heights.clear();
         ui.close();
     }
     if ui.button(tl!("Minimize All Tracks")).clicked() {
         app.ui.timeline.video_track_h = 26.0;
         app.ui.timeline.audio_track_h = 26.0;
+        app.ui.timeline.track_heights.clear();
         ui.close();
     }
 }
