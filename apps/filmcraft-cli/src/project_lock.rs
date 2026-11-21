@@ -10,6 +10,7 @@
 //! removing it would let one run wait on the old file while another locks a new one.
 
 use crate::args::Args;
+use same_file::Handle;
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
@@ -30,8 +31,8 @@ fn same_file(a: &str, b: &str) -> bool {
 /// The path this run saves over, when that is the file it opens. `--save-as` somewhere else replaces
 /// that file whatever it held, so there is no edit of its to lose.
 ///
-/// The lock goes by this path as written, not by where a symlink points. A save replaces the link
-/// itself, so resolving it would give the runs before and after that save different locks.
+/// The lock goes by this path as written and, for a symlink, by the file it points to as well
+/// ([`lock_names`]).
 ///
 /// A missing `--project` is an error here, before anything else, the same one `Backend::open` would
 /// give. If the run went on, another one could create the project before `Backend::open` reads it,
@@ -53,36 +54,65 @@ fn saved_in_place(a: &Args) -> Result<Option<&Path>, String> {
     }
 }
 
-/// Lock `project`, calling `waiting` first if another run holds the lock.
-fn lock(project: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
-    let file = File::options().create(true).truncate(false).read(true).write(true).open(lock_path(project))?;
-    match file.try_lock() {
+/// The paths whose locks a save of `project` takes, in the order it takes them. A run through a
+/// symlink and a run through the real path, or through another link, edit one file, so a link also
+/// takes the lock of the file it points to (#4151). Its own lock stays: a save through a link
+/// replaces the link with a regular file (#4005), and the runs before and after that save must
+/// still share a lock. Every run takes the link's lock before the file's, so two runs can never each
+/// hold a lock the other is waiting for.
+fn lock_names(project: &Path) -> Vec<PathBuf> {
+    let mut names = vec![project.to_path_buf()];
+    if std::fs::symlink_metadata(project).is_ok_and(|m| m.file_type().is_symlink())
+        && let Ok(target) = std::fs::canonicalize(project)
+    {
+        names.push(target);
+    }
+    names
+}
+
+/// Open the lock file `path` and lock it, calling `waiting` first if another run holds it. `None`
+/// when `held` has it already. Two paths can name one lock file: the same folder and the same first
+/// 200 bytes, a link to the folder, a case-insensitive volume, a hard link. A second lock on a file
+/// this process holds would wait on itself forever, so lock files are told apart by what they are
+/// (device and inode, or volume and file index), not by how their paths are spelt.
+fn lock(path: &Path, held: &[Handle], waiting: impl FnOnce()) -> std::io::Result<Option<Handle>> {
+    let file = File::options().create(true).truncate(false).read(true).write(true).open(path)?;
+    let handle = Handle::from_file(file)?;
+    if held.contains(&handle) {
+        return Ok(None);
+    }
+    match handle.as_file().try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
             waiting();
-            file.lock()?;
+            handle.as_file().lock()?;
         }
         Err(TryLockError::Error(e)) => return Err(e),
     }
-    Ok(file)
+    Ok(Some(handle))
 }
 
-/// Take the project's lock if this run saves over the file it opens, or exit if `--project` is
+/// Take the project's locks if this run saves over the file it opens, or exit if `--project` is
 /// missing. Call it before opening the project and keep the result until the save is done. Blocks
-/// while another run holds the lock, which is fine here: nothing else is running yet. A lock that
+/// while another run holds a lock, which is fine here: nothing else is running yet. A lock that
 /// can't be had (a read-only folder, a file system without locks) is a warning and not an error, so
 /// that saving works where it did.
-pub fn for_save(a: &Args) -> Option<File> {
-    let project = saved_in_place(a).unwrap_or_else(|e| crate::fail(e))?;
+pub fn for_save(a: &Args) -> Vec<Handle> {
+    let Some(project) = saved_in_place(a).unwrap_or_else(|e| crate::fail(e)) else { return Vec::new() };
     let shown = project.display();
-    let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
-    match lock(project, waiting) {
-        Ok(file) => Some(file),
-        Err(e) => {
-            crate::diag(format_args!("filmcraft-cli: warning: can't lock {shown} ({e}); another run saving it now could overwrite these edits"));
-            None
+    let mut locks = Vec::new();
+    for name in lock_names(project) {
+        let file = lock_path(&name);
+        let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
+        match lock(&file, &locks, waiting) {
+            Ok(Some(handle)) => locks.push(handle),
+            Ok(None) => {}
+            Err(e) => {
+                crate::diag(format_args!("filmcraft-cli: warning: can't lock {} ({e}); another run saving it now could overwrite these edits", file.display()))
+            }
         }
     }
+    locks
 }
 
 #[cfg(test)]
@@ -124,6 +154,75 @@ mod tests {
         }
         // --project with --bridge is a usage error, which `Backend::open` reports
         assert_eq!(saved_in_place(&args(&["--bridge", "127.0.0.1:1", "--project", gone, "--save", "exec"])), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_takes_its_own_lock_and_then_the_lock_of_the_file_it_points_to() {
+        let dir = std::env::temp_dir().join(format!("fc-cli-lock-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("links")).unwrap();
+        let real = dir.join("p.fcproj");
+        std::fs::write(&real, b"{}").unwrap();
+        let link = dir.join("links/link.fcproj");
+        std::os::unix::fs::symlink("../p.fcproj", &link).unwrap();
+        let chained = dir.join("chained.fcproj");
+        std::os::unix::fs::symlink(&link, &chained).unwrap();
+        let real_name = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(lock_names(&real), std::slice::from_ref(&real));
+        assert_eq!(lock_names(&link), [link.clone(), real_name.clone()]);
+        assert_eq!(lock_names(&chained), [chained.clone(), real_name]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Lock files held after locking `paths` in order, or `None` if that takes over ten seconds:
+    /// without the identity check, a second path to one lock file waits on this test forever.
+    fn held_after_locking(paths: Vec<PathBuf>) -> Option<usize> {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for path in &paths {
+                if let Some(handle) = lock(path, &held, || {}).unwrap() {
+                    held.push(handle);
+                }
+            }
+            let _ = done.send(held.len());
+        });
+        result.recv_timeout(std::time::Duration::from_secs(10)).ok()
+    }
+
+    /// Rows: lock-file paths taken in order, and how many lock files that is. Each alias of one
+    /// file, however it is spelt, must count once. Every row has files of its own, so a row that
+    /// waits on itself can't hold up the next.
+    #[test]
+    fn a_lock_file_is_taken_once_whatever_path_reaches_it() {
+        let dir = std::env::temp_dir().join(format!("fc-cli-lock-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = |name: &str| dir.join(format!(".{name}.lock"));
+        let shared = lock(&"p".repeat(MAX_NAME_BYTES));
+        std::fs::write(lock("hard"), b"").unwrap();
+        std::fs::hard_link(lock("hard"), lock("hard-alias")).unwrap();
+        let mut rows: Vec<(&str, Vec<PathBuf>, usize)> = vec![
+            ("one path twice (a link and its file sharing their first 200 bytes)", vec![shared.clone(), shared], 1),
+            ("a hard link", vec![lock("hard"), lock("hard-alias")], 1),
+            ("two files", vec![lock("one"), lock("two")], 2),
+        ];
+        #[cfg(unix)]
+        {
+            let folder = dir.join("folder");
+            std::os::unix::fs::symlink(&dir, &folder).unwrap();
+            rows.push(("through a link to the folder", vec![lock("linked"), folder.join(".linked.lock")], 1));
+        }
+        // only where the volume ignores case (macOS and Windows by default)
+        std::fs::write(lock("case"), b"").unwrap();
+        if lock("CASE").exists() {
+            rows.push(("another case", vec![lock("case"), lock("CASE")], 1));
+        }
+        for (what, paths, want) in rows {
+            assert_eq!(held_after_locking(paths), Some(want), "{what}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
