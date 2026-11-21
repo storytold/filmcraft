@@ -20,11 +20,37 @@ pub fn auto_save_dir(project_path: &Path) -> PathBuf {
     project_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).join(AUTO_SAVE_DIR)
 }
 
-/// A file-name-safe version of a project name (path separators and control characters replaced).
-pub fn file_stem(name: &str) -> String {
+/// Most bytes of the project name kept in an auto-save file name. The rest of the 255-byte limit is
+/// left for `-`, the 19-byte stamp, the unix time, `-collision-N` and `.fcproj`.
+const STEM_MAX: usize = 150;
+
+/// Length of the `-<16 hex digits>` suffix that keeps shortened stems of different names apart.
+const HASH_SUFFIX: usize = 17;
+
+/// A file-name-safe version of a project name (path separators and control characters replaced),
+/// not limited in length.
+fn sanitized_name(name: &str) -> String {
     let s: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c }).collect();
-    let s = s.trim().trim_matches('.').to_string();
-    if s.is_empty() { "Untitled".into() } else { s }
+    let s = s.trim().trim_matches('.');
+    if s.is_empty() { "Untitled".into() } else { s.to_string() }
+}
+
+/// FNV-1a, a fixed hash so the same name always gives the same file name.
+fn fnv1a(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// A file-name-safe version of a project name. A name longer than [`STEM_MAX`] bytes is cut at a
+/// char boundary and gets a hash of the whole name appended, so the stamp, unix time, collision
+/// suffix and extension fit in the 255-byte file name limit and long names that share a start
+/// stay distinct.
+pub fn file_stem(name: &str) -> String {
+    let s = sanitized_name(name);
+    if s.len() <= STEM_MAX {
+        return s;
+    }
+    let cut = (0..=STEM_MAX - HASH_SUFFIX).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+    format!("{}-{:016x}", s[..cut].trim_end().trim_end_matches('.'), fnv1a(&s))
 }
 
 /// Unix seconds → (proleptic Gregorian year, the same wall-clock instant moved into chrono's range
@@ -120,12 +146,14 @@ fn parse_stamp(s: &str) -> Option<(&str, Option<i64>, Option<u64>)> {
 /// without a unix time in their name are older than those with one).
 pub fn list_auto_saves(dir: &Path, name: &str) -> Vec<PathBuf> {
     let prefix = format!("{}-", file_stem(name));
+    // Files written before stems were capped carry the whole name; keep listing (and rotating) them.
+    let legacy_prefix = format!("{}-", sanitized_name(name));
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut v: Vec<(Option<i64>, String, Option<u64>, PathBuf)> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let f = e.file_name().to_string_lossy().into_owned();
-            let (stamp, unix, collision) = parse_stamp(f.strip_prefix(&prefix)?.strip_suffix(".fcproj")?)?;
+            let (stamp, unix, collision) = parse_stamp(f.strip_prefix(&prefix).or_else(|| f.strip_prefix(&legacy_prefix))?.strip_suffix(".fcproj")?)?;
             Some((unix, stamp.to_string(), collision, e.path()))
         })
         .collect();
@@ -225,6 +253,48 @@ mod tests {
         assert_eq!(file_stem("a/b:c"), "a_b_c");
         assert_eq!(file_stem("  "), "Untitled");
         assert_eq!(auto_save_dir(Path::new("/x/y/p.fcproj")), Path::new("/x/y/Auto-Save"));
+    }
+
+    #[test]
+    fn a_long_project_name_still_auto_saves() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("filmcraft-long-name-{}-{nonce}", std::process::id()));
+        for name in ["a".repeat(240), "é".repeat(120)] {
+            let p = write_auto_save(&d, &name, 1_790_775_907, 0, b"x", 5).unwrap();
+            let f = p.file_name().unwrap().to_str().unwrap();
+            assert!(f.len() <= 255 && f.ends_with(".fcproj"));
+            assert_eq!(fs::read(&p).unwrap(), b"x");
+            assert_eq!(list_auto_saves(&d, &name), vec![p]);
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn long_names_sharing_a_start_do_not_share_auto_saves() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("filmcraft-long-shared-{}-{nonce}", std::process::id()));
+        let (a, b) = ("a".repeat(200) + "1", "a".repeat(200) + "2");
+        let pa = write_auto_save(&d, &a, 1_790_000_000, 0, b"a", 1).unwrap();
+        let pb = write_auto_save(&d, &b, 1_790_000_060, 0, b"b", 1).unwrap();
+        assert!(pa.exists(), "rotation of one project deleted the other's auto-save");
+        assert_eq!(list_auto_saves(&d, &a), vec![pa]);
+        assert_eq!(list_auto_saves(&d, &b), vec![pb]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn auto_saves_written_with_an_uncapped_stem_are_still_listed_and_rotated() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("filmcraft-long-legacy-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let name = "a".repeat(200);
+        let legacy = d.join(format!("{name}-{}-1790000000.fcproj", timestamp(1_790_000_000, 0)));
+        fs::write(&legacy, b"old").unwrap();
+        assert_eq!(list_auto_saves(&d, &name), vec![legacy.clone()]);
+        let new = write_auto_save(&d, &name, 1_790_000_060, 0, b"new", 1).unwrap();
+        assert!(!legacy.exists());
+        assert_eq!(list_auto_saves(&d, &name), vec![new]);
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
