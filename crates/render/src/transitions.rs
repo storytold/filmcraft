@@ -29,6 +29,8 @@ use crate::image::Image;
 
 pub mod cards;
 mod dissolve;
+#[cfg(test)]
+pub(crate) use dissolve::cross_dissolve_curve;
 mod grunge;
 mod legacy;
 mod lights;
@@ -46,7 +48,52 @@ pub fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
 
 /// Render transition `e` at progress `p`; `scale` converts pixel parameters (border width, blur
 /// length, centre) from sequence pixels to working-image pixels (½ for half-resolution playback).
+/// For a plain Rec. 709 sequence; [`apply_in`] says which.
 pub fn apply_scaled(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
+    apply_in(e, a, b, p, scale, true)
+}
+
+/// [`apply_scaled`] in a sequence whose colour pipeline is plain Rec. 709 (`plain`) or HDR /
+/// wide gamut.
+///
+/// `plain` only changes `cross_dissolve`: in a plain Rec. 709 sequence it mixes the encoded
+/// pictures, as Premiere 26's does (#4477), in one pass over `a` and `b`. Every other transition,
+/// and every transition in an HDR or wide-gamut sequence, mixes in linear light as before. The ends
+/// (`p` ≤ 0 or ≥ 1, NaN counts as 0) and layers of different sizes take the linear path too, so
+/// they return the pictures themselves rather than their encode / decode round trip.
+pub fn apply_in(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32, plain: bool) -> Image {
+    let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
+    if !(plain && e.effect == "cross_dissolve") || p <= 0.0 || p >= 1.0 || a.w == 0 || a.h == 0 || (a.w, a.h) != (b.w, b.h) {
+        return mixed(e, a, b, p, scale);
+    }
+    let t = Tx { e, a, b, p, w: a.w, h: a.h, wf: a.w as f32, hf: a.h as f32, scale: 1.0 };
+    let k = dissolve::cross_dissolve_curve(p, t.num("ease_in"), t.num("ease_out"));
+    encoded_mix(a, b, k)
+}
+
+/// `a` and `b` mixed `k` of the way in the encoded signal: each unpremultiplied colour encoded with
+/// the Rec. 709 curve FilmCraft decodes and encodes with, the premultiplied encoded values and the
+/// alphas mixed, the result decoded again. A fully transparent pixel's values pass through as they
+/// are.
+fn encoded_mix(a: &Image, b: &Image, k: f32) -> Image {
+    use filmcraft_color::{Transfer, from_linear, to_linear};
+    let encoded = |c: f32, alpha: f32| if alpha > 0.0 { from_linear(c / alpha, Transfer::Bt709) * alpha } else { c };
+    let mut out = Image::new(a.w, a.h);
+    out.px.par_chunks_exact_mut(4).zip(a.px.par_chunks_exact(4)).zip(b.px.par_chunks_exact(4)).for_each(|((o, pa), pb)| {
+        let alpha = pa[3] + (pb[3] - pa[3]) * k;
+        for c in 0..3 {
+            let (ea, eb) = (encoded(pa[c], pa[3]), encoded(pb[c], pb[3]));
+            let m = ea + (eb - ea) * k;
+            o[c] = if alpha > 0.0 { to_linear(m / alpha, Transfer::Bt709) * alpha } else { m };
+        }
+        o[3] = alpha;
+    });
+    out
+}
+
+/// Transition `e` at progress `p` on `a` and `b` as they are (the legacy implementations first,
+/// then the families of [`Tx`]-based transitions); the ends return the pictures unchanged.
+fn mixed(e: &EffectInstance, a: &Image, b: &Image, p: f32, scale: f32) -> Image {
     let p = if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 };
     if a.w == 0 || a.h == 0 || (a.w, a.h) != (b.w, b.h) {
         return if p < 0.5 { a.clone() } else { b.clone() };
