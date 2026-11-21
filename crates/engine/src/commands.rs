@@ -4248,6 +4248,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::paste_media::commands());
     v.extend(crate::pacing::commands());
     v.extend(crate::audio_levels::commands());
+    v.extend(crate::review::commands());
     // Edit ▸ Label ▸ <colour>, Paste Attributes, subclips, Video / Audio Options, Replace With Clip…
     // and their menu order
     crate::clip_ops::apply_layout(&mut v);

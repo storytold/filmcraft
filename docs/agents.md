@@ -112,6 +112,24 @@ the project or adds an undo step.
 `audio.levels` and a report run decode media while the command runs, so measure a range, not
 hours at once.
 
+**Before saying an edit is done**, run `sequence.review {againstUndo?: n, flashFrames=3,
+longSeconds=5, wordMarginSeconds=0.04, popDb=-30}`. It lists `issues` with `severity`, `seconds`,
+`clip`, `detail` and a `fix`:
+
+| kind | severity | meaning |
+|---|---|---|
+| `gap` | error | black inside the picture |
+| `flashFrame` | error | a shot shorter than `flashFrames` frames |
+| `offlineMedia` | error | a clip whose media can't be opened |
+| `midWord` | warning | an audio edge inside a spoken word; the fix names the word edge to trim to |
+| `audioPop` | warning | a hard audio cut where the mix is loud: add a short crossfade |
+| `jumpCut` | info | the next shot continues the same media further on |
+| `longHold` | info | a shot longer than `longSeconds` |
+
+With `againstUndo: n`, `before` and `after` compare the picture with the state n undo steps ago
+(duration, picture seconds, shots, cuts per minute, longest shot). The checks find likely
+mistakes; a clean report doesn't mean a good edit.
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not
