@@ -141,6 +141,10 @@ pub(super) fn insert_frame_hold_segment(s: &mut Session, p: &Value) -> Result<Va
         seg.link = None;
         seg.markers.clear();
         let ids = edit::insert(q, vec![(track, seg)], ctx)?;
+        // the segment is an insert: later markers move with the clips, as Paste Insert's do
+        if st.ripple_sequence_markers {
+            crate::sequence_tools::ripple_markers(&mut q.markers, t, dur);
+        }
         st.selection = ids.clone();
         Ok(ids[0])
     })?;
