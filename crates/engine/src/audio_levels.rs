@@ -77,6 +77,12 @@ pub(crate) fn quiet_runs(rms: &[f64], quiet_db: f64, min_windows: usize) -> Vec<
     out
 }
 
+/// The rate the mixer renders `q` at (it bounds a damaged sequence rate), so requests in samples
+/// cover the times they are meant to.
+pub(crate) fn mix_rate(s: &Session, q: &filmcraft_project::Sequence, provider: &dyn filmcraft_render::SourceProvider) -> u32 {
+    filmcraft_render::audio::mix_sequence(&s.project, q, 0, 1, provider).sample_rate.max(1)
+}
+
 fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = match u64_p(p, "sequence") {
         Some(id) => ItemId(id),
@@ -109,11 +115,11 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     let min_quiet = positive("minQuietSeconds", 1.0)?;
     let loudest_n = u64_p(p, "loudest").unwrap_or(5).min(100) as usize;
 
-    let sr = q.settings.sample_rate.max(1);
+    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    let sr = mix_rate(s, q, &provider);
     let first = Tick::from_seconds_f64(start).to_units_floor(i64::from(sr));
     let last = Tick::from_seconds_f64(end).to_units_floor(i64::from(sr));
     let per = ((window * f64::from(sr)).round() as i64).max(1);
-    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     // On the web a clip's audio can still be loading: the mix leaves it out, which would read as
     // silence. Report that instead of measuring it (as file.exportFrame does, #228).
     let _ = filmcraft_media::pending::take();
@@ -140,13 +146,16 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     let window = per as f64 / f64::from(sr);
     let first_seconds = first as f64 / f64::from(sr);
     let t_of = |i: usize| first_seconds + i as f64 * window;
-    let min_windows = (min_quiet / window).ceil() as usize;
+    // lengths in samples, so a stretch of exactly minQuietSeconds isn't lost to rounding
+    let secs = |samples: i64| samples as f64 / f64::from(sr);
+    let min_samples = ((min_quiet * f64::from(sr)).round() as i64).max(1);
+    let min_windows = (min_samples + per - 1) / per;
     // a run that reaches the end of the range is clipped to it, and then must still be long enough
-    let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows)
+    let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows as usize)
         .into_iter()
-        .map(|(a, b)| (t_of(a), t_of(b).min(end)))
-        .filter(|(a, b)| b - a >= min_quiet)
-        .map(|(a, b)| json!({"startSeconds": a, "endSeconds": b, "seconds": b - a}))
+        .map(|(a, b)| (first + a as i64 * per, (first + b as i64 * per).min(last)))
+        .filter(|(a, b)| b - a >= min_samples)
+        .map(|(a, b)| json!({"startSeconds": secs(a), "endSeconds": secs(b), "seconds": secs(b - a)}))
         .collect();
     let mut order: Vec<usize> = (0..rms.len()).collect();
     order.sort_by(|a, b| rms[*b].total_cmp(&rms[*a]));

@@ -70,3 +70,18 @@ fn reported_windows_are_the_measured_sample_spans() {
     assert!(whole(start) && whole(window), "{start} {window} at {sr} Hz");
     assert!(start <= 0.10001 && 0.10001 - start < 1.0 / sr, "the window starts on the sample of the requested start");
 }
+
+/// A quiet stretch of exactly minQuietSeconds is kept: lengths are compared in samples.
+#[test]
+fn a_quiet_stretch_of_exactly_the_minimum_is_kept() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let tracks: Vec<u64> = s.active_sequence().unwrap().audio_tracks.iter().map(|t| t.id.0).collect();
+    for t in tracks {
+        s.execute("timeline.setTrack", json!({"track": t, "muted": true})).unwrap();
+    }
+    for (start, end, window, min) in [(0.4, 1.4, 0.5, 1.0), (0.6, 0.9, 0.1, 0.3)] {
+        let r = levels(&mut s, json!({"startSeconds": start, "endSeconds": end, "windowSeconds": window, "minQuietSeconds": min}));
+        assert_eq!(r["quiet"].as_array().unwrap().len(), 1, "{start}..{end} by {window}: {r}");
+    }
+}
