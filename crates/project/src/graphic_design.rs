@@ -291,10 +291,21 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
     for (j, n) in nodes.iter().enumerate() {
         by_uid.entry(n.uid).or_insert(j);
     }
+    // A depth-limited chain can be revisited from many starting layers. Resolve its edges
+    // once, rather than hashing the same UID on every visit (up to MAX_PIN_CHAIN per layer).
+    let targets: Vec<Option<usize>> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| match n.pin.as_ref().map(|p| p.to) {
+            Some(PinTarget::Layer(uid)) if uid != 0 => by_uid.get(&uid).copied().filter(|&j| j != i),
+            _ => None,
+        })
+        .collect();
+    drop(by_uid);
     struct Walk<'a> {
         nodes: &'a [PinNode],
         frame: [f64; 4],
-        by_uid: std::collections::HashMap<u64, usize>,
+        targets: Vec<Option<usize>>,
         /// Layers on the current chain, and how long it is.
         visiting: Vec<bool>,
         depth: usize,
@@ -323,7 +334,7 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
         w.depth += 1;
         let target = match pin.to {
             PinTarget::Frame => Some(frame),
-            PinTarget::Layer(uid) => w.by_uid.get(&uid).copied().filter(|&j| uid != 0 && j != i).map(|j| solve(j, w, out)),
+            PinTarget::Layer(_) => w.targets[i].map(|j| solve(j, w, out)),
         };
         w.depth -= 1;
         w.visiting[i] = false;
@@ -348,7 +359,7 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
         }
         b
     }
-    let mut w = Walk { nodes, frame, by_uid, visiting: vec![false; nodes.len()], depth: 0, cuts: 0 };
+    let mut w = Walk { nodes, frame, targets, visiting: vec![false; nodes.len()], depth: 0, cuts: 0 };
     (0..nodes.len()).map(|i| solve(i, &mut w, &mut out)).collect()
 }
 
@@ -621,6 +632,27 @@ mod tests {
         // only for instrumented runs (the shared SonarCloud workflow sets LLVM_PROFILE_FILE).
         let budget = if std::env::var_os("LLVM_PROFILE_FILE").is_some() { 30 } else { 10 };
         assert!(t.elapsed().as_secs() < budget, "{:?} (budget: {budget}s)", t.elapsed());
+    }
+
+    #[test]
+    fn indexed_pin_targets_keep_first_duplicate_and_reject_zero_self_and_missing() {
+        let own = [1.0, 2.0, 11.0, 12.0];
+        let first = [20.0, 30.0, 40.0, 50.0];
+        let pin = |uid, target| PinNode { uid, pin: Some(Pin::new(PinTarget::Layer(target), [true; 4], [0.0; 4], [0.0; 4])), bounds: own, resizable: true };
+        let nodes = vec![
+            pin(1, 7),
+            PinNode { uid: 7, pin: None, bounds: first, resizable: true },
+            PinNode { uid: 7, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(2, 0),
+            PinNode { uid: 0, pin: None, bounds: [99.0; 4], resizable: true },
+            pin(3, 3),
+            pin(4, 999),
+        ];
+        let out = resolve_pins(&nodes, [0.0; 4]);
+        assert_eq!(out[0], first, "a duplicate UID still resolves to its first layer");
+        for i in [3, 5, 6] {
+            assert_eq!(out[i], own, "zero, self and missing targets leave the layer unchanged");
+        }
     }
 
     #[test]
