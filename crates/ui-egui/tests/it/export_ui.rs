@@ -609,6 +609,56 @@ fn export_button_locks_and_cancels_during_active_export() {
     assert_eq!(d.app().session.jobs.len(), jobs_before, "cancelling the active export does not dispatch another job");
 }
 
+/// #4040: while the queue encodes, the settings, the range and Send to Queue stay usable, so more
+/// ranges can be queued; Export waits for the queue. An Export still locks them all (#2670).
+#[test]
+fn more_can_be_queued_while_the_queue_encodes() {
+    use filmcraft_engine::Job;
+    use filmcraft_engine::export_tools::QueueStatus;
+    let mut d = Driver::new("queue-busy");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    let set = |d: &mut Driver, name: &str, start: f64| {
+        d.ok(
+            "ui.set",
+            json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "location": loc, "fileName": name, "range": "custom", "customStart": start, "customEnd": start + 0.25}}),
+        );
+        d.frames(2);
+    };
+    set(&mut d, "first", 0.0);
+    d.click("export.sendToQueue");
+    // the queue encodes its first item
+    let job = Job { id: 901, label: "Queue: first".into(), progress: Default::default(), result: Default::default() };
+    d.app().session.jobs.push(job);
+    {
+        let q = &mut d.app().session.export_queue;
+        q.running = true;
+        q.items[0].status = QueueStatus::Encoding;
+        q.items[0].job = Some(901);
+    }
+    d.frames(3);
+    assert!(d.app().session.export_queue.is_active());
+    // a new range and name go to the queue as a second item
+    set(&mut d, "second", 1.0);
+    d.click("export.sendToQueue");
+    let items = d.queue();
+    assert_eq!(items.len(), 2, "Send to Queue works while the queue encodes: {items:?}");
+    assert_eq!(items[1]["status"], "ready");
+    assert!(items[1]["path"].as_str().unwrap().contains("second"), "{}", items[1]);
+    assert_eq!(items[0]["status"], "encoding", "the encoding item is untouched");
+    // Export waits for the queue
+    let jobs = d.app().session.jobs.len();
+    d.click("export.button");
+    assert_eq!(d.app().session.jobs.len(), jobs, "Export does not start next to the queue");
+    // an Export locks Send to Queue
+    let job = Job { id: 902, label: "Export third.wav".into(), progress: Default::default(), result: Default::default() };
+    d.app().session.jobs.push(job);
+    d.frames(2);
+    set(&mut d, "third", 2.0);
+    d.click("export.sendToQueue");
+    assert_eq!(d.queue().len(), 2, "nothing is queued while an Export runs");
+}
+
 /// #2749: with In/Out marks on the sequence, Export starts on Source In/Out (as Premiere does);
 /// without, on Entire Source. A Range chosen afterwards stays until the marks change.
 #[test]
