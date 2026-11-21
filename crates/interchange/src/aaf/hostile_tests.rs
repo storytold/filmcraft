@@ -1,5 +1,5 @@
 //! Hostile object trees: a crafted file must give an error, never a crash, a hang or an
-//! allocation sized by a count in the file (AGENTS.md §0).
+//! allocation sized by a count in the file (AGENTS.md rule 13).
 
 use filmcraft_cfb::{Version, Writer};
 

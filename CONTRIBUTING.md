@@ -2,14 +2,12 @@
 
 Thanks for helping. Before you start:
 
-1. Read **[AGENTS.md](AGENTS.md)**. Its rules are absolute. In particular: no Adobe assets of any
-   kind, every asset openly licensed with an attribution sidecar, no GPL/LGPL code, and ffmpeg only
-   as an external test oracle.
+1. Read **[AGENTS.md](AGENTS.md)**: the shared rules and the facts about this repository.
 2. **Never crash.** A crash loses someone's work, so this rule outranks feature work: no `unwrap()`,
-   `expect()`, `panic!`, `unreachable!`, `todo!`, `unimplemented!` or `unsafe` in production code;
-   return `Result` and treat every input as hostile. See [AGENTS.md](AGENTS.md) §0.
+   `expect()`, `panic!`, `unreachable!`, `todo!` or `unimplemented!` in production code, and no `unsafe` outside `crates/platform`;
+   return `Result` and treat every input as hostile. See rule 13 of [AGENTS.md](AGENTS.md).
 3. Follow **[docs/contributing.md](docs/contributing.md)**: setup per OS, building and running,
-   the quality gates (`cargo xtask ci`), commit conventions, and how to add commands, effects,
+   the checks, commit conventions, and how to add commands, effects,
    transitions, codecs, panels and assets.
 
 More reading: [docs/architecture.md](docs/architecture.md), [docs/testing.md](docs/testing.md),
