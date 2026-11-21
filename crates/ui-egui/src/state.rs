@@ -189,6 +189,10 @@ pub struct TimelineView {
     pub split: f32,
     pub video_track_h: f32,
     pub audio_track_h: f32,
+    /// Per-track heights that differ from `video_track_h` / `audio_track_h`, keyed by track id. The
+    /// header's height handle writes here, so dragging one track's edge resizes only that track.
+    #[serde(default)]
+    pub track_heights: std::collections::BTreeMap<u64, f32>,
     pub header_w: f32,
     pub show_thumbnails: bool,
     /// Which frames a video clip shows while `show_thumbnails` is on (the wrench menu).
@@ -236,6 +240,7 @@ impl Default for TimelineView {
             split: 0.5,
             video_track_h: 60.0,
             audio_track_h: 56.0,
+            track_heights: Default::default(),
             header_w: 204.0,
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,
