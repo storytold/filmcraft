@@ -1,5 +1,6 @@
 # FilmCraft Roadmap
 
+- M11: Replace Footage is available from Clip and the Project-item context menu for one file-backed item. The replacement preserves timeline edits, detaches the old proxy and supports undo/redo; no parity percentage is changed by this UI wiring.
 - M3: Markers and clips share the existing sixteen clip presets plus a project-local custom hex palette. A reusable wheel/hex editor defines colors separately from marker editing; timeline markers expose Edit Marker with Name, Author and Notes. Marker/clip colors, palette edits and authors persist with undo and project saves. AVB marker import remains separate.
 
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
