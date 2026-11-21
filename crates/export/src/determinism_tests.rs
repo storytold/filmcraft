@@ -207,6 +207,50 @@ fn hdr_with_audio_is_the_same_file_when_the_memory_budget_caps_the_batch() {
     }
 }
 
+#[test]
+fn the_render_budget_caps_the_batch_by_what_its_frames_hold_and_the_file_is_the_same() {
+    for (format, ext) in [(Format::ProRes, "mov"), (Format::H264, "mp4")] {
+        // `render_budget(ws)`: a budget sized from the first frame's estimated working set `ws`
+        let run = |name: &str, overlap: bool, render_budget: Option<&(dyn Fn(u64) -> u64 + Sync)>| {
+            let (p, seq, m) = project();
+            let s = ExportSettings { format, path: tmp(&format!("{name}.{ext}")), include_audio: false, ..Default::default() };
+            pool(3).install(|| {
+                let prog = Progress::default();
+                let mut ex = Exporter::new(p, seq, &s, &prog).unwrap();
+                ex.set_batch(16);
+                ex.set_overlap(overlap);
+                let ws = ex.working_set(0);
+                assert!(ws > 0, "a frame with a clip has a working set");
+                if let Some(b) = render_budget {
+                    ex.set_render_budget(b(ws));
+                }
+                let mut first_ahead = None;
+                loop {
+                    let step = ex.step(&m, &prog).unwrap();
+                    first_ahead.get_or_insert(ex.frames_ahead());
+                    if matches!(step, Step::Done(_)) {
+                        break;
+                    }
+                }
+                (std::fs::read(&s.path).unwrap(), first_ahead.unwrap_or(0))
+            })
+        };
+        let (reference, _) = run(&format!("wscap-{}-ref", format.id()), false, None);
+        // room for three frames being drawn (and a little over): batches of 3, not 16
+        let (capped, ahead) = run(&format!("wscap-{}-3", format.id()), true, Some(&|ws| 3 * ws + ws / 2));
+        assert_eq!(ahead, 3, "{}: the batch was not capped to 3 frames", format.label());
+        assert!(reference == capped, "{}: a batch capped by its working set gives a different file", format.label());
+        // a budget below one frame still renders, one frame at a time
+        let (one, ahead) = run(&format!("wscap-{}-1", format.id()), true, Some(&|_| 1));
+        assert_eq!(ahead, 1);
+        assert!(reference == one, "{}: one-frame batches give a different file", format.label());
+        // the default budget leaves these small frames alone: 24 frames in batches of 16 leave 8
+        let (full, ahead) = run(&format!("wscap-{}-16", format.id()), true, None);
+        assert_eq!(ahead, 8, "{}: the default budget capped a 320 x 180 batch", format.label());
+        assert!(reference == full);
+    }
+}
+
 /// Bytes of one HDR frame of the test project (320 x 180, three f32 per pixel).
 fn frame_bytes_for_test() -> u64 {
     320 * 180 * 12
@@ -381,4 +425,43 @@ fn max_threads_is_a_setting_of_the_json_interface() {
     assert_eq!(s.max_threads, 2);
     assert_eq!(ExportSettings::default().max_threads, 0, "all cores unless asked");
     assert_eq!(serde_json::to_value(&s).unwrap()["maxThreads"], serde_json::json!(2));
+}
+
+#[test]
+fn the_working_set_counts_fitting_a_full_quality_render_into_a_smaller_frame() {
+    let (p, seq, _) = project();
+    // Maximum Render Quality draws the 320 x 180 sequence at full size, then resamples it to 160 x 90
+    let s = ExportSettings {
+        format: Format::ProRes,
+        path: tmp("ws-place.mov"),
+        frame_size: Some((160, 90)),
+        max_render_quality: true,
+        include_audio: false,
+        ..Default::default()
+    };
+    let prog = Progress::default();
+    let ex = Exporter::new(p, seq, &s, &prog).unwrap();
+    let img = |w: u64, h: u64| w * h * 16;
+    // far past the clip the render holds only its canvas; placing it holds the canvas, the
+    // 160 x 180 intermediate and the 160 x 90 result
+    assert_eq!(ex.working_set(1 << 20), img(320, 180) + img(160, 180) + img(160, 90));
+}
+
+#[test]
+fn the_working_set_counts_the_layer_of_a_translucent_text_overlay() {
+    let img = |w: u64, h: u64| w * h * 16;
+    let at = |opacity: f32, name: &str| {
+        let (p, seq, _) = project();
+        let mut s = ExportSettings { format: Format::ProRes, path: tmp("ws-overlay.mov"), include_audio: false, ..Default::default() };
+        s.effects.timecode_overlay = TextOverlay { enabled: true, opacity, ..Default::default() };
+        s.effects.name_overlay = TextOverlay { enabled: !name.is_empty(), text: name.into(), opacity, ..Default::default() };
+        let prog = Progress::default();
+        // far past the clip the render holds only its 320 x 180 canvas
+        Exporter::new(p, seq, &s, &prog).unwrap().working_set(1 << 20)
+    };
+    // at half opacity the timecode is drawn on a layer of its own beside the output frame
+    assert_eq!(at(50.0, ""), 2 * img(320, 180));
+    assert_eq!(at(50.0, "Reel 1"), 2 * img(320, 180));
+    // opaque text is burnt straight into the frame
+    assert_eq!(at(100.0, ""), img(320, 180));
 }
