@@ -747,21 +747,14 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
 }
 
 /// Start editing a text layer with all text selected (used when double-clicking a text layer row
-/// in the Properties panel): commits any in-flight marked text, restarts the IME target, focuses
-/// the Program monitor, and selects the layer.
-pub(super) fn start_edit_layer(
-    app: &mut FilmcraftApp,
-    ctx: &egui::Context,
-    clip: ClipId,
-    layer: usize,
-    uid: u64,
-    text_len: usize,
-    actions: &mut Vec<(String, Value)>,
-) {
+/// in the Properties panel): commits any in-flight marked text, restarts the IME target, reveals
+/// and focuses the Program monitor, and selects the layer.
+pub(super) fn start_edit_layer(app: &mut FilmcraftApp, ctx: &egui::Context, clip: ClipId, layer: usize, uid: u64, actions: &mut Vec<(String, Value)>) {
     commit_marked_text(app, ctx);
     app.restart_ime_target();
+    let text_len = current_layer_text(&app.session, clip.0, layer).map_or(0, str::len);
     app.ui.gfx_edit = Some(GfxEdit { clip: clip.0, layer, caret: text_len, anchor: 0, uid, fingerprint: 0 });
-    app.ui.focused = crate::dock::PanelKind::Program;
+    app.show_panel(crate::dock::PanelKind::Program);
     ctx.memory_mut(|m| m.request_focus(egui::Id::unique(TEXT_EDIT_ID)));
     actions.push(("graphics.selectLayer".into(), json!({"clip": clip.0, "layers": [layer]})));
 }
