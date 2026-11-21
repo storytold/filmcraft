@@ -1,6 +1,53 @@
 use super::{FilmcraftApp, ThemeKind, Tokens, dock, i18n, state, theme};
 
 impl FilmcraftApp {
+    /// Persist an explicit control-channel view request before acknowledging it, even before the
+    /// sequence's automatic first fit has run.
+    pub(crate) fn explicit_timeline_view_edit(&mut self, keep_pending_fit: bool) {
+        let Some(active) = self.session.state.active_sequence else { return };
+        if keep_pending_fit {
+            self.tl.track_anim = None;
+            self.session.state.timeline_pending_fits.insert(active);
+            let shown = filmcraft_engine::project::SequenceView {
+                pps: 40.0,
+                scroll: 0.0,
+                v_scroll: self.ui.timeline.v_scroll,
+                a_scroll: self.ui.timeline.a_scroll,
+                video_track_h: self.ui.timeline.video_track_h,
+                audio_track_h: self.ui.timeline.audio_track_h,
+            };
+            let previous = self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_of = Some(active);
+            self.timeline_view_last = None;
+            if previous != Some(shown) {
+                self.session.view_changed();
+                self.session.sync_persistence();
+            }
+            return;
+        }
+        self.session.state.timeline_pending_fits.remove(&active);
+        if !keep_pending_fit {
+            self.ui.timeline.fit_pending = false;
+        }
+        self.ui.timeline.fit_empty = None;
+        let shown = filmcraft_engine::project::SequenceView {
+            pps: self.ui.timeline.target_pps,
+            scroll: self.ui.timeline.target_scroll,
+            v_scroll: self.ui.timeline.v_scroll,
+            a_scroll: self.ui.timeline.a_scroll,
+            video_track_h: self.ui.timeline.video_track_h,
+            audio_track_h: self.ui.timeline.audio_track_h,
+        };
+        let Some(shown) = shown.checked() else { return };
+        let previous = self.session.state.timeline_views.insert(active, shown).and_then(|view| view.checked());
+        self.timeline_view_of = Some(active);
+        self.timeline_view_last = Some(shown);
+        if previous != Some(shown) {
+            self.session.view_changed();
+            self.session.sync_persistence();
+        }
+    }
+
     /// Show theme `k` with the Settings ▸ Appearance highlight colour and contrast.
     pub fn set_theme(&mut self, ctx: &egui::Context, k: ThemeKind) {
         let a = &self.session.prefs.appearance;
@@ -167,15 +214,10 @@ impl FilmcraftApp {
             self.ui.status = note;
         }
         if prev.is_none() && !self.workspace_restored {
-            // reopen the workspace in use when the app last closed, with the layout it had then.
-            // When it names no workspace (a damaged or edited file) and a layout is remembered,
-            // nothing is remembered this session: the default layout must not replace it.
+            // reopen the workspace in use when the app last closed
+            self.workspace_restored = true;
             if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
-                self.workspace_restored = true;
                 self.set_workspace(&w);
-                self.restore_remembered_layout(&w);
-            } else if self.workspaces.last.is_none() {
-                self.workspace_restored = true;
             }
         }
         self.applied_prefs = Some(p);
@@ -189,7 +231,7 @@ impl FilmcraftApp {
     /// - writes a change made in the panel to the session,
     /// - and takes over a view that was changed in the session (by a command or the control
     ///   channel).
-    pub(super) fn sync_timeline_view(&mut self) {
+    pub(crate) fn sync_timeline_view(&mut self) {
         let Some(active) = self.session.state.active_sequence else {
             self.timeline_view_of = None;
             return;
@@ -210,11 +252,20 @@ impl FilmcraftApp {
             (v.fit_pending, v.fit_empty) = (false, None);
         };
         if self.timeline_view_of != Some(active) {
+            self.tl.track_anim = None;
             self.timeline_view_of = Some(active);
+            // the zoom ceiling is applied by animate_view with the measured content width --
+            // clamping here (before the first layout) would use the placeholder width
             match stored.and_then(|s| s.checked()) {
                 Some(s) => {
-                    show(v, s);
-                    self.timeline_view_last = Some(s);
+                    if self.session.state.timeline_pending_fits.contains(&active) {
+                        (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (s.v_scroll, s.a_scroll, s.video_track_h, s.audio_track_h);
+                        (v.fit_pending, v.fit_empty) = (true, None);
+                        self.timeline_view_last = None;
+                    } else {
+                        show(v, s);
+                        self.timeline_view_last = Some(s);
+                    }
                 }
                 None => {
                     let d = state::TimelineView::default();
@@ -223,15 +274,108 @@ impl FilmcraftApp {
                     self.timeline_view_last = None;
                 }
             }
+        } else if !v.fit_pending && self.session.state.timeline_pending_fits.remove(&active) {
+            self.session.state.timeline_views.insert(active, shown);
+            self.timeline_view_last = Some(shown);
         } else if v.fit_pending {
             // the panel has not fitted the sequence yet: nothing to keep
         } else if self.timeline_view_last != Some(shown) {
+            let previous = self.timeline_view_last;
             self.session.state.timeline_views.insert(active, shown);
             self.timeline_view_last = Some(shown);
+            // the zoom and scroll are part of the saved session: carry the change into the
+            // autosave journal via the view counter (never the revision -- these change on
+            // every frame of a drag, and a clean project must stay clean)
+            let playback_only_scroll = self.tl.playback_auto_scroll.take().is_some_and(|(sequence, scroll)| {
+                sequence == active
+                    && scroll == shown.scroll
+                    && previous.is_some_and(|previous| {
+                        previous.pps == shown.pps
+                            && previous.scroll != shown.scroll
+                            && previous.v_scroll == shown.v_scroll
+                            && previous.a_scroll == shown.a_scroll
+                            && previous.video_track_h == shown.video_track_h
+                            && previous.audio_track_h == shown.audio_track_h
+                    })
+            });
+            if !playback_only_scroll {
+                self.session.view_changed();
+            }
         } else if let Some(s) = stored.filter(|s| *s != shown).and_then(|s| s.checked()) {
             show(v, s);
             self.timeline_view_last = Some(s);
             self.session.state.timeline_views.insert(active, s);
         }
+    }
+}
+
+#[cfg(test)]
+mod playback_view_dirty_tests {
+    use super::*;
+    use filmcraft_engine::Session;
+
+    #[test]
+    fn playback_follow_scroll_is_saved_without_marking_the_view_user_dirty() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let active = session.state.active_sequence.unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.timeline.fit_pending = false;
+        let view = filmcraft_engine::project::SequenceView {
+            pps: app.ui.timeline.target_pps,
+            scroll: app.ui.timeline.target_scroll,
+            v_scroll: app.ui.timeline.v_scroll,
+            a_scroll: app.ui.timeline.a_scroll,
+            video_track_h: app.ui.timeline.video_track_h,
+            audio_track_h: app.ui.timeline.audio_track_h,
+        };
+        app.timeline_view_of = Some(active);
+        app.timeline_view_last = Some(view);
+        app.session.state.timeline_views.insert(active, view);
+        app.session.saved_view_epoch = app.session.view_epoch;
+        app.playback.playing = true;
+        app.ui.timeline.target_scroll = view.scroll + 5.0;
+        app.tl.playback_auto_scroll = Some((active, app.ui.timeline.target_scroll));
+
+        app.sync_timeline_view();
+        assert_eq!(app.session.view_epoch, app.session.saved_view_epoch, "automatic follow does not prompt to save");
+        assert_eq!(app.session.state.timeline_views.get(&active).map(|view| view.scroll), Some(view.scroll + 5.0));
+
+        app.ui.timeline.target_scroll += 1.0;
+        app.tl.playback_auto_scroll = Some((active, app.ui.timeline.target_scroll - 1.0));
+        app.sync_timeline_view();
+        assert_ne!(app.session.view_epoch, app.session.saved_view_epoch, "a manual scroll still marks the view unsaved");
+    }
+
+    #[test]
+    fn a_pending_first_fit_keeps_the_requested_track_height_without_inherited_zoom() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let first = session.state.active_sequence.unwrap();
+        let first_view =
+            filmcraft_engine::project::SequenceView { pps: 91.0, scroll: 27.0, v_scroll: 0.0, a_scroll: 0.0, video_track_h: 60.0, audio_track_h: 60.0 };
+        session.state.timeline_views.insert(first, first_view);
+        let mut app = FilmcraftApp::new(session);
+        app.sync_timeline_view();
+        let second = app.session.execute("file.newSequence", serde_json::json!({"name": "Second"})).unwrap()["sequence"].as_u64().unwrap();
+        app.sync_timeline_view();
+        assert!(app.ui.timeline.fit_pending);
+        app.ui.timeline.video_track_h = 80.0;
+        app.explicit_timeline_view_edit(true);
+        let second = filmcraft_engine::project::ItemId(second);
+        let stored = app.session.state.timeline_views.get(&second).copied();
+        assert_eq!(stored.map(|view| (view.pps, view.scroll, view.video_track_h)), Some((40.0, 0.0, 80.0)));
+        let project = app.session.project.clone();
+        let saved_view = app.session.project_view();
+
+        let mut reopened = Session::default();
+        reopened.project = project;
+        reopened.restore_project_view(saved_view);
+        let mut reopened_app = FilmcraftApp::new(reopened);
+        reopened_app.sync_timeline_view();
+        assert!(reopened_app.ui.timeline.fit_pending);
+        assert_eq!(reopened_app.ui.timeline.video_track_h, 80.0);
+        assert_eq!(reopened_app.ui.timeline.target_pps, 40.0);
+        assert_eq!(reopened_app.ui.timeline.target_scroll, 0.0);
     }
 }
