@@ -114,8 +114,10 @@ pub fn sequence_frames(first: &Numbered, siblings: &[String]) -> Vec<Option<Stri
             frames[i] = Some(format!("{}{}", first.dir, name));
         }
     }
-    if frames[0].is_none() {
-        frames[0] = Some(first.path(first.number));
+    let first_name = first.file_name(first.number);
+    // Keep the selected spelling when the directory also contains case variants.
+    if frames[0].is_none() || siblings.contains(&first_name) {
+        frames[0] = Some(format!("{}{first_name}", first.dir));
     }
     frames
 }
@@ -300,6 +302,15 @@ mod tests {
         assert_eq!(f[1].as_deref(), Some("/d/s_004.png"));
         assert_eq!((f[2].as_deref(), f[3].as_deref()), (None, None));
         assert_eq!(f[4].as_deref(), Some("/d/s_007.png"));
+    }
+
+    #[test]
+    fn case_variants_do_not_displace_the_chosen_first_frame() {
+        let first = Numbered::parse("/shots/shot01.png").unwrap();
+        let names = ["shot01.PNG", "shot03.png", "shot03.PNG", "shot01.png"].map(str::to_string);
+        for (siblings, first_path) in [(&names[..], "/shots/shot01.png"), (&names[..3], "/shots/shot01.PNG"), (&names[1..3], "/shots/shot01.png")] {
+            assert_eq!(sequence_frames(&first, siblings), [Some(first_path.to_string()), None, Some("/shots/shot03.PNG".to_string())]);
+        }
     }
 
     fn png(w: u32, h: u32, v: u8) -> Vec<u8> {
