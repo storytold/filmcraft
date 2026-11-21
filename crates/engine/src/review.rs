@@ -214,12 +214,15 @@ fn pop_issues(s: &Session, q: &Sequence, pop_db: f64, out: &mut Vec<Issue>) {
     edits.sort();
     for (at, clip) in edits {
         let pos = at.to_units_floor(i64::from(sr));
-        let b = filmcraft_render::audio::mix_sequence(&s.project, q, (pos - win as i64).max(0), 2 * win, &provider);
+        // `win` samples on each side of the edit; near the start there are fewer before it
+        let from = (pos - win as i64).max(0);
+        let split = (pos - from) as usize;
+        let b = filmcraft_render::audio::mix_sequence(&s.project, q, from, split + win, &provider);
         let peak_db = |range: std::ops::Range<usize>| {
             let pk = b.channels.iter().flat_map(|c| c.get(range.clone()).unwrap_or(&[]).iter()).fold(0f32, |m, x| m.max(x.abs()));
             if pk > 0.0 { 20.0 * f64::from(pk).log10() } else { -120.0 }
         };
-        let (before, after) = (peak_db(0..win), peak_db(win..2 * win));
+        let (before, after) = (peak_db(0..split), peak_db(split..split + win));
         if before.max(after) > pop_db {
             out.push(issue(
                 "audioPop",
@@ -263,7 +266,7 @@ fn review(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let against = match u64_p(p, "againstUndo") {
         None => None,
-        Some(n) if n >= 1 && (n as usize) <= s.history.undo.len() => Some(s.history.undo[s.history.undo.len() - n as usize].1.clone()),
+        Some(n) if n >= 1 && usize::try_from(n).is_ok_and(|n| n <= s.history.undo.len()) => Some(s.history.undo[s.history.undo.len() - n as usize].1.clone()),
         Some(n) => return Err(bad(ID, format!("againstUndo {n} is out of range: there are {} undo steps", s.history.undo.len()))),
     };
 
