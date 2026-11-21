@@ -109,8 +109,9 @@ OPTIONS
                                 project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
-  --data-dir <dir>              FilmCraft data directory for user export presets (headless;
-                                default: the app's data directory)
+  --data-dir <dir>              FilmCraft data directory for user export and effect presets and
+                                the Effect Presets library, which are read and saved there
+                                (headless; default: the app's data directory)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -178,9 +179,11 @@ impl Backend {
             return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
-        // user export presets (and other per-user libraries) from the data directory
+        // user export and effect presets from the data directory: without the effect-preset
+        // directory, imports live only in this process and `presets.scan` finds nothing (#4775)
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
+            s.presets.set_dir(&dir);
         }
         if let Some(p) = a.opt("--project") {
             if let Err(e) = s.execute("file.open", json!({"path": p})) {

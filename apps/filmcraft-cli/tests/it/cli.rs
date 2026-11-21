@@ -612,3 +612,66 @@ fn export_with_missing_media_fails_unless_allowed() {
     assert!(String::from_utf8_lossy(&render.stderr).contains("still.png"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #4775: effect presets imported by one CLI process are listed by the next one using the same
+/// `--data-dir`, both a library file (copied into `<data dir>/Effect Presets`) and a hand import
+/// (kept only in `effect-presets.json`), and `presets.scan` walks `<data dir>/Effect Presets`.
+#[test]
+fn effect_presets_persist_in_data_dir_across_invocations() {
+    let dir = private_dir("fc-cli-effect-presets");
+    let data = dir.join("data");
+    let data_s = data.to_str().unwrap();
+    let preset = |name: &str| {
+        json!({
+            "format": "filmcraft.effect-presets",
+            "version": 1,
+            "presets": [{
+                "name": name,
+                "description": "",
+                "keyframes": "Scale",
+                "source_duration": 0,
+                "source_size": [1920, 1080],
+                "effects": [{
+                    "effect": "noise",
+                    "enabled": true,
+                    "params": {"amount": {"value": {"Float": 4.0}}},
+                    "masks": [],
+                    "post_fader": false,
+                    "essential": false,
+                    "layer": null
+                }]
+            }]
+        })
+        .to_string()
+    };
+    let import =
+        |file: &std::path::Path| json_out(&cli(&["--data-dir", data_s, "exec", "presets.import", &json!({"path": file.to_str().unwrap()}).to_string()]));
+    let list = || json_out(&cli(&["--data-dir", data_s, "exec", "presets.list"]));
+    let has = |v: &Value, name: &str| v["presets"].as_array().unwrap().iter().any(|p| p["name"] == name);
+    let user_file = data.join("effect-presets.json");
+
+    // A `.json` file joins the library and is saved in the user file.
+    let library_import = dir.join("preset.json");
+    std::fs::write(&library_import, preset("cli library import 4775")).unwrap();
+    assert_eq!(import(&library_import)["imported"], json!(["cli library import 4775"]));
+    assert!(data.join("Effect Presets").join("preset.json").is_file());
+    assert!(std::fs::read_to_string(&user_file).unwrap().contains("cli library import 4775"));
+
+    // Any other file is a hand import that only the user file keeps.
+    let hand_import = dir.join("preset.txt");
+    std::fs::write(&hand_import, preset("cli hand import 4775")).unwrap();
+    assert_eq!(import(&hand_import)["imported"], json!(["cli hand import 4775"]));
+    assert!(std::fs::read_to_string(&user_file).unwrap().contains("cli hand import 4775"));
+
+    let listed = list();
+    assert!(has(&listed, "cli library import 4775"), "{listed}");
+    assert!(has(&listed, "cli hand import 4775"), "{listed}");
+
+    std::fs::write(data.join("Effect Presets").join("Scanned.json"), preset("cli scan 4775")).unwrap();
+    let scanned = json_out(&cli(&["--data-dir", data_s, "exec", "presets.scan"]));
+    assert_eq!(scanned["files"], 2, "{scanned}");
+    assert_eq!(scanned["errors"], json!([]), "{scanned}");
+    let listed = list();
+    assert!(has(&listed, "cli scan 4775"), "{listed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
