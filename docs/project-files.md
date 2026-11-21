@@ -117,10 +117,11 @@ to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't
 | `file.open {path}` | File ▸ Open Project… (⌘O) | returns `{schemaVersion, migrated}` |
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
-Open Project… shows one too. In the desktop app, when the current project has unsaved changes, it
-then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save** and **Save**, and
-the chosen project opens after Save or Don't Save. File ▸ Open Recent and the Recent list on Home
-ask the same way.
+Open Project… shows one too. In the desktop app and the web build, when the current project has
+unsaved changes, it then asks *"Save changes to 'X' before closing?"* with **Cancel**, **Don't Save**
+and **Save**, and the chosen project opens after Save or Don't Save. File ▸ Open Recent and the
+Recent list on Home ask the same way, and so does a project dropped on the web build's page. Media
+dropped together with that project is imported after the answer, into the project that is open then.
 
 ## Auto Save
 
