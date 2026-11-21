@@ -206,7 +206,7 @@ impl FilmcraftApp {
     }
 
     /// A file dialog, or the replace prompt for its answer, is waiting for the user.
-    fn dialog_busy(&self) -> bool {
+    pub(crate) fn dialog_busy(&self) -> bool {
         self.native_dialog.is_some() || self.overwrite_prompt.is_some()
     }
 

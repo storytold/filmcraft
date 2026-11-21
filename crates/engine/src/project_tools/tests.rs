@@ -35,6 +35,8 @@ fn assert_order(ids: &[&str], order: &[&str]) {
 #[test]
 fn file_edit_clip_menu_order_and_shortcuts_match_premiere() {
     assert_order(&menu_ids(&["File", "New"]), &["file.newBin", "file.newBinFromSelection", "file.newSearchBin", "file.newOfflineFile"]);
+    let new = menu_ids(&["File", "New"]);
+    assert_eq!(pos(&new, "file.newProjectFromTemplate"), pos(&new, "file.newProject") + 1, "{new:?}");
     assert_order(
         &menu_ids(&["File"]),
         &[
