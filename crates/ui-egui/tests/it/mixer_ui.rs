@@ -445,8 +445,30 @@ fn audio_gain_dialog_field_takes_a_calculation() {
     d.frames(2);
     d.ok("ui.key", json!({"key": "Enter"}));
     d.frames(2);
-    d.click("audioGain.ok");
+    assert!(d.ids("audioGain.").is_empty(), "Enter closes the Audio Gain dialog");
     assert!((peak(&mut d) - (before + 3.0)).abs() < 0.05, "3 dB louder: {before} -> {}", peak(&mut d));
+}
+
+/// #4928: the Audio Gain shortcut leaves the current value selected and Enter applies it.
+#[test]
+fn audio_gain_dialog_opens_ready_for_keyboard_input() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = seq["audio"][0]["items"][0]["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    let peak = |d: &mut Driver| d.exec("clip.audioPeak", json!({"clips": [clip]}))["peakDb"].as_f64().unwrap();
+    let before = peak(&mut d);
+
+    for (typed, gain) in [("3", 3.0), ("-2", 1.0)] {
+        d.ok("ui.key", json!({"key": "G"}));
+        d.frames(3);
+        assert!(d.ids("audioGain.").iter().any(|id| id == "audioGain.ok"), "the shortcut opens Audio Gain");
+        d.ok("ui.type", json!({"text": typed}));
+        d.ok("ui.key", json!({"key": "Enter"}));
+        d.frames(2);
+        assert!(d.ids("audioGain.").is_empty(), "Enter applies the gain and closes the dialog");
+        assert!((peak(&mut d) - (before + gain)).abs() < 0.05, "typing replaces the gain on every open");
+    }
 }
 
 #[test]

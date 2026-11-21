@@ -99,6 +99,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+const AUDIO_GAIN_FOCUS_ON_OPEN: &str = "audio-gain-focus-on-open";
+
+pub(crate) fn open_audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if app.ui.audio_gain.mode.is_empty() {
+        app.ui.audio_gain.mode = "adjust".into();
+    }
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(AUDIO_GAIN_FOCUS_ON_OPEN), true));
+    app.dialog = Some(Dialog::AudioGain);
+}
+
 /// Clip ▸ Audio Gain…: Set Gain to / Adjust Gain by / Normalize Max Peak to / Normalize All Peaks to,
 /// with the selection's peak amplitude. Returns whether the dialog stays open.
 ///
@@ -142,7 +152,11 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     if r.clicked() {
                         draft.mode = id.to_string();
                     }
-                    let f = ui.add_enabled(draft.mode == id, crate::widgets::number_drag(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
+                    let active = draft.mode == id;
+                    if active {
+                        crate::widgets::focus_dialog_number(ui, egui::Id::unique(AUDIO_GAIN_FOCUS_ON_OPEN));
+                    }
+                    let f = ui.add_enabled(active, crate::widgets::number_drag(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
                     elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
                     ui.end_row();
                 }
@@ -171,7 +185,7 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     if crate::widgets::escape_closes(ctx) {
         keep = false;
     }
-    if apply {
+    if keep && (apply || ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())) {
         let db = match draft.mode.as_str() {
             "set" => draft.set_db,
             "normalizeMax" => draft.max_peak_db,
