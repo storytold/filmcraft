@@ -65,6 +65,31 @@ pub(crate) fn thai_available() -> bool {
     thai_craft_fonts().next().is_some() || thai_font().is_some()
 }
 
+// Devanagari (Hindi, Marathi, ...): in no other UI font either. A macOS family named in Devanagari
+// (InaiMathi, "इनाईमाथी") also appears in every font picker, and drew as boxes or, in the
+// headless harness, panicked with "No glyph for इ".
+const DEVA_SAMPLE: &str = "इनाईमाथी हिन्दी";
+const DEVA_PREFERRED: &[&str] = &["Noto Sans Devanagari", "Kohinoor Devanagari", "Devanagari Sangam MN", "Nirmala UI", "Mangal", "Noto Sans Devanagari UI"];
+
+/// The font-data name of the installed Devanagari face [`install`] appends to every family when
+/// craft-fonts has none.
+pub(crate) const DEVA_FACE: &str = "system-deva";
+
+pub(crate) fn deva_craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fonts::CraftFont> {
+    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Deva"))
+}
+
+fn deva_font() -> Option<Arc<FontData>> {
+    static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| find_system_font(DEVA_SAMPLE, DEVA_PREFERRED)).clone()
+}
+
+/// Whether [`install`] has a Devanagari face to add: a craft-fonts one, or an installed system face.
+#[cfg(test)]
+pub(crate) fn deva_available() -> bool {
+    deva_craft_fonts().next().is_some() || deva_font().is_some()
+}
+
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
 /// Keep the owned bytes behind an Arc so theme reinstalls do not reread or leak a font file.
 fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
@@ -103,23 +128,29 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
             stack.push(KOREAN_FACE.into());
         }
     }
-    install_thai(fonts);
+    install_script(fonts, thai_craft_fonts(), thai_font, THAI_FACE);
+    install_script(fonts, deva_craft_fonts(), deva_font, DEVA_FACE);
 }
 
-/// Thai letters are in no other UI font, so the faces go last; craft-fonts first, else one
-/// installed face.
-fn install_thai(fonts: &mut FontDefinitions) {
+/// Thai and Devanagari letters are in no other UI font, so their faces go last; craft-fonts
+/// first, else one installed face (`system`, named `system_name`).
+fn install_script<'a>(
+    fonts: &mut FontDefinitions,
+    craft: impl Iterator<Item = &'a filmcraft_text::fonts::CraftFont>,
+    system: fn() -> Option<Arc<FontData>>,
+    system_name: &str,
+) {
     let mut names = Vec::new();
-    for f in thai_craft_fonts() {
+    for f in craft {
         let name = format!("craft:{} {}", f.family, f.style);
         fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
         names.push(name);
     }
     if names.is_empty()
-        && let Some(font) = thai_font()
+        && let Some(font) = system()
     {
-        fonts.font_data.insert(THAI_FACE.into(), font);
-        names.push(THAI_FACE.into());
+        fonts.font_data.insert(system_name.into(), font);
+        names.push(system_name.into());
     }
     for stack in fonts.families.values_mut() {
         for name in &names {
@@ -177,6 +208,22 @@ mod font_blob_tests {
         for (family, stack) in &fonts.families {
             let thai = stack.iter().filter(|n| n.starts_with("craft:Noto Sans Thai") || n.as_str() == THAI_FACE).count();
             assert_eq!(thai, 1, "{family:?}: {stack:?}");
+        }
+    }
+
+    /// Devanagari names (Hindi files, the macOS family "इनाईमाथी") need a Devanagari face in every
+    /// UI font family: craft-fonts' Noto Sans Devanagari when built with it, else an installed one.
+    #[test]
+    fn install_adds_a_devanagari_face_to_every_family() {
+        if !deva_available() {
+            eprintln!("skipped: no craft-fonts Devanagari face and no installed Devanagari font");
+            return;
+        }
+        let mut fonts = FontDefinitions::default();
+        install(&mut fonts);
+        for (family, stack) in &fonts.families {
+            let deva = stack.iter().filter(|n| n.starts_with("craft:Noto Sans Devanagari") || n.as_str() == DEVA_FACE).count();
+            assert_eq!(deva, 1, "{family:?}: {stack:?}");
         }
     }
 }
