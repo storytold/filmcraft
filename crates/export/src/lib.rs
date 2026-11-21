@@ -27,7 +27,7 @@ pub mod presets;
 mod raster;
 pub mod settings;
 pub mod still;
-pub use audio_out::LoudnessReport;
+pub use audio_out::{LoudnessReport, measure_mix_loudness};
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};

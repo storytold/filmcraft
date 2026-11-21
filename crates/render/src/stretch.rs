@@ -5,11 +5,9 @@
 //! read near the source sample the clip shows at the start of hop `k`, aligned to grain `k - 1`, so
 //! a chain read in order gives the same samples however the reads are cut.
 //!
-//! Each reader keeps its own chain, the way clip effect chains are kept ([`crate::audio_fx`]): a
-//! read continues the chain whose last read ended exactly where it starts, and takes that chain out
-//! of the cache while it runs. Playback, Render Audio, a loudness pass or a scrub reading the same
-//! clip at the same time therefore never continue each other's chains, and a read that continues
-//! no chain (a seek) starts a fresh one a few grains early.
+//! A read continues the chain whose last read ended exactly where it starts, and takes that chain
+//! out of the cache while it runs. A read that continues no chain (a seek) starts a fresh one a few
+//! grains early. Loudness passes keep their chains in a render-local cache.
 //!
 //! Grains only read the clip's own source span, from its in point to its out point in playing
 //! order; source outside it reads as silence, so no audio from the handles plays (varispeed never
@@ -20,14 +18,14 @@
 //! where `s` is the source sample (at the sequence rate). Grains always read forwards in `q`.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use filmcraft_audio_dsp::stretch::Wsola;
 use filmcraft_frame::AudioBuffer;
 use filmcraft_project::TrackItem;
 use filmcraft_time::Tick;
 
-use crate::audio::SourceAudio;
+use crate::audio::{SourceAudio, Window};
 
 /// Grains a new chain starts before the first hop it plays.
 const WARMUP: i64 = 4;
@@ -63,7 +61,7 @@ impl Chain {
 
 /// The readers' chains, per clip, with when each clip was last read.
 #[derive(Default)]
-struct Chains {
+pub(crate) struct Chains {
     clock: u64,
     map: HashMap<Key, (u64, Vec<Chain>)>,
 }
@@ -100,11 +98,6 @@ impl Chains {
     }
 }
 
-fn cache() -> &'static Mutex<Chains> {
-    static C: OnceLock<Mutex<Chains>> = OnceLock::new();
-    C.get_or_init(Default::default)
-}
-
 fn key(item: &TrackItem, sr: u32, w: usize) -> Key {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -123,7 +116,8 @@ pub(crate) fn applies(item: &TrackItem, speed: f64) -> bool {
 /// to the clip's speed with its pitch kept, in the source's channels; the channels the clip does
 /// not play on a track of `w` channels are left silent. `None` when the source has no audio there
 /// or the span is too long to read at once (the caller then resamples).
-pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize) -> Option<AudioBuffer> {
+pub(crate) fn read(item: &TrackItem, src: SourceAudio, window: Window, w: usize, cache: &Mutex<Chains>) -> Option<AudioBuffer> {
+    let Window { start: a0, frames: n, sr } = window;
     let ws = Wsola::new(sr);
     let (h, tol) = (ws.hop() as i64, ws.tolerance() as i64);
     let last = a0.checked_add(i64::try_from(n).ok()?)?.checked_sub(1)?;
@@ -140,7 +134,7 @@ pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u3
     let (q_in, q_out) = (q_at(item.start.to_units_floor(rate)), q_at(item.end().to_units_floor(rate)));
     let key = key(item, sr, w);
     // this reader's chain: the one its previous read left off at `a0`
-    let taken = cache().lock().unwrap_or_else(|e| e.into_inner()).take(key, a0);
+    let taken = cache.lock().unwrap_or_else(|e| e.into_inner()).take(key, a0);
     // `before`: the position of grain `first - 1`, which the chain continues from
     let (first, before) = match taken.and_then(|c| c.position(k0 - 1)) {
         Some(q) => (k0, q),
@@ -215,7 +209,7 @@ pub(crate) fn read(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u3
     }
     if let (Some(q0), Some(q1)) = (at(k1 - 1), at(k1)) {
         let chain = Chain { next_a0: last + 1, last: [(k1 - 1, q0), (k1, q1)] };
-        cache().lock().unwrap_or_else(|e| e.into_inner()).put(key, chain);
+        cache.lock().unwrap_or_else(|e| e.into_inner()).put(key, chain);
     }
     Some(out)
 }

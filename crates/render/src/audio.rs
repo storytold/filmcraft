@@ -10,14 +10,54 @@
 //! 5.1 clips, and Channel Volume's left/right levels apply to L and R.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use filmcraft_audio_dsp::channels::{self as chans, Layout, Mixdown};
 use filmcraft_frame::AudioBuffer;
-use filmcraft_project::{AudioChannels, Project, Sequence, Track, TrackId, TrackItem};
+use filmcraft_media::{MediaError, MediaSource, SharedSource};
+use filmcraft_project::{AudioChannels, ItemId, Project, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
 use crate::mixer::Override;
-use crate::{SourceProvider, transitions};
+use crate::{SourceProvider, audio_fx, mixer, stretch, transitions};
+
+/// Cached state that depends on a continuous audio signal.
+#[derive(Default)]
+pub struct RenderCache {
+    pub(crate) mixer: mixer::GraphCache,
+    pub(crate) clip_effects: audio_fx::EffectCache,
+    pub(crate) stretch: Mutex<stretch::Chains>,
+}
+
+pub(crate) fn shared_cache() -> &'static RenderCache {
+    static CACHE: OnceLock<RenderCache> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Resolve the same media with fresh mixer, clip effect and time-stretch history. Keep this
+/// provider for the whole render pass so adjacent reads share state, including in nested mixes.
+pub fn isolated_sources(sources: &dyn SourceProvider) -> impl SourceProvider + '_ {
+    struct ScopedSources<'a> {
+        inner: &'a dyn SourceProvider,
+        cache: RenderCache,
+    }
+
+    impl SourceProvider for ScopedSources<'_> {
+        fn source(&self, item: ItemId) -> Option<SharedSource> {
+            self.inner.source(item)
+        }
+
+        fn audio_read_failed(&self, item: ItemId, error: &MediaError) {
+            self.inner.audio_read_failed(item, error);
+        }
+
+        fn audio_render_cache(&self) -> &RenderCache {
+            &self.cache
+        }
+    }
+
+    ScopedSources { inner: sources, cache: RenderCache::default() }
+}
 
 /// Live Clip Mixer lanes ([`crate::mixer::LiveMix`] overrides keyed by the track id): the clip
 /// Volume level (dB) and Panner balance of the clip under the playhead while a Clip Mixer control
@@ -207,6 +247,8 @@ fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window
     }
     let w = out.channels.len();
     let n = (a1 - a0) as usize;
+    let clip_window = Window { start: a0, frames: n, sr };
+    let cache = sources.audio_render_cache();
     let buf = if let Some(nested) = project.sequence(item.item) {
         // Past the depth limit a nest is silent, like its picture is empty, so a sequence that
         // contains itself (a damaged project; the editor refuses to make one) cannot recurse
@@ -224,13 +266,14 @@ fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
         let read = |m0: i64, len: usize| Some(nested_mix(project, &q, Window { start: m0, frames: len, sr }, sources, w, live.depth));
-        effected(item, &read, a0, n, sr, w)
+        effected(item, &read, clip_window, w, cache)
     } else {
         let Some(src) = sources.source(item.item) else { return };
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
+        let read = |start, frames| read_media_audio(item, &*src, Window { start, frames, sr }, sources);
+        effected(item, &read, clip_window, w, cache)
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -329,9 +372,14 @@ pub(crate) type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
 /// timeline samples `[a0, a0 + n)`, `w` channels.
-fn effected(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
-    let read = |x0: i64, len: usize| raw_channels(item, src, x0, len, sr, w);
-    if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) }
+fn effected(item: &TrackItem, src: SourceAudio, window: Window, w: usize, cache: &RenderCache) -> Vec<Vec<f32>> {
+    let read = |start, frames| raw_channels(item, src, Window { start, frames, sr: window.sr }, w, cache);
+    if audio_fx::has_effects(item) { audio_fx::process_with_cache(item, window, &read, &cache.clip_effects) } else { read(window.start, window.frames) }
+}
+
+fn read_media_audio(item: &TrackItem, source: &dyn MediaSource, window: Window, sources: &dyn SourceProvider) -> Option<AudioBuffer> {
+    let Window { start, frames, sr } = window;
+    source.audio_stream(item.audio_stream, start, frames, sr).inspect_err(|error| sources.audio_read_failed(item.item, error)).ok()
 }
 
 /// One clip's own signal for timeline samples `[start, start + frames)` (sequence rate): clip gain
@@ -350,7 +398,8 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
+        let read = |start, frames| read_media_audio(item, &*src, Window { start, frames, sr }, sources);
+        let buf = effected(item, &read, Window { start: a0, frames: n, sr }, 2, sources.audio_render_cache());
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
                 *d = x * g;
@@ -374,7 +423,7 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
 
 /// A sequence's sample rate as the mixer runs it: a damaged project can claim any rate, and the
 /// request sizing in [`nested_mix`] and the mixing in `mixer::mix_graph_at` must agree.
-pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
+pub fn bounded_sample_rate(rate: u32) -> u32 {
     rate.clamp(1_000, 768_000)
 }
 
@@ -390,7 +439,8 @@ fn read_speed(item: &TrackItem) -> f64 {
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
 /// the clip.
-fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
+fn raw_channels(item: &TrackItem, src: SourceAudio, window: Window, w: usize, cache: &RenderCache) -> Vec<Vec<f32>> {
+    let Window { start: x0, frames: len, sr } = window;
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
@@ -410,7 +460,9 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         remixed
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
-    } else if let Some(stretched) = crate::stretch::applies(item, speed).then(|| crate::stretch::read(item, src, a0, n, sr, w)).flatten() {
+    } else if let Some(stretched) =
+        stretch::applies(item, speed).then(|| stretch::read(item, src, Window { start: a0, frames: n, sr }, w, &cache.stretch)).flatten()
+    {
         // Maintain Audio Pitch: time-stretched (falls back to varispeed for a span too long to read)
         Some(stretched)
     } else {
@@ -565,8 +617,9 @@ mod tests {
     #[test]
     fn blocks_of_a_clip_above_the_speed_cap_stay_contiguous() {
         let it = item(1000.0);
-        let whole = raw_channels(&it, &ramp, 0, 200, 48_000, 2);
-        let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2);
+        let cache = RenderCache::default();
+        let whole = raw_channels(&it, &ramp, Window { start: 0, frames: 200, sr: 48_000 }, 2, &cache);
+        let second = raw_channels(&it, &ramp, Window { start: 100, frames: 100, sr: 48_000 }, 2, &cache);
         assert!((second[0][0] - whole[0][100]).abs() < 1e-4, "block 2 starts at {}, the whole read has {} there", second[0][0], whole[0][100]);
     }
 }

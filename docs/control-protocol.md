@@ -128,6 +128,18 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `essentialSound.ducking.against.<Type>`, `essentialSound.generateDucking`, `essentialSound.volume.on`,
 `essentialSound.volume.levelDb`, `essentialSound.mute`, `essentialSound.browse.<Type>.<preset>`.
 
+**Loudness measurements** from `audio.measureLoudness {sequence?, of?, track?, clips?, range?, startSeconds?, endSeconds?}` include
+integrated, momentary and short-term loudness, loudness range, sample peak and true peak without editing. The command runs synchronously.
+`of: "mix"` (default) uses the saved Mix layout before export normalization.
+`of: "track"` takes a track ID or name such as `A1` and meters the strip before its destination bus.
+`of: "clips"` returns a reading per audio clip ID (or the selected audio clips in the active sequence),
+using Auto-Match's clip signal before Volume, including active proxies. Mono clips count as one channel.
+When `range`, `startSeconds` and `endSeconds` are omitted, the range is `entire`. Supplying
+either seconds field without `range` selects `custom`, which requires both seconds fields.
+`range` also accepts `inOut` and `workArea`. For a clip, a subrange measures only its overlap
+with the clip. Results include `start` / `end` in timeline ticks, `seconds`, and nulls for
+unavailable measurements. `offlineMedia` includes any used source whose audio could not be read.
+
 Project files, auto-save, crash recovery and preferences commands (`file.recover`, `prefs.set`, …) and their
 automation ids are listed in [project-files.md](project-files.md). That file also lists the media
 management commands and dialog ids: offline media and relinking (`media.findMissing`,

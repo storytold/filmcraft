@@ -17,7 +17,7 @@
 //! - Paths that came from a document (the project file, a template, an interchange file) are
 //!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -464,6 +464,12 @@ impl MediaPool {
     }
 }
 
+#[derive(Clone, Default)]
+struct UsedMedia {
+    items: BTreeSet<ItemId>,
+    audio_errors: BTreeMap<ItemId, String>,
+}
+
 /// Implements [`filmcraft_render::SourceProvider`] over the pool for one project snapshot.
 pub struct PoolProvider {
     pub pool: Arc<MediaPool>,
@@ -471,8 +477,8 @@ pub struct PoolProvider {
     pub services: Arc<dyn Services>,
     /// Ignore proxies (export always renders full resolution).
     pub full_res: bool,
-    /// Items asked for so far, when recording ([`PoolProvider::recording`]).
-    used: Option<Mutex<BTreeSet<ItemId>>>,
+    /// Items asked for and read errors seen during this recording.
+    used: Option<Mutex<UsedMedia>>,
     /// Per media item, its own copy or None to share the pool's source ([`PoolProvider::own_sources`]).
     own: Option<Mutex<HashMap<ItemId, Option<SharedSource>>>>,
 }
@@ -489,7 +495,7 @@ impl PoolProvider {
     /// This provider, remembering the items it is asked for so [`PoolProvider::offline_used`] can
     /// tell which of them rendered offline.
     pub fn recording(mut self) -> Self {
-        self.used = Some(Mutex::new(BTreeSet::new()));
+        self.used = Some(Mutex::default());
         self
     }
 
@@ -498,11 +504,18 @@ impl PoolProvider {
     pub fn offline_used(&self) -> Vec<OfflineMedia> {
         let Some(used) = &self.used else { return Vec::new() };
         let used = used.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        let media: BTreeSet<ItemId> = used.into_iter().filter_map(|i| self.project.resolve_media(i).map(|(id, _, _)| id)).collect();
+        let media: BTreeMap<_, _> = used.items.into_iter().filter_map(|i| self.project.resolve_media(i).map(|(id, clip, _)| (id, clip))).collect();
         media
             .into_iter()
-            .filter_map(|id| {
-                let st = self.pool.offline_status(id)?;
+            .filter_map(|(id, clip)| {
+                let st = self.pool.offline_status(id).or_else(|| {
+                    let error = used.audio_errors.get(&id)?.clone();
+                    let path = match &clip.media {
+                        MediaRef::File { path } => path.clone(),
+                        MediaRef::Generator(_) => String::new(),
+                    };
+                    Some(OfflineStatus { reason: OfflineReason::Unreadable, path, error })
+                })?;
                 let status = match st.reason {
                     OfflineReason::Missing => "missing",
                     OfflineReason::MadeOffline => "offline",
@@ -518,7 +531,7 @@ impl PoolProvider {
 impl filmcraft_render::SourceProvider for PoolProvider {
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         if let Some(used) = &self.used {
-            used.lock().unwrap_or_else(PoisonError::into_inner).insert(item);
+            used.lock().unwrap_or_else(PoisonError::into_inner).items.insert(item);
         }
         if let Some(own) = &self.own
             && let Some((media, _, _)) = self.project.resolve_media(item)
@@ -541,6 +554,16 @@ impl filmcraft_render::SourceProvider for PoolProvider {
             }
         }
         if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
+    }
+
+    fn audio_read_failed(&self, item: ItemId, error: &MediaError) {
+        if let Some(used) = &self.used
+            && !matches!(error, MediaError::Cancelled)
+            && !filmcraft_media::pending::is_set()
+            && let Some((id, _, _)) = self.project.resolve_media(item)
+        {
+            used.lock().unwrap_or_else(PoisonError::into_inner).audio_errors.entry(id).or_insert_with(|| error.to_string());
+        }
     }
 }
 

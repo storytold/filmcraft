@@ -274,6 +274,7 @@ enum Kind {
     Track,
     Submix,
     Master,
+    TrackOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -469,6 +470,20 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// Keep the requested audio strip and its post-pan output width, with no downstream effects,
+    /// sends or other sources. Keep the mute and solo decisions of the original graph.
+    fn isolate_track(mut self, track: TrackId) -> Option<Self> {
+        let index = self.strips.iter().position(|s| s.kind == Kind::Track && s.track.id == track)?;
+        let target = self.routes.iter().find(|r| r.src == index && r.tap == Tap::Out)?.target;
+        let mut output = self.strips.swap_remove(target);
+        output.kind = Kind::TrackOutput;
+        output.pre.clear();
+        output.post.clear();
+        output.silent = false;
+        let track = self.strips.swap_remove(index);
+        Some(Plan { strips: vec![track, output], routes: vec![RouteSpec { src: 0, tap: Tap::Out, send: None, target: 1 }] })
+    }
+
     fn structure_hash(&self, sr: u32) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -593,10 +608,8 @@ fn build_state(plan: &Plan, sr: u32) -> Option<GraphState> {
     Some(GraphState { next_out: 0, strips, latency })
 }
 
-fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
-    static C: OnceLock<Mutex<HashMap<u64, Vec<GraphState>>>> = OnceLock::new();
-    C.get_or_init(Default::default)
-}
+#[derive(Default)]
+pub(crate) struct GraphCache(Mutex<HashMap<u64, Vec<GraphState>>>);
 
 /// Keys of graphs [`build_state`] refused (same key and sample rate: same refusal).
 fn refused_graphs() -> &'static Mutex<std::collections::HashSet<u64>> {
@@ -877,6 +890,22 @@ pub fn mix_graph(project: &Project, seq: &Sequence, start: i64, frames: usize, s
     mix_graph_at(project, seq, start, frames, sources, live, 0)
 }
 
+/// Create a render pass for one audio track's output before its destination bus. The pass
+/// includes inserts, fader and panner, and owns the audio history for the given sources.
+/// Call the returned renderer with the starting sample at the sequence rate and a frame count.
+pub fn track_renderer<'a>(
+    project: &'a Project,
+    seq: &'a Sequence,
+    track: TrackId,
+    sources: &'a dyn SourceProvider,
+) -> Option<impl Fn(i64, usize) -> AudioBuffer + 'a> {
+    let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
+    let ovs = HashMap::new();
+    let plan = Plan::build(seq, &ovs).isolate_track(track)?;
+    let sources = crate::audio::isolated_sources(sources);
+    Some(move |start, frames| mix_plan(project, &plan, crate::audio::Window { start, frames, sr }, &sources, None, 0, &ovs))
+}
+
 /// [`mix_graph`] for a sequence `depth` nests down from the one being mixed (see
 /// [`crate::MAX_NEST_DEPTH`]).
 pub(crate) fn mix_graph_at(
@@ -893,9 +922,23 @@ pub(crate) fn mix_graph_at(
     let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
+    mix_plan(project, &plan, crate::audio::Window { start, frames, sr }, sources, live, depth, &ovs)
+}
+
+fn mix_plan(
+    project: &Project,
+    plan: &Plan<'_>,
+    window: crate::audio::Window,
+    sources: &dyn SourceProvider,
+    live: Option<&LiveMix>,
+    depth: u32,
+    ovs: &HashMap<(TrackId, String), Override>,
+) -> AudioBuffer {
+    let crate::audio::Window { start, frames, sr } = window;
     let key = plan.structure_hash(sr);
+    let cache = &sources.audio_render_cache().mixer.0;
     let taken = {
-        let mut c = lock(cache());
+        let mut c = lock(cache);
         c.get_mut(&key).and_then(|v| v.iter().position(|g| g.next_out == start).map(|i| v.swap_remove(i)))
     };
     let (mut st, skip) = match taken {
@@ -907,7 +950,7 @@ pub(crate) fn mix_graph_at(
             if lock(refused_graphs()).contains(&key) {
                 return refused();
             }
-            let Some(st) = build_state(&plan, sr) else {
+            let Some(st) = build_state(plan, sr) else {
                 let mut r = lock(refused_graphs());
                 if r.len() >= 64 {
                     r.clear();
@@ -943,13 +986,13 @@ pub(crate) fn mix_graph_at(
                 return None;
             }
             let input = if has_clips {
-                let mut v = track_input_at(project, &s.track, crate::audio::Window { start: x0, frames: total, sr }, sources, &ovs, depth).channels;
+                let mut v = track_input_at(project, &s.track, crate::audio::Window { start: x0, frames: total, sr }, sources, ovs, depth).channels;
                 v.resize(s.width, vec![0.0; total]);
                 v
             } else {
                 silent(s.width, total)
             };
-            Some(run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs: &ovs }))
+            Some(run_strip(plan, si, ss, input, StripRun { x0, skip, sr, ovs }))
         })
         .collect();
     let deliver = |o: StripOut, si: usize, bus: &mut Vec<Option<Bus>>, meters: &mut Vec<(TrackId, Vec<f32>)>| {
@@ -980,14 +1023,18 @@ pub(crate) fn mix_graph_at(
             continue;
         }
         let input = bus[si].take().unwrap_or_else(|| silent(s.width, total));
-        let o = run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs: &ovs });
+        if s.kind == Kind::TrackOutput {
+            out = input;
+            break;
+        }
+        let o = run_strip(plan, si, ss, input, StripRun { x0, skip, sr, ovs });
         if let Some(fin) = deliver(o, si, &mut bus, &mut meters) {
             out = fin;
         }
     }
     st.next_out = start + frames as i64;
     {
-        let mut c = lock(cache());
+        let mut c = lock(cache);
         let v = c.entry(key).or_default();
         v.push(st);
         if v.len() > 4 {
