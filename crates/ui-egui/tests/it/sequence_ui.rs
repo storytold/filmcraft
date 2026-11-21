@@ -1599,6 +1599,7 @@ impl Driver {
     }
 }
 
+/// Ctrl+C copies the selected clip and Ctrl+V pastes it at the playhead.
 #[test]
 fn ctrl_c_and_ctrl_v_copy_and_paste_clips() {
     let mut d = Driver::demo();
@@ -1616,6 +1617,48 @@ fn ctrl_c_and_ctrl_v_copy_and_paste_clips() {
     d.exec("playhead.set", json!({"time": end.0}));
     d.clipboard_shortcut(egui::Event::Paste(first.name.clone()), egui::Modifiers::COMMAND);
     assert_eq!(copies(&mut d), before + 1, "Ctrl+V pastes it at the playhead");
+}
+
+/// A selected track keyframe that an Undo removed no longer takes Ctrl+C (#3562): the selected
+/// clip is copied instead of the copy failing on a keyframe that is gone.
+#[test]
+fn ctrl_c_skips_keyframes_undo_removed() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let q = d.app().session.active_sequence().unwrap().clone();
+    let (strip, first) = (q.audio_tracks[0].id.0, q.video_tracks[0].items[0].id.0);
+    let t = filmcraft_time::TICKS_PER_SECOND;
+    d.exec("mixer.setKeyframe", json!({"strip": strip, "lane": "volume", "time": t, "value": -3.0}));
+    d.ok("ui.set", json!({"trackKeyframeSelection": [{"strip": strip, "lane": "volume", "time": t}]}));
+    d.exec("edit.undo", json!({}));
+    d.exec("timeline.select", json!({"clips": [first]}));
+
+    d.clipboard_shortcut(egui::Event::Copy, egui::Modifiers::COMMAND);
+    let st = &d.app().session.state;
+    assert!(st.clipboard.iter().any(|(_, _, it)| it.id.0 == first), "Ctrl+C copied the selected clip");
+    assert!(st.keyframe_clipboard.is_empty(), "not the keyframe Undo removed");
+}
+
+/// A selected clip keyframe that an Undo removed no longer takes Ctrl+C either: the selected clip
+/// is copied.
+#[test]
+fn ctrl_c_skips_clip_keyframes_undo_removed() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let q = d.app().session.active_sequence().unwrap().clone();
+    let (audio, first) = (q.audio_tracks[0].items[0].clone(), q.video_tracks[0].items[0].id.0);
+    let volume = audio.effects.iter().position(|e| e.effect == "volume").unwrap();
+    let t = audio.start.0 + audio.duration.0 / 2;
+    d.exec("effects.addKeyframe", json!({"clip": audio.id.0, "effect": "volume", "param": "level", "time": t}));
+    let m = d.app().session.active_sequence().unwrap().find_item(audio.id).unwrap().1.effect("volume").unwrap().param("level").unwrap().keyframes[0].time.0;
+    d.ok("ui.set", json!({"keyframeSelection": [{"clip": audio.id.0, "effect": volume, "param": "level", "time": m}]}));
+    d.exec("edit.undo", json!({}));
+    d.exec("timeline.select", json!({"clips": [first]}));
+
+    d.clipboard_shortcut(egui::Event::Copy, egui::Modifiers::COMMAND);
+    let st = &d.app().session.state;
+    assert!(st.clipboard.iter().any(|(_, _, it)| it.id.0 == first), "Ctrl+C copied the selected clip");
+    assert!(st.keyframe_clipboard.is_empty(), "not the keyframe Undo removed");
 }
 
 #[test]

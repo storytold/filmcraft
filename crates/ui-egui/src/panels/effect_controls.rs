@@ -55,7 +55,7 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
 }
 
 /// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
-fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
+pub(crate) fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
     let Some(e) = it.effects.get(k.effect) else { return false };
     let param = match k.mask {
         Some(m) => e.masks.get(m).and_then(|m| m.param(&k.param)),

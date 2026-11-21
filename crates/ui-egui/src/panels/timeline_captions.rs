@@ -298,6 +298,9 @@ fn interact_block(
     }
     if resp.clicked() {
         let add = ctx.input(|i| i.modifiers.command || i.modifiers.shift);
+        // selected keyframes would take Copy over the caption (#3562)
+        app.ui.keyframe_selection.clear();
+        app.ui.track_keyframe_selection.clear();
         actions.push(("captions.select".into(), json!({"captions": [c.id.0], "add": add})));
     }
     if tr.locked {
@@ -315,6 +318,9 @@ fn interact_block(
         };
         ctx.data_mut(|d| d.insert_temp(egui::Id::unique("caption-drag-origin"), p.x));
         ctx.data_mut(|d| d.insert_temp(drag_id(), (c.id.0, g, 0i64)));
+        // an already selected caption may sit beside selected keyframes: drop them either way
+        app.ui.keyframe_selection.clear();
+        app.ui.track_keyframe_selection.clear();
         if !app.session.state.caption_selection.contains(&c.id) {
             actions.push(("captions.select".into(), json!({"captions": [c.id.0]})));
         }
