@@ -3468,6 +3468,8 @@
 	Encoder	Encodeur
 	Hardware (H.265 has no software encoder)	Matériel (H.265 n'a pas d'encodeur logiciel)
 	Hardware (AV1 has no software encoder)	Matériel (AV1 n'a pas d'encodeur logiciel)
+	Hardware (software AV1 baseline fallback)	Matériel (repli AV1 de base logiciel)
+	Software (AV1 baseline, DC-only)	Logiciel (AV1 de base, DC uniquement)
 	Text Properties	Propriétés du texte
 	Text Box Height	Hauteur de la zone de texte
 	Paragraph Text	Texte de paragraphe

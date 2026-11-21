@@ -3745,3 +3745,5 @@
 	Toggle Color Grading Section	Переключить раздел грейдинга
 	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов
+	Hardware (software AV1 baseline fallback)	Аппаратный (резервный базовый программный AV1)
+	Software (AV1 baseline, DC-only)	Программный (базовый AV1, только DC)

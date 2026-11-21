@@ -454,3 +454,5 @@
 	Toggle Color Grading Section	Перемкнути розділ кольорокорекції
 	Color Grading Section	Розділ кольорокорекції
 	Read Video Scopes	Зчитати дані відеоскопів
+	Hardware (software AV1 baseline fallback)	Апаратний (резервний базовий програмний AV1)
+	Software (AV1 baseline, DC-only)	Програмний (базовий AV1, лише DC)
