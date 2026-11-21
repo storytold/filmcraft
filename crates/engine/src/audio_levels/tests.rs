@@ -37,3 +37,22 @@ fn an_empty_or_reversed_range_is_refused() {
     assert!(s.execute("audio.levels", json!({"startSeconds": 5.0, "endSeconds": 2.0})).is_err());
     assert!(s.execute("audio.levels", json!({"windowSeconds": 0.0})).is_err());
 }
+
+/// A quiet stretch cut short by the end of the range is reported only if what is left is still
+/// `minQuietSeconds` long.
+#[test]
+fn a_quiet_stretch_clipped_by_the_range_end_must_still_be_long_enough() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let tracks: Vec<u64> = s.active_sequence().unwrap().audio_tracks.iter().map(|t| t.id.0).collect();
+    for t in tracks {
+        s.execute("timeline.setTrack", json!({"track": t, "muted": true})).unwrap();
+    }
+    // 0.75 s of silence: two 0.5 s windows, the second clipped to the range end
+    let short = levels(&mut s, json!({"startSeconds": 0.0, "endSeconds": 0.75, "minQuietSeconds": 1.0}));
+    assert!(short["quiet"].as_array().unwrap().is_empty(), "{short}");
+    let long = levels(&mut s, json!({"startSeconds": 0.0, "endSeconds": 1.25, "minQuietSeconds": 1.0}));
+    let q = long["quiet"].as_array().unwrap();
+    assert_eq!(q.len(), 1, "{long}");
+    assert!((q[0]["seconds"].as_f64().unwrap() - 1.25).abs() < 1e-9, "{long}");
+}

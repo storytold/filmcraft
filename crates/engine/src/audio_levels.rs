@@ -132,9 +132,12 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let t_of = |i: usize| start + i as f64 * window;
     let min_windows = (min_quiet / window).ceil() as usize;
+    // a run that reaches the end of the range is clipped to it, and then must still be long enough
     let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows)
         .into_iter()
-        .map(|(a, b)| json!({"startSeconds": t_of(a), "endSeconds": t_of(b).min(end), "seconds": t_of(b).min(end) - t_of(a)}))
+        .map(|(a, b)| (t_of(a), t_of(b).min(end)))
+        .filter(|(a, b)| b - a >= min_quiet)
+        .map(|(a, b)| json!({"startSeconds": a, "endSeconds": b, "seconds": b - a}))
         .collect();
     let mut order: Vec<usize> = (0..rms.len()).collect();
     order.sort_by(|a, b| rms[*b].total_cmp(&rms[*a]));
