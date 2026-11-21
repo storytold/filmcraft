@@ -410,6 +410,7 @@ async fn cli_run(a: &Args) {
     } else {
         read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     let mut failed = 0;
