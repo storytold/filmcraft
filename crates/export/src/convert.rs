@@ -52,57 +52,81 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
     }
 }
 
-/// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally).
+/// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally). Planes
+/// are filled row by row for the rows `rgba` holds; a source shorter than `w * h` pixels leaves the
+/// rest untouched.
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
+    if !covers(rgba.len(), w, 1, 4) {
+        return;
+    }
     let cw = w.div_ceil(2);
-    debug_assert!(y.len() >= w * h && rgba.len() >= w * h * 4);
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
-        let src = &rgba[row * w * 4..(row + 1) * w * 4];
-        let mut us = vec![0f32; w];
-        let mut vs = vec![0f32; w];
-        for x in 0..w {
-            let (r, g, b) = (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
-            let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-            yr[x] = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
-            us[x] = (b - yy) / 1.8556;
-            vs[x] = (r - yy) / 1.5748;
-        }
-        for cx in 0..cw {
-            let a = cx * 2;
-            let b2 = (a + 1).min(w - 1);
-            let u = (us[a] + us[b2]) * 0.5;
-            let v = (vs[a] + vs[b2]) * 0.5;
-            cbr[cx] = (512.0 + 896.0 * u).round().clamp(4.0, 1019.0) as u16;
-            crr[cx] = (512.0 + 896.0 * v).round().clamp(4.0, 1019.0) as u16;
-        }
-    });
+    // per-code tables of exactly the products the formula takes: `c / 255.0` and `k * (c / 255.0)`
+    let unit: [f32; 256] = std::array::from_fn(|c| c as f32 / 255.0);
+    let (kr, kg, kb): ([f32; 256], [f32; 256], [f32; 256]) =
+        (std::array::from_fn(|c| 0.2126 * unit[c]), std::array::from_fn(|c| 0.7152 * unit[c]), std::array::from_fn(|c| 0.0722 * unit[c]));
+    let scratch = || (vec![0f32; w], vec![0f32; w]);
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).take(h).enumerate().for_each_init(
+        scratch,
+        |(us, vs), (row, (yr, (cbr, crr)))| {
+            let Some(src) = rgba.get(row * w * 4..(row + 1) * w * 4) else { return };
+            for (p, (yo, (u, v))) in src.as_chunks::<4>().0.iter().zip(yr.iter_mut().zip(us.iter_mut().zip(vs.iter_mut()))) {
+                let (pr, pg, pb) = (usize::from(p[0]), usize::from(p[1]), usize::from(p[2]));
+                let yy = kr[pr] + kg[pg] + kb[pb];
+                *yo = code10(64.0 + 876.0 * yy);
+                *u = (unit[pb] - yy) / 1.8556;
+                *v = (unit[pr] - yy) / 1.5748;
+            }
+            chroma422_10(us, vs, cbr, crr);
+        },
+    );
 }
 
-/// Limited-range 10-bit 4:2:2 from encoded R'G'B' floats with matrix (Kr, Kb).
+/// Limited-range 10-bit 4:2:2 from encoded R'G'B' floats with matrix (Kr, Kb). Planes are filled
+/// row by row for the rows `rgb` holds, as [`rgba_to_yuv422_10`].
 pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
+    if !covers(rgb.len(), w, 1, 3) {
+        return;
+    }
     let Matrix { kr, kb } = m;
     let cw = w.div_ceil(2);
-    debug_assert!(rgb.len() >= w * h * 3 && y.len() >= w * h);
     let kg = 1.0 - kr - kb;
     let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
-        let src = &rgb[row * w * 3..(row + 1) * w * 3];
-        let mut us = vec![0f32; w];
-        let mut vs = vec![0f32; w];
-        for x in 0..w {
-            let (r, g, b) = (src[x * 3], src[x * 3 + 1], src[x * 3 + 2]);
-            let yy = kr * r + kg * g + kb * b;
-            yr[x] = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
-            us[x] = (b - yy) / sb;
-            vs[x] = (r - yy) / sr;
-        }
-        for cx in 0..cw {
-            let a = cx * 2;
-            let b2 = (a + 1).min(w - 1);
-            cbr[cx] = (512.0 + 896.0 * (us[a] + us[b2]) * 0.5).round().clamp(4.0, 1019.0) as u16;
-            crr[cx] = (512.0 + 896.0 * (vs[a] + vs[b2]) * 0.5).round().clamp(4.0, 1019.0) as u16;
-        }
-    });
+    let scratch = || (vec![0f32; w], vec![0f32; w]);
+    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).take(h).enumerate().for_each_init(
+        scratch,
+        |(us, vs), (row, (yr, (cbr, crr)))| {
+            let Some(src) = rgb.get(row * w * 3..(row + 1) * w * 3) else { return };
+            for (p, (yo, (u, v))) in src.as_chunks::<3>().0.iter().zip(yr.iter_mut().zip(us.iter_mut().zip(vs.iter_mut()))) {
+                let (r, g, b) = (p[0], p[1], p[2]);
+                let yy = kr * r + kg * g + kb * b;
+                *yo = code10(64.0 + 876.0 * yy);
+                *u = (b - yy) / sb;
+                *v = (r - yy) / sr;
+            }
+            chroma422_10(us, vs, cbr, crr);
+        },
+    );
+}
+
+/// One row's 4:2:2 chroma codes from its per-pixel chroma differences: each pair averaged (an odd
+/// last column with itself).
+fn chroma422_10(us: &[f32], vs: &[f32], cbr: &mut [u16], crr: &mut [u16]) {
+    let last = us.len().saturating_sub(1);
+    for (cx, (co, ro)) in cbr.iter_mut().zip(crr.iter_mut()).enumerate() {
+        let (a, b) = (cx * 2, (cx * 2 + 1).min(last));
+        let (Some(&u0), Some(&u1), Some(&v0), Some(&v1)) = (us.get(a), us.get(b), vs.get(a), vs.get(b)) else { break };
+        *co = code10(512.0 + 896.0 * ((u0 + u1) * 0.5));
+        *ro = code10(512.0 + 896.0 * ((v0 + v1) * 0.5));
+    }
+}
+
+/// `x.round().clamp(4.0, 1019.0) as u16` without the `roundf` call, as [`code8`] does for 8 bits.
+#[inline(always)]
+fn code10(x: f32) -> u16 {
+    if x.is_nan() {
+        return 0;
+    }
+    ((x + 0.5) as i32).clamp(4, 1019) as u16
 }
 
 /// `x.round().clamp(1.0, 254.0) as u8` for the finite values the conversions produce, without
@@ -421,6 +445,145 @@ mod tests {
             let rgba: Vec<u8> = (0..6 * 4).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
             check(&rgba, 6, 4);
         }
+    }
+
+    /// The per-pixel float formula `rgba_to_yuv422_10` (`rgb: false`) and `rgbf_to_yuv422_10`
+    /// (`rgb: true`, matrix `m`) must reproduce bit for bit.
+    fn reference_422_10(px: &[[f32; 3]], w: usize, h: usize, m: Option<Matrix>) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+        let cw = w.div_ceil(2);
+        let (mut y, mut u, mut v) = (vec![0u16; w * h], vec![0u16; cw * h], vec![0u16; cw * h]);
+        let (kr, kb) = m.map_or((0.2126, 0.0722), |m| (m.kr, m.kb));
+        let kg = if m.is_some() { 1.0 - kr - kb } else { 0.7152 };
+        let (sb, sr) = if m.is_some() { (2.0 * (1.0 - kb), 2.0 * (1.0 - kr)) } else { (1.8556, 1.5748) };
+        for row in 0..h {
+            let mut us = vec![0f32; w];
+            let mut vs = vec![0f32; w];
+            for x in 0..w {
+                let [r, g, b] = px[row * w + x];
+                let yy = kr * r + kg * g + kb * b;
+                y[row * w + x] = (64.0 + 876.0 * yy).round().clamp(4.0, 1019.0) as u16;
+                us[x] = (b - yy) / sb;
+                vs[x] = (r - yy) / sr;
+            }
+            for cx in 0..cw {
+                let (a, b2) = (cx * 2, (cx * 2 + 1).min(w - 1));
+                u[row * cw + cx] = (512.0 + 896.0 * ((us[a] + us[b2]) * 0.5)).round().clamp(4.0, 1019.0) as u16;
+                v[row * cw + cx] = (512.0 + 896.0 * ((vs[a] + vs[b2]) * 0.5)).round().clamp(4.0, 1019.0) as u16;
+            }
+        }
+        (y, u, v)
+    }
+
+    fn check_422_10(rgba: &[u8], w: usize, h: usize) {
+        let cw = w.div_ceil(2);
+        let (mut y, mut u, mut v) = (vec![0u16; w * h], vec![0u16; cw * h], vec![0u16; cw * h]);
+        rgba_to_yuv422_10(rgba, w, h, &mut y, &mut u, &mut v);
+        let px: Vec<[f32; 3]> = rgba.as_chunks::<4>().0.iter().map(|p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]).collect();
+        let (ry, ru, rv) = reference_422_10(&px, w, h, None);
+        assert!(y == ry, "{w}x{h}: luma differs");
+        assert!(u == ru, "{w}x{h}: Cb differs");
+        assert!(v == rv, "{w}x{h}: Cr differs");
+    }
+
+    #[test]
+    fn code10_rounds_like_round_around_every_half() {
+        for n in 0..1100 {
+            let half = n as f32 + 0.5;
+            let (mut x, mut down) = (half, half);
+            for _ in 0..64 {
+                for v in [x, down] {
+                    assert_eq!(code10(v), v.round().clamp(4.0, 1019.0) as u16, "{v}");
+                }
+                x = f32::from_bits(x.to_bits() + 1);
+                down = f32::from_bits(down.to_bits() - 1);
+            }
+        }
+        for v in [-3.0f32, -0.5, -0.0, 0.0, 3.49, 3.5, 1019.0, 1019.5, 1e9, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(code10(v), v.round().clamp(4.0, 1019.0) as u16, "{v}");
+        }
+    }
+
+    #[test]
+    fn yuv422_10_matches_the_float_formula_for_every_colour() {
+        let (w, h) = (4096, 4096);
+        let mut rgba = vec![255u8; w * h * 4];
+        for (i, p) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            p[0] = (i >> 16) as u8;
+            p[1] = (i >> 8) as u8;
+            p[2] = i as u8;
+        }
+        check_422_10(&rgba, w, h);
+    }
+
+    fn noise(n: usize, seed: &mut u32) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 17;
+                *seed ^= *seed << 5;
+                (*seed >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn yuv422_10_matches_the_float_formula_at_odd_sizes() {
+        let mut seed = 0x9e37_79b9u32;
+        for (w, h) in [(1, 1), (2, 2), (3, 5), (17, 9), (64, 33), (1921, 3)] {
+            check_422_10(&noise(w * h * 4, &mut seed), w, h);
+        }
+        for c in [[0u8, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]] {
+            let rgba: Vec<u8> = (0..7 * 3).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
+            check_422_10(&rgba, 7, 3);
+        }
+    }
+
+    #[test]
+    fn float_yuv422_10_matches_the_float_formula() {
+        let mut seed = 0x1234_5678u32;
+        let m = Matrix::new(0.2627, 0.0593);
+        for (w, h) in [(1, 1), (5, 3), (64, 9), (1921, 2)] {
+            // out of range, NaN and infinities clamp in the code step, as before
+            let mut px: Vec<[f32; 3]> = noise(w * h * 3, &mut seed).as_chunks::<3>().0.iter().map(|p| p.map(|c| c as f32 / 200.0 - 0.1)).collect();
+            if let Some(p) = px.first_mut() {
+                *p = [f32::NAN, f32::INFINITY, -1.0];
+            }
+            let rgb: Vec<f32> = px.iter().flatten().copied().collect();
+            let cw = w.div_ceil(2);
+            let (mut y, mut u, mut v) = (vec![0u16; w * h], vec![0u16; cw * h], vec![0u16; cw * h]);
+            rgbf_to_yuv422_10(&rgb, w, h, m, &mut y, &mut u, &mut v);
+            let (ry, ru, rv) = reference_422_10(&px, w, h, Some(m));
+            assert!(y == ry && u == ru && v == rv, "{w}x{h}: float 4:2:2 differs");
+        }
+    }
+
+    /// A source shorter than its size used to index past its end (a panic in the export thread).
+    #[test]
+    fn yuv422_10_from_a_short_source_converts_only_the_rows_it_holds() {
+        let (w, h) = (4, 3);
+        let (mut y, mut u, mut v) = (vec![7u16; w * h], vec![7u16; 2 * h], vec![7u16; 2 * h]);
+        rgba_to_yuv422_10(&[255; 4 * 4 + 5], w, h, &mut y, &mut u, &mut v);
+        assert_eq!(&y[..4], &[940; 4]);
+        assert!(y[4..].iter().all(|&c| c == 7), "rows past the source stay untouched");
+        rgbf_to_yuv422_10(&[0.0; 3 * 4 + 1], w, h, Matrix::new(0.2126, 0.0722), &mut y, &mut u, &mut v);
+        assert_eq!(&y[..4], &[64; 4]);
+        rgba_to_yuv422_10(&[], 0, 0, &mut y, &mut u, &mut v);
+        rgba_to_yuv422_10(&[0; 4], usize::MAX, 2, &mut y, &mut u, &mut v);
+    }
+
+    /// Conversion time of one 1080p frame. Run with `cargo test --release -p filmcraft-export
+    /// convert::tests::yuv422_10_speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn yuv422_10_speed() {
+        let (w, h) = (1920, 1080);
+        let rgba = noise(w * h * 4, &mut 0x4242_4242u32);
+        let (mut y, mut u, mut v) = (vec![0u16; w * h], vec![0u16; w / 2 * h], vec![0u16; w / 2 * h]);
+        let t = web_time::Instant::now();
+        for _ in 0..50 {
+            rgba_to_yuv422_10(&rgba, w, h, &mut y, &mut u, &mut v);
+        }
+        eprintln!("rgba_to_yuv422_10 1080p: {:.2} ms", t.elapsed().as_secs_f64() * 1e3 / 50.0);
     }
 }
 
