@@ -3582,11 +3582,8 @@
 	Delete Caption Track	删除字幕轨道
 	Delete Caption Tracks	删除多个字幕轨道
 	Delete Empty Caption Tracks	删除空字幕轨道
-
 	Appearance Settings…	外观设置…
-
 	Add to favorites	添加到收藏
-
 	Remove from favorites	从收藏中移除
 	Compression	压缩
 	ZIP (1 scan line)	ZIP（1 条扫描线）
@@ -3634,12 +3631,9 @@
 	Show Audio Names	显示音频名称
 	Video Names	视频名称
 	Audio Names	音频名称
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	控制服务器已禁用：FILMCRAFT_CONTROL_TOKEN 必须包含 64 个随机十六进制字符（参见 docs/control-protocol.md）
-
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
-
 # Clip Mismatch Warning dialog.
 	Clip Mismatch Warning	剪辑不匹配警告
 	This clip does not match the sequence settings.	此剪辑与序列设置不匹配。
@@ -3707,7 +3701,6 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
-
 # The strings the report listed as missing for zh-cn.
 	1 frame ({seconds} s)	1 帧（{seconds} 秒）
 	1/2	1/2
@@ -3762,7 +3755,6 @@
 	Preset library updated: {imported} loaded, {removed} removed	预设库已更新：已加载 {imported} 个，已移除 {removed} 个
 	Preset library updated	预设库已更新
 	Preset library is up to date	预设库已是最新
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	10 位色彩
@@ -3778,3 +3770,99 @@
 	Toggle Color Grading Section	切换色彩分级分区
 	Color Grading Section	色彩分级分区
 	Read Video Scopes	读取视频示波器
+
+	Alternate Drag Speed:	替代拖动速度:
+	Center on Playhead:	居中到播放头:
+	Controls	控制
+	Enter Shortcut	输入快捷键
+	Explode Slider:	展开滑块:
+	Invert Scrolling	反转滚动
+	Playhead Centering Range	播放头居中范围
+	Snap to Tracks	对齐到轨道
+	Smooth Animations	σ╣│µ╗æσè¿τö╗
+	Playhead Centering	µÆ¡µö╛σñ┤σ▒àΣ╕¡
+	Hide Slider	隐藏滑块
+	Unhide Slider	显示滑块
+	Maximum Zoom Level	最大缩放级别
+	Alternate Drag Speed (Shift + Drag)	拖动速度调整（Shift + 拖动）
+	Playhead Centering Range (Double Click)	播放头居中范围（三击）
+	Alternate Drag Speed	拖动速度调整
+	Value:	值：
+	Closest	最近
+	Very Slow	非常慢
+	Far	最远
+	3s	3 秒
+	5s	5 秒
+	10s	10 秒
+	30s	30 秒
+	Position Indicator Color:	位置指示器颜色：
+	Video Indicator Color:	视频指示器颜色：
+	Audio Indicator Color:	音频指示器颜色：
+	Offline Indicator Color:	离线指示器颜色：
+	Timeline Slider Settings	时间轴滑块设置
+	Track Slider Settings	轨道滑块设置
+	Unhide Timeline Slider	显示时间轴滑块
+	Unhide Track Slider	显示轨道滑块
+	Inverted Controls	反转控制
+	Slider Minimap	滑块缩略图
+	Show Whole Timeline	显示整个时间轴
+	Prioritise Audio	优先音频
+	Position Indicator	位置指示器
+	Fill Clips	填充剪辑
+	Decouple Edges	分离两端
+	Alternate Slider Position	滑块备用位置
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	你可以随时右键单击时间轴并选择列表底部的“{row}”来重新显示它。
+	Maximum zoom level in seconds	最大缩放级别（秒）
+	Alternate drag speed multiplier	拖动速度调整倍数
+	Playhead centering range in seconds	播放头居中范围（秒）
+	Alternate drag speed for the track sliders	轨道滑块的拖动速度调整
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	启用后，滑块边缘、以播放头居中和镜像滑块操作会使用平滑动画。
+	Reverses timeline scrolling and zooming when holding the center of the slider.	按住滑块中央时，反转时间线滚动和缩放方向。
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	垂直拖动时间线滑块可调整两个轨道区域的大小。隐藏轨道滑块时建议使用。
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	播放头进入可见时间线后，放大时视图会向播放头靠近。
+	Moves the timeline slider to the top.	将时间线滑块移至顶部。
+	Sets the maximum amount you can zoom in.	设置最大放大程度。
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	模仿 Blender 中的功能。较高的倍数可能使其比普通拖动更快。
+	Sets how much of the timeline is visible on each side of the playhead.	设置播放头两侧显示的时间线范围。
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	按住滑块中央并在时间线上垂直滚动时反转缩放方向。
+	Use Alternate Drag Speed for fine adjustments when enabled.	启用后可使用备用拖动速度进行精细调整。
+	Keeps the opposite slider edge fixed while resizing.	调整大小时保持滑块的另一端固定。
+	Moves the track sliders to the left side.	将轨道滑块移至左侧。
+	Adjust Track Height:	调整轨道高度：
+	Fast Timeline Scroll:	快速滚动时间线：
+	Mirror Sliders:	镜像滑块：
+	Scroll Track Rows:	滚动轨道行：
+	Timeline Slider: Alternate Drag Speed	时间线滑块：备用拖动速度
+	Timeline Slider: Center on Playhead	时间线滑块：以播放头居中
+	Timeline Slider: Explode	时间线滑块：展开
+	Timeline: Fast Scroll	时间线：快速滚动
+	Timeline: Zoom	时间线：缩放
+	Track Sliders: Adjust Track Height	轨道滑块：调整轨道高度
+	Track Sliders: Alternate Drag Speed	轨道滑块：备用拖动速度
+	Track Sliders: Explode	轨道滑块：展开
+	Track Sliders: Mirror	轨道滑块：镜像
+	Track Sliders: Scroll Track Rows	轨道滑块：滚动轨道行
+	Zoom In:	放大：
+	Zoom Out:	缩小：
+	Zoom Timeline:	缩放时间线：
+	Shortcut unavailable	快捷键不可用
+	Left click is reserved for controlling the application and cannot be assigned.	左键单击保留用于控制应用程序，无法分配。
+	Right click is reserved for opening slider settings and cannot be assigned.	右键单击保留用于打开滑块设置，无法分配。
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	启用“分离边缘”以使用“吸附到轨道”；关联的边缘无法单独吸附。
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	此快捷键已被分配。打开“键盘快捷键”进行检查。
+	Copy of the project saved to {path}	项目副本已保存到 {path}
+	Project saved to {path}	项目已保存到 {path}
+	Ticked attributes are removed from the selected clips.	勾选的属性将从所选片段中移除。
+	No bin {id}	不存在素材箱 {id}
+	Unbound	未分配
+	Track Control Angle:	轨道控制角度：
+	to	至
+	Control Track Sliders	控制轨道滑块
+	Full Screen Program Monitor	全屏节目监视器
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 竖屏 9:16，缩放以填充，VBR 单遍，10 Mbps，响度归一化至 −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 竖屏 9:16，缩放以填充，VBR 单遍，12 Mbps，响度归一化至 −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 竖屏 9:16，缩放以填充，VBR 单遍，8 Mbps，响度归一化至 −14 LUFS
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	抠除高光
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
