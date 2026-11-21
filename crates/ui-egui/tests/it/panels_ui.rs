@@ -820,7 +820,7 @@ fn inspectors_follow_reselected_project_items_and_clear_without_stale_targets() 
     d.click(&format!("project.item.{}", a.0));
     d.click("panel.tab.Info");
     assert_eq!(d.label("info.item"), a_name);
-    d.exec("file.newProject", json!({"name":"Fresh inspector project"}));
+    d.exec("file.newProject", json!({"name":"Fresh inspector project", "force": true}));
     d.frames(3);
     assert!(!d.has("info.item"), "no item identity is retained from the old project");
     assert!(!d.has("info.sequence"));

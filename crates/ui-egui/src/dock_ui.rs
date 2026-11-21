@@ -204,24 +204,27 @@ impl FilmcraftApp {
             return false;
         }
         let Some(bodies) = ctx.data(|data| data.get_temp::<Vec<(PanelKind, Rect, egui::LayerId)>>(bodies_id())) else { return true };
-        let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else { return false };
+        let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else {
+            return false;
+        };
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
-        !self.ui.dock.floating.iter().any(|window| {
+        let blocked = self.ui.dock.floating.iter().any(|window| {
             let Some(layer) = DockArea::floating_layer(area_id(), window) else { return false };
             // Floating windows are hidden while a frame is maximized.
             ctx.memory(|memory| memory.areas().is_visible(&layer))
                 && layer != *timeline
                 && rank(&layer) > rank(timeline)
                 && ctx.memory(|memory| memory.area_rect(layer.id)).is_some_and(|rect| rect.contains(pos))
-        })
+        });
+        !blocked
     }
 
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
     /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
     /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
     /// the dock area blocks its native windows meanwhile.
-    fn modal_open(&self, ctx: &egui::Context) -> bool {
+    pub(crate) fn modal_open(&self, ctx: &egui::Context) -> bool {
         matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
             || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
             || self.native_dialog_open()

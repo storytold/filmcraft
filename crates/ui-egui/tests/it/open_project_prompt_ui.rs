@@ -328,7 +328,7 @@ fn open_project_save_waits_for_a_save_dialog_answered_later() {
     d.menu("file.open");
     answer(&mut d, vec![other]);
     d.click("openProject.save");
-    d.exec("file.newProject", json!({"name": "New"}));
+    d.exec("file.newProject", json!({"name": "New", "force": true}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     answer(&mut d, vec![late.clone()]);
     assert!(!std::path::Path::new(&late).exists());
@@ -346,7 +346,7 @@ fn a_save_prompt_closes_when_a_script_replaces_its_project() {
     d.edit();
     d.open_project(&other);
     assert!(d.has("openProject.dontSave"));
-    d.exec("file.newProject", json!({"name": "New"}));
+    d.exec("file.newProject", json!({"name": "New", "force": true}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     assert!(d.app().ui.clip_dialog.is_none());
     assert!(!d.has("openProject.dontSave"));
@@ -355,7 +355,7 @@ fn a_save_prompt_closes_when_a_script_replaces_its_project() {
     // Close Project
     d.menu("file.closeProject");
     assert!(d.has("closeProject.dontSave"));
-    d.exec("file.newProject", json!({"name": "New"}));
+    d.exec("file.newProject", json!({"name": "New", "force": true}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     assert!(d.app().ui.clip_dialog.is_none());
     assert!(d.app().session.is_dirty());
@@ -363,7 +363,7 @@ fn a_save_prompt_closes_when_a_script_replaces_its_project() {
     d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
     d.frames(3);
     assert!(d.has("quit.dontSave"));
-    d.exec("file.newProject", json!({"name": "New"}));
+    d.exec("file.newProject", json!({"name": "New", "force": true}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     assert!(d.app().ui.clip_dialog.is_none());
     assert!(!d.app().quit_confirmed);
