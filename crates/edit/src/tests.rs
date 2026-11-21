@@ -1392,3 +1392,20 @@ fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
         assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
+
+#[test]
+fn flatten_trims_reversed_inner_clip_from_the_media_it_plays_last() {
+    for (outer_in, outer_dur, want_in, want_out) in [(20, 80, 0, 80), (0, 80, 20, 100)] {
+        let mut fx = Fx::new();
+        let mut inner = fx.item(0, 100, 0);
+        inner.reverse = true;
+        let mut track = fx.seq.video_tracks[0].clone();
+        track.items = vec![inner];
+        let outer = fx.item(0, outer_dur, outer_in);
+        let mut ctx = Fx::ctx(&mut fx.next);
+        let pieces = crate::multicam::flatten_items(&outer, &track, &mut ctx, &mut Default::default()).unwrap();
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].source_in, f(want_in), "source_in");
+        assert_eq!(pieces[0].source_out(), f(want_out), "source_out");
+    }
+}
