@@ -67,6 +67,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "clip.sceneEditDetection" => (tl!("Scene Edit Detection"), "sceneDetect", tl!("Analyze")),
         "sequence.normalizeMixTrack" => (tl!("Normalize Mix Track"), "normalizeMix", tl!("OK")),
         "sequence.simplify" => (tl!("Simplify Sequence"), "simplify", tl!("Simplify")),
+        "sequence.autoReframe" => (tl!("Auto Reframe Sequence"), "autoReframe", tl!("Create")),
         "sequence.transcribe" => (tl!("Transcribe Sequence"), "transcribe", tl!("Transcribe")),
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
@@ -91,6 +92,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "clip.sceneEditDetection" => "clip.sceneEditDetection",
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
         "sequence.simplify" => "sequence.simplify",
+        "sequence.autoReframe" => "sequence.autoReframe",
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
@@ -384,6 +386,10 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str, bin: Option<Option<u64>
                 json!({"name": name, "removeDisabled": true, "removeEmptyTracks": true, "closeGaps": false, "moveClipsDown": false, "removeVideoEffects": false, "removeAudioEffects": false, "removeText": false, "keep": "both"}),
                 Value::Null,
             )
+        }
+        "sequence.autoReframe" => {
+            let name = s.state.active_sequence.and_then(|q| s.project.item(q)).map(|i| format!("{} (9:16)", i.name)).unwrap_or_default();
+            (json!({"name": name, "aspect": "9:16", "preset": "default"}), Value::Null)
         }
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
@@ -798,6 +804,38 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     "keep",
                     tl!("Keep:"),
                     &[("both", tl!("Video and Audio")), ("video", tl!("Video Only")), ("audio", tl!("Audio Only"))],
+                );
+            }
+            "sequence.autoReframe" => {
+                // the copy is named after its aspect unless the name was edited
+                let old = p["aspect"].as_str().unwrap_or("9:16").to_string();
+                text(ui, &mut elems, pre, p, "name", tl!("Sequence Name:"), 240.0);
+                radios(
+                    ui,
+                    &mut elems,
+                    pre,
+                    p,
+                    "aspect",
+                    tl!("Aspect:"),
+                    &[("9:16", tl!("Vertical 9:16")), ("1:1", tl!("Square 1:1")), ("4:5", tl!("Vertical 4:5")), ("16:9", tl!("Horizontal 16:9"))],
+                );
+                let new = p["aspect"].as_str().unwrap_or("9:16").to_string();
+                if new != old
+                    && let Some(n) = p["name"].as_str().and_then(|n| n.strip_suffix(&format!("({old})")))
+                {
+                    p["name"] = json!(format!("{n}({new})"));
+                }
+                radios(
+                    ui,
+                    &mut elems,
+                    pre,
+                    p,
+                    "preset",
+                    tl!("Motion Preset:"),
+                    &[("slower", tl!("Slower Motion")), ("default", tl!("Default")), ("faster", tl!("Faster Motion"))],
+                );
+                ui.label(
+                    RichText::new(tl!("A copy of the sequence in the new shape: every video clip follows its subject. The original stays as it is.")).weak(),
                 );
             }
             "sequence.transcribe" => {

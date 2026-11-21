@@ -70,6 +70,15 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             simplify,
         ),
         spec(
+            "sequence.autoReframe",
+            "Auto Reframe Sequence…",
+            &["Sequence"],
+            None,
+            r#"{"aspect":"9:16|1:1|4:5|16:9"="9:16","preset":"slower|default|faster"?,"name":str?}"#,
+            has_video_clips,
+            auto_reframe,
+        ),
+        spec(
             "captions.showActiveOnly",
             "Show Active Caption Tracks Only",
             &["Sequence", "Captions"],
@@ -110,6 +119,12 @@ fn has_audio_clips(s: &Session) -> std::result::Result<(), String> {
 fn can_transcribe_sequence(s: &Session) -> std::result::Result<(), String> {
     crate::transcript::can_transcribe(s)?;
     has_audio_clips(s)
+}
+
+fn has_video_clips(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    let q = s.active_sequence().ok_or("no sequence is open")?;
+    if q.video_tracks.iter().any(|t| !t.items.is_empty()) { Ok(()) } else { Err("the sequence has no video clips".into()) }
 }
 
 fn has_caption_track(s: &Session) -> std::result::Result<(), String> {
@@ -291,6 +306,83 @@ fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     s.execute("transcript.generate", params)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Auto Reframe Sequence
+// ---------------------------------------------------------------------------------------------
+
+/// The frame size of `aspect` ("9:16", "1:1", "4:5", "16:9") built on the short side of a
+/// `w`×`h` sequence (1920×1080 → 1080×1920 for 9:16), even and within the encoders' limits.
+pub fn reframe_size(w: u32, h: u32, aspect: &str) -> Option<(u32, u32)> {
+    let (aw, ah) = match aspect {
+        "9:16" => (9u64, 16u64),
+        "1:1" => (1, 1),
+        "4:5" => (4, 5),
+        "16:9" => (16, 9),
+        _ => return None,
+    };
+    // the largest short side that keeps the long side within 16384 for this aspect
+    let short = u64::from(w.min(h)).clamp(2, 16384 * aw.min(ah) / aw.max(ah));
+    // the short side of the new frame is the old one; the long side follows the ratio
+    let (nw, nh) = if aw <= ah { (short, short * ah / aw) } else { (short * aw / ah, short) };
+    let even = |v: u64| u32::try_from((v / 2 * 2).clamp(2, 16384)).ok();
+    Some((even(nw)?, even(nh)?))
+}
+
+/// Sequence ▸ Auto Reframe Sequence…: a copy of the open sequence in another aspect (9:16 for
+/// TikTok / Reels / Shorts by default), every picture clip carrying Auto Reframe so the subject
+/// stays in frame. The original is untouched; the copy opens. One undo step.
+fn auto_reframe(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sequence.autoReframe";
+    let aspect = str_p(p, "aspect").unwrap_or("9:16");
+    let preset = match str_p(p, "preset").unwrap_or("default") {
+        "slower" => 0,
+        "default" => 1,
+        "faster" => 2,
+        other => return Err(bad(cmd, format!("unknown preset `{other}` (slower, default or faster)"))),
+    };
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let src = s.project.item(seq_id).cloned().ok_or(EngineError::NoSequence)?;
+    let ItemKind::Sequence(orig) = &src.kind else { return Err(EngineError::NoSequence) };
+    let (w, h) = reframe_size(orig.settings.width, orig.settings.height, aspect)
+        .ok_or_else(|| bad(cmd, format!("unknown aspect `{aspect}` (9:16, 1:1, 4:5 or 16:9)")))?;
+    let def = filmcraft_project::find_effect("auto_reframe").ok_or_else(|| EngineError::Other("the Auto Reframe effect is missing".into()))?;
+    let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("{} ({aspect})", src.name));
+    let (id, reframed) = s.edit("Auto Reframe Sequence", |pr, st| {
+        let mut q = (**orig).clone();
+        q.settings.width = w;
+        q.settings.height = h;
+        let mut reframed = 0usize;
+        for t in &mut q.video_tracks {
+            for it in &mut t.items {
+                // pictures only: titles and shapes are laid out for the new frame already, and a
+                // clip reframed by hand keeps what was chosen
+                let picture = pr.item(it.item).is_some_and(|x| matches!(x.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)));
+                if !picture || it.effects.iter().any(|e| e.effect == "auto_reframe") {
+                    continue;
+                }
+                let mut inst = def.instance();
+                if let Some(v) = inst.params.get_mut("preset") {
+                    v.value = filmcraft_project::ParamValue::Choice(preset);
+                }
+                it.effects.push(inst);
+                reframed += 1;
+            }
+        }
+        q.check().map_err(EngineError::Other)?;
+        let bin = pr.root.parent_of(seq_id).filter(|b| b.0 != 0);
+        let id = pr.add_item(&name, src.label, ItemKind::Sequence(std::sync::Arc::new(q)), bin);
+        st.active_sequence = Some(id);
+        if !st.open_sequences.contains(&id) {
+            st.open_sequences.push(id);
+        }
+        st.selection.clear();
+        st.project_selection = vec![id];
+        Ok((id, reframed))
+    })?;
+    s.events.push(crate::Event::OpenSequence(id));
+    Ok(json!({"sequence": id.0, "name": name, "width": w, "height": h, "reframed": reframed}))
 }
 
 // ---------------------------------------------------------------------------------------------
