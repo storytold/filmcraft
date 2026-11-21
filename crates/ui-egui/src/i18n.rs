@@ -57,6 +57,12 @@ pub enum Language {
     Pl,
     /// Swedish.
     Sv,
+    /// Dutch.
+    Nl,
+    /// Danish.
+    Da,
+    /// Finnish.
+    Fi,
     Tr,
 }
 
@@ -75,10 +81,13 @@ static ITALIAN: OnceLock<Catalog> = OnceLock::new();
 static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
 static CZECH: OnceLock<Catalog> = OnceLock::new();
 static SWEDISH: OnceLock<Catalog> = OnceLock::new();
+static DUTCH: OnceLock<Catalog> = OnceLock::new();
+static DANISH: OnceLock<Catalog> = OnceLock::new();
+static FINNISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -94,6 +103,9 @@ impl Language {
         Self::Cs,
         Self::Pl,
         Self::Sv,
+        Self::Nl,
+        Self::Da,
+        Self::Fi,
         Self::Tr,
         Self::Bs,
     ];
@@ -118,6 +130,9 @@ impl Language {
             Self::Cs => "cs",
             Self::Pl => "pl",
             Self::Sv => "sv",
+            Self::Nl => "nl",
+            Self::Da => "da",
+            Self::Fi => "fi",
             Self::Tr => "tr",
         }
     }
@@ -140,6 +155,9 @@ impl Language {
             Self::Cs => "Čeština",
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
+            Self::Nl => "Nederlands",
+            Self::Da => "Dansk",
+            Self::Fi => "Suomi",
             Self::Tr => "Türkçe",
         }
     }
@@ -162,6 +180,9 @@ impl Language {
             "cs" => Some(Self::Cs),
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
+            "nl" => Some(Self::Nl),
+            "da" => Some(Self::Da),
+            "fi" => Some(Self::Fi),
             "tr" => Some(Self::Tr),
             _ => None,
         }
@@ -177,7 +198,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 20] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -194,6 +215,9 @@ impl Language {
             ("cs", Language::Cs),
             ("pl", Language::Pl),
             ("sv", Language::Sv),
+            ("nl", Language::Nl),
+            ("da", Language::Da),
+            ("fi", Language::Fi),
             ("tr", Language::Tr),
         ];
         tags.iter()
@@ -231,6 +255,9 @@ impl Language {
             Self::Cs => "cs",
             Self::Pl => "pl",
             Self::Sv => "sv",
+            Self::Nl => "nl",
+            Self::Da => "da",
+            Self::Fi => "fi",
             Self::Tr => "tr",
         }
     }
@@ -254,6 +281,9 @@ impl Language {
             Self::Cs => Some(CZECH.get_or_init(|| Catalog::parse(include_str!("i18n/cs.tsv")))),
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
+            Self::Nl => Some(DUTCH.get_or_init(|| Catalog::parse(include_str!("i18n/nl.tsv")))),
+            Self::Da => Some(DANISH.get_or_init(|| Catalog::parse(include_str!("i18n/da.tsv")))),
+            Self::Fi => Some(FINNISH.get_or_init(|| Catalog::parse(include_str!("i18n/fi.tsv")))),
             Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
         }
     }

@@ -1,0 +1,8 @@
+asset:        fi.tsv
+title:        Finnish interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-11-09 by pechnikov2026-star
+notes:        AI-assisted (Claude Code), written from the meaning of the English labels; no native-speaker review beyond suggestions by Janiz-zzz.
