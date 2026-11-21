@@ -356,6 +356,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | G6: the WebM screen-recording acceptance test covers a VP8/Opus import, an extract edit, and H.264/AAC export with picture and audio sync checks. Readiness scores were not re-measured. |
 | 2026-10-12 | minor | Outdated entries corrected from merged work: AVI import (#650) and E-AC-3 decode (#647, via #788) removed from the failing lists; VP8 WebM decodes (#432, via #1064); localization "4 of 12" now 9 of 12 (localization-parity.md); scores and hours not re-measured |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |

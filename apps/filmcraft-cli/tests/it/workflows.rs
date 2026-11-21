@@ -3,7 +3,8 @@
 //! JSON-RPC over stdio) and the CLI itself, on media that looks like what people shoot:
 //!
 //! - a phone clip: H.264 + AAC in MP4 with a variable frame rate (dropped frames);
-//! - a camera clip: long-GOP H.264 (one keyframe) in Matroska with two audio tracks (AAC, AC-3).
+//! - a camera clip: long-GOP H.264 (one keyframe) in Matroska with two audio tracks (AAC, AC-3);
+//! - a screen-recording clip: VP8 and Opus in WebM, with a flash and tone as a sync marker.
 //!
 //! Each test imports, edits (extract, audio gain, title; ripple trims, colour matte, cross
 //! dissolve), exports (H.264 MP4; save the project, reopen it in a new process and export ProRes)
@@ -59,6 +60,22 @@ fn camera_long_gop_mkv(ffmpeg: &Path) -> Option<PathBuf> {
             .args(["-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
             .args(["-g", "300", "-keyint_min", "300", "-sc_threshold", "0", "-bf", "3"])
             .args(["-c:a:0", "aac", "-ac:a:0", "2", "-c:a:1", "ac3", "-ac:a:1", "2"])
+            .arg(tmp)
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// A three-second screen-recording stand-in with a white frame and an audio tone at 2 seconds.
+fn screen_recording_webm(ffmpeg: &Path) -> Option<PathBuf> {
+    let out = filmcraft_testkit::fixtures_dir("cli/workflows").join("screen_recording_vp8_opus_stereo.webm");
+    filmcraft_testkit::fixtures::generate(&out, |tmp| {
+        Command::new(ffmpeg)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=3"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=3"])
+            .args(["-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='between(t,2,2.02)'"])
+            .args(["-af", "volume='between(t,2,2.12)':eval=frame"])
+            .args(["-c:v", "libvpx", "-pix_fmt", "yuv420p", "-g", "75", "-c:a", "libopus", "-ac", "2"])
             .arg(tmp)
             .status()
             .is_ok_and(|s| s.success())
@@ -489,4 +506,65 @@ fn end_frame_of(project: &str) -> Option<u64> {
     let o = crate::filmcraft_command().args(["--project", project, "inspect", "sequence"]).output().ok()?;
     let v: Value = serde_json::from_slice(&o.stdout).ok()?;
     v["video"][0]["items"][0]["endFrame"].as_u64()
+}
+
+/// Extract one second before the sync marker, then check the decoded picture and sound in the
+/// H.264 export. A black frame or silent audio would pass a container-only probe.
+#[test]
+fn screen_recording_webm_extract_preserves_picture_and_sound() {
+    let (ffmpeg, ffprobe) = filmcraft_testkit::require_oracles!();
+    let Some(src) = screen_recording_webm(&ffmpeg) else {
+        assert!(
+            !filmcraft_testkit::ffmpeg_has_encoder(&ffmpeg, "libvpx") || !filmcraft_testkit::ffmpeg_has_encoder(&ffmpeg, "libopus"),
+            "ffmpeg has both encoders but failed to generate the WebM fixture"
+        );
+        return filmcraft_testkit::skip("WebM workflow", "ffmpeg needs libvpx and libopus");
+    };
+    let src = src.to_string_lossy().into_owned();
+    let dir = Scratch::new("webm");
+    let mut m = Mcp::start(&dir.path("data"));
+    let imported = m.tool("media_import", json!({"paths": [src]}));
+    assert_eq!(imported["errors"], json!([]), "{imported}");
+    let item = imported["items"][0].as_u64().unwrap();
+    let made = m.run("file.newSequenceFromClip", json!({"items": [item]}));
+    assert!(made["sequence"].is_u64(), "{made}");
+    let seq = m.tool("sequence_inspect", json!({}));
+    assert_eq!(seq["settings"]["frame_rate"], json!({"num": 25, "den": 1}), "{seq}");
+    assert_eq!(seq["durationFrames"], 75, "{seq}");
+
+    m.run("markers.markIn", json!({"frame": 20}));
+    m.run("markers.markOut", json!({"frame": 44}));
+    m.run("sequence.extract", json!({}));
+    let seq = m.tool("sequence_inspect", json!({}));
+    assert_eq!(seq["durationFrames"], 50, "{seq}");
+    assert_eq!(clips_on(&seq, "video", 0).len(), 2);
+    assert_eq!(clips_on(&seq, "audio", 0).len(), 2);
+
+    let out = dir.path("webm_edit.mp4");
+    let r = m.run("file.exportMedia", json!({"path": out, "format": "h264", "range": "entire", "gpuRendering": "off", "wait": true}));
+    assert_eq!(r["result"]["frames"], 50, "{r}");
+    let info = probe(&ffprobe, &out);
+    let (video, audio) = (streams(&info, "video"), streams(&info, "audio"));
+    assert_eq!((video.len(), audio.len()), (1, 1), "{info}");
+    assert_eq!(video[0]["codec_name"], "h264", "{info}");
+    assert_eq!(video[0]["r_frame_rate"], "25/1", "{info}");
+    assert_eq!(audio[0]["codec_name"], "aac", "{info}");
+
+    let source = frames(&ffmpeg, &src, None, "gray");
+    let rendered = frames(&ffmpeg, &out, None, "gray");
+    assert_eq!((source.len(), rendered.len()), (75, 50));
+    for (frame, picture) in rendered.iter().enumerate() {
+        let source_frame = if frame < 20 { frame } else { frame + 25 };
+        assert_shows(picture, &source, source_frame, &format!("export frame {frame}"));
+    }
+    assert!(rendered[25].iter().all(|&level| level > 200), "expected a white frame at 1 s");
+    let source_pcm = pcm(&ffmpeg, &src, 0);
+    let exported_pcm = pcm(&ffmpeg, &out, 0);
+    let beeps = onsets(&exported_pcm);
+    assert_eq!(beeps.len(), 1, "expected one beep, got {beeps:?}");
+    // Raw PCM starts at the audio stream's first sample, which can have a nonzero timestamp.
+    let beep_in_video_time = beeps[0] + num(&audio[0]["start_time"]) - num(&video[0]["start_time"]);
+    assert!((beep_in_video_time - 1.0).abs() < 1.0 / 25.0, "beep at {beep_in_video_time:.3} s, flash at 1 s");
+    let gain = db(tone(&exported_pcm, 1.02, 880.0) / tone(&source_pcm, 2.02, 880.0));
+    assert!(gain.abs() < 3.0, "880 Hz tone changed by {gain:.2} dB across the edit");
 }
