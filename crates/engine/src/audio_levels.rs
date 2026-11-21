@@ -130,7 +130,10 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
         peak.push(pk);
         pos += n as i64;
     }
-    let t_of = |i: usize| start + i as f64 * window;
+    // the windows as measured: whole samples from the sample the range starts on
+    let window = per as f64 / f64::from(sr);
+    let first_seconds = first as f64 / f64::from(sr);
+    let t_of = |i: usize| first_seconds + i as f64 * window;
     let min_windows = (min_quiet / window).ceil() as usize;
     // a run that reaches the end of the range is clipped to it, and then must still be long enough
     let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows)
@@ -150,7 +153,7 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     }
     Ok(json!({
         "sequence": seq_id.0,
-        "startSeconds": start,
+        "startSeconds": first_seconds,
         "endSeconds": end,
         "windowSeconds": window,
         "rmsDb": rms.iter().map(|v| round1(*v)).collect::<Vec<_>>(),

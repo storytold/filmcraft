@@ -56,3 +56,17 @@ fn a_quiet_stretch_clipped_by_the_range_end_must_still_be_long_enough() {
     assert_eq!(q.len(), 1, "{long}");
     assert!((q[0]["seconds"].as_f64().unwrap() - 1.25).abs() < 1e-9, "{long}");
 }
+
+/// The windows are whole samples: the reported start and width are what was measured, so the
+/// times of quiet stretches and loud moments line up with the audio.
+#[test]
+fn reported_windows_are_the_measured_sample_spans() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let sr = f64::from(s.active_sequence().unwrap().settings.sample_rate);
+    let r = levels(&mut s, json!({"startSeconds": 0.10001, "endSeconds": 3.0, "windowSeconds": 1.0 / 3.0}));
+    let (start, window) = (r["startSeconds"].as_f64().unwrap(), r["windowSeconds"].as_f64().unwrap());
+    let whole = |x: f64| ((x * sr) - (x * sr).round()).abs() < 1e-6;
+    assert!(whole(start) && whole(window), "{start} {window} at {sr} Hz");
+    assert!(start <= 0.10001 && 0.10001 - start < 1.0 / sr, "the window starts on the sample of the requested start");
+}
