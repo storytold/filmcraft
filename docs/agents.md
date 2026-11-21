@@ -151,6 +151,13 @@ progress and stop it:
   add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (a cancelled
   long export's clean-up removes only the stills numbered from `basePath` with the digits of
   `lastPath`, up to it). `filmcraft-cli export` prints the first and the last.
+- While an export job runs, the files it writes (the destination, an image sequence's stills, an
+  OP-Atom export's audio files, the caption sidecar) cannot become project media until the job has
+  finished, failed or been cancelled (#3551). `file.import` imports the other paths of the call and
+  lists the refused ones in `errors`; when every path is refused it fails with an error instead
+  (and `replace: true` then leaves the project as it is). `media.relink` and `media.replaceFootage`
+  fail, and `media.search` does not list such a file. Paths are compared as files, so another
+  spelling of the same path (or a link to it) is refused too.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
