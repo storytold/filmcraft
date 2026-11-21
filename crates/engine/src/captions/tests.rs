@@ -429,3 +429,29 @@ fn caption_export_warns_about_characters_608_and_708_cannot_carry() {
     assert_eq!(export(&mut s, "srt")["warnings"], json!([]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Animated captions: a highlight colour turns the spoken-word
+/// highlight on, "none" turns it off, a bad value is refused and changes nothing; the project
+/// file keeps it.
+#[test]
+fn set_style_highlight_turns_animated_captions_on_and_off() {
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "Animated words", "seconds": 1.0})).unwrap();
+    let style = |s: &Session| s.active_sequence().unwrap().caption_tracks[0].style.clone();
+    assert_eq!(style(&s).highlight, None, "plain captions by default");
+    s.execute("captions.setStyle", json!({"highlight": "#ffc800"})).unwrap();
+    assert_eq!(style(&s).highlight, Some([255, 200, 0, 255]));
+    assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["style"]["highlight"], "#ffc800ff");
+    let saved = serde_json::to_string(&style(&s)).unwrap();
+    assert_eq!(serde_json::from_str::<filmcraft_project::CaptionStyle>(&saved).unwrap(), style(&s));
+    for bad in [json!("yellowish"), json!(42), json!({"r": 1}), json!([255, 200, 0, "bad"]), json!([255, 200, 0]), json!("ffc800"), json!("#ffc8"), json!("#")]
+    {
+        assert!(s.execute("captions.setStyle", json!({"highlight": bad})).is_err(), "{bad}");
+    }
+    assert_eq!(style(&s).highlight, Some([255, 200, 0, 255]), "a refused value changes nothing");
+    s.execute("captions.setStyle", json!({"highlight": "none"})).unwrap();
+    assert_eq!(style(&s).highlight, None);
+    // older projects without the field read as plain captions
+    let old: filmcraft_project::CaptionStyle = serde_json::from_str(r#"{"font":"Inter"}"#).unwrap();
+    assert_eq!(old.highlight, None);
+}

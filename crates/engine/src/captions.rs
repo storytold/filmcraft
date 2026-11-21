@@ -255,6 +255,7 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
             "fontStyle": t.style.font_style,
+            "highlight": t.style.highlight.map(hex),
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
     })
@@ -362,7 +363,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"highlight":"#rrggbb[aa]"|"none"? (animated captions: the spoken word in this colour),"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -402,6 +403,19 @@ pub fn commands() -> Vec<CommandSpec> {
                     }
                     if let Some(c) = p.get("outlineColor").and_then(parse_color) {
                         y.outline_color = c;
+                    }
+                    // animated captions: a colour turns the spoken-word highlight on, "none" (or
+                    // false / null) off; anything else is refused rather than ignored
+                    match p.get("highlight") {
+                        None => {}
+                        Some(Value::Null | Value::Bool(false)) => y.highlight = None,
+                        Some(Value::String(v)) if v.eq_ignore_ascii_case("none") => y.highlight = None,
+                        // only the documented "#rrggbb[aa]" string: an array would drop entries it
+                        // cannot read and still pass
+                        Some(v @ Value::String(h)) if h.starts_with('#') => {
+                            y.highlight = Some(parse_color(v).ok_or_else(|| bad("captions.setStyle", "`highlight` must be a colour (#rrggbb) or \"none\""))?)
+                        }
+                        Some(_) => return Err(bad("captions.setStyle", "`highlight` must be a colour (#rrggbb) or \"none\"")),
                     }
                     if let Some(v) = f64_p(&p, "outline") {
                         y.outline = (v as f32).clamp(0.0, 40.0);
