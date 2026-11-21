@@ -166,8 +166,15 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         app.ui.program.res =
             PlaybackRes::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r) || format!("{x:?}").eq_ignore_ascii_case(r)).unwrap_or(app.ui.program.res);
     }
+    let timeline = p.get("timeline");
+    let explicit_view =
+        timeline.is_some_and(|tl| ["pps", "scroll", "videoTrackHeight", "audioTrackHeight"].iter().any(|key| tl.get(*key).and_then(Value::as_f64).is_some()));
+    let explicit_zoom_or_scroll = timeline.is_some_and(|tl| ["pps", "scroll"].iter().any(|key| tl.get(*key).and_then(Value::as_f64).is_some()));
     if let Err(e) = set_timeline(app, p) {
         return err(e);
+    }
+    if explicit_view {
+        app.explicit_timeline_view_edit(app.ui.timeline.fit_pending && !explicit_zoom_or_scroll);
     }
     if let Some(q) = s("effectsSearch") {
         app.ui.effects_search = q.to_string();
@@ -252,6 +259,13 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
 /// and the thumbnail mode.
 fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
+    // Validate every fallible field before changing any state. A bad thumbnail name must not
+    // leave the other requested view fields applied without their persistence notification.
+    let thumbnails = match tl.get("thumbnails").and_then(Value::as_str) {
+        Some(m) if m.eq_ignore_ascii_case("off") => Some(None),
+        Some(m) => Some(Some(ThumbnailMode::from_name(m).ok_or_else(|| format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"))?)),
+        None => None,
+    };
     if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
         app.ui.timeline.target_pps = v;
     }
@@ -274,15 +288,12 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
         app.ui.timeline.show_audio_names = v;
     }
     // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
-    if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
-        if m.eq_ignore_ascii_case("off") {
-            app.ui.timeline.show_thumbnails = false;
-        } else {
-            let Some(mode) = ThumbnailMode::from_name(m) else {
-                return Err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
-            };
+    if let Some(mode) = thumbnails {
+        if let Some(mode) = mode {
             app.ui.timeline.show_thumbnails = true;
             app.ui.timeline.thumbnail_mode = mode;
+        } else {
+            app.ui.timeline.show_thumbnails = false;
         }
     }
     Ok(())
@@ -883,6 +894,62 @@ mod input_bounds_tests {
         app.synthetic.clear();
         assert!(matches!(request(&mut app, "ui.move", json!({"x": 10, "y": 20, "count": u64::MAX})), Outcome::AfterInput));
         assert_eq!(app.synthetic.len(), 3, "ui.move does not use count");
+    }
+
+    #[test]
+    fn invalid_thumbnail_mode_does_not_partially_apply_timeline_settings() {
+        let mut app = app();
+        let before = (
+            app.ui.timeline.target_pps,
+            app.ui.timeline.target_scroll,
+            app.ui.timeline.video_track_h,
+            app.ui.timeline.show_thumbnails,
+            app.ui.timeline.thumbnail_mode,
+        );
+        let result = set_timeline(
+            &mut app,
+            &json!({"timeline": {
+                "pps": 123.0,
+                "scroll": 7.0,
+                "videoTrackHeight": 55.0,
+                "thumbnails": "not-a-mode"
+            }}),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            (
+                app.ui.timeline.target_pps,
+                app.ui.timeline.target_scroll,
+                app.ui.timeline.video_track_h,
+                app.ui.timeline.show_thumbnails,
+                app.ui.timeline.thumbnail_mode,
+            ),
+            before,
+            "invalid mode must reject the entire Timeline update"
+        );
+    }
+
+    #[test]
+    fn explicit_timeline_settings_are_saved_before_the_control_reply() {
+        let mut app = app();
+        app.session.execute("file.openDemoProject", json!({})).unwrap();
+        let active = app.session.state.active_sequence.unwrap();
+        app.ui.timeline.fit_pending = true;
+        let Outcome::Done(reply) = request(&mut app, "ui.set", json!({"timeline": {"videoTrackHeight": 64.0}})) else {
+            panic!("a valid Timeline view update should be acknowledged")
+        };
+        assert_eq!(reply["ok"], true);
+        assert!(app.session.state.timeline_pending_fits.contains(&active), "track height must not cancel the pending fit");
+        assert_eq!(app.session.state.timeline_views.get(&active).map(|view| view.video_track_h), Some(64.0));
+        assert_ne!(app.session.view_epoch, app.session.saved_view_epoch, "the acknowledged view must be marked unsaved");
+
+        let Outcome::Done(reply) = request(&mut app, "ui.set", json!({"timeline": {"pps": 120.0, "scroll": 3.5}})) else {
+            panic!("explicit zoom and scroll should be acknowledged")
+        };
+        assert_eq!(reply["ok"], true);
+        assert!(!app.session.state.timeline_pending_fits.contains(&active));
+        let view = app.session.state.timeline_views.get(&active).unwrap();
+        assert_eq!((view.pps, view.scroll), (120.0, 3.5));
     }
 
     /// Verify missing/null defaults and accepted drag bounds retain endpoints and button release.

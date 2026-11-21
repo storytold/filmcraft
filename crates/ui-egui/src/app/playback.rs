@@ -309,6 +309,7 @@ impl FilmcraftApp {
         };
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
+            self.mark_automatic_playhead_stop();
             self.stop();
         } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
@@ -317,16 +318,25 @@ impl FilmcraftApp {
                 self.play(self.playback.speed);
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
+                self.mark_automatic_playhead_stop();
                 self.stop();
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
             self.session.set_playhead(Tick::ZERO);
+            self.mark_automatic_playhead_stop();
             self.stop();
         } else {
             self.session.set_playhead(t);
             self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
         }
         ctx.request_repaint();
+    }
+
+    /// Tag a playback stop so the next Timeline draw can reveal it without dirtying the view.
+    fn mark_automatic_playhead_stop(&mut self) {
+        if let Some(sequence) = self.session.state.active_sequence {
+            self.tl.playback_stop_reveal = Some((sequence, self.session.playhead().seconds()));
+        }
     }
 }
 
@@ -402,6 +412,26 @@ mod smooth_playhead_tests {
         app.set_now_for_test(now);
         app.advance_playback(&egui::Context::default());
         app
+    }
+
+    #[test]
+    fn playback_end_does_not_turn_its_final_playhead_into_a_stopped_jump() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.prefs.timeline.auto_scroll = "noScroll".into();
+        let mut app = FilmcraftApp::new(session);
+        let active = app.session.state.active_sequence.unwrap();
+        let duration = app.session.active_sequence().unwrap().duration();
+        app.ui.timeline.seen_playhead = Some((active, 0.0));
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.anchor_tick = duration;
+        app.playback.anchor_time = 0.0;
+        app.set_now_for_test(1.0);
+        app.advance_playback(&egui::Context::default());
+        assert!(!app.playback.playing);
+        assert_eq!(app.ui.timeline.seen_playhead, Some((active, 0.0)), "the Timeline still sees the stop as a playhead jump");
+        assert_eq!(app.tl.playback_stop_reveal, Some((active, app.session.playhead().seconds())));
     }
 
     /// The playhead line follows the playback clock between frame boundaries, so it glides at the

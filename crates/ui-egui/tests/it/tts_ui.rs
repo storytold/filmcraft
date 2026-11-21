@@ -59,6 +59,10 @@ impl Driver {
         self.ok("engine.execute", json!({"command": command, "params": params}))
     }
 
+    fn menu_command(&mut self, command: &str) -> Value {
+        self.ok("ui.menu.invoke", json!({"id": command}))
+    }
+
     fn click(&mut self, id: &str) {
         self.ok("ui.click", json!({"id": id}));
         self.frames(3);
@@ -121,7 +125,7 @@ fn scratch(name: &str) -> String {
 fn write_add_click_to_edit_and_save_in_place() {
     let dir = scratch("flow");
     let mut d = Driver::demo(&dir);
-    d.exec("window.panel.TextToSpeech", json!({}));
+    d.menu_command("window.panel.TextToSpeech");
     d.frames(3);
     // the panel opens beside Properties, leaving the Program monitor visible
     assert!(!d.ids("program.").is_empty(), "Program monitor still shown");
@@ -188,7 +192,7 @@ fn write_add_click_to_edit_and_save_in_place() {
 fn settings_controls_and_hear_this_voice() {
     let dir = scratch("controls");
     let mut d = Driver::demo(&dir);
-    d.exec("window.panel.TextToSpeech", json!({}));
+    d.menu_command("window.panel.TextToSpeech");
     d.frames(3);
     // Save is disabled with an empty script
     d.click("tts.save");

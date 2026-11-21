@@ -211,7 +211,7 @@ fn compact_floating_monitor_timecodes_keep_drag_typing_escape_and_caret_routing(
         d.harness.ctx.set_pixels_per_point(scale);
         d.frames(4);
         for (panel, x) in [("Source", 70), ("Program", 360)] {
-            d.ok("engine.execute", json!({"command": "window.floatPanel", "params": {"panel": panel, "rect": [x, 100, 250, 360]}}));
+            d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": panel, "rect": [x, 100, 250, 360]}}));
         }
         let project = d.harness.state().session.project.clone();
         d.set_frame(30);

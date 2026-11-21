@@ -118,7 +118,7 @@ fn perf_stats_reports_playback_frames_and_decode() {
     assert_eq!(v["playback"]["playing"], json!(false));
     // the same through the command id (what MCP `command_run` sends in bridge mode)
     let c = d.ok("engine.execute", json!({"command": "perf.stats"}));
-    assert!(c["frames"]["workers"].as_u64().unwrap() >= 1 && c["decode"].is_object(), "{c}");
+    assert!(c["jobs"]["total"].as_u64().is_some() && c["decode"].is_object(), "{c}");
 }
 
 /// A value dragged in Effect Controls changes on every UI pass, so the frame the monitor asks for

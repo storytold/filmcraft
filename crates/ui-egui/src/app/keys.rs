@@ -4,6 +4,7 @@ impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
     /// to a focused text field except dock dividers.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        panels::timeline::reconcile_controls_capture(self, ctx);
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
@@ -34,6 +35,7 @@ impl FilmcraftApp {
         // out, so it still reports the previous pass, and it is true for any focused widget, which
         // would leave the editor without its single-key tool shortcuts while a slider has focus.
         let text_focused = ctx.text_edit_focused();
+        panels::timeline::route_slider_shortcut(self, ctx);
         // read before `input_mut`: the plugin lock must not be taken inside the input lock
         let label_selected = ctx.with_plugin(|s: &mut egui::text_selection::LabelSelectionState| s.has_selection()).unwrap_or(false);
         // Esc cancels a dynamic trim in progress
@@ -50,7 +52,8 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
+        panels::timeline::reconcile_controls_capture(self, ctx);
+        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || self.modal_open(ctx) {
             return;
         }
         let mut input = egui::InputState::default();
@@ -60,6 +63,11 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         let fire = self.match_shortcuts(&mut input, false, false, false);
+        // The app's own bindings keep priority in a floating viewport. If none matched, give
+        // the remaining chord to Timeline Controls just as the main-window route does.
+        if fire.is_empty() {
+            panels::timeline::route_forwarded_slider_shortcut(self, ctx, &mut input.events, input.modifiers);
+        }
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -351,6 +359,79 @@ mod forwarded_key_tests {
         let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
         app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
         assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
+    }
+
+    #[test]
+    fn forwarded_custom_slider_chord_reaches_the_general_shortcut_matcher() {
+        use egui_kittest::Harness;
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + K".into();
+        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| super::FilmcraftApp::new(session));
+        for _ in 0..4 {
+            harness.step();
+        }
+        harness.state_mut().ui.focused = crate::dock::PanelKind::Timeline;
+        harness.state_mut().bindings = vec![(Modifiers::CTRL, Key::K, "file.openDemoProject".into(), None)];
+        let ctx = harness.ctx.clone();
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+
+        let before_epoch = harness.state().session.document_epoch;
+        harness.state_mut().handle_forwarded_keys(&ctx, vec![key]);
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), None);
+        assert_eq!(harness.state().session.document_epoch, before_epoch + 1, "the app shortcut handles the overlapping forwarded chord");
+    }
+
+    #[test]
+    fn forwarded_slider_only_chord_triggers_its_controls_action() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + Shift + Alt + K".into();
+        let mut app = super::FilmcraftApp::new(session);
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        let modifiers = Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT;
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers };
+
+        app.handle_forwarded_keys(&ctx, vec![key]);
+
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), Some(3));
+    }
+
+    #[test]
+    fn forwarded_floating_keys_do_not_reserve_slider_shortcuts_while_a_save_prompt_is_open() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_center_on_playhead = "Ctrl + K".into();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.ui.clip_dialog = Some(crate::state::ClipDialogDraft { command: "file.closeProject".into(), ..Default::default() });
+        let ctx = egui::Context::default();
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+
+        app.handle_forwarded_keys(&ctx, vec![key]);
+
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), None);
+    }
+
+    #[test]
+    fn a_modal_clears_controls_capture_before_keyboard_early_returns() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.dialog = Some(crate::Dialog::Preferences);
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("tl-controls-listening"), Some(0usize));
+            d.insert_temp(egui::Id::unique("tl-controls-listening-track"), false);
+            d.insert_temp(egui::Id::unique("tl-controls-listening-document-epoch"), app.session.document_epoch);
+        });
+
+        app.handle_shortcuts(&ctx);
+
+        assert!(!crate::panels::timeline::controls_listening(&ctx));
     }
 }
 

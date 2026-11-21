@@ -7,6 +7,7 @@ use super::{
     Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
     selection_trim_kind, vec2,
 };
+use crate::panels::timeline_hit::hit_secondary;
 
 pub(super) fn preview_drag(
     app: &FilmcraftApp,
@@ -248,7 +249,7 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
 }
 
 /// Wheel input over the Timeline: the wheel scrolls the Timeline in time (up = backwards),
-/// Shift+wheel does the same a lot faster, Ctrl+wheel moves the tracks up and down and
+/// Shift+wheel does the same, Ctrl+wheel moves the tracks up and down and
 /// Option+wheel zooms about the pointer.
 // Keep the mutually exclusive wheel gestures together so one event only changes one view axis.
 #[allow(clippy::cognitive_complexity)]
@@ -260,7 +261,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
     //   Ctrl + wheel     the tracks under the pointer, up and down
     //   Option + wheel   zoom about the pointer
     // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
-    // wheel. A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+    // wheel. A sideways gesture (trackpad swipe, tilt wheel) normally scrolls the Timeline in
     // time; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
@@ -275,12 +276,11 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
         }
         let inv = app.session.state.timeline_ui.inverted_controls;
         // macOS delivers Shift+wheel sideways (delta.x only): treat it as the wheel's own axis
-        let wdy = if w.delta.y == 0.0 { w.delta.x } else { w.delta.y };
+        let wdy = selected_wheel_component(w.delta);
         let extra = &app.session.state.timeline_ui.timeline_control_bindings;
         let wheel_name =
             format!("{}{}{}Scroll", if w.command { "Ctrl + " } else { "" }, if w.shift { "Shift + " } else { "" }, if w.alt { "Alt + " } else { "" });
-        let track_height_binding = extra.first().is_none_or(String::is_empty);
-        let track_height_wheel = if track_height_binding { w.shift && !w.command && !w.alt } else { extra.first().is_some_and(|s| s == &wheel_name) };
+        let track_height_wheel = extra.first().is_some_and(|s| !s.is_empty() && s == &wheel_name);
         let fast_scroll = extra.get(1).is_some_and(|s| !s.is_empty() && s == &wheel_name);
         if track_height_wheel && !fast_scroll && wdy != 0.0 {
             let video = p.y < layout.split_y;
@@ -313,12 +313,15 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
         let default_track_scroll = w.command && !w.shift && !w.alt;
         let default_zoom = w.alt && !w.command && !w.shift;
         let track_scroll = if track_scroll_binding.is_empty() { default_track_scroll } else { track_scroll_binding == wheel_name };
+        let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
+        let selected_track_scroll = track_scroll && (!track_scroll_binding.is_empty() || (default_track_scroll && swap));
         let zoom_scroll = if zoom_binding.is_empty() { default_zoom } else { zoom_binding == wheel_name };
         if (default_track_scroll && !track_scroll && !zoom_scroll) || (default_zoom && !zoom_scroll && !track_scroll) {
             return;
         }
         // Ctrl + Shift + wheel zooms about the pointer, and Inverted controls turns that around
-        if (w.pinch - 1.0).abs() > 1e-4 || (zoom_scroll && wdy != 0.0) {
+        let alt_horizontal_swipe = is_alt_horizontal_swipe(w.alt, w.command, w.shift, w.delta);
+        if (w.pinch - 1.0).abs() > 1e-4 || (zoom_scroll && wdy != 0.0 && !alt_horizontal_swipe) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 {
                 w.pinch as f64
             } else {
@@ -336,31 +339,28 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             );
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
-            // A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+            // A sideways gesture (trackpad swipe, tilt wheel) normally scrolls the Timeline in
             // time. The wheel itself does the same -- up = backwards in time -- and with Shift a
             // lot faster; Ctrl + wheel moves the tracks up and down. Settings ▸ Timeline ▸
             // Timeline Mouse Scrolling "Horizontal" swaps those two.
-            if track_scroll && !default_track_scroll {
+            if selected_track_scroll {
                 if p.y < layout.split_y {
-                    app.ui.timeline.v_scroll += if inv { -w.delta.y } else { w.delta.y };
+                    app.ui.timeline.v_scroll += if inv { -wdy } else { wdy };
                 } else {
-                    app.ui.timeline.a_scroll -= if inv { -w.delta.y } else { w.delta.y };
+                    app.ui.timeline.a_scroll -= if inv { -wdy } else { wdy };
                 }
                 return;
             }
-            let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
             let time = if fast_scroll {
                 Some(wdy * 10.0)
-            } else if w.shift {
-                None
-            } else if w.command == swap {
+            } else if w.shift || w.command != swap {
                 Some(wdy)
             } else {
                 None
             };
-            // a sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
-            // time -- but Shift+wheel keeps its 10x speed even when macOS reports it sideways
-            let sideways = if w.delta.x.abs() > w.delta.y.abs() && !w.shift { Some(w.delta.x) } else { time };
+            // a sideways gesture (trackpad swipe, tilt wheel) normally scrolls the Timeline in
+            // time. Shift uses the wheel's selected component too, including macOS sideways reports.
+            let sideways = if !selected_track_scroll && w.delta.x.abs() > w.delta.y.abs() && !w.shift { Some(w.delta.x) } else { time };
             match sideways {
                 Some(d) => {
                     // Inverted controls: the wheel scrolls the Timeline the other way in time
@@ -373,11 +373,23 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
                 // up and down: the video tracks above the divider, the audio tracks below it (the
                 // lowest video track is at the bottom, so wheeling up brings higher ones in).
                 // Inverted controls turns both around too.
-                None if p.y < layout.split_y => app.ui.timeline.v_scroll += if inv { -w.delta.y } else { w.delta.y },
-                None => app.ui.timeline.a_scroll -= if inv { -w.delta.y } else { w.delta.y },
+                None if p.y < layout.split_y => app.ui.timeline.v_scroll += if inv { -wdy } else { wdy },
+                None => app.ui.timeline.a_scroll -= if inv { -wdy } else { wdy },
             }
         }
     }
+}
+
+fn selected_wheel_component(delta: egui::Vec2) -> f32 {
+    if delta.y == 0.0 { delta.x } else { delta.y }
+}
+
+fn is_alt_horizontal_swipe(alt: bool, command: bool, shift: bool, delta: egui::Vec2) -> bool {
+    alt && !command && !shift && delta.x.abs() > delta.y.abs()
+}
+
+fn drag_frame_needs_update(dragged: bool, stopped: bool) -> bool {
+    dragged || stopped
 }
 
 /// Cursor feedback: what a press here would grab (#259) — the cursor for it, the trim
@@ -738,13 +750,16 @@ fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
 /// An ongoing drag: recomputes its state under the pointer (snapping, the destination track,
 /// the marquee box), refuses it when it would land on locked tracks, and auto-scrolls near
 /// the edges.
+// The match intentionally keeps every drag state's update beside the others; splitting it would
+// scatter the state-machine invariants (release, lock and auto-scroll handling).
+#[allow(clippy::cognitive_complexity)]
 fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, seq: &Sequence, layout: &Layout) {
     let ctx = ui.ctx().clone();
     let rate = seq.settings.frame_rate;
     let mods = ctx.input(|i| i.modifiers);
     // ---- drag
     if !app.tl.cancelled
-        && resp.dragged()
+        && drag_frame_needs_update(resp.dragged(), resp.drag_stopped())
         && let Some(p) = resp.interact_pointer_pos()
         && let Some(d) = app.tl.drag.clone()
     {
@@ -896,13 +911,12 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
         // input happened to repaint). The ramp runs over a long stretch (80 pt at the right edge,
         // 40 at the left), so it stays gentle well before the edge, and tops out at 9 pt per
         // 1/60 s on it.
-        if matches!(app.tl.drag, Some(Drag::Move { .. })) {
+        if resp.dragged() && matches!(app.tl.drag, Some(Drag::Move { .. })) {
             let dt = f64::from(ui.input(|i| i.stable_dt).clamp(1.0 / 240.0, 1.0 / 15.0));
             let base = 9.0 * dt * 60.0 / app.ui.timeline.pps.max(1e-9);
-            let right_zone = 80.0f32;
-            let left_zone = 40.0f32;
-            let over_right = ((p.x - (layout.content.max.x - right_zone)) / right_zone).clamp(0.0, 1.0);
-            let over_left = (((layout.content.min.x + left_zone) - p.x) / left_zone).clamp(0.0, 1.0);
+            let (left_zone, right_zone) = auto_scroll_zone_widths(layout.content.width());
+            let over_right = if right_zone > 0.0 { ((p.x - (layout.content.max.x - right_zone)) / right_zone).clamp(0.0, 1.0) } else { 0.0 };
+            let over_left = if left_zone > 0.0 { (((layout.content.min.x + left_zone) - p.x) / left_zone).clamp(0.0, 1.0) } else { 0.0 };
             let v = &mut app.ui.timeline;
             if over_right > 0.0 {
                 v.target_scroll += base * f64::from(over_right);
@@ -949,6 +963,11 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
     }
 }
 
+fn auto_scroll_zone_widths(content_width: f32) -> (f32, f32) {
+    let scale = (content_width.max(0.0) / 120.0).min(1.0);
+    (40.0 * scale, 80.0 * scale)
+}
+
 /// Resolve the row or new track under a dragged clip, keeping it in its source track kind.
 fn move_drag_destination(
     app: &FilmcraftApp,
@@ -962,7 +981,11 @@ fn move_drag_destination(
     // Crossing the A/V divider selects the nearest row of the clip's own kind.
     let current_row = layout.row_at(pointer_y).filter(|row| start_row.is_some_and(|start| row.kind == start.kind)).or_else(|| {
         let kind = start_row?.kind;
-        layout.rows.iter().filter(|row| row.kind == kind).min_by(|a, b| (a.rect.center().y - pointer_y).abs().total_cmp(&(b.rect.center().y - pointer_y).abs()))
+        layout
+            .rows
+            .iter()
+            .filter(|row| row.kind == kind && layout.shown(row).height() > 0.0)
+            .min_by(|a, b| (layout.shown(a).center().y - pointer_y).abs().total_cmp(&(layout.shown(b).center().y - pointer_y).abs()))
     });
     let track_delta = match (current_row, start_row) {
         (Some(current), Some(start)) if current.kind == start.kind => current.index as i32 - start.index as i32,
@@ -1442,7 +1465,10 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let on_gap = match hit(seq, layout, p) {
+        // A right-click replaces the previous contextual target even when the new target has
+        // no menu (for example, empty time after the final clip).
+        ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+        let on_gap = match hit_secondary(seq, layout, p) {
             Hit::Empty { track } => app.session.execute("timeline.selectGap", json!({"track": track.0, "time": layout.tick_at(p.x).0})).is_ok(),
             _ => false,
         };
@@ -1477,7 +1503,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
+        && let Hit::Clip { clip, edge, track } = hit_secondary(seq, layout, p)
     {
         ctx.data_mut(|d| d.insert_temp(menu_clip_id, clip));
         let target = edge.and_then(|e| EditPointTarget::at(seq, track, clip, e).map(|t| (t, e)));
@@ -1641,6 +1667,37 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 mod marquee_tests {
     use super::super::layout::Row;
     use super::*;
+
+    #[test]
+    fn horizontal_wheel_is_the_selected_track_scroll_component() {
+        assert_eq!(selected_wheel_component(egui::vec2(12.0, 0.0)), 12.0);
+        assert_eq!(selected_wheel_component(egui::vec2(12.0, -3.0)), -3.0);
+    }
+
+    #[test]
+    fn alt_horizontal_gesture_with_vertical_drift_stays_in_time_scroll_path() {
+        assert!(is_alt_horizontal_swipe(true, false, false, egui::vec2(20.0, 0.0)));
+        assert!(is_alt_horizontal_swipe(true, false, false, egui::vec2(20.0, 2.0)));
+        assert!(!is_alt_horizontal_swipe(true, false, false, egui::vec2(2.0, 20.0)));
+        assert!(!is_alt_horizontal_swipe(true, false, false, egui::vec2(20.0, 20.0)));
+        assert!(!is_alt_horizontal_swipe(true, true, false, egui::vec2(20.0, 2.0)));
+    }
+
+    #[test]
+    fn release_frame_recomputes_drag_state() {
+        assert!(drag_frame_needs_update(false, true));
+        assert!(drag_frame_needs_update(true, false));
+        assert!(!drag_frame_needs_update(false, false));
+    }
+
+    #[test]
+    fn horizontal_auto_scroll_zones_never_overlap() {
+        for width in [0.0, 1.0, 40.0, 100.0, 119.0, 120.0, 400.0] {
+            let (left, right) = auto_scroll_zone_widths(width);
+            assert!(left >= 0.0 && right >= 0.0);
+            assert!(left + right <= width.max(0.0) + f32::EPSILON, "width {width}: {left} + {right}");
+        }
+    }
 
     fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
         let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));

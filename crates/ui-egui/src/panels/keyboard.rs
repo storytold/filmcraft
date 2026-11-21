@@ -224,8 +224,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "timeline.nextScreen" | "timeline.prevScreen" => {
             let tv = &mut app.ui.timeline;
-            let w = (app.last_timeline_width.max(200.0) - tv.header_w) as f64;
-            let page = w / tv.pps.max(1e-6);
+            // `last_timeline_width` already records the content viewport, after the header.
+            let page = timeline_page_distance(app.last_timeline_width, tv.pps);
             let d = if id == "timeline.nextScreen" { page } else { -page };
             tv.target_scroll = (tv.target_scroll + d).max(0.0);
             Ok(json!({"scroll": tv.target_scroll}))
@@ -252,6 +252,10 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         app.ui.status = e.clone();
     }
     Some(r)
+}
+
+fn timeline_page_distance(content_width: f32, pps: f64) -> f64 {
+    f64::from(content_width.max(200.0)) / pps.max(1e-6)
 }
 
 // ------------------------------------------------------------------ frames and panels
@@ -559,6 +563,11 @@ fn text_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod transcript_selection_tests {
     use serde_json::{Value, json};
+
+    #[test]
+    fn page_distance_uses_the_already_header_adjusted_content_width() {
+        assert_eq!(super::timeline_page_distance(800.0, 100.0), 8.0);
+    }
 
     #[test]
     fn prev_word_after_the_transcript_shrank_under_the_selection_does_not_panic() {

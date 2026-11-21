@@ -103,6 +103,7 @@ impl FilmcraftApp {
             fonts_ready: false,
             integrated_titlebar: false,
             last_timeline_width: 1000.0,
+            last_timeline_center_x: 500.0,
             timeline_view_of: None,
             pending_timeline_drop: None,
             clip_mismatch: None,
@@ -272,7 +273,7 @@ impl FilmcraftApp {
         if self.session.trim_play.active() {
             ctx.request_repaint();
         }
-        if self.session.persistence.is_some() && self.session.is_dirty() {
+        if self.session.persistence.is_some() && self.session.has_unsaved_changes() {
             // Keep polling the auto-save worker (status, "also save the project" results) while hidden.
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
@@ -295,6 +296,10 @@ impl FilmcraftApp {
                     self.restart_ime_target();
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
+                    // The new document may reuse the previous sequence ID with a different
+                    // playhead. Do not treat that restored value as a user jump.
+                    self.ui.timeline.seen_playhead = None;
+                    self.tl.playback_stop_reveal = None;
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
@@ -379,6 +384,7 @@ impl FilmcraftApp {
             // has no new events and must not re-run a click, shortcut or drop.
             self.auto.begin_frame();
             self.apply_prefs(&ctx);
+            panels::timeline::flush_pending_zoombar_view_change(self, &ctx);
             self.sync_timeline_view();
             panels::metadata::follow_selection(self);
             self.handle_drops(&ctx);
@@ -523,6 +529,7 @@ impl eframe::App for FilmcraftApp {
     /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        panels::timeline::flush_pending_zoombar_view_change(self, &ctx);
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
@@ -541,6 +548,15 @@ mod lifecycle_synthetic_tests {
     use filmcraft_engine::Session;
 
     use super::FilmcraftApp;
+
+    #[test]
+    fn opening_a_sequence_clears_the_previous_playhead_observation() {
+        let mut app = FilmcraftApp::new(Session::default());
+        app.ui.timeline.seen_playhead = Some((filmcraft_project::ItemId(7), 12.0));
+        app.session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        app.logic_session_events();
+        assert_eq!(app.ui.timeline.seen_playhead, None);
+    }
 
     /// Extract the pointer-moved positions from a raw event batch, for synthetic-input tests.
     fn pointer_events(events: &[Event]) -> Vec<egui::Pos2> {

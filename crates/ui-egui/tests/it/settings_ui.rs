@@ -258,8 +258,14 @@ fn escape_mid_drag_reverts_a_settings_color() {
     // the areas on top: the Settings modal, and the picker's popup over it when it is open
     let on_top = |d: &Driver| {
         d.harness.ctx.memory(|m| {
-            let mut v: Vec<egui::Rect> =
-                m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Foreground).filter_map(|l| m.area_rect(l.id)).collect();
+            let mut v: Vec<egui::Rect> = m
+                .areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| l.order == egui::Order::Foreground)
+                .filter_map(|l| m.area_rect(l.id))
+                .filter(|r| r.is_positive())
+                .collect();
             v.sort_by(|a, b| a.area().total_cmp(&b.area()));
             v
         })

@@ -52,7 +52,11 @@ use layout::{track_scroll_max, video_row_tops};
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
-pub use scrollbars::{controls_listening, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden, sync_slider_bindings, zoombar_cursor_watchdog};
+pub(crate) use scrollbars::reconcile_controls_capture;
+pub use scrollbars::{
+    controls_listening, flush_pending_zoombar_view_change, route_forwarded_slider_shortcut, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden,
+    sync_slider_bindings, zoombar_cursor_watchdog,
+};
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
 pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};
@@ -121,6 +125,8 @@ pub struct TlState {
     /// it can never hit any edge and reappears on release at the very same pixel. `None` also when
     /// no drag has it.
     pub zoombar_cursor_lock: Option<Pos2>,
+    /// The OS viewport that acquired the confined cursor, so release is sent to that same window.
+    pub zoombar_cursor_viewport: Option<egui::ViewportId>,
     pub zoombar_track_control: bool,
     /// One frame after a zoom-bar Shift drag releases the pinned cursor: the unlock warp settles
     /// as egui pointer motion in that frame, so movement is skipped once to keep it from showing
@@ -136,6 +142,9 @@ pub struct TlState {
     /// Scroll applied by playback auto-follow in the last Timeline draw. The next view sync can
     /// persist it without treating it as a user edit.
     pub playback_auto_scroll: Option<(ItemId, f64)>,
+    /// Playhead position at a playback stop. The Timeline reveals it on the next draw, then
+    /// records that automatic scroll without marking the view as user-edited.
+    pub playback_stop_reveal: Option<(ItemId, f64)>,
     /// The track sliders' end-circle ring width, eased between its states while Smooth Animations
     /// is on (the zoom bar's [`Self::zoombar_ring_w`] on its end) -- one per slider, so the video
     /// and audio sliders can never fight over one shared number.
@@ -587,6 +596,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         } else {
             Rect::from_min_max(pos2(full.min.x + 7.0, full.max.y - SCROLLBAR_H + 2.0), pos2(full.max.x - 7.0, full.max.y - 2.0))
         };
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), bar));
         zoom_scrollbar(app, ui, bar, content.width(), seq, seq.settings.frame_rate.frame_duration().seconds(), &t);
     }
     if let Some(dy) = ui.data_mut(|d| d.remove_temp::<f32>(egui::Id::unique("timeline-control-tracks-dy"))) {
@@ -735,6 +745,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let outer_extension = MASTER_H;
         let vbar = Rect::from_min_max(pos2(sx0, video_area.min.y + outer - outer_extension), pos2(sx1, split_y - 3.0));
         let abar = Rect::from_min_max(pos2(sx0, split_y + DIVIDER_H + 3.0), pos2(sx1, tracks_area.max.y - outer));
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-track-slider-video-rect"), vbar);
+            d.insert_temp(egui::Id::unique("timeline-track-slider-audio-rect"), abar);
+        });
         app.auto.add("timeline.trackSlider.video.track", vbar, "Video track slider track");
         app.auto.add("timeline.trackSlider.audio.track", abar, "Audio track slider track");
         let (on_vs, vthumb, vclicks) = vertical_scrollbar(
@@ -953,10 +967,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         }
         // however the zoom was set (wheel, keys, the bar, a script), zooming out stops at the
         // extent and zooming in stops at the Maximum Zoom Level setting
-        let floor = min_pps(seq.duration().seconds(), content.width());
-        let ceiling = max_pps(content.width(), min_zoom_view);
-        v.target_pps = v.target_pps.clamp(floor.min(ceiling), ceiling);
-        v.pps = v.pps.clamp(floor.min(ceiling), ceiling);
+        layout::clamp_zoom_to_width(v, seq.duration().seconds(), content.width(), min_zoom_view);
         // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
         let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
         let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
@@ -1007,7 +1018,8 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         }
     }
     // A jump while stopped (Home, End, edit points, markers) brings the playhead into view.
-    {
+    let automatic_stop = app.tl.playback_stop_reveal.take().is_some_and(|stop| stop == (seq_id, app.session.playhead().seconds()));
+    let revealed_by_playback = {
         let v = &mut app.ui.timeline;
         let ph = app.session.playhead().seconds();
         // another sequence's tab has its own playhead and keeps its own view
@@ -1018,9 +1030,16 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
             && !v.fit_pending
             && let Some(s) = scroll_to_reveal(ph, v.target_scroll, v.target_pps, content.width() as f64)
         {
+            let changed = s != v.target_scroll;
             v.target_scroll = s;
             v.scroll = s;
+            automatic_stop && changed
+        } else {
+            false
         }
+    };
+    if revealed_by_playback {
+        app.tl.playback_auto_scroll = Some((seq_id, app.ui.timeline.target_scroll));
     }
     // The view stays inside the Timeline's extent, however it was moved (wheel, scroll bar, zoom,
     // a script): scrolled past it, nothing is in view and the scroll bar has nowhere to show it.
@@ -1514,7 +1533,7 @@ mod waveform_drag_anchor_tests {
 
 #[cfg(test)]
 mod reveal_tests {
-    use super::scroll_to_reveal;
+    use super::*;
 
     #[test]
     fn home_scrolls_back_to_the_start() {
@@ -1532,6 +1551,44 @@ mod reveal_tests {
         assert_eq!(scroll_to_reveal(5.0, 0.0, 40.0, 800.0), None);
         assert_eq!(scroll_to_reveal(f64::NAN, 0.0, 40.0, 800.0), None);
         assert_eq!(scroll_to_reveal(5.0, 0.0, 0.0, 800.0), None);
+    }
+
+    #[test]
+    fn playback_stop_still_reveals_the_playhead_without_dirtying_the_view() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let sequence = session.state.active_sequence.unwrap();
+        let seq = session.active_sequence().unwrap().clone();
+        let mut app = crate::FilmcraftApp::new(session);
+        let v = &mut app.ui.timeline;
+        v.fit_pending = false;
+        v.pps = 100.0;
+        v.target_pps = 100.0;
+        v.scroll = 0.0;
+        v.target_scroll = 0.0;
+        v.seen_playhead = Some((sequence, 0.0));
+        let shown = filmcraft_engine::project::SequenceView {
+            pps: 100.0,
+            scroll: 0.0,
+            v_scroll: v.v_scroll,
+            a_scroll: v.a_scroll,
+            video_track_h: v.video_track_h,
+            audio_track_h: v.audio_track_h,
+        };
+        app.timeline_view_of = Some(sequence);
+        app.timeline_view_last = Some(shown);
+        app.session.state.timeline_views.insert(sequence, shown);
+        app.session.saved_view_epoch = app.session.view_epoch;
+
+        let playhead = (seq.duration() - seq.settings.frame_rate.frame_duration()).seconds();
+        app.session.set_playhead(seq.duration() - seq.settings.frame_rate.frame_duration());
+        app.tl.playback_stop_reveal = Some((sequence, playhead));
+        animate_view(&mut app, &egui::Context::default(), Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 300.0)), sequence, &seq);
+
+        assert!(app.ui.timeline.target_scroll > 0.0, "the stopped playhead is still revealed");
+        assert_eq!(app.tl.playback_auto_scroll, Some((sequence, app.ui.timeline.target_scroll)));
+        app.sync_timeline_view();
+        assert_eq!(app.session.view_epoch, app.session.saved_view_epoch, "the automatic reveal does not make the project view-dirty");
     }
 }
 
@@ -1667,6 +1724,11 @@ mod new_track_tests {
         for y in [160.0, 202.0, 230.0] {
             assert_eq!(at(y), None, "y = {y}");
         }
+        let mut overflow = layout.clone();
+        overflow.rows[0].rect = Rect::from_min_max(pos2(0.0, -20.0), pos2(800.0, 30.0));
+        overflow.rows[1].rect = Rect::from_min_max(pos2(0.0, 470.0), pos2(800.0, 520.0));
+        assert_eq!(new_track_at(&seq, &overflow, -30.0, 50.0, 50.0), None, "video tracks can overflow above the pane");
+        assert_eq!(new_track_at(&seq, &overflow, 530.0, 50.0, 50.0), None, "audio tracks can overflow below the Mix row");
     }
 
     #[test]

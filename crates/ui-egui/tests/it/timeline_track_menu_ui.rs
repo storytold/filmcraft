@@ -123,7 +123,8 @@ fn the_empty_part_of_the_header_column_offers_the_dialogs() {
     d.frames(4);
     let n = d.harness.state().session.active_sequence().unwrap().video_tracks.len();
     let top = rect(&mut d, &format!("timeline.track.V{n}.sourcePatch"));
-    let (x, y) = (top[0] + 30.0, top[1] - 25.0);
+    let tracks = rect(&mut d, "timeline.tracks");
+    let (x, y) = (top[0] + 30.0, (tracks[1] + top[1]) / 2.0);
     d.ok("ui.click", json!({"x": x, "y": y, "button": "right"}));
     assert!(has(&mut d, "timeline.tracks.menu.addTracks"), "Add Tracks… is offered");
     assert!(has(&mut d, "timeline.tracks.menu.deleteTracks"));

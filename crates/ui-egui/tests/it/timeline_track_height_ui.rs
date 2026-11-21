@@ -24,7 +24,8 @@ impl Driver {
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 1400.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
-        // short enough that every track is in view, with empty space above and below them
+        // the Timeline enforces its per-track minimum from the available pane height; all tracks
+        // fit, leaving the end circles ready to zoom the track height.
         d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 24.0, "audioTrackHeight": 24.0}}));
         d.frames(3);
         d
@@ -81,35 +82,29 @@ impl Driver {
 #[test]
 fn the_top_edge_of_the_highest_video_track_resizes_the_video_tracks() {
     let mut d = Driver::demo();
-    let (top, _) = d.labels();
     let (v0, a0) = d.heights();
-    // dragging the outer edge up makes the video tracks taller, as the line below it does
-    d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, -15.0);
+    // drag the top slider end inward to make the video tracks taller
+    d.drag("timeline.trackSlider.video.topCircle", 0.5, 15.0);
     let (v1, a1) = d.heights();
     assert!(v1 > v0 + 5.0, "video tracks grow: {v0} -> {v1}");
     assert_eq!(a1, a0, "audio tracks are left alone");
-    // and down makes them shorter again
-    d.drag(&format!("timeline.track.{top}.resizeTop"), 0.5, 15.0);
+    // and back outward makes them shorter again
+    d.drag("timeline.trackSlider.video.topCircle", 0.5, -15.0);
     assert!(d.heights().0 < v1 - 5.0);
-    // the line below it still works the same way
-    let v2 = d.heights().0;
-    d.drag(&format!("timeline.track.{top}.resize"), 0.5, -15.0);
-    assert!(d.heights().0 > v2 + 5.0);
+    assert!((d.heights().0 - v0).abs() < 5.0, "returning the slider restores its starting height");
 }
 
 #[test]
 fn the_bottom_edge_of_the_last_audio_track_resizes_the_audio_tracks_from_either_side_of_the_line() {
     let mut d = Driver::demo();
-    let (_, last) = d.labels();
-    let id = format!("timeline.track.{last}.resize");
     let (v0, a0) = d.heights();
-    // from just past the line, in the empty space below the last track
-    d.drag(&id, 0.9, 15.0);
+    // Pull the bottom slider end inward to make the audio tracks taller.
+    d.drag("timeline.trackSlider.audio.bottomCircle", 0.5, -15.0);
     let (v1, a1) = d.heights();
     assert!(a1 > a0 + 5.0, "audio tracks grow: {a0} -> {a1}");
     assert_eq!(v1, v0, "video tracks are left alone");
-    // and from just inside it
-    d.drag(&id, 0.1, -15.0);
+    // and back outward to make them shorter again
+    d.drag("timeline.trackSlider.audio.bottomCircle", 0.5, 15.0);
     assert!(d.heights().1 < a1 - 5.0);
 }
 
@@ -141,7 +136,7 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     let (top, _) = d.labels();
     let separator = d.app().tokens.separator;
     let ruler = rect_of(&mut d, "timeline.ruler");
-    let top_edge = rect_of(&mut d, &format!("timeline.track.{top}.resizeTop"));
+    let top_edge = rect_of(&mut d, &format!("timeline.track.{top}.sourcePatch"));
     let seq = d.app().session.active_sequence().unwrap();
     let tracks = seq.video_tracks.len() + seq.audio_tracks.len();
     // horizontal separator lines across the track area (the headers' own lines start left of the ruler)
@@ -164,7 +159,7 @@ fn timeline_draws_visible_lines_between_tracks_and_above_the_top_video_track() {
     ys.dedup_by(|a, b| (*a - *b).abs() < 0.1);
     assert!(ys.len() > tracks, "a line under each of the {tracks} tracks and one above the top video track, found {ys:?}");
     let first = ys[0];
-    assert!((first - top_edge.center().y).abs() < 1.5, "the first line ({first}) is at the top edge of the highest video track ({})", top_edge.center().y);
+    assert!((first - (top_edge.min.y - 1.0)).abs() < 1.5, "the first line ({first}) is at the top edge of the highest video track ({})", top_edge.min.y - 1.0);
 }
 
 // Regression test for #703: the playhead's head spanned the whole ruler and covered the markers and

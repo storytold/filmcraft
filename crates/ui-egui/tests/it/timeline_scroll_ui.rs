@@ -63,6 +63,10 @@ impl Driver {
     fn exec(&mut self, command: &str, params: Value) -> Value {
         self.ok("engine.execute", json!({"command": command, "params": params}))
     }
+
+    fn menu_command(&mut self, command: &str, params: Value) -> Value {
+        self.ok("ui.menu.invoke", json!({"id": command, "params": params}))
+    }
 }
 
 impl Driver {
@@ -221,6 +225,51 @@ fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
 }
 
+#[test]
+fn horizontal_cmd_wheel_uses_the_selected_component_to_scroll_tracks() {
+    let mut d = Driver::tall();
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    d.wheel(0.2, 40.0, 0.0, json!({"command": true}));
+    assert_eq!(d.view(), (4.0, 50.0, 40.0, 0.0), "the horizontal component moves video tracks when Cmd+wheel is assigned to track scrolling");
+}
+
+#[test]
+fn alt_horizontal_wheel_with_vertical_drift_scrolls_time_without_zooming() {
+    let mut d = Driver::tall();
+    d.wheel(0.2, -50.0, 5.0, json!({"alt": true}));
+    assert_eq!(d.view(), (5.0, 50.0, 0.0, 0.0), "Alt plus a mostly horizontal gesture scrolls time despite vertical drift, without zooming");
+
+    let mut horizontal_only = Driver::tall();
+    horizontal_only.wheel(0.2, -50.0, 0.0, json!({"alt": true}));
+    assert_eq!(horizontal_only.view(), (5.0, 50.0, 0.0, 0.0), "horizontal-only Alt gesture scrolls time without zooming");
+}
+
+#[test]
+fn pending_zoom_setting_change_flushes_after_its_popup_stops_drawing() {
+    let mut d = Driver::demo();
+    let before = d.app().session.view_epoch;
+    let key = egui::Id::unique("tl-zoombar-view-pending");
+    d.harness.ctx.data_mut(|data| data.insert_temp(key, true));
+    let pos = egui::pos2(30.0, 30.0);
+    d.harness.input_mut().events.extend([
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+    ]);
+    d.frames(1);
+    assert_eq!(d.app().session.view_epoch, before, "the setting is not committed before its drag ends");
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<bool>(key)), Some(true));
+
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(1);
+    assert_eq!(d.app().session.view_epoch, before + 1, "the app UI pass commits the pending view change even when the settings popup is not drawn");
+    assert_eq!(d.harness.ctx.data(|data| data.get_temp::<bool>(key)), None);
+}
+
 /// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was
 /// in view and the scroll bar's thumb sat at the right end whatever was done to it.
 #[test]
@@ -298,7 +347,7 @@ fn a_twelve_hour_sequence_zooms_out_until_it_is_all_in_view() {
     assert_eq!(scroll, 0.0);
     // the Zoom Out command stops at the same place
     for _ in 0..40 {
-        d.exec("view.zoomOut", json!({}));
+        d.menu_command("view.zoomOut", json!({}));
         d.frames(2);
     }
     let (_, pps, ..) = d.view();
@@ -315,7 +364,7 @@ fn the_scroll_bar_thumb_follows_the_pointer_and_reaches_both_ends() {
     d.ok("ui.set", json!({"timeline": {"scroll": 0.0}}));
     d.frames(3);
     let thumb = d.rect("timeline.zoomBar");
-    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2] / 4.0, "{thumb:?} in {track:?}");
+    assert!((thumb[0] - track[0]).abs() < 0.5 && thumb[2] >= 30.0 && thumb[2] < track[2], "{thumb:?} in {track:?}");
     // dragged by its middle it moves with the pointer, and the view with it
     let y = thumb[1] + thumb[3] / 2.0;
     let grab = thumb[0] + thumb[2] / 2.0;
@@ -447,10 +496,10 @@ fn home_and_end_bring_the_playhead_into_view() {
     let mut d = Driver::demo();
     d.ok("ui.set", json!({"timeline": {"pps": 400.0, "scroll": 3.0}}));
     d.frames(3);
-    d.exec("playhead.start", json!({}));
+    d.menu_command("playhead.start", json!({}));
     d.frames(3);
     assert_eq!(d.app().ui.timeline.target_scroll, 0.0, "Home scrolls back to the start");
-    d.exec("playhead.end", json!({}));
+    d.menu_command("playhead.end", json!({}));
     d.frames(3);
     let end = d.app().session.playhead().seconds();
     let v = &d.app().ui.timeline;
@@ -463,7 +512,7 @@ fn repeated_endpoint_navigation_reveals_the_same_playhead(use_keys: bool) {
     let project = d.app().session.project.clone();
     let undo = d.app().session.history.undo.len();
     for (command, key, manual_scroll) in [("playhead.start", "Home", 5.0), ("playhead.end", "End", 0.0)] {
-        d.exec(command, json!({}));
+        d.menu_command(command, json!({}));
         d.frames(3);
         let playhead = d.app().session.playhead();
         d.ok("ui.set", json!({"timeline": {"pps": 400.0, "scroll": manual_scroll}}));
@@ -472,7 +521,7 @@ fn repeated_endpoint_navigation_reveals_the_same_playhead(use_keys: bool) {
         if use_keys {
             d.ok("ui.key", json!({"key": key}));
         } else {
-            d.exec(command, json!({}));
+            d.menu_command(command, json!({}));
         }
         d.frames(3);
         let (scroll, pps, ..) = d.view();

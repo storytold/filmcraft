@@ -61,7 +61,7 @@ impl Driver {
     }
 
     fn frame_stats(&mut self) -> Value {
-        self.ok("engine.execute", json!({"command": "perf.stats"}))["frames"].clone()
+        self.ok("ui.menu.invoke", json!({"id": "perf.stats"}))["frames"].clone()
     }
 
     /// Drain queued requests; running jobs can still finish after this returns.

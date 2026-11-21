@@ -151,7 +151,7 @@ fn export_dialog_and_install_round_trip() {
     let r = d.exec("graphics.newText", json!({"text": "Exported Title"}));
     let clip = r["clip"].as_u64().unwrap();
     // the menu item opens the dialog
-    let v = d.exec("graphics.template.export", json!({}));
+    let v = d.ok("ui.menu.invoke", json!({"id": "graphics.template.export"}));
     assert_eq!(v["dialog"], "exportTemplate");
     d.frames(3);
     assert!(d.ids("exportTemplate.").contains(&"exportTemplate.ok".to_string()));
@@ -173,7 +173,7 @@ fn export_dialog_and_install_round_trip() {
     d.frames(130);
     assert!(d.ids("gfxTemplates.item.").contains(&"gfxTemplates.item.user:ui-title".to_string()));
     // Replace Fonts dialog
-    let v = d.exec("file.replaceFonts", json!({}));
+    let v = d.ok("ui.menu.invoke", json!({"id": "file.replaceFonts"}));
     assert_eq!(v["dialog"], "replaceFonts");
     d.frames(3);
     assert!(d.ids("replaceFonts.").contains(&"replaceFonts.ok".to_string()));

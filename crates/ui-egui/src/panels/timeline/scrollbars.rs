@@ -91,6 +91,15 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     settings_menu(app, ui, "timeline-zoombar", zoombar_settings_rows);
 }
 
+/// Commit a deferred settings change even if its popup stopped drawing during the gesture.
+pub fn flush_pending_zoombar_view_change(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let key = egui::Id::unique("tl-zoombar-view-pending");
+    if ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) && !ctx.input(|i| i.pointer.any_down()) {
+        ctx.data_mut(|d| d.remove_temp::<bool>(key));
+        app.session.project_view_changed();
+    }
+}
+
 fn zoombar_popup_content_height_key() -> egui::Id {
     egui::Id::unique("timeline-zoombar-popup-content-height")
 }
@@ -789,10 +798,7 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         // change, but bump the (cache-invalidating) revision only once the gesture ends
         ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-zoombar-view-pending"), true));
     }
-    if ui.data(|d| d.get_temp::<bool>(egui::Id::unique("tl-zoombar-view-pending"))).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
-        ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("tl-zoombar-view-pending")));
-        app.session.project_view_changed();
-    }
+    flush_pending_zoombar_view_change(app, ui.ctx());
 }
 
 /// A pill on/off switch for the zoom-bar settings popup: red while off, the accent blue while on.
@@ -850,10 +856,10 @@ fn key_binding_name(key: egui::Key) -> String {
     }
 }
 
-/// The chord or mouse button a frame's events name: the first non-modifier key PRESS (with the
-/// modifiers held at that instant as its prefix), or the first mouse button press. Modifier
-/// presses and all releases are skipped -- the chord completes when the key it modifies arrives,
-/// never when a modifier or its release does.
+/// The chord or mouse button a frame's events name: keyboard and clipboard events take precedence
+/// over pointer gestures, so a custom Copy chord is never mistaken for a double-click gesture.
+/// Modifier presses and all releases are skipped -- the chord completes when the key it modifies
+/// arrives, never when a modifier or its release does.
 fn chord_and_button(events: &[egui::Event], fallback_modifiers: egui::Modifiers) -> Option<String> {
     for e in events {
         match e {
@@ -871,6 +877,13 @@ fn chord_and_button(events: &[egui::Event], fallback_modifiers: egui::Modifiers)
                 s.push_str(&key_binding_name(*key));
                 return Some(s);
             }
+            egui::Event::Paste(_) | egui::Event::PasteImage(_) if fallback_modifiers.command => return Some("Ctrl + V".into()),
+            egui::Event::Copy if fallback_modifiers.command => return Some("Ctrl + C".into()),
+            _ => {}
+        }
+    }
+    for e in events {
+        match e {
             egui::Event::PointerButton { button, pressed: true, .. } => {
                 return Some(
                     match button {
@@ -896,7 +909,6 @@ fn chord_and_button(events: &[egui::Event], fallback_modifiers: egui::Modifiers)
                 s.push_str("Scroll");
                 return Some(s);
             }
-            egui::Event::Paste(_) | egui::Event::PasteImage(_) if fallback_modifiers.command => return Some("Ctrl + V".into()),
             _ => {}
         }
     }
@@ -1012,6 +1024,10 @@ fn controls_listen_track_key() -> egui::Id {
     egui::Id::unique("tl-controls-listening-track")
 }
 
+fn controls_listen_document_epoch_key() -> egui::Id {
+    egui::Id::unique("tl-controls-listening-document-epoch")
+}
+
 /// A track-slider Controls binding that was just completed fires its action, so the user sees
 /// the new input work straight away (the Timeline then consumes it). Slots 0/1/3 trigger; slot
 /// 2 (Alternate Drag Speed) is a chord for drags, not an action, and triggers nothing here.
@@ -1025,8 +1041,11 @@ fn zoom_trigger_key() -> egui::Id {
 
 /// Route assigned slider keys before the application's general shortcut matcher consumes them.
 pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
-    if controls_listening(ctx) || ctx.text_edit_focused() || app.dialog == Some(crate::Dialog::Shortcuts) || app.ui.focused != crate::dock::PanelKind::Timeline
-    {
+    clear_inactive_alternate_drag_capture(app, ctx);
+    if reconcile_controls_capture(app, ctx) {
+        return;
+    }
+    if controls_listening(ctx) || ctx.text_edit_focused() || app.dialog == Some(crate::Dialog::Shortcuts) {
         return;
     }
     let combo_key = egui::Id::unique("timeline-controls-held-modifiers");
@@ -1055,45 +1074,159 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
         None
     };
     let Some(text) = key_text.or(combo) else { return };
+    let mut events = ctx.input(|i| i.events.clone());
+    route_slider_text(app, ctx, &mut events, &text, ctx.pointer_hover_pos(), true);
+    ctx.input_mut(|i| i.events = events);
+}
+
+/// Route a floating viewport's forwarded chord after application shortcuts had first refusal.
+/// There is no Timeline pointer in that viewport, so availability is based on the owning slider
+/// and active sequence rather than its hover rectangle.
+pub fn route_forwarded_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context, events: &mut Vec<egui::Event>, modifiers: egui::Modifiers) {
+    if reconcile_controls_capture(app, ctx) || controls_listening(ctx) || ctx.text_edit_focused() || app.dialog == Some(crate::Dialog::Shortcuts) {
+        return;
+    }
+    let Some(text) = chord_and_button(events, modifiers) else { return };
+    route_slider_text(app, ctx, events, &text, None, false);
+}
+
+fn route_slider_text(app: &FilmcraftApp, ctx: &egui::Context, events: &mut Vec<egui::Event>, text: &str, pointer: Option<Pos2>, require_pointer: bool) {
     if text.ends_with("Click") || text.ends_with("Scroll") {
         return;
     }
     let s = &app.session.state.timeline_ui;
+    let has_sequence = app.session.state.active_sequence.is_some();
+    let over_zoom = !require_pointer
+        || pointer.is_some_and(|p| ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique("timeline-zoom-slider-rect"))).is_some_and(|r| r.contains(p)));
+    let over_tracks = !require_pointer
+        || pointer.is_some_and(|p| {
+            ["timeline-track-slider-video-rect", "timeline-track-slider-audio-rect"]
+                .into_iter()
+                .any(|id| ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique(id))).is_some_and(|r| r.contains(p)))
+        });
+    let zoom_available = has_sequence && !s.zoom_bar_hidden && over_zoom;
+    let track_available = has_sequence && !s.track_slider_hidden && over_tracks;
     let zoom = [&s.control_center_on_playhead, &s.control_explode_slider, &s.control_alternate_drag_speed, &s.control_settings];
     let track = [&s.track_control_mirror, &s.track_control_explode, &s.track_control_alternate_drag_speed, &s.track_control_settings];
-    let matched = zoom
+    let zoom_match = if zoom_available {
+        zoom.iter().enumerate().find(|(i, b)| *i != 2 && !b.is_empty() && b.as_str() == text).map(|(i, _)| (zoom_trigger_key(), i))
+    } else {
+        None
+    };
+    let extra_match = s
+        .timeline_control_bindings
         .iter()
         .enumerate()
-        .find(|(i, b)| *i != 2 && !b.is_empty() && b.as_str() == text)
-        .map(|(i, _)| (zoom_trigger_key(), i))
-        .or_else(|| s.timeline_control_bindings.iter().enumerate().find(|(_, b)| !b.is_empty() && b.as_str() == text).map(|(i, _)| (zoom_trigger_key(), i + 4)))
-        .or_else(|| track.iter().enumerate().find(|(i, b)| *i != 2 && !b.is_empty() && b.as_str() == text).map(|(i, _)| (track_trigger_key(), i)));
+        .find(|(i, b)| {
+            let owner_available = match *i {
+                0 | 2 => zoom_available || track_available,
+                _ => zoom_available,
+            };
+            owner_available && !b.is_empty() && b.as_str() == text
+        })
+        .map(|(i, _)| (zoom_trigger_key(), i + 4));
+    let track_match = if track_available {
+        track.iter().enumerate().find(|(i, b)| *i != 2 && !b.is_empty() && b.as_str() == text).map(|(i, _)| (track_trigger_key(), i))
+    } else {
+        None
+    };
+    // Alternate Drag Speed is a held chord, not a shortcut action. Swallow its key only while
+    // the owning slider is actually being dragged; elsewhere the application shortcut wins.
+    let alternate_drag_active =
+        (matches!(app.tl.drag, Some(Drag::ZoomBar { .. })) && !s.control_alternate_drag_speed.is_empty() && s.control_alternate_drag_speed == text)
+            || (app.tl.track_slider_dragging && !s.track_control_alternate_drag_speed.is_empty() && s.track_control_alternate_drag_speed == text);
+    if alternate_drag_active {
+        ctx.data_mut(|d| d.insert_temp(alternate_drag_capture_key(), text.to_string()));
+        consume_slider_shortcut_events(events);
+        ctx.input_mut(|i| i.events = events.to_vec());
+        return;
+    }
+    let matched = zoom_match.or(extra_match).or(track_match);
     if let Some((id, slot)) = matched {
         if id == zoom_trigger_key() && slot >= 4 {
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique("tl-controls-zoom-extra-action"), slot));
         } else {
             ctx.data_mut(|d| d.insert_temp(id, slot));
         }
-        if let Some(delta) = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::MouseWheel { delta, .. } => Some(delta.y + delta.x),
-                _ => None,
-            })
+        if let Some(delta) = events.iter().find_map(|e| match e {
+            egui::Event::MouseWheel { delta, .. } => Some(delta.y + delta.x),
+            _ => None,
         }) {
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique("timeline-controls-wheel-delta"), delta));
         }
-        ctx.input_mut(|i| {
-            i.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key { pressed: true, .. }
-                        | egui::Event::Text(_)
-                        | egui::Event::MouseWheel { .. }
-                        | egui::Event::Paste(_)
-                        | egui::Event::PasteImage(_)
-                )
-            })
-        });
+        consume_slider_shortcut_events(events);
+        ctx.input_mut(|i| i.events = events.to_vec());
+    }
+}
+
+fn consume_slider_shortcut_events(events: &mut Vec<egui::Event>) {
+    events.retain(|e| {
+        !matches!(
+            e,
+            egui::Event::Key { pressed: true, .. }
+                | egui::Event::Text(_)
+                | egui::Event::MouseWheel { .. }
+                | egui::Event::Paste(_)
+                | egui::Event::PasteImage(_)
+                | egui::Event::Copy
+        )
+    });
+}
+
+fn alternate_drag_capture_key() -> egui::Id {
+    egui::Id::unique("timeline-active-alternate-drag-chord")
+}
+
+fn alternate_drag_binding_captured(ctx: &egui::Context, binding: &str) -> bool {
+    ctx.data(|d| d.get_temp::<String>(alternate_drag_capture_key()).as_deref() == Some(binding))
+}
+
+fn clear_inactive_alternate_drag_capture(app: &FilmcraftApp, ctx: &egui::Context) {
+    let capture = ctx.data(|d| d.get_temp::<String>(alternate_drag_capture_key()));
+    let Some(binding) = capture else { return };
+    let s = &app.session.state.timeline_ui;
+    let still_owned = (matches!(app.tl.drag, Some(Drag::ZoomBar { .. })) && binding == s.control_alternate_drag_speed)
+        || (app.tl.track_slider_dragging && binding == s.track_control_alternate_drag_speed);
+    let key_name = binding.split(" + ").last().unwrap_or_default();
+    let released = egui::Key::from_name(key_name).is_some_and(|key| {
+        ctx.input(|i| i.events.iter().any(|event| matches!(event, egui::Event::Key { key: released, pressed: false, .. } if *released == key)))
+    });
+    if !still_owned || released {
+        ctx.data_mut(|d| d.remove_temp::<String>(alternate_drag_capture_key()));
+    }
+}
+
+/// Stop waiting for a Controls binding when its Timeline context is no longer available.
+fn clear_controls_capture(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.insert_temp(controls_listen_key(), None::<usize>);
+        d.insert_temp(controls_listen_track_key(), false);
+        d.remove_temp::<u64>(controls_listen_document_epoch_key());
+    });
+}
+
+/// Drop an in-progress slider Controls capture as soon as the Timeline can no longer accept it.
+/// Called before the app's general keyboard-focus early returns as well as by the slider router.
+pub(crate) fn reconcile_controls_capture(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    if app.modal_open(ctx) || app.ui.focused != crate::dock::PanelKind::Timeline || app.session.state.active_sequence.is_none() {
+        clear_controls_capture(ctx);
+        return true;
+    }
+    if controls_listening(ctx) {
+        let capture_epoch = ctx.data(|d| d.get_temp::<u64>(controls_listen_document_epoch_key()));
+        if capture_epoch != Some(app.session.document_epoch) || !controls_popup_open(app, ctx) {
+            clear_controls_capture(ctx);
+        }
+    }
+    false
+}
+
+fn controls_popup_open(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    let track = ctx.data(|d| d.get_temp::<bool>(controls_listen_track_key()).unwrap_or(false));
+    if track {
+        app.tl.track_slider_settings_pos.is_some()
+    } else {
+        app.tl.zoombar_settings_pos.is_some() || ctx.data(|d| d.get_temp::<bool>(zoombar_popup_open_key())).unwrap_or(false)
     }
 }
 
@@ -1110,6 +1243,342 @@ mod slider_clipboard_shortcut_tests {
             Some("Ctrl + V".into())
         );
         assert_eq!(chord_and_button(&[Event::Paste("text".into())], Modifiers::NONE), None);
+        assert_eq!(chord_and_button(&[Event::Copy], Modifiers::COMMAND), Some("Ctrl + C".into()));
+        assert_eq!(chord_and_button(&[Event::Copy], Modifiers::NONE), None);
+        assert_eq!(
+            chord_and_button(
+                &[
+                    Event::PointerButton { pos: egui::pos2(5.0, 5.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+                    Event::Copy
+                ],
+                Modifiers::COMMAND,
+            ),
+            Some("Ctrl + C".into())
+        );
+    }
+
+    #[test]
+    fn copy_binding_is_routed_and_removed_before_the_general_copy_handler() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_center_on_playhead = "Ctrl + C".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)))
+        });
+        let input = egui::RawInput {
+            events: vec![
+                Event::PointerMoved(egui::pos2(50.0, 50.0)),
+                Event::Key {
+                    key: egui::Key::C,
+                    physical_key: Some(egui::Key::C),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+                },
+                Event::Copy,
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(super::zoom_trigger_key())), Some(0));
+        assert!(!ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Copy))));
+    }
+
+    #[test]
+    fn controls_capture_clears_when_timeline_loses_its_session_context() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        let app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(super::controls_listen_key(), Some(2usize));
+            d.insert_temp(super::controls_listen_track_key(), true);
+        });
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!super::controls_listening(&ctx));
+        assert!(!ctx.data(|d| d.get_temp::<bool>(super::controls_listen_track_key()).unwrap_or(false)));
+
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.ui.focused = PanelKind::Timeline;
+        ctx.data_mut(|d| d.insert_temp(super::controls_listen_key(), Some(2usize)));
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!super::controls_listening(&ctx));
+
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        ctx.data_mut(|d| {
+            d.insert_temp(super::controls_listen_key(), Some(2usize));
+            d.insert_temp(super::controls_listen_track_key(), false);
+            d.insert_temp(super::zoombar_popup_open_key(), false);
+        });
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!super::controls_listening(&ctx), "a closed settings popup cannot keep Controls listening");
+
+        app.tl.zoombar_settings_pos = Some(egui::pos2(10.0, 10.0));
+        ctx.data_mut(|d| {
+            d.insert_temp(super::controls_listen_key(), Some(2usize));
+            d.insert_temp(super::controls_listen_track_key(), false);
+            d.insert_temp(super::controls_listen_document_epoch_key(), app.session.document_epoch);
+            d.insert_temp(super::zoombar_popup_open_key(), true);
+        });
+        app.session.document_epoch = app.session.document_epoch.wrapping_add(1);
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!super::controls_listening(&ctx), "a replacement document cancels its prior Controls capture");
+    }
+
+    #[test]
+    fn controls_capture_clears_when_track_settings_popup_disappears() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        app.tl.track_slider_settings_pos = Some(egui::pos2(10.0, 10.0));
+        let ctx = egui::Context::default();
+        let set_capture = |ctx: &egui::Context, epoch| {
+            ctx.data_mut(|d| {
+                d.insert_temp(super::controls_listen_key(), Some(2usize));
+                d.insert_temp(super::controls_listen_track_key(), true);
+                d.insert_temp(super::controls_listen_document_epoch_key(), epoch);
+            });
+        };
+
+        set_capture(&ctx, app.session.document_epoch);
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(super::controls_listening(&ctx), "the visible Track Slider Settings popup owns the capture");
+
+        app.tl.track_slider_settings_pos = None;
+        set_capture(&ctx, app.session.document_epoch);
+        let mut output = ctx.run_ui(Default::default(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!super::controls_listening(&ctx), "a vanished popup cannot keep the Timeline listening");
+    }
+
+    #[test]
+    fn zoom_setting_change_flushes_after_popup_stops_drawing() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let before = app.session.view_epoch;
+        let ctx = egui::Context::default();
+        let key = egui::Id::unique("tl-zoombar-view-pending");
+        ctx.data_mut(|d| d.insert_temp(key, true));
+        let mut output = ctx.run_ui(Default::default(), |ui| super::flush_pending_zoombar_view_change(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.session.view_epoch, before + 1);
+        assert_eq!(ctx.data(|d| d.get_temp::<bool>(key)), None);
+    }
+
+    #[test]
+    fn hidden_or_missing_slider_does_not_reserve_its_shortcut() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+
+        for (hidden, open_sequence, expect_reserved) in [(true, true, false), (false, false, false), (false, true, true)] {
+            let mut session = Session::default();
+            if open_sequence {
+                session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+            }
+            session.state.timeline_ui.track_slider_hidden = hidden;
+            session.state.timeline_ui.track_control_mirror = "Ctrl + K".into();
+            let mut app = FilmcraftApp::new(session);
+            app.ui.focused = PanelKind::Timeline;
+            let ctx = egui::Context::default();
+            let modifiers = Modifiers { ctrl: true, ..Modifiers::default() };
+            ctx.data_mut(|data| {
+                data.insert_temp(
+                    egui::Id::unique("timeline-track-slider-video-rect"),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)),
+                );
+            });
+            let input = egui::RawInput {
+                events: vec![
+                    Event::PointerMoved(egui::pos2(50.0, 50.0)),
+                    Event::Key { key: egui::Key::K, physical_key: Some(egui::Key::K), pressed: true, repeat: false, modifiers },
+                ],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+            output.textures_delta.clear();
+            assert_eq!(ctx.data(|data| data.get_temp::<usize>(super::track_trigger_key()).is_some()), expect_reserved);
+        }
+    }
+
+    #[test]
+    fn zoom_owned_extra_binding_is_not_reserved_when_only_the_track_slider_is_available() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.zoom_bar_hidden = true;
+        session.state.timeline_ui.track_slider_hidden = false;
+        assert!(session.state.timeline_ui.timeline_control_bindings.len() > 4);
+        session.state.timeline_ui.timeline_control_bindings[4] = "Ctrl + M".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-track-slider-video-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)))
+        });
+        let input = egui::RawInput {
+            events: vec![
+                Event::PointerMoved(egui::pos2(50.0, 50.0)),
+                Event::Key {
+                    key: egui::Key::M,
+                    physical_key: Some(egui::Key::M),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+                },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-extra-action"))), None);
+        assert!(ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::M, pressed: true, .. }))));
+    }
+
+    #[test]
+    fn custom_slider_binding_does_not_suppress_app_shortcuts_outside_slider_regions() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_center_on_playhead = "Ctrl + C".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)))
+        });
+        let input = egui::RawInput {
+            events: vec![
+                Event::PointerMoved(egui::pos2(200.0, 200.0)),
+                Event::Key {
+                    key: egui::Key::C,
+                    physical_key: Some(egui::Key::C),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+                },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(super::zoom_trigger_key())), None);
+        assert!(ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::C, pressed: true, .. }))));
+    }
+
+    #[test]
+    fn custom_slider_binding_does_not_reserve_a_shortcut_without_a_pointer() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_center_on_playhead = "Ctrl + C".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)))
+        });
+        let input = egui::RawInput {
+            events: vec![Event::Key {
+                key: egui::Key::C,
+                physical_key: Some(egui::Key::C),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+            }],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(super::zoom_trigger_key())), None);
+        assert!(ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::C, pressed: true, .. }))));
+    }
+
+    #[test]
+    fn alternate_drag_binding_is_reserved_only_during_its_own_drag() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.track_control_alternate_drag_speed = "Ctrl + S".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let input = || egui::RawInput {
+            events: vec![Event::Key {
+                key: egui::Key::S,
+                physical_key: Some(egui::Key::S),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+            }],
+            ..Default::default()
+        };
+
+        let outside_drag = egui::Context::default();
+        let mut output = outside_drag.run_ui(input(), |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert!(outside_drag.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::S, pressed: true, .. }))));
+
+        app.tl.track_slider_dragging = true;
+        let during_drag = egui::Context::default();
+        let mut alternate_is_down = false;
+        let mut output = during_drag.run_ui(input(), |ui| {
+            super::route_slider_shortcut(&app, ui.ctx());
+            alternate_is_down = super::alternate_down(ui.ctx(), "Ctrl + S");
+        });
+        output.textures_delta.clear();
+        assert!(during_drag.input(|i| !i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::S, pressed: true, .. }))));
+        assert!(alternate_is_down, "the drag still sees its alternate-speed chord");
+        assert_eq!(during_drag.data(|d| d.get_temp::<usize>(super::track_trigger_key())), None);
+    }
+
+    #[test]
+    fn track_slider_binding_does_not_reserve_shortcut_over_the_zoom_slider() {
+        use crate::{FilmcraftApp, dock::PanelKind};
+        use filmcraft_engine::Session;
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.track_control_mirror = "Ctrl + K".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        app.session.state.timeline_ui.track_slider_hidden = true;
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)))
+        });
+        let input = egui::RawInput {
+            events: vec![
+                Event::PointerMoved(egui::pos2(50.0, 50.0)),
+                Event::Key {
+                    key: egui::Key::K,
+                    physical_key: Some(egui::Key::K),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+                },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(super::track_trigger_key())), None);
+        assert!(ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: egui::Key::K, pressed: true, .. }))));
     }
 }
 
@@ -1138,32 +1607,46 @@ fn gesture(response: &egui::Response, ui: &egui::Ui) -> Option<String> {
 }
 
 fn uses_default_gesture(binding: &str, default: &str) -> bool {
-    binding.is_empty()
-        || match (filmcraft_engine::shortcuts::Chord::parse(binding), filmcraft_engine::shortcuts::Chord::parse(default)) {
-            (Ok(binding), Ok(default)) => binding == default,
-            _ => false,
-        }
+    if binding.is_empty() {
+        return true;
+    }
+    binding != "Unbound" && normalize_slider_gesture(binding) == normalize_slider_gesture(default)
 }
 
 fn matches_gesture(binding: &str, default: &str, gesture: Option<&str>) -> bool {
     let binding = if binding.is_empty() { default } else { binding };
-    gesture.is_some_and(|gesture| same_slider_chord(binding, gesture))
+    gesture.is_some_and(|gesture| binding != "Unbound" && normalize_slider_gesture(binding) == normalize_slider_gesture(gesture))
 }
 
-fn same_slider_chord(a: &str, b: &str) -> bool {
-    use filmcraft_engine::shortcuts::{Chord, Platform};
-    match (Chord::parse(a), Chord::parse(b)) {
-        (Ok(a), Ok(b)) => a.effective(Platform::current()) == b.effective(Platform::current()),
-        _ => false,
-    }
+fn normalize_slider_gesture(text: &str) -> String {
+    text.replace('⇧', "Shift")
+        .replace('⌥', "Alt")
+        .replace('⌘', "Ctrl")
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '+')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// A routed key chord is already the action itself; pointer gesture modifiers apply only to the
+/// pointer path and must not veto that action.
+fn slider_action_triggered(key_trigger: Option<usize>, slot: usize, binding: &str, default: &str, gesture: Option<&str>) -> bool {
+    key_trigger == Some(slot) || matches_gesture(binding, default, gesture)
 }
 
 fn alternate_down(ctx: &egui::Context, binding: &str) -> bool {
+    alternate_drag_binding_captured(ctx, binding) || ctx.input(|i| alternate_down_input(i, binding))
+}
+
+fn alternate_down_input(input: &egui::InputState, binding: &str) -> bool {
     if binding == "Unbound" {
         return false;
     }
     if binding.is_empty() {
-        return ctx.input(|i| i.modifiers.shift);
+        return input.modifiers.shift;
+    }
+    if uses_default_gesture(binding, "Shift + Drag") {
+        return input.modifiers.shift;
     }
     // Shortcut labels use macOS glyphs on macOS, while input handling uses words.
     // Parse the label first so ⇧Drag and Shift + Drag activate the same gesture.
@@ -1172,29 +1655,25 @@ fn alternate_down(ctx: &egui::Context, binding: &str) -> bool {
         .unwrap_or_else(|_| binding.to_string());
     let mut parts = binding.split(" + ").collect::<Vec<_>>();
     if parts.len() >= 2 && parts.iter().all(|p| matches!(*p, "Ctrl" | "Shift" | "Alt")) {
-        return ctx.input(|i| {
-            (!parts.contains(&"Shift") || i.modifiers.shift)
-                && (!parts.contains(&"Ctrl") || i.modifiers.ctrl || i.modifiers.mac_cmd)
-                && (!parts.contains(&"Alt") || i.modifiers.alt)
-        });
+        return (!parts.contains(&"Shift") || input.modifiers.shift)
+            && (!parts.contains(&"Ctrl") || input.modifiers.ctrl || input.modifiers.mac_cmd)
+            && (!parts.contains(&"Alt") || input.modifiers.alt);
     }
     let Some(activation) = parts.pop() else { return false };
-    ctx.input(|i| {
-        let down = if let Some(key) = egui::Key::from_name(activation) {
-            i.key_down(key)
-        } else {
-            match activation {
-                "Drag" => true,
-                "Left Click" => i.pointer.button_down(egui::PointerButton::Primary),
-                "Right Click" => i.pointer.button_down(egui::PointerButton::Secondary),
-                "Middle Click" => i.pointer.button_down(egui::PointerButton::Middle),
-                _ => false,
-            }
-        };
-        down && (!parts.contains(&"Shift") || i.modifiers.shift)
-            && (!parts.contains(&"Ctrl") || i.modifiers.ctrl || i.modifiers.mac_cmd)
-            && (!parts.contains(&"Alt") || i.modifiers.alt)
-    })
+    let down = if let Some(key) = egui::Key::from_name(activation) {
+        input.key_down(key)
+    } else {
+        match activation {
+            "Drag" => true,
+            "Left Click" => input.pointer.button_down(egui::PointerButton::Primary),
+            "Right Click" => input.pointer.button_down(egui::PointerButton::Secondary),
+            "Middle Click" => input.pointer.button_down(egui::PointerButton::Middle),
+            _ => false,
+        }
+    };
+    down && (!parts.contains(&"Shift") || input.modifiers.shift)
+        && (!parts.contains(&"Ctrl") || input.modifiers.ctrl || input.modifiers.mac_cmd)
+        && (!parts.contains(&"Alt") || input.modifiers.alt)
 }
 
 /// The width the Controls flyout always has -- the main slider's -- in every menu.
@@ -1324,7 +1803,11 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
     let pending_key = egui::Id::unique("tl-controls-pending-click");
     let key_text = ui.input(|i| {
         chord_and_button(
-            &i.events.iter().filter(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Paste(_) | egui::Event::PasteImage(_))).cloned().collect::<Vec<_>>(),
+            &i.events
+                .iter()
+                .filter(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Paste(_) | egui::Event::PasteImage(_) | egui::Event::Copy))
+                .cloned()
+                .collect::<Vec<_>>(),
             i.modifiers,
         )
     });
@@ -1666,6 +2149,7 @@ fn hover_flyout(
                             d.remove_temp::<String>(egui::Id::unique("timeline-controls-modifiers"));
                             d.insert_temp(controls_listen_key(), Some(slot));
                             d.insert_temp(controls_listen_track_key(), track);
+                            d.insert_temp(controls_listen_document_epoch_key(), app.session.document_epoch);
                             d.remove_temp::<(String, u8, f64)>(egui::Id::unique("tl-controls-pending-click"));
                         });
                     }
@@ -1687,6 +2171,7 @@ fn hover_flyout(
                                 d.remove_temp::<String>(egui::Id::unique("timeline-controls-modifiers"));
                                 d.insert_temp(controls_listen_key(), Some(11usize));
                                 d.insert_temp(controls_listen_track_key(), false);
+                                d.insert_temp(controls_listen_document_epoch_key(), app.session.document_epoch);
                                 d.remove_temp::<(String, u8, f64)>(egui::Id::unique("tl-controls-pending-click"));
                             });
                         }
@@ -2611,7 +3096,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // pinned), so it stays hidden there.
     app.tl.zoombar_point_cursor = app.tl.zoombar_cursor_lock.is_none() && (on_circle || edge_grab);
     if app.tl.zoombar_point_cursor {
-        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
     }
     // The "you are here" marker on the fixed minimap: the true visible window in the plain linear
     // map, drawn as one blue line (2 pt) with a 1 pt gap to the slider -- above it normally, below
@@ -2675,8 +3160,8 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     }
     // mouse buttons are capturable and shown in the box, but only a key chord triggers an
     // action here -- a "Left Click" binding must never hijack every click in the app
-    let center_bound = key_trigger == Some(0) || matches_gesture(&binds[0], "Double Click", mouse.as_deref());
-    let explode_bound = key_trigger == Some(1) || matches_gesture(&binds[1], "Triple Click", mouse.as_deref());
+    let center_bound = slider_action_triggered(key_trigger, 0, &binds[0], "Double Click", mouse.as_deref());
+    let explode_bound = slider_action_triggered(key_trigger, 1, &binds[1], "Triple Click", mouse.as_deref());
     // while a Controls box is capturing, a mouse input is a candidate binding -- it must never
     // also open the settings (which would reset the capture) or otherwise act on the bar
     let secondary_click = !controls_capturing(ui)
@@ -2926,6 +3411,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         if shift && let Some(origin) = ui.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) {
             if app.tl.zoombar_cursor_lock.is_none() {
                 app.tl.zoombar_cursor_lock = Some(origin);
+                app.tl.zoombar_cursor_viewport = Some(ui.ctx().viewport_id());
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::Confined));
             }
             let pinned = app.tl.zoombar_cursor_lock.unwrap_or(origin);
@@ -2936,7 +3422,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             ui.ctx().set_cursor_image(Some(transparent_cursor()));
         } else if let Some(_origin) = app.tl.zoombar_cursor_lock.take() {
             app.tl.zoombar_unlock_catchup = true;
-            release_zoombar_cursor(ui.ctx());
+            release_zoombar_cursor(ui.ctx(), app.tl.zoombar_cursor_viewport.take());
         }
         if app.tl.zoombar_track_control && !just_control {
             track_dy = if app.tl.zoombar_cursor_lock.is_some() { shift_dy } else { delta.y };
@@ -3026,7 +3512,14 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     app.tl.playhead_capture_vis = vis;
                     app.tl.playhead_capture_u = ((ph - v.scroll) / vis.max(1e-9)).clamp(0.0, 1.0);
                 }
+                let old_scroll = v.scroll;
                 zoom_about_center(v, view_w, total, view_w.max(1.0) as f64 / new_vis, min_view);
+                // Keep the opposite edge of the view fixed: the right handle changes the
+                // timeline's right edge while the left handle keeps its right edge in place.
+                let anchored_scroll = if mode == 2 { old_scroll } else { old_scroll + vis - new_vis };
+                let range = (total - new_vis).max(0.0);
+                v.scroll = anchored_scroll.clamp(0.0, range);
+                v.target_scroll = v.scroll;
                 app.tl.zoom_anchor = None;
                 // Playhead Centering: while a zoom drags the playhead into the visible range the
                 // view is caught ("gravity"). ONE smooth action afterwards: where the playhead sits
@@ -3098,7 +3591,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         app.tl.zoombar_track_control = false;
         ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("timeline-control-tracks-axis")));
         if app.tl.zoombar_cursor_lock.take().is_some() {
-            release_zoombar_cursor(ui.ctx());
+            release_zoombar_cursor(ui.ctx(), app.tl.zoombar_cursor_viewport.take());
             app.tl.zoombar_unlock_catchup = true;
         }
     }
@@ -3113,9 +3606,14 @@ fn transparent_cursor() -> egui::CustomCursorImage {
 
 /// Release the invisible, confined zoom-bar drag cursor: restore the standard cursor and let the
 /// window edges go. Nothing warps -- the cursor is simply wherever the user's hand left it.
-fn release_zoombar_cursor(ctx: &egui::Context) {
+fn release_zoombar_cursor(ctx: &egui::Context, viewport: Option<egui::ViewportId>) {
     ctx.set_cursor_image(None);
-    ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None));
+    let command = egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::None);
+    ctx.send_viewport_cmd_to(cursor_release_target(viewport, ctx.viewport_id()), command);
+}
+
+fn cursor_release_target(acquired: Option<egui::ViewportId>, current: egui::ViewportId) -> egui::ViewportId {
+    acquired.unwrap_or(current)
 }
 
 /// Close the zoom bar's own settings popup (the one opened by right-clicking the bar). The two
@@ -3273,7 +3771,7 @@ pub fn set_zoombar_hidden(app: &mut FilmcraftApp, ctx: &egui::Context, hidden: b
         app.tl.zoombar_cursor_lock = None;
         app.tl.zoombar_unlock_catchup = false;
         app.tl.zoombar_point_cursor = false;
-        release_zoombar_cursor(ctx);
+        release_zoombar_cursor(ctx, app.tl.zoombar_cursor_viewport.take());
     } else {
         // a stale "how to bring it back" window means nothing once the bar is back
         app.tl.zoombar_hide_dialog_open = false;
@@ -3289,18 +3787,20 @@ pub fn zoombar_cursor_watchdog(tl: &mut super::TlState, ctx: &egui::Context, set
     // the pin is legitimate during a zoom-bar Shift drag or a track slider's (which pins the
     // same cursor to its own press pixel)
     let live_drag = matches!(tl.drag, Some(Drag::ZoomBar { .. })) || tl.track_slider_dragging;
+    let owner = cursor_release_target(tl.zoombar_cursor_viewport, ctx.viewport_id());
+    let alternate_binding = if tl.track_slider_dragging { &settings.track_control_alternate_drag_speed } else { &settings.control_alternate_drag_speed };
+    let alternate_captured = alternate_drag_binding_captured(ctx, alternate_binding);
     let still = tl.zoombar_cursor_lock.is_some()
         && live_drag
-        && ctx.input(|i| i.focused && (i.pointer.button_down(egui::PointerButton::Primary) || i.pointer.button_down(egui::PointerButton::Secondary)))
-        && (tl.zoombar_track_control
-            || alternate_down(
-                ctx,
-                if tl.track_slider_dragging { &settings.track_control_alternate_drag_speed } else { &settings.control_alternate_drag_speed },
-            ));
+        && ctx.input_for(owner, |i| {
+            i.focused
+                && (i.pointer.button_down(egui::PointerButton::Primary) || i.pointer.button_down(egui::PointerButton::Secondary))
+                && (tl.zoombar_track_control || alternate_down_input(i, alternate_binding) || alternate_captured)
+        });
     if !still && let Some(_origin) = tl.zoombar_cursor_lock.take() {
         tl.zoombar_track_control = false;
         tl.zoombar_unlock_catchup = true;
-        release_zoombar_cursor(ctx);
+        release_zoombar_cursor(ctx, tl.zoombar_cursor_viewport.take());
     }
 }
 
@@ -3527,6 +4027,7 @@ pub(super) fn vertical_scrollbar(
         if shift && let Some(origin) = ui.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) {
             if tl.zoombar_cursor_lock.is_none() {
                 tl.zoombar_cursor_lock = Some(origin);
+                tl.zoombar_cursor_viewport = Some(ui.ctx().viewport_id());
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::viewport::CursorGrab::Confined));
             }
             let pinned = tl.zoombar_cursor_lock.unwrap_or(origin);
@@ -3536,7 +4037,7 @@ pub(super) fn vertical_scrollbar(
             ui.ctx().set_cursor_image(Some(transparent_cursor()));
         } else if tl.zoombar_cursor_lock.is_some() && !matches!(tl.drag, Some(Drag::ZoomBar { .. })) {
             tl.zoombar_unlock_catchup = true;
-            release_zoombar_cursor(ui.ctx());
+            release_zoombar_cursor(ui.ctx(), tl.zoombar_cursor_viewport.take());
             tl.zoombar_cursor_lock = None;
         }
         let plain_dy = resp.drag_delta().y;
@@ -4106,7 +4607,7 @@ pub fn set_track_slider_hidden(app: &mut FilmcraftApp, _ctx: &egui::Context, hid
 
 #[cfg(test)]
 mod zoom_drag_scale_tests {
-    use super::{shift_drag_base, shift_edge_speed_multiplier};
+    use super::{cursor_release_target, shift_drag_base, shift_edge_speed_multiplier};
 
     #[test]
     fn edge_speed_multiplier_hits_the_zoomed_in_anchors_and_survives_hostile_input() {
@@ -4126,6 +4627,14 @@ mod zoom_drag_scale_tests {
         assert!((shift_edge_speed_multiplier(f64::NAN) - 1.0).abs() < 1e-9);
         assert!((shift_edge_speed_multiplier(0.0) - 1.0).abs() < 1e-9);
         assert!((shift_edge_speed_multiplier(-3.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cursor_release_targets_the_viewport_that_acquired_it() {
+        let acquired = egui::ViewportId::from_hash_of("slider-owner");
+        let current = egui::ViewportId::from_hash_of("current-window");
+        assert_eq!(cursor_release_target(Some(acquired), current), acquired);
+        assert_eq!(cursor_release_target(None, current), current);
     }
 
     #[test]
@@ -4182,7 +4691,7 @@ mod zoom_drag_scale_tests {
 mod controls_tests {
     use super::{
         SHIFT_CONTENT_RATE, SHIFT_THUMB_RATE, matches_gesture, minimap_clips_fit, minimap_indicator_bounds, minimap_indicator_filled,
-        minimap_indicator_hugs_edges, shift_drag_rate,
+        minimap_indicator_hugs_edges, shift_drag_rate, slider_action_triggered,
     };
 
     #[test]
@@ -4233,6 +4742,12 @@ mod controls_tests {
         assert!(matches_gesture("", "Double Click", Some("Double Click")));
         assert!(matches_gesture("⇧Double Click", "Double Click", Some("Shift + Double Click")));
         assert!(!matches_gesture("Ctrl + K", "Double Click", Some("Double Click")));
+    }
+
+    #[test]
+    fn routed_key_action_precedes_pointer_gesture_modifier_matching() {
+        assert!(slider_action_triggered(Some(0), 0, "Ctrl + K", "Double Click", Some("Shift + Double Click")));
+        assert!(!slider_action_triggered(None, 0, "Ctrl + K", "Double Click", Some("Shift + Double Click")));
     }
 
     /// The minimap's clips vanish below a quarter of the screen's width -- exactly at the quarter

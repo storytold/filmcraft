@@ -141,13 +141,15 @@ fn each_sequence_tab_keeps_its_own_zoom_scroll_and_track_heights() {
     let other = d.new_sequence("Other");
     let fitted = d.view();
     assert!(fitted.0 != 333.0 && fitted.1 == 0.0 && fitted.2 == 60.0, "{fitted:?}");
-    d.ok("ui.set", json!({"timeline": {"pps": 20.0, "scroll": 1.0, "videoTrackHeight": 30.0}}));
+    // The Timeline's per-track minimum in this window is above 30 points; use a custom value
+    // safely above that layout floor so this checks tab persistence, not minimum-height clamping.
+    d.ok("ui.set", json!({"timeline": {"pps": 20.0, "scroll": 1.0, "videoTrackHeight": 40.0}}));
     d.frames(3);
     // back and forth by clicking the tabs: each comes back as it was left
     d.click(&format!("timeline.tab.{main}"));
     assert_eq!(d.view(), (333.0, 4.5, 96.0));
     d.click(&format!("timeline.tab.{other}"));
-    assert_eq!(d.view(), (20.0, 1.0, 30.0));
+    assert_eq!(d.view(), (20.0, 1.0, 40.0));
     // the session holds both (it is what a saved project keeps)
     let views = d.app().session.state.timeline_views.clone();
     assert_eq!((views[&ItemId(main)].pps, views[&ItemId(other)].pps), (333.0, 20.0));

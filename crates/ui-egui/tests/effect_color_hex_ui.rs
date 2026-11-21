@@ -91,10 +91,15 @@ impl Driver {
     /// picker's popup while it is open.
     fn popup_text(&mut self) -> String {
         self.frames(2);
-        let areas: Vec<egui::Rect> = self
-            .harness
-            .ctx
-            .memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order == egui::Order::Foreground).filter_map(|l| m.area_rect(l.id)).collect());
+        let areas: Vec<egui::Rect> = self.harness.ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|l| l.order == egui::Order::Foreground)
+                .filter_map(|l| m.area_rect(l.id))
+                .filter(|r| r.is_positive())
+                .collect()
+        });
         let r = areas.into_iter().min_by(|a, b| a.area().total_cmp(&b.area())).expect("the colour picker opened");
         self.harness
             .query_all(By::new())

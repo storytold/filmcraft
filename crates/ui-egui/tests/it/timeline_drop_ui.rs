@@ -19,10 +19,14 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
 }
 
 fn harness() -> Harness<'static, FilmcraftApp> {
+    harness_at_scale(1.0)
+}
+
+fn harness_at_scale(scale: f32) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_pixels_per_point(scale).build_eframe(move |_cc| FilmcraftApp::new(s));
     for _ in 0..4 {
         step(&mut h);
     }
@@ -243,11 +247,7 @@ fn hover_at(h: &mut Harness<'static, FilmcraftApp>, pos: egui::Pos2) -> bool {
 #[test]
 fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts() {
     for scale in [1.0, 2.0] {
-        let mut h = harness();
-        h.ctx.set_pixels_per_point(scale);
-        for _ in 0..4 {
-            step(&mut h);
-        }
+        let mut h = harness_at_scale(scale);
         let at = point_on_row(&h, "timeline.track.V1.target");
         float_panel(&mut h, "Info", [at.x - 20.0, at.y - 60.0, 320.0, 200.0]);
         let project = h.state().session.project.clone();
@@ -260,7 +260,8 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
         assert!(!covered_preview, "a covered Timeline must not preview a placement");
         float_panel(&mut h, "Info", [5.0, 5.0, 320.0, 200.0]);
         let at = point_on_row(&h, "timeline.track.V1.target");
-        assert!(hover_at(&mut h, at));
+        let hovered = hover_at(&mut h, at);
+        assert!(hovered, "uncovered Timeline at scale {scale}: {at:?}");
         drop_at(&mut h, at, &still(&format!("drop_uncovered_{scale}.png")));
         assert_eq!(clip_counts(&h), (1, 0));
     }

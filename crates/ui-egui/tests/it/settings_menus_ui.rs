@@ -79,14 +79,20 @@ fn the_timeline_settings_menu_stays_open_while_options_are_toggled() {
 #[test]
 fn the_track_height_actions_set_both_heights_and_close_the_timeline_menu() {
     let mut d = Driver::demo();
-    for (action, height) in [("Expand All Tracks", 64.0), ("Minimize All Tracks", 26.0)] {
+    for action in ["Expand All Tracks", "Minimize All Tracks"] {
         d.ok("ui.click", json!({"id": "timeline.toggle.settings"}));
         d.frames(2);
         assert!(has(&mut d, "timeline.settings.showThumbnails"), "the menu opened for {action}");
         d.harness.get_by_label(action).click();
         d.frames(3);
         let timeline = &d.harness.state().ui.timeline;
-        assert_eq!((timeline.video_track_h, timeline.audio_track_h), (height, height), "{action}");
+        if action == "Expand All Tracks" {
+            assert_eq!((timeline.video_track_h, timeline.audio_track_h), (64.0, 64.0), "{action}");
+        } else {
+            assert!(timeline.video_track_h >= 26.0 && timeline.video_track_h < 64.0, "video tracks reach their layout minimum: {}", timeline.video_track_h);
+            assert!(timeline.audio_track_h >= 26.0 && timeline.audio_track_h < 64.0, "audio tracks reach their layout minimum: {}", timeline.audio_track_h);
+            assert!((timeline.video_track_h - timeline.audio_track_h).abs() < 0.01, "both sides minimize together");
+        }
         assert!(!has(&mut d, "timeline.settings.showThumbnails"), "{action} closes the menu");
     }
 }

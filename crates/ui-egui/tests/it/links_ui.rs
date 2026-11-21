@@ -82,7 +82,7 @@ fn community_links_everywhere() {
     let mut d = Driver::demo();
     // Help menu: every link is a command that reports the URL it opened.
     for (id, _, url) in links::ALL {
-        let r = d.ok("engine.execute", json!({"command": id, "params": {}}));
+        let r = d.ok("ui.menu.invoke", json!({"id": id}));
         assert_eq!(r["url"], json!(url), "{id}");
     }
     let menu = d.ok("ui.menu.list", json!({}));
@@ -94,7 +94,7 @@ fn community_links_everywhere() {
     assert_eq!(d.ids("header.discord"), vec!["header.discord".to_string()]);
     d.snapshot("header");
     // About dialog: Discord first, then website, app page, GitHub, issues.
-    d.ok("engine.execute", json!({"command": "app.about", "params": {}}));
+    d.ok("ui.menu.invoke", json!({"id": "app.about"}));
     d.frames(3);
     let about = d.ids("about.");
     for id in ["about.discord", "about.website", "about.appPage", "about.github", "about.reportIssue"] {
@@ -105,7 +105,7 @@ fn community_links_everywhere() {
     d.frames(3);
     assert!(d.ids("about.").is_empty(), "Escape closes About");
     // Home screen (Import mode): community links.
-    d.ok("engine.execute", json!({"command": "mode.import", "params": {}}));
+    d.ok("ui.menu.invoke", json!({"id": "mode.import"}));
     d.frames(3);
     let home = d.ids("import.link.");
     for id in ["import.link.discord", "import.link.website", "import.link.appPage", "import.link.github"] {

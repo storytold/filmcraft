@@ -215,9 +215,10 @@ impl FilmcraftApp {
         }
         if prev.is_none() && !self.workspace_restored {
             // reopen the workspace in use when the app last closed
-            self.workspace_restored = true;
             if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
+                self.workspace_restored = true;
                 self.set_workspace(&w);
+                self.restore_remembered_layout(&w);
             }
         }
         self.applied_prefs = Some(p);
@@ -313,6 +314,19 @@ impl FilmcraftApp {
 mod playback_view_dirty_tests {
     use super::*;
     use filmcraft_engine::Session;
+
+    #[test]
+    fn startup_restores_the_remembered_layout_for_a_valid_workspace() {
+        let mut app = FilmcraftApp::new(Session::default());
+        let expected = dock::saved_workspace(&dock::WorkspacePrefs::default(), "Color").layout;
+        app.workspaces.current = "Editing".into();
+        app.workspaces.last = Some(dock::SavedWorkspace::new("Editing", &expected).unwrap());
+
+        app.apply_prefs(&egui::Context::default());
+
+        assert!(app.workspace_restored);
+        assert_eq!(app.ui.dock, expected);
+    }
 
     #[test]
     fn playback_follow_scroll_is_saved_without_marking_the_view_user_dirty() {

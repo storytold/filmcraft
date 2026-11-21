@@ -208,6 +208,18 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
 
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // The control channel's engine.execute endpoint runs an engine command directly. Menu
+    // invocations still pass through the UI routes below, where commands without parameters can
+    // open their parameter dialogs.
+    if app.engine_call {
+        if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, false) {
+            return r;
+        }
+        if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, false) {
+            return r;
+        }
+        return app.session.execute(id, params).map_err(|e| e.to_string());
+    }
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -344,10 +356,11 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, true) {
         return r;
     }
     if matches!(id, "file.closeProject" | "file.closeAllProjects" | "file.open" | "file.revert" | "app.quit") {
+        crate::panels::timeline::flush_pending_zoombar_view_change(app, ctx);
         app.sync_timeline_view();
     }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
@@ -368,7 +381,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, true) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -1570,6 +1583,58 @@ mod chord_held_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_slider_setting_change_prompts_before_closing_the_project() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let active = session.state.active_sequence.unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let shown = filmcraft_engine::project::SequenceView {
+            pps: app.ui.timeline.target_pps,
+            scroll: app.ui.timeline.target_scroll,
+            v_scroll: app.ui.timeline.v_scroll,
+            a_scroll: app.ui.timeline.a_scroll,
+            video_track_h: app.ui.timeline.video_track_h,
+            audio_track_h: app.ui.timeline.audio_track_h,
+        };
+        app.timeline_view_of = Some(active);
+        app.timeline_view_last = Some(shown);
+        app.session.state.timeline_views.insert(active, shown);
+        app.session.saved_view_epoch = app.session.view_epoch;
+        let ctx = egui::Context::default();
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique("tl-zoombar-view-pending"), true));
+
+        let result = invoke_command(&mut app, &ctx, "file.closeProject", json!({}));
+
+        assert_eq!(result.unwrap()["dialog"], "closeProject");
+        assert!(app.ui.clip_dialog.is_some(), "the pending view-only change must ask before closing");
+        assert_eq!(app.session.state.active_sequence, Some(active));
+        assert!(app.session.has_unsaved_changes());
+    }
+
+    #[test]
+    fn auto_save_now_syncs_the_timeline_view_before_requesting_a_checkpoint() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let active = session.state.active_sequence.unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let stored =
+            filmcraft_engine::project::SequenceView { pps: 100.0, scroll: 0.0, v_scroll: 0.0, a_scroll: 0.0, video_track_h: 50.0, audio_track_h: 50.0 };
+        app.timeline_view_of = Some(active);
+        app.timeline_view_last = Some(stored);
+        app.session.state.timeline_views.insert(active, stored);
+        app.ui.timeline.fit_pending = false;
+        app.ui.timeline.target_pps = 140.0;
+        app.ui.timeline.target_scroll = 6.0;
+        let before_epoch = app.session.view_epoch;
+
+        let result = invoke_command(&mut app, &egui::Context::default(), "file.autoSaveNow", json!({}));
+
+        assert!(result.is_err(), "the test session has no auto-save worker");
+        assert_eq!(app.session.state.timeline_views.get(&active).map(|view| (view.pps, view.scroll)), Some((140.0, 6.0)));
+        assert_eq!(app.session.view_epoch, before_epoch + 1, "the unsaved geometry reaches the checkpoint before auto-save is requested");
+    }
 
     #[test]
     fn keyboard_zoom_waits_for_usable_timeline_width() {

@@ -111,43 +111,14 @@ fn hot_number_editor(
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     arrows_start_from_the_end(ui, edit_id, buf);
+    if numeric_only {
+        normalize_numeric_draft(ui, edit_id, buf, range);
+    }
     // Up/Down step the typed value and commit it, leaving it selected (before the `TextEdit` sees the key)
     let stepped = step_typed_value(ui, edit_id, buf, value, range, suffix);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).char_limit(32).desired_width(56.0).font(Tokens::ui(12.0))), label);
     if numeric_only {
-        // A decimal comma is a decimal point in many locales: normalise it instead of eating it
-        // ("1,5" must never become "15"). A leading minus survives for signed ranges. Then only
-        // digits and one decimal point remain, and the cursor moves back over whatever was
-        // removed so typing in the middle of a number cannot make it jump to the end.
-        let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
-        let cursor =
-            egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index))).unwrap_or(0);
-        let mut decimal_seen = false;
-        let mut kept = String::with_capacity(before.len());
-        let mut kept_before_cursor = 0usize;
-        for (i, ch) in before.chars().enumerate() {
-            let ok = if ch.is_ascii_digit() {
-                true
-            } else if ch == '.' && !decimal_seen {
-                decimal_seen = true;
-                true
-            } else {
-                ch == '-' && range.0 < 0.0 && kept.is_empty()
-            };
-            if ok {
-                if i < cursor {
-                    kept_before_cursor += 1;
-                }
-                kept.push(ch);
-            }
-        }
-        if kept != *buf {
-            *buf = kept;
-            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
-                st.store(ui.ctx(), edit_id);
-            }
-        }
+        normalize_numeric_draft(ui, edit_id, buf, range);
     }
     let mut out = stepped;
     if r.lost_focus() {
@@ -180,6 +151,40 @@ fn hot_number_editor(
         }
     }
     (r, out)
+}
+
+/// Keep a numeric-only draft valid before stepping and after text input, preserving the cursor
+/// when characters that cannot be committed are removed.
+fn normalize_numeric_draft(ui: &Ui, edit_id: egui::Id, buf: &mut String, range: (f64, f64)) {
+    let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
+    let cursor =
+        egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index))).unwrap_or(0);
+    let mut decimal_seen = false;
+    let mut kept = String::with_capacity(before.len());
+    let mut kept_before_cursor = 0usize;
+    for (i, ch) in before.chars().enumerate() {
+        let ok = if ch.is_ascii_digit() {
+            true
+        } else if ch == '.' && !decimal_seen {
+            decimal_seen = true;
+            true
+        } else {
+            ch == '-' && range.0 < 0.0 && kept.is_empty()
+        };
+        if ok {
+            if i < cursor {
+                kept_before_cursor += 1;
+            }
+            kept.push(ch);
+        }
+    }
+    if kept != *buf {
+        *buf = kept;
+        if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
+            st.store(ui.ctx(), edit_id);
+        }
+    }
 }
 
 /// Up/Down in a hot number's text field step the typed value as Premiere does: by 1, or by the last
@@ -790,6 +795,28 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    #[test]
+    fn numeric_only_up_step_normalizes_invalid_draft_before_stepping() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("numeric-only-step");
+        let mut buf = "1+2".to_string();
+        let mut stepped = None;
+        ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key { key: egui::Key::ArrowUp, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+                ..Default::default()
+            },
+            |ui| {
+                let (_, value) = hot_number_editor(ui, "Value", id, 12.0, (0.0, 100.0), "", &mut buf, true);
+                stepped = value;
+            },
+        )
+        .textures_delta
+        .clear();
+        assert_eq!(buf, "13");
+        assert_eq!(stepped, Some(13.0));
     }
 
     /// The queue's progress line is painted digit by digit; a screen reader still reads it whole.

@@ -148,7 +148,7 @@ fn native_menu_commands_cannot_contaminate_control_only_validation() {
     d.frames(2, true);
     assert!(!d.h.state().playback.playing);
     // Intentional playback remains reachable through the control command path.
-    d.ok("engine.execute", json!({"command":"playback.reverse","params":{}}), false);
+    d.ok("ui.menu.invoke", json!({"id":"playback.reverse"}), false);
     assert!(d.h.state().playback.playing);
     assert_eq!(d.h.state().playback.speed, -1.0);
 }

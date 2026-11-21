@@ -48,7 +48,10 @@ impl Layout {
     pub fn shown(&self, row: &Row) -> Rect {
         let mut r = row.rect;
         match row.kind {
-            TrackKind::Video => r.max.y = r.max.y.min(self.split_y),
+            TrackKind::Video => {
+                r.min.y = r.min.y.max(self.content.min.y);
+                r.max.y = r.max.y.min(self.split_y);
+            }
             TrackKind::Audio => {
                 r.min.y = r.min.y.max(self.split_y + DIVIDER_H);
                 r.max.y = r.max.y.min(self.content.max.y - MASTER_H);
@@ -69,17 +72,20 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
     }
     let cap_n = seq.caption_tracks.len();
     let tracks_top = layout.content.min.y + if cap_n > 0 { cap_n as f32 * crate::panels::timeline_captions::ROW_H + DIVIDER_H } else { 0.0 };
-    let band = |y0: f32, y1: f32| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1));
+    let band = |y0: f32, y1: f32| {
+        (y0.is_finite() && y1.is_finite() && y1 > y0 && layout.content.max.x > layout.content.min.x)
+            .then(|| Rect::from_min_max(pos2(layout.content.min.x, y0), pos2(layout.content.max.x, y1)))
+    };
     if y < layout.split_y {
         let top = layout.rows.iter().filter(|r| r.kind == TrackKind::Video).map(|r| r.rect.min.y).fold(layout.split_y, f32::min);
         // ANYWHERE above the top video row counts -- over the ruler, or outside the Timeline's
         // own rect entirely (a clip dragged above the window wants a new track too)
-        (y < top).then(|| (TrackKind::Video, band((top - vh).max(tracks_top), top)))
+        if y < top { band((top - vh).max(tracks_top), top).map(|rect| (TrackKind::Video, rect)) } else { None }
     } else {
         let bottom = layout.rows.iter().filter(|r| r.kind == TrackKind::Audio).map(|r| r.rect.max.y).fold(layout.split_y + DIVIDER_H, f32::max);
         let mix = layout.content.max.y - MASTER_H;
         // anywhere below the last audio row counts, Mix row and past the window's edge included
-        (y >= bottom).then(|| (TrackKind::Audio, band(bottom, (bottom + ah).min(mix))))
+        if y >= bottom { band(bottom, (bottom + ah).min(mix)).map(|rect| (TrackKind::Audio, rect)) } else { None }
     }
 }
 
@@ -151,6 +157,18 @@ pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
     width.max(1.0) as f64 / min_view
 }
 
+/// Clamp the Timeline zoom only after the pane has a real width. Collapsed panes report zero
+/// width; `max_pps`' one-point fallback is for safe arithmetic, not a usable saved zoom ceiling.
+pub(crate) fn clamp_zoom_to_width(v: &mut TimelineView, sequence_seconds: f64, width: f32, min_view_secs: f64) {
+    if !width.is_finite() || width <= 1.0 {
+        return;
+    }
+    let ceiling = max_pps(width, min_view_secs);
+    let floor = min_pps(sequence_seconds, width).min(ceiling);
+    v.target_pps = v.target_pps.clamp(floor, ceiling);
+    v.pps = v.pps.clamp(floor, ceiling);
+}
+
 /// Zoom about a time (keeps it under the same screen x).
 pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64) {
     let old = v.target_pps;
@@ -166,7 +184,8 @@ pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f3
 
 #[cfg(test)]
 mod track_scroll_tests {
-    use super::track_scroll_max;
+    use super::{Layout, Row, new_track_at, track_scroll_max};
+    use crate::panels::timeline::{Rect, TrackId, TrackKind, pos2};
 
     #[test]
     fn target_height_keeps_its_scroll_range_while_current_height_animates() {
@@ -176,5 +195,44 @@ mod track_scroll_tests {
         let current_max = track_scroll_max(slots, 60.0, window);
         assert!(target_max > current_max);
         assert_eq!(track_scroll_max(slots, 120.0, window), target_max);
+    }
+
+    #[test]
+    fn video_rows_entirely_above_the_content_are_not_hit() {
+        let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 400.0));
+        let row = Row { track: TrackId(1), kind: TrackKind::Video, index: 0, rect: Rect::from_min_max(pos2(0.0, -30.0), pos2(800.0, -10.0)), lane: false };
+        let layout = Layout { content, ruler: content, rows: vec![row], pps: 100.0, scroll: 0.0, split_y: 250.0, v_scroll: 0.0, a_scroll: 0.0 };
+
+        assert!(layout.shown(&layout.rows[0]).height() <= 0.0);
+        assert!(layout.row_at(-20.0).is_none(), "a hidden row is not an interaction destination");
+    }
+
+    #[test]
+    fn overflowing_video_rows_cannot_create_an_inverted_new_track_band() {
+        let mut project = filmcraft_project::Project::new("overflowing timeline");
+        let id = project.new_sequence("Sequence", filmcraft_project::SequenceSettings::default(), 1, 0, None);
+        let sequence = project.sequence(id).expect("the fixture sequence exists");
+        let track = sequence.video_tracks.first().expect("the fixture video track exists");
+        let content = Rect::from_min_max(pos2(0.0, 200.0), pos2(800.0, 500.0));
+        let row = Row { track: track.id, kind: TrackKind::Video, index: 0, rect: Rect::from_min_max(pos2(0.0, 150.0), pos2(800.0, 220.0)), lane: false };
+        let layout = Layout { content, ruler: content, rows: vec![row], pps: 100.0, scroll: 0.0, split_y: 250.0, v_scroll: 0.0, a_scroll: 0.0 };
+
+        assert!(layout.row_at(100.0).is_none());
+        assert!(new_track_at(sequence, &layout, 100.0, 100.0, 60.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod zoom_width_tests {
+    use super::*;
+
+    #[test]
+    fn collapsed_timeline_keeps_its_saved_zoom_until_width_is_usable() {
+        let mut view = TimelineView { pps: 10_000.0, target_pps: 10_000.0, ..Default::default() };
+        clamp_zoom_to_width(&mut view, 100.0, 0.0, 0.4);
+        assert_eq!((view.pps, view.target_pps), (10_000.0, 10_000.0));
+
+        clamp_zoom_to_width(&mut view, 100.0, 100.0, 0.4);
+        assert_eq!((view.pps, view.target_pps), (250.0, 250.0));
     }
 }
