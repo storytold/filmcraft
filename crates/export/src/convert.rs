@@ -52,6 +52,80 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
     }
 }
 
+/// BT.709 limited-range 8-bit 4:2:2 (`U Y0 V Y1`) from straight RGBA8, rows tight.
+///
+/// On this thread rather than on the pool, like [`yuv422_10_to_v210`]: the encode side of an
+/// overlapping export owns the calling thread while the pool renders the next batch (`job.rs`), and
+/// the picture converts in a couple of milliseconds (1080p) against the megabytes it writes.
+pub fn rgba_to_uyvy8(rgba: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    let cw = w.div_ceil(2);
+    debug_assert!(rgba.len() >= w * h * 4);
+    out.clear();
+    out.resize(cw * 4 * h, 0);
+    for (row, dst) in out.chunks_mut(cw * 4).enumerate() {
+        let src = &rgba[row * w * 4..(row + 1) * w * 4];
+        let rgb = |x: usize| (src[x * 4] as f32 / 255.0, src[x * 4 + 1] as f32 / 255.0, src[x * 4 + 2] as f32 / 255.0);
+        // the last pair of an odd width pairs the last pixel with itself
+        for (cx, q) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (a, b) = (cx * 2, (cx * 2 + 1).min(w - 1));
+            let (r0, g0, b0) = rgb(a);
+            let (r1, g1, b1) = rgb(b);
+            let (y0, y1) = (0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0, 0.2126 * r1 + 0.7152 * g1 + 0.0722 * b1);
+            let u = ((b0 - y0) + (b1 - y1)) * 0.5 / 1.8556;
+            let v = ((r0 - y0) + (r1 - y1)) * 0.5 / 1.5748;
+            q[0] = (128.0 + 224.0 * u).round().clamp(1.0, 254.0) as u8;
+            q[1] = (16.0 + 219.0 * y0).round().clamp(1.0, 254.0) as u8;
+            q[2] = (128.0 + 224.0 * v).round().clamp(1.0, 254.0) as u8;
+            q[3] = (16.0 + 219.0 * y1).round().clamp(1.0, 254.0) as u8;
+        }
+    }
+}
+
+/// Straight 24-bit RGB from straight RGBA8 (the alpha channel is dropped), rows tight.
+pub fn rgba_to_rgb24(rgba: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    debug_assert!(rgba.len() >= w * h * 4);
+    out.clear();
+    out.reserve(w * h * 3);
+    for p in rgba.as_chunks::<4>().0.iter().take(w * h) {
+        out.extend_from_slice(&p[..3]);
+    }
+}
+
+/// Pack 10-bit 4:2:2 planes into `v210`: six pixels (three chroma pairs) to a 16-byte group in four
+/// little-endian words — `Cb0 Y0 Cr0 | Y1 Cb1 Y2 | Cr1 Y3 Cb2 | Y4 Cr2 Y5` — and every row padded to
+/// a multiple of 48 pixels (`v210` never stores a row shorter than that). Pixels past the picture
+/// and the row's padding bytes are zero.
+pub fn yuv422_10_to_v210(y: &[u16], cb: &[u16], cr: &[u16], w: usize, h: usize, out: &mut Vec<u8>) {
+    let groups = w.div_ceil(48) * 48 / 6;
+    debug_assert!(y.len() >= w * h && cb.len() >= w.div_ceil(2) * h && cr.len() >= w.div_ceil(2) * h);
+    out.clear();
+    out.resize(groups * 16 * h, 0);
+    let at = |plane: &[u16], i: usize| u32::from(plane.get(i).copied().unwrap_or(0)) & 0x3FF;
+    // see `rgba_to_uyvy8`: a packing pass on the thread that encodes, with the pool rendering.
+    // Each row reads its own slice of every plane, so a row's padding past its width is zero and
+    // never borrows the next row's samples.
+    let cw = w.div_ceil(2);
+    let packed = groups * 16;
+    for (row, dst) in out.chunks_mut(packed).enumerate() {
+        let y = y.get(row * w..(row + 1) * w).unwrap_or_default();
+        let cb = cb.get(row * cw..(row + 1) * cw).unwrap_or_default();
+        let cr = cr.get(row * cw..(row + 1) * cw).unwrap_or_default();
+        for (g, d) in dst.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+            let (x, c) = (g * 6, g * 3);
+            let word = |a: u32, b: u32, e: u32| a | (b << 10) | (e << 20);
+            let words = [
+                word(at(cb, c), at(y, x), at(cr, c)),
+                word(at(y, x + 1), at(cb, c + 1), at(y, x + 2)),
+                word(at(cr, c + 1), at(y, x + 3), at(cb, c + 2)),
+                word(at(y, x + 4), at(cr, c + 2), at(y, x + 5)),
+            ];
+            for (k, v) in words.iter().enumerate() {
+                d[k * 4..k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+}
+
 /// BT.709 limited-range 10-bit 4:2:2 from straight RGBA8 (chroma averaged horizontally).
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
     let cw = w.div_ceil(2);
@@ -444,5 +518,61 @@ mod short_source_tests {
         // a full-size source still converts
         rgba_to_yuv420_8(&[128; 16], 2, 2, &mut y, &mut u, &mut v);
         assert_eq!((y.len(), u.len(), v.len()), (4, 1, 1));
+    }
+}
+
+#[cfg(test)]
+mod v210_row_tests {
+    use super::yuv422_10_to_v210;
+
+    /// Each output row must come from its own source row: the packing used to restart the x and c
+    /// offsets at zero for every row, repeating row 0 through the whole picture.
+    #[test]
+    fn every_v210_row_is_packed_from_its_own_source_row() {
+        // 48 wide is exactly one v210 group of 8, so no padding is involved.
+        let (w, h) = (48usize, 2usize);
+        let mut y = vec![0u16; w * h];
+        let mut cb = vec![0u16; (w / 2) * h];
+        let mut cr = vec![0u16; (w / 2) * h];
+        y[..w].fill(100);
+        y[w..].fill(900);
+        cb[..w / 2].fill(200);
+        cb[w / 2..].fill(800);
+        cr.fill(64);
+        let mut out = Vec::new();
+        yuv422_10_to_v210(&y, &cb, &cr, w, h, &mut out);
+        let row = out.len() / h;
+        let word = |r: usize, k: usize| {
+            let b = &out[r * row + k * 4..r * row + k * 4 + 4];
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        };
+        // word 0 is Cb0 | Y0 << 10 | Cr0 << 20
+        assert_eq!(word(0, 0) & 0x3FF, 200, "row 0 Cb0");
+        assert_eq!((word(0, 0) >> 10) & 0x3FF, 100, "row 0 Y0");
+        assert_eq!(word(1, 0) & 0x3FF, 800, "row 1 Cb0 comes from row 1");
+        assert_eq!((word(1, 0) >> 10) & 0x3FF, 900, "row 1 Y0 comes from row 1");
+    }
+
+    /// Padding past the picture reads zero, not the next source row samples.
+    #[test]
+    fn v210_padding_does_not_borrow_from_the_next_row() {
+        // 320 wide pads to 336 pixels (56 groups), so samples past 320 are padding.
+        let (w, h) = (320usize, 2usize);
+        let mut y = vec![0u16; w * h];
+        let mut cb = vec![0u16; (w / 2) * h];
+        let mut cr = vec![0u16; (w / 2) * h];
+        y[..w].fill(100);
+        y[w..].fill(900);
+        cb[..w / 2].fill(200);
+        cb[w / 2..].fill(800);
+        cr.fill(64);
+        let mut out = Vec::new();
+        yuv422_10_to_v210(&y, &cb, &cr, w, h, &mut out);
+        // group 54 covers pixels 324..330, entirely past the 320-wide picture
+        let g = &out[54 * 16..55 * 16];
+        let w0 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
+        assert_eq!(w0 & 0x3FF, 0, "Cb past the row is padding");
+        assert_eq!((w0 >> 10) & 0x3FF, 0, "Y past the row is padding");
+        assert_eq!((w0 >> 20) & 0x3FF, 0, "Cr past the row is padding");
     }
 }

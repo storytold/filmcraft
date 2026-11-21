@@ -286,6 +286,9 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = p.get("uncompressedPixelFormat") {
+        settings.uncompressed_pixel_format = serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "uncompressedPixelFormat: uyvy8 | v210 | rgb24"))?;
+    }
     if let Some(v) = str_p(p, "h264Profile") {
         settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
     }

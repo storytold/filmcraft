@@ -34,7 +34,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 | CinemaDNG / DNG | decode | own decoder (#1065): uncompressed and lossless JPEG raw, Bayer and LinearRaw, DNG colour model to linear Rec. 709 floats; folders of `.dng` frames as one clip with the CinemaDNG frame rate and time code; **no** lossy / JPEG XL DNG, MXF-wrapped CinemaDNG, opcode lists or Raw settings UI | — | raw samples bit-exact (and identical to LibRaw's on our synthetic files), processing against hand-computed values | 60% | 10–20 h |
 | Camera RAW: R3D (incl. R3D NE), ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW (plug-in) | decode (vendor SDKs) | none (#383) | — | — | 0% | 50–90 h for the ones with public specs; vendor-SDK-only formats need an owner decision |
 | GIF (animated) | encode | decode as still | encode | — | 80% | — |
-| Uncompressed / v210 / RGB | decode + encode (AVI, MOV) | partial (MOV PCM-style video not verified) | none | — | 30% | 8–15 h |
+| Uncompressed / v210 / RGB | decode + encode (AVI, MOV) | own decoder (AVI) | yes (MOV: `2vuy`, `v210`, 24-bit RGB; PCM) | v210 and 2vuy bit-exact against ffmpeg, RGB24 exact | 70% | — |
 
 ## Audio
 

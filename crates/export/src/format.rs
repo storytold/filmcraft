@@ -2,7 +2,7 @@ use super::output::OutputSink;
 use super::run::validate_range;
 use super::{
     Arc, AudioCodec, AudioSettings, BitrateMode, Deserialize, ExportEffects, ExportError, ExportMetadata, ExrCompression, FieldOrder, FrameRate, GpuRendering,
-    H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
+    H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange, UncompressedPixelFormat,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -80,6 +80,12 @@ pub enum Format {
     /// audio channel ([`opatom_audio_paths`]).
     #[serde(rename = "mxf-opatom", alias = "MxfOpAtom")]
     MxfOpAtom,
+    /// QuickTime, uncompressed video ([`ExportSettings::uncompressed_pixel_format`]: 8-bit 4:2:2
+    /// `2vuy`, 10-bit 4:2:2 `v210`, or 24-bit RGB `raw `) + PCM. Lossless and much larger than the
+    /// codecs above. The picture is BT.709 limited range, which the sample entry's `colr` box
+    /// signals: uncompressed video is the one format here with no colour description of its own.
+    #[serde(rename = "uncompressed", alias = "Uncompressed")]
+    Uncompressed,
 }
 
 impl Format {
@@ -94,6 +100,10 @@ impl Format {
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
             "mxfopatom" | "opatom" | "mxfatom" | "avidmxf" => Format::MxfOpAtom,
             "mjpeg" | "motionjpeg" | "jpeg" => Format::Mjpeg,
+            // `v210` is deliberately not an alias: it names a pixel layout, and `from_name` cannot
+            // set one, so it would silently export 8-bit `2vuy`. Ask for `uncompressed` with
+            // `uncompressedPixelFormat` instead.
+            "uncompressed" | "rawvideo" | "2vuy" | "uyvy" => Format::Uncompressed,
             "png" | "pngsequence" => Format::PngSequence,
             "tif" | "tiff" | "tiffsequence" => Format::TiffSequence,
             "bmp" | "bmpsequence" => Format::BmpSequence,
@@ -121,6 +131,7 @@ impl Format {
             Format::DnxHr => "dnxhr",
             Format::Apv => "apv",
             Format::Mjpeg => "mjpeg",
+            Format::Uncompressed => "uncompressed",
             Format::PngSequence => "png",
             Format::TiffSequence => "tiff",
             Format::BmpSequence => "bmp",
@@ -141,7 +152,7 @@ impl Format {
     pub fn extension(self) -> &'static str {
         match self {
             Format::H264 | Format::Hevc | Format::Av1 => "mp4",
-            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
+            Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::Uncompressed => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
             Format::BmpSequence => "bmp",
@@ -167,6 +178,7 @@ impl Format {
             Format::DnxHr => "Avid DNxHR",
             Format::Apv => "APV",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
+            Format::Uncompressed => "QuickTime (Uncompressed)",
             Format::PngSequence => "PNG",
             Format::TiffSequence => "TIFF",
             Format::BmpSequence => "BMP",
@@ -222,7 +234,7 @@ impl Format {
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
-    pub const ALL: [Format; 22] = [
+    pub const ALL: [Format; 23] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -230,6 +242,7 @@ impl Format {
         Format::DnxHr,
         Format::Apv,
         Format::Mjpeg,
+        Format::Uncompressed,
         Format::PngSequence,
         Format::TiffSequence,
         Format::BmpSequence,
@@ -292,6 +305,9 @@ pub struct ExportSettings {
     /// DNxHR profile: `lb`, `sq`, `hq` or `hqx` (empty = HQ).
     #[serde(default)]
     pub dnx_profile: String,
+    /// Uncompressed QuickTime pixel layout ([`Format::Uncompressed`]).
+    #[serde(default)]
+    pub uncompressed_pixel_format: UncompressedPixelFormat,
     /// APV profile: `422-10`, `422-12`, `444-10` or `444-12` (empty = `422-10`).
     #[serde(default)]
     pub apv_profile: String,
@@ -445,6 +461,7 @@ impl Default for ExportSettings {
             prores_profile: String::new(),
             dnx_profile: String::new(),
             apv_profile: String::new(),
+            uncompressed_pixel_format: UncompressedPixelFormat::default(),
             mxf_video_codec: MxfVideoCodec::default(),
             sdr: false,
             alpha: false,

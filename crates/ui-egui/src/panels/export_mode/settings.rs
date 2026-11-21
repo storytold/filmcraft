@@ -1,7 +1,7 @@
 use super::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, is_export_busy,
-    pos2, vec2,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, UncompressedPixelFormat,
+    apply_preset, is_export_busy, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -637,6 +637,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let cur = keys.iter().position(|k| *k == s.apv_profile).unwrap_or(0);
                 if let Some(i) = combo(ui, reg, "export.video.apvProfile", labels[cur], &opts(&labels), 220.0) {
                     s.apv_profile = keys[i].into();
+                }
+            });
+        }
+        Format::Uncompressed => {
+            row(ui, t, tl!("Pixel Format"), |ui| {
+                let labels: Vec<&str> = UncompressedPixelFormat::ALL.iter().map(|&p| p.label()).collect();
+                let cur = UncompressedPixelFormat::ALL.iter().position(|&p| p == s.uncompressed_pixel_format).unwrap_or(0);
+                if let Some(i) = combo(ui, reg, "export.video.uncompressedPixelFormat", labels[cur], &opts(&labels), 220.0) {
+                    s.uncompressed_pixel_format = UncompressedPixelFormat::ALL[i];
                 }
             });
         }
