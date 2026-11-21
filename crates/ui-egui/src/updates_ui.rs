@@ -84,7 +84,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
-        let clean = !app.session.is_dirty();
+        let clean = !app.session.has_unsaved_changes();
         let prior_commands = ctx.output(|output| output.commands.len());
         let action = app.updates_rt.updater.show_if(ctx, clean);
         if app.hooks.open_url.is_some() {
