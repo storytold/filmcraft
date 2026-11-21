@@ -3744,6 +3744,7 @@
 	Scan Presets Folder	プリセットフォルダーをスキャン
 	From preset file:	プリセットファイル：
 	No presets folder: the app has no data directory	プリセットフォルダーがありません：アプリにデータディレクトリがありません
+	Imported {n} LUTs	LUTを{n}件読み込みました
 	Imported {n} preset(s)	{n} 個のプリセットを読み込みました
 	Imported {n} preset(s); {skipped} skipped	{n} 個のプリセットを読み込みました（{skipped} 個スキップ）
 	Imported {n} preset(s); {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました（{warnings} 個に未対応パラメーターあり）

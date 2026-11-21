@@ -608,6 +608,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
   parity.
 
+  Browse applies a single file to the slot. Choosing several files adds them to the project
+  library in one undo step for later selection.
+
 ### 5.4 Multi-camera and synchronisation
 
 ```text

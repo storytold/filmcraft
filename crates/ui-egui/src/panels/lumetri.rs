@@ -259,10 +259,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             continue;
         }
         if p.get("browse").is_some() {
-            let (cmd, clip) = (cmd.to_string(), clip.0);
-            app.pick_ui(FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
-                let Some(path) = paths.into_iter().next() else { return };
-                if let Err(err) = app.session.execute(&cmd, json!({"path": path, "clip": clip})) {
+            let clip = clip.0;
+            browse_luts(app, move |app, path| {
+                if let Err(err) = app.session.execute(cmd, json!({"path": path, "clip": clip})) {
                     app.ui.status = err.to_string();
                 }
             });
@@ -333,11 +332,33 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
     app.auto.add(&format!("lumetri.{param}"), rect, label);
 }
 
+/// Browse for LUTs. One file is applied by the caller. Multiple files are imported to the library
+/// in one undo step so the editor can choose which look to apply.
+pub(crate) fn browse_luts(app: &mut FilmcraftApp, apply_one: impl FnOnce(&mut FilmcraftApp, &str) + 'static) {
+    const EXTS: &[&str] = &["cube", "3dl"];
+    let multi = FileDialog::open_files(EXTS);
+    let dialog = if multi.available(&app.hooks) { multi } else { FileDialog::open_file(tl!("LUT"), EXTS) };
+    let epoch = app.session.document_epoch;
+    app.pick_ui(dialog, move |app, paths| {
+        if app.session.document_epoch != epoch {
+            return;
+        }
+        match paths.as_slice() {
+            [] => {}
+            [path] => apply_one(app, path),
+            _ => match app.session.execute("lut.import", json!({"paths": paths})) {
+                Ok(result) => app.ui.status = tlf!("Imported {n} LUTs", n = result["imported"]),
+                Err(e) => app.ui.status = e.to_string(),
+            },
+        }
+    });
+}
+
 /// What was chosen in a [`lut_menu`].
 pub(crate) enum LutPick {
     /// A LUT reference (`builtin:<id>`, `lib:<id>`), or "" for None.
     Lut(String),
-    /// Browse…: pick a .cube / .3dl file.
+    /// Browse…: pick .cube / .3dl files.
     Browse,
 }
 
@@ -757,7 +778,46 @@ fn match_controls(ui: &mut egui::Ui, app: &mut FilmcraftApp, out: &mut Vec<(&'st
 
 #[cfg(test)]
 mod tests {
-    use super::without_point;
+    use super::{browse_luts, without_point};
+
+    #[test]
+    fn lut_browse_imports_multiple_files_and_keeps_the_single_picker() {
+        use crate::FilmcraftApp;
+        use filmcraft_color::{Lut, Lut3d};
+
+        let temp = tempfile::tempdir().unwrap();
+        let swap = temp.path().join("Swap.cube");
+        let tint = temp.path().join("Tint.cube");
+        std::fs::write(&swap, Lut::from_cube(Lut3d::from_fn(2, |c| [c[2], c[1], c[0]])).to_cube()).unwrap();
+        std::fs::write(&tint, Lut::from_cube(Lut3d::from_fn(2, |c| [c[0], c[1] * 0.5, c[2]])).to_cube()).unwrap();
+        let first = swap.to_string_lossy().into_owned();
+        let paths = vec![first.clone(), tint.to_string_lossy().into_owned()];
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        app.hooks.pick_files = Some(Box::new(move |exts| {
+            assert_eq!(exts, ["cube", "3dl"]);
+            paths.clone()
+        }));
+        browse_luts(&mut app, |_, _| panic!("batch import must wait for the editor to choose a look"));
+        assert!(app.native_dialog_open());
+        app.poll_native_dialog(&ctx);
+        assert_eq!(app.session.project.luts.iter().map(|lut| lut.name.as_str()).collect::<Vec<_>>(), ["Swap", "Tint"]);
+
+        browse_luts(&mut app, |_, _| panic!("the previous project's picker cannot apply a look"));
+        app.session.execute("file.newProject", serde_json::json!({})).unwrap();
+        app.poll_native_dialog(&ctx);
+        assert!(app.session.project.luts.is_empty(), "the delayed answer belongs to the previous project");
+
+        app.hooks.pick_files = None;
+        let picked = first.clone();
+        app.hooks.pick_open_file = Some(Box::new(move |_, exts| {
+            assert_eq!(exts, ["cube", "3dl"]);
+            Some(picked.clone())
+        }));
+        browse_luts(&mut app, |app, path| app.ui.status = path.into());
+        app.poll_native_dialog(&ctx);
+        assert_eq!(app.ui.status, first);
+    }
 
     #[test]
     fn a_curve_point_is_removed_by_position_not_by_list_order() {

@@ -9,6 +9,8 @@
 //! Color Grading configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
 //! renders a folder's thumbnail grid (our Color Grading on the procedural preview picture) to a PNG.
 
+use std::io::Read;
+
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
@@ -54,7 +56,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             preset_thumbnails,
         ),
         query("media.colorInfo", "Media Colour Info", r#"{"item":id}"#, color_info),
-        spec("lut.import", "Import LUT…", &[], r#"{"path":str,"name":str?}"#, always, import),
+        spec("lut.import", "Import LUT…", &[], r#"{"path":str?,"name":str?,"paths":[str]?}"#, always, import),
         query("lut.list", "List LUTs", "{}", list),
         spec("lut.remove", "Remove LUT", &[], r#"{"id":str}"#, always, remove),
         query("lut.export", "Export LUT", r#"{"lut":"lib:<id>"|"builtin:<id>","path":str,"format":"cube"|"3dl"?}"#, export),
@@ -85,9 +87,11 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
 }
 
 fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String, Value)> {
-    let text = std::fs::read_to_string(path).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
-    if text.len() > filmcraft_project::MAX_LUT_TEXT_BYTES {
-        return Err(bad("lut.import", format!("{path}: LUT source exceeds the {} byte limit", filmcraft_project::MAX_LUT_TEXT_BYTES)));
+    let limit = filmcraft_project::MAX_LUT_TEXT_BYTES;
+    let mut text = String::new();
+    std::fs::File::open(path).and_then(|file| file.take(limit as u64 + 1).read_to_string(&mut text)).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
+    if text.len() > limit {
+        return Err(bad("lut.import", format!("{path}: LUT source exceeds the {limit} byte limit")));
     }
     let fmt = LutFormat::from_path(path).ok_or_else(|| bad("lut.import", "expected a .cube or .3dl file"))?;
     let lut = Lut::parse(&text, Some(fmt)).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
@@ -118,6 +122,17 @@ fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String
 }
 
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(paths) = p.get("paths") {
+        if p.get("path").is_some() || p.get("name").is_some() {
+            return Err(bad("lut.import", "use either paths or a single path and optional name"));
+        }
+        let invalid = || bad("lut.import", "paths must be a non-empty array of file paths");
+        let paths = paths.as_array().filter(|v| !v.is_empty()).ok_or_else(invalid)?;
+        let files: Vec<&str> = paths.iter().map(|v| v.as_str().filter(|v| !v.is_empty()).ok_or_else(invalid)).collect::<Result<_>>()?;
+        let luts = s.edit_group("Import LUTs", |s| files.iter().map(|path| import_lut(s, path, None).map(|(_, result)| result)).collect::<Result<Vec<_>>>())?;
+        let imported = luts.iter().filter(|lut| lut["reused"] != true).count();
+        return Ok(json!({"imported": imported, "luts": luts}));
+    }
     let path = str_p(p, "path").ok_or_else(|| bad("lut.import", "need `path`"))?.to_string();
     Ok(import_lut(s, &path, str_p(p, "name"))?.1)
 }

@@ -446,3 +446,39 @@ fn export_cube_goes_through_the_host_and_refuses_a_masked_lumetri() {
     assert!(s.execute("lumetri.exportCube", json!({"path": other})).is_err());
     assert!(files.read_file(other).is_err());
 }
+
+#[test]
+fn import_lut_batch_groups_undo_and_preserves_the_current_look() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let look = "builtin:look-monochrome";
+    s.execute("lumetri.setLook", json!({"clip":clip.0,"lut":look})).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let swap = temp.path().join("Swap.cube");
+    let tint = temp.path().join("Tint.cube");
+    let missing = temp.path().join("Missing.cube");
+    std::fs::write(&swap, Lut::from_cube(Lut3d::from_fn(2, |c| [c[2], c[1], c[0]])).to_cube()).unwrap();
+    std::fs::write(&tint, Lut::from_cube(Lut3d::from_fn(2, |c| [c[0], c[1] * 0.5, c[2]])).to_cube()).unwrap();
+
+    let before = s.project.clone();
+    let undo = s.undo_mark();
+    for p in [json!({"paths":[&swap,&missing]}), json!({"paths":[&swap,4]}), json!({"paths":[]}), json!({"paths":[&swap],"path":&tint})] {
+        assert!(s.execute("lut.import", p).is_err());
+        assert_eq!(&*s.project, &*before, "failed batches roll back the import");
+        assert_eq!(s.undo_mark(), undo);
+    }
+
+    let result = s.execute("lut.import", json!({"paths":[&swap,&tint,&swap]})).unwrap();
+    assert_eq!(result["imported"], 2);
+    assert_eq!(result["luts"][0]["name"], "Swap");
+    assert_eq!(result["luts"][1]["name"], "Tint");
+    assert_eq!(result["luts"][2]["reused"], true);
+    assert_eq!(result["luts"][0]["ref"], result["luts"][2]["ref"]);
+    assert_eq!(s.project.luts.len(), 2);
+    assert_eq!(lumetri_text(&s, clip, "look_lut"), look);
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(&*s.project, &*before, "one undo removes both imports");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project.luts.len(), 2);
+}
