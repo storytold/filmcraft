@@ -215,6 +215,10 @@ impl PreparedPlan {
 /// Values per parallel chunk when converting.
 const CHUNK: usize = 1 << 15;
 
+/// Uploaded frames kept between frames (enough for several stacked layers + playback lookahead);
+/// a frame with more layers keeps all of its own ([`GpuCompositor::trim_uploads`]).
+const KEPT_UPLOADS: usize = 24;
+
 fn f32_to_f16_bytes(v: &[f32]) -> Vec<u8> {
     let mut out = vec![0u8; v.len() * 2];
     out.par_chunks_mut(CHUNK * 2).zip(v.par_chunks(CHUNK)).for_each(|(o, s)| {
@@ -584,15 +588,23 @@ impl GpuCompositor {
             }
         };
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
-        if self.uploads.len() > 24 {
-            let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
-            v.sort_unstable();
-            for (_, k) in v.into_iter().take(self.uploads.len() - 24) {
-                self.uploads.remove(&k);
-            }
-        }
         key
+    }
+
+    /// Drop the least recently used uploads beyond [`KEPT_UPLOADS`], or beyond the `in_use` most
+    /// recent ones when there are more (the uploads of the frame being drawn). Called once a
+    /// frame's layers are all uploaded, never between them: evicting while they upload dropped the
+    /// bottom layers of a stack deeper than the cap, which then drew nothing (#4803).
+    fn trim_uploads(&mut self, in_use: usize) {
+        let keep = KEPT_UPLOADS.max(in_use);
+        if self.uploads.len() <= keep {
+            return;
+        }
+        let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
+        v.sort_unstable();
+        for (_, k) in v.into_iter().take(self.uploads.len() - keep) {
+            self.uploads.remove(&k);
+        }
     }
 
     /// The source description of an uploaded frame.
@@ -788,6 +800,8 @@ impl GpuCompositor {
                 self.upload(&l.frame, p)
             })
             .collect();
+        // (this frame's uploads are the most recently used: none of them is dropped)
+        self.trim_uploads(keys.len());
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
@@ -1110,6 +1124,7 @@ impl GpuCompositor {
     /// CPU from the same frame). None when the working image does not fit in a texture.
     pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
         let key = self.upload(frame, None);
+        self.trim_uploads(1);
         let src = self.src_info(frame, key)?;
         let views = self.uploads.get(&key)?.views.clone();
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
