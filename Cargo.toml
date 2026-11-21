@@ -61,8 +61,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
-# Shared OpenEXR ZIP chunk compressor.
-craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
+# Shared OpenEXR ZIP chunk compression and inflation.
+craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8b40f1a4b0718916e7c136c1b91b38a5c7531a0e" }
 # DPX still reader, on the same commit as craft-media.
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 # Shared YUV4MPEG2 parser and frame index.
@@ -83,6 +83,7 @@ craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-l
 # The audio codecs (AAC, AC-3, FLAC, MP1/MP2, Opus) and the containers come from craft-libs. Both
 # are on one commit, so the types they share (CodecParams, ByteSource) are the same.
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", default-features = false }
+craft-media-source = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6a061a30bdd4a6cc24329334d5e44241896edba6" }
 craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", default-features = false, features = ["aac-decode", "aac-encode", "rayon", "ac3-decode", "mpa-decode", "mp3-decode", "decode-native", "symphonia", "opus-decode", "flac-encode", "mp3-encode"] }
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }

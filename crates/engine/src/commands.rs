@@ -1441,6 +1441,10 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
         ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
         ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
         ItemKind::AdjustmentLayer { width, height, .. } => Some((*width, *height)),
+        // A subclip shows its parent media's picture, so its anchor resolves
+        // against the parent's size: without this a clip placed from a subclip
+        // baked its anchor from the sequence frame instead (#4613 follow-up).
+        ItemKind::Subclip { .. } => s.project.source_size(item),
         _ => None,
     }
     .unwrap_or((1920, 1080));
@@ -5440,11 +5444,14 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
     s.media = std::sync::Arc::new(s.media.successor());
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());
+    // Projects saved before stills applied EXIF Orientation keep a portrait still's
+    // unturned size and the anchors baked from it (#4613).
+    crate::still_migration::migrate_legacy_still_sizes(&mut proj, &s.media, &*s.services);
     s.set_project(std::sync::Arc::new(proj));
     s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
