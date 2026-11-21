@@ -13,7 +13,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, build_frame_renderer, note_gpu_fallback, note_gpu_frame};
+use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, keep_idle_renderers, note_gpu_fallback, note_gpu_frame, take_frame_renderer};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -165,7 +165,16 @@ impl Drop for Pipeline {
     /// without this a long-lived process holds gigabytes after every export. Caches in use by
     /// another thread (a monitor) are left alone.
     fn drop(&mut self) {
+        // A part of a larger job hands its working renderers to the next part (building them is
+        // most of a short part's setup); a standalone export frees them with the rest.
+        if let Some(pool) = self.renderer.take()
+            && !self.trim_pool
+            && !pool.failed.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            keep_idle_renderers(std::mem::take(&mut *pool.renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
+        }
         if self.trim_pool {
+            crate::release_idle_renderers();
             filmcraft_frame::pool::trim_f32();
             filmcraft_codecs::release_idle();
             filmcraft_frame::pool::trim_planes();
@@ -217,7 +226,7 @@ impl Pipeline {
             let count = rayon::current_num_threads().clamp(2, 4);
             let mut list = Vec::with_capacity(count);
             for _ in 0..count {
-                if let Some(r) = build_frame_renderer() {
+                if let Some(r) = take_frame_renderer() {
                     list.push(r);
                 } else {
                     break;
@@ -414,7 +423,7 @@ fn composite(dst: &mut Image, src: &Image, x: i64, y: i64, opacity: f32) {
 
 /// Load a PNG / JPEG overlay as premultiplied linear light, `width` pixels wide.
 fn load_overlay(path: &str, width: f32) -> Result<Image> {
-    let bytes = std::fs::read(path).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
+    let bytes = filmcraft_media::reader::read_regular_file(std::path::Path::new(path)).map_err(|e| ExportError::Io(format!("image overlay {path}: {e}")))?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes));
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
