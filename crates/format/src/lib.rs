@@ -13,6 +13,8 @@
 //! - **Atomic saves.** [`atomic_write`] writes a temp file in the destination directory, fsyncs it,
 //!   renames it over the target and fsyncs the directory: a crash or power cut during a save leaves
 //!   either the old file or the new one, never a torn mix.
+//! - **Thumbnail.** An optional small picture of the project ([`thumbnail`]) is stored beside the
+//!   project, like the `view`, outside the schema's promises.
 //! - **Auto-save naming/rotation** lives in [`autosave`] (`<name>-YYYY-MM-DD_HH-MM-SS.fcproj` in an
 //!   `Auto-Save` folder next to the project, oldest pruned beyond the version limit).
 //!
@@ -46,12 +48,14 @@
 
 pub mod atomic;
 pub mod autosave;
+pub mod thumbnail;
 
 use filmcraft_project::{Project, ProjectView};
 #[cfg(test)]
 use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new};
+pub use thumbnail::{Thumbnail, ThumbnailError, ThumbnailFormat, ThumbnailImage, read_thumbnail, scan_thumbnail};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
@@ -70,6 +74,8 @@ pub struct Loaded {
     /// What was open when the file was saved (sequence tabs and how each was shown), when the
     /// file records it and it can be read.
     pub view: Option<ProjectView>,
+    /// The project's thumbnail, when the file has one that can be read (it is not decoded).
+    pub thumbnail: Option<Thumbnail>,
 }
 
 impl Loaded {
@@ -84,9 +90,25 @@ pub fn generator() -> String {
     format!("FilmCraft {}", env!("CARGO_PKG_VERSION"))
 }
 
-fn loaded(env: craft_fcproj_format::EnvelopeIn<Project>, schema_version: u32) -> Loaded {
+/// The shared envelope ([`craft_fcproj_format::EnvelopeOut`]) with the thumbnail added. Only
+/// files that have a thumbnail are written through it; the keys it shares are in the same order.
+#[derive(serde::Serialize)]
+struct EnvelopeWithThumbnail<'a> {
+    format: &'static str,
+    schema_version: u32,
+    generator: String,
+    /// Before `project`, so [`read_thumbnail`] finds it without reading the project.
+    thumbnail: thumbnail::ThumbnailJson,
+    project: &'a Project,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    view: Option<&'a ProjectView>,
+}
+
+/// `bytes` is the file as read: the thumbnail is outside the schema, so it is taken from there,
+/// not from the migrated document. One that cannot be read is dropped, like the view.
+fn loaded(env: craft_fcproj_format::EnvelopeIn<Project>, schema_version: u32, bytes: &[u8]) -> Loaded {
     let view = env.view.and_then(|v| serde_json::from_value(v).ok());
-    Loaded { project: env.project, schema_version, generator: env.generator, view }
+    Loaded { project: env.project, schema_version, generator: env.generator, view, thumbnail: thumbnail::find_thumbnail(bytes) }
 }
 
 /// Serialize a project in the current schema. `pretty` = indented (human-diffable; used for the
@@ -99,7 +121,20 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    encode_with_view_and_thumbnail(project, view, None, pretty)
+}
+
+/// [`encode_with_view`], with the project's thumbnail stored beside it too (outside the schema,
+/// like the view; written before the project so [`read_thumbnail`] stays cheap).
+pub fn encode_with_view_and_thumbnail(project: &Project, view: Option<&ProjectView>, thumbnail: Option<&Thumbnail>, pretty: bool) -> Vec<u8> {
+    let Some(thumbnail) = thumbnail else {
+        return craft_fcproj_format::encode(project, view, generator(), pretty);
+    };
+    let env =
+        EnvelopeWithThumbnail { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), thumbnail: thumbnail.to_json(), project, view };
+    let r = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
+    // Serializing plain data (string keys, finite numbers or null) cannot fail.
+    r.unwrap_or_default()
 }
 
 /// Read a project file (any supported schema).
@@ -108,7 +143,7 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
     let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
-    validate_loaded(loaded(env, found))
+    validate_loaded(loaded(env, found, bytes))
 }
 
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
@@ -309,6 +344,57 @@ mod tests {
         // unknown ids are not this crate's business (the editor checks them against the project)
         doc["view"] = serde_json::json!({"open_sequences": [424242]});
         assert_eq!(decode(&serde_json::to_vec(&doc).unwrap()).unwrap().view.unwrap().open_sequences, [ItemId(424242)]);
+    }
+
+    /// The thumbnail is stored beside the project, before it, and round-trips. A file without one
+    /// opens with none; one that cannot be read (junk, damaged, oversized) is dropped and the
+    /// project still opens; and the project is the same bytes either way.
+    #[test]
+    fn the_thumbnail_is_kept_beside_the_project_and_never_stops_a_file_from_opening() {
+        let p = Project::new("Thumb");
+        let px: Vec<u8> = (0..640 * 360).flat_map(|i| [(i % 251) as u8, 40, 200, 255]).collect();
+        let thumb = Thumbnail::from_rgba8(640, 360, &px).unwrap();
+        for pretty in [true, false] {
+            let bytes = encode_with_view_and_thumbnail(&p, None, Some(&thumb), pretty);
+            let l = decode(&bytes).unwrap();
+            assert_eq!((l.thumbnail.as_ref(), &l.project), (Some(&thumb), &p));
+            // the cheap reader finds it from the start of the file alone
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            let cut = text.find("\"project\"").unwrap();
+            assert_eq!(scan_thumbnail(&bytes[..cut + 12]).as_ref(), Some(&thumb));
+            assert_eq!(decode(&encode(&p, pretty)).unwrap().thumbnail, None);
+            assert_eq!(scan_thumbnail(&encode(&p, pretty)), None);
+        }
+        let mut doc: Value = serde_json::from_slice(&encode_with_view_and_thumbnail(&p, None, Some(&thumb), false)).unwrap();
+        assert_eq!(doc["project"], serde_json::from_slice::<Value>(&encode(&p, false)).unwrap()["project"]);
+        let data = doc["thumbnail"]["data"].clone();
+        let huge = "A".repeat(4 * 1024 * 1024);
+        for junk in [
+            serde_json::json!(7),
+            Value::Null,
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!({"format": "jpeg", "width": 320, "height": 180, "data": "%%%"}),
+            serde_json::json!({"format": "jpeg", "width": -1, "height": 180, "data": data}),
+            serde_json::json!({"format": "jpeg", "width": 99999, "height": 99999, "data": data}),
+            serde_json::json!({"format": "jpeg", "width": 320, "height": 180, "data": huge}),
+            serde_json::json!({"format": "webp", "width": 320, "height": 180, "data": data}),
+        ] {
+            doc["thumbnail"] = junk.clone();
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            let l = decode(&bytes).unwrap_or_else(|e| panic!("{junk}: a bad thumbnail stopped the project from opening: {e}"));
+            assert_eq!((l.thumbnail, &l.project), (None, &p), "{junk}");
+            assert_eq!(scan_thumbnail(&bytes), None);
+        }
+        // valid base64 of an image that is not what it claims: kept (it is only decoded on demand), decode fails cleanly
+        doc["thumbnail"] = serde_json::json!({"format": "jpeg", "width": 320, "height": 180, "data": "/9j/AAAA"});
+        let l = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(l.thumbnail.unwrap().decode_rgba().is_err());
+        // an older schema with a thumbnail beside it (written by a newer build's experiment) migrates and keeps it
+        doc["thumbnail"] = serde_json::to_value(thumb.to_json()).unwrap();
+        doc["schema_version"] = Value::from(SCHEMA_VERSION - 1);
+        let l = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(l.migrated());
+        assert_eq!(l.thumbnail, Some(thumb));
     }
 
     /// A clip with unresolved "auto" points (NaN) is written with `null` coordinates. Such a file

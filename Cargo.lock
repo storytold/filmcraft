@@ -2451,14 +2451,18 @@ dependencies = [
 name = "filmcraft-format"
 version = "0.20.1"
 dependencies = [
+ "base64",
  "chrono",
  "craft-fcproj-format",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",
+ "image",
  "log",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2738,6 +2742,7 @@ dependencies = [
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
