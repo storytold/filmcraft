@@ -31,8 +31,9 @@
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
 //! - Open Project (asked once the project to open is chosen, see [`ask_before_open`])
 //!   `openProject.save`, `openProject.dontSave`, `openProject.cancel`;
-//! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
-//!   `quit.save`, `quit.dontSave`, `quit.cancel`.
+//! - Quit (asked on close with unsaved changes or an active export, see [`intercept_quit`]):
+//!   `quit.exportWarning` during an export, `quit.save` / `quit.dontSave` with edits or
+//!   `quit.confirm` for a saved project, and `quit.cancel`.
 
 use crate::widgets::CenteredDialog as _;
 use egui::RichText;
@@ -162,11 +163,11 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
-/// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
-/// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
+/// Ask before a window close (Quit, the title bar's close button, the OS) would discard edits
+/// or interrupt an active export.
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
-    if app.quit_confirmed || !app.session.is_dirty() {
+    if app.quit_confirmed || (!app.session.is_dirty() && !super::export_mode::is_export_busy(app)) {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
@@ -384,6 +385,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.clip_dialog = None;
         return;
     }
+    let quitting = d.command == "app.quit";
+    let warn_about_export = quitting && super::export_mode::is_export_busy(app);
+    let ask_to_save = !quitting || app.session.is_dirty();
+    if !ask_to_save && !warn_about_export {
+        // The export finished while the user was deciding. Keep the window open.
+        app.ui.clip_dialog = None;
+        return;
+    }
+    let title = if warn_about_export { tl!("Quit FilmCraft") } else { title };
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
@@ -663,13 +673,29 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             }
             "file.closeProject" | "app.quit" | "file.open" => {
-                ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
+                if warn_about_export {
+                    let warning = tl!("Quitting now will interrupt the export.");
+                    let r = ui.label(warning);
+                    push(&mut elems, "quit.exportWarning", &r, warning);
+                }
+                if ask_to_save {
+                    ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = ui.button(tl!("Cancel"));
                     push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                     if r.clicked() {
                         action = Some("cancel");
+                    }
+                    if !ask_to_save {
+                        let label = tl!("Quit FilmCraft");
+                        let r = ui.button(label);
+                        push(&mut elems, "quit.confirm", &r, label);
+                        if r.clicked() {
+                            action = Some("quit");
+                        }
+                        return;
                     }
                     let r = ui.button(tl!("Don't Save"));
                     push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
@@ -736,7 +762,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 Err(e) => d.error = e.to_string(),
             }
         }
-        Some("dontSave") => {
+        Some("quit" | "dontSave") => {
             leave(app, ctx, &d);
             return;
         }
@@ -775,8 +801,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     return Ok(Value::Null);
                 };
                 let r = app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string());
+                // An export may have started while the native picker was open, after Save was
+                // clicked. Give the user a chance to keep it running.
+                let needs_export_confirmation = prompt.command == "app.quit" && !warn_about_export && super::export_mode::is_export_busy(app);
                 match &r {
-                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt),
+                    Ok(_) if !app.session.is_dirty() && !needs_export_confirmation => leave(app, &ctx2, &prompt),
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
                     // the save failed: the prompt stays, with the reason in the status bar
                     Err(e) => {
@@ -798,8 +827,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     app.ui.clip_dialog = Some(d);
 }
 
-/// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
-/// then for Quit close the window; for Open open the chosen project instead of closing.
+/// Carry out a confirmed quit, close or open after any requested save has succeeded.
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
     let command = prompt.command.as_str();
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
