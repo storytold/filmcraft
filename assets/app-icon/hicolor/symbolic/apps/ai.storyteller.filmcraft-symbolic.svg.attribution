@@ -1,0 +1,7 @@
+SPDX-License-Identifier: MIT
+Title: FilmCraft Symbolic Icon
+Author: FilmCraft contributors
+Year: 2024
+Source: Original work, created for the FilmCraft project
+Notes: Symbolic (monochrome) variant of the FilmCraft application icon for GNOME Shell
+       status areas and system trays. Uses currentColor for automatic light/dark adaptation.
