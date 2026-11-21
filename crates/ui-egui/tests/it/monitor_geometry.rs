@@ -308,3 +308,27 @@ fn only_the_primary_button_scrubs_the_monitor() {
         assert_ne!(playhead(&h), start, "{prefix}: the primary button still scrubs");
     }
 }
+
+#[test]
+fn direct_manipulation_toggle_keeps_clear_of_the_transport() {
+    for width in [720.0, 500.0, 300.0, 250.0, 90.0] {
+        let mut h = harness(width, ThemeKind::Dark, Which::Program);
+        let Some(toggle) = h.state().auto.elements.iter().find(|e| e.id == "program.direct").map(|_| element(&h, "program.direct")) else {
+            assert!(width < 250.0, "{width}: the toggle shows when there is room");
+            continue;
+        };
+        let arrow = element(&h, "program.direct.menu");
+        for e in &h.state().auto.elements {
+            if e.id.starts_with("program.transport.") {
+                let r = element(&h, &e.id);
+                assert!(!overlaps(toggle, r) && !overlaps(arrow, r), "{width}: the toggle overlaps {}", e.id);
+            }
+        }
+        click(&mut h, "program.direct");
+        assert!(h.state().ui.program.direct, "{width}: the button turns it on");
+        click(&mut h, "program.direct.menu");
+        click(&mut h, "program.direct.crop");
+        assert_eq!(h.state().ui.program.direct_mode, filmcraft_ui_egui::state::DirectMode::Crop);
+        assert!(h.state().ui.program.direct, "{width}: picking a mode leaves it on");
+    }
+}

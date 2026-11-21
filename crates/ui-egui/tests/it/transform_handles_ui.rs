@@ -794,3 +794,113 @@ fn corner_pin_handles_move_its_corners() {
     let after: Vec<(f64, f64)> = ["upper_left", "upper_right", "lower_right", "lower_left"].iter().map(|p| d.point(clip, "corner_pin", p)).collect();
     assert_eq!(after, pins);
 }
+
+/// Selecting Crop shows a box on its cropped edges (#1872): a corner handle moves its two edges,
+/// an edge handle its own, and a drag inside the box slides the crop, each drag in one undo step.
+/// With Zoom on there is no box.
+#[test]
+fn crop_handles_move_its_edges() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    // half size, so the whole picture is on the monitor
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "crop"}));
+    d.frames(2);
+    d.click("effectControls.effect.motion");
+    let picture: Vec<(f64, f64)> = (0..8).map(|n| d.center(&format!("program.transform.handle.{n}"))).collect();
+    assert!(d.find("program.crop.box").is_none(), "no crop box while Motion is selected");
+    d.exec("effects.select", json!({"clip": clip, "effect": "crop"}));
+    d.frames(2);
+    assert!(d.find("program.transform.box").is_none(), "Crop has no transform box");
+    for (n, c) in picture.iter().enumerate() {
+        let at = d.center(&format!("program.crop.handle.{n}"));
+        assert!(near(at, *c), "handle {n} starts on the uncropped picture: {at:?} vs {c:?}");
+    }
+    d.shot("crop-selected");
+
+    let b = d.rect("program.crop.box");
+    let undo = d.undo_len();
+    // the left edge, a fifth of the picture's width in
+    d.drag("program.crop.handle.7", b[2] / 5.0, 30.0);
+    assert!((d.num(clip, "crop", "left") - 20.0).abs() < 0.5, "left: {}", d.num(clip, "crop", "left"));
+    assert_eq!(d.num(clip, "crop", "top"), 0.0, "an edge handle moves only its edge");
+    assert_eq!(d.undo_len(), undo + 1, "one undo step per drag");
+    assert!(near(d.center("program.crop.handle.7"), (picture[7].0 + b[2] / 5.0, picture[7].1)), "the handle follows the edge");
+
+    // the bottom-right corner, a tenth of the picture in each way
+    let undo = d.undo_len();
+    d.drag("program.crop.handle.2", -b[2] / 10.0, -b[3] / 10.0);
+    let (r, bt) = (d.num(clip, "crop", "right"), d.num(clip, "crop", "bottom"));
+    assert!((r - 10.0).abs() < 0.5 && (bt - 10.0).abs() < 0.5, "right {r}, bottom {bt}");
+    assert_eq!(d.undo_len(), undo + 1, "a corner's two edges move in one undo step");
+    d.shot("crop-dragged");
+
+    // a slide keeps the size and stops at the picture's border
+    let undo = d.undo_len();
+    let c = d.rect("program.crop.box");
+    d.drag_from((c[0] + c[2] * 0.4, c[1] + c[3] * 0.4), b[2], 0.0);
+    let (l, r) = (d.num(clip, "crop", "left"), d.num(clip, "crop", "right"));
+    assert!((l - 30.0).abs() < 0.5 && r.abs() < 0.5, "left {l}, right {r}");
+    assert_eq!(d.undo_len(), undo + 1, "a slide is one undo step");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert!((d.num(clip, "crop", "left") - 20.0).abs() < 0.5, "undo puts the slide back");
+
+    // Zoom fills the frame with the cropped area: no edges on the picture to drag
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "zoom", "value": true}));
+    d.frames(2);
+    assert!(d.find("program.crop.box").is_none(), "no crop box with Zoom on");
+}
+
+#[test]
+fn direct_manipulation_toggle_shows_the_transform_or_crop_box() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    // half size, so the whole picture is on the monitor
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.select", json!({"none": true}));
+    d.frames(2);
+    assert!(d.find("program.transform.box").is_none(), "no box while the toggle is off and no effect is selected");
+
+    d.click("program.direct");
+    let b = d.rect("program.transform.box");
+    assert_eq!(d.selected_effect(), Value::Null, "Transform shows Motion's box without selecting it");
+    let picture: Vec<(f64, f64)> = (0..8).map(|n| d.center(&format!("program.transform.handle.{n}"))).collect();
+    let (x, y) = d.point(clip, "motion", "position");
+    d.drag_from((b[0] + b[2] * 0.3, b[1] + b[3] * 0.3), 20.0, 10.0);
+    let (nx, ny) = d.point(clip, "motion", "position");
+    assert!(nx > x && ny > y, "a drag inside the box moves the clip: {x},{y} -> {nx},{ny}");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    d.shot("direct-transform");
+
+    // the menu picks Crop; the clip has no Crop effect, so the box is on the whole picture
+    d.click("program.direct.menu");
+    d.click("program.direct.crop");
+    assert!(d.find("program.transform.box").is_none(), "Crop mode draws no transform box");
+    for (n, c) in picture.iter().enumerate() {
+        assert!(near(d.center(&format!("program.crop.handle.{n}")), *c), "crop handle {n} starts on the picture");
+    }
+    let undo = d.undo_len();
+    d.drag("program.crop.handle.7", b[2] / 5.0, 0.0);
+    assert!((d.num(clip, "crop", "left") - 20.0).abs() < 0.5, "the first drag applies Crop: left {}", d.num(clip, "crop", "left"));
+    assert_eq!(d.undo_len(), undo + 2, "applying Crop, then its edges");
+    let crops = |d: &mut Driver| {
+        d.harness.state().session.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().filter(|e| e.effect == "crop").count()
+    };
+    d.drag("program.crop.handle.5", -b[2] / 10.0, 0.0);
+    assert_eq!(crops(&mut d), 1, "later drags change the same Crop");
+    assert!((d.num(clip, "crop", "right") - 10.0).abs() < 0.5, "right {}", d.num(clip, "crop", "right"));
+    d.shot("direct-crop");
+
+    d.click("program.direct");
+    assert!(d.find("program.crop.box").is_none() && d.find("program.transform.box").is_none(), "off: no box without a selected effect");
+
+    // the commands, for shortcuts and agents
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "view.toggleTransformDirectManipulation"}))["directManipulation"], "transform");
+    assert!(d.find("program.transform.box").is_some());
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "view.toggleCropDirectManipulation"}))["directManipulation"], "crop");
+    assert!(d.find("program.crop.box").is_some());
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "view.toggleCropDirectManipulation"}))["directManipulation"], Value::Null);
+    assert!(d.find("program.crop.box").is_none());
+}
