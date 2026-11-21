@@ -188,6 +188,20 @@ fn set_param_refuses_values_outside_the_range() {
     s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 0})).unwrap();
 }
 
+/// #4596: HSL Secondary's Hue Range is the key's full width, so it reaches 360° (every hue);
+/// it stopped at 180°, which keyed only half the hue circle.
+#[test]
+fn hsl_hue_range_reaches_the_whole_hue_circle() {
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "hsl_hue_range", "value": 360})).unwrap();
+    let e = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("lumetri").unwrap();
+    assert_eq!(e.param("hsl_hue_range").unwrap().value.as_f64(), Some(360.0));
+    let err = s.execute("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "hsl_hue_range", "value": 361})).unwrap_err();
+    assert!(err.to_string().contains("must be between 1 and 360"), "{err}");
+}
+
 /// #3455: a transition's requested duration can be longer than the clips around its cut can
 /// hold (a crossfade next to a few-frames clip). The preview clamps it to what the cut
 /// supports — the same invariant `edit::transitions::set_span` keeps when a transition is
