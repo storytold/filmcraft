@@ -376,6 +376,10 @@ impl CpalOut {
         // The old stream (and its audio thread) goes first: only one stream ever runs the mixer.
         self.stream = None;
         self.health.clear_errors();
+        // A replacement stream gets its own delivery window: keeping the old baseline and elapsed
+        // time across a dropout would make a healthy replacement look slow. `checked` stays, so
+        // the correction still applies at most once per play.
+        self.delivery.started = None;
         let prefer = match buffer {
             cpal::BufferSize::Fixed(n) => Some(n),
             cpal::BufferSize::Default => None,
