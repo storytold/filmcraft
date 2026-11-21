@@ -141,7 +141,9 @@ fn apply_default_transitions(s: &mut Session, p: &Value) -> Result<Value> {
 /// Apply Video / Audio Transition (⌘D / ⇧⌘D) with clips or edit points of `kind` selected: the
 /// transition goes at the selected clips' edges (as Apply Default Transitions to Selection), or at
 /// the selected edit points, instead of at the playhead (#1124). `None` when nothing of `kind` is
-/// selected. `p`'s settings (`effect`, `frames`, `params`, `reverse`) apply to every edge.
+/// selected. `p`'s settings (`effect`, `frames`, `params`, `reverse`) apply to every edge. An edge
+/// on a locked track refuses the whole command before anything changes, so the unlocked part of
+/// the selection is not left half done with no sign of what was left out.
 pub(crate) fn apply_to_selection(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Option<Value>> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let on_kind = |c: ClipId| q.find_item(c).and_then(|(t, _)| q.track(t)).is_some_and(|t| t.kind == kind);
@@ -158,6 +160,9 @@ pub(crate) fn apply_to_selection(s: &mut Session, p: &Value, kind: TrackKind) ->
     };
     if clips.is_empty() && edges.is_empty() {
         return Ok(None);
+    }
+    if edges.iter().any(|e| q.find_item(e.1).and_then(|(t, _)| q.track(t)).is_some_and(|t| t.locked)) {
+        return Err(edit::EditError::Locked.into());
     }
     let label = if kind == TrackKind::Video { "Apply Video Transition" } else { "Apply Audio Transition" };
     apply_at_edges(s, edges, p, label).map(Some)
