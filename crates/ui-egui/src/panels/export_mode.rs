@@ -77,6 +77,8 @@ pub struct ExportUi {
     pub quick_open: bool,
     pub quick_path: String,
     pub quick_preset: String,
+    /// An export waiting for Replace or Cancel because its file already exists (None = no prompt).
+    pub replace: Option<PendingReplace>,
     /// The sequence and its In/Out marks the Range was last chosen for: when either changes, the
     /// Range follows them again (Source In/Out with marks set, else Entire Source; #2749). Part of
     /// the state, so a `ui.set` of other export fields keeps it (and a chosen Range stays).
@@ -100,6 +102,7 @@ impl Default for ExportUi {
             quick_open: false,
             quick_path: String::new(),
             quick_preset: String::new(),
+            replace: None,
             range_for: None,
         }
     }
@@ -199,6 +202,73 @@ pub(super) fn active_export_job(app: &FilmcraftApp) -> Option<filmcraft_engine::
 
 pub(super) fn is_export_busy(app: &FilmcraftApp) -> bool {
     active_export_job(app).is_some() || app.session.export_queue.is_active()
+}
+
+/// An export whose file already exists, held until the user picks Replace or Cancel: the engine
+/// command to run and its params.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReplace {
+    pub path: String,
+    pub command: String,
+    pub params: Value,
+}
+
+/// Run an export command (`file.exportMedia`, `export.queue.add`, `export.quick`) writing `path`,
+/// asking first when a file is already there.
+pub(crate) fn export_or_ask(app: &mut FilmcraftApp, command: &str, path: &str, params: Value) {
+    if !path.is_empty() && std::path::Path::new(&filmcraft_engine::export_tools::expand_home(path)).exists() {
+        app.ui.export.replace = Some(PendingReplace { path: path.to_string(), command: command.to_string(), params });
+        return;
+    }
+    run_export(app, command, params);
+}
+
+fn run_export(app: &mut FilmcraftApp, command: &str, params: Value) {
+    app.ui.status = match (command, app.session.execute(command, params)) {
+        ("export.queue.add", Ok(_)) => tl!("Added to the export queue").into(),
+        ("export.quick", Ok(v)) => tlf!("Quick Export: {path}", path = v["path"].as_str().unwrap_or("")),
+        (_, Ok(v)) => tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
+        (_, Err(e)) => e.to_string(),
+    };
+}
+
+/// The "already exists" prompt of [`export_or_ask`] (automation ids `export.replace.yes` /
+/// `export.replace.no`; Escape cancels).
+pub fn replace_prompt(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(p) = app.ui.export.replace.clone() else { return };
+    let t = app.tokens;
+    let file = std::path::Path::new(&p.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.path.clone());
+    let mut answer = None;
+    let r = egui::Modal::new(egui::Id::unique("export-replace-modal")).frame(crate::panels::file_dialogs::modal_frame(&t)).show(ctx, |ui| {
+        ui.set_width(460.0);
+        egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
+            ui.label(egui::RichText::new(tl!("Replace File")).size(18.0).strong().color(t.text));
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            let resp = ui.label(egui::RichText::new(tlf!("'{file}' already exists. Do you want to replace it?", file)).size(13.5).color(t.text));
+            app.auto.add("export.replace.message", resp.rect, &p.path);
+            ui.add_space(18.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::panels::file_dialogs::button(app, ui, "export.replace.yes", tl!("Replace"), true) {
+                    answer = Some(true);
+                }
+                if crate::panels::file_dialogs::button(app, ui, "export.replace.no", tl!("Cancel"), false) {
+                    answer = Some(false);
+                }
+            });
+        });
+    });
+    if answer.is_none() && r.should_close() && !ctx.input(|i| i.pointer.any_down()) {
+        answer = Some(false);
+    }
+    if let Some(replace) = answer {
+        app.ui.export.replace = None;
+        if replace {
+            run_export(app, &p.command, p.params);
+        }
+    }
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
