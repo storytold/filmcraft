@@ -90,6 +90,7 @@ pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, Strin
         }
         return stop(app);
     }
+    app.require_edit_transport()?;
     if app.playback.playing {
         app.stop();
     }

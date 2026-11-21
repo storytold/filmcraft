@@ -41,7 +41,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         );
         if resp.clicked() {
             let _ = crate::menus::invoke(app, &ctx, cmd, json!({}));
-            app.ui.mode = crate::state::Mode::Edit;
+            app.set_mode(crate::state::Mode::Edit);
         }
     }
     let y = recent(app, ui, rect, 90.0 + 150.0 + 36.0);
@@ -116,7 +116,7 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
                 info.insert("editAfterOpen".into(), json!(true));
             }
         } else if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
-            app.ui.mode = crate::state::Mode::Edit;
+            app.set_mode(crate::state::Mode::Edit);
         }
     }
     y + 16.0 + paths.len() as f32 * RECENT_ROW_H + 36.0

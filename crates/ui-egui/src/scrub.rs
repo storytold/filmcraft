@@ -90,6 +90,13 @@ impl FilmcraftApp {
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();
         let prev = self.scrub.last_tick.replace(ph);
+        // Keep last_tick current so returning to Edit cannot audition a stale move.
+        if self.ui.mode == crate::state::Mode::Export {
+            if self.scrub.open {
+                self.stop();
+            }
+            return false;
+        }
         if self.playback.playing || self.source_playback.clock.playing {
             // playback (Program or Source) owns the playback output: it stopped the scrub stream
             // when it started, and the scrub must not stop it when the button is released. The

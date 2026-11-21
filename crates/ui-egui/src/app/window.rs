@@ -1,6 +1,21 @@
 use super::*;
 
 impl FilmcraftApp {
+    /// Export has a still preview, so every mode-entry route ends editing transport here.
+    /// Preserve the last visible playheads and finish active takes/trim transactions normally.
+    pub fn set_mode(&mut self, mode: crate::state::Mode) {
+        if mode == crate::state::Mode::Export {
+            self.stop();
+            self.stop_source();
+            if self.session.trim_play.active()
+                && let Err(error) = self.session.execute("trim.shuttleStop", json!({}))
+            {
+                self.ui.status = error.to_string();
+            }
+        }
+        self.ui.mode = mode;
+    }
+
     fn workspaces_path(&self) -> Option<std::path::PathBuf> {
         self.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join(dock::WORKSPACES_FILE))
     }
