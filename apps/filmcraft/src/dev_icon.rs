@@ -20,7 +20,7 @@
 //! `Exec=` the same two-layer way as here; keep the two in sync.
 //!
 //! Every failure is logged and skipped — a missing dev icon must never stop the app
-//! ([`AGENTS.md`](/AGENTS.md) §0 "never crash").
+//! ([`AGENTS.md`](/AGENTS.md) rule 13, "never crash").
 
 /// Install the user-level desktop entry and icons for a source-tree run (Linux).
 pub fn ensure_dev_desktop_entry() {
