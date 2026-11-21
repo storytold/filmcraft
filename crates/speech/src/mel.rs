@@ -32,17 +32,24 @@ fn mel_to_hz(m: f64) -> f64 {
 
 /// Mel filterbank, `n_mels × N_BINS` row-major, for 16 kHz audio and a 400-point FFT.
 pub fn mel_filters(n_mels: usize) -> Vec<f32> {
+    mel_filters_for(n_mels, N_FFT)
+}
+
+/// Mel filterbank for an `n_fft`-point FFT of 16 kHz audio, `n_mels × (n_fft / 2 + 1)` row-major
+/// (Slaney scale and area normalisation, 0–8 kHz).
+pub fn mel_filters_for(n_mels: usize, n_fft: usize) -> Vec<f32> {
     let sr = 16_000.0;
-    let fftfreqs: Vec<f64> = (0..N_BINS).map(|i| i as f64 * sr / N_FFT as f64).collect();
+    let n_bins = n_fft / 2 + 1;
+    let fftfreqs: Vec<f64> = (0..n_bins).map(|i| i as f64 * sr / n_fft.max(1) as f64).collect();
     let (lo, hi) = (hz_to_mel(0.0), hz_to_mel(sr / 2.0));
     let mel_f: Vec<f64> = (0..n_mels + 2).map(|i| mel_to_hz(lo + (hi - lo) * i as f64 / (n_mels + 1) as f64)).collect();
-    let mut w = vec![0f32; n_mels * N_BINS];
+    let mut w = vec![0f32; n_mels * n_bins];
     for m in 0..n_mels {
         let enorm = 2.0 / (mel_f[m + 2] - mel_f[m]);
         for (k, &f) in fftfreqs.iter().enumerate() {
             let lower = (f - mel_f[m]) / (mel_f[m + 1] - mel_f[m]);
             let upper = (mel_f[m + 2] - f) / (mel_f[m + 2] - mel_f[m + 1]);
-            w[m * N_BINS + k] = (lower.min(upper).max(0.0) * enorm) as f32;
+            w[m * n_bins + k] = (lower.min(upper).max(0.0) * enorm) as f32;
         }
     }
     w

@@ -1,4 +1,4 @@
-//! Whisper end-to-end on real speech, when the weights are on this machine.
+//! Whisper and Parakeet end-to-end on real speech, when the weights are on this machine.
 //!
 //! Never downloads. Looks for the model in `$FILMCRAFT_MODELS_DIR/<id>/`, then
 //! `<repo>/target/models/<id>/` (put a model there by hand, or let the app download it into the
@@ -90,4 +90,35 @@ fn tiny_model_transcribes_public_domain_speech() {
     let wer = errs / words.max(1) as f64;
     eprintln!("whisper-tiny WER {:.1}% over {words} words", wer * 100.0);
     assert!(wer < 0.25, "WER {wer}");
+}
+
+#[test]
+fn parakeet_transcribes_speech_with_word_times() {
+    let Some(dir) = model_dir("parakeet-tdt-0.6b-v3") else {
+        eprintln!("SKIPPED: parakeet-tdt-0.6b-v3 weights not found (see the test's module docs)");
+        return;
+    };
+    let samples = samples();
+    if samples.is_empty() {
+        eprintln!("SKIPPED: no speech samples in target/fixtures/speech");
+        return;
+    }
+    let m = filmcraft_speech::parakeet::Parakeet::load(&dir, "parakeet-tdt-0.6b-v3").unwrap();
+    let opts = Options { diarize: false, ..Default::default() };
+    let (mut errs, mut words) = (0.0, 0usize);
+    for (p, reference) in samples.iter().take(8) {
+        let audio = read_f32(p);
+        let t = m.transcribe(&audio, &opts, &mut |_, _| true).unwrap();
+        let hyp = t.text();
+        let n = reference.split_whitespace().count();
+        errs += word_error_rate(reference, &hyp) * n as f64;
+        words += n;
+        let end = filmcraft_speech::sample_tick(audio.len() as i64);
+        t.check().unwrap();
+        assert!(t.words.iter().all(|x| x.start < x.end && x.end <= end), "{}", p.display());
+        assert_eq!(t.language, "en");
+    }
+    let wer = errs / words.max(1) as f64;
+    eprintln!("parakeet-tdt-0.6b-v3 WER {:.1}% over {words} words", wer * 100.0);
+    assert!(wer < 0.15, "WER {wer}");
 }
