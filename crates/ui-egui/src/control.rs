@@ -1,7 +1,7 @@
 //! Programmatic control of the running app (agents, tests, MCP bridge).
 //!
 //! Transport-agnostic: a transport thread (TCP in the desktop app) sends [`ControlRequest`]s; the
-//! UI thread handles them between frames and replies with `{"ok":…, "result"|"error":…}`.
+//! UI thread handles them between frames and replies with `{"ok":â€¦, "result"|"error":â€¦}`.
 //!
 //! Methods:
 //! - `engine.execute {command, params}` / `ui.menu.invoke {id}`: run any engine or UI command
@@ -10,7 +10,7 @@
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
 //! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
-//! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
+//! - `ui.set {tts: {voice, pitch, pace, textâ€¦}}`: patch the Text to Speech panel draft
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
@@ -119,7 +119,7 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
 
 fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     let s = |k: &str| p.get(k).and_then(Value::as_str);
-    // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
+    // Text to Speech panel draft (voice, pitch, pace, textâ€¦), merged into the current one
     if let Some(patch) = p.get("tts") {
         let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();
         merge(&mut cur, patch);
@@ -166,7 +166,7 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
         app.ui.program.res =
             PlaybackRes::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r) || format!("{x:?}").eq_ignore_ascii_case(r)).unwrap_or(app.ui.program.res);
     }
-    if let Err(e) = set_timeline(app, p) {
+    if let Err(e) = set_timeline(app, ctx, p) {
         return err(e);
     }
     if let Some(q) = s("effectsSearch") {
@@ -203,7 +203,7 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
             Err(e) => return err(format!("`export`: {e}")),
         }
     }
-    // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
+    // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, â€¦}, merged
     if let Some(patch) = p.get("panels") {
         let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();
         merge(&mut cur, patch);
@@ -216,7 +216,7 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
     if let Err(e) = set_panel_views(app, p) {
         return err(e);
     }
-    // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
+    // Essential Graphics â–¸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
     if let Some(patch) = p.get("gfxTemplates") {
         let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();
         merge(&mut cur, patch);
@@ -250,22 +250,172 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
 
 /// The `timeline` part of a `ui.set` payload: playback zoom and scroll, fit, track heights
 /// and the thumbnail mode.
-fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+// one `if let` per key is the clearest shape for a settings dictionary; splitting it into
+// helpers would scatter one logical operation (a settings apply) over the file
+#[allow(clippy::cognitive_complexity)]
+fn set_timeline(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
-    if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
+    // Validate the mode before applying any other Timeline changes, so an invalid request is
+    // all-or-nothing.
+    let thumbnail_mode = tl
+        .get("thumbnails")
+        .and_then(Value::as_str)
+        .map(|m| {
+            if m.eq_ignore_ascii_case("off") {
+                Ok(None)
+            } else {
+                ThumbnailMode::from_name(m).map(Some).ok_or_else(|| format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"))
+            }
+        })
+        .transpose()?;
+    let timeline_ui_before = app.session.state.timeline_ui.clone();
+    let view_epoch_before = app.session.view_epoch;
+    let mut view_settings_changed = false;
+    let explicit_zoom_scroll = tl.get("pps").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v > 0.0)
+        || tl.get("scroll").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && v >= 0.0);
+    let explicit_view = explicit_zoom_scroll
+        || tl.get("videoTrackHeight").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && (8.0..=600.0).contains(&v))
+        || tl.get("audioTrackHeight").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && (8.0..=600.0).contains(&v));
+    // hostile control parameters: NaN or infinite zoom/scroll would poison every rect in the
+    // Timeline, so only finite, positive values are accepted. The zoom ceiling is applied by
+    // `animate_view` every frame (with the measured Timeline width -- this early in a session
+    // the width is still a placeholder, and clamping against it would shrink a valid request)
+    if let Some(v) = tl.get("pps").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0) {
         app.ui.timeline.target_pps = v;
     }
-    if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
+    if let Some(v) = tl.get("scroll").and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0) {
         app.ui.timeline.target_scroll = v;
+    }
+    if let Some(v) = tl.get("smoothAnimations").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.smooth_animations != v;
+        app.session.state.timeline_ui.smooth_animations = v;
+    }
+    if let Some(v) = tl.get("invertedControls").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.inverted_controls != v;
+        app.session.state.timeline_ui.inverted_controls = v;
+    }
+    if let Some(v) = tl.get("controlTracks").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.control_tracks != v;
+        app.session.state.timeline_ui.control_tracks = v;
+    }
+    if let Some(v) = tl.get("playheadSideSeconds").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.1..=3600.0).contains(v)) {
+        view_settings_changed |= app.session.state.timeline_ui.playhead_side_seconds != v;
+        app.session.state.timeline_ui.playhead_side_seconds = v;
+        let custom = ![3.0, 5.0, 10.0, 30.0].contains(&v);
+        if custom {
+            app.session.state.timeline_ui.playhead_side_last_custom = v;
+        }
+        app.session.state.timeline_ui.playhead_side_custom = custom;
+    }
+    if let Some(v) = tl.get("shiftDragSpeed").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.1..=50.0).contains(v)) {
+        view_settings_changed |= app.session.state.timeline_ui.shift_drag_speed != v;
+        app.session.state.timeline_ui.shift_drag_speed = v;
+        let custom = ![0.25, 0.5, 1.0, 2.0].contains(&v);
+        if custom {
+            app.session.state.timeline_ui.shift_drag_last_custom = v;
+        }
+        app.session.state.timeline_ui.shift_drag_custom = custom;
+    }
+    if let Some(v) = tl.get("playheadCentering").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.playhead_centering != v;
+        app.session.state.timeline_ui.playhead_centering = v;
+        if !v {
+            app.tl.playhead_captured = false;
+        }
+    }
+    if let Some(v) = tl.get("maxZoomLevel").and_then(Value::as_f64).filter(|v| v.is_finite() && (0.05..=3.0).contains(v)) {
+        view_settings_changed |= app.session.state.timeline_ui.max_zoom_seconds != v;
+        app.session.state.timeline_ui.max_zoom_seconds = v;
+        // the zoom established under the old ceiling is clamped to the new one by animate_view
+        let custom = ![0.1, 0.2, 0.4, 0.8].contains(&v);
+        if custom {
+            app.session.state.timeline_ui.max_zoom_last_custom = v;
+        }
+        app.session.state.timeline_ui.max_zoom_custom = custom;
     }
     if tl.get("fit").and_then(Value::as_bool) == Some(true) {
         app.ui.timeline.fit_pending = true;
     }
-    if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
+    // Hide Slider / Unhide Timeline Slider (the setting only: hiding unwinds every piece of the
+    // bar's state, so it is recalled by the Timeline's right-click menu at any time)
+    if let Some(v) = tl.get("zoomBarHidden").and_then(Value::as_bool) {
+        crate::panels::timeline::set_zoombar_hidden(app, ctx, v);
+    }
+    if let Some(v) = tl.get("trackSliderHidden").and_then(Value::as_bool) {
+        crate::panels::timeline::set_track_slider_hidden(app, ctx, v);
+    }
+    if let Some(values) = tl.get("timelineControlBindings").and_then(Value::as_array) {
+        for (slot, value) in values.iter().take(14).enumerate() {
+            if let Some(binding) = value.as_str() {
+                let dst = app.session.state.timeline_ui.timeline_control_bindings.get_mut(slot);
+                if let Some(dst) = dst {
+                    let binding: String = binding.chars().take(64).collect();
+                    if *dst != binding {
+                        *dst = binding;
+                        view_settings_changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(v) = tl.get("alternateSliderPosition").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.alternate_slider_position != v;
+        app.session.state.timeline_ui.alternate_slider_position = v;
+    }
+    if let Some(v) = tl.get("sliderMinimap").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.slider_minimap != v;
+        app.session.state.timeline_ui.slider_minimap = v;
+    }
+    if let Some(v) = tl.get("positionIndicator").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.show_position_indicator != v;
+        app.session.state.timeline_ui.show_position_indicator = v;
+    }
+    if let Some(v) = tl.get("showWholeTimeline").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.show_whole_timeline != v;
+        app.session.state.timeline_ui.show_whole_timeline = v;
+    }
+    if let Some(v) = tl.get("fillClips").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.fill_clips != v;
+        app.session.state.timeline_ui.fill_clips = v;
+    }
+    if let Some(v) = tl.get("positionIndicatorColor").and_then(Value::as_str).and_then(filmcraft_project::normalize_hex_color) {
+        view_settings_changed |= app.session.state.timeline_ui.position_indicator_color != v;
+        app.session.state.timeline_ui.position_indicator_color = v;
+    }
+    if let Some(v) = tl.get("prioritiseAudio").and_then(Value::as_bool) {
+        view_settings_changed |= app.session.state.timeline_ui.prioritise_audio != v;
+        app.session.state.timeline_ui.prioritise_audio = v;
+    }
+    for (key, field) in [("videoIndicatorColor", "video"), ("audioIndicatorColor", "audio"), ("offlineIndicatorColor", "offline")] {
+        if let Some(v) = tl.get(key).and_then(Value::as_str).and_then(filmcraft_project::normalize_hex_color) {
+            let cur = match field {
+                "video" => &app.session.state.timeline_ui.video_indicator_color,
+                "audio" => &app.session.state.timeline_ui.audio_indicator_color,
+                _ => &app.session.state.timeline_ui.offline_indicator_color,
+            };
+            view_settings_changed |= *cur != v;
+            match field {
+                "video" => app.session.state.timeline_ui.video_indicator_color = v,
+                "audio" => app.session.state.timeline_ui.audio_indicator_color = v,
+                _ => app.session.state.timeline_ui.offline_indicator_color = v,
+            }
+        }
+    }
+    // the same 8-600 pt bounds SequenceView::checked() gives a project file's track heights
+    let explicit_track_height = tl.get("videoTrackHeight").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && (8.0..=600.0).contains(&v))
+        || tl.get("audioTrackHeight").and_then(Value::as_f64).is_some_and(|v| v.is_finite() && (8.0..=600.0).contains(&v));
+    if explicit_track_height {
+        app.tl.track_anim = None;
+    }
+    if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64).filter(|v| v.is_finite() && (8.0..=600.0).contains(v)) {
         app.ui.timeline.video_track_h = v as f32;
     }
-    if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
+    if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64).filter(|v| v.is_finite() && (8.0..=600.0).contains(v)) {
         app.ui.timeline.audio_track_h = v as f32;
+    }
+    if explicit_view && app.ui.timeline.fit_pending && app.session.state.active_sequence.is_some() {
+        let keep_pending_fit = !explicit_zoom_scroll || tl.get("fit").and_then(Value::as_bool) == Some(true);
+        app.explicit_timeline_view_edit(keep_pending_fit);
     }
     if let Some(v) = tl.get("showVideoNames").and_then(Value::as_bool) {
         app.ui.timeline.show_video_names = v;
@@ -273,16 +423,19 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     if let Some(v) = tl.get("showAudioNames").and_then(Value::as_bool) {
         app.ui.timeline.show_audio_names = v;
     }
+    // Compare the complete persisted settings value. Numeric fields can keep the same number
+    // while selecting a preset clears their Custom flag, which is itself saved project state.
+    view_settings_changed |= timeline_ui_before != app.session.state.timeline_ui;
+    if view_settings_changed && app.session.view_epoch == view_epoch_before {
+        app.session.project_view_changed();
+    }
     // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
-    if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
-        if m.eq_ignore_ascii_case("off") {
-            app.ui.timeline.show_thumbnails = false;
-        } else {
-            let Some(mode) = ThumbnailMode::from_name(m) else {
-                return Err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
-            };
+    if let Some(mode) = thumbnail_mode {
+        if let Some(mode) = mode {
             app.ui.timeline.show_thumbnails = true;
             app.ui.timeline.thumbnail_mode = mode;
+        } else {
+            app.ui.timeline.show_thumbnails = false;
         }
     }
     Ok(())
@@ -496,11 +649,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
-            // `engine.execute` never opens a parameter dialog (#1540); `ui.menu.invoke` is the menu
-            app.engine_call = req.method == "engine.execute";
-            let r = invoke(app, ctx, id, params);
-            app.engine_call = false;
-            match r {
+            match invoke(app, ctx, id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -718,13 +867,7 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
             Err(e) => json!({"ok": false, "error": e}),
         };
     }
-    let path = match path {
-        Some(p) => p.to_string(),
-        None => match filmcraft_engine::private_temp_dir() {
-            Ok(d) => d.join("filmcraft-screenshot.png").to_string_lossy().to_string(),
-            Err(e) => return json!({"ok": false, "error": format!("no private temporary folder: {e}")}),
-        },
-    };
+    let path = path.map(str::to_string).unwrap_or_else(|| filmcraft_engine::temp_dir().join("filmcraft-screenshot.png").to_string_lossy().to_string());
     match encode_png(&rgba, cw as u32, ch as u32) {
         Ok(png) => match std::fs::write(&path, png) {
             Ok(()) => json!({"ok": true, "result": {"path": path, "width": cw, "height": ch}}),
@@ -814,6 +957,106 @@ mod input_bounds_tests {
     /// Create an empty editor session for inspecting queued synthetic input without a window.
     fn app() -> FilmcraftApp {
         FilmcraftApp::new(filmcraft_engine::Session::default())
+    }
+
+    #[test]
+    fn explicit_first_timeline_view_is_stored_and_marks_view_unsaved() {
+        let mut app = app();
+        let sequence = filmcraft_engine::project::ItemId(1);
+        app.session.state.active_sequence = Some(sequence);
+        app.sync_timeline_view();
+        assert!(app.ui.timeline.fit_pending);
+
+        let result = set_timeline(
+            &mut app,
+            &egui::Context::default(),
+            &json!({"timeline": {
+                "pps": 37.0, "scroll": 12.0, "videoTrackHeight": 144.0
+            }}),
+        );
+        assert!(result.is_ok());
+        app.sync_timeline_view();
+
+        let saved = app.session.state.timeline_views.get(&sequence);
+        assert_eq!(saved.map(|view| (view.pps, view.scroll, view.video_track_h)), Some((37.0, 12.0, 144.0)));
+        assert_eq!(app.session.view_epoch, 1);
+        assert!(!app.ui.timeline.fit_pending);
+    }
+
+    #[test]
+    fn explicit_track_height_is_saved_while_collapsed_fit_remains_pending() {
+        let mut app = app();
+        let sequence = filmcraft_engine::project::ItemId(1);
+        app.session.state.active_sequence = Some(sequence);
+        app.last_timeline_width = 40.0;
+        app.sync_timeline_view();
+
+        let result = set_timeline(
+            &mut app,
+            &egui::Context::default(),
+            &json!({"timeline": {
+                "fit": true, "videoTrackHeight": 80.0
+            }}),
+        );
+        assert!(result.is_ok());
+
+        let saved = app.session.state.timeline_views.get(&sequence);
+        assert_eq!(saved.map(|view| (view.pps, view.scroll, view.video_track_h)), Some((40.0, 0.0, 80.0)));
+        assert!(app.session.state.timeline_pending_fits.contains(&sequence));
+        assert_eq!(app.session.view_epoch, 1);
+        assert!(app.ui.timeline.fit_pending, "the explicit fit must wait for usable Timeline geometry");
+    }
+
+    #[test]
+    fn explicit_track_height_cancels_an_older_slider_animation_target() {
+        let mut app = app();
+        app.tl.track_anim = Some([120.0, 15.0, 90.0, 10.0]);
+        let result = set_timeline(&mut app, &egui::Context::default(), &json!({"timeline": {"videoTrackHeight": 180.0}}));
+        assert!(result.is_ok());
+        assert_eq!(app.ui.timeline.video_track_h, 180.0);
+        assert_eq!(app.tl.track_anim, None);
+    }
+
+    #[test]
+    fn selecting_a_preset_persists_custom_flag_changes_when_the_number_is_unchanged() {
+        let mut app = app();
+        let original_revision = app.session.revision;
+        let settings = &mut app.session.state.timeline_ui;
+        settings.playhead_side_seconds = 5.0;
+        settings.playhead_side_custom = true;
+        settings.shift_drag_speed = 1.0;
+        settings.shift_drag_custom = true;
+        settings.max_zoom_seconds = 0.4;
+        settings.max_zoom_custom = true;
+
+        let result =
+            set_timeline(&mut app, &egui::Context::default(), &json!({"timeline": {"playheadSideSeconds": 5.0, "shiftDragSpeed": 1.0, "maxZoomLevel": 0.4}}));
+
+        assert!(result.is_ok());
+        let settings = &app.session.state.timeline_ui;
+        assert!(!settings.playhead_side_custom);
+        assert!(!settings.shift_drag_custom);
+        assert!(!settings.max_zoom_custom);
+        assert_eq!(app.session.revision, original_revision, "view settings do not dirty project content");
+        assert_eq!(app.session.view_epoch, 1, "Custom flag changes are persisted as view changes");
+    }
+
+    #[test]
+    fn invalid_thumbnail_mode_does_not_apply_other_timeline_fields() {
+        let mut app = app();
+        let old_pps = app.ui.timeline.target_pps;
+        let old_smooth = app.session.state.timeline_ui.smooth_animations;
+        let result = set_timeline(
+            &mut app,
+            &egui::Context::default(),
+            &json!({"timeline": {
+                "pps": 91.0, "smoothAnimations": !old_smooth, "thumbnails": "invalid"
+            }}),
+        );
+        assert!(result.is_err());
+        assert_eq!(app.ui.timeline.target_pps, old_pps);
+        assert_eq!(app.session.state.timeline_ui.smooth_animations, old_smooth);
+        assert_eq!(app.session.view_epoch, 0);
     }
 
     /// Dispatch a control request and fail the test if hostile parameters cause a panic.
@@ -929,9 +1172,9 @@ mod base64_tests {
     #[test]
     fn screenshot_crop_clips_negative_panel_origin() {
         // A panel starting two points left of / one point above the window: only the visible
-        // 2×3 pixels are captured, not the requested 4×4 starting at (0, 0).
+        // 2Ã—3 pixels are captured, not the requested 4Ã—4 starting at (0, 0).
         assert_eq!(super::crop_pixels([8, 8], Some([-2.0, -1.0, 4.0, 4.0]), 1.0).unwrap(), (0, 0, 2, 3));
-        // The same crop at 2× scale clips the same logical region to the pixel grid.
+        // The same crop at 2Ã— scale clips the same logical region to the pixel grid.
         assert_eq!(super::crop_pixels([16, 16], Some([-2.0, -1.0, 4.0, 4.0]), 2.0).unwrap(), (0, 0, 4, 6));
         // Partly outside on the right/bottom uses the visible remainder.
         assert_eq!(super::crop_pixels([8, 8], Some([6.0, 5.0, 4.0, 4.0]), 1.0).unwrap(), (6, 5, 2, 3));
