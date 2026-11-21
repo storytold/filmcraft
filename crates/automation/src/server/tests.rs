@@ -117,6 +117,22 @@ async fn tools_are_titled_and_annotated() {
     assert_eq!((ro("command_list"), ro("command_run")), (Some(json!(true)), Some(json!(false))));
 }
 
+/// #4599: a key the command doesn't take is reported beside the result, and the command still runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_parameter_key_is_a_warning() {
+    let mut c = Client::start(demo());
+    c.init().await;
+    let r = c.call(1, "command_run", json!({"id": "file.newBin", "params": {"nme": "x"}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!(r["result"]["content"][1]["text"], "warning: `file.newBin` ignores unknown parameter `nme` (it takes name, parent)", "{r}");
+    let r = c.call(2, "command_run", json!({"id": "file.newBin", "params": {"name": "x"}})).await;
+    assert_eq!(r["result"]["content"].as_array().map(Vec::len), Some(1), "{r}");
+    let r = c.call(3, "command_batch", json!({"steps": [{"id": "file.newBin", "params": {"nme": "y"}}, {"id": "file.newBin", "params": {"name": "z"}}]})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(v["results"][0]["warning"].as_str().unwrap().contains("`nme`"), "{v}");
+    assert!(v["results"][1].get("warning").is_none(), "{v}");
+}
+
 /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line
 /// protocol.
 #[tokio::test(flavor = "multi_thread")]
