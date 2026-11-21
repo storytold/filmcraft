@@ -105,6 +105,29 @@ pub fn open_owned(app: &mut FilmcraftApp, marker: &Marker, owner: Owner) {
     });
 }
 
+/// Add Marker on the frame of a marker opens that marker's Edit Marker dialog instead of stacking a
+/// second marker on it; returns the id of the marker it opened. `params` are Add Marker's, with
+/// `target` already set for the Source monitor. A time in them always adds. Add Marker reads a null
+/// or wrongly typed time as no time, so one of those opens the playhead's marker too.
+pub fn open_at_playhead(app: &mut FilmcraftApp, params: &serde_json::Value) -> Option<u64> {
+    let has = |k: &str, is: fn(&serde_json::Value) -> bool| params.get(k).is_some_and(is);
+    if has("time", serde_json::Value::is_i64)
+        || has("frame", serde_json::Value::is_i64)
+        || has("seconds", serde_json::Value::is_number)
+        || has("timecode", serde_json::Value::is_string)
+    {
+        return None;
+    }
+    let source = params.get("target").and_then(serde_json::Value::as_str) == Some("source");
+    let owner = Owner::current(app, source)?;
+    let (_, rate, _, markers) = owner.details(app)?;
+    let playhead = if source { app.session.state.source_playhead } else { app.session.playhead() };
+    // of markers already stacked there, the one drawn on top
+    let marker = markers.iter().rev().find(|m| rate.frame_at(m.start) == rate.frame_at(playhead)).cloned()?;
+    open_owned(app, &marker, owner);
+    Some(marker.id.0)
+}
+
 enum Action {
     Done,
     Cancel,
