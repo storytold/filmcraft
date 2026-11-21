@@ -145,15 +145,33 @@ fn is_offline(s: &Session, item: ItemId) -> bool {
 }
 
 fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
-    let mut w = MediaWalk { s, seen: Default::default(), out };
+    let mut w = MediaWalk { s, seen: Default::default(), walked: Default::default(), budget: MAX_WALKED_CLIPS, out };
     w.walk(q, (Tick::ZERO, Tick(i64::MAX)), &|t| t, None, 0);
+    if w.budget == 0 {
+        w.out.push(issue(
+            "offlineMedia",
+            "info",
+            Tick::ZERO,
+            None,
+            format!("the check of nested sequences stopped after {MAX_WALKED_CLIPS} clips: offline footage deeper in nests may not be listed"),
+            "review the nested sequences on their own",
+        ));
+    }
 }
+
+/// Clips the offline check visits at most, nests included: nests of nests can multiply.
+const MAX_WALKED_CLIPS: usize = 100_000;
 
 /// The offline-media check's walk through a sequence and its nests.
 struct MediaWalk<'a> {
     s: &'a Session,
     /// Media items already reported: once each, however often they show.
     seen: std::collections::BTreeSet<ItemId>,
+    /// (sequence, range) parts already walked: another nest showing the same part holds the same
+    /// media, so it isn't walked again.
+    walked: std::collections::HashSet<(ItemId, Tick, Tick)>,
+    /// Clips left to visit.
+    budget: usize,
     out: &'a mut Vec<Issue>,
 }
 
@@ -165,6 +183,10 @@ impl MediaWalk<'_> {
     fn walk(&mut self, q: &Sequence, window: (Tick, Tick), to_top: &dyn Fn(Tick) -> Tick, nest: Option<(u64, &str)>, depth: u32) {
         let s = self.s;
         for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+            if self.budget == 0 {
+                return;
+            }
+            self.budget -= 1;
             // the part of the clip inside the window, in `q`'s time
             let (a, b) = (it.start.max(window.0), it.end().min(window.1));
             if a >= b {
@@ -182,7 +204,7 @@ impl MediaWalk<'_> {
                     (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start))
                 };
                 let (lo, hi) = (lo.max(Tick::ZERO), hi.min(child.duration()));
-                if lo >= hi {
+                if lo >= hi || !self.walked.insert((it.item, lo, hi)) {
                     continue;
                 }
                 let (start, src_in, src_out, speed, reverse) = (it.start, it.source_in, it.source_out(), it.speed, it.reverse);

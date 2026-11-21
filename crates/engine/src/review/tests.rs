@@ -302,3 +302,35 @@ fn offline_footage_inside_a_nest_is_reported_where_the_nest_shows_it() {
     assert_eq!(found[0]["seconds"].as_f64(), Some(0.0), "where it first shows in the parent");
     assert!(offline(&mut s, ocean_only).is_empty(), "the nest never shows the offline part");
 }
+
+/// Nests of nests multiply: a sequence that nests the same child many times, at every level,
+/// is checked once per part shown and in bounded time.
+#[test]
+fn repeated_nests_are_walked_once() {
+    use filmcraft_project::{ClipId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let top = {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let settings = p.sequence(seq).unwrap().settings.clone();
+        // seven levels, each holding the level below 40 times on 40 tracks: 40^7 nest clips if each were walked
+        let mut below = seq;
+        for _ in 0..7 {
+            let q = p.new_sequence("level", settings.clone(), 40, 0, None);
+            let len = p.sequence(below).unwrap().duration();
+            for k in 0..40 {
+                let mut n = p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, len), rate).unwrap();
+                n.id = ClipId(p.alloc_id());
+                p.sequence_mut(q).unwrap().video_tracks[k].items = vec![n];
+            }
+            below = q;
+        }
+        below
+    };
+    let t0 = std::time::Instant::now();
+    let r = review(&mut s, json!({"sequence": top.0}));
+    assert!(t0.elapsed().as_secs() < 10, "the check is bounded: {:?}", t0.elapsed());
+    assert_eq!(r["errors"], 0, "the demo footage is online: {r}");
+}
