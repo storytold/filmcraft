@@ -15,6 +15,7 @@ pub enum Icon {
     RateStretch,
     Remix,
     Razor,
+    Scissors,
     Slip,
     Slide,
     Pen,
@@ -291,6 +292,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.circle(8.0, 8.0, 1.3);
             pen.line(&[(5.0, 8.0), (6.5, 8.0)]);
             pen.line(&[(9.5, 8.0), (11.0, 8.0)]);
+        }
+        Scissors => {
+            pen.circle(4.0, 5.0, 2.0);
+            pen.circle(4.0, 11.0, 2.0);
+            pen.line(&[(5.5, 6.0), (13.5, 12.0)]);
+            pen.line(&[(5.5, 10.0), (13.5, 4.0)]);
         }
         Slip => {
             pen.line(&[(2.5, 4.0), (2.5, 12.0)]);
@@ -837,6 +844,7 @@ mod tests {
         RateStretch,
         Remix,
         Razor,
+        Scissors,
         Slip,
         Slide,
         Pen,
