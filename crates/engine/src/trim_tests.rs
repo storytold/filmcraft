@@ -613,3 +613,36 @@ fn timeline_ripple_trim_clips_leaves_no_gap_behind_the_cut() {
     assert_eq!(qb.duration, rate.tick_of(48), "the selected neighbour is not trimmed by the ripple");
     assert_eq!(qb.start, qa.end(), "no gap: the neighbour follows the cut");
 }
+
+/// #1926 review (H4): a ripple trim clamps over the clips it actually moves, not over the whole
+/// selection, so what the Timeline's preview promised is what the command applies. The short
+/// selected neighbour here would cap a regular multi-selection trim to three frames, and the
+/// ripple has no business asking it: it moves with the cut instead of being trimmed.
+#[test]
+fn timeline_ripple_trim_clamps_like_the_preview_not_like_the_selection() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Ripple clamp", "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.as_media().is_some()).unwrap().id;
+    // A on 0..48 frames, B butted against it with only 4 frames of material
+    for (frame, frames) in [(0i64, 48i64), (48, 4)] {
+        s.execute(
+            "timeline.place",
+            json!({"item": item.0, "track": "V1", "frame": frame, "sourceIn": rate.tick_of(frames).0, "duration": rate.tick_of(frames).0, "audio": false}),
+        )
+        .unwrap();
+    }
+    let ids: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    assert_eq!(ids.len(), 2, "two clips, one butted against the other");
+    let (a, b) = (ids[0], ids[1]);
+    let minus_ten = Tick(rate.frame_duration().0 * -10);
+    // what the Timeline's preview computes for this drag, with links on
+    let preview = crate::commands::trim_delta_linked(&s, a, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Ripple, minus_ten, true).unwrap();
+    assert_eq!(preview, minus_ten, "a ripple on A can take the whole 10 frames: B follows the cut");
+    s.execute("timeline.trim", json!({"clip": a.0, "clips": [a.0, b.0], "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (qa, qb) = (q.find_item(a).unwrap().1, q.find_item(b).unwrap().1);
+    assert_eq!(qa.end(), rate.tick_of(38), "the command applied what the preview promised, not the neighbour's limit");
+    assert_eq!(qb.duration, rate.tick_of(4), "a ripple does not trim the selected neighbour");
+    assert_eq!(qb.start, qa.end(), "no gap: the neighbour follows the cut");
+}
