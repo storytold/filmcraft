@@ -98,7 +98,8 @@ SUBCOMMANDS
                                 media info as JSON, with MXF / Ogg / BWF details; with
                                 --image-sequence <media> is the first numbered still of a sequence
   bench-decode <media> [--frames N]
-  mcp                           MCP server on stdio (headless, or --bridge to the live app)
+  mcp                           MCP server on stdio (headless, or --bridge to the live app; confine
+                                its files with --automation-read-root/--automation-write-root)
   help                          this text
   --version                     print the version
 
@@ -111,6 +112,12 @@ OPTIONS
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
+  --automation-read-root <dir>  `mcp`: only files under this folder may be read (it must exist)
+  --automation-write-root <dir> `mcp`: only files under this folder may be written. A root left out
+                                grants no access of its kind; with neither, nothing is confined.
+                                With --bridge they are enforced before each command reaches the app,
+                                which is not itself confined: it opens footage a project names, and
+                                its Auto Save has to be off
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -289,11 +296,38 @@ fn register_hardware_decoders() -> filmcraft_platform::Availability {
     filmcraft_platform::register()
 }
 
+/// The automation roots `mcp` was given (`--automation-read-root/--automation-write-root`),
+/// opened and checked. `Err` is a usage error; `None`: nothing is confined (#985).
+fn mcp_roots(a: &Args) -> Result<Option<std::sync::Arc<filmcraft_automation::AutomationRoots>>, String> {
+    for flag in ["--automation-read-root", "--automation-write-root"] {
+        match a.occurrences(flag) {
+            0 => {}
+            // A flag with no value (`mcp --automation-read-root` at the end) must not silently
+            // leave the server unconfined.
+            1 if a.opt(flag).is_some() => {}
+            1 => return Err(format!("{flag} needs a folder")),
+            _ => return Err(format!("{flag} is given twice: it takes one folder")),
+        }
+    }
+    let roots = filmcraft_automation::AutomationRoots::new(a.opt("--automation-read-root"), a.opt("--automation-write-root"))?;
+    Ok(roots.map(std::sync::Arc::new))
+}
+
 /// `path` made absolute against the working directory, as the project stores it. Unlike
 /// `canonicalize`, `std::path::absolute` keeps symlinks and adds no Windows verbatim `\\?\`
 /// prefix (#850). A path it cannot resolve is kept as given.
 fn absolute(path: &str) -> String {
     std::path::absolute(path).ok().and_then(|p| p.into_os_string().into_string().ok()).unwrap_or_else(|| path.to_string())
+}
+
+/// The automation root flag, if any, whose value isn't text (`--flag value` or `--flag=value`). The lossy spelling of
+/// such a name can be another existing folder, and a root is a security boundary: refuse it rather than confine that one.
+fn non_text_root(args: &[std::ffi::OsString]) -> Option<&'static str> {
+    const FLAGS: [&str; 2] = ["--automation-read-root", "--automation-write-root"];
+    args.iter().enumerate().filter(|(_, arg)| arg.to_str().is_none()).find_map(|(i, arg)| {
+        let lossy = arg.to_string_lossy();
+        FLAGS.into_iter().find(|f| lossy.starts_with(&format!("{f}=")) || (i > 0 && args[i - 1].to_str() == Some(*f)))
+    })
 }
 
 #[tokio::main]
@@ -304,9 +338,14 @@ async fn main() {
     }
 }
 
+/// Run the command line: parse the arguments, then dispatch to the subcommand.
 async fn cli() {
     // `std::env::args` panics on an argument that is not Unicode (a Linux file name in Latin-1)
-    let a = Args::parse(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(flag) = non_text_root(&raw) {
+        usage(format!("{flag} must be text: its folder's name isn't valid Unicode, and the lossy spelling would name a different folder"));
+    }
+    let a = Args::parse(raw.iter().map(|a| a.to_string_lossy().into_owned()));
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
     if a.flag("--help") {
@@ -550,17 +589,22 @@ async fn cli_render(a: &Args) {
     diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
 }
 
+/// `mcp`: serve MCP on stdio, headless or over the bridge, inside the automation roots when given.
 async fn cli_mcp(a: &Args) {
-    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--automation-read-root", "--automation-write-root"]) {
         usage(format!("unknown mcp option `{opt}`"));
     }
+    let roots = mcp_roots(a).unwrap_or_else(|e| usage(e));
     let server = match a.opt("--bridge") {
-        Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)),
+        Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)).with_roots(roots.clone()).unwrap_or_else(|e| usage(e)),
         None => match Backend::open(a) {
-            Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s),
+            Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s).with_roots(roots.clone()).unwrap_or_else(|e| usage(e)),
             Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
         },
     };
+    if let Some(r) = &roots {
+        diag(format_args!("filmcraft-cli: files confined: {}", r.describe()));
+    }
     if let Err(e) = server.serve_stdio().await {
         fail(format!("mcp: {e}"));
     }
@@ -680,6 +724,23 @@ mod format_tests {
         assert_eq!(super::render_at_playhead(&s, 0.5).unwrap().0.w, 8);
     }
 
+    /// #985: the automation roots' flag shapes are usage errors; neither flag given confines nothing.
+    /// A word following the flag is its value whatever it is (as for `--project`), so a root given a
+    /// flag's name instead of a folder fails loudly when the root is opened.
+    #[test]
+    fn mcp_roots_reject_a_missing_or_repeated_flag() {
+        use crate::args::Args;
+        let a = Args::parse(["mcp".into(), "--automation-read-root".into()]);
+        assert_eq!(super::mcp_roots(&a).unwrap_err(), "--automation-read-root needs a folder");
+        let a = Args::parse(["mcp".into(), "--automation-write-root".into(), "--bridge".into(), "127.0.0.1:1".into()]);
+        let e = super::mcp_roots(&a).unwrap_err();
+        assert!(e.starts_with("cannot open the automation write root `--bridge`"), "{e}");
+        let a = Args::parse(["mcp".into(), "--automation-read-root=x".into(), "--automation-read-root=y".into()]);
+        assert_eq!(super::mcp_roots(&a).unwrap_err(), "--automation-read-root is given twice: it takes one folder");
+        let a = Args::parse(["mcp".into(), "--demo".into()]);
+        assert!(super::mcp_roots(&a).unwrap().is_none(), "no roots, no confinement");
+    }
+
     /// The CLI (and MCP / headless runs, which share its entry point) registers the hardware
     /// decoders at start-up.
     #[test]
@@ -778,6 +839,25 @@ mod format_tests {
         let mut p = json!({});
         super::set_custom_bounds(&mut p, None, None);
         assert!(p.get("range").is_none());
+    }
+
+    /// A root whose name isn't text is refused, in either spelling of the flag: its lossy text could name another folder.
+    #[test]
+    fn a_root_that_is_not_text_is_refused() {
+        use std::ffi::OsString;
+        let text = |s: &str| OsString::from(s);
+        assert_eq!(super::non_text_root(&[text("mcp"), text("--automation-read-root"), text("/work")]), None);
+        assert_eq!(super::non_text_root(&[text("--automation-read-root=/work"), text("--demo")]), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let bad = OsString::from_vec(b"/tmp/root-\xff".to_vec());
+            assert_eq!(super::non_text_root(&[text("--automation-write-root"), bad.clone()]), Some("--automation-write-root"));
+            let mut inline = b"--automation-read-root=/tmp/root-".to_vec();
+            inline.push(0xff);
+            assert_eq!(super::non_text_root(&[OsString::from_vec(inline)]), Some("--automation-read-root"));
+            assert_eq!(super::non_text_root(&[text("--project"), bad]), None, "only the roots are held to text");
+        }
     }
 
     /// `import` used `canonicalize`, which resolves symlinks and on Windows stores `\\?\C:\…`

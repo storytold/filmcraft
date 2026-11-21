@@ -14,9 +14,78 @@ FilmCraft from an agent. Part 2 covers developing FilmCraft as an agent.
 | Headless | `filmcraft-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
 | Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmcraft --control 9876` |
 
-Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
-there are no folder-confinement flags such as `--automation-read-root`, so the server can read
-and write wherever the user can.
+Headless mode also takes `--data-dir DIR` (user presets) and the file-confinement flags below.
+Any other option is rejected (exit 2).
+
+**File confinement** (#985, as in VectorCraft and EffectCraft). Start the server with
+`--automation-read-root DIR` and/or `--automation-write-root DIR` (each an existing folder; a
+missing or non-folder one is a usage error, exit 2). A command may then only read files under a
+read root and only write files under a write root. A root left out grants no access of its kind;
+with neither flag, nothing is confined. While confined:
+
+- Paths must be absolute. Each is resolved (links followed, `..` below a missing folder refused) and
+  must land inside the root, or the tool returns an error naming the root so the agent can correct
+  itself. The named file parameters, any string under a path-like key, and any other absolute path
+  in the parameters are all checked.
+- On Windows, a network path (`\\host\share\x`, `\\?\UNC\…`, `\\host@SSL\…`), a `\\.\` device or a
+  `\\?\` volume is refused before any file call, because even looking at it would contact that host
+  and send it your Windows credentials. So is a link leading to one, and a reserved device name such
+  as `NUL` or `COM1:`. The one exception is a share that a root itself stands on: when a root is
+  `\\host\share\media`, paths on that server and share (in any spelling or case) work, and no other
+  network path does.
+- `mediaBrowser.navigate` with `up`, `back` or `forward` is refused: they go to a folder that no path
+  names. Give the folder as `path`.
+- `file.exportAaf` and `file.exportOmf` also write a folder named after `path` with ` Media` or
+  ` Audio Files` added, beside it. That folder is checked too, so with the write root itself as `path`
+  the export is refused: give a file name inside the root.
+- Every command has to be known to stay inside the roots. One that isn't is refused, and so are
+  commands that can't be kept inside them, each with its reason: render previews, proxies, Project
+  Manager, XMP sidecars, ingest, recovery, and adding to the app's libraries.
+- A command must name its destination where it would otherwise pick one: `tts.create`, `tts.edit`
+  and `audio.voiceover.stop` need `dir`; `file.save`, `file.saveAsTemplate` and
+  `graphics.template.export` need `path`.
+- A command that writes is refused while the folder it writes in, or any folder below that or
+  reached through a link from there, holds a link leading out of the write root: exports choose the
+  final file names after the check, so any name there could be used. A write that would have to
+  look at over a million files and folders this way is refused too.
+- Headless sessions check every file again as it is opened, so footage a project names outside the
+  read root shows as offline.
+- Bridge mode enforces the command checks before each command reaches the app, and refuses the
+  UI-driving tools (`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_control`), since they could
+  drive the app's file dialogs past the roots. The app itself is not confined: footage a project
+  names is opened wherever it is, so only open projects whose media you would let the agent read. The
+  same holds for what the app does by itself, such as Auto Save, which is why that has to be off.
+- Bridge mode also refuses every `export.queue.*` command, because the app's queue can hold exports
+  its user added to anywhere. Use `file.exportMedia` or `export.quick`, which are checked.
+  It refuses `file.revert` too, which reads the app's project from wherever it's saved.
+- Bridge mode refuses every command that names files while the app's project has ingest on, which
+  would copy what is imported to a folder of its own. Turn ingest off in the app's Project Settings.
+  The server checks that and then sends the command, one command at a time. Another client of the
+  same app, or the person at its keyboard, can still turn ingest on in between, so confine an app that
+  nobody else is driving.
+- A headless session skips ingest while confined: `file.import` still adds the files, without copying
+  or transcoding them, and its result says so in `ingest.skipped`. An import is not a media copy.
+- Folder preferences (`mediaCache.location`, `mediaCache.databaseLocation`) must be given as an
+  absolute folder, or empty for the default one; a bare name would be read against the server's
+  working folder.
+- The app's Auto Save writes a folder beside the open project, and with `autoSave.saveCurrentProject` over the
+  project itself, wherever it lives. A bridge command is refused until both `autoSave.enabled` and
+  `autoSave.saveCurrentProject` are off in the app's settings, and `prefs.set` can't turn either on, nor can
+  `prefs.reset` without a category or with `autoSave`, which put the defaults back. A
+  headless session can't be confined while its autosave worker runs (the CLI never starts one).
+- Bridge mode imports media files only: each named path must be a file, not a folder named like one. The app would add a preset file to its library, write a
+  document's audio beside it, and take all that a folder holds. `captions.import` still reads
+  captions, `file.importAaf` still imports a document inside both roots, and a headless session
+  can import documents.
+
+A path is checked and opened a moment later. Another program on the same computer that changes a
+folder in between can redirect the open outside the root: the roots keep an agent to the files it
+was given, and don't stop other local programs. On a shared server, run the agent under an account
+that other users can't write to, and put both roots in folders other users can't change.
+
+Not confined: the `--project` file the server was started with (the footage it names is), temporary
+files, the settings and libraries the app keeps in its data folder, and the desktop app's own
+panels. For a server shared between people, give each one their own `--data-dir`.
 
 **Claude Code.** The repository's `.mcp.json` registers both servers (`filmcraft` = bridge,
 `filmcraft-headless` = demo). Both point at `target/release/filmcraft-cli`, so build it first:

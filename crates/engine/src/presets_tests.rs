@@ -430,6 +430,60 @@ fn bypassed_parameterless_effect_remains_disabled_on_import() {
     assert!(!parsed.presets[0].effects[0].enabled, "bypassed parameterless effect should be disabled");
 }
 
+/// `file.import` opens a preset file as `presets.import` does, whose copy into the library doesn't
+/// go through the session's services.
+#[test]
+fn a_confined_session_keeps_imported_preset_files_out_of_the_library() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-confined-preset-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::default();
+    s.presets.set_dir(&dir.join("data"));
+    s.files_confined = true;
+    let src = dir.join("Sample.prfpset");
+    std::fs::write(&src, SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+
+    let e = s.execute("file.import", json!({"paths": [src.to_str().unwrap()]})).unwrap_err().to_string();
+    assert!(e.contains("not available while file access is confined"), "{e}");
+    let lib_dir = s.presets.library_dir().unwrap();
+    assert!(!lib_dir.join("Sample.prfpset").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bridge lets these through by their names, to an app whose session isn't confined: a folder
+/// named like media isn't walked, and a file named like media is opened as media, whatever it holds.
+#[test]
+fn what_is_named_like_media_stays_out_of_the_library() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-named-like-media-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for folder in ["docs.png", "docs"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+        // A folder import skips `.prfpset` and takes `.xml`, and goes by what that holds.
+        std::fs::write(dir.join(folder).join("Sample.xml"), SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("Sample.prfpset"), SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+    std::fs::write(dir.join("fake.png"), SAMPLE_PRFPSET_XML.as_bytes()).unwrap();
+    let mut s = Session::default();
+    s.presets.set_dir(&dir.join("data"));
+    let lib_dir = s.presets.library_dir().unwrap();
+    let in_library = || std::fs::read_dir(&lib_dir).map_or(0, |d| d.count());
+    let named = |name: &str| dir.join(name).to_string_lossy().into_owned();
+
+    for path in [named("docs.png"), format!("{}/", named("docs.png"))] {
+        let r = s.execute("mediaBrowser.import", json!({"paths": [path]}));
+        assert!(r.is_err(), "{r:?}");
+    }
+    assert!(s.execute("file.import", json!({"paths": [named("fake.png")]})).is_err());
+    assert_eq!(in_library(), 0);
+
+    // Under other names the folder is walked and the file goes in the library, so all this can fail.
+    let r = s.execute("mediaBrowser.import", json!({"paths": [named("docs")]}));
+    assert!(r.is_ok(), "{r:?}");
+    assert!(s.execute("file.import", json!({"paths": [named("Sample.prfpset")]})).is_ok());
+    assert_eq!(in_library(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn import_collision_picks_suffixed_filename() {
     let dir = std::env::temp_dir().join(format!("filmcraft-import-collision-test-{}", std::process::id()));

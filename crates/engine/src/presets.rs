@@ -1099,6 +1099,10 @@ pub fn import_bytes(s: &mut Session, path: &str, bytes: &[u8]) -> std::result::R
 /// Engine command handler to import preset files into the library.
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("presets.import", "need `path`"))?;
+    // The copy into the library below doesn't go through `s.services`.
+    if s.files_confined {
+        return Err(bad("presets.import", "not available while file access is confined: it adds to the library in the app's data folder"));
+    }
     if let Ok(size) = s.services.file_size(path)
         && size > crate::prfpset::MAX_BYTES
     {

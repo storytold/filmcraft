@@ -5260,6 +5260,7 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
 /// JSON description of the project (bins, items) for agents.
 pub fn inspect_project(s: &Session) -> Value {
     let p = &s.project;
+    /// The bin `b` and what is in it, recursively, as `inspect_project` reports them.
     fn bin(b: &filmcraft_project::Bin, p: &filmcraft_project::Project) -> Value {
         json!({
             "id": b.id.0,
@@ -5281,6 +5282,7 @@ pub fn inspect_project(s: &Session) -> Value {
         "root": bin(&p.root, p),
         "activeSequence": s.state.active_sequence.map(|i| i.0),
         "sourceItem": s.state.source_item.map(|i| i.0),
+        "ingestEnabled": p.settings.ingest.enabled,
     })
 }
 
