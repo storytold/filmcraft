@@ -422,3 +422,64 @@ fn source_move_band_needs_both_marks_so_an_unmarked_bar_has_no_hand() {
     pointer(&mut h, body, None);
     assert!(hand.contains(&h.output().platform_output.cursor_icon), "both marks: the band shows the hand");
 }
+
+/// #3569: with no sequence open, the drop makes one from the marked range and the stream chosen.
+#[test]
+fn source_drag_onto_an_empty_timeline_keeps_the_marks_and_stream_choice() {
+    let mut h = harness(5);
+    let (start, out) = (Tick::from_seconds_f64(1.0), Tick::from_seconds_f64(3.0));
+    h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":start.0,"out":out.0})).unwrap();
+    h.state_mut().session.state.active_sequence = None;
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let from = control_rect(&h, "source.drag.video").center();
+    let to = control_rect(&h, "panel.Timeline").center();
+    pointer(&mut h, from, Some(true));
+    pointer(&mut h, from + egui::vec2(0.0, 9.0), None);
+    pointer(&mut h, to, None);
+    pointer(&mut h, to, Some(false));
+    for _ in 0..2 {
+        step(&mut h);
+    }
+    let s = &h.state().session;
+    let q = s.active_sequence().unwrap_or_else(|| panic!("no sequence: {}", h.state().ui.status));
+    let clips: Vec<_> = q.video_tracks.iter().flat_map(|t| t.items.iter()).collect();
+    assert_eq!(clips.len(), 1, "{}", h.state().ui.status);
+    assert_eq!(clips[0].source_in, start);
+    let marked = filmcraft_engine::clip_ops::source_view(s, filmcraft_engine::project::ItemId(5)).unwrap().selected_range();
+    assert_eq!(clips[0].duration, q.settings.frame_rate.snap_nearest(marked.duration), "the marked span, on the sequence's frames");
+    assert!(q.audio_tracks.iter().all(|t| t.items.is_empty()));
+}
+
+/// #3447: the header's Search shows Effects with the cursor in its search field, also when the
+/// panel was showing already.
+#[test]
+fn header_search_puts_the_cursor_in_the_effects_search() {
+    let mut h = harness(5);
+    h.state_mut().set_workspace("Effects");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let at = control_rect(&h, "header.search").center();
+    pointer(&mut h, at, Some(true));
+    pointer(&mut h, at, Some(false));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(h.ctx.egui_wants_keyboard_input());
+    assert!(!h.state().ui.focus_effects_search, "the request was taken");
+}
+
+/// #3443: the header's Volume opens the mixer it points at, not only a status line.
+#[test]
+fn header_volume_brings_up_the_audio_track_mixer() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut h = harness(5);
+    let at = control_rect(&h, "header.volume").center();
+    pointer(&mut h, at, Some(true));
+    pointer(&mut h, at, Some(false));
+    step(&mut h);
+    assert_eq!(h.state().ui.focused, PanelKind::AudioTrackMixer);
+    assert!(h.state().ui.dock.contains(&PanelKind::AudioTrackMixer));
+}

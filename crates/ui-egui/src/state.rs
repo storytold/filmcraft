@@ -467,6 +467,9 @@ pub struct UiState {
     pub source: MonitorView,
     pub project_search: String,
     pub effects_search: String,
+    /// The next frame of the Effects panel puts the cursor in its search field.
+    #[serde(skip)]
+    pub focus_effects_search: bool,
     /// Expanded bins in the project list view.
     pub expanded_bins: Vec<u64>,
     /// Expanded folders in the Effects panel.
@@ -1023,6 +1026,7 @@ impl Default for UiState {
             source: MonitorView::default(),
             project_search: String::new(),
             effects_search: String::new(),
+            focus_effects_search: false,
             expanded_bins: vec![],
             expanded_fx: vec!["Video Transitions".into(), "Video Transitions/Dissolve".into()],
             lumetri_grid_folder: None,
