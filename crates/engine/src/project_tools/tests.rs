@@ -180,12 +180,15 @@ fn close_commands_and_templates() {
     s.execute("file.closeAllProjects", json!({"force": true})).unwrap();
     assert!(s.project.items.is_empty());
     s.view_changed();
-    assert!(s.execute("file.newProjectFromTemplate", json!({"template": path, "name": "Ep 2"})).is_err(), "unsaved Timeline view changes");
+    assert!(s.has_unsaved_changes());
+    assert!(s.execute("file.newProjectFromTemplate", json!({"template": path, "name": "Ep 2"})).is_err());
+    assert!(s.has_unsaved_changes(), "refused template replacement keeps the current view state");
     s.execute("file.newProjectFromTemplate", json!({"template": path, "name": "Ep 2", "force": true})).unwrap();
     assert!(s.project.items.values().any(|i| i.name == "Main Edit"));
     assert_eq!(s.project.items.len(), n);
     assert_eq!(s.project.name, "Ep 2");
     assert!(s.path.is_none() && !s.is_dirty());
+    assert!(!s.has_unsaved_changes());
 }
 
 #[test]
