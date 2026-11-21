@@ -63,6 +63,11 @@ struct Driver {
 impl Driver {
     /// The demo project with a new sequence open and `source` in the Source Monitor.
     fn new(source: u64) -> Self {
+        Self::with_displays(source, None)
+    }
+
+    /// [`Self::new`] with the host reporting `displays` (physical pixels).
+    fn with_displays(source: u64, displays: Option<Vec<filmcraft_ui_egui::monitors::Display>>) -> Self {
         native_host();
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
@@ -70,7 +75,10 @@ impl Driver {
         s.prefs.timeline.clip_mismatch_warning = false;
         s.execute("source.open", json!({"item": source})).unwrap();
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
+        let mut app = FilmcraftApp::new(s).with_control(rx);
+        if let Some(displays) = displays {
+            app.hooks.display_list = Some(Box::new(move || displays.clone()));
+        }
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
             filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
             app
@@ -343,4 +351,40 @@ fn a_floating_program_monitor_composes_and_rearms_its_ime_fence() {
     window_frame(&mut d, vec![egui::Event::ImeResetCompleted { request_id: fence }, ime_preedit("が"), ime_commit("が")]);
     let after = text(&mut d);
     assert!(after.as_str().is_some_and(|t| t.contains('が')), "the completed fence admits the commit: {after}");
+}
+
+/// `ui.monitors` reports the displays the OS lists (none where it cannot) and the same in the
+/// desktop points the dock uses; whatever it reports is usable, so a floating window always has a
+/// monitor to land on.
+#[test]
+fn ui_monitors_reports_only_usable_displays() {
+    let mut d = Driver::new(6);
+    let reply = d.ok("ui.monitors", json!({}));
+    let displays = reply["displays"].as_array().expect("displays array");
+    let monitors = reply["monitors"].as_array().expect("monitors array");
+    assert!(monitors.len() <= displays.len(), "{reply}");
+    for monitor in monitors {
+        let rect: Vec<f64> = monitor["rect"].as_array().expect("rect").iter().filter_map(Value::as_f64).collect();
+        assert_eq!(rect.len(), 4, "{monitor}");
+        assert!(rect.iter().all(|v| v.is_finite()) && rect[2] >= 1.0 && rect[3] >= 1.0, "{monitor}");
+        assert!(monitor["scale"].as_f64().is_some_and(|s| s.is_finite() && s > 0.0), "{monitor}");
+    }
+}
+
+/// The host's display list reaches the dock, and a hostile entry in it (an empty or absurd
+/// display) is dropped instead of becoming a monitor floating windows are pulled onto.
+#[test]
+fn the_hosts_display_list_is_sanitized_before_the_dock_sees_it() {
+    use filmcraft_ui_egui::monitors::Display;
+    let display = |x, w| Display { name: Some(format!("D{x}")), x, y: 0, width: w, height: 1080, dpi_scale: 1.0 };
+    let mut d = Driver::with_displays(7, Some(vec![display(0, 1920), display(1920, 0), display(3840, i32::MAX), display(-1920, 1920)]));
+    d.frames(200);
+    let reply = d.ok("ui.monitors", json!({}));
+    assert_eq!(reply["displays"].as_array().map(Vec::len), Some(4), "{reply}");
+    let names: Vec<&str> = reply["monitors"].as_array().expect("monitors").iter().filter_map(|m| m["name"].as_str()).collect();
+    assert_eq!(names, ["D0", "D-1920"], "{reply}");
+    // A window floated onto a listed display stores that display (so removing the list from the dock fails this).
+    d.float("Timeline", [-1500.0, 100.0, 680.0, 420.0]);
+    let inspect = d.ok("ui.inspect", json!({}));
+    assert_eq!(inspect["ui"]["dock"]["floating"][0]["monitor"]["name"], json!("D-1920"), "{}", inspect["ui"]["dock"]["floating"]);
 }
