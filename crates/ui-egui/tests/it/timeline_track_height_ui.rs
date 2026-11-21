@@ -5,6 +5,7 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
@@ -242,4 +243,48 @@ fn playhead_head_is_short_and_sits_on_the_ruler_tick_row() {
         head.min.y,
         ruler.max.y - 14.0
     );
+}
+
+/// #5091 review (H2): a height that is not a number must not throw away the per-track overrides.
+/// `ui.set` cleared all of them whenever the key was present, so a request that changed no default
+/// still dropped the heights someone had dragged.
+#[test]
+fn a_height_that_is_not_a_number_keeps_the_per_track_overrides() {
+    let mut d = Driver::demo();
+    d.drag("timeline.track.V1.resize", 0.5, -15.0);
+    let own = d.video_bands()[0].1;
+    assert!(own > 30.0, "V1 got its own height: {own}");
+    // null is present but is not a number: nothing applies, so nothing is cleared
+    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": null, "audioTrackHeight": null}}));
+    d.frames(3);
+    let after = d.video_bands()[0].1;
+    assert!((after - own).abs() < 0.6, "V1 kept its own height: {own} -> {after}");
+    // a real number is a new default for every track, so it does clear them
+    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 39.0}}));
+    d.frames(3);
+    let applied = d.video_bands()[0].1;
+    assert!((applied - 39.0).abs() < 2.0, "the number applies to every track: {applied}");
+}
+
+/// #5091 review: the two actions in the Timeline's own settings menu have to reach a track with
+/// its own height as well, or "Minimize All Tracks" only moves the tracks that never got one. The
+/// keyboard commands had a test; these two buttons did not.
+#[test]
+fn the_settings_menu_height_actions_reach_a_track_with_its_own_height() {
+    let mut d = Driver::demo();
+    d.drag("timeline.track.V1.resize", 0.5, -15.0);
+    let own = d.video_bands()[0].1;
+    assert!(own > 30.0, "V1 got its own height: {own}");
+    d.ok("ui.click", json!({"id": "timeline.toggle.settings"}));
+    d.frames(2);
+    d.harness.get_by_label("Minimize All Tracks").click();
+    d.frames(3);
+    let small = d.video_bands()[0].1;
+    assert!(small < own - 2.0, "the menu button shrank V1 too: {own} -> {small}");
+    d.ok("ui.click", json!({"id": "timeline.toggle.settings"}));
+    d.frames(2);
+    d.harness.get_by_label("Expand All Tracks").click();
+    d.frames(3);
+    let big = d.video_bands()[0].1;
+    assert!(big > small + 5.0, "the menu button grew V1 too: {small} -> {big}");
 }
