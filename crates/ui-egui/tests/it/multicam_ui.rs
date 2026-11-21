@@ -392,6 +392,46 @@ fn multicam_view_pages_beyond_sixteen_angles_and_edit_cameras() {
     assert_eq!(d.exec("multicam.grid", json!({}))["angles"], 19);
 }
 
+/// #4642: Clip ▸ Multi-Camera ▸ Enable shows whether the selected nested sequence clip is a
+/// multi-camera clip, so choosing it visibly turns multi-camera on or off.
+#[test]
+fn multicam_enable_menu_item_shows_its_checkmark() {
+    let (mut s, _) = session_empty();
+    let mut items = Vec::new();
+    for (k, hex) in ["#ff0000", "#0000ff"].iter().enumerate() {
+        let r = s.execute("file.newColorMatte", json!({"color": hex, "seconds": 4.0, "width": W, "height": H, "name": format!("Cam {}", k + 1)})).unwrap();
+        items.push(r["item"].as_u64().unwrap());
+    }
+    let mut p = (*s.project).clone();
+    let seq = s.state.active_sequence.unwrap();
+    let dur = FrameRate::FPS_24.tick_of(96);
+    for (k, it) in items.iter().enumerate() {
+        let v = p
+            .make_track_item(filmcraft_engine::project::ItemId(*it), TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), FrameRate::FPS_24)
+            .unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[k].items.push(v);
+    }
+    s.project = Arc::new(p);
+    let ids: Vec<u64> = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).map(|i| i.id.0).collect();
+    s.execute("timeline.select", json!({"clips": ids})).unwrap();
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    let mut d = Driver::new(s);
+    let checked = |d: &mut Driver| {
+        let menus = d.ok("ui.menu.list", json!({}));
+        menus.as_array().unwrap().iter().find(|m| m["id"] == "clip.multicamEnable").expect("Enable in the menus")["checked"].clone()
+    };
+    assert_eq!(checked(&mut d), false, "a plain nest is not multi-camera yet");
+    d.ok("ui.menu.invoke", json!({"id": "clip.multicamEnable"}));
+    d.frames(2);
+    assert!(d.app().session.active_sequence().unwrap().find_item(nest).unwrap().1.multicam.is_some_and(|m| m.enabled));
+    assert_eq!(checked(&mut d), true, "Enable shows its checkmark once chosen");
+    d.ok("ui.menu.invoke", json!({"id": "clip.multicamEnable"}));
+    d.frames(2);
+    assert_eq!(checked(&mut d), false, "choosing it again turns multi-camera off");
+}
+
 /// #1362: with nothing selected in the Project panel, Create Multi-Camera Source Sequence works on
 /// the clips selected in the Timeline.
 #[test]
