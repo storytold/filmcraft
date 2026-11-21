@@ -323,6 +323,94 @@ fn timeline_synchronize_by_audio_and_timecode() {
     assert_eq!(find_clip(q, items[1], true).start - find_clip(q, items[0], true).start, rate.tick_of(60));
 }
 
+/// Where the camera's recording starts in the recorder's, in samples: not on a 24 fps frame.
+const CAM_IN_REC: usize = 73_234;
+
+/// White noise from a fixed seed, `n` samples.
+fn noise(n: usize, seed: u64) -> Vec<f32> {
+    let mut x = seed;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.6
+        })
+        .collect()
+}
+
+/// A recorder (10 s), a camera that heard the same thing from [`CAM_IN_REC`] on (5 s) and a piece
+/// of music that has nothing to do with them (5 s), as WAVs on A1, A2 and A3 of a 24 fps sequence
+/// at frames 0, 48 and 72, all selected. Returns (session, [recorder, camera, music] items).
+fn recorder_camera_and_music() -> (Session, [ItemId; 3]) {
+    let dir = tmp_dir("sync-reliable");
+    let rec = noise(10 * SR as usize, 7);
+    let cam = rec[CAM_IN_REC..CAM_IN_REC + 5 * SR as usize].to_vec();
+    let music = noise(5 * SR as usize, 99);
+    let mut paths = Vec::new();
+    for (name, samples) in [("rec.wav", &rec), ("cam.wav", &cam), ("music.wav", &music)] {
+        let path = dir.join(name);
+        std::fs::write(&path, filmcraft_media::wav::write_wav16(samples, 1, SR as u32)).unwrap();
+        paths.push(path);
+    }
+    let mut s = Session::default();
+    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let items = import(&mut s, &refs);
+    let mut p = (*s.project).clone();
+    let rate = FrameRate::FPS_24;
+    let seq = p.new_sequence("Sync", filmcraft_project::SequenceSettings { frame_rate: rate, ..Default::default() }, 1, 3, None);
+    for (track, (it, frame)) in items.iter().zip([0, 48, 72]).enumerate() {
+        let range = filmcraft_time::TimeRange::new(Tick::ZERO, p.item(*it).unwrap().duration());
+        let clip = p.make_track_item(*it, filmcraft_project::TrackKind::Audio, rate.tick_of(frame), range, rate).unwrap();
+        p.sequence_mut(seq).unwrap().audio_tracks[track].items.push(clip);
+    }
+    s.project = std::sync::Arc::new(p);
+    s.state.active_sequence = Some(seq);
+    let all: Vec<u64> = s.project.sequence(seq).unwrap().all_tracks().flat_map(|t| t.items.iter().map(|i| i.id.0)).collect();
+    s.execute("timeline.select", json!({"clips": all})).unwrap();
+    (s, [items[0], items[1], items[2]])
+}
+
+/// A clip whose audio match is not reliable stays where it is and is reported, instead of moving
+/// by whatever lag the correlation peaked at; `moveUnreliable` still moves it.
+#[test]
+fn synchronize_leaves_a_clip_without_a_reliable_audio_match_where_it_is() {
+    let (mut s, [rec, cam, music]) = recorder_camera_and_music();
+    let music_clip = find_clip(s.active_sequence().unwrap(), music, false).clone();
+    let r = s.execute("clip.synchronize", json!({"method": "audio", "track": "A1"})).unwrap();
+    let row = |item: ItemId| r["clips"].as_array().unwrap().iter().find(|c| c["item"] == item.0).unwrap().clone();
+    assert_eq!(row(cam)["audio"]["reliable"], true, "{r}");
+    assert_eq!(row(music)["audio"]["reliable"], false, "{r}");
+    assert_eq!(r["moved"], 1, "only the camera moves: {r}");
+    assert_eq!(r["skipped"], json!([music_clip.id.0]), "{r}");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(find_clip(q, music, false), &music_clip, "the music stays where it was");
+    let (c, rc) = (find_clip(q, cam, false), find_clip(q, rec, false));
+    assert_eq!(c.start - c.source_in, rc.start + Tick::from_units(CAM_IN_REC as i64, SR), "the camera is in sync");
+    s.execute("edit.undo", json!({})).unwrap();
+    let all: Vec<u64> = s.active_sequence().unwrap().all_tracks().flat_map(|t| t.items.iter().map(|i| i.id.0)).collect();
+    s.execute("timeline.select", json!({"clips": all})).unwrap();
+    let r = s.execute("clip.synchronize", json!({"method": "audio", "track": "A1", "moveUnreliable": true})).unwrap();
+    assert!(r["moved"].as_u64() >= Some(2) && r["skipped"] == json!([]), "{r}");
+    assert_ne!(find_clip(s.active_sequence().unwrap(), music, false).start, music_clip.start, "moved when asked to");
+}
+
+/// The result says where each clip starts once synchronized: a clip whose sync point falls between
+/// frames starts on the next frame, with its source In trimmed by the rest, and the result gives
+/// that frame, not the one before it.
+#[test]
+fn synchronize_reports_where_each_clip_lands() {
+    let (mut s, [_, cam, _]) = recorder_camera_and_music();
+    let r = s.execute("clip.synchronize", json!({"method": "audio", "track": "A1"})).unwrap();
+    let rate = FrameRate::FPS_24;
+    let q = s.active_sequence().unwrap();
+    assert!(find_clip(q, cam, false).source_in > Tick::ZERO, "the sync point falls between frames");
+    for row in r["clips"].as_array().unwrap() {
+        let clip = find_clip(q, ItemId(row["item"].as_u64().unwrap()), false);
+        assert_eq!((row["start"].as_i64(), row["startFrame"].as_i64()), (Some(clip.start.0), Some(rate.frame_at(clip.start))), "{row}");
+    }
+}
+
 // ------------------------------------------------------------------ editing (our own media)
 
 const W: u32 = 160;
