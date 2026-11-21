@@ -240,39 +240,29 @@ impl CaptionTrack {
 pub fn plain_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
+    let (mut no_gt, mut no_close) = (false, false);
     while let Some(c) = chars.next() {
         match c {
-            '<' => {
-                // A tag runs to the next '>'.  Scan forward once; preserving an unterminated
-                // tag as literal text must not rescan every later opening bracket.
-                let mut literal = String::new();
-                let mut closed = false;
-                for next in chars.by_ref() {
-                    if next == '>' {
-                        closed = true;
-                        break;
-                    }
-                    literal.push(next);
-                }
-                if !closed {
+            '<' if !no_gt => {
+                // A tag runs to the next '>'.  Scan ahead without consuming; if there is none,
+                // remember that so later openers do not rescan, and keep '<' as literal text
+                // that still gets the normal cleaning.
+                let mut ahead = chars.clone();
+                if ahead.any(|next| next == '>') {
+                    chars = ahead;
+                } else {
+                    no_gt = true;
                     out.push('<');
-                    out.push_str(&literal);
                 }
             }
-            '{' if chars.peek() == Some(&'\\') => {
+            '{' if !no_close && chars.peek() == Some(&'\\') => {
                 // SSA-style override blocks some SRT files carry: {\an8}
-                let mut literal = String::new();
-                let mut closed = false;
-                for next in chars.by_ref() {
-                    if next == '}' {
-                        closed = true;
-                        break;
-                    }
-                    literal.push(next);
-                }
-                if !closed {
+                let mut ahead = chars.clone();
+                if ahead.any(|next| next == '}') {
+                    chars = ahead;
+                } else {
+                    no_close = true;
                     out.push('{');
-                    out.push_str(&literal);
                 }
             }
             '&' => {
@@ -322,6 +312,12 @@ mod tests {
         assert_eq!(plain_text("{\\an8}Top"), "Top");
         assert_eq!(plain_text("a < b"), "a < b");
         assert_eq!(plain_text("<v Bob>Hi</v>"), "Hi");
+    }
+
+    #[test]
+    fn unterminated_openers_still_clean_the_rest() {
+        assert_eq!(plain_text("a < b &amp; c"), "a < b & c");
+        assert_eq!(plain_text("a {\\an8 b &amp;\r c"), "a {\\an8 b & c");
     }
 
     #[test]
