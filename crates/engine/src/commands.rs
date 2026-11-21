@@ -3835,12 +3835,13 @@ fn build() -> Vec<CommandSpec> {
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
-                    let e = match &eff {
-                        Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
-                        Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+                    let ei = match &eff {
+                        Value::Number(n) => Some(n.as_u64().unwrap_or(0) as usize).filter(|i| *i < it.effects.len()),
+                        Value::String(sid) => it.effects.iter().position(|e| &e.effect == sid),
                         _ => None,
                     }
                     .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
+                    let e = it.effects.get_mut(ei).ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
                     // the parameter's definition (a mask's own parameters have none)
                     let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
                     // a choice takes its option name as well as its index, as transition parameters do
@@ -3887,6 +3888,8 @@ fn build() -> Vec<CommandSpec> {
                         (keyframes, v)
                     };
                     let accepted_value = param_value_to_json(&v);
+                    // renaming a layer renames the graphic clip that holds it (#5120)
+                    let renamed = pid == "name" && filmcraft_project::graphic::is_layer(e);
 
                     if e.effect == "ultra_key"
                         && pid == "setting"
@@ -3901,6 +3904,9 @@ fn build() -> Vec<CommandSpec> {
                                 e.params.insert((*id).to_string(), filmcraft_project::Param::new(ParamValue::Float(*value)));
                             }
                         }
+                    }
+                    if renamed {
+                        crate::graphics::sync_clip_name(it, ei);
                     }
                     Ok((keyframes, accepted_value))
                 })?;
@@ -3957,7 +3963,12 @@ fn build() -> Vec<CommandSpec> {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                 if let Some(e) = it.effects.get_mut(idx) {
+                    // resetting a layer empties its Layer Name too: the clip goes back to the text (#5120)
+                    let renamed = filmcraft_project::graphic::is_layer(e);
                     reset_params(e, None, frame, source, mt);
+                    if renamed {
+                        crate::graphics::sync_clip_name(it, idx);
+                    }
                 }
                 Ok(())
             })?;
@@ -3973,14 +3984,20 @@ fn build() -> Vec<CommandSpec> {
             s.edit_sequence("Reset Parameter", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
-                let e = match &eff {
-                    Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
-                    Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+                let ei = match &eff {
+                    Value::Number(n) => Some(n.as_u64().unwrap_or(0) as usize).filter(|i| *i < it.effects.len()),
+                    Value::String(sid) => it.effects.iter().position(|e| &e.effect == sid),
                     _ => None,
                 }
                 .ok_or_else(|| bad("effects.resetParam", "no such effect on clip"))?;
+                let e = it.effects.get_mut(ei).ok_or_else(|| bad("effects.resetParam", "no such effect on clip"))?;
+                // resetting a layer's Layer Name renames its clip back to the text (#5120)
+                let renamed = pid == "name" && filmcraft_project::graphic::is_layer(e);
                 if !reset_params(e, Some(&pid), frame, source, mt) {
                     return Err(bad("effects.resetParam", format!("no param `{pid}`")));
+                }
+                if renamed {
+                    crate::graphics::sync_clip_name(it, ei);
                 }
                 Ok(())
             })?;

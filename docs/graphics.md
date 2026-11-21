@@ -31,6 +31,10 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 | Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
 | Transform | `position` (graphic canvas px), `anchor` (layer px), `scale`, `scale_width`, `uniform_scale`, `rotation`, `opacity` |
 
+A layer's **Layer Name** (`name`) names the graphic clip as well as the layer: renaming a layer
+renames its clip in the timeline and in the panel headers, and with several text layers the last one
+renamed wins. `clip.rename` sets an explicit clip name, which a later layer rename replaces.
+
 Point text's origin is its alignment point on the first baseline (the click point of the Type
 tool); paragraph text's origin is the top-left corner of its box; a shape's origin is its centre.
 Colours are `#rrggbb` (sRGB).

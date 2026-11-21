@@ -538,11 +538,13 @@ pub fn new_shape_layer(shape: u32, position: Vec2, size: Vec2, points: Vec<[f32;
     e
 }
 
-/// Display name of a layer: its name, else the text (first line), else "Shape 01"-style.
+/// Display name of a layer: its name (trimmed, so a name of only spaces is no name), else the text
+/// (first line), else "Shape 01"-style.
 pub fn layer_display_name(e: &EffectInstance, index: usize) -> String {
     let name = ss(e, "name", Tick::ZERO);
+    let name = name.trim();
     if !name.is_empty() {
-        return name;
+        return name.to_string();
     }
     if e.effect == TEXT_LAYER {
         let t = ss(e, "text", Tick::ZERO);
@@ -646,6 +648,15 @@ mod tests {
         assert!((ox.hypot(oy) - MAX_SHADOW_PX).abs() < 0.01, "{ox} {oy}");
         e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::NAN);
         assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_layer_name_of_only_spaces_is_no_name() {
+        let mut e = new_text_layer("Hello", Vec2::new(10.0, 20.0), 40.0);
+        set(&mut e, "name", ParamValue::Text("   ".into()));
+        assert_eq!(layer_display_name(&e, 0), "Hello", "a name of only spaces falls back to the text");
+        set(&mut e, "name", ParamValue::Text("  Title  ".into()));
+        assert_eq!(layer_display_name(&e, 0), "Title", "a name is shown without its surrounding spaces");
     }
 
     #[test]

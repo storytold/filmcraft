@@ -80,6 +80,18 @@ pub(crate) fn layer_effect_index(s: &Session, clip: ClipId, p: &Value) -> Result
     Ok((l, e))
 }
 
+/// The clip's visible name follows the Layer Name of the layer that was just renamed (#5120): the
+/// timeline and the panel headers show the new name, and undo takes it back with the rename because
+/// this runs inside the same undo step. An empty Layer Name falls back to the layer's text, as the
+/// layer list does.
+pub(crate) fn sync_clip_name(it: &mut filmcraft_project::TrackItem, eidx: usize) {
+    let Some(l) = layer_indices(&it.effects).iter().position(|&i| i == eidx) else { return };
+    let name = layer_display_name(&it.effects[eidx], l);
+    if it.name != name {
+        it.name = name;
+    }
+}
+
 pub(crate) fn vec2_p(p: &Value, k: &str) -> Option<Vec2> {
     let a = p.get(k)?.as_array()?;
     Some(Vec2::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
@@ -333,6 +345,10 @@ fn set_props_on(
             let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
             let e = it.effects.get_mut(eidx).ok_or_else(|| bad("graphics.set", "no such layer"))?;
             let c = apply_props(e, &props, mt, keyframe)?;
+            // renaming a layer renames the graphic clip that holds it (#5120)
+            if props.contains_key("name") {
+                sync_clip_name(it, eidx);
+            }
             if i == 0 {
                 counts = c;
             }
@@ -1159,6 +1175,21 @@ pub fn commands() -> Vec<CommandSpec> {
                 }
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
                 let counts = set_props_on(s, &targets, &props, tl, "Change Graphic Property", merge.as_deref(), keyframe)?;
+                // a renamed layer names the clips of the graphic that holds it, and only that one
+                // (#5120): hand the sync the clip and the layer uid the command really edited
+                if props.contains_key("name") {
+                    let renamed: Vec<_> = {
+                        let seq = s.active_sequence();
+                        targets
+                            .iter()
+                            .filter_map(|&(c, ei)| {
+                                let (_, it) = seq?.find_item(c)?;
+                                Some((c, filmcraft_project::gtemplate::layer_uid(it.effects.get(ei)?)))
+                            })
+                            .collect()
+                    };
+                    s.graphic_rename_targets = renamed;
+                }
                 // unchanged for a call without `keyframe`: nothing to report
                 if keyframe {
                     Ok(json!({"keyframes": counts.into_iter().map(|(k, n)| (k, json!(n))).collect::<serde_json::Map<_, _>>()}))
