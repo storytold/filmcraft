@@ -318,13 +318,26 @@ pub(super) fn draw_clip(
 
 /// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
 pub(super) fn paint_hatch(p: &egui::Painter, r: Rect) {
-    let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    let step = 4.0;
-    let mut x = r.min.x - r.height();
-    while x < r.max.x {
+    let shown = r.intersect(p.clip_rect());
+    let cp = p.with_clip_rect(shown);
+    for x in hatch_line_starts(r, shown.min.x, shown.max.x) {
         cp.line_segment([pos2(x, r.max.y), pos2(x + r.height(), r.min.y)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xd9, 0xd9, 0xd9, 110)));
-        x += step;
     }
+}
+
+/// The left ends of the hatch lines over `r` that reach the shown span `x0..x1`, on a 4 pt grid
+/// anchored at `r`'s left edge. Only the shown lines are listed: a long clip far zoomed in spans
+/// hundreds of millions of points, and there a 4 pt f32 step would no longer move `x` at all.
+pub(super) fn hatch_line_starts(r: Rect, x0: f32, x1: f32) -> impl Iterator<Item = f32> {
+    const STEP: f64 = 4.0;
+    let h = f64::from(r.height());
+    let origin = f64::from(r.min.x) - h;
+    let end = f64::from(r.max.x).min(f64::from(x1));
+    let first = ((f64::from(x0) - h - origin) / STEP).floor().max(0.0);
+    let count = ((end - origin) / STEP).ceil() - first;
+    // NaN (a non-finite rect) and a negative count both draw nothing; the cap is far past any screen
+    let count = if count.is_finite() { count.clamp(0.0, 1_000_000.0) as usize } else { 0 };
+    (0..count).map(move |k| (origin + (first + k as f64) * STEP) as f32)
 }
 
 pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, selected: bool, t: &Tokens) {
@@ -357,5 +370,32 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hatch_far_zoomed_in_lists_only_the_shown_lines() {
+        // a 3 h hatched span at the deepest zoom (24 000 pt a second), scrolled two hours in:
+        // its left edge is far past where a 4 pt f32 step still moves
+        let r = Rect::from_min_max(pos2(-2.0 * 3600.0 * 24_000.0, 10.0), pos2(3600.0 * 24_000.0, 64.0));
+        let xs: Vec<f32> = hatch_line_starts(r, 0.0, 800.0).collect();
+        assert!(!xs.is_empty() && xs.len() < 1000, "{} lines", xs.len());
+        assert!(xs.iter().all(|x| x + r.height() >= -4.0 && *x <= 804.0), "every line meets the shown span");
+    }
+
+    #[test]
+    fn hatch_on_screen_keeps_its_grid() {
+        // a hatched span wholly on screen draws the same lines as walking it from its left edge
+        let r = Rect::from_min_max(pos2(100.0, 0.0), pos2(300.0, 20.0));
+        let walked: Vec<f32> = (0..).map(|k| r.min.x - r.height() + 4.0 * k as f32).take_while(|x| *x < r.max.x).collect();
+        assert_eq!(hatch_line_starts(r, r.min.x, r.max.x).collect::<Vec<_>>(), walked);
+        // shown in part: a subset of those, so the stripes do not move as the view scrolls
+        let part: Vec<f32> = hatch_line_starts(r, 200.0, 250.0).collect();
+        assert!(!part.is_empty() && part.iter().all(|x| walked.contains(x)));
+        assert!(hatch_line_starts(Rect::NAN, 0.0, 800.0).next().is_none());
     }
 }
