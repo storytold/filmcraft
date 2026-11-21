@@ -145,17 +145,68 @@ fn is_offline(s: &Session, item: ItemId) -> bool {
 }
 
 fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
-    let mut seen = std::collections::BTreeSet::new();
-    for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()) {
-        if it.enabled && needs_media(&s.project, it.item) && !seen.contains(&it.item) && is_offline(s, it.item) && seen.insert(it.item) {
-            out.push(issue(
-                "offlineMedia",
-                "error",
-                it.start,
-                Some(it.id.0),
-                format!("{}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder", it.name),
-                "relink the media (media.findMissing) before exporting",
-            ));
+    let mut w = MediaWalk { s, seen: Default::default(), out };
+    w.walk(q, (Tick::ZERO, Tick(i64::MAX)), &|t| t, None, 0);
+}
+
+/// The offline-media check's walk through a sequence and its nests.
+struct MediaWalk<'a> {
+    s: &'a Session,
+    /// Media items already reported: once each, however often they show.
+    seen: std::collections::BTreeSet<ItemId>,
+    out: &'a mut Vec<Issue>,
+}
+
+/// The clips of `q` that show within `window` (in `q`'s time), down into nests: a nest shows the
+/// part of its sequence its source range covers (not past the contents), and its clips are
+/// checked there. `to_top` maps `q`'s time to the reviewed sequence's; `nest` is the top-level
+/// nest clip (id, name) the walk went through.
+impl MediaWalk<'_> {
+    fn walk(&mut self, q: &Sequence, window: (Tick, Tick), to_top: &dyn Fn(Tick) -> Tick, nest: Option<(u64, &str)>, depth: u32) {
+        let s = self.s;
+        for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+            // the part of the clip inside the window, in `q`'s time
+            let (a, b) = (it.start.max(window.0), it.end().min(window.1));
+            if a >= b {
+                continue;
+            }
+            if let Some(child) = s.project.sequence(it.item) {
+                if depth + 1 >= filmcraft_render::MAX_NEST_DEPTH || it.speed <= 0.0 {
+                    continue;
+                }
+                // the child times that part plays: forward from the In point, reversed back from the Out point
+                let scale = |d: Tick| Tick((d.0 as f64 * it.speed) as i64);
+                let (lo, hi) = if it.reverse {
+                    (it.source_out() - scale(b - it.start), it.source_out() - scale(a - it.start))
+                } else {
+                    (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start))
+                };
+                let (lo, hi) = (lo.max(Tick::ZERO), hi.min(child.duration()));
+                if lo >= hi {
+                    continue;
+                }
+                let (start, src_in, src_out, speed, reverse) = (it.start, it.source_in, it.source_out(), it.speed, it.reverse);
+                let to_q = move |ct: Tick| {
+                    let d = if reverse { src_out - ct } else { ct - src_in };
+                    start + Tick((d.0 as f64 / speed) as i64)
+                };
+                let top = nest.unwrap_or((it.id.0, it.name.as_str()));
+                self.walk(child, (lo, hi), &|ct| to_top(to_q(ct)), Some(top), depth + 1);
+                continue;
+            }
+            if needs_media(&s.project, it.item) && !self.seen.contains(&it.item) && is_offline(s, it.item) && self.seen.insert(it.item) {
+                let (clip, detail) = match nest {
+                    None => (it.id.0, format!("{}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder", it.name)),
+                    Some((id, name)) => (
+                        id,
+                        format!(
+                            "{} inside the nested sequence {name}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder",
+                            it.name
+                        ),
+                    ),
+                };
+                self.out.push(issue("offlineMedia", "error", to_top(a), Some(clip), detail, "relink the media (media.findMissing) before exporting"));
+            }
         }
     }
 }

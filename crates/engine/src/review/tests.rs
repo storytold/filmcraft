@@ -252,4 +252,53 @@ fn black_left_by_overlapping_clips_is_a_gap() {
     let r = review(&mut s, json!({}));
     let gap = r["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "gap").unwrap_or_else(|| panic!("no gap: {r}"));
     assert_eq!(gap["time"].as_i64(), Some(b_end.0), "{r}");
+
+/// Offline footage inside a nest is reported in the parent, where the nest shows it, and only
+/// where it shows (#5166).
+#[test]
+fn offline_footage_inside_a_nest_is_reported_where_the_nest_shows_it() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_project::{ClipId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let dir = tmp_dir("review-nested-offline");
+    let (forest, ocean) = (dir.join("forest.mov"), dir.join("ocean.mov"));
+    make_movie(&forest, filmcraft_media::DemoScene::Forest, 160, 90, 24);
+    make_movie(&ocean, filmcraft_media::DemoScene::OceanSunset, 160, 90, 24);
+    let (mut s, items, seq) = session_with(&[&forest, &ocean]);
+    let rate = s.sequence_rate();
+    let sec = Tick::from_seconds_f64;
+    // child: forest 0–1 s, then ocean 1–2 s; two parents: one shows the whole child, one only its ocean part
+    let (child, whole, ocean_only) = {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let settings = p.sequence(seq).unwrap().settings.clone();
+        let child = p.new_sequence("child", settings.clone(), 1, 1, None);
+        let mut a = p.make_track_item(items[0], TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(1.0)), rate).unwrap();
+        a.id = ClipId(p.alloc_id());
+        let mut b = p.make_track_item(items[1], TrackKind::Video, a.end(), TimeRange::new(Tick::ZERO, sec(1.0)), rate).unwrap();
+        b.id = ClipId(p.alloc_id());
+        let ocean_starts = b.start;
+        p.sequence_mut(child).unwrap().video_tracks[0].items = vec![a, b];
+        let child_len = p.sequence(child).unwrap().duration();
+        let mut parent = |src: TimeRange| {
+            let q = p.new_sequence("parent", settings.clone(), 1, 1, None);
+            let mut n = p.make_track_item(child, TrackKind::Video, Tick::ZERO, src, rate).unwrap();
+            n.id = ClipId(p.alloc_id());
+            p.sequence_mut(q).unwrap().video_tracks[0].items = vec![n];
+            q
+        };
+        let whole = parent(TimeRange::new(Tick::ZERO, child_len));
+        let ocean_only = parent(TimeRange::from_bounds(ocean_starts, child_len));
+        (child, whole, ocean_only)
+    };
+    s.execute("media.makeOffline", json!({"items": [items[0].0]})).unwrap();
+    let offline = |s: &mut Session, q: filmcraft_project::ItemId| {
+        let r = review(s, json!({"sequence": q.0}));
+        r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "offlineMedia").cloned().collect::<Vec<_>>()
+    };
+    assert_eq!(offline(&mut s, child).len(), 1, "the child itself");
+    let found = offline(&mut s, whole);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0]["detail"].as_str().unwrap().contains("inside the nested sequence"), "{found:?}");
+    assert_eq!(found[0]["seconds"].as_f64(), Some(0.0), "where it first shows in the parent");
+    assert!(offline(&mut s, ocean_only).is_empty(), "the nest never shows the offline part");
 }

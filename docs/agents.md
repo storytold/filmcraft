@@ -120,7 +120,7 @@ longSeconds=5, wordMarginSeconds=0.04, popDb=-30}`. It lists `issues` with `seve
 |---|---|---|
 | `gap` | error | black inside the picture |
 | `flashFrame` | error | a shot shorter than `flashFrames` frames |
-| `offlineMedia` | error | a clip whose media can't be opened |
+| `offlineMedia` | error | a clip whose media is offline, also inside a nested sequence where the nest shows it |
 | `midWord` | warning | an audio edge inside a spoken word; the fix names the word edge to trim to |
 | `audioPop` | warning | a hard audio cut where the mix is loud: add a short crossfade |
 | `jumpCut` | info | the next shot continues the same media further on |
