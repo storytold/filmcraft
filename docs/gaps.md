@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-09 · **Change:** minor (G11: the EffectCraft link covers Replace With After Effects Composition; G10: uncompressed / PackBits YCbCr TIFF stills apply their Orientation tag) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -223,6 +223,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
+- **Covered:** the Replace With After Effects Composition workflow, through EffectCraft
+  ([effectcraft-link.md](effectcraft-link.md)): a clip or an `.ecproj` becomes a composition rendered
+  in the background and re-rendered when it is saved. Not covered: live (non-rendered) playback of the
+  composition, linked audio from an imported project, links that survive a restart.
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
 - **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md rule 13, `unsafe`). **200–400 h.**
 
@@ -366,4 +370,5 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
+| 2026-10-28 | minor | G11: Replace With EffectCraft Composition and `.ecproj` import (docs/effectcraft-link.md) |
 | 2026-11-09 | minor | G10: uncompressed and PackBits YCbCr TIFF stills turn upright by their Orientation tag |

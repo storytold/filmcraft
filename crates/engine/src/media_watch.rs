@@ -35,14 +35,14 @@ pub type Stamp = (u64, u128);
 pub type MediaScan = Arc<Mutex<Option<Vec<(String, Option<Stamp>)>>>>;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn stamp(path: &str) -> Option<Stamp> {
+pub(crate) fn stamp(path: &str) -> Option<Stamp> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some((meta.len(), modified.as_nanos()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn stamp(_: &str) -> Option<Stamp> {
+pub(crate) fn stamp(_: &str) -> Option<Stamp> {
     None
 }
 

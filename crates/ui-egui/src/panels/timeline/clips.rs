@@ -179,6 +179,26 @@ pub fn zoomed_thumbnail_tiles(
     tiles.into_iter().map(|(x, t)| (x0 + (x - x0) * r, tile_w * r, t)).collect()
 }
 
+/// While EffectCraft renders a clip (a replacement, or a saved change), a dim layer over it with
+/// what it is doing and a progress bar along its bottom edge, like Premiere's "analyzing in the
+/// background" mark.
+pub(super) fn draw_effectcraft_overlay(app: &FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem) {
+    let Some((fraction, frames_flow)) = app.session.effectcraft_clip_overlay(it.id, it.item) else { return };
+    let text = crate::panels::monitor::effectcraft_overlay_text(fraction, frames_flow);
+    let clip = body.intersect(p.clip_rect());
+    if !clip.is_positive() {
+        return;
+    }
+    let p = p.with_clip_rect(clip);
+    p.rect_filled(body, 0.0, Color32::from_black_alpha(150));
+    let bar = Rect::from_min_max(pos2(body.min.x, (body.max.y - 4.0).max(body.min.y)), body.max);
+    p.rect_filled(bar, 0.0, Color32::from_black_alpha(140));
+    p.rect_filled(Rect::from_min_max(bar.min, pos2(bar.min.x + bar.width() * fraction, bar.max.y)), 0.0, app.tokens.accent);
+    // the text stays at the visible left edge of a clip that runs off the screen
+    let x = body.min.x.max(clip.min.x) + 6.0;
+    p.text(pos2(x, body.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.0), Color32::WHITE);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_clip(
     app: &mut FilmcraftApp,

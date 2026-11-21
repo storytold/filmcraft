@@ -134,7 +134,9 @@ pub fn scan(p: &Project, pool: &MediaPool, services: &dyn Services) -> Vec<Missi
 
 /// Rescan and remember the result. Returns the list.
 pub fn refresh(s: &mut Session) -> Vec<Missing> {
-    let list = scan(&s.project, &s.media, &*s.services);
+    let mut list = scan(&s.project, &s.media, &*s.services);
+    // A movie an EffectCraft render is still writing isn't a link problem.
+    list.retain(|m| !s.ec_pending.contains(&m.path));
     s.offline.missing = list.iter().filter(|m| m.status != "proxyMissing").map(|m| ItemId(m.item)).collect();
     list
 }
