@@ -331,9 +331,13 @@ pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
         (true, false) => "Trim Next Edit to Playhead",
         (false, false) => "Trim Previous Edit to Playhead",
     };
-    s.edit_sequence(label, |q, ctx, _| {
+    s.edit_sequence(label, |q, ctx, st| {
         if ripple {
             filmcraft_edit::extract(q, &tracks, range, ctx);
+            // as Extract does: later markers move back, markers in the removed range go
+            if st.ripple_sequence_markers {
+                crate::sequence_tools::ripple_markers(&mut q.markers, range.end(), Tick::ZERO - range.duration);
+            }
         } else {
             filmcraft_edit::lift(q, &tracks, range, ctx);
         }
