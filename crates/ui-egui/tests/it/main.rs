@@ -19,6 +19,7 @@ mod deselect_ui;
 mod dialog_buttons_ui;
 mod drop_preview_ui;
 mod edit_point_menu_ui;
+mod effect_drop_ui;
 mod engine_toast_ui;
 mod escape_drag_ui;
 mod essential_sound_ui;

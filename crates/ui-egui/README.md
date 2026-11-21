@@ -46,6 +46,20 @@ clip outline. `timeline.transitionDropPreview` exposes the span and alignment to
 hover without project edits, the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to
 render screenshots with wgpu.
 
+## Effect drops onto a selection
+
+Dragging an effect, effect preset or Lumetri preset onto a selected Timeline clip applies it to
+all selected clips in one undo step and preserves the selection. The hover outlines show the
+target group (`timeline.effectDropPreview.<clip id>`), clipped to the Timeline content so
+partially offscreen clips cannot paint over track headers or the ruler. Each outline stays in
+its own visible track pane, including after vertical scrolling, and fully hidden outlines are
+omitted. Audio-effect previews also outline linked audio recipients when linked selection is
+disabled, deduplicating audio clips already selected. Dropping onto an unselected clip targets
+and selects only that clip. Transitions continue to target one edit point.
+`effect_drop_ui` covers real pointer drags, group/single targets, linked audio recipients,
+vertical and horizontal clipping, hover feedback, selection and undo/redo;
+`FILMCRAFT_UI_SNAPSHOT_DIR` enables rendered snapshots.
+
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
