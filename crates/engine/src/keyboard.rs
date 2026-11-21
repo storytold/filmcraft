@@ -138,14 +138,28 @@ fn reveal_nested(s: &mut Session) -> Result<Value> {
 
 // ------------------------------------------------------------------ selection
 
+/// Select Clip at Playhead (D): the clips under the playhead on the targeted tracks. In the empty
+/// time between two clips it selects that gap instead, as a click on it does, so Delete closes it:
+/// the gap on the first targeted, unlocked track that has one there (V1 upwards, then A1 down).
 fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
     let t = s.playhead();
     let tg = s.targeting().targeted;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let ids: Vec<ClipId> = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
+    if ids.is_empty() {
+        let tracks: Vec<u64> = seq.video_tracks.iter().chain(&seq.audio_tracks).filter(|tr| tg.contains(&tr.id)).map(|tr| tr.id.0).collect();
+        for track in tracks {
+            // no gap there (after the last clip) or a locked track: try the next one
+            if let Ok(gap) = crate::commands::select_gap(s, &json!({"track": track, "time": t.0})) {
+                return Ok(json!({"selection": [], "gap": gap}));
+            }
+        }
+    }
     s.state.selection = with_links(s, &ids);
     s.state.edit_points.clear();
     s.state.caption_selection.clear();
+    // a clip selection replaces a selected gap, so Delete acts on the clips
+    s.state.gap_selection = None;
     Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
 
