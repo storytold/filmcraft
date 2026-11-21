@@ -140,7 +140,8 @@ impl FilmcraftApp {
         let Some(pi) = self.session.project.item(view.media) else { return };
         let fill: Box<dyn FnMut(&mut [f32], usize) + Send> = match &pi.kind {
             ItemKind::Media(media) => {
-                if !media.info.has_audio() {
+                // nothing to hear when no stream decodes: the picture plays on without a failing audio stream
+                if !media.info.has_decodable_audio() {
                     audio.stop();
                     self.source_playback.clock.audio_retry_at = 0.0;
                     return;
@@ -151,7 +152,11 @@ impl FilmcraftApp {
                     self.ui.status = "Source audio is unavailable: check Link Media".into();
                     return;
                 };
-                let channels = media.interpret.audio_channels.as_ref().and_then(|m| m.clips.first()).cloned().unwrap_or_default();
+                // the stream a placement puts on the destination track: the first one that decodes (an
+                // iPhone video's Apple Positional Audio stream comes first and plays nothing, #2758)
+                let stream = media.info.audio_streams.iter().position(|a| a.can_decode()).unwrap_or(0);
+                // the Modify ▸ Audio Channels map describes stream 0
+                let channels = media.interpret.audio_channels.as_ref().and_then(|m| m.clips.first()).filter(|_| stream == 0).cloned().unwrap_or_default();
                 let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
                 let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
                 // A seek gets its own failure slot: a late callback from the old stream cannot stop it.
@@ -169,7 +174,7 @@ impl FilmcraftApp {
                         return;
                     }
                     let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
-                    match source.audio(cursor, frames, sr) {
+                    match source.audio_stream(stream, cursor, frames, sr) {
                         Ok(mut sound) => {
                             if !channels.is_empty() {
                                 sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();

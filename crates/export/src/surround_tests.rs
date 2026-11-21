@@ -46,7 +46,7 @@ fn surround() -> (Arc<Project>, ItemId, SourceMap) {
         kind: MediaKind::AudioOnly,
         duration: Tick(2 * TICKS_PER_SECOND),
         video: None,
-        audio_streams: vec![AudioStreamInfo { sample_rate: SR, channels: 6, codec: "test".into(), bits_per_sample: Some(32) }],
+        audio_streams: vec![AudioStreamInfo { sample_rate: SR, channels: 6, codec: "test".into(), bits_per_sample: Some(32), decodable: true }],
         container: "test".into(),
         start_timecode: None,
         file_size: None,
