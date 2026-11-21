@@ -152,6 +152,36 @@ fn new_effect_params_are_settable_and_keyframable() {
 }
 
 #[test]
+fn simple_text_font_takes_any_family_name() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "simple_text"})).unwrap();
+    let font = |s: &Session| {
+        s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effect("simple_text").unwrap().param("font").unwrap().value.clone()
+    };
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Inter".into()));
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": "Noto Serif"})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Noto Serif".into()));
+
+    // a project saved when Font was a choice of Inter / JetBrains Mono still takes a family name
+    {
+        let seq = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let (_, it) = q.find_item_mut(filmcraft_project::ClipId(clip)).unwrap();
+        it.effects.iter_mut().find(|e| e.effect == "simple_text").unwrap().param_mut("font").unwrap().value = filmcraft_project::ParamValue::Choice(1);
+    }
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": "Noto Serif"})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Noto Serif".into()));
+
+    // scripts written when Font was a choice still pass its index
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 1})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("JetBrains Mono".into()));
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 0})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Inter".into()));
+    assert!(s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 2})).is_err());
+}
+
+#[test]
 fn ultra_key_setting_writes_aggressive_parameters() {
     let mut s = demo();
     let clip = first_v1_clip(&s);
