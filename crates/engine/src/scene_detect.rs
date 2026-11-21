@@ -13,6 +13,11 @@
 //!   bin "<clip> Scenes";
 //! - **Create a clip marker at each detected cut point**: a marker on the clip's master clip
 //!   (media time) at each cut.
+//!
+//! With `report: true` the analysis runs at once (as with `wait`) and only reports: `shots` lists
+//! each clip's shots (timeline and media start and end, length), nothing is applied, no undo step
+//! is added, and the apply options are ignored. Agents use it to see the shots of footage they
+//! can't watch before deciding what to cut.
 
 use std::sync::{Arc, Mutex};
 
@@ -50,7 +55,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Scene Edit Detection…",
         menu: &["Clip"],
         shortcut: None,
-        params: r#"{"clips":[id]?,"sensitivity":0..100=50,"minShotFrames":n=6,"applyCuts":bool=true,"createSubclips":bool=false,"generateMarkers":bool=false,"wait":bool=false}"#,
+        params: r#"{"clips":[id]?,"sensitivity":0..100=50,"minShotFrames":n=6,"applyCuts":bool=true,"createSubclips":bool=false,"generateMarkers":bool=false,"wait":bool=false,"report":bool=false}"#,
         enabled: has_video_selection,
         run: detect,
         journal: true,
@@ -153,10 +158,14 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         subclips: bool_p(p, "createSubclips").unwrap_or(false),
         markers: bool_p(p, "generateMarkers").unwrap_or(false),
     };
-    if !(apply.cuts || apply.subclips || apply.markers) {
-        return Err(bad("clip.sceneEditDetection", "choose at least one of applyCuts, createSubclips, generateMarkers"));
+    let report = bool_p(p, "report").unwrap_or(false);
+    if !report && !(apply.cuts || apply.subclips || apply.markers) {
+        return Err(bad(
+            "clip.sceneEditDetection",
+            "choose at least one of applyCuts, createSubclips, generateMarkers (or report: true to only list the shots)",
+        ));
     }
-    if s.scene_jobs.iter().any(|j| j.seq == seq_id) {
+    if !report && s.scene_jobs.iter().any(|j| j.seq == seq_id) {
         return Err(EngineError::Other("Scene Edit Detection is already running on this sequence".into()));
     }
     let mut work = Vec::new();
@@ -257,11 +266,16 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone(), epoch: s.document_epoch });
-    let wait = bool_p(p, "wait").unwrap_or(false);
+    if !report {
+        s.scene_jobs.push(PendingScene { job: id, seq: seq_id, apply, results: results.clone(), epoch: s.document_epoch });
+    }
+    let wait = report || bool_p(p, "wait").unwrap_or(false);
     let mut out = json!({"job": id, "frames": total});
     if wait || cfg!(target_arch = "wasm32") {
         run();
+        if report && let Some(r) = lock(&results).as_ref() {
+            out["shots"] = shots_json(s, seq_id, r);
+        }
         if let Some(r) = lock(&results).as_ref() {
             out["clips"] = json!(
                 r.iter()
@@ -281,6 +295,31 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other(e));
     }
     Ok(out)
+}
+
+/// Each analysed clip's shots for `report: true`: from the clip's start to its first cut, between
+/// cuts, and from the last cut to the clip's end, in timeline and media time.
+fn shots_json(s: &Session, seq_id: ItemId, results: &[ClipScenes]) -> Value {
+    let q = s.project.sequence(seq_id);
+    let clips: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            let it = q.and_then(|q| q.find_item(r.clip)).map(|(_, it)| it);
+            let (start, end) = it.map_or((Tick::ZERO, Tick::ZERO), |it| (it.start, it.end()));
+            let first = (start, it.map_or(r.media_range.start, |it| it.source_time_at(it.start)));
+            let bounds: Vec<(Tick, Tick)> = std::iter::once(first).chain(r.cuts.iter().copied()).collect();
+            let shots: Vec<Value> = bounds
+                .iter()
+                .enumerate()
+                .map(|(k, (t, mt))| {
+                    let t_end = bounds.get(k + 1).map_or(end, |b| b.0);
+                    json!({"start": t.0, "end": t_end.0, "startSeconds": t.seconds(), "seconds": (t_end - *t).seconds(), "mediaStart": mt.0, "mediaStartSeconds": mt.seconds()})
+                })
+                .collect();
+            json!({"clip": r.clip.0, "name": r.name, "shots": shots, "unanalysed": r.unanalysed})
+        })
+        .collect();
+    json!(clips)
 }
 
 /// Apply finished jobs (one undo step each) and drop finished / cancelled ones. Called once per UI

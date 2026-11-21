@@ -278,3 +278,32 @@ fn results_of_a_replaced_project_are_not_applied() {
     crate::scene_detect::poll(&mut s);
     assert_eq!(count(&s), before + 1, "the current project's result applies");
 }
+
+#[test]
+fn report_lists_the_shots_and_changes_nothing() {
+    let dir = tmp_dir("scene-report");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16), (DemoScene::Forest, 14)], 160, 90);
+    let (mut s, items, _) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    select_v1(&mut s);
+    let n_undo = s.history.undo.len();
+    let before = s.active_sequence().unwrap().clone();
+    // the apply options are ignored in a report
+    let r = s.execute("clip.sceneEditDetection", json!({"report": true, "applyCuts": true, "generateMarkers": true})).unwrap();
+    assert_eq!(s.history.undo.len(), n_undo, "no undo step");
+    assert_eq!(s.active_sequence().unwrap().video_tracks, before.video_tracks, "no cut was applied");
+    assert!(s.project.item(items[0]).unwrap().as_media().unwrap().markers.is_empty(), "no marker was added");
+    s.poll_persistence();
+    assert_eq!(s.history.undo.len(), n_undo, "nothing is applied later either");
+    let shots = r["shots"][0]["shots"].as_array().unwrap();
+    // the same cuts the applying run finds, as shots that tile the clip
+    assert_eq!(shots.len(), r["clips"][0]["cuts"].as_array().unwrap().len() + 1, "{r}");
+    let starts: Vec<i64> = shots.iter().map(|x| x["start"].as_i64().unwrap()).collect();
+    assert_eq!(&starts[1..], r["clips"][0]["cuts"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect::<Vec<_>>().as_slice());
+    for w in shots.windows(2) {
+        assert_eq!(w[0]["end"], w[1]["start"]);
+    }
+    assert_eq!(shots.last().unwrap()["end"].as_i64(), Some(before.video_tracks[0].items[0].end().0));
+    assert!(starts.contains(&rate.tick_of(20).0) && starts.contains(&rate.tick_of(36).0), "{r}");
+}
