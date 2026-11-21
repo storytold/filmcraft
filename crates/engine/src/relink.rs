@@ -12,7 +12,7 @@
 //!   prefix → the new one) and applies it to every other missing file, checking each one.
 //! - **Search.** [`search`] walks a folder for files named like the missing ones.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use filmcraft_media::MediaInfo;
@@ -587,15 +587,21 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     let mut deleted = Vec::new();
     if delete {
+        let cached_items_by_path = resolved_media_reference_index(s);
         for (id, path) in &files {
             // Stored paths in an opened document are not authority to delete arbitrary files.
             // Delete only the resolved path that the media pool permits opening, and only when
             // it is a regular media file that is still the one the item was linked to.
             if let Ok(path) = s.media.follow(path)
                 && deletable_media(s, *id, &path)
-                && std::fs::remove_file(&path).is_ok()
             {
-                deleted.push(path.clone());
+                // Another item or proxy may hold the file under a lexical alias. Retire its
+                // readers before unlinking so deletion works on platforms that lock open files.
+                s.media.retire_file_sources(&path);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => deleted.push(path.clone()),
+                    Err(error) => log::warn!("make offline: couldn't delete media item {} ({:?})", id.0, error.kind()),
+                }
             }
         }
     }
