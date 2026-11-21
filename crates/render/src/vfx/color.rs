@@ -1,11 +1,10 @@
 //! Colour, keying and matte effects.
 
-use filmcraft_color::{Matrix, hsl_to_rgb, rgb_to_hsl, rgb_to_ycbcr};
 use filmcraft_project::EffectInstance;
 use filmcraft_project::effect::LIGHT_IDS;
 use rayon::prelude::*;
 
-use super::{Affine, FxCtx, Image, Vec2, blur_plane, bv, chv, cv, dec, enc, fv, lin, luma, pv, smoothstep};
+use super::{Affine, FxCtx, Image, Vec2, bv, chv, cv, dec, enc, fv, lin, luma, pv, smoothstep};
 
 /// Lighting Effects: up to five directional / omni / spot lights, ambience, gloss and a bump map
 /// from the layer's own luminance.
@@ -151,109 +150,6 @@ pub fn logo_cutout(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let l = dec(col);
         let na = a * p[3];
         p.copy_from_slice(&[l[0] * na, l[1] * na, l[2] * na, na]);
-    });
-}
-
-/// Ultra Key: a colour-difference keyer working in Y′CbCr against the key colour's chroma, with
-/// Premiere's matte generation, cleanup, spill suppression and colour correction stages.
-pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let kc = cv(e, "key_color", cx);
-    let k = rgb_to_ycbcr(kc[0], kc[1], kc[2], Matrix::Bt709);
-    let kmag2 = (k[1] * k[1] + k[2] * k[2]).max(1e-6);
-    let setting = chv(e, "setting");
-    let preset = filmcraft_project::effect::ultra_key_setting(setting);
-    let pf = |id: &str, fallback: f32| preset.and_then(|rows| rows.iter().find(|(k, _)| *k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback);
-    let transparency = pf("transparency", fv(e, "transparency", cx)) / 100.0;
-    let highlight = pf("highlight", fv(e, "highlight", cx)) / 100.0;
-    let shadow = pf("shadow", fv(e, "shadow", cx)) / 100.0;
-    let tol = 0.08 + pf("tolerance", fv(e, "tolerance", cx)) / 100.0 * 0.5;
-    let pedestal = (pf("pedestal", fv(e, "pedestal", cx)) / 100.0 * 0.3).min(0.9);
-    let gain = 1.0 + 2.0 * transparency;
-    let output = chv(e, "output");
-    let dom = if kc[1] >= kc[0] && kc[1] >= kc[2] {
-        1
-    } else if kc[2] >= kc[0] {
-        2
-    } else {
-        0
-    };
-    // matte
-    let n = img.w * img.h;
-    let mut alpha = vec![1.0f32; n];
-    alpha.par_iter_mut().zip(img.px.par_chunks(4)).for_each(|(a, p)| {
-        if p[3] <= 1e-6 {
-            *a = 0.0;
-            return;
-        }
-        let v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
-        let y = rgb_to_ycbcr(v[0], v[1], v[2], Matrix::Bt709);
-        let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
-        let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag2.sqrt();
-        let keyness = proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp));
-        let mut m = (1.0 - keyness * gain).clamp(0.0, 1.0);
-        m += (y[0] - k[0]).max(0.0) * highlight * 2.0 * keyness.min(1.0);
-        m += (k[0] - y[0]).max(0.0) * shadow * 2.0 * keyness.min(1.0);
-        *a = ((m.clamp(0.0, 1.0) - pedestal) / (1.0 - pedestal)).clamp(0.0, 1.0);
-    });
-    // cleanup
-    let choke = pf("choke", fv(e, "choke", cx)) / 100.0;
-    let soften = pf("soften", fv(e, "soften", cx)) / 100.0;
-    let contrast = pf("contrast", fv(e, "contrast", cx)) / 100.0;
-    let mid = pf("mid_point", fv(e, "mid_point", cx)) / 100.0;
-    if choke > 0.0 {
-        let r = (choke * 4.0 * cx.px_scale).max(0.5);
-        let b = blur_plane(&alpha, img.w, img.h, r);
-        let c = choke * 0.5;
-        alpha.par_iter_mut().zip(b.par_iter()).for_each(|(a, &bb)| *a = a.min(((bb - c) / (1.0 - c)).clamp(0.0, 1.0)));
-    }
-    if soften > 0.0 {
-        alpha = blur_plane(&alpha, img.w, img.h, soften * 10.0 * cx.px_scale);
-    }
-    if contrast > 0.0 {
-        let g = 1.0 + contrast * 4.0;
-        alpha.par_iter_mut().for_each(|a| *a = ((*a - mid) * g + mid).clamp(0.0, 1.0));
-    }
-    // spill suppression + colour correction on the foreground
-    let spill = pf("spill", fv(e, "spill", cx)) / 100.0;
-    let desat = pf("desaturate", fv(e, "desaturate", cx)) / 100.0;
-    let range = pf("range", fv(e, "range", cx)) / 100.0;
-    let sluma = pf("spill_luma", fv(e, "spill_luma", cx)) / 100.0;
-    let (cc_s, cc_h, cc_l) = (fv(e, "cc_saturation", cx) / 100.0, fv(e, "cc_hue", cx) / 360.0, fv(e, "cc_luminance", cx) / 100.0);
-    let cc = (cc_s - 1.0).abs() > 1e-4 || cc_h.abs() > 1e-6 || (cc_l - 1.0).abs() > 1e-4;
-    img.px.par_chunks_mut(4).zip(alpha.par_iter()).for_each(|(p, &a)| {
-        let src_a = p[3];
-        let mut v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
-        let (o1, o2) = (v[(dom + 1) % 3], v[(dom + 2) % 3]);
-        let limit = o1.max(o2) * (1.0 - range) + (o1 + o2) * 0.5 * range;
-        let excess = (v[dom] - limit).max(0.0);
-        if excess > 0.0 && spill > 0.0 {
-            let l0 = luma(v);
-            v[dom] -= excess * spill;
-            let l1 = luma(v);
-            let lm = luma(v);
-            v = v.map(|q| lm + (q - lm) * (1.0 - desat * (excess * 4.0).min(1.0)));
-            let comp = (l0 - l1) * sluma;
-            v = v.map(|q| q + comp);
-        }
-        if cc {
-            let mut h = rgb_to_hsl(v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0));
-            h[0] = (h[0] + cc_h).rem_euclid(1.0);
-            h[1] = (h[1] * cc_s).clamp(0.0, 1.0);
-            h[2] = (h[2] * cc_l).clamp(0.0, 1.0);
-            v = hsl_to_rgb(h[0], h[1], h[2]);
-        }
-        let l = dec(v);
-        match output {
-            1 => {
-                let g = filmcraft_color::srgb_to_linear(a);
-                p.copy_from_slice(&[g * src_a, g * src_a, g * src_a, src_a]);
-            }
-            2 => p.copy_from_slice(&[l[0] * src_a, l[1] * src_a, l[2] * src_a, src_a]),
-            _ => {
-                let na = a * src_a;
-                p.copy_from_slice(&[l[0] * na, l[1] * na, l[2] * na, na]);
-            }
-        }
     });
 }
 

@@ -9,13 +9,14 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use filmcraft_color::{Matrix, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl, rgb_to_ycbcr, srgb_to_linear};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, lift_scale, on, point, text};
+use crate::effects::{FxCtx, b, box_blur, choice, color, dec, enc, f, gaussian_boxes, grade_space, lift_scale, on, point, text};
 use crate::image::Image;
+use crate::vfx::{chv, cv, fv, luma, smoothstep};
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
 /// magnification or mild minification: no mip pre-filter).
@@ -219,6 +220,32 @@ pub enum FxOp {
         aspect: f32,
         gpu_capable: bool,
     },
+    UltraKey {
+        k: [f32; 3],
+        kmag2: f32,
+        dom: u32,
+        output: u32,
+        tol: f32,
+        gain: f32,
+        hl2: f32,
+        sh2: f32,
+        pedestal: f32,
+        choke: f32,
+        choke_rx: Vec<u32>,
+        choke_ry: Vec<u32>,
+        soften_rx: Vec<u32>,
+        soften_ry: Vec<u32>,
+        contrast: f32,
+        mid: f32,
+        spill: f32,
+        desat: f32,
+        range: f32,
+        sluma: f32,
+        cc: bool,
+        cc_h: f32,
+        cc_s: f32,
+        cc_l: f32,
+    },
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
@@ -259,6 +286,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "ultra_key",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -659,6 +687,79 @@ impl FxOp {
                     gpu_capable,
                 }
             }
+            "ultra_key" => {
+                let kc = cv(e, "key_color", cx);
+                let k = rgb_to_ycbcr(kc[0], kc[1], kc[2], Matrix::Bt709);
+                let kmag2 = (k[1] * k[1] + k[2] * k[2]).max(1e-6);
+                let setting = chv(e, "setting");
+                let preset = filmcraft_project::effect::ultra_key_setting(setting);
+                let pf =
+                    |id: &str, fallback: f32| preset.and_then(|rows| rows.iter().find(|(row_k, _)| *row_k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback);
+                let transparency = pf("transparency", fv(e, "transparency", cx)) / 100.0;
+                let highlight = pf("highlight", fv(e, "highlight", cx)) / 100.0;
+                let shadow = pf("shadow", fv(e, "shadow", cx)) / 100.0;
+                let tol = 0.08 + pf("tolerance", fv(e, "tolerance", cx)) / 100.0 * 0.5;
+                let pedestal = (pf("pedestal", fv(e, "pedestal", cx)) / 100.0 * 0.3).min(0.9);
+                let gain = 1.0 + 2.0 * transparency;
+                let output = chv(e, "output");
+                let dom = if kc[1] >= kc[0] && kc[1] >= kc[2] {
+                    1
+                } else if kc[2] >= kc[0] {
+                    2
+                } else {
+                    0
+                };
+                let choke = pf("choke", fv(e, "choke", cx)) / 100.0;
+                let soften = pf("soften", fv(e, "soften", cx)) / 100.0;
+                let contrast = pf("contrast", fv(e, "contrast", cx)) / 100.0;
+                let mid = pf("mid_point", fv(e, "mid_point", cx)) / 100.0;
+                let (choke_rx, choke_ry) = if choke > 0.0 {
+                    let r = (choke * 4.0 * cx.px_scale).max(0.5);
+                    gaussian_boxes(w, h, r, r)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let (soften_rx, soften_ry) = if soften > 0.0 {
+                    let s = soften * 10.0 * cx.px_scale;
+                    gaussian_boxes(w, h, s, s)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let spill = pf("spill", fv(e, "spill", cx)) / 100.0;
+                let desat = pf("desaturate", fv(e, "desaturate", cx)) / 100.0;
+                let range = pf("range", fv(e, "range", cx)) / 100.0;
+                let sluma = pf("spill_luma", fv(e, "spill_luma", cx)) / 100.0;
+                let cc_s = fv(e, "cc_saturation", cx) / 100.0;
+                let cc_h = fv(e, "cc_hue", cx) / 360.0;
+                let cc_l = fv(e, "cc_luminance", cx) / 100.0;
+                let cc = (cc_s - 1.0).abs() > 1e-4 || cc_h.abs() > 1e-6 || (cc_l - 1.0).abs() > 1e-4;
+                FxOp::UltraKey {
+                    k,
+                    kmag2,
+                    dom,
+                    output,
+                    tol,
+                    gain,
+                    hl2: highlight * 2.0,
+                    sh2: shadow * 2.0,
+                    pedestal,
+                    choke,
+                    choke_rx,
+                    choke_ry,
+                    soften_rx,
+                    soften_ry,
+                    contrast,
+                    mid,
+                    spill,
+                    desat,
+                    range,
+                    sluma,
+                    cc,
+                    cc_h,
+                    cc_s,
+                    cc_l,
+                }
+            }
             _ => return None,
         })
     }
@@ -713,6 +814,21 @@ impl FxOp {
                     && fin(st)
                     && fin(ht)
                     && fin(&[*va, *vmid, *vround, *vfeather, *aspect])
+            }
+            FxOp::UltraKey {
+                k, kmag2, dom, output, tol, gain, hl2, sh2, pedestal, choke, contrast, mid, spill, desat, range, sluma, cc_h, cc_s, cc_l, ..
+            } => {
+                *dom <= 2
+                    && *output <= 2
+                    && fin(k)
+                    && fin(&[*kmag2, *tol, *gain, *hl2, *sh2, *pedestal, *choke, *contrast, *mid, *spill, *desat, *range, *sluma, *cc_h, *cc_s, *cc_l])
+                    && *kmag2 > 0.0
+                    && (1.0 - *pedestal).abs() > 1e-4
+                    // `choke` and `contrast` are 0..=1 (0..100% authored); beyond that the
+                    // `1/(1-c)` and `1+4c` amplifiers blow up ulp differences between the GPU
+                    // (multiply-by-reciprocal) and CPU (division), so stay on the CPU instead.
+                    && *choke <= 1.0
+                    && *contrast <= 1.0
             }
         }
     }
@@ -1121,6 +1237,113 @@ impl FxOp {
                         v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
                     }
                     dec(v)
+                });
+            }
+            FxOp::UltraKey {
+                k,
+                kmag2,
+                dom,
+                output,
+                tol,
+                gain,
+                hl2,
+                sh2,
+                pedestal,
+                choke,
+                choke_rx,
+                choke_ry,
+                soften_rx,
+                soften_ry,
+                contrast,
+                mid,
+                spill,
+                desat,
+                range,
+                sluma,
+                cc,
+                cc_h,
+                cc_s,
+                cc_l,
+            } => {
+                let (k, kmag2, output) = (*k, *kmag2, *output);
+                // `dom` is 0..=2 from `eval`, but the public fields can be constructed out of range:
+                // clamp so the channel indexing below can never panic.
+                let dom = (*dom as usize).min(2);
+                let (tol, gain, hl2, sh2, pedestal) = (*tol, *gain, *hl2, *sh2, *pedestal);
+                let (choke, contrast, mid) = (*choke, *contrast, *mid);
+                let (spill, desat, range, sluma) = (*spill, *desat, *range, *sluma);
+                let (cc, cc_h, cc_s, cc_l) = (*cc, *cc_h, *cc_s, *cc_l);
+                let n = img.w * img.h;
+                let mut alpha = vec![1.0f32; n];
+                let kmag = kmag2.sqrt();
+                alpha.par_iter_mut().zip(img.px.par_chunks(4)).for_each(|(a, p)| {
+                    if p[3] <= 1e-6 {
+                        *a = 0.0;
+                        return;
+                    }
+                    let v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
+                    let y = rgb_to_ycbcr(v[0], v[1], v[2], Matrix::Bt709);
+                    let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
+                    let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag;
+                    let keyness = proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp));
+                    let mut m = (1.0 - keyness * gain).clamp(0.0, 1.0);
+                    m += (y[0] - k[0]).max(0.0) * hl2 * keyness.min(1.0);
+                    m += (k[0] - y[0]).max(0.0) * sh2 * keyness.min(1.0);
+                    *a = ((m.clamp(0.0, 1.0) - pedestal) / (1.0 - pedestal)).clamp(0.0, 1.0);
+                });
+                let blur_alpha = |plane: &[f32], rx: &[u32], ry: &[u32]| -> Vec<f32> {
+                    if rx.iter().all(|&r| r == 0) && ry.iter().all(|&r| r == 0) {
+                        return plane.to_vec();
+                    }
+                    let mut im = Image { w: img.w, h: img.h, px: plane.iter().flat_map(|&v| [v, 0.0, 0.0, 0.0]).collect() };
+                    box_blur(&mut im, rx, ry, false);
+                    im.px.as_chunks::<4>().0.iter().map(|p| p[0]).collect()
+                };
+                if choke > 0.0 {
+                    let b = blur_alpha(&alpha, choke_rx, choke_ry);
+                    let c = choke * 0.5;
+                    alpha.par_iter_mut().zip(b.par_iter()).for_each(|(a, &bb)| *a = a.min(((bb - c) / (1.0 - c)).clamp(0.0, 1.0)));
+                }
+                if !soften_rx.is_empty() || !soften_ry.is_empty() {
+                    alpha = blur_alpha(&alpha, soften_rx, soften_ry);
+                }
+                if contrast > 0.0 {
+                    let g = 1.0 + contrast * 4.0;
+                    alpha.par_iter_mut().for_each(|a| *a = ((*a - mid) * g + mid).clamp(0.0, 1.0));
+                }
+                img.px.par_chunks_mut(4).zip(alpha.par_iter()).for_each(|(p, &a)| {
+                    let src_a = p[3];
+                    let mut v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
+                    let (o1, o2) = (v[(dom + 1) % 3], v[(dom + 2) % 3]);
+                    let limit = o1.max(o2) * (1.0 - range) + (o1 + o2) * 0.5 * range;
+                    let excess = (v[dom] - limit).max(0.0);
+                    if excess > 0.0 && spill > 0.0 {
+                        let l0 = luma(v);
+                        v[dom] -= excess * spill;
+                        let l1 = luma(v);
+                        v = v.map(|q| l1 + (q - l1) * (1.0 - desat * (excess * 4.0).min(1.0)));
+                        let comp = (l0 - l1) * sluma;
+                        v = v.map(|q| q + comp);
+                    }
+                    if cc {
+                        let mut h = rgb_to_hsl(v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0));
+                        h[0] = (h[0] + cc_h).rem_euclid(1.0);
+                        h[1] = (h[1] * cc_s).clamp(0.0, 1.0);
+                        h[2] = (h[2] * cc_l).clamp(0.0, 1.0);
+                        v = hsl_to_rgb(h[0], h[1], h[2]);
+                    }
+                    let l = dec(v);
+                    match output {
+                        1 => {
+                            let g = srgb_to_linear(a);
+                            p.copy_from_slice(&[g * src_a, g * src_a, g * src_a, src_a]);
+                        }
+                        2 => p.copy_from_slice(&[l[0] * src_a, l[1] * src_a, l[2] * src_a, src_a]),
+                        _ => {
+                            let na = a * src_a;
+                            p.copy_from_slice(&[l[0] * na, l[1] * na, l[2] * na, na]);
+                        }
+                    }
                 });
             }
         }

@@ -57,6 +57,10 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_ULTRA_KEY_FULL: u32 = 40;
+const OP_ULTRA_KEY_MATTE: u32 = 41;
+const OP_ULTRA_KEY_CHOKE: u32 = 42;
+const OP_ULTRA_KEY_FINAL: u32 = 43;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -98,10 +102,12 @@ struct Step {
     code: u32,
     i1: [u32; 4],
     p: [f32; 24],
-    /// Unsharp combine: reads the blurred image and the original.
-    combine: bool,
-    /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
-    unsharp_blur: bool,
+    /// Keep the entry texture (`orig`) untouched in a third target across this pass.
+    preserve_orig: bool,
+    /// Read `orig` in binding 3 (`aux`).
+    read_orig: bool,
+    /// Release `orig` after this pass completes.
+    release_orig: bool,
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
@@ -112,7 +118,29 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, preserve_orig: false, read_orig: false, release_orig: false, kernel: Vec::new() }
+}
+
+/// Which auxiliary texture (binding 3) a pass reads.
+#[derive(Debug, PartialEq, Eq)]
+enum AuxSource {
+    /// The retained `orig` target.
+    Orig(usize),
+    /// The Bokeh kernel texture.
+    Kernel,
+    /// The dummy.
+    Dummy,
+}
+
+/// Resolve a pass's aux source. `None` when the pass asks to read `orig` while none is retained:
+/// the caller must fall back to the CPU rather than bind a dummy silently.
+fn aux_source(read_orig: bool, orig: Option<usize>, has_kernel: bool) -> Option<AuxSource> {
+    match (read_orig, orig, has_kernel) {
+        (true, Some(o), _) => Some(AuxSource::Orig(o)),
+        (true, None, _) => None,
+        (false, _, true) => Some(AuxSource::Kernel),
+        (false, _, false) => Some(AuxSource::Dummy),
+    }
 }
 
 /// Texels a row of a kernel texture holds.
@@ -223,10 +251,12 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             boxes(rx, false, true, &mut out);
             boxes(ry, true, true, &mut out);
             for s in &mut out {
-                s.unsharp_blur = true;
+                s.preserve_orig = true;
             }
             let mut s = step(OP_UNSHARP, [0; 4], &[*amount, *threshold]);
-            s.combine = true;
+            s.preserve_orig = true;
+            s.read_orig = true;
+            s.release_orig = true;
             out.push(s);
         }
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
@@ -320,6 +350,106 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 0.0,
             ];
             out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+        }
+        FxOp::UltraKey {
+            k,
+            kmag2,
+            dom,
+            output,
+            tol,
+            gain,
+            hl2,
+            sh2,
+            pedestal,
+            choke,
+            choke_rx,
+            choke_ry,
+            soften_rx,
+            soften_ry,
+            contrast,
+            mid,
+            spill,
+            desat,
+            range,
+            sluma,
+            cc,
+            cc_h,
+            cc_s,
+            cc_l,
+        } => {
+            let choke_blur = choke_rx.iter().any(|&r| r > 0) || choke_ry.iter().any(|&r| r > 0);
+            let soften_blur = soften_rx.iter().any(|&r| r > 0) || soften_ry.iter().any(|&r| r > 0);
+            let flags = u32::from(*contrast > 0.0) | (u32::from(*spill > 0.0) << 1) | (u32::from(*cc) << 2) | (u32::from(*choke > 0.0 && !choke_blur) << 3);
+            let inv_kmag2 = 1.0 / *kmag2;
+            let inv_kmag = inv_kmag2.sqrt();
+            let inv_1m_pedestal = 1.0 / (1.0 - *pedestal);
+            let choke_c = *choke * 0.5;
+            let inv_1m_choke = if *choke > 0.0 { 1.0 / (1.0 - choke_c) } else { 1.0 };
+            let contrast_g = 1.0 + *contrast * 4.0;
+            let params = [
+                k[0],
+                k[1],
+                k[2],
+                inv_kmag2,
+                inv_kmag,
+                *tol,
+                *gain,
+                *hl2,
+                *sh2,
+                *pedestal,
+                inv_1m_pedestal,
+                choke_c,
+                inv_1m_choke,
+                contrast_g,
+                *mid,
+                *spill,
+                *desat,
+                *range,
+                *sluma,
+                *cc_h,
+                *cc_s,
+                *cc_l,
+            ];
+            let i1 = [*dom, *output, flags, 0];
+            if !choke_blur && !soften_blur {
+                out.push(step(OP_ULTRA_KEY_FULL, i1, &params));
+            } else {
+                let mut matte = step(OP_ULTRA_KEY_MATTE, i1, &params);
+                matte.preserve_orig = true;
+                out.push(matte);
+                if choke_blur {
+                    let start = out.len();
+                    boxes(choke_rx, false, false, &mut out);
+                    boxes(choke_ry, true, false, &mut out);
+                    if let Some(tail) = out.get_mut(start..) {
+                        for s in tail {
+                            s.preserve_orig = true;
+                        }
+                    }
+                    if soften_blur {
+                        let mut choke_step = step(OP_ULTRA_KEY_CHOKE, i1, &params);
+                        choke_step.preserve_orig = true;
+                        choke_step.read_orig = true;
+                        out.push(choke_step);
+                    }
+                }
+                if soften_blur {
+                    let start = out.len();
+                    boxes(soften_rx, false, false, &mut out);
+                    boxes(soften_ry, true, false, &mut out);
+                    if let Some(tail) = out.get_mut(start..) {
+                        for s in tail {
+                            s.preserve_orig = true;
+                        }
+                    }
+                }
+                let apply_choke_final = u32::from(choke_blur && !soften_blur);
+                let mut final_step = step(OP_ULTRA_KEY_FINAL, [*dom, *output, flags, apply_choke_final], &params);
+                final_step.preserve_orig = true;
+                final_step.read_orig = true;
+                final_step.release_orig = true;
+                out.push(final_step);
+            }
         }
     }
     out
@@ -481,25 +611,24 @@ impl FxStage {
             return None;
         }
         let all: Vec<Step> = fx.ops.iter().flat_map(|op| steps(op, w, h)).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
+        let n = if all.iter().any(|s| s.preserve_orig || s.read_orig) { 3 } else { 2 };
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
-        // Unsharp: the image its blur started from (kept while its blur passes run)
+        // Retained entry texture for multi-pass ops (Unsharp Mask, Ultra Key).
         let mut orig: Option<usize> = None;
         for s in &all {
-            // (an Unsharp without blur passes, radius 0, combines the original with itself)
-            if (s.unsharp_blur || s.combine) && orig.is_none() {
+            if s.preserve_orig && orig.is_none() {
                 orig = Some(cur);
             }
-            let keep = if s.unsharp_blur || s.combine { orig } else { None };
+            let keep = if s.preserve_orig { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
             let kernel = (!s.kernel.is_empty()).then(|| kernel_texture(device, queue, &s.kernel));
-            let aux = match (s.combine, orig, &kernel) {
-                (true, Some(o), _) => views.get(o)?,
-                (_, _, Some(k)) => k,
-                _ => dummy,
+            let aux = match aux_source(s.read_orig, orig, !s.kernel.is_empty())? {
+                AuxSource::Orig(o) => views.get(o)?,
+                AuxSource::Kernel => kernel.as_ref().unwrap_or(dummy),
+                AuxSource::Dummy => dummy,
             };
             let mut bytes = Vec::with_capacity(128);
             for v in [s.code, w, h, 0].iter().chain(&s.i1) {
@@ -533,7 +662,7 @@ impl FxStage {
             };
             dispatches.push(Dispatch { run: s.run, bg, groups });
             cur = dst;
-            if s.combine {
+            if s.release_orig {
                 orig = None;
             }
         }
@@ -575,5 +704,23 @@ impl FxStage {
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuxSource, aux_source};
+
+    #[test]
+    fn aux_source_falls_back_without_retained_orig() {
+        // read_orig with no retained `orig` must be refused, not silently bound to the dummy.
+        assert_eq!(aux_source(true, None, false), None);
+        assert_eq!(aux_source(true, None, true), None);
+        // the retained `orig` wins over the kernel when read_orig is set.
+        assert_eq!(aux_source(true, Some(1), false), Some(AuxSource::Orig(1)));
+        assert_eq!(aux_source(true, Some(1), true), Some(AuxSource::Orig(1)));
+        // otherwise the kernel, then the dummy.
+        assert_eq!(aux_source(false, None, true), Some(AuxSource::Kernel));
+        assert_eq!(aux_source(false, None, false), Some(AuxSource::Dummy));
     }
 }
