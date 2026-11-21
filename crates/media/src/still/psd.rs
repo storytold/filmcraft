@@ -11,6 +11,8 @@ use craft_psd::merged::{EncodedRows, Merged};
 use craft_psd::resources::ids;
 use craft_psd::{ColorMode, Header, Version};
 
+use image::metadata::Orientation;
+
 use super::Raster;
 use crate::{MediaError, Result};
 
@@ -136,6 +138,16 @@ fn rows_to_rgba8(name: &str, rows: &EncodedRows<'_>, h: &Header, colours: usize,
 }
 
 /// Decode the composite image of a Photoshop document to straight-alpha RGBA8.
+/// The size [`decode`] reports for this file, from its header alone. `None` when the
+/// header does not parse or the picture is past the pixel ceiling [`decode`] enforces.
+pub fn geometry(b: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let header = Header::from_bytes(b).ok()?;
+    if u64::from(header.width) * u64::from(header.height) > MAX_PIXELS as u64 {
+        return None;
+    }
+    Some((header.width, header.height, Orientation::NoTransforms))
+}
+
 pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
     if !sniff(b) {
         return Err(err(name, "not a Photoshop document"));
@@ -160,7 +172,7 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Raster> {
     // supports at most MAX_SIDE 16-bit samples per row; the shared view allocates no planes.
     let rows = merged.encoded_rows(used, MAX_SIDE as usize * 2).map_err(|e| err(name, &e.to_string()))?;
     let (rgba, has_alpha) = rows_to_rgba8(name, &rows, h, colours, alpha)?;
-    Ok(Raster { width: h.width, height: h.height, rgba, has_alpha })
+    Ok(Raster { width: h.width, height: h.height, rgba, has_alpha, orientation: Orientation::NoTransforms })
 }
 
 #[cfg(test)]
