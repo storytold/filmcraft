@@ -52,9 +52,9 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Feature | Premiere (Mercury Playback Engine: Metal, CUDA, OpenCL) | Ours (wgpu: Metal, D3D12, Vulkan) | % |
 |---|---|---|---|
 | Compositing, blend modes, transforms | GPU | **GPU** (#32), CPU compositor is the oracle | 90% |
-| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Color Grading basic / creative / vignette | ~40% |
+| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **38 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Color Grading basic / creative / vignette, Color Key and Luma Key | ~40% |
 | Color Grading curves, wheels, HSL secondary | GPU | CPU | 0% |
-| Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
+| Keys (Ultra Key), masks, distortions, transitions | GPU | Color Key and Luma Key on the GPU; Ultra Key, masks, distortions and transitions on the CPU (masks have WGSL parity tests, not in the live path) | 15% |
 | Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 4.0–5.0× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
@@ -87,5 +87,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | Accelerated effects (38 effect ids) and Keys rows: Color Key and Luma Key on the GPU |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Color Grading on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

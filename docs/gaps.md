@@ -115,7 +115,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
   encode on Apple silicon; Intel Quick Sync and AMD AMF encoders (and their 4:2:2 decode);
   VA-API VP9 / AV1 and VA-API encode; HEVC encode on Linux; AV1 hardware encode; ~48 of Premiere's
-  ~82 accelerated effects (keys, masks, Color Grading curves / wheels / HSL, distortions, transitions);
+  ~82 accelerated effects (Ultra Key (Color Key and Luma Key run on the GPU), masks, Color Grading curves / wheels / HSL, distortions, transitions);
   external video I/O (DeckLink / AJA, Mercury Transmit), control surfaces (EUCON / Mackie);
   a CPU fallback adapter renders everything on the CPU (#632).
 - **Estimate:** 120–200 h (hardware we don't own needs a human). Doc:
@@ -358,6 +358,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-18 | minor | G5: Color Key and Luma Key run on the GPU effect stage, so a layer with one of them stays on the GPU |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |

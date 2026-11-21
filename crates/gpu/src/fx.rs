@@ -57,6 +57,8 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_KEY: u32 = 44;
+const OP_LUMA_KEY: u32 = 45;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -259,6 +261,10 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 out.push(step(OP_VIGNETTE, [0; 4], &[*amount, *midpoint, *roundness, *feather, target[0], target[1], target[2]]));
             }
         }
+        FxOp::Key { key_ycc, tol, soft, spill, dom, matte } => {
+            out.push(step(OP_KEY, [*dom, *matte as u32, 0, 0], &[key_ycc[0], key_ycc[1], key_ycc[2], *tol, *soft, *spill]));
+        }
+        FxOp::LumaKey { th, cut, invert } => out.push(step(OP_LUMA_KEY, [*invert as u32, 0, 0, 0], &[*th, *cut])),
         FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
             out.push(step(OP_VIDEO_LIMITER, [*axis, *warn as u32, 0, 0], &[*max, *comp, warning_color[0], warning_color[1], warning_color[2]]));
         }

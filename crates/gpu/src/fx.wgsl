@@ -55,6 +55,8 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_KEY: u32 = 44u;
+const OP_LUMA_KEY: u32 = 45u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -245,6 +247,14 @@ fn round_away(x: f32) -> f32 {
     let f = floor(a);
     let r = select(f, f + 1.0, a - f >= 0.5);
     return select(r, -r, x < 0.0);
+}
+
+// `filmcraft_color::rgb_to_ycbcr(.., Matrix::Bt709)`: Y', Cb, Cr
+fn ycbcr709(c: vec3<f32>) -> vec3<f32> {
+    let kr = 0.2126;
+    let kb = 0.0722;
+    let y = kr * c.x + (1.0 - kr - kb) * c.y + kb * c.z;
+    return vec3(y, (c.z - y) / (2.0 * (1.0 - kb)), (c.x - y) / (2.0 * (1.0 - kr)));
 }
 
 // `rem_euclid(1.0)`
@@ -821,6 +831,56 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             let res = vec3(enc_to_linear_limiter(out_enc.x), enc_to_linear_limiter(out_enc.y), enc_to_linear_limiter(out_enc.z));
             return vec4(res * a, a);
+        }
+        case OP_KEY: {
+            // Ultra Key / Color Key (`effects::key`): alpha from the BT.709 chroma distance to the
+            // key colour (plus 0.15 of the luma distance), spill pulled from the dominant channel
+            let o = ld(p);
+            if o.a <= 0.0 {
+                return o;
+            }
+            let e = enc(o.rgb / o.a);
+            let ycc = ycbcr709(e);
+            let key = u.p0.xyz;
+            let d = sqrt((ycc.y - key.y) * (ycc.y - key.y) + (ycc.z - key.z) * (ycc.z - key.z)) + abs(ycc.x - key.x) * 0.15;
+            let alpha = clamp((d - u.p0.w) / u.p1.x, 0.0, 1.0);
+            let spill = u.p1.y;
+            let dom = u.i1.x;
+            var oc = e;
+            if spill > 0.0 {
+                // rotate the dominant channel into x (no runtime vector index: FXC aborts on a
+                // dynamically indexed vector write), pull it towards the others, rotate back
+                var v = select(select(e, e.yzx, dom == 1u), e.zxy, dom == 2u);
+                let others = (v.y + v.z) / 2.0;
+                if v.x > others {
+                    v.x = v.x - (v.x - others) * spill;
+                }
+                oc = select(select(v, v.zxy, dom == 1u), v.yzx, dom == 2u);
+            }
+            if u.i1.y != 0u {
+                return vec4(vec3(alpha * o.a), o.a);
+            }
+            let a = o.a * alpha;
+            return vec4(dec(oc) * a, a);
+        }
+        case OP_LUMA_KEY: {
+            let o = ld(p);
+            if o.a <= 0.0 {
+                return o;
+            }
+            var l = linear_to_srgb1(max(luma709(o.rgb / o.a), 0.0));
+            if u.i1.x != 0u {
+                l = 1.0 - l;
+            }
+            let th = u.p0.x;
+            let cut = u.p0.y;
+            var a = (l - cut) / max(th - cut, 1e-3);
+            if l <= cut {
+                a = 0.0;
+            } else if l >= max(th, cut + 1e-3) {
+                a = 1.0;
+            }
+            return o * a;
         }
         case OP_LUMETRI: {
             let o = ld(p);

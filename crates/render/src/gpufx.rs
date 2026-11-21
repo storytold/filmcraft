@@ -197,6 +197,24 @@ pub enum FxOp {
         warn: bool,
         warning_color: [f32; 3],
     },
+    /// Color Key (`effects::key`): the key colour in BT.709 Y'CbCr, tolerance and softness of the
+    /// chroma distance, spill suppression on the key's dominant channel (`dom`), and `matte` (an
+    /// alpha-channel view). Spill and matte are kept general, as in `effects::key`.
+    Key {
+        key_ycc: [f32; 3],
+        tol: f32,
+        soft: f32,
+        spill: f32,
+        dom: u32,
+        matte: bool,
+    },
+    /// Luma Key: alpha ramps from Cutoff to Threshold on display-encoded luma (`invert`: keys out
+    /// brights).
+    LumaKey {
+        th: f32,
+        cut: f32,
+        invert: bool,
+    },
     Lumetri {
         gains: [f32; 3],
         exposure: f32,
@@ -259,6 +277,8 @@ pub const GPU_EFFECTS: &[&str] = &[
     "vignette",
     "video_limiter",
     "lumetri",
+    "color_key",
+    "luma_key",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -585,6 +605,22 @@ impl FxOp {
                 let wc = dec([c[0], c[1], c[2]]);
                 FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
             }
+            // Color Key (effects::key). Ultra Key is vfx::color::ultra_key (choke, presets, matte
+            // cleanup) and stays on the CPU.
+            "color_key" => {
+                let kc = color(e, "color", cx);
+                let key_ycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
+                let (tol, soft, spill, output) = (f(e, "tolerance", cx) / 255.0 * 0.6 + 0.01, f(e, "feather", cx) / 50.0 * 0.2 + 0.01, 0.0, 0);
+                let dom = if kc[1] >= kc[0] && kc[1] >= kc[2] {
+                    1
+                } else if kc[2] >= kc[0] {
+                    2
+                } else {
+                    0
+                };
+                FxOp::Key { key_ycc, tol, soft, spill, dom, matte: output == 1 }
+            }
+            "luma_key" => FxOp::LumaKey { th: f(e, "threshold", cx) / 100.0, cut: f(e, "cutoff", cx) / 100.0, invert: b(e, "invert") },
             "lumetri" => {
                 use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
@@ -706,6 +742,9 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
+            // a softness of zero divides by zero on the CPU: that (and NaN) stays there
+            FxOp::Key { key_ycc, tol, soft, spill, dom, .. } => fin(key_ycc) && fin(&[*tol, *soft, *spill]) && *soft > 1e-6 && *dom <= 2,
+            FxOp::LumaKey { th, cut, .. } => fin(&[*th, *cut]),
             FxOp::Lumetri { gains, exposure, contrast, hl, sh, wh, bl, sat, faded, vib, st, ht, va, vmid, vround, vfeather, aspect, gpu_capable, .. } => {
                 *gpu_capable
                     && fin(gains)
@@ -1042,6 +1081,54 @@ impl FxOp {
                     out.map(enc_to_linear)
                 });
             }
+            FxOp::Key { key_ycc, tol, soft, spill, dom, matte } => {
+                // effects::key, operation for operation
+                let (kycc, tol, soft, spill, dom, matte) = (*key_ycc, *tol, *soft, *spill, *dom as usize, *matte);
+                img.px.par_chunks_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+                    let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+                    let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
+                    let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
+                    let mut o = c;
+                    if spill > 0.0 {
+                        let others = (o[(dom + 1) % 3] + o[(dom + 2) % 3]) / 2.0;
+                        if o[dom] > others {
+                            o[dom] -= (o[dom] - others) * spill;
+                        }
+                    }
+                    let a = p[3] * alpha;
+                    if matte {
+                        p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
+                    } else {
+                        let lo = dec(o);
+                        p.copy_from_slice(&[lo[0] * a, lo[1] * a, lo[2] * a, a]);
+                    }
+                });
+            }
+            FxOp::LumaKey { th, cut, invert } => {
+                // effects::apply "luma_key"
+                let (th, cut, invert) = (*th, *cut, *invert);
+                img.px.par_chunks_mut(4).for_each(|p| {
+                    if p[3] <= 0.0 {
+                        return;
+                    }
+                    let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                    let l = if invert { 1.0 - l } else { l };
+                    let a = if l <= cut {
+                        0.0
+                    } else if l >= th.max(cut + 1e-3) {
+                        1.0
+                    } else {
+                        (l - cut) / (th - cut).max(1e-3)
+                    };
+                    for v in p.iter_mut() {
+                        *v *= a;
+                    }
+                });
+            }
             FxOp::Lumetri {
                 gains,
                 exposure,
@@ -1269,6 +1356,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Color Key and Luma Key run on the GPU: the op's CPU reference (which the shader mirrors)
+    /// gives what the effects themselves give. Ultra Key keeps its own CPU path (vfx).
+    #[test]
+    fn key_ops_match_the_effects() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            mask_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let (w, h) = (24usize, 12usize);
+        // hues across, lightness down, a green-screen band, some transparency
+        let px: Vec<f32> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                let c = if y < 3 { [0.05, 0.75, 0.2] } else { hsl_to_rgb(x as f32 / w as f32, 0.7, 0.1 + 0.8 * y as f32 / h as f32) };
+                let a = if x % 5 == 2 { 0.5 } else { 1.0 };
+                let l = c.map(|q| filmcraft_color::srgb_to_linear(q) * a);
+                [l[0], l[1], l[2], a]
+            })
+            .collect();
+        let set = |e: &mut EffectInstance, k: &str, v: ParamValue| e.params.get_mut(k).unwrap().value = v;
+        let mut cases = Vec::new();
+        for (tol, feather) in [(0.0, 0.0), (60.0, 10.0), (200.0, 50.0)] {
+            let mut e = find_effect("color_key").unwrap().instance();
+            set(&mut e, "color", ParamValue::Color([0.05, 0.75, 0.2, 1.0]));
+            set(&mut e, "tolerance", ParamValue::Float(tol));
+            set(&mut e, "feather", ParamValue::Float(feather));
+            cases.push(e);
+        }
+        for (th, cut, inv) in [(40.0, 10.0, false), (80.0, 30.0, true), (20.0, 20.0, false)] {
+            let mut e = find_effect("luma_key").unwrap().instance();
+            set(&mut e, "threshold", ParamValue::Float(th));
+            set(&mut e, "cutoff", ParamValue::Float(cut));
+            set(&mut e, "invert", ParamValue::Bool(inv));
+            cases.push(e);
+        }
+        for e in &cases {
+            let op = FxOp::eval(e, &cx, w, h).unwrap();
+            assert!(op.gpu_ok(), "{} on the GPU", e.effect);
+            let mut via_op = Image { w, h, px: px.clone() };
+            op.apply(&mut via_op);
+            let mut via_effect = Image { w, h, px: px.clone() };
+            crate::effects::apply(&mut via_effect, e, &cx);
+            assert_eq!(via_op.px, via_effect.px, "{} {:?}", e.effect, e.params.keys().collect::<Vec<_>>());
+        }
+        assert!(FxOp::eval(&find_effect("ultra_key").unwrap().instance(), &cx, w, h).is_none_or(|o| !o.gpu_ok()), "Ultra Key stays on the CPU");
     }
 
     /// Transform with its own shutter angle blurs the motion on the CPU
