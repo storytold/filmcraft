@@ -134,6 +134,13 @@ impl FilmcraftApp {
         }
     }
 
+    /// Whether this window's position and size are the ones remembered for the next launch
+    /// (#1994). Off by default, and left off for a window started for an agent, which opens where
+    /// the user's window was and must not change that record (see [`crate::window_geometry`]).
+    pub fn set_window_remembered(&mut self, on: bool) {
+        self.window_geometry.set_remembered(on);
+    }
+
     pub fn with_control(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_rx = Some(rx);
         self

@@ -7,7 +7,8 @@
 //!
 //! - [`Tracker::record`] writes the normal geometry seen last into the window record of every
 //!   save made while the window is maximized or full-screen, so the record never depends on a
-//!   save having happened in between.
+//!   save having happened in between. Only for a window whose geometry is remembered: one
+//!   started for an agent reads the user's record and must not change it.
 //! - A change to the normal geometry asks for a save soon after it, so little is lost if the
 //!   app ends without its closing save.
 
@@ -56,9 +57,17 @@ pub struct Tracker {
     /// The window is maximized or full-screen now, so eframe's save keeps its older geometry.
     covered: bool,
     dirty: bool,
+    /// This window's geometry is the one remembered. Off for a window that only reads the record,
+    /// such as one started for an agent: its saves must leave the user's record as it is.
+    remembered: bool,
 }
 
 impl Tracker {
+    /// Whether this window's geometry is the one remembered (off until the desktop app says so).
+    pub fn set_remembered(&mut self, on: bool) {
+        self.remembered = on;
+    }
+
     /// Note the root viewport's geometry for this frame. `zoom` is egui's zoom factor.
     pub fn observe(&mut self, info: &egui::ViewportInfo, zoom: f32) {
         self.covered = info.maximized == Some(true) || info.fullscreen == Some(true);
@@ -93,9 +102,12 @@ impl Tracker {
     /// previous save, so put the one seen last in its place.
     pub fn record(&mut self, storage: &mut dyn eframe::Storage) {
         self.dirty = false;
+        if !self.remembered {
+            // eframe wrote nothing for this window, so the record in `storage` is the user's.
+            return;
+        }
         let (true, Some(normal)) = (self.covered, self.normal) else { return };
-        // No record (an agent run does not keep one) or one in a format this does not know:
-        // leave it as eframe wrote it.
+        // No record, or one in a format this does not know: leave it as eframe wrote it.
         let Some(mut record) = eframe::get_value::<Record>(storage, WINDOW_KEY) else { return };
         if (record.maximized || record.fullscreen) && record.normal_geometry != normal {
             record.normal_geometry = normal;
@@ -151,11 +163,42 @@ mod tests {
         }
     }
 
+    fn remembered() -> Tracker {
+        let mut t = Tracker::default();
+        t.set_remembered(true);
+        t
+    }
+
+    /// A window started for an agent opens from the user's record and writes nothing back. With
+    /// that record maximized, an agent that unmaximizes, resizes and maximizes its window must
+    /// not put its own geometry into it.
+    #[test]
+    fn a_window_that_is_not_remembered_leaves_the_users_maximized_record_alone() {
+        let users = record_of(100.0, 800.0, true);
+        for is_remembered in [false, true] {
+            let mut t = Tracker::default();
+            t.set_remembered(is_remembered);
+            let mut store = Store::default();
+            eframe::set_value(&mut store, WINDOW_KEY, &users);
+            t.observe(&info(0.0, 1920.0, true), 1.0);
+            t.observe(&info(140.0, 900.0, false), 1.0);
+            t.observe(&info(0.0, 1920.0, true), 1.0);
+            t.record(&mut store);
+            let after = eframe::get_value::<Record>(&store, WINDOW_KEY);
+            if is_remembered {
+                assert_eq!(after, Some(record_of(140.0, 900.0, true)), "the user's own window");
+            } else {
+                assert_eq!(after, Some(users), "an agent's window");
+            }
+        }
+        assert!(!Tracker::default().remembered, "off unless the desktop app turns it on");
+    }
+
     /// #1994: resize, maximize before any save, save, relaunch, unmaximize. eframe's save while
     /// maximized writes the geometry of its previous save; the record must hold the resized one.
     #[test]
     fn a_resize_then_an_immediate_maximize_is_saved_with_the_resized_geometry() {
-        let mut t = Tracker::default();
+        let mut t = remembered();
         let mut store = Store::default();
         t.observe(&info(100.0, 800.0, false), 1.0);
         eframe::set_value(&mut store, WINDOW_KEY, &record_of(100.0, 800.0, false));
@@ -175,7 +218,7 @@ mod tests {
 
     #[test]
     fn a_save_of_a_normal_window_or_with_no_record_is_left_as_eframe_wrote_it() {
-        let mut t = Tracker::default();
+        let mut t = remembered();
         let mut store = Store::default();
         t.observe(&info(140.0, 900.0, false), 1.0);
         let written = record_of(141.0, 901.0, false);
@@ -183,7 +226,7 @@ mod tests {
         t.record(&mut store);
         assert_eq!(eframe::get_value::<Record>(&store, WINDOW_KEY), Some(written));
 
-        // Maximized with no record kept (an agent run): none is made.
+        // Maximized with no record in the storage: none is made.
         let mut store = Store::default();
         t.observe(&info(0.0, 1920.0, true), 1.0);
         t.record(&mut store);
@@ -193,7 +236,7 @@ mod tests {
     /// The position is stored in physical pixels: points times egui's zoom times the scale.
     #[test]
     fn the_position_is_stored_in_pixels_under_a_zoom() {
-        let mut t = Tracker::default();
+        let mut t = remembered();
         t.observe(&info(100.0, 800.0, false), 2.0);
         let normal = t.normal.expect("a geometry");
         assert_eq!(normal.outer_position_pixels, Some(Xy { x: 300.0, y: 0.0 }));
@@ -217,7 +260,7 @@ mod tests {
 
     #[test]
     fn a_move_or_resize_asks_for_a_save_soon_and_a_save_settles_it() {
-        let mut t = Tracker::default();
+        let mut t = remembered();
         t.observe(&info(100.0, 800.0, false), 1.0);
         assert_eq!(t.interval(), UNCHANGED, "the first geometry is the restored one");
         t.observe(&info(100.0, 800.0, false), 1.0);
@@ -232,7 +275,7 @@ mod tests {
 
     #[test]
     fn maximizing_is_not_a_change_to_the_normal_geometry() {
-        let mut t = Tracker::default();
+        let mut t = remembered();
         t.observe(&info(100.0, 800.0, false), 1.0);
         t.observe(&info(0.0, 1920.0, true), 1.0);
         assert_eq!(t.interval(), UNCHANGED);
