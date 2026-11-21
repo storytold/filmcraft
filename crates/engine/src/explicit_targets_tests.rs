@@ -308,6 +308,29 @@ fn link_leaves_clips_without_a_partner_unlinked() {
     assert_eq!(clip(&s, a2).unwrap().link, None, "a2 has no overlapping video in the selection");
 }
 
+/// A razor cut through one half of a linked pair (its track alone, or its clip alone with Linked
+/// Selection off) leaves the new piece unlinked: the partner was not cut, so a link of the piece's
+/// own would have no other member. The left piece stays linked to the partner.
+#[test]
+fn a_razor_cut_through_one_half_of_a_pair_leaves_the_new_piece_unlinked() {
+    for by in ["track", "clip"] {
+        let mut s = demo();
+        let (v, a) = (v1(&s)[0].clone(), a1(&s)[0].clone());
+        assert!(v.link.is_some() && v.link == a.link, "the demo's first clips are a pair");
+        let rate = s.sequence_rate();
+        let frame = (rate.frame_at(v.start.max(a.start)) + rate.frame_at(v.end().min(a.end()))) / 2;
+        let mid = rate.tick_of(frame);
+        assert!(v.start < mid && mid < v.end() && a.start < mid && mid < a.end(), "{by}: {frame} is inside both");
+        let params = if by == "track" { json!({"frame": frame, "track": "V1"}) } else { json!({"frame": frame, "clip": a.id.0}) };
+        let r = s.execute("timeline.razor", params).unwrap();
+        assert_eq!(r["cuts"], 1, "{by}");
+        let cut = if by == "track" { v1(&s) } else { a1(&s) };
+        let piece = cut.iter().find(|i| i.start == mid).unwrap();
+        assert_eq!(piece.link, None, "{by}: the new piece has no partner");
+        assert_eq!((clip(&s, v.id).unwrap().link, clip(&s, a.id).unwrap().link), (v.link, v.link), "{by}: the pair stays linked");
+    }
+}
+
 /// #1103: Unlink with a selection that also holds an unlinked clip (a title, a music clip) unlinks
 /// the linked ones, as the Timeline's context menu offers, instead of re-linking them.
 #[test]

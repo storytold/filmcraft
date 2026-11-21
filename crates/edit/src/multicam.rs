@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use filmcraft_project::{ClipId, ItemId, MulticamSel, Sequence, Track, TrackId, TrackItem};
 use filmcraft_time::{Tick, TimeRange};
 
-use crate::{EditCtx, EditError, Result, remove_orphan_transitions, split_track_at};
+use crate::{EditCtx, EditError, Result, drop_lone_links, remove_orphan_transitions, split_track_at};
 
 /// Whether `it` is a multi-camera clip (enabled or not).
 pub fn is_multicam(it: &TrackItem) -> bool {
@@ -147,6 +147,7 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
         heal_track(tr, TimeRange::from_bounds(first, end));
         points += tr.items.iter().filter(|i| i.start > first && i.start < end).count();
     }
+    drop_lone_links(seq, &links);
     points
 }
 
