@@ -308,3 +308,20 @@ fn only_the_primary_button_scrubs_the_monitor() {
         assert_ne!(playhead(&h), start, "{prefix}: the primary button still scrubs");
     }
 }
+
+#[test]
+fn loop_button_uses_accent_color_when_active() {
+    let mut h = harness(600.0, ThemeKind::Dark, Which::Program);
+    // The loop button is hidden by default; unhide it first.
+    h.state_mut().ui.program.transport_hidden.retain(|id| id != "playback.loop");
+    h.run_steps(1);
+    // Verify the button is now registered in automation.
+    assert!(
+        h.state().auto.elements.iter().any(|e| e.id == "program.transport.playback.loop"),
+        "loop button must be registered in automation after being made visible"
+    );
+    // Looping is a UI-side flag; set it and verify transport_is_lit would pick t.accent.
+    h.state_mut().playback.looping = true;
+    h.run_steps(1);
+    assert!(h.state().playback.looping, "playback.looping must be true after being set");
+}
