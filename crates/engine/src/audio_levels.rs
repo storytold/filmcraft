@@ -114,6 +114,9 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     let last = Tick::from_seconds_f64(end).to_units_floor(i64::from(sr));
     let per = ((window * f64::from(sr)).round() as i64).max(1);
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    // On the web a clip's audio can still be loading: the mix leaves it out, which would read as
+    // silence. Report that instead of measuring it (as file.exportFrame does, #228).
+    let _ = filmcraft_media::pending::take();
     let (mut rms, mut peak) = (Vec::new(), Vec::new());
     let (mut sum_sq, mut n_all, mut max_peak) = (0f64, 0usize, FLOOR_DB);
     let mut pos = first;
@@ -129,6 +132,9 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
         rms.push(r);
         peak.push(pk);
         pos += n as i64;
+    }
+    if filmcraft_media::pending::take() {
+        return Err(EngineError::Other("the audio is still loading; measure again in a moment".into()));
     }
     // the windows as measured: whole samples from the sample the range starts on
     let window = per as f64 / f64::from(sr);
