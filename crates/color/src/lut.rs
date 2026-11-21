@@ -25,6 +25,7 @@ pub struct Lut1d {
 
 impl Lut1d {
     pub fn identity(size: usize) -> Self {
+        let size = size.max(2);
         let n = (size - 1) as f32;
         Lut1d { domain_min: [0.0; 3], domain_max: [1.0; 3], data: (0..size).map(|i| [i as f32 / n; 3]).collect() }
     }
@@ -486,6 +487,15 @@ fn bit_max(v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lut1d_identity_small_sizes_are_finite() {
+        for size in [0, 1] {
+            let l = Lut1d::identity(size);
+            assert!(l.size() >= 2);
+            assert!(l.data.iter().all(|v| v.iter().all(|x| x.is_finite())));
+        }
+    }
 
     /// Brute-force tetrahedral reference: find the Kuhn simplex (one of the 6 tetrahedra along the
     /// cell diagonal) whose barycentric coordinates are all ≥ 0, by solving a 3×3 system for each.
