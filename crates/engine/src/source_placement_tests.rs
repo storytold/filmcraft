@@ -430,3 +430,37 @@ fn placement_lanes_are_the_tracks_a_placement_fills() {
     assert_eq!(lanes, filled_tracks(&s));
     assert_eq!(lanes, (1, 1));
 }
+
+/// #3569: a sequence made from a marked clip (a Source drag onto an empty Timeline) holds the
+/// marked span, not the whole clip, and never reads past the clip's end.
+#[test]
+fn new_sequence_from_marked_clip_places_only_the_marked_range() {
+    // (In, Out): on the grid; an off-grid In with no Out; an In only
+    let cases = [(1.0, Some(3.0)), (0.01, None), (2.0, None)];
+    for (secs_in, secs_out) in cases {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.execute("source.open", json!({"item":5})).unwrap();
+        let start = Tick::from_seconds_f64(secs_in);
+        let mut marks = json!({"item":5,"in":start.0});
+        if let Some(o) = secs_out {
+            marks["out"] = json!(Tick::from_seconds_f64(o).0);
+        }
+        s.execute("project.setMarks", marks).unwrap();
+        let range = clip_ops::source_view(&s, ItemId(5)).unwrap().selected_range();
+        let full = s.project.item(ItemId(5)).unwrap().duration();
+        s.execute("file.newSequence", json!({"fromItems":[5]})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let fd = q.settings.frame_rate.frame_duration();
+        let clips: Vec<_> = q.all_tracks().flat_map(|t| t.items.iter()).collect();
+        assert!(!clips.is_empty());
+        for clip in clips {
+            let case = (secs_in, secs_out);
+            assert_eq!(clip.source_in, range.start, "{case:?}");
+            assert_eq!(clip.start, Tick::ZERO, "{case:?}");
+            assert!(clip.source_in + clip.duration <= full, "{case:?}: reads past the clip's end");
+            assert!(clip.duration <= range.duration && range.duration - clip.duration < fd, "{case:?}: {:?} vs {:?}", clip.duration, range.duration);
+            assert_eq!(clip.duration, q.settings.frame_rate.snap(clip.duration), "{case:?}: on the frame grid");
+        }
+    }
+}
