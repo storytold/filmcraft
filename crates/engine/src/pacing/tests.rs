@@ -26,8 +26,8 @@ fn shots_and_gaps_tile_the_whole_sequence_in_order() {
     let r = pacing(&mut s);
     let total: f64 = r["shots"].as_array().unwrap().iter().chain(r["gaps"].as_array().unwrap()).map(|g| g["seconds"].as_f64().unwrap()).sum();
     assert!((total - r["durationSeconds"].as_f64().unwrap()).abs() < 1e-6, "{r}");
-    assert!(r["shotSeconds"]["min"].as_f64() <= r["shotSeconds"]["median"].as_f64());
-    assert!(r["shotSeconds"]["median"].as_f64() <= r["shotSeconds"]["max"].as_f64());
+    let stat = |k: &str| r["shotSeconds"][k].as_f64().unwrap_or_else(|| panic!("shotSeconds.{k} missing: {r}"));
+    assert!(stat("min") <= stat("median") && stat("median") <= stat("max"), "{r}");
 }
 
 #[test]
@@ -93,6 +93,11 @@ fn through_edits_follow_direction_holds_and_angles() {
     assert!(through(&piece(Tick::ZERO, x + d, true), &piece(d, x, true)), "reverse, continuous");
     assert!(!through(&piece(Tick::ZERO, x + d + d, true), &piece(d, x, true)), "reverse jump");
     assert!(!through(&piece(Tick::ZERO, x, false), &piece(d, x + d, true)), "direction change");
+    // a reversed split rounds each piece's media range: a tick apart is still continuous
+    assert!(through(&piece(Tick::ZERO, x + d + Tick(1), true), &piece(d, x, true)), "reverse, one tick of rounding");
+    let mut quiet = piece(d, x + d, false);
+    quiet.gain_db = -96.0;
+    assert!(!through(&piece(Tick::ZERO, x, false), &quiet), "a gain change is heard");
 
     let held = |c: &mut filmcraft_project::TrackItem, at: Tick| c.frame_hold = Some(at);
     let (mut a, mut b) = (piece(Tick::ZERO, x, false), piece(d, x + d, false));

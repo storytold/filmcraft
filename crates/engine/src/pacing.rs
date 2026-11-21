@@ -56,25 +56,23 @@ fn is_picture(p: &Project, item: ItemId) -> bool {
     !matches!(p.item(item).map(|i| &i.kind), Some(ItemKind::Graphic { .. } | ItemKind::AdjustmentLayer { .. }))
 }
 
-/// `b` continues `a` with no visible change: the same media (subclips of one file count as the
-/// same, as their clips use the parent's media time), the same multi-camera angle (when enabled), and picked up
-/// where `a` stops, at the same speed and direction (backwards when reversed). Held frames continue
-/// only into the same held frame.
+/// `b` continues `a` with no visible change: the editing rule for through edits
+/// ([`filmcraft_edit::through::is_through_edit`]: same speed, direction, holds, gain and effects,
+/// continuous media within its rounding slack), with two differences for what the viewer sees:
+/// subclips of one file are the same media (their clips use the parent's media time), and a
+/// multi-camera selection that is switched off plays like a nest, so its stored angle doesn't count.
 pub(crate) fn is_through_edit(p: &Project, a: &TrackItem, b: &TrackItem) -> bool {
     let root = |c: &TrackItem| p.resolve_media(c.item).map_or(c.item, |(r, _, _)| r);
-    // a disabled multi-camera selection plays like a nest: its angle doesn't show
-    let angle = |c: &TrackItem| c.multicam.filter(|m| m.enabled).map(|m| m.angle);
-    if a.end() != b.start || root(a) != root(b) || angle(a) != angle(b) {
+    if root(a) != root(b) {
         return false;
     }
-    match (a.frame_hold, b.frame_hold) {
-        (None, None) => {
-            let continuous = if a.reverse { b.source_out() == a.source_in } else { a.source_out() == b.source_in };
-            a.speed == b.speed && a.reverse == b.reverse && continuous
-        }
-        (Some(x), Some(y)) => x == y,
-        _ => false,
+    let angle = |c: &TrackItem| c.multicam.filter(|m| m.enabled).map(|m| m.angle);
+    let mut b = b.clone();
+    b.item = a.item;
+    if angle(a) == angle(&b) {
+        b.multicam = a.multicam;
     }
+    filmcraft_edit::through::is_through_edit(a, &b)
 }
 
 /// The clips that can be the picture: (track index, clip) on enabled video tracks, enabled, with
