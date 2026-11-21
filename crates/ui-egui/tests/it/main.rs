@@ -59,6 +59,7 @@ mod playback_clock_ui;
 mod project_panel_ui;
 mod properties_scroll_ui;
 mod remix_ui;
+mod script_ui;
 mod scripted;
 mod scrub_stop_ui;
 mod scrub_stream_ui;

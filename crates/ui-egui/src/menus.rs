@@ -123,6 +123,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.effects", "Effects", ["Window", "Workspaces"], Some("Alt+Shift+4")),
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
+    uic!("window.workspace.script", "Script", ["Window", "Workspaces"], None),
+    uic!("script.openPanel", "Open Script", [], None),
+    uic!("script.findInScript", "Find in Script", [], None),
+    uic!("script.addMarkAtSelection", "Add Script Mark", [], None),
+    uic!("script.toggleOffscreen", "Toggle Script Offscreen", [], None),
+    uic!("script.thumbnailBack", "Script Thumbnail Back", [], None),
+    uic!("script.thumbnailForward", "Script Thumbnail Forward", [], None),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
     uic!("window.workspace.vertical", "Vertical", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
@@ -208,6 +215,7 @@ pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> 
 
 /// Execute a UI or engine command by id.
 pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    app.ui.script.sync_project(&app.session.project_instance);
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -331,6 +339,65 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
+        return Ok(Value::Null);
+    }
+    if id == "script.openPanel" {
+        let item = params.get("item").and_then(Value::as_u64).ok_or("script.openPanel needs an item")?;
+        if app.session.project.item(filmcraft_project::ItemId(item)).and_then(|item| item.as_script()).is_none() {
+            return Err("that project item is not a script".into());
+        }
+        app.ui.script.open_document(Some(item));
+        app.show_panel(PanelKind::Script);
+        return Ok(json!({"item": item}));
+    }
+    if id == "script.findInScript" {
+        let source =
+            params.get("item").and_then(Value::as_u64).or_else(|| app.session.state.project_selection.first().map(|id| id.0)).ok_or("select a project clip")?;
+        return crate::panels::script::find_source(app, filmcraft_project::ItemId(source));
+    }
+    if id == "script.addMarkAtSelection" {
+        return crate::panels::script::add_mark_at_selection(app);
+    }
+    if id == "script.toggleOffscreen" {
+        return crate::panels::script::toggle_offscreen_selection(app);
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.clear" && params.as_object().is_none_or(|map| map.is_empty()) {
+        if ctx.text_edit_focused() {
+            return Ok(Value::Null);
+        }
+        return crate::panels::script::delete_selection(app);
+    }
+    if matches!(id, "script.thumbnailBack" | "script.thumbnailForward") {
+        return crate::panels::script::shuttle_thumbnail(app, ctx, if id == "script.thumbnailBack" { -1 } else { 1 });
+    }
+    if app.ui.focused == PanelKind::Script && id == "edit.undo" && crate::panels::script::has_text_paste_undo(app) {
+        return crate::panels::script::undo_text_paste(app, ctx);
+    }
+    if app.ui.focused == PanelKind::Script && params.as_object().is_none_or(|map| map.is_empty()) && matches!(id, "edit.copy" | "edit.paste") {
+        if ctx.text_edit_focused() {
+            if id == "edit.copy" {
+                app.synthetic.push(egui::Event::Copy);
+            } else if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+                app.synthetic.push(egui::Event::Paste(text));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
+            return Ok(Value::Null);
+        }
+        if id == "edit.copy" {
+            let result = crate::panels::script::copy_paste_section(app, true)?;
+            if let Some(text) = crate::panels::script::copied_plain_text(app) {
+                ctx.copy_text(text);
+            }
+            return Ok(result);
+        }
+        if let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read()) {
+            return crate::panels::script::paste_plain_text(app, &text);
+        }
+        if app.ui.script.section_clipboard.is_some() {
+            return crate::panels::script::copy_paste_section(app, false);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
         return Ok(Value::Null);
     }
     if let Some(r) = crate::panels::workspaces::route(app, id, &params) {
@@ -743,7 +810,17 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         return Ok(Value::Null);
     }
     match text {
-        TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
+        TextCommand::Paste => {
+            if window == egui::ViewportId::ROOT
+                && app.ui.focused == PanelKind::Script
+                && let Some(text) = app.hooks.clipboard_text.as_mut().and_then(|read| read())
+            {
+                app.synthetic.push(egui::Event::Paste(text));
+                ctx.request_repaint();
+            } else {
+                ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste);
+            }
+        }
         TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
             app.synthetic.extend(events);
             ctx.request_repaint();

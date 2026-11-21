@@ -298,13 +298,18 @@ impl FilmcraftApp {
                     self.ui.dock.restore_timeline();
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
-                filmcraft_engine::Event::OpenSource(_) => {
+                filmcraft_engine::Event::OpenSource(_) | filmcraft_engine::Event::CueSource(_) => {
+                    let cue = matches!(ev, filmcraft_engine::Event::CueSource(_));
+                    let focused = self.ui.focused;
                     // a closed Source panel reopens, and another panel's maximize would hide it
-                    if self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
+                    if !cue && self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
                         self.ui.keys.maximized = None;
                     }
-                    // the clip just opened there is what Space and J/K/L act on next (#3669)
                     self.show_panel(PanelKind::Source);
+                    if cue {
+                        let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: focused });
+                        self.ui.focused = focused;
+                    }
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),
@@ -380,8 +385,10 @@ impl FilmcraftApp {
             self.auto.begin_frame();
             self.apply_prefs(&ctx);
             self.sync_timeline_view();
+            self.ui.script.sync_project(&self.session.project_instance);
             panels::metadata::follow_selection(self);
             self.handle_drops(&ctx);
+            panels::script::finish_edit_on_click_away(self, &ctx);
             self.begin_press(&ctx);
             self.latch_escape_cancel(&ctx);
             self.handle_shortcuts(&ctx);
