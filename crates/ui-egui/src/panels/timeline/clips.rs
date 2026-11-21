@@ -191,13 +191,15 @@ pub(super) fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = it.custom_label_color.map_or_else(
-        || label_color(app, it.label),
-        |c| {
-            let [r, g, b] = c.0;
-            Color32::from_rgb(r, g, b)
-        },
-    );
+    let base = crate::panels::project_links::linked_color(app, it.item).unwrap_or_else(|| {
+        it.custom_label_color.map_or_else(
+            || label_color(app, it.label),
+            |c| {
+                let [r, g, b] = c.0;
+                Color32::from_rgb(r, g, b)
+            },
+        )
+    });
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).

@@ -41,6 +41,7 @@
 //!   would drop them when saving.
 //! - **v16**: marker authors, named project swatches, and exact marker/clip hex colors.
 //! - **v17**: optional marker URLs, independent of notes and retained across marker-type changes.
+//! - **v18**: linked-project descriptors; older readers must refuse files to avoid dropping links.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -48,12 +49,31 @@ pub mod atomic;
 pub mod autosave;
 
 use filmcraft_project::{Project, ProjectView};
-#[cfg(test)]
 use serde_json::Value;
 
 pub use atomic::{atomic_write, atomic_write_new};
 
-pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
+pub use craft_fcproj_format::{FORMAT_ID, FormatError, Migration, OLDEST_SCHEMA, detect_version, migrate_with};
+
+// Keep all shipped migrations in the shared crate; only the linked-project no-op belongs here.
+const fn linked_migrations() -> [Migration; craft_fcproj_format::MIGRATIONS.len() + 1] {
+    let mut table = [v17_to_v18 as Migration; craft_fcproj_format::MIGRATIONS.len() + 1];
+    let mut i = 0;
+    while i < craft_fcproj_format::MIGRATIONS.len() {
+        table[i] = craft_fcproj_format::MIGRATIONS[i];
+        i += 1;
+    }
+    table
+}
+
+/// Shared historical migrations followed by the linked-project schema step.
+pub const MIGRATIONS: &[Migration] = &linked_migrations();
+/// Linked projects must not be silently discarded by readers of the preceding schema.
+pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
+
+fn v17_to_v18(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
 
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
@@ -99,7 +119,10 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    // The shared envelope is reusable, but its convenience writer stamps schema 17.
+    let env = craft_fcproj_format::EnvelopeOut { format: FORMAT_ID, schema_version: SCHEMA_VERSION, generator: generator(), project, view };
+    let result = if pretty { serde_json::to_vec_pretty(&env) } else { serde_json::to_vec(&env) };
+    result.unwrap_or_default()
 }
 
 /// Read a project file (any supported schema).
@@ -107,7 +130,17 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
+    let (env, found) = match craft_fcproj_format::decode::<Project>(bytes) {
+        Ok(file) => file,
+        // Schema 18 adds a defaulted map and needs no JSON transformation. Reuse the shared
+        // decoder for all earlier shapes, and its typed envelope for current linked files.
+        Err(FormatError::TooNew { found, .. }) if found == SCHEMA_VERSION => {
+            let env = serde_json::from_slice(bytes).map_err(|e| FormatError::Corrupt(e.to_string()))?;
+            (env, found)
+        }
+        Err(FormatError::TooNew { found, .. }) => return Err(FormatError::TooNew { found, supported: SCHEMA_VERSION }),
+        Err(error) => return Err(error),
+    };
     validate_loaded(loaded(env, found))
 }
 
@@ -184,7 +217,46 @@ mod tests {
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 17);
+        assert_eq!(SCHEMA_VERSION, 18);
+    }
+
+    #[test]
+    fn linked_envelopes_round_trip_and_pre_link_readers_refuse_them() {
+        use filmcraft_project::{ItemId, project_link::ProjectLink};
+        let mut project = Project::new("Linked");
+        project.project_links.insert(
+            ItemId(100),
+            ProjectLink {
+                version: 1,
+                provider: "effectcraft".into(),
+                project_path: "title.ecproj".into(),
+                object: "composition-1".into(),
+                object_name: "Title".into(),
+                revision: "cached-revision".into(),
+                cache_generation: 7,
+                baked: false,
+            },
+        );
+        for pretty in [false, true] {
+            let bytes = encode(&project, pretty);
+            assert!(matches!(craft_fcproj_format::decode::<Value>(&bytes), Err(FormatError::TooNew { found: 18, supported: 17 })));
+            let loaded = decode(&bytes).unwrap();
+            assert_eq!(loaded.schema_version, 18);
+            assert!(!loaded.migrated());
+            assert_eq!(loaded.project.project_links, project.project_links);
+        }
+    }
+
+    #[test]
+    fn shared_schema_seventeen_loads_and_is_saved_as_link_capable() {
+        let project = Project::new("Before links");
+        let bytes = craft_fcproj_format::encode(&project, None::<&ProjectView>, "FilmCraft before links".into(), false);
+        let loaded = decode(&bytes).unwrap();
+        assert_eq!(loaded.schema_version, 17);
+        assert!(loaded.migrated());
+        assert!(loaded.project.project_links.is_empty());
+        let saved: Value = serde_json::from_slice(&encode(&loaded.project, false)).unwrap();
+        assert_eq!(saved["schema_version"], 18);
     }
 
     #[test]

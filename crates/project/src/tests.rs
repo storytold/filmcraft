@@ -396,6 +396,25 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
 }
 
 #[test]
+fn max_id_reserves_orphaned_project_link_keys() {
+    let mut p = Project::new("Orphaned link");
+    p.project_links.insert(
+        ItemId(9000),
+        project_link::ProjectLink {
+            version: 1,
+            provider: "effectcraft".into(),
+            project_path: "missing.ecproj".into(),
+            object: "comp".into(),
+            object_name: "Old composition".into(),
+            revision: String::new(),
+            cache_generation: 0,
+            baked: false,
+        },
+    );
+    assert_eq!(p.max_id(), 9000);
+}
+
+#[test]
 fn sequence_display_format_round_trips_and_old_files_load_as_timecode() {
     use filmcraft_time::TimeDisplay;
     for d in [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames] {

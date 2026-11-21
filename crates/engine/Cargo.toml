@@ -38,6 +38,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+sha2 = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
