@@ -67,8 +67,8 @@ pub use output::{OutputSink, path_is_file};
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
     AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, idle_renderer_count, register_audio_encoder, register_encoder, register_format_probe,
-    register_frame_renderer, register_hdr_probe, release_idle_renderers,
+    cqp_available, encoder_registered, frame_renderer_registered, hdr_available, idle_renderer_count, register_audio_encoder, register_cqp_probe,
+    register_encoder, register_format_probe, register_frame_renderer, register_hdr_probe, release_idle_renderers,
 };
 use registry::{audio_factories, video_factories};
 pub(crate) use registry::{keep_idle_renderers, take_frame_renderer};

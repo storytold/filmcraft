@@ -3751,3 +3751,11 @@
 	Toggle Color Grading Section	Växla färggraderingsavsnitt
 	Color Grading Section	Färggraderingsavsnitt
 	Read Video Scopes	Läs av videoskop
+	CQP (constant quantizer)	CQP (konstant kvantiserare)
+	Quantizer (QP)	Kvantiserare (QP)
+	Multipass	Flerpass
+	Spatial AQ	Spatiell AQ
+	Lookahead	Framåtblick
+	Enable hardware two-pass / multipass rate control	Aktivera hårdvarubaserad tvåpass- / flerpasshastighetsstyrning
+	Enable spatial adaptive quantization	Aktivera spatiell adaptiv kvantisering
+	Enable lookahead frame analysis	Aktivera framåtblickande bildanalys

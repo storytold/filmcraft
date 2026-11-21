@@ -1138,3 +1138,31 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+#[test]
+fn cqp_multipass_spatial_aq_and_lookahead_flat_params_reach_export_settings() {
+    filmcraft_export::register_cqp_probe(filmcraft_export::Format::Hevc, || true);
+    let session = Session::default();
+    let settings_of = |params: Value| crate::export_tools::settings_from_params(&session, &params, "file.exportMedia").map(|(_, s)| s);
+
+    let cqp = settings_of(json!({"format": "hevc", "path": "out.mp4", "bitrateMode": "cqp", "qp": 21})).unwrap();
+    assert_eq!(cqp.bitrate_mode, filmcraft_export::BitrateMode::Cqp);
+    assert_eq!(cqp.qp, Some(21));
+
+    let vbr = settings_of(json!({
+        "format": "hevc",
+        "path": "out.mp4",
+        "bitrateMode": "vbr1Pass",
+        "multipass": true,
+        "spatialAq": true,
+        "lookahead": 12
+    }))
+    .unwrap();
+    assert!(vbr.multipass);
+    assert!(vbr.spatial_aq);
+    assert_eq!(vbr.lookahead, Some(12));
+
+    let implied_cqp = settings_of(json!({"format": "hevc", "path": "out.mp4", "qp": 28})).unwrap();
+    assert_eq!(implied_cqp.bitrate_mode, filmcraft_export::BitrateMode::Cqp);
+    assert_eq!(implied_cqp.qp, Some(28));
+}

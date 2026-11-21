@@ -535,6 +535,7 @@ fn constants_match_the_header() {
 fn capabilities_constants_match_the_header() {
     assert_eq!(NV_ENC_CAPS_NUM_MAX_BFRAMES as i64, 0, "NV_ENC_CAPS_NUM_MAX_BFRAMES");
     assert_eq!(NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES as i64, 1, "NV_ENC_CAPS_SUPPORTED_RATECONTROL_MODES");
+    assert_eq!(NV_ENC_CAPS_SUPPORT_LOOKAHEAD as i64, 37, "NV_ENC_CAPS_SUPPORT_LOOKAHEAD");
     assert_eq!(NV_ENC_CAPS_WIDTH_MAX as i64, 16, "NV_ENC_CAPS_WIDTH_MAX");
     assert_eq!(NV_ENC_CAPS_HEIGHT_MAX as i64, 17, "NV_ENC_CAPS_HEIGHT_MAX");
     assert_eq!(NV_ENC_CAPS_WIDTH_MIN as i64, 45, "NV_ENC_CAPS_WIDTH_MIN");
