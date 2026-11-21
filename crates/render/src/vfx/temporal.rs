@@ -146,33 +146,119 @@ fn centroid_cache() -> &'static CentroidCache {
     C.get_or_init(Default::default)
 }
 
+/// The key of a clip's analyses in the process-wide caches: its place and range ([`FxEnv::clip_key`],
+/// project-local) and the media it shows ([`FxEnv::source_key`]), so two projects whose clips share
+/// ids and timing don't get each other's results.
+fn analysis_key(env: &dyn FxEnv) -> u64 {
+    (env.clip_key() ^ env.source_key()).wrapping_mul(0x0100_0000_01b3)
+}
+
+type ActiveCache = Mutex<HashMap<u64, [f64; 4]>>;
+fn active_cache() -> &'static ActiveCache {
+    static C: OnceLock<ActiveCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Frames of a clip looked at to find its black bars.
+const BAR_SAMPLES: usize = 8;
+
+/// The whole frame, as an [`active_picture`].
+const WHOLE_FRAME: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// The active picture of the clip `env` describes: its frame less the black bars of a letterboxed
+/// or pillarboxed source, as fractions (x0, y0, x1, y1). Bars are rows (or columns) at both edges,
+/// of about the same size, that stay black (below 24 / 255 in sRGB, as video black and its noise
+/// are) in every one of a few frames sampled over the clip. A dark sky on one side is not a bar.
+pub(super) fn active_picture(env: &dyn FxEnv, now: f64) -> [f64; 4] {
+    let key = analysis_key(env);
+    if let Some(a) = active_cache().lock().ok().and_then(|c| c.get(&key).copied()) {
+        return a;
+    }
+    let scale = (320.0 / env.source_size().0.max(1) as f32).min(1.0);
+    let limit = filmcraft_color::srgb_to_linear(24.0 / 255.0);
+    // the brightest value of each row and column over the samples
+    let (mut rows, mut cols): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+    for k in 0..BAR_SAMPLES {
+        let t = env.clip_seconds().max(0.0) * (k as f64 + 0.5) / BAR_SAMPLES as f64;
+        let Some(f) = env.source_frame(t - now, scale) else { continue };
+        if f.w == 0 || f.h == 0 || f.px.len() < f.w * f.h * 4 {
+            continue;
+        }
+        if rows.is_empty() {
+            (rows, cols) = (vec![0.0; f.h], vec![0.0; f.w]);
+        } else if (rows.len(), cols.len()) != (f.h, f.w) {
+            continue;
+        }
+        for (row, line) in rows.iter_mut().zip(f.px.chunks_exact(f.w * 4)) {
+            for (col, &[r, g, b, _]) in cols.iter_mut().zip(line.as_chunks::<4>().0) {
+                let v = r.max(g).max(b);
+                *row = row.max(v);
+                *col = col.max(v);
+            }
+        }
+    }
+    if rows.is_empty() {
+        return WHOLE_FRAME;
+    }
+    // a pair of bars of about one size, each under 40 % of the frame; one more row or column of
+    // the picture is left out with them, for the one the analysis size blends with the bar
+    let bars = |line: &[f32]| {
+        let n = line.len();
+        let lead = line.iter().take_while(|v| **v < limit).count();
+        let trail = line.iter().rev().take_while(|v| **v < limit).count();
+        let (a, b) = (lead.min(trail), lead.max(trail));
+        if a == 0 || b - a > 2 + b / 8 || b * 5 > n * 2 || lead + trail + 2 >= n {
+            return (0.0, 1.0);
+        }
+        ((lead + 1) as f64 / n as f64, 1.0 - (trail + 1) as f64 / n as f64)
+    };
+    let ((x0, x1), (y0, y1)) = (bars(&cols), bars(&rows));
+    let a = [x0, y0, x1, y1];
+    if let Ok(mut c) = active_cache().lock() {
+        if c.len() > 4096 {
+            c.clear();
+        }
+        c.insert(key, a);
+    }
+    a
+}
+
 /// Auto Reframe: keeps the subject (a saliency centroid averaged over a time window set by the
-/// Motion Preset) in frame while zooming the clip to fill the sequence (or a chosen aspect).
+/// Motion Preset) in a window of the target aspect, which Reframe Zoom narrows. On the sequence's
+/// aspect, the layer covers the frame ([`super::reframes_to_sequence`]); a chosen aspect expects
+/// the clip placed so its centred window of that aspect fills the frame (Fill Frame does it). The
+/// window stays inside the clip's [`active_picture`], so a letterboxed source's bars don't show.
 pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (lw, lh) = (img.w as f64, img.h as f64);
-    // the frame the layer must fill, in layer pixels (Motion at its defaults places the layer
-    // centred in the sequence 1:1)
-    let target = match (chv(e, "aspect"), cx.env) {
+    // the aspect of the window, in layer pixels
+    let r = match (chv(e, "aspect"), cx.env) {
         (0, Some(env)) => {
+            // the frame's, as the layer sees it: the box around the frame mapped back into the
+            // layer, so pixel aspects, a non-uniform Scale and Rotation count (a quarter turn swaps
+            // the sides)
+            let Some(i) = env.layer_to_output().inverse() else { return };
             let (sw, sh) = env.sequence_size();
-            let (src_w, _) = env.source_size();
-            let k = lw / src_w.max(1) as f64;
-            (sw as f64 * k, sh as f64 * k)
+            let (sw, sh) = (sw as f64, sh as f64);
+            ((i.a * sw).abs() + (i.c * sh).abs()) / ((i.b * sw).abs() + (i.d * sh).abs())
         }
         (0, None) => return,
-        (a, _) => {
-            let r = [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize];
-            if lw / lh > r { (lh * r, lh) } else { (lw, lw / r) }
-        }
+        (a, _) => [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize],
     };
-    let zoom_user = (fv(e, "zoom", cx) as f64 / 100.0).max(1.0);
-    let z = (target.0 / lw).max(target.1 / lh).max(1.0) * zoom_user;
+    if !(r.is_finite() && r > 0.0) {
+        return;
+    }
+    let target = if lw / lh > r { (lh * r, lh) } else { (lw, lw / r) };
+    // the window stays inside the active picture, zooming past a letterbox's or pillarbox's bars
+    let area = cx.env.map_or(WHOLE_FRAME, |env| active_picture(env, cx.seconds));
+    let (ax0, ay0, ax1, ay1) = (area[0] * lw, area[1] * lh, area[2] * lw, area[3] * lh);
+    let (aw, ah) = (ax1 - ax0, ay1 - ay0);
+    let z = (fv(e, "zoom", cx) as f64 / 100.0).max(1.0) * (target.0 / aw).max(target.1 / ah).max(1.0);
     // window of the source that stays visible
-    let (vw, vh) = (target.0.min(lw * z) / z, target.1.min(lh * z) / z);
+    let (vw, vh) = ((target.0 / z).min(aw), (target.1 / z).min(ah));
     let (half, step) = [(1.0, 0.25), (0.5, 0.125), (0.15, 0.05)][chv(e, "preset").min(2) as usize];
     let subject = match cx.env {
         Some(env) => {
-            let key = env.clip_key();
+            let key = analysis_key(env);
             let fps = env.frame_rate().max(1.0);
             let mut acc = (0.0f64, 0.0f64, 0.0f64);
             let mut k = -half;
@@ -207,8 +293,10 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
     };
     let off = offv(e, "offset", cx);
-    let sx = (subject.0 * lw + off.x).clamp(vw / 2.0, lw - vw / 2.0);
-    let sy = (subject.1 * lh + off.y).clamp(vh / 2.0, lh - vh / 2.0);
+    // `max` then `min`, not `clamp`: the bounds meet, and may cross by a rounding, when the window
+    // is as wide as the active picture
+    let sx = (subject.0 * lw + off.x).max(ax0 + vw / 2.0).min(ax1 - vw / 2.0);
+    let sy = (subject.1 * lh + off.y).max(ay0 + vh / 2.0).min(ay1 - vh / 2.0);
     // output(p) = input(subject + (p − centre) / z)
     let m = Affine::translate(lw / 2.0, lh / 2.0).then_apply(&Affine::scale(z, z)).then_apply(&Affine::translate(-sx, -sy));
     if (z - 1.0).abs() < 1e-9 && (sx - lw / 2.0).abs() < 1e-6 && (sy - lh / 2.0).abs() < 1e-6 {
