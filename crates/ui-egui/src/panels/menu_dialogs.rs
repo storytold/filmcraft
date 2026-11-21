@@ -482,19 +482,31 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
     });
 }
 
-/// A color swatch that opens the color picker; the parameter is `#rrggbb`.
-fn color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str) {
+/// Edit the matte's hex draft while showing the most recent valid color in the swatch.
+fn matte_color(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value) -> bool {
+    let mut hex = p["color"].as_str().unwrap_or_default().to_owned();
+    let preview = ui.scope_id().with((pre, "color-preview"));
+    let as_rgb = |[r, g, b, _]: [f32; 4]| [r, g, b].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let mut rgb = filmcraft_color::parse_hex(&hex).map(as_rgb).or_else(|| ui.data(|data| data.get_temp(preview))).unwrap_or_default();
     ui.horizontal(|ui| {
-        ui.label(label);
-        let c = p.get(key).and_then(Value::as_str).and_then(filmcraft_color::parse_hex).unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let mut rgb = [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        let r = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
-        push(elems, format!("{pre}.{key}"), &r, label);
-        if r.changed() {
-            p[key] = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+        ui.label(tl!("Color:"));
+        let swatch = egui::color_picker::color_edit_button_srgb(ui, &mut rgb);
+        push(elems, format!("{pre}.color"), &swatch, tl!("Color:"));
+        if swatch.changed() {
+            let [r, g, b] = rgb;
+            hex = format!("#{r:02x}{g:02x}{b:02x}");
         }
-        ui.label(p.get(key).and_then(Value::as_str).unwrap_or_default());
+        let field = ui.add(egui::TextEdit::singleline(&mut hex).font(egui::TextStyle::Monospace).desired_width(84.0).hint_text("#RRGGBB").char_limit(32));
+        push(elems, format!("{pre}.color.hex"), &field, tl!("Hex color"));
     });
+    let color = filmcraft_color::parse_hex(&hex);
+    p["color"] = json!(hex);
+    if let Some(color) = color {
+        ui.data_mut(|data| data.insert_temp(preview, as_rgb(color)));
+    } else {
+        ui.colored_label(ui.visuals().error_fg_color, tl!("Enter six hex digits, for example FF80C0."));
+    }
+    color.is_some()
 }
 
 fn pairs(v: &[&str]) -> Vec<(String, String)> {
@@ -512,6 +524,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let mut browse: Option<String> = None;
+    let mut can_confirm = true;
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("menu-dialog", pre));
@@ -818,13 +831,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
             "file.newColorMatte" => {
-                color(ui, &mut elems, pre, p, "color", tl!("Color:"));
+                can_confirm = matte_color(ui, &mut elems, pre, p);
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
                 number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
                 number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
                 number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.04..=36000.0, suffix: " s" });
             }
-            "project.matteColor" => color(ui, &mut elems, pre, p, "color", tl!("Color:")),
+            "project.matteColor" => can_confirm = matte_color(ui, &mut elems, pre, p),
             "markers.addFlashCue" => {
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
                 text(ui, &mut elems, pre, p, "comment", tl!("Comments:"), 220.0);
@@ -874,7 +887,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     action = Some("cancel");
                 }
             }
-            let r = ui.button(ok_text);
+            let r = ui.add_enabled(can_confirm, egui::Button::new(ok_text));
             push(&mut elems, format!("{pre}.ok"), &r, ok_text);
             if r.clicked() {
                 action = Some(if info_only { "cancel" } else { "ok" });
