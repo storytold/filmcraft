@@ -34,7 +34,10 @@ pub const ZOOMS: [(&str, f32); 10] =
     [("10", 0.1), ("25", 0.25), ("50", 0.5), ("75", 0.75), ("100", 1.0), ("150", 1.5), ("200", 2.0), ("400", 4.0), ("800", 8.0), ("1600", 16.0)];
 /// Ruler thickness (points).
 pub const RULER: f32 = 16.0;
-const GUIDE_COLOR: Color32 = Color32::from_rgb(0x3d, 0xa5, 0xff);
+const GUIDE_COLOR: Color32 = {
+    let [r, g, b] = Guide::DEFAULT_COLOR;
+    Color32::from_rgb(r, g, b)
+};
 const SNAP_COLOR: Color32 = Color32::from_rgb(0xff, 0x4f, 0xd8);
 /// Snap distance (points).
 pub const SNAP_PX: f32 = 6.0;
@@ -181,7 +184,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             Some(pos) => {
                 let vertical = params.get("orientation").and_then(Value::as_str) != Some("horizontal");
                 let v = view_mut(app, w);
-                v.guides.push(Guide { vertical, position: pos });
+                v.guides.push(Guide { vertical, position: pos, ..Guide::default() });
                 v.show_guides = true;
                 Ok(json!({"monitor": pfx, "guides": v.guides.len()}))
             }
@@ -191,6 +194,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
                 Ok(json!({"dialog": "addGuide"}))
             }
         },
+        "editGuide" | "removeGuide" => change_guide(view_mut(app, w), params, rest == "removeGuide"),
         "guideTemplates.save" => match params.get("name").and_then(Value::as_str) {
             Some(name) => save_template(app, w, name),
             None => {
@@ -242,6 +246,36 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         _ => return None,
     };
     Some(r)
+}
+
+fn change_guide(view: &mut MonitorView, params: &Value, remove: bool) -> Result<Value, String> {
+    if view.lock_guides {
+        return Err("Unlock guides before editing them.".into());
+    }
+    let index = params
+        .get("guide")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|&n| n < view.guides.len())
+        .ok_or_else(|| "Select a valid guide.".to_string())?;
+    if remove {
+        view.guides.remove(index);
+        return Ok(json!({"removed": index}));
+    }
+    let color = params
+        .get("color")
+        .map(|value| serde_json::from_value::<[u8; 3]>(value.clone()).map_err(|_| "Color must have three RGB values from 0 to 255."))
+        .transpose()?;
+    let opacity =
+        params.get("opacity").map(|value| value.as_f64().filter(|value| (0.0..=1.0).contains(value)).ok_or("Opacity must be between 0 and 1.")).transpose()?;
+    let guide = &mut view.guides[index];
+    if let Some(color) = color {
+        guide.color = color;
+    }
+    if let Some(opacity) = opacity {
+        guide.opacity = opacity;
+    }
+    Ok(json!({"guide": index, "color": guide.color, "opacity": guide.opacity}))
 }
 
 fn set_display(app: &mut FilmcraftApp, w: Which, d: &str) -> Result<Value, String> {
@@ -324,6 +358,7 @@ pub fn enabled(app: &FilmcraftApp, id: &str) -> bool {
     let v = view(app, which_of(app, &Value::Null));
     match id {
         "view.lockGuides" | "view.clearGuides" | "view.guideTemplates.save" => !v.guides.is_empty(),
+        "view.editGuide" | "view.removeGuide" => !v.guides.is_empty() && !v.lock_guides,
         _ => true,
     }
 }
@@ -588,7 +623,7 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
             if area.contains(pos) && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 let position = if ng.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
                 let v = view_mut(app, w);
-                v.guides.push(Guide { vertical: ng.vertical, position });
+                v.guides.push(Guide { vertical: ng.vertical, position, ..Guide::default() });
                 v.show_guides = true;
             }
         }
@@ -613,13 +648,39 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         } else {
             ([pos2(area.min.x, c), pos2(area.max.x, c)], Rect::from_min_max(pos2(area.min.x, c - 3.0), pos2(area.max.x, c + 3.0)))
         };
-        p.line_segment(seg, Stroke::new(1.0, GUIDE_COLOR));
+        let [red, green, blue] = g.color;
+        let alpha = (g.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        p.line_segment(seg, Stroke::new(1.0, Color32::from_rgba_unmultiplied(red, green, blue, alpha)));
         let hit = hit.intersect(area);
         app.auto.add(&format!("{pfx}.guide.{i}"), hit, if g.vertical { "vertical guide" } else { "horizontal guide" });
         if v.lock_guides {
             continue;
         }
-        let resp = ui.interact(hit, egui::Id::unique((pfx, "guide", i)), Sense::drag());
+        let resp = ui.interact(hit, egui::Id::unique((pfx, "guide", i)), Sense::click_and_drag());
+        resp.context_menu(|ui| {
+            let mut color = g.color;
+            let swatch = ui
+                .horizontal(|ui| {
+                    ui.label(tl!("Color"));
+                    egui::color_picker::color_edit_button_srgb(ui, &mut color)
+                })
+                .inner;
+            app.auto.add(&format!("{pfx}.guideMenu.color"), swatch.rect, "Guide color");
+            let mut opacity = g.opacity * 100.0;
+            let slider = ui.add(egui::Slider::new(&mut opacity, 0.0..=100.0).text(tl!("Opacity")).suffix("%"));
+            app.auto.add(&format!("{pfx}.guideMenu.opacity"), slider.rect, "Guide opacity");
+            if (swatch.changed() || slider.changed())
+                && let Some(Err(error)) = route(app, "view.editGuide", &json!({"monitor":pfx, "guide":i, "color":color, "opacity":opacity / 100.0}))
+            {
+                app.ui.status = error;
+            }
+            let delete = ui.button(tl!("Delete"));
+            app.auto.add(&format!("{pfx}.guideMenu.delete"), delete.rect, "Delete guide");
+            if delete.clicked() {
+                remove = Some(i);
+                ui.close();
+            }
+        });
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if g.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
@@ -652,8 +713,10 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
             }
         }
     }
-    if let Some(i) = remove {
-        view_mut(app, w).guides.remove(i);
+    if let Some(i) = remove
+        && let Some(Err(error)) = route(app, "view.removeGuide", &json!({"monitor":pfx, "guide":i}))
+    {
+        app.ui.status = error;
     }
 }
 
