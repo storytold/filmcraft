@@ -448,6 +448,8 @@ pub struct UiState {
     #[serde(skip)]
     pub marker_properties: Option<crate::panels::marker_properties::Draft>,
     #[serde(skip)]
+    pub caption_split: Option<crate::panels::caption_split::Draft>,
+    #[serde(skip)]
     pub custom_label_color: Option<crate::panels::custom_colors::Draft>,
     #[serde(default)]
     pub language: crate::i18n::Language,
@@ -1008,6 +1010,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             marker_properties: None,
+            caption_split: None,
             markers_panel: Default::default(),
             palette_manager: None,
             custom_label_color: None,

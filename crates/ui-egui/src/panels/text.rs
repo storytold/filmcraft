@@ -87,13 +87,15 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Add captions"), Tokens::semibold(16.0), t.text);
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, tl!("Create a caption track or import a caption file."), Tokens::ui(12.0), t.text_dim);
-        for (i, (id, label, cmd)) in [
+        let mut buttons = vec![
             ("text.captions.newTrack", tl!("Create new caption track"), "captions.newTrack"),
             ("text.captions.import", tl!("Import captions file…"), "captions.import"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        ];
+        // a transcribed sequence: the main way to get captions
+        if app.session.is_enabled("transcript.createCaptions") {
+            buttons.insert(0, ("text.captions.fromTranscript", tl!("Generate from transcript"), "transcript.createCaptions"));
+        }
+        for (i, (id, label, cmd)) in buttons.into_iter().enumerate() {
             let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(200.0, 26.0));
             let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
             ui.painter().rect_filled(r, 13.0, if i == 0 { if resp.hovered() { t.accent_hover } else { t.accent } } else { t.field_bg });
@@ -142,7 +144,16 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ph = app.session.playhead();
     let any_sel = !sel.is_empty();
     let under = track.caption_at(ph).filter(|c| c.start < ph).map(|c| c.id);
-    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
+    let tools: [(Icon, &str, &str, bool, &str, Value); 6] = [
+        // the sequence's transcript, cut into captions that follow the montage
+        (
+            Icon::Captions,
+            "text.captions.fromTranscript",
+            tl!("Generate captions from the transcript"),
+            app.session.is_enabled("transcript.createCaptions"),
+            "transcript.createCaptions",
+            json!({}),
+        ),
         (Icon::Plus, "text.captions.add", tl!("Add caption at playhead"), track.caption_at(ph).is_none(), "captions.add", json!({"track": track.id.0})),
         (
             Icon::Razor,
@@ -156,16 +167,32 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         (Icon::Trash, "text.captions.delete", tl!("Delete selected captions"), any_sel, "captions.delete", json!({})),
         (Icon::Export, "text.captions.export", "Export captions…", !track.captions.is_empty(), "captions.export", json!({"track": track.id.0})),
     ];
-    for (icon, id, label, enabled, cmd, params) in tools {
-        let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
-        if r.max.x > rect.max.x {
-            break;
+    // in a narrow panel the buttons that do not fit wrap onto a second row instead of vanishing
+    let mut row = 0.0f32;
+    let mut slot = |x: &mut f32| {
+        if *x + 24.0 > rect.max.x - 6.0 && row == 0.0 {
+            *x = bar.min.x;
+            row = 28.0;
         }
+        let r = Rect::from_min_size(pos2(*x, bar.min.y + row), vec2(24.0, 24.0));
+        *x += 28.0;
+        r
+    };
+    for (icon, id, label, enabled, cmd, params) in tools {
+        let r = slot(&mut x);
         if tool_button(app, ui, r, icon, id, label, enabled) {
             actions.push((cmd.into(), params));
         }
-        x += 28.0;
     }
+    // the window that turns line breaks into the next captions: the selected caption, else the one under the playhead
+    let target = sel.first().copied().or_else(|| track.caption_at(ph).map(|c| c.id));
+    let r = slot(&mut x);
+    if tool_button(app, ui, r, Icon::Type, "text.captions.splitText", tl!("Edit caption text and split at line breaks…"), target.is_some())
+        && let Some(c) = target
+    {
+        crate::panels::caption_split::open(app, c.0);
+    }
+    let bar_bottom = bar.max.y + row;
 
     // ---- style strip: its controls wrap onto more rows in a narrow panel, so the strip is as tall
     // as they were on the last frame (one 30 px row at least, half the panel at most)
@@ -191,7 +218,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---- segment list
-    let list = Rect::from_min_max(pos2(rect.min.x + 6.0, bar.max.y + 8.0), pos2(rect.max.x - 6.0, style_rect.min.y - 6.0));
+    let list = Rect::from_min_max(pos2(rect.min.x + 6.0, bar_bottom + 8.0), pos2(rect.max.x - 6.0, style_rect.min.y - 6.0));
     ui.painter().rect_filled(list, 3.0, t.app_bg);
     let q = app.ui.caption_search.to_lowercase();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list.shrink(4.0)).id_salt("caption-list"));
@@ -260,6 +287,20 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         let key = egui::Id::unique(("cap-text", c.id.0));
                         let mut buf = ui.data(|d| d.get_temp::<String>(key)).unwrap_or_else(|| c.text.clone());
+                        let te_id = key.with("te");
+                        // Enter in the text cuts the caption at the cursor: what follows becomes the next caption
+                        // (Shift+Enter still adds a line to this one). Taken before the field sees the key.
+                        let split = (ui.memory(|m| m.has_focus(te_id))
+                            && !ui.input(|i| i.modifiers.shift)
+                            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
+                        .then(|| {
+                            let idx = egui::text_edit::TextEditState::load(ui.ctx(), te_id)
+                                .and_then(|s| s.cursor.char_range())
+                                .map_or(usize::MAX, |r| r.primary.index.into());
+                            let at = buf.char_indices().nth(idx).map_or(buf.len(), |(b, _)| b);
+                            let (before, after) = buf.split_at_checked(at).unwrap_or((buf.as_str(), ""));
+                            format!("{before}\n{after}")
+                        });
                         let resp = if crate::rtl::has_rtl(&buf) && !ui.memory(|m| m.has_focus(key.with("te"))) {
                             reading_order(ui, &buf, key.with("te"))
                         } else {
@@ -284,7 +325,24 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         } else {
                             ui.data_mut(|d| d.remove::<String>(key));
                         }
-                        if resp.lost_focus() && buf != c.text {
+                        // after a cut, the cursor goes to the start of the new caption (the second one selected)
+                        let after_cut = egui::Id::unique("caption-cut-focus");
+                        let now = ui.input(|i| i.time);
+                        if sel.get(1) == Some(&c.id) && ui.data(|d| d.get_temp::<f64>(after_cut)).is_some_and(|t| now - t < 1.0) {
+                            ui.data_mut(|d| d.remove::<f64>(after_cut));
+                            resp.request_focus();
+                            let mut st = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
+                            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(0))));
+                            st.store(ui.ctx(), te_id);
+                        }
+                        if let Some(text) = split {
+                            actions.push(("captions.splitText".into(), json!({"caption": c.id.0, "text": text})));
+                            ui.data_mut(|d| {
+                                d.remove::<String>(key);
+                                d.insert_temp(after_cut, now);
+                            });
+                            ui.memory_mut(|m| m.surrender_focus(te_id));
+                        } else if resp.lost_focus() && buf != c.text {
                             actions.push(("captions.setText".into(), json!({"caption": c.id.0, "text": buf})));
                         }
                     });
