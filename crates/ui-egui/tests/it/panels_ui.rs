@@ -223,6 +223,20 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
 }
 
+/// #5025 point 4: the ≡ menu lists its items as a menu, one row under the next with no gap,
+/// as the menu bar's menus do, not as a stack of separate framed buttons.
+#[test]
+fn panel_menu_items_are_menu_rows_not_spaced_buttons() {
+    let mut d = Driver::demo();
+    d.click("panel.menu.Program");
+    let rect = |d: &mut Driver, id: &str| d.rects(id).into_iter().find(|(i, _)| i == id).map(|(_, r)| r).unwrap_or_else(|| panic!("no {id}"));
+    let undock = rect(&mut d, "panel.menu.Program.undock");
+    let maximize = rect(&mut d, "panel.menu.Program.maximize");
+    assert!((maximize.top() - undock.bottom()).abs() < 0.5, "a gap between menu rows: {undock:?} then {maximize:?}");
+    // every row spans the menu, so its hover does too, whatever the length of its label
+    assert!((maximize.width() - undock.width()).abs() < 0.5, "rows of different widths: {undock:?} and {maximize:?}");
+}
+
 /// The History panel menu: Delete Redoable Actions asks for OK and then forgets the dimmed steps
 /// (Backspace in the History panel asks the same), and Clear History forgets every step. The
 /// project stays as it is.

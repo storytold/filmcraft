@@ -167,6 +167,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let anchor = pos2(wr.min.x, rect.max.y + 4.0);
         let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(anchor).show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
+                // menu rows, as in Window ▸ Workspaces, not framed buttons
+                crate::theme::menu_style(ui.style_mut());
                 ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                     ui.set_min_width(220.0);
                     for w in crate::dock::names(&app.workspaces) {

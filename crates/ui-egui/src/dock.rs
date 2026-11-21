@@ -785,9 +785,15 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     let list_open = ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false);
     if let Some(r) = more.filter(|_| list_open) {
         let mut picked = None;
-        let area =
-            egui::Area::new(list_id.with("area")).order(egui::Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(r.right_bottom()).show(ui.ctx(), |ui| {
+        let area = egui::Area::new(list_id.with("area"))
+            .order(egui::Order::Foreground)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(r.right_bottom())
+            .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    // menu rows, not framed buttons
+                    crate::theme::menu_style(ui.style_mut());
                     ui.set_min_width(160.0);
                     // many open sequences: the list scrolls instead of leaving the window
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
