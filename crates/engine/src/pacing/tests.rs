@@ -151,3 +151,42 @@ fn overlapping_clips_on_a_track_follow_playback() {
     assert_eq!(at(6.0).clip, None, "B has ended and playback shows nothing on V1: {segs:?}");
     assert_eq!(at(6.0).start, b_end, "the black starts where B ends");
 }
+
+/// A nest that outlasts its shortened contents shows nothing past their end: pacing reports
+/// black there, as playback shows it (#5165).
+#[test]
+fn a_nest_past_its_contents_is_black() {
+    use filmcraft_project::{ClipId, ItemId, TrackKind};
+    use filmcraft_time::{Tick, TimeRange};
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let sec = Tick::from_seconds_f64;
+    let city: ItemId = s.project.items.iter().find(|(_, i)| i.name == "City_Night_Drive.mp4").map(|(id, _)| *id).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let settings = p.sequence(seq).unwrap().settings.clone();
+    // a child sequence with 6 s of contents
+    let child = p.new_sequence("child", settings, 1, 1, None);
+    let mut inner = p.make_track_item(city, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(6.0)), rate).unwrap();
+    inner.id = ClipId(p.alloc_id());
+    p.sequence_mut(child).unwrap().video_tracks[0].items.push(inner);
+    // in the parent, a 10 s nest of it: its last 4 s are past the contents
+    let mut nest = p.make_track_item(child, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(6.0)), rate).unwrap();
+    nest.id = ClipId(p.alloc_id());
+    nest.duration = sec(10.0);
+    let nest_id = nest.id;
+    let overhang = p.nest_overhang(&nest).expect("the nest outlasts its contents");
+    let q = p.sequence_mut(seq).unwrap();
+    for t in &mut q.video_tracks {
+        t.items.clear();
+    }
+    q.video_tracks[0].items = vec![nest];
+    let q = s.project.sequence(seq).unwrap();
+    let segs = super::segments(&s.project, q);
+    let at = |t: Tick| segs.iter().find(|g| g.start <= t && t < g.end).unwrap();
+    assert_eq!(at(sec(1.0)).clip, Some(nest_id));
+    let tail = at(overhang.start);
+    assert_eq!((tail.clip, tail.start), (None, overhang.start), "black from where the contents end: {segs:?}");
+    assert!(tail.end >= overhang.end());
+}

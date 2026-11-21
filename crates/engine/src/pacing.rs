@@ -78,8 +78,11 @@ pub(crate) fn is_through_edit(p: &Project, a: &TrackItem, b: &TrackItem) -> bool
 /// The clip that is the picture at `t`: from the top enabled video track down, the clip playback
 /// takes on that track (`Track::item_at`: the latest start at or before `t`, nothing once it has
 /// ended), if it is enabled and replaces the picture (graphics and adjustment layers sit over it).
+/// A nest shows nothing past the end of its contents (`Project::nest_overhang`), so there the
+/// tracks below show through, as through an empty spot.
 pub(crate) fn picture_at<'a>(p: &Project, q: &'a Sequence, t: Tick) -> Option<&'a TrackItem> {
-    q.video_tracks.iter().rev().filter(|tr| tr.enabled).find_map(|tr| tr.item_at(t).filter(|c| c.enabled && c.duration > Tick::ZERO && is_picture(p, c.item)))
+    let shows = |c: &TrackItem| c.enabled && c.duration > Tick::ZERO && is_picture(p, c.item) && p.nest_overhang(c).is_none_or(|r| !r.contains(t));
+    q.video_tracks.iter().rev().filter(|tr| tr.enabled).find_map(|tr| tr.item_at(t).filter(|c| shows(c)))
 }
 
 /// The program picture of `q` from 0 to its end, as shots and black gaps.
@@ -90,6 +93,10 @@ pub fn segments(p: &Project, q: &Sequence) -> Vec<Segment> {
     for c in q.video_tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.items.iter()) {
         bounds.push(c.start);
         bounds.push(c.end());
+        // a shortened nest stops showing where its contents end
+        if let Some(r) = p.nest_overhang(c) {
+            bounds.push(r.start);
+        }
     }
     bounds.retain(|t| *t >= Tick::ZERO && *t <= end);
     bounds.sort();
