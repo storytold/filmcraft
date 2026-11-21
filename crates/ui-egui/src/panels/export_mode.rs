@@ -20,6 +20,8 @@
 //! `quickExport.location` (the folder; opens the save dialog), `quickExport.preset.<name>`,
 //! `quickExport.go`, `quickExport.close`.
 
+use std::collections::BTreeMap;
+
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
@@ -69,8 +71,10 @@ pub struct ExportUi {
     pub custom_end: f64,
     /// Expanded settings sections.
     pub open_sections: Vec<String>,
-    /// The sequence the file name was taken from.
+    /// The sequence the file name and range belong to.
     pub for_sequence: Option<u64>,
+    /// The file name and range of the project's other sequences, by sequence id.
+    pub sequences: BTreeMap<u64, SequenceExport>,
     /// Preset Manager (None = closed).
     pub manager: Option<PresetManager>,
     /// Quick Export popup.
@@ -81,6 +85,54 @@ pub struct ExportUi {
     /// Range follows them again (Source In/Out with marks set, else Entire Source; #2749). Part of
     /// the state, so a `ui.set` of other export fields keeps it (and a chosen Range stays).
     pub range_for: Option<(u64, Option<i64>, Option<i64>)>,
+
+    /// The project these settings belong to (`Session::document_epoch`). Never saved.
+    #[serde(skip)]
+    pub epoch: Option<u64>,
+}
+
+/// What each sequence keeps of its own: the file name and the range.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SequenceExport {
+    pub file_name: String,
+    pub range: String,
+    pub custom_start: f64,
+    pub custom_end: f64,
+    /// [`ExportUi::range_for`] of this sequence.
+    pub range_for: Option<(u64, Option<i64>, Option<i64>)>,
+}
+
+impl Default for SequenceExport {
+    fn default() -> Self {
+        SequenceExport { file_name: String::new(), range: "entire".into(), custom_start: 0.0, custom_end: 10.0, range_for: None }
+    }
+}
+
+impl SequenceExport {
+    /// The values held to what the fields allow (they come from a project file).
+    fn checked(mut self) -> Self {
+        self.custom_start = if self.custom_start.is_finite() { self.custom_start.clamp(0.0, 86_400.0) } else { 0.0 };
+        self.custom_end = if self.custom_end.is_finite() { self.custom_end.clamp(0.0, 86_400.0) } else { 10.0 };
+        self
+    }
+}
+
+impl ExportUi {
+    fn current(&self) -> SequenceExport {
+        SequenceExport {
+            file_name: self.file_name.clone(),
+            range: self.range.clone(),
+            custom_start: self.custom_start,
+            custom_end: self.custom_end,
+            range_for: self.range_for,
+        }
+    }
+
+    fn set_current(&mut self, s: SequenceExport) {
+        let s = s.checked();
+        (self.file_name, self.range, self.custom_start, self.custom_end, self.range_for) = (s.file_name, s.range, s.custom_start, s.custom_end, s.range_for);
+    }
 }
 
 impl Default for ExportUi {
@@ -96,11 +148,13 @@ impl Default for ExportUi {
             custom_end: 10.0,
             open_sections: vec!["video".into(), "audio".into()],
             for_sequence: None,
+            sequences: BTreeMap::new(),
             manager: None,
             quick_open: false,
             quick_path: String::new(),
             quick_preset: String::new(),
             range_for: None,
+            epoch: None,
         }
     }
 }
@@ -170,11 +224,86 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
     p
 }
 
+/// The settings saved beside the project ([`filmcraft_engine::EditorState::export_ui`]): all but
+/// the open dialogs.
+fn saved_view(ex: &ExportUi) -> Value {
+    let mut v = serde_json::to_value(ex).unwrap_or_default();
+    if let Some(m) = v.as_object_mut() {
+        for k in ["manager", "quickOpen"] {
+            m.remove(k);
+        }
+    }
+    v
+}
+
+/// Keep the session's copy of the export settings current, so saving the project saves them. A
+/// project just opened or created first brings its own ([`restore_settings`]).
+pub fn note_settings(app: &mut FilmcraftApp) {
+    let opened = app.ui.export.epoch != Some(app.session.document_epoch);
+    if opened {
+        restore_settings(app);
+        app.ui.export.epoch = Some(app.session.document_epoch);
+    }
+    // only Export mode and Quick Export change them: no serializing on every frame elsewhere
+    // (it slowed playback while dragging a value)
+    if opened || app.ui.mode == crate::state::Mode::Export || app.ui.export.quick_open {
+        store_settings(app);
+    }
+}
+
+/// Copy the export settings into the session now (`ui.set`, so a save right after has them).
+pub fn store_settings(app: &mut FilmcraftApp) {
+    let v = saved_view(&app.ui.export);
+    if app.session.state.export_ui.as_ref() != Some(&v) {
+        app.session.state.export_ui = Some(v);
+    }
+}
+
+/// Take the export settings the project was saved with. A project without them (new, or saved
+/// before they were) keeps the preset, settings and folder last used, and its sequences start
+/// from their own name and the whole sequence. The settings come from a file: ones that do not
+/// read as settings are ignored, and each custom range is held to what its fields allow.
+fn restore_settings(app: &mut FilmcraftApp) {
+    let saved = app.session.state.export_ui.clone().and_then(|v| serde_json::from_value::<ExportUi>(v).ok());
+    let ex = &mut app.ui.export;
+    match saved {
+        Some(mut s) => {
+            // only this project's sequences: the file holds no more entries than it has sequences
+            let project = &app.session.project;
+            s.sequences = std::mem::take(&mut s.sequences)
+                .into_iter()
+                .filter(|(k, _)| project.sequence(filmcraft_project::ItemId(*k)).is_some())
+                .map(|(k, v)| (k, v.checked()))
+                .collect();
+            let cur = s.current();
+            s.set_current(cur);
+            s.manager = ex.manager.take();
+            s.quick_open = ex.quick_open;
+            *ex = s;
+        }
+        None => {
+            ex.set_current(SequenceExport::default());
+            ex.for_sequence = None;
+            ex.sequences.clear();
+        }
+    }
+}
+
 fn sync_sequence(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.state.active_sequence else { return };
-    if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {
-        app.ui.export.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
-        app.ui.export.for_sequence = Some(seq.0);
+    let ex = &mut app.ui.export;
+    // each sequence keeps its own file name and range
+    if ex.for_sequence != Some(seq.0) {
+        // with no sequence yet, the values shown are this one's
+        if let Some(prev) = ex.for_sequence {
+            ex.sequences.insert(prev, ex.current());
+            let own = ex.sequences.remove(&seq.0).unwrap_or_default();
+            ex.set_current(own);
+        }
+        ex.for_sequence = Some(seq.0);
+    }
+    if ex.file_name.is_empty() {
+        ex.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
     }
     if app.ui.export.location.is_empty() {
         app.ui.export.location = filmcraft_engine::export_tools::default_export_dir(&app.session).to_string_lossy().to_string();

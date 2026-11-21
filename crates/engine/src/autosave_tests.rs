@@ -363,6 +363,8 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     assert_eq!(*t.project, *s.project);
     assert!(s.is_dirty(), "auto-save does not save the project itself by default");
     s.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
+    // the export settings (part of the view beside the project) are kept by that save too
+    s.state.export_ui = Some(json!({"fileName": "Kept"}));
     s.execute("sequence.addEdit", json!({"seconds": 5.0})).unwrap();
     s.execute("file.autoSaveNow", json!({})).unwrap();
     wait_for("project saved", || {
@@ -372,6 +374,7 @@ fn auto_save_ring_rotates_and_can_save_the_project() {
     let mut t = Session::default();
     t.execute("file.open", json!({"path": proj})).unwrap();
     assert_eq!(*t.project, *s.project);
+    assert_eq!(t.state.export_ui, Some(json!({"fileName": "Kept"})), "auto-save kept the export settings");
     s.shutdown();
     let _ = std::fs::remove_dir_all(&d);
 }
