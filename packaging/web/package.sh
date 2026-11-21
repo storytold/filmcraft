@@ -25,6 +25,11 @@ fi
 
 SITE="$CARGO_TARGET_DIR/web/dist"
 [[ -f "$SITE/index.html" ]] || { echo "error: $SITE/index.html missing; run without --skip-build" >&2; exit 1; }
+# The language switcher fetches these files on demand; a release without them silently loses
+# Chinese, Korean, or Japanese when the corresponding face is not already embedded.
+for font in filmcraft-cjk-sc.otf filmcraft-hangul.ttf filmcraft-japanese.ttf; do
+  [[ -f "$SITE/$font" ]] || { echo "error: $SITE/$font missing; rebuild with CRAFT_FONTS_DIR set to the pinned craft-fonts checkout" >&2; exit 1; }
+done
 # Paths must be relative so the site works under any prefix.
 if grep -Eq '(src|href)="/[^/]' "$SITE/index.html"; then
   echo "error: $SITE/index.html has root-absolute URLs; it would break when served from a sub-path" >&2

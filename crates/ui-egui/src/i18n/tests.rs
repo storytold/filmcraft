@@ -225,6 +225,122 @@ fn chinese_switches_and_persists_or_is_refused_without_a_font() {
     set_current(Language::En);
 }
 
+#[test]
+fn later_language_choice_cancels_a_pending_web_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    app.pending_web_language = Some("ko".into());
+    app.pending_web_restore = true;
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    assert!(app.pending_web_language.is_none());
+    assert!(!app.pending_web_restore);
+    // A late completion is ignored before parsing or installing the response.
+    app.finish_web_language_font(&ctx, "ko", 0, b"not a font".to_vec()).unwrap();
+    assert_eq!(app.ui.language, Language::En);
+    set_current(Language::En);
+}
+
+#[test]
+fn invalid_web_font_does_not_change_language() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    app.pending_web_language = Some("ko".into());
+    app.web_font_request_id = 2;
+    // An older request for the same language must not consume the current request.
+    app.finish_web_language_font(&ctx, "ko", 1, b"not a font".to_vec()).unwrap();
+    assert_eq!(app.pending_web_language.as_deref(), Some("ko"));
+    assert!(app.finish_web_language_font(&ctx, "ko", 2, b"not a font".to_vec()).is_err());
+    assert_eq!(app.ui.language, Language::En);
+    set_current(Language::En);
+}
+
+fn craft_web_font(file: &str) -> Option<Vec<u8>> {
+    let root = std::env::var_os("CRAFT_FONTS_DIR").filter(|p| !p.is_empty())?;
+    std::fs::read(std::path::Path::new(&root).join(file)).ok()
+}
+
+/// Selecting a language whose face is not installed starts a host font request instead of
+/// switching, and a saved preference does the same with a restore pending.
+#[test]
+fn missing_web_language_fonts_request_a_download() {
+    let _ = crate::cjk::web_japanese_available();
+    let _ = chinese_font_available();
+    let _ = korean_font_available();
+    let ctx = egui::Context::default();
+    assert_eq!(crate::register_web_language_font(&ctx, "en", b"not a font".to_vec()).unwrap_err(), "unsupported web language font");
+
+    let requested = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(String, u64)>::new()));
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let rec = requested.clone();
+    app.hooks.request_language_font = Some(Box::new(move |language, id| {
+        rec.borrow_mut().push((language.to_string(), id));
+    }));
+
+    for (command, code) in [("app.language.japanese", "ja"), ("app.language.chinese", "zh-cn"), ("app.language.korean", "ko")] {
+        requested.borrow_mut().clear();
+        crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+        let r = crate::menus::invoke(&mut app, &ctx, command, serde_json::json!({}));
+        if app.pending_web_language.as_deref() == Some(code) {
+            assert_eq!(r.unwrap(), serde_json::json!({"loadingLanguage": code}));
+            assert_eq!(requested.borrow().as_slice(), &[(code.to_string(), app.web_font_request_id)]);
+            assert!(app.ui.status.contains("Loading language font") || app.ui.status.contains("language font"));
+            assert_eq!(app.ui.language, Language::En);
+        }
+    }
+
+    for (value, code) in [("ja", "ja"), ("zh-cn", "zh-cn"), ("ko", "ko")] {
+        requested.borrow_mut().clear();
+        crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+        app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": value})).unwrap();
+        app.apply_prefs(&ctx);
+        if app.pending_web_restore {
+            assert_eq!(app.pending_web_language.as_deref(), Some(code));
+            assert_eq!(requested.borrow().as_slice(), &[(code.to_string(), app.web_font_request_id)]);
+            assert!(app.ui.status.contains("Loading language font") || app.ui.status.contains("language font"));
+        }
+    }
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    set_current(Language::En);
+}
+
+/// A completed fetch applies the language; a preference restore only marks prefs stale so the
+/// saved choice can be reapplied, and does not replace it with a fixed language command.
+#[test]
+fn a_fetched_web_font_applies_or_restores_the_language() {
+    let Some(korean) = craft_web_font("fonts/nanum-gothic/NanumGothic-Regular.ttf") else {
+        eprintln!("skipped: CRAFT_FONTS_DIR is unset or the Hangul face is missing");
+        return;
+    };
+    let japanese = craft_web_font("fonts/biz-ud-pgothic/BIZUDPGothic-Regular.ttf").expect("Japanese face sits next to the Hangul face");
+    let chinese = craft_web_font("fonts/noto-sans-cjk-sc/NotoSansCJKsc-Regular.otf").expect("Chinese face sits next to the Hangul face");
+    let ctx = egui::Context::default();
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+
+    app.pending_web_language = Some("ko".into());
+    app.web_font_request_id = 4;
+    app.finish_web_language_font(&ctx, "ko", 4, korean).unwrap();
+    assert!(app.pending_web_language.is_none());
+    assert_eq!(app.ui.language, Language::Ko);
+    assert!(korean_font_available());
+
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    app.pending_web_language = Some("zh-cn".into());
+    app.web_font_request_id = 5;
+    app.finish_web_language_font(&ctx, "zh-cn", 5, chinese).unwrap();
+    assert_eq!(app.ui.language, Language::ZhCn);
+
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    app.pending_web_language = Some("ja".into());
+    app.web_font_request_id = 6;
+    app.pending_web_restore = true;
+    app.finish_web_language_font(&ctx, "ja", 6, japanese).unwrap();
+    assert!(app.pending_web_language.is_none());
+    assert!(!app.pending_web_restore);
+    assert_eq!(app.ui.language, Language::En, "a restore does not run the language command");
+    assert!(crate::cjk::web_japanese_available());
+    set_current(Language::En);
+}
+
 /// The crate's sources (`src/**/*.rs`), each cut at its test module.
 fn sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
