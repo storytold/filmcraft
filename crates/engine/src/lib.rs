@@ -56,7 +56,9 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod slip;
 pub mod source_monitor;
+pub mod still_migration;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
@@ -167,6 +169,15 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
+    /// Read a whole file, refusing one over `max` bytes. Hosts that can read natively override
+    /// this so an oversize file is refused before its bytes fill memory.
+    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
+        let bytes = self.read_file(path)?;
+        if bytes.len() as u64 > max {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{path}: {} bytes is over the {max} byte limit", bytes.len())));
+        }
+        Ok(bytes)
+    }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
     /// Publish a complete new file only when the final path is unoccupied. Publication must
     /// reject a concurrent collision; a prior existence check alone is insufficient.
@@ -228,6 +239,9 @@ pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
+    }
+    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
+        filmcraft_media::reader::read_regular_file_bounded(std::path::Path::new(path), max)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -1506,7 +1520,11 @@ mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod slip_tests;
+#[cfg(test)]
 mod split_edit_ripple_trim_tests;
+#[cfg(test)]
+mod still_migration_tests;
 #[cfg(test)]
 mod stored_paths_tests;
 #[cfg(test)]

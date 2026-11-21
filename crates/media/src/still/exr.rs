@@ -17,6 +17,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 use rayon::prelude::*;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
@@ -57,6 +58,14 @@ pub struct Decoded {
     pub pixel_format: String,
 }
 
+/// The size [`still`] reports for this file, from its header alone: the display
+/// window, which is the frame the decoder produces.
+pub fn geometry(name: &str, bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let h = header(name, bytes).ok()?;
+    let (w, height) = h.display.size()?;
+    Some((u32::try_from(w).ok()?, u32::try_from(height).ok()?, Orientation::NoTransforms))
+}
+
 /// Open an EXR file as a still.
 pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
     let d = decode(name, bytes)?;
@@ -82,7 +91,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillSource { info, frame: Arc::new(d.frame), orientation: Orientation::NoTransforms })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
