@@ -739,6 +739,139 @@ fn speed_and_reverse_on_a_nest_change_its_sound_like_a_clips() {
     assert!(w < 0.01, "reversed: off by {w}");
 }
 
+/// A 1 kHz tone, `0.5 · sin(2π · 1000 · i / 48 000)` on both channels.
+fn tone_1k(i: i64, _: usize) -> f32 {
+    (0.5 * (std::f64::consts::TAU * 1000.0 * i as f64 / 48_000.0).sin()) as f32
+}
+
+#[test]
+fn speed_changed_clips_read_the_same_samples_however_the_requests_are_cut() {
+    // a request used to start reading from the source sample below its exact position, dropping the
+    // fraction at every request boundary: the samples depended on the request sizes, and the sound
+    // jumped at each boundary
+    let lerp = |x: f64| {
+        let i0 = x.floor();
+        let (a, b) = (tone_1k(i0 as i64, 0) as f64, tone_1k(i0 as i64 + 1, 0) as f64);
+        a + (b - a) * (x - i0)
+    };
+    let mut r = Rig::new(&[tone_1k]);
+    for (speed, reverse) in [(0.7777, false), (1.3333, false), (0.7777, true)] {
+        let it = &mut r.track(0).items[0];
+        it.speed = speed;
+        it.reverse = reverse;
+        it.source_in = Tick(3_124_396_800); // 0.0123 s, 590.4 samples
+        it.duration = Tick(5 * TICKS_PER_SECOND);
+        let whole = r.mix(0, 4000);
+        for sizes in [&[333usize][..], &[1, 63, 1000], &[480, 512, 1024]] {
+            assert_eq!(r.mix_cut(0, 4000, sizes, None), whole, "speed {speed}, reversed {reverse}, cut {sizes:?}");
+        }
+        // forward, sample k reads the source at 590.4 + speed · k; reversed, at the end of what the
+        // clip covers less speed · k, one sample lower (the sample that ends there)
+        let out = 590.4 + 5.0 * speed * 48_000.0;
+        for k in [0usize, 1, 332, 333, 334, 1000, 3999] {
+            let want = if reverse { lerp(out - speed * k as f64 - 1.0) } else { lerp(590.4 + speed * k as f64) };
+            assert!((whole[0][k] as f64 - want).abs() < 1e-4, "speed {speed}, reversed {reverse}, sample {k}: {} vs {want}", whole[0][k]);
+        }
+    }
+}
+
+#[test]
+fn a_held_speed_changed_clip_plays_its_range() {
+    // a frame hold freezes the picture, not the sound: a held clip at a speed sounds as it would
+    // unheld, however the requests are cut (imports put holds on sound clips too)
+    let mut r = Rig::new(&[tone_1k]);
+    let it = &mut r.track(0).items[0];
+    it.speed = 0.7777;
+    it.source_in = Tick(3_124_396_800); // 0.0123 s, 590.4 samples
+    it.duration = Tick(5 * TICKS_PER_SECOND);
+    let unheld = r.mix(0, 4000);
+    r.track(0).items[0].frame_hold = Some(Tick(3_124_396_800));
+    for sizes in [&[4000usize][..], &[333], &[480, 512, 1024]] {
+        assert_eq!(r.mix_cut(0, 4000, sizes, None), unheld, "cut {sizes:?}");
+    }
+}
+
+/// A 1 kHz tone source with the channels its info declares that remembers the longest read asked
+/// of it. It refuses reads longer than 2^20 frames, as real sources refuse oversized buffers, so
+/// the test holds no large buffer.
+struct Widest {
+    info: MediaInfo,
+    widest: std::sync::atomic::AtomicUsize,
+}
+
+impl MediaSource for Widest {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        Err(MediaError::NoStream("video"))
+    }
+    fn audio(&self, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
+        self.widest.fetch_max(frames, std::sync::atomic::Ordering::Relaxed);
+        if frames > 1 << 20 {
+            return Err(MediaError::Decode(format!("a read of {frames} frames")));
+        }
+        let ch: Vec<f32> = (0..frames).map(|i| tone_1k(start + i as i64, 0)).collect();
+        let channels = self.info.audio_streams.first().map_or(1, |a| a.channels as usize);
+        Ok(AudioBuffer { sample_rate: sr, channels: vec![ch; channels] })
+    }
+}
+
+#[test]
+fn a_damaged_speed_reads_no_more_than_a_source_can_return() {
+    // A project can store any speed, and the source read used to grow with it without limit. The
+    // read has to pass the checks the readers apply for the source's channels and rate: the
+    // buffer at the requested rate, and at the source's own rate with the two samples a
+    // resampling read adds.
+    for (channels, rate) in [(2u32, 48_000u32), (6, 48_000), (2, 96_000), (6, 96_000)] {
+        let info = MediaInfo {
+            name: "tone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(60 * TICKS_PER_SECOND),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels, codec: "PCM".into(), bits_per_sample: Some(32) }],
+            container: "WAV".into(),
+            start_timecode: None,
+            file_size: None,
+        };
+        for (speed, reverse) in [(1e6, false), (1e6, true), (1e300, false), (f64::INFINITY, true)] {
+            let mut p = Project::new("damaged");
+            let seq = p.new_sequence("mix", SequenceSettings::default(), 0, 1, None);
+            let id = p.add_item(
+                "tone.wav",
+                Label::Iris,
+                ItemKind::Media(Box::new(MediaClip {
+                    media: MediaRef::File { path: "tone.wav".into() },
+                    info: info.clone(),
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let src = Arc::new(Widest { info: info.clone(), widest: Default::default() });
+            let mut map = SourceMap::default();
+            map.0.insert(id, src.clone());
+            let mut clip = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+            clip.speed = speed;
+            clip.reverse = reverse;
+            p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(clip);
+            let q = p.sequence(seq).unwrap();
+            let mix = crate::audio::mix_sequence(&p, q, 0, 4000, &map);
+            let widest = src.widest.load(std::sync::atomic::Ordering::Relaxed);
+            let at = format!("{channels} channels at {rate} Hz, speed {speed}, reversed {reverse}: a read of {widest} frames");
+            let own = filmcraft_media::resample_source_frames(widest, rate, q.settings.sample_rate).unwrap();
+            assert!(filmcraft_media::validate_audio_buffer_shape(channels as usize, widest).is_ok(), "{at}");
+            assert!(filmcraft_media::validate_audio_buffer_shape(channels as usize, own + 2).is_ok(), "{at} ({own} at {rate} Hz)");
+            assert!(mix.channels.iter().all(|c| c.len() == 4000 && c.iter().all(|v| v.is_finite())), "{at}");
+        }
+    }
+}
+
 #[test]
 fn a_nest_trimmed_in_starts_later_in_its_sequence() {
     let (mut p, outer, map, tone) = nested_tone(44_100);
