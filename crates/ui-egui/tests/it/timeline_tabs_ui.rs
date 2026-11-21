@@ -283,3 +283,71 @@ fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     assert_eq!(e.view(), (250.0, 2.0, 80.0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn sequence_tabs_start_left_after_the_timeline_tab() {
+    // #5024: the sequence tabs belong in the Timeline header's free space, right after the
+    // panel's own tab, not pinned to the strip's right end next to the ≡ menu.
+    let mut d = Driver::new();
+    let main = d.active();
+    let other = d.new_sequence("Other");
+    d.frames(3);
+    let panel_tab = d.rect("panel.tab.Timeline").expect("the Timeline panel tab");
+    let menu = d.rect("panel.menu.Timeline").expect("the panel menu");
+    let first = d.rect(&format!("timeline.tab.{main}")).expect("the first sequence tab");
+    let second = d.rect(&format!("timeline.tab.{other}")).expect("the second sequence tab");
+    let panel_right = panel_tab[0] + panel_tab[2];
+    // Between 0 and 24: a negative gap is a tab drawn under the panel's own tab, which the
+    // one-sided form of this check used to let through.
+    assert!(
+        (0.0..24.0).contains(&(first[0] - panel_right)),
+        "the first tab starts at the left, {} px after the Timeline tab, and that has to be between 0 and 24",
+        first[0] - panel_right
+    );
+    assert!(first[0] + first[2] <= second[0], "tabs run left to right: {first:?} then {second:?}");
+    assert!(second[0] + second[2] <= menu[0], "the last tab clears the ≡ menu: {second:?} vs {menu:?}");
+    assert!(!d.has("timeline.tabs.more"), "two tabs fit without the » list");
+    // #5024: the × sits after the label, at the tab's far end, so every label keeps the same x
+    let close = d.rect(&format!("timeline.tab.{other}.close")).expect("the active tab's ×");
+    assert!(close[0] > second[0] + second[2] / 2.0, "the × is at the tab's right end: {close:?} in {second:?}");
+    assert!(close[0] + close[2] <= second[0] + second[2], "the × stays inside its tab");
+}
+
+#[test]
+fn a_tab_wider_than_the_strip_keeps_its_close_control_reachable() {
+    // CodeRabbit on #5130: the × sits at the tab's far end now, and the strip can be narrower
+    // than the tab it holds, so an over-wide active tab must not push the × past the strip,
+    // where the painter clips it and it cannot be clicked any more.
+    let mut d = Driver::new();
+    let main = d.active();
+    let long = d.new_sequence("A sequence name that is deliberately much longer than the whole Timeline header strip can ever be, so that this tab alone asks for more room than the strip has");
+    d.frames(3);
+    let menu = d.rect("panel.menu.Timeline").expect("the panel menu");
+    let tab = d.rect(&format!("timeline.tab.{long}")).expect("the long tab");
+    let close = d.rect(&format!("timeline.tab.{long}.close")).expect("the long tab's ×");
+    assert!(close[0] + close[2] <= menu[0], "the × stays left of the ≡ menu: {close:?} vs {menu:?}");
+    // Both axes: the Y-only form of this check let a × outside its tab on the left pass.
+    assert!(
+        close[0] >= tab[0] && close[0] + close[2] <= tab[0] + tab[2] && close[1] >= tab[1] && close[1] + close[3] <= tab[1] + tab[3],
+        "the × sits inside its tab: {close:?} in {tab:?}"
+    );
+    d.click(&format!("timeline.tab.{long}.close"));
+    assert_eq!(d.active(), main, "the × closes the tab it belongs to");
+    assert!(!d.has(&format!("timeline.tab.{long}")), "the tab is gone");
+}
+#[test]
+fn switching_tabs_does_not_move_the_tabs_after_it() {
+    // CodeRabbit on #5130: only the active tab reserved room for its ×, so when the selection
+    // moved, the tab that lost it came out 16 px narrower and every tab after it slid left.
+    let mut d = Driver::new();
+    let main = d.active();
+    let other = d.new_sequence("Other");
+    d.frames(3);
+    d.click(&format!("timeline.tab.{main}"));
+    assert_eq!(d.active(), main, "the first tab is the shown one");
+    let before = d.rect(&format!("timeline.tab.{other}")).expect("the second tab");
+    d.click(&format!("timeline.tab.{other}"));
+    assert_eq!(d.active(), other, "the second tab is the shown one now");
+    let after = d.rect(&format!("timeline.tab.{other}")).expect("the second tab");
+    assert!((before[0] - after[0]).abs() < 0.5, "the second tab stays where it was: {before:?} then {after:?}");
+}
