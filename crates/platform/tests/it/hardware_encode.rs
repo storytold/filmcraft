@@ -68,7 +68,7 @@ fn encode_all(enc: &mut Box<dyn VideoEncoder>, frames: u64) -> Vec<EncodedPacket
     let mut packets = Vec::new();
     for i in 0..frames {
         let rgba = picture(i);
-        packets.extend(enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i }).expect("encode"));
+        packets.extend(enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i, nv12: None, rgb8: None }).expect("encode"));
     }
     packets.extend(enc.flush().expect("flush"));
     packets
@@ -526,11 +526,13 @@ fn encoder_refuses_pictures_of_another_size() {
     let s = hardware_settings();
     let Some(mut enc) = hardware(&s, W, H) else { return };
     let rgba = vec![0u8; 100 * 100 * 4];
-    assert!(enc.encode(&EncoderFrame { width: 100, height: 100, rgba: &rgba, hdr: None, index: 0 }).is_err());
+    assert!(enc.encode(&EncoderFrame { width: 100, height: 100, rgba: &rgba, hdr: None, index: 0, nv12: None, rgb8: None }).is_err());
     let short = vec![0u8; 16];
-    assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &short, hdr: None, index: 0 }).is_err());
+    assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &short, hdr: None, index: 0, nv12: None, rgb8: None }).is_err());
     let hdr = vec![0.0f32; (W * H * 3) as usize];
-    assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &vec![0u8; (W * H * 4) as usize], hdr: Some(&hdr), index: 0 }).is_err());
+    assert!(
+        enc.encode(&EncoderFrame { width: W, height: H, rgba: &vec![0u8; (W * H * 4) as usize], hdr: Some(&hdr), index: 0, nv12: None, rgb8: None }).is_err()
+    );
 }
 
 #[test]
@@ -540,7 +542,7 @@ fn encoders_can_be_dropped_at_any_point() {
         let Some(mut enc) = hardware(&s, W, H) else { return };
         for i in 0..frames {
             let rgba = picture(i);
-            let _ = calm("encode", || enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i }));
+            let _ = calm("encode", || enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i, nv12: None, rgb8: None }));
         }
         drop(enc); // pending frames, no flush: must not crash or hang
     }
@@ -596,7 +598,7 @@ fn pictures_keep_their_exact_size() {
         let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
         let mut packets = Vec::new();
         for i in 0..6u64 {
-            packets.extend(enc.encode(&EncoderFrame { width: w, height: h, rgba: &rgba, hdr: None, index: i }).expect("encode"));
+            packets.extend(enc.encode(&EncoderFrame { width: w, height: h, rgba: &rgba, hdr: None, index: i, nv12: None, rgb8: None }).expect("encode"));
         }
         packets.extend(enc.flush().expect("flush"));
         assert_eq!(packets.len(), 6, "{w}x{h}");
@@ -815,7 +817,7 @@ fn hevc_encoders_can_be_dropped_at_any_point() {
         let Some(mut enc) = hardware(&s, W, H) else { return };
         for i in 0..frames {
             let rgba = picture(i);
-            let _ = calm("encode", || enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i }));
+            let _ = calm("encode", || enc.encode(&EncoderFrame { width: W, height: H, rgba: &rgba, hdr: None, index: i, nv12: None, rgb8: None }));
         }
         drop(enc); // pending frames, no flush: must not crash or hang
     }
@@ -830,7 +832,7 @@ fn hevc_pictures_keep_their_exact_size() {
         let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
         let mut packets = Vec::new();
         for i in 0..6u64 {
-            packets.extend(enc.encode(&EncoderFrame { width: w, height: h, rgba: &rgba, hdr: None, index: i }).expect("encode"));
+            packets.extend(enc.encode(&EncoderFrame { width: w, height: h, rgba: &rgba, hdr: None, index: i, nv12: None, rgb8: None }).expect("encode"));
         }
         packets.extend(enc.flush().expect("flush"));
         assert_eq!(packets.len(), 6, "{w}x{h}");

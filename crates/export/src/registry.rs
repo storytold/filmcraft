@@ -24,6 +24,17 @@ pub struct EncoderFrame<'a> {
     pub rgba: &'a [u8],
     pub hdr: Option<&'a [f32]>,
     pub index: u64,
+    pub nv12: Option<&'a [u8]>,
+    pub rgb8: Option<&'a [u8]>,
+}
+
+/// One rendered frame ready for encoding, holding whichever buffers the export pipeline produced.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderedFrame {
+    pub rgba: Vec<u8>,
+    pub hdr: Vec<f32>,
+    pub nv12: Option<Vec<u8>>,
+    pub rgb8: Option<Vec<u8>>,
 }
 
 /// Per-picture work an encoder hands to the export's render threads, see
@@ -127,6 +138,49 @@ pub trait FrameRenderer: Send {
     /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// Render directly to straight sRGB RGBA8 when the export pipeline does not need the
+    /// intermediate premultiplied linear f32 image (no HDR, no alpha, no overlay/limiter, direct
+    /// geometry). `None` falls back to [`Self::render`].
+    fn render_rgba8(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
+
+    /// Render directly to biplanar NV12 (8-bit Y + UV interleaved) when the format accepts it.
+    /// `None` falls back to [`Self::render_rgba8`] or [`Self::render`].
+    #[allow(clippy::too_many_arguments)]
+    fn render_nv12(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+        _matrix_mode: u32,
+        _range_mode: u32,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
+
+    /// Render directly to packed 24-bit RGB8 (no alpha padding) when the format accepts it.
+    /// `None` falls back to [`Self::render_rgba8`] or [`Self::render`].
+    fn render_rgb8(
+        &mut self,
+        _project: &Project,
+        _seq: ItemId,
+        _t: Tick,
+        _opts: filmcraft_render::RenderOptions,
+        _sources: &dyn SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

@@ -1,5 +1,5 @@
 use super::format::{ExportSettings, Format};
-use super::{ExportError, ExrCompression, Result, raster};
+use super::{ExportError, ExrCompression, RenderedFrame, Result, raster};
 
 /// Encode straight sRGB RGBA8 pixels as a PNG file (thumbnails, previews).
 pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {
@@ -54,6 +54,39 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
             }
         }
         _ => return Err(ExportError::Unsupported(format!("{} is not an image sequence", format.label()))),
+    }
+    Ok(out.into_inner())
+}
+
+/// Encode one still of an image sequence with a pre-rendered [`RenderedFrame`] (using direct RGB8 where applicable).
+pub fn encode_still_with_frame(format: Format, frame: &RenderedFrame, w: u32, h: u32, alpha: bool, quality: u8, exr: ExrCompression) -> Result<Vec<u8>> {
+    let enc = |e: image::ImageError| ExportError::Encode(e.to_string());
+    let mut out = std::io::Cursor::new(Vec::new());
+    match format {
+        Format::JpegSequence => {
+            let rgb =
+                if let Some(rgb) = frame.rgb8.as_deref() { std::borrow::Cow::Borrowed(rgb) } else { std::borrow::Cow::Owned(raster::rgb(&frame.rgba, w, h)?) };
+            image::ImageEncoder::write_image(
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100)),
+                &rgb,
+                w,
+                h,
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(enc)?
+        }
+        Format::PngSequence if !alpha && frame.rgb8.is_some() => {
+            if let Some(rgb) = frame.rgb8.as_deref() {
+                image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), rgb, w, h, image::ExtendedColorType::Rgb8).map_err(enc)?
+            }
+        }
+        Format::BmpSequence if frame.rgb8.is_some() => {
+            if let Some(rgb) = frame.rgb8.as_deref() {
+                let img = image::RgbImage::from_raw(w, h, rgb.to_vec()).ok_or_else(|| ExportError::Encode("frame size".into()))?;
+                image::DynamicImage::ImageRgb8(img).write_to(&mut out, image::ImageFormat::Bmp).map_err(enc)?
+            }
+        }
+        _ => return encode_still_with(format, frame.rgba.clone(), w, h, alpha, quality, exr),
     }
     Ok(out.into_inner())
 }

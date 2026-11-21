@@ -23,6 +23,7 @@ const VALUED: &[&str] = &[
     "--data-dir",
     "--settings",
     "--gpu-rendering",
+    "--hardware-encoding",
 ];
 
 #[derive(Debug, Default)]

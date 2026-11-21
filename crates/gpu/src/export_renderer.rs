@@ -171,6 +171,85 @@ impl ExportRenderer {
             }
         }
     }
+
+    /// One frame directly as straight sRGB RGBA8 over black at the output size, or `None` when
+    /// this frame must go to the CPU renderer or needs intermediate linear-light processing.
+    pub fn render_rgba8(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<(u32, u32, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            FramePlan::Image(img) => Some((img.w as u32, img.h as u32, img.over_black_rgba8())),
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let res = self.compositor.render_export_rgba8_prepared(&plan, Some(&prep))?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some(res)
+            }
+        }
+    }
+
+    /// One frame directly as biplanar NV12 (8-bit Y plane followed by interleaved UV plane) at the
+    /// output size, or `None` when this frame must go to the CPU renderer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_nv12(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: RenderOptions,
+        sources: &dyn SourceProvider,
+        matrix_mode: u32,
+        range_mode: u32,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            FramePlan::Image(_) => None,
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let res = self.compositor.render_export_nv12_prepared(&plan, Some(&prep), matrix_mode, range_mode)?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some(res)
+            }
+        }
+    }
+
+    /// One frame directly as packed 24-bit RGB8 (no alpha padding) at the output size, or `None`
+    /// when this frame must go to the CPU renderer.
+    pub fn render_rgb8(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<(u32, u32, Vec<u8>)> {
+        let plan = plan_frame(project, seq, t, opts, self.compositor.caps(), sources);
+        match &plan {
+            FramePlan::Image(img) => {
+                let rgba = img.over_black_rgba8();
+                let (w, h) = (img.w as u32, img.h as u32);
+                let (chunks, _) = rgba.as_chunks::<4>();
+                let rgb = chunks.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+                Some((w, h, rgb))
+            }
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
+                if device_failed() {
+                    return None;
+                }
+                let prep = prepare(&plan);
+                let res = self.compositor.render_export_rgb8_prepared(&plan, Some(&prep))?;
+                if device_failed() {
+                    return None;
+                }
+                timing::add_frame();
+                Some(res)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -670,6 +749,17 @@ mod tests {
         impl FrameRenderer for R {
             fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
                 self.0.render(project, seq, t, opts, sources)
+            }
+
+            fn render_rgba8(
+                &mut self,
+                project: &Project,
+                seq: ItemId,
+                t: Tick,
+                opts: RenderOptions,
+                sources: &dyn SourceProvider,
+            ) -> Option<(u32, u32, Vec<u8>)> {
+                self.0.render_rgba8(project, seq, t, opts, sources)
             }
 
             fn caps(&self) -> DeviceCaps {

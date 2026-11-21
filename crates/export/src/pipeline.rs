@@ -12,8 +12,11 @@ use filmcraft_render::{Image, RenderOptions, SourceProvider};
 use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
-use crate::settings::{ExportEffects, Placement, Scaling, TextOverlay};
-use crate::{ExportError, ExportSettings, FrameRenderer, GpuRendering, Result, keep_idle_renderers, note_gpu_fallback, note_gpu_frame, take_frame_renderer};
+use crate::settings::{ExportEffects, H264Profile, HardwareEncoding, Placement, Scaling, TextOverlay};
+use crate::{
+    ExportError, ExportSettings, Format, FrameRenderer, GpuRendering, RenderedFrame, Result, keep_idle_renderers, note_gpu_fallback, note_gpu_frame,
+    take_frame_renderer,
+};
 
 /// Image overlays originate outside the project and are expanded to f32 working images. This
 /// admits ordinary 4K artwork while keeping both source decode and resampling bounded.
@@ -139,6 +142,9 @@ pub(crate) struct Pipeline {
     seq_rate: FrameRate,
     pub w: u32,
     pub h: u32,
+    pub format: Format,
+    pub h264_profile: H264Profile,
+    pub hardware_encoding: HardwareEncoding,
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
@@ -245,6 +251,9 @@ impl Pipeline {
             rate: r.rate,
             w: r.width,
             h: r.height,
+            format: settings.format,
+            h264_profile: settings.h264_profile,
+            hardware_encoding: settings.hardware_encoding,
             geom,
             opts,
             hdr_out,
@@ -255,10 +264,118 @@ impl Pipeline {
         })
     }
 
+    /// Output frame `f` as a [`RenderedFrame`], taking the fastest GPU format direct path when available
+    /// (e.g. NV12 compute conversion for H.264/HEVC, RGB8 for Motion-JPEG / stills).
+    pub fn frame_rendered(&self, f: i64, sources: &dyn SourceProvider) -> RenderedFrame {
+        let t = self.rate.tick_of(f);
+        let can_direct = !self.hdr_out
+            && !self.alpha
+            && self.geom.content.is_none()
+            && self.geom.offset == (0, 0)
+            && !self.effects.image_overlay.enabled
+            && (!self.effects.name_overlay.enabled || self.effects.name_overlay.text.trim().is_empty())
+            && !self.effects.timecode_overlay.enabled
+            && !self.effects.video_limiter.enabled;
+
+        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+        if can_direct && let Some(pool) = pool {
+            // Direct NV12 for 8-bit H.264 (non-High-10) and SDR HEVC when the encoder supports it
+            // (on macOS, VideoToolbox hardware encoder requires RGBA8 input).
+            let vt_hw = cfg!(target_os = "macos") && self.hardware_encoding != HardwareEncoding::Off;
+            let wants_nv12 = !vt_hw
+                && ((self.format == Format::H264 && self.h264_profile != H264Profile::High10) || self.format == Format::Hevc)
+                && self.w.is_multiple_of(4)
+                && self.h.is_multiple_of(2);
+            if wants_nv12 {
+                let asked = web_time::Instant::now();
+                let direct_nv12 = pool
+                    .with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.render_nv12(&self.project, self.seq, t, self.opts, sources, 0, 0)
+                    })
+                    .flatten();
+                if let Some((w, h, nv12)) = direct_nv12
+                    && w == self.w
+                    && h == self.h
+                {
+                    note_gpu_frame();
+                    return RenderedFrame { rgba: Vec::new(), hdr: Vec::new(), nv12: Some(nv12), rgb8: None };
+                }
+            }
+
+            // Direct RGB8 for Motion-JPEG, JpegSequence, BmpSequence, or non-alpha Png
+            let wants_rgb8 = self.w.is_multiple_of(4)
+                && (self.format == Format::Mjpeg
+                    || self.format == Format::JpegSequence
+                    || self.format == Format::BmpSequence
+                    || (!self.alpha && self.format == Format::PngSequence));
+            if wants_rgb8 {
+                let asked = web_time::Instant::now();
+                let direct_rgb8 = pool
+                    .with(|r| {
+                        crate::note_lock_wait(asked.elapsed());
+                        r.render_rgb8(&self.project, self.seq, t, self.opts, sources)
+                    })
+                    .flatten();
+                if let Some((w, h, rgb8)) = direct_rgb8
+                    && w == self.w
+                    && h == self.h
+                {
+                    note_gpu_frame();
+                    return RenderedFrame { rgba: Vec::new(), hdr: Vec::new(), nv12: None, rgb8: Some(rgb8) };
+                }
+            }
+
+            // Direct RGBA8
+            let asked = web_time::Instant::now();
+            let direct = pool
+                .with(|r| {
+                    crate::note_lock_wait(asked.elapsed());
+                    r.render_rgba8(&self.project, self.seq, t, self.opts, sources)
+                })
+                .flatten();
+            if let Some((w, h, rgba)) = direct
+                && w == self.w
+                && h == self.h
+            {
+                note_gpu_frame();
+                return RenderedFrame { rgba, hdr: Vec::new(), nv12: None, rgb8: None };
+            }
+        }
+
+        let (rgba, hdr) = self.frame(f, sources);
+        RenderedFrame { rgba, hdr, nv12: None, rgb8: None }
+    }
+
     /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
+        let can_direct_rgba8 = !self.hdr_out
+            && !self.alpha
+            && self.geom.content.is_none()
+            && self.geom.offset == (0, 0)
+            && !self.effects.image_overlay.enabled
+            && (!self.effects.name_overlay.enabled || self.effects.name_overlay.text.trim().is_empty())
+            && !self.effects.timecode_overlay.enabled
+            && !self.effects.video_limiter.enabled;
+        let pool = self.renderer.as_ref().filter(|pool| !filmcraft_render::plan::is_cpu_frame(&self.project, self.seq, t, self.opts, pool.caps));
+        if can_direct_rgba8 && let Some(pool) = pool {
+            let asked = web_time::Instant::now();
+            let direct = pool
+                .with(|r| {
+                    crate::note_lock_wait(asked.elapsed());
+                    r.render_rgba8(&self.project, self.seq, t, self.opts, sources)
+                })
+                .flatten();
+            if let Some((w, h, rgba)) = direct
+                && w == self.w
+                && h == self.h
+            {
+                note_gpu_frame();
+                return (rgba, Vec::new());
+            }
+        }
         // The registered GPU renderer goes first; `None` (no adapter, a plan the GPU cannot
         // draw, any internal error) falls back to the CPU reference renderer below. A frame the
         // planner hands back as one CPU image anyway (an adjustment layer the GPU can't run, a

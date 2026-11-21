@@ -176,7 +176,7 @@ fn the_software_h264_sei_is_the_static_metadata_laid_out_as_messages() {
     let s = ExportSettings { format: Format::H264, signal: ColorSignal::PQ, ..Default::default() };
     let mut enc = h264_factory(Format::H264, 64, 64, FrameRate::FPS_24, &s).unwrap().unwrap();
     let rgb = vec![0.5f32; 64 * 64 * 3];
-    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &[], hdr: Some(&rgb), index: 0 }).unwrap();
+    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &[], hdr: Some(&rgb), index: 0, nv12: None, rgb8: None }).unwrap();
     packets.extend(enc.flush().unwrap());
     // find the SEI NAL unit (type 6) of the length-prefixed first access unit
     let data = &packets[0].data;
@@ -205,7 +205,7 @@ fn software_h264_keeps_the_filmcraft_encoder_identification() {
     let s = ExportSettings { format: Format::H264, include_audio: false, ..Default::default() };
     let mut enc = h264_factory(Format::H264, 64, 64, FrameRate::FPS_24, &s).unwrap().unwrap();
     let rgba = vec![128u8; 64 * 64 * 4];
-    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &rgba, hdr: None, index: 0 }).unwrap();
+    let mut packets = enc.encode(&EncoderFrame { width: 64, height: 64, rgba: &rgba, hdr: None, index: 0, nv12: None, rgb8: None }).unwrap();
     packets.extend(enc.flush().unwrap());
     let first = String::from_utf8_lossy(&packets[0].data);
     let expected = format!("filmcraft-h264enc {}", env!("CARGO_PKG_VERSION"));
@@ -268,7 +268,7 @@ fn high10_export_encodes_sdr_and_hdr_frames_at_10_bits() {
             let mut packets = Vec::new();
             for index in 0..4 {
                 let hdr = signal.is_hdr().then_some(&rgb[..]);
-                packets.extend(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &rgba, hdr, index }).unwrap());
+                packets.extend(enc.encode(&EncoderFrame { width: 64, height: 48, rgba: &rgba, hdr, index, nv12: None, rgb8: None }).unwrap());
             }
             packets.extend(enc.flush().unwrap());
             assert_eq!(packets.len(), 4, "{signal:?}");

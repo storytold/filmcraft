@@ -25,7 +25,11 @@ impl VideoEncoder for MjpegEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        let out = mjpeg::encode(f.rgba, f.width, f.height, self.quality).map_err(ExportError::Encode)?;
+        let out = if let Some(rgb) = f.rgb8 {
+            mjpeg::encode_rgb(rgb, f.width, f.height, self.quality).map_err(ExportError::Encode)?
+        } else {
+            mjpeg::encode(f.rgba, f.width, f.height, self.quality).map_err(ExportError::Encode)?
+        };
         Ok(vec![EncodedPacket { data: out, key: true, duration: self.rate.den as u32, composition_offset: 0 }])
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
@@ -452,9 +456,34 @@ impl VideoEncoder for H264Encoder {
         match ready.filter(|(y, u, v)| y.len() == w * h && u.len() == chroma && v.len() == chroma) {
             Some((y, u, v)) => (self.y, self.u, self.v) = (y, u, v),
             None => {
-                let (enc, y, u, v, signal) = (&self.enc, &mut self.y, &mut self.u, &mut self.v, self.signal);
-                // on the encoder's own threads: the global pool is busy rendering the next batch
-                timed(Stage::Convert, || enc.install(|| h264_input(f, signal, y, u, v)));
+                if let Some(nv12) = f.nv12 {
+                    let y_len = w.saturating_mul(h);
+                    let uv_len = chroma;
+                    if nv12.len() >= y_len.saturating_add(uv_len.saturating_mul(2)) {
+                        self.y.clear();
+                        if let Some(src_y) = nv12.get(..y_len) {
+                            self.y.extend_from_slice(src_y);
+                        }
+                        self.u.clear();
+                        self.v.clear();
+                        self.u.reserve(uv_len);
+                        self.v.reserve(uv_len);
+                        if let Some(src_uv) = nv12.get(y_len..y_len.saturating_add(uv_len.saturating_mul(2))) {
+                            let (chunks, _) = src_uv.as_chunks::<2>();
+                            for chunk in chunks {
+                                self.u.push(chunk[0]);
+                                self.v.push(chunk[1]);
+                            }
+                        }
+                    } else {
+                        let (enc, y, u, v, signal) = (&self.enc, &mut self.y, &mut self.u, &mut self.v, self.signal);
+                        timed(Stage::Convert, || enc.install(|| h264_input(f, signal, y, u, v)));
+                    }
+                } else {
+                    let (enc, y, u, v, signal) = (&self.enc, &mut self.y, &mut self.u, &mut self.v, self.signal);
+                    // on the encoder's own threads: the global pool is busy rendering the next batch
+                    timed(Stage::Convert, || enc.install(|| h264_input(f, signal, y, u, v)));
+                }
             }
         }
         let cw = (f.width as usize).div_ceil(2);
@@ -480,6 +509,31 @@ impl VideoEncoder for H264Encoder {
         }
         let (ready, signal) = (self.ready.clone(), self.signal);
         Some(Arc::new(move |f: &EncoderFrame| {
+            if let Some(nv12) = f.nv12 {
+                let w = f.width as usize;
+                let h = f.height as usize;
+                let y_len = w.saturating_mul(h);
+                let chroma_w = w.div_ceil(2);
+                let chroma_h = h.div_ceil(2);
+                let uv_len = chroma_w.saturating_mul(chroma_h);
+                if nv12.len() >= y_len.saturating_add(uv_len.saturating_mul(2)) {
+                    let mut y = Vec::with_capacity(y_len);
+                    if let Some(src_y) = nv12.get(..y_len) {
+                        y.extend_from_slice(src_y);
+                    }
+                    let mut u = Vec::with_capacity(uv_len);
+                    let mut v = Vec::with_capacity(uv_len);
+                    if let Some(src_uv) = nv12.get(y_len..y_len.saturating_add(uv_len.saturating_mul(2))) {
+                        let (chunks, _) = src_uv.as_chunks::<2>();
+                        for chunk in chunks {
+                            u.push(chunk[0]);
+                            v.push(chunk[1]);
+                        }
+                    }
+                    ready.lock().unwrap_or_else(PoisonError::into_inner).insert(f.index, (y, u, v));
+                    return;
+                }
+            }
             let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
             timed(Stage::Convert, || h264_input(f, signal, &mut y, &mut u, &mut v));
             ready.lock().unwrap_or_else(PoisonError::into_inner).insert(f.index, (y, u, v));
@@ -563,7 +617,7 @@ mod mjpeg_adapter_tests {
                 assert_eq!(encoder.timescale(), rate.num as u32);
                 let rgba = [25, 80, 195, 123];
                 for index in [0, 1, 99] {
-                    let packets = encoder.encode(&EncoderFrame { width: 1, height: 1, rgba: &rgba, hdr: None, index }).unwrap();
+                    let packets = encoder.encode(&EncoderFrame { width: 1, height: 1, rgba: &rgba, hdr: None, index, nv12: None, rgb8: None }).unwrap();
                     assert_eq!(packets.len(), 1);
                     let packet = &packets[0];
                     assert!(packet.key);

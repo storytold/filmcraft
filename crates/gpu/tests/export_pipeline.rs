@@ -27,6 +27,41 @@ impl FrameRenderer for GpuFrameRenderer {
         self.0.render(project, seq, t, opts, sources)
     }
 
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
+    }
+
+    fn render_nv12(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+        matrix_mode: u32,
+        range_mode: u32,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_nv12(project, seq, t, opts, sources, matrix_mode, range_mode)
+    }
+
+    fn render_rgb8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        self.0.render_rgb8(project, seq, t, opts, sources)
+    }
+
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
     }

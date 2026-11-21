@@ -122,7 +122,7 @@ fn ffmpeg_first_picture(ffmpeg: &Path, path: &str, w: usize, h: usize) -> (Vec<u
 }
 
 fn frame<'a>(rgba: &'a [u8], hdr: Option<&'a [f32]>, index: u64) -> EncoderFrame<'a> {
-    EncoderFrame { width: 640, height: 360, rgba, hdr, index }
+    EncoderFrame { width: 640, height: 360, rgba, hdr, index, nv12: None, rgb8: None }
 }
 
 fn psnr10(a: &[u16], b: &[u16]) -> f64 {
@@ -333,7 +333,7 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     for bad in [&good[..good.len() - 1], &[][..], &vec![0.5f32; good.len() + 3][..]] {
         assert!(ten.encode(&frame(&rgba, Some(bad), 0)).is_err(), "{} floats", bad.len());
     }
-    assert!(ten.encode(&EncoderFrame { width: w + 2, height: h, rgba: &rgba, hdr: Some(&good), index: 0 }).is_err());
+    assert!(ten.encode(&EncoderFrame { width: w + 2, height: h, rgba: &rgba, hdr: Some(&good), index: 0, nv12: None, rgb8: None }).is_err());
     // NaN, infinities and out-of-range values clamp: the pictures encode
     let mut hostile = vec![0.25f32; good.len()];
     for (i, x) in hostile.iter_mut().enumerate() {
