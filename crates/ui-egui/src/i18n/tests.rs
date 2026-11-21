@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::He => Some(include_str!("he.tsv")),
     }
 }
 
@@ -77,6 +78,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
     }
     assert_eq!(Language::En.tr("File"), "File");
     assert_eq!(Language::parse("xx"), None);
+    assert_eq!(Language::parse("he"), Some(Language::He));
     for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE"] {
         assert_eq!(Language::parse(code), None, "the preference stores the bare code");
     }
@@ -96,6 +98,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
         (Language::Tr, "Türkçe"),
+        (Language::He, "עברית"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -957,5 +960,30 @@ fn display_guard_catches_retired_marks_without_banning_descriptive_terms() {
         "Volumetrijske zrake",
     ] {
         assert_eq!(retired_feature_label(label), None, "{label}");
+    }
+}
+
+/// DAY-03: ensure the shared Hebrew catalog is actually selectable and persisted by FilmCraft.
+#[test]
+fn hebrew_ui_catalog_menu_and_preference_roundtrip() {
+    assert_eq!(Language::from_locales(&["he-IL".into()]), Language::He);
+    assert_eq!(Language::from_locales(&["he_IL.UTF-8".into()]), Language::He);
+    assert_eq!(Language::He.name(), "עברית");
+    assert_eq!(Language::He.bcp47(), "he");
+    assert_eq!(Language::He.tr("About FilmCraft"), "אודות FilmCraft");
+    assert_eq!(Language::He.tr("File"), "קובץ");
+    assert_eq!(Language::He.tr("Save"), "שמירה");
+    let ctx = egui::Context::default();
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.hebrew"));
+    if crate::rtl::hebrew_font_available() {
+        switch(&mut app, &ctx, "app.language.hebrew");
+        assert_eq!(app.ui.language, Language::He);
+        assert_only_checked(&app, "app.language.hebrew");
+        assert_ui_persists(&app, Language::He, "he");
+        assert_restart_keeps(&app, Language::He);
+    } else {
+        assert!(crate::menus::invoke(&mut app, &ctx, "app.language.hebrew", serde_json::json!({}),).is_err());
+        assert_eq!(app.ui.language, Language::En);
     }
 }

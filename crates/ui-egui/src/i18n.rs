@@ -58,6 +58,8 @@ pub enum Language {
     /// Swedish.
     Sv,
     Tr,
+    /// Hebrew uses existing RTL shaping and fonts.
+    He,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -76,9 +78,10 @@ static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
 static CZECH: OnceLock<Catalog> = OnceLock::new();
 static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
+static HEBREW: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -96,6 +99,7 @@ impl Language {
         Self::Sv,
         Self::Tr,
         Self::Bs,
+        Self::He,
     ];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
@@ -119,6 +123,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::He => "he",
         }
     }
 
@@ -141,6 +146,7 @@ impl Language {
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
             Self::Tr => "Türkçe",
+            Self::He => "עברית",
         }
     }
 
@@ -163,6 +169,7 @@ impl Language {
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
             "tr" => Some(Self::Tr),
+            "he" => Some(Self::He),
             _ => None,
         }
     }
@@ -177,7 +184,7 @@ impl Language {
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 18] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -195,6 +202,7 @@ impl Language {
             ("pl", Language::Pl),
             ("sv", Language::Sv),
             ("tr", Language::Tr),
+            ("he", Language::He),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -232,6 +240,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::He => "he",
         }
     }
 
@@ -255,6 +264,7 @@ impl Language {
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
             Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
+            Self::He => Some(HEBREW.get_or_init(|| Catalog::parse(include_str!("i18n/he.tsv")))),
         }
     }
 
@@ -501,6 +511,7 @@ mod bcp47_tests {
         assert_eq!(Language::En.bcp47(), "en");
         assert_eq!(Language::PtBr.bcp47(), "pt-BR");
         assert_eq!(Language::ZhCn.bcp47(), "zh-CN");
+        assert_eq!(Language::He.bcp47(), "he");
         for language in Language::ALL {
             let tag = language.bcp47();
             assert!(!tag.is_empty() && tag.is_ascii(), "{tag:?}");
@@ -527,6 +538,7 @@ mod feature_name_tests {
             ("ru", include_str!("i18n/ru.tsv")),
             ("sv", include_str!("i18n/sv.tsv")),
             ("tr", include_str!("i18n/tr.tsv")),
+            ("he", include_str!("i18n/he.tsv")),
             ("uk", include_str!("i18n/uk.tsv")),
             ("zh-cn", include_str!("i18n/zh-cn.tsv")),
         ];
