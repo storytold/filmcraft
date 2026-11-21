@@ -502,6 +502,14 @@ fn clipboard_media() -> Option<filmcraft_ui_egui::ClipboardMedia> {
 
 /// Open a file in its default application, or reveal it in the file manager (Edit Original,
 /// Reveal Log Files).
+fn reveal_parent(path: &std::path::Path) -> &std::path::Path {
+    match path.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => std::path::Path::new("."),
+        Some(parent) => parent,
+        None => path,
+    }
+}
+
 fn open_path(path: &str, reveal: bool) -> Result<(), String> {
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
@@ -522,7 +530,7 @@ fn open_path(path: &str, reveal: bool) -> Result<(), String> {
         // Linux file managers have no select-file flag: open the parent folder instead.
         let mut c = std::process::Command::new("xdg-open");
         let p = std::path::Path::new(path);
-        c.arg(if reveal { p.parent().unwrap_or(p) } else { p });
+        c.arg(if reveal { reveal_parent(p) } else { p });
         c
     };
     cmd.spawn().map(|_| ()).map_err(|e| format!("can't open {path}: {e}"))
@@ -680,6 +688,15 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reveal_uses_the_working_directory_for_a_bare_project_name() {
+        use std::path::Path;
+
+        assert_eq!(super::reveal_parent(Path::new("project.fcproj")), Path::new("."));
+        assert_eq!(super::reveal_parent(Path::new("projects/project.fcproj")), Path::new("projects"));
+        assert_eq!(super::reveal_parent(Path::new("/")), Path::new("/"));
+    }
+
     /// The new start after a graphics panic keeps the arguments and picks the next mode, replacing a
     /// `--graphics` that was given (#2558).
     #[test]
