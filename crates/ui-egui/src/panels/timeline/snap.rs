@@ -1,21 +1,28 @@
-use filmcraft_project::{Track, Transition};
+use filmcraft_project::{MarkerId, Track, Transition};
 
 use super::layout::Layout;
 use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
 pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
-    snap_to(app, seq, layout, t, exclude, true)
+    snap_to(app, seq, layout, t, exclude, true, None)
 }
 
 /// Where a dragged playhead lands: [`snap`], but not onto itself, or it would stick where it is
 /// and only move in jumps of `SNAP_PX` (#164).
 pub(super) fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick) -> Tick {
-    snap_to(app, seq, layout, t, &[], false)
+    snap_to(app, seq, layout, t, &[], false, None)
 }
 
-fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Tick {
-    match targets(app, seq, layout, t, exclude, to_playhead).first() {
+/// Where a dragged marker lands (#4491): [`snap`], but neither onto the marker itself nor onto the
+/// playhead the press parked on it, or it would stick where it was.
+pub(super) fn snap_marker(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, marker: MarkerId) -> Tick {
+    snap_to(app, seq, layout, t, &[], false, Some(marker))
+}
+
+/// [`targets`]' nearest candidate, or `t` itself with none; shows the snap line on it.
+fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool, marker: Option<MarkerId>) -> Tick {
+    match targets(app, seq, layout, t, exclude, to_playhead, marker).first() {
         Some(&(_, c)) => {
             app.tl.snap_x = Some(layout.x_of(c));
             c
@@ -25,8 +32,8 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
 }
 
 /// The candidates [`snap_to`] can snap `t` to, within `SNAP_PX` and nearest first (in candidate
-/// order on a tie, the one it takes): none with snapping off.
-fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool) -> Vec<(f32, Tick)> {
+/// order on a tie, the one it takes): none with snapping off. `marker`, being dragged, is not one.
+fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId], to_playhead: bool, marker: Option<MarkerId>) -> Vec<(f32, Tick)> {
     if !app.session.state.snapping {
         return Vec::new();
     }
@@ -43,7 +50,7 @@ fn targets(app: &FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude
     if to_playhead {
         cands.push(app.session.playhead());
     }
-    cands.extend(seq.markers.iter().map(|m| m.start));
+    cands.extend(seq.markers.iter().filter(|m| Some(m.id) != marker).map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
     let x = layout.x_of(t);
@@ -78,7 +85,7 @@ pub(super) fn snap_transition(
     };
     // (distance, move, target) of each end's targets, nearest first (the start's on a tie)
     let mut snaps: Vec<(f32, Tick, Tick)> =
-        ends.into_iter().flat_map(|base| targets(app, seq, layout, base + delta, &[], true).into_iter().map(move |(px, c)| (px, c - base, c))).collect();
+        ends.into_iter().flat_map(|base| targets(app, seq, layout, base + delta, &[], true, None).into_iter().map(move |(px, c)| (px, c - base, c))).collect();
     snaps.sort_by(|a, b| a.0.total_cmp(&b.0));
     match snaps.into_iter().find_map(|(_, d, c)| span(d).filter(|s| moved(*s) == d).map(|s| (s, c))) {
         Some((s, c)) => {
