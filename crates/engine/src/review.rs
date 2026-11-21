@@ -155,15 +155,17 @@ fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
             if it.reverse || it.speed <= 0.0 {
                 continue;
             }
-            let Some(tr) = p.transcripts.get(&it.item) else { continue };
+            // a subclip's clips play its parent's media, which holds the transcript
+            let root = p.resolve_media(it.item).map_or(it.item, |(r, _, _)| r);
+            let Some(tr) = p.transcripts.get(&it.item).or_else(|| p.transcripts.get(&root)) else { continue };
             let continued_from = k.checked_sub(1).and_then(|j| items.get(j)).is_some_and(|prev| is_through_edit(p, prev, it));
             let continues = items.get(k + 1).is_some_and(|next| is_through_edit(p, it, next));
             for (edge, at, src) in [("starts", it.start, it.source_in), ("ends", it.end(), it.source_out())] {
                 if (edge == "starts" && continued_from) || (edge == "ends" && continues) {
                     continue;
                 }
-                let i = tr.words.partition_point(|w| w.end <= src);
-                let Some(w) = tr.words.get(i).filter(|w| w.start + margin < src && src < w.end - margin) else { continue };
+                // a loaded transcript isn't guaranteed to be sorted by end: look at every word
+                let Some(w) = tr.words.iter().find(|w| w.start + margin < src && src < w.end - margin) else { continue };
                 // the edge moved to either word boundary (sequence time scales with speed)
                 let to = |b: Tick| (at + Tick(((b - src).0 as f64 / it.speed) as i64)).seconds();
                 let (keep, drop) = if edge == "starts" { (to(w.start), to(w.end)) } else { (to(w.end), to(w.start)) };
@@ -181,58 +183,60 @@ fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
     }
 }
 
-/// Hard audio edits where the mix is loud: likely clicks.
+/// Peak (dBFS, with the clip's gain) of `c`'s own sound in the few milliseconds it plays next to
+/// its start or end (`at_end`), in playing direction. None when it has no sound to read.
+fn edge_peak_db(s: &Session, c: &TrackItem, at_end: bool) -> Option<f64> {
+    let src = s.source(c.item)?;
+    let sr = src.info().audio_streams.first()?.sample_rate.max(1);
+    let n = ((POP_WINDOW_SECONDS * f64::from(sr)).ceil() as usize).max(1);
+    // the media time at the edge: a reversed clip starts at its Out point and ends at its In point
+    let edge = if at_end != c.reverse { c.source_out() } else { c.source_in };
+    let pos = edge.to_units_floor(i64::from(sr));
+    // the media that plays next to the edge lies before `pos` at a forward end or a reversed start
+    let from = if at_end != c.reverse { pos - n as i64 } else { pos };
+    let b = src.audio(from.max(0), n, sr).ok()?;
+    let pk = b.channels.iter().flat_map(|ch| ch.iter()).fold(0f32, |m, x| m.max(x.abs()));
+    Some(if pk > 0.0 { 20.0 * f64::from(pk).log10() + c.gain_db } else { -120.0 })
+}
+
+/// Hard audio edits where an edited clip is loud at the cut: likely clicks. Each side is measured
+/// from the clip's own sound, so loud audio on another track doesn't count against a quiet edit.
 fn pop_issues(s: &Session, q: &Sequence, pop_db: f64, out: &mut Vec<Issue>) {
-    let sr = q.settings.sample_rate.max(1);
-    let win = (POP_WINDOW_SECONDS * f64::from(sr)).ceil() as usize;
     let end = q.duration();
-    let mut edits: Vec<(Tick, u64)> = Vec::new();
+    let mut found: Vec<(Tick, u64, f64, f64)> = Vec::new();
     for t in q.audio_tracks.iter().filter(|t| t.enabled && !t.muted) {
         let covered = |at: Tick| t.transitions.iter().any(|tr| tr.start <= at && at <= tr.start + tr.duration);
         let items: Vec<&TrackItem> = t.items.iter().filter(|it| it.enabled).collect();
-        for (k, it) in items.iter().enumerate() {
-            for at in [it.start, it.end()] {
-                if at <= Tick::ZERO || at >= end || covered(at) {
-                    continue;
-                }
-                // a through edit plays on without a change
-                let prev = items.get(k.wrapping_sub(1)).filter(|p| p.end() == at && at == it.start);
-                let next = items.get(k + 1).filter(|n| n.start == at && at == it.end());
-                if prev.is_some_and(|pv| is_through_edit(&s.project, pv, it)) || next.is_some_and(|n| is_through_edit(&s.project, it, n)) {
-                    continue;
-                }
-                if !edits.iter().any(|(e, _)| *e == at) {
-                    edits.push((at, it.id.0));
-                }
+        let mut times: Vec<Tick> = items.iter().flat_map(|it| [it.start, it.end()]).filter(|at| *at > Tick::ZERO && *at < end && !covered(*at)).collect();
+        times.sort();
+        times.dedup();
+        for at in times {
+            let outgoing = items.iter().find(|it| it.end() == at).copied();
+            let incoming = items.iter().find(|it| it.start == at).copied();
+            // a through edit plays on without a change
+            if let (Some(a), Some(b)) = (outgoing, incoming)
+                && is_through_edit(&s.project, a, b)
+            {
+                continue;
+            }
+            let before = outgoing.and_then(|c| edge_peak_db(s, c, true)).unwrap_or(-120.0);
+            let after = incoming.and_then(|c| edge_peak_db(s, c, false)).unwrap_or(-120.0);
+            let clip = incoming.or(outgoing).map_or(0, |c| c.id.0);
+            if before.max(after) > pop_db && !found.iter().any(|f| f.0 == at) {
+                found.push((at, clip, before, after));
             }
         }
     }
-    if edits.is_empty() {
-        return;
-    }
-    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
-    edits.sort();
-    for (at, clip) in edits {
-        let pos = at.to_units_floor(i64::from(sr));
-        // `win` samples on each side of the edit; near the start there are fewer before it
-        let from = (pos - win as i64).max(0);
-        let split = (pos - from) as usize;
-        let b = filmcraft_render::audio::mix_sequence(&s.project, q, from, split + win, &provider);
-        let peak_db = |range: std::ops::Range<usize>| {
-            let pk = b.channels.iter().flat_map(|c| c.get(range.clone()).unwrap_or(&[]).iter()).fold(0f32, |m, x| m.max(x.abs()));
-            if pk > 0.0 { 20.0 * f64::from(pk).log10() } else { -120.0 }
-        };
-        let (before, after) = (peak_db(0..split), peak_db(split..split + win));
-        if before.max(after) > pop_db {
-            out.push(issue(
-                "audioPop",
-                "warning",
-                at,
-                Some(clip),
-                format!("hard audio cut at {} with the mix at {before:.0} dB before and {after:.0} dB after: likely to click", secs(at)),
-                "add a short audio crossfade (2–10 frames) at the edit",
-            ));
-        }
+    found.sort_by_key(|f| f.0);
+    for (at, clip, before, after) in found {
+        out.push(issue(
+            "audioPop",
+            "warning",
+            at,
+            Some(clip),
+            format!("hard audio cut at {} with the edited sound at {before:.0} dB before and {after:.0} dB after: likely to click", secs(at)),
+            "add a short audio crossfade (2–10 frames) at the edit",
+        ));
     }
 }
 

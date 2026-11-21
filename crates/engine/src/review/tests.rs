@@ -122,3 +122,23 @@ fn media_made_offline_is_reported_once_and_only_on_enabled_tracks() {
     let r = review(&mut s, json!({}));
     assert!(!kinds(&r).contains(&"offlineMedia".to_string()), "{r}");
 }
+
+/// A click is judged from the edited clips' own sound: quiet clips cut under loud music on
+/// another track are not a pop, the same cuts with loud clips are.
+#[test]
+fn audio_pops_come_from_the_edited_sound_not_other_tracks() {
+    let mut s = demo();
+    let (a1, edges): (Vec<u64>, Vec<i64>) = {
+        let q = s.active_sequence().unwrap();
+        let t = &q.audio_tracks[0];
+        let end = q.duration();
+        (t.items.iter().map(|c| c.id.0).collect(), t.items.iter().flat_map(|c| [c.start, c.end()]).filter(|x| x.0 > 0 && *x < end).map(|x| x.0).collect())
+    };
+    let pops_on_a1 =
+        |r: &Value| r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "audioPop" && edges.contains(&i["time"].as_i64().unwrap())).count();
+    let loud = review(&mut s, json!({}));
+    assert!(pops_on_a1(&loud) > 0, "the demo's hard cuts on A1 are loud: {loud}");
+    s.execute("clip.audioGain", json!({"clips": a1, "mode": "set", "db": -96.0})).unwrap();
+    let quiet = review(&mut s, json!({}));
+    assert_eq!(pops_on_a1(&quiet), 0, "silent A1 clips under the music bed: {quiet}");
+}
