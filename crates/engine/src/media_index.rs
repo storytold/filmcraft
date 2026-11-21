@@ -138,6 +138,8 @@ pub struct MediaIndex {
     pub truncated: bool,
     /// `Session::document_epoch` of the analysis: a replaced project's ids mean other things.
     pub epoch: u64,
+    /// The media analysed. An undo can give another item the same id, so a lookup checks it.
+    pub media: Option<filmcraft_project::MediaRef>,
 }
 
 /// A running `media.analyze` job; its results are stored by [`poll`] when it finishes.
@@ -193,6 +195,7 @@ struct Work {
     /// The project's media info says the item has a picture (an audio-only interpretation of a
     /// file with video has none).
     video: bool,
+    media: Option<filmcraft_project::MediaRef>,
 }
 
 fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, done: &mut u64) -> std::result::Result<MediaIndex, String> {
@@ -249,7 +252,7 @@ fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, do
         }
     }
     let shots = if times.is_empty() { Vec::new() } else { group_shots(&times, &measures, &cuts, duration, step) };
-    Ok(MediaIndex { item: w.item, name: w.name.clone(), duration, fps, frames: times.len(), shots, levels, truncated, epoch })
+    Ok(MediaIndex { item: w.item, name: w.name.clone(), duration, fps, frames: times.len(), shots, levels, truncated, epoch, media: w.media.clone() })
 }
 
 /// The items to analyse: `items`, else the Project selection, else the media of the selected clips.
@@ -285,7 +288,8 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
         match s.source(item) {
             Some(src) if src.info().video.is_some() || !src.info().audio_streams.is_empty() => {
                 let video = project_video.unwrap_or(src.info().video.is_some()) && src.info().video.is_some();
-                work.push(Work { item, name, src, video });
+                let media = media_ref(s, item);
+                work.push(Work { item, name, src, video, media });
             }
             Some(_) => skipped.push(json!({"item": item.0, "reason": "no picture or sound"})),
             None => skipped.push(json!({"item": item.0, "reason": "the media can't be opened (offline, a sequence or a graphic)"})),
@@ -294,6 +298,7 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     if work.is_empty() {
         return Err(bad("media.analyze", "nothing to analyse: pass items (media item ids) or select footage in the Project panel"));
     }
+    let count = work.len();
     let total: u64 = work.iter().map(|w| (w.src.info().duration.seconds().min(MAX_SECONDS) * fps).max(1.0) as u64).sum();
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let label = format!("Analyze Footage ({} item{})", work.len(), if work.len() == 1 { "" } else { "s" });
@@ -343,7 +348,7 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     s.index_jobs.push(PendingIndex { job: id, results, epoch });
-    let mut reply = json!({"job": id, "items": total, "skipped": skipped, "poll": "jobs.list", "then": "media.index"});
+    let mut reply = json!({"job": id, "items": count, "frames": total, "skipped": skipped, "poll": "jobs.list", "then": "media.index"});
     if bool_p(p, "wait").unwrap_or(false) || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -416,11 +421,21 @@ fn assess(sh: &Shot, median_sharpness: f32) -> (Vec<&'static str>, f64) {
     (flags, (score * 10.0).round() / 10.0)
 }
 
+/// The media behind an item (a subclip's parent media).
+fn media_ref(s: &Session, item: ItemId) -> Option<filmcraft_project::MediaRef> {
+    s.project.resolve_media(item).map(|(_, m, _)| m.media.clone())
+}
+
 fn index(s: &mut Session, p: &Value) -> Result<Value> {
+    // results of a job that finished since the last poll (headless sessions only poll here)
+    poll(s);
     let item = ItemId(u64_p(p, "item").ok_or_else(|| bad("media.index", "item (a media item id) is required"))?);
     let limit = u64_p(p, "shotsLimit").unwrap_or(200).clamp(1, 10_000) as usize;
     let ix = match s.media_index.get(&item) {
-        Some(ix) if ix.epoch == s.document_epoch => ix.clone(),
+        Some(ix) if ix.epoch == s.document_epoch && ix.media == media_ref(s, item) => ix.clone(),
+        Some(ix) if ix.epoch == s.document_epoch => {
+            return Err(bad("media.index", "the item's media changed since it was analysed (an undo, a relink or a replace): run media.analyze again"));
+        }
         _ => {
             let running = s.index_jobs.iter().any(|j| s.jobs.iter().any(|x| x.id == j.job));
             return Err(bad(
