@@ -270,7 +270,8 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 /// A call that only reports, so it is not journaled although its command edits: `sequence.settings`
 /// with nothing to change (`null` or `{}`) answers the settings, as `sequence.inspect` does (#1540).
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
-    id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
+    (id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty())))
+        || (id == "clip.sceneEditDetection" && p.get("report") == Some(&Value::Bool(true)))
 }
 /// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {

@@ -15,8 +15,9 @@
 //!   (media time) at each cut.
 //!
 //! With `report: true` the analysis runs at once (as with `wait`) and only reports: `shots` lists
-//! each clip's shots (timeline and media start and end, length), nothing is applied, no undo step
-//! is added, and the apply options are ignored. Agents use it to see the shots of footage they
+//! each clip's shots (timeline start, end and length; media start and end), nothing is applied
+//! (not even other finished jobs), no undo step is added, the call isn't journaled, and the apply
+//! options are ignored. Agents use it to see the shots of footage they
 //! can't watch before deciding what to cut.
 
 use std::sync::{Arc, Mutex};
@@ -287,7 +288,10 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                 out["warnings"] = json!([w]);
             }
         }
-        poll(s);
+        // a report applies nothing, also not other finished jobs: those wait for the next poll
+        if !report {
+            poll(s);
+        }
     } else {
         std::thread::Builder::new().name("filmcraft-scene-detect".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
@@ -298,7 +302,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Each analysed clip's shots for `report: true`: from the clip's start to its first cut, between
-/// cuts, and from the last cut to the clip's end, in timeline and media time.
+/// cuts, and from the last cut to the clip's end: timeline start, end and length, and the media
+/// times the shot starts and ends at (in playing order, so a reversed clip's media end is earlier).
 fn shots_json(s: &Session, seq_id: ItemId, results: &[ClipScenes]) -> Value {
     let q = s.project.sequence(seq_id);
     let clips: Vec<Value> = results
@@ -307,13 +312,18 @@ fn shots_json(s: &Session, seq_id: ItemId, results: &[ClipScenes]) -> Value {
             let it = q.and_then(|q| q.find_item(r.clip)).map(|(_, it)| it);
             let (start, end) = it.map_or((Tick::ZERO, Tick::ZERO), |it| (it.start, it.end()));
             let first = (start, it.map_or(r.media_range.start, |it| it.source_time_at(it.start)));
+            // where the clip's picture stops in its media (a reversed clip ends at its In point)
+            let media_end = it.map_or(r.media_range.end(), |it| if it.reverse { it.source_in } else { it.source_out() });
             let bounds: Vec<(Tick, Tick)> = std::iter::once(first).chain(r.cuts.iter().copied()).collect();
             let shots: Vec<Value> = bounds
                 .iter()
                 .enumerate()
                 .map(|(k, (t, mt))| {
-                    let t_end = bounds.get(k + 1).map_or(end, |b| b.0);
-                    json!({"start": t.0, "end": t_end.0, "startSeconds": t.seconds(), "seconds": (t_end - *t).seconds(), "mediaStart": mt.0, "mediaStartSeconds": mt.seconds()})
+                    let (t_end, mt_end) = bounds.get(k + 1).map_or((end, media_end), |b| (b.0, b.1));
+                    json!({
+                        "start": t.0, "end": t_end.0, "startSeconds": t.seconds(), "seconds": (t_end - *t).seconds(),
+                        "mediaStart": mt.0, "mediaEnd": mt_end.0, "mediaStartSeconds": mt.seconds(), "mediaEndSeconds": mt_end.seconds(),
+                    })
                 })
                 .collect();
             json!({"clip": r.clip.0, "name": r.name, "shots": shots, "unanalysed": r.unanalysed})

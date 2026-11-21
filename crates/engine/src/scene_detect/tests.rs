@@ -306,4 +306,33 @@ fn report_lists_the_shots_and_changes_nothing() {
     }
     assert_eq!(shots.last().unwrap()["end"].as_i64(), Some(before.video_tracks[0].items[0].end().0));
     assert!(starts.contains(&rate.tick_of(20).0) && starts.contains(&rate.tick_of(36).0), "{r}");
+    // media times run on from shot to shot, to the clip's own media end
+    for w in shots.windows(2) {
+        assert_eq!(w[0]["mediaEnd"], w[1]["mediaStart"]);
+    }
+    assert_eq!(shots.last().unwrap()["mediaEnd"].as_i64(), Some(before.video_tracks[0].items[0].source_out().0));
+}
+
+#[test]
+fn a_report_leaves_another_finished_job_for_the_next_poll() {
+    use std::sync::atomic::Ordering;
+    let dir = tmp_dir("scene-report-poll");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16), (DemoScene::Forest, 14)], 160, 90);
+    let (mut s, _, _) = session_with(&[&path]);
+    select_v1(&mut s);
+    let n_undo = s.history.undo.len();
+    // an applying job in the background, finished but not yet applied
+    let job = s.execute("clip.sceneEditDetection", json!({"applyCuts": true})).unwrap()["job"].as_u64().unwrap();
+    let t0 = std::time::Instant::now();
+    while !s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.finished.load(Ordering::Relaxed)) {
+        assert!(t0.elapsed().as_secs() < 60, "the job didn't finish");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    select_v1(&mut s);
+    s.execute("clip.sceneEditDetection", json!({"report": true})).unwrap();
+    assert_eq!(s.history.undo.len(), n_undo, "the report applied the other job's cuts");
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
+    s.poll_persistence();
+    assert_eq!(s.history.undo.len(), n_undo + 1, "the finished job is applied by the next poll");
 }
