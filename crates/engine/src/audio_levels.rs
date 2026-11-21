@@ -1,0 +1,166 @@
+//! `audio.levels`: how loud a sequence's mix is over time, for agents that can't listen.
+//!
+//! A transcript tells an agent what is said, but not where music, applause, laughter, room tone or
+//! silence are. This read-only report renders the mix through the mixer graph (as playback and
+//! export do) and returns its level in fixed windows, the quiet stretches and the loudest moments,
+//! so an agent can find pauses without speech recognition, cut on the music's loud parts or check
+//! that nothing went silent after an edit. Levels are RMS and sample peak in dBFS over all channels
+//! of the stereo fold; they are not loudness (LUFS) readings.
+
+use filmcraft_project::ItemId;
+use filmcraft_time::Tick;
+use serde_json::{Value, json};
+
+use crate::commands::{CommandSpec, NamedKeys, always, bad, f64_p, u64_p};
+use crate::{EngineError, Result, Session};
+
+const ID: &str = "audio.levels";
+/// Floor reported for digital silence.
+const FLOOR_DB: f64 = -120.0;
+/// Windows reported at most; a longer range gets wider windows.
+const MAX_WINDOWS: usize = 4000;
+/// Longest range analysed in one call (4 h).
+const MAX_SECONDS: f64 = 4.0 * 3600.0;
+
+pub(crate) fn commands() -> Vec<CommandSpec> {
+    vec![CommandSpec {
+        id: ID,
+        label: "Audio Levels Over Time",
+        menu: &[],
+        shortcut: None,
+        params: r#"{"sequence":id?,"startSeconds":f?,"endSeconds":f?,"windowSeconds":f=0.5,"quietDb":f=-45,"minQuietSeconds":f=1,"loudest":n=5}"#,
+        enabled: always,
+        run: levels,
+        journal: false,
+        named: NamedKeys::NONE,
+    }]
+}
+
+fn db(x: f64) -> f64 {
+    if x > 0.0 { (20.0 * x.log10()).max(FLOOR_DB) } else { FLOOR_DB }
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+/// One measured window: (rms dBFS, peak dBFS).
+pub(crate) fn measure(channels: &[Vec<f32>]) -> (f64, f64) {
+    let (mut sum, mut n, mut peak) = (0f64, 0usize, 0f32);
+    for c in channels {
+        for &x in c {
+            sum += f64::from(x) * f64::from(x);
+            peak = peak.max(x.abs());
+        }
+        n += c.len();
+    }
+    let rms = if n > 0 { (sum / n as f64).sqrt() } else { 0.0 };
+    (db(rms), db(f64::from(peak)))
+}
+
+/// Runs of windows below `quiet_db` lasting at least `min_windows`, as (first, last exclusive).
+pub(crate) fn quiet_runs(rms: &[f64], quiet_db: f64, min_windows: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, &v) in rms.iter().chain(std::iter::once(&f64::INFINITY)).enumerate() {
+        match (v < quiet_db, start) {
+            (true, None) => start = Some(i),
+            (false, Some(a)) => {
+                if i - a >= min_windows.max(1) {
+                    out.push((a, i));
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn levels(s: &mut Session, p: &Value) -> Result<Value> {
+    let seq_id = match u64_p(p, "sequence") {
+        Some(id) => ItemId(id),
+        None => s.state.active_sequence.ok_or(EngineError::NoSequence)?,
+    };
+    let q = s.project.sequence(seq_id).ok_or_else(|| bad(ID, format!("{} is not a sequence", seq_id.0)))?;
+    let positive = |k: &str, d: f64| -> Result<f64> {
+        let v = f64_p(p, k).unwrap_or(d);
+        if v.is_finite() && v > 0.0 { Ok(v) } else { Err(bad(ID, format!("{k} must be a positive number"))) }
+    };
+    let duration = q.duration().seconds();
+    let start = f64_p(p, "startSeconds").unwrap_or(0.0);
+    let end = f64_p(p, "endSeconds").unwrap_or(duration).min(duration);
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+        return Err(bad(ID, "the range is empty: startSeconds must be ≥ 0 and before endSeconds (and the sequence end)"));
+    }
+    if end - start > MAX_SECONDS {
+        return Err(bad(ID, "the range is longer than 4 hours; measure it in parts"));
+    }
+    let mut window = positive("windowSeconds", 0.5)?.clamp(0.05, 60.0);
+    let mut widened = false;
+    if (end - start) / window > MAX_WINDOWS as f64 {
+        window = (end - start) / MAX_WINDOWS as f64;
+        widened = true;
+    }
+    let quiet_db = f64_p(p, "quietDb").unwrap_or(-45.0);
+    if !quiet_db.is_finite() {
+        return Err(bad(ID, "quietDb must be a number"));
+    }
+    let min_quiet = positive("minQuietSeconds", 1.0)?;
+    let loudest_n = u64_p(p, "loudest").unwrap_or(5).min(100) as usize;
+
+    let sr = q.settings.sample_rate.max(1);
+    let first = Tick::from_seconds_f64(start).to_units_floor(i64::from(sr));
+    let last = Tick::from_seconds_f64(end).to_units_floor(i64::from(sr));
+    let per = ((window * f64::from(sr)).round() as i64).max(1);
+    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
+    let (mut rms, mut peak) = (Vec::new(), Vec::new());
+    let (mut sum_sq, mut n_all, mut max_peak) = (0f64, 0usize, FLOOR_DB);
+    let mut pos = first;
+    while pos < last {
+        let n = (last - pos).min(per) as usize;
+        let b = filmcraft_render::audio::mix_sequence(&s.project, q, pos, n, &provider);
+        let (r, pk) = measure(&b.channels);
+        for c in &b.channels {
+            sum_sq += c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>();
+            n_all += c.len();
+        }
+        max_peak = max_peak.max(pk);
+        rms.push(r);
+        peak.push(pk);
+        pos += n as i64;
+    }
+    let t_of = |i: usize| start + i as f64 * window;
+    let min_windows = (min_quiet / window).ceil() as usize;
+    let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows)
+        .into_iter()
+        .map(|(a, b)| json!({"startSeconds": t_of(a), "endSeconds": t_of(b).min(end), "seconds": t_of(b).min(end) - t_of(a)}))
+        .collect();
+    let mut order: Vec<usize> = (0..rms.len()).collect();
+    order.sort_by(|a, b| rms[*b].total_cmp(&rms[*a]));
+    let loudest: Vec<Value> =
+        order.into_iter().take(loudest_n).map(|i| json!({"startSeconds": t_of(i), "rmsDb": round1(rms[i]), "peakDb": round1(peak[i])})).collect();
+    let overall = if n_all > 0 { db((sum_sq / n_all as f64).sqrt()) } else { FLOOR_DB };
+    let mut warnings = Vec::new();
+    if widened {
+        warnings.push(format!("the range has more than {MAX_WINDOWS} windows: windowSeconds was widened to {window:.3}"));
+    }
+    Ok(json!({
+        "sequence": seq_id.0,
+        "startSeconds": start,
+        "endSeconds": end,
+        "windowSeconds": window,
+        "rmsDb": rms.iter().map(|v| round1(*v)).collect::<Vec<_>>(),
+        "peakDb": peak.iter().map(|v| round1(*v)).collect::<Vec<_>>(),
+        "overallRmsDb": round1(overall),
+        "maxPeakDb": round1(max_peak),
+        "quietDb": quiet_db,
+        "quiet": quiet,
+        "loudest": loudest,
+        "warnings": warnings,
+        "notes": "rmsDb[i] and peakDb[i] cover startSeconds + i × windowSeconds. dBFS of the mix (stereo fold, after track and master faders); -120 is silence. Not LUFS.",
+    }))
+}
+
+#[cfg(test)]
+mod tests;

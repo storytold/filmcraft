@@ -105,7 +105,11 @@ the project or adds an undo step.
 | Command | What it reports |
 |---|---|
 | `transcript.inspect` | the words, with their times and speakers (see [transcripts.md](transcripts.md)) |
+| `audio.levels {startSeconds?, endSeconds?, windowSeconds=0.5, quietDb=-45, minQuietSeconds=1, loudest=5}` | the mix's RMS and peak level (dBFS) per window, rendered like playback; `quiet` stretches (pauses, dead air without a transcript) and the `loudest` moments (music hits, applause). Not LUFS |
 | `sequence.pacing {longSeconds=5}` | the shots the viewer sees (topmost enabled video clip; titles and adjustment layers don't start a shot, through edits aren't cuts), `cutsPerMinute`, shot length mean/median/min/max, the `longest` shot, `longShots` and black `gaps` |
+
+`audio.levels` decodes media while the command runs, so measure a range, not
+hours at once.
 
 ### Conventions
 
