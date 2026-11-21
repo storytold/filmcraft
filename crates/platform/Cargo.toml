@@ -30,6 +30,7 @@ filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-isobmff = { workspace = true }
+filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 log = { workspace = true }
 
@@ -65,4 +66,3 @@ tempfile = "3"
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-project = { workspace = true }
-filmcraft-render = { workspace = true }
