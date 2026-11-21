@@ -407,9 +407,35 @@ fn field_label(ui: &mut Ui, text: &str) {
     let w = LABEL_W.min(ui.available_width() * 0.45);
     ui.allocate_ui_with_layout(vec2(w, 24.0), Layout::right_to_left(Align::Center), |ui| {
         if !text.is_empty() {
-            ui.add(egui::Label::new(RichText::new(format!("{}:", crate::i18n::t(text))).size(12.5)).wrap());
+            ui.add(egui::Label::new(RichText::new(format!("{}:", platform_keys(crate::i18n::t(text), cfg!(target_os = "macos")))).size(12.5)).wrap());
         }
     });
+}
+
+/// The modifier keys of a label as this computer names them: the settings schema writes the Mac's
+/// "+ Cmd" / "+ Opt" (Bins and Projects double-click), which Windows and Linux keyboards call Ctrl
+/// and Alt.
+fn platform_keys(label: &str, mac: bool) -> String {
+    if mac {
+        return label.to_string();
+    }
+    match label {
+        "+ Cmd" => "+ Ctrl".into(),
+        "+ Opt" => "+ Alt".into(),
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod platform_keys_tests {
+    /// The double-click modifiers name the keys on the keyboard.
+    #[test]
+    fn modifier_labels_follow_the_platform() {
+        assert_eq!(super::platform_keys("+ Cmd", false), "+ Ctrl");
+        assert_eq!(super::platform_keys("+ Opt", false), "+ Alt");
+        assert_eq!(super::platform_keys("+ Cmd", true), "+ Cmd");
+        assert_eq!(super::platform_keys("Double-click", false), "Double-click");
+    }
 }
 
 fn unit(ui: &mut Ui, u: &str) {
@@ -449,7 +475,7 @@ fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, label: &str, current: &
         });
     // The accessible name is the field's label, while the automation label stays the selected
     // value so `ui.elements` reports what the dropdown shows.
-    let response = crate::widgets::accessible_name(r.response, crate::i18n::t(label));
+    let response = crate::widgets::accessible_name(r.response, platform_keys(crate::i18n::t(label), cfg!(target_os = "macos")));
     app.auto.add(&format!("settings.{key}"), response.rect, &shown);
     for (id, rect, l) in items {
         app.auto.add(&id, rect, &l);
