@@ -90,7 +90,10 @@ pub fn register() -> Availability {
         // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
         // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         nvenc::warm_hevc_probe();
+        nvenc::warm_av1_probe();
     }
     #[cfg(target_os = "windows")]
     {

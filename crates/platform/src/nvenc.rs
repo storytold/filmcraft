@@ -28,6 +28,7 @@
 //! declines what NVENC cannot do (no NVIDIA GPU or driver, sizes, HDR, two-pass, MXF...) and the
 //! software encoder takes over. A declined HEVC export is an error that says why.
 
+pub mod av1;
 #[allow(unsafe_code)]
 pub(crate) mod device;
 pub mod export;
@@ -42,12 +43,12 @@ mod abi_tests;
 
 use std::collections::VecDeque;
 
-use filmcraft_isobmff::HevcConfig;
+use filmcraft_isobmff::{Av1Config, HevcConfig};
 
 pub use self::session::{Caps, Codec, Params, Sei, Signal};
 use self::session::{Locked, Session, Submitted};
 
-/// H.264 profile (`profile_idc` 66 / 77 / 100), or HEVC Main (8-bit 4:2:0) / Main 10 (10-bit 4:2:0).
+/// H.264 profile (`profile_idc` 66 / 77 / 100), or HEVC / AV1 Main (8-bit 4:2:0) / Main 10 (10-bit 4:2:0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
     Baseline,
@@ -57,6 +58,10 @@ pub enum Profile {
     HevcMain,
     /// H.265 Main 10: 10-bit 4:2:0 (P010 input), for HDR (PQ / HLG) and 10-bit SDR.
     HevcMain10,
+    /// AV1 Main (8-bit 4:2:0).
+    Av1Main,
+    /// AV1 Main 10 (10-bit 4:2:0, P010 input).
+    Av1Main10,
 }
 
 impl Profile {
@@ -64,6 +69,7 @@ impl Profile {
     pub fn codec(self) -> Codec {
         match self {
             Profile::HevcMain | Profile::HevcMain10 => Codec::Hevc,
+            Profile::Av1Main | Profile::Av1Main10 => Codec::Av1,
             _ => Codec::H264,
         }
     }
@@ -103,16 +109,19 @@ pub struct Packet {
 /// Pictures in flight: input / output buffer pairs.
 const RING: usize = 8;
 
-/// An NVENC encoder (H.264, or HEVC when the profile is [`Profile::HevcMain`] or [`Profile::HevcMain10`]).
+/// An NVENC encoder (H.264, or HEVC when the profile is [`Profile::HevcMain`] or [`Profile::HevcMain10`], or AV1).
 pub struct Nvenc {
     session: Session,
     codec: Codec,
-    /// Empty for H.264.
+    /// Empty for H.264 / AV1.
     vps: Vec<u8>,
     sps: Vec<u8>,
     pps: Vec<u8>,
     /// The `hvcC` record (HEVC only), built from the parameter sets the encoder wrote.
     hvcc: Option<HevcConfig>,
+    /// The `av1C` record (AV1 only), built from the parameter sets the encoder wrote.
+    av1c: Option<Av1Config>,
+    av1_metadata: Vec<u8>,
     /// Frames the output is delayed by reordering (0 or 1).
     delay: u32,
     free: Vec<usize>,
@@ -226,6 +235,95 @@ pub fn hevc_probed() -> bool {
     HEVC_AVAILABLE.get().is_some()
 }
 
+/// Whether this system's NVENC can encode AV1: a session opened and an AV1 encoder created for a
+/// small picture, once (the answer is kept). What makes the AV1 export format available.
+pub fn av1_available() -> bool {
+    *AV1_AVAILABLE.get_or_init(|| {
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::Av1Main,
+            level: None,
+            sar: None,
+            bframes: false,
+        };
+        let result = Nvenc::new(&probe);
+        if let Err(why) = &result {
+            log::info!("no hardware AV1 encoder: {why}");
+        }
+        result.is_ok()
+    })
+}
+
+/// The answer of [`av1_available`], once asked.
+static AV1_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Ask [`av1_available`] on a thread of its own (once, however often this is called), so the
+/// first draw of Export's format list does not wait for the probe session.
+pub fn warm_av1_probe() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new().name("nvenc-av1-probe".into()).spawn(|| {
+            if std::panic::catch_unwind(av1_available).is_err() {
+                log::warn!("the hardware AV1 probe panicked; the format list will ask again");
+            }
+            if std::panic::catch_unwind(av1_hdr_available).is_err() {
+                log::warn!("the hardware AV1 Main 10 probe panicked; the export will ask again");
+            }
+        });
+        if let Err(e) = spawned {
+            log::info!("hardware AV1 probe thread not started: {e}");
+        }
+    });
+}
+
+/// Whether this system's NVENC can encode AV1 Main 10 (10-bit): AV1 works and a Main 10 session
+/// opened for a small picture, once (the answer is kept). What makes HDR AV1 exports possible:
+/// `filmcraft_export::hdr_available(Format::Av1)`.
+pub fn av1_hdr_available() -> bool {
+    *AV1_HDR_AVAILABLE.get_or_init(|| {
+        if !av1_available() {
+            return false;
+        }
+        let probe = Config {
+            width: 640,
+            height: 360,
+            fps: (30, 1),
+            bitrate_kbps: 2000,
+            max_bitrate_kbps: 3000,
+            cbr: false,
+            keyint: 30,
+            profile: Profile::Av1Main10,
+            level: None,
+            sar: None,
+            bframes: false,
+        };
+        let result = Nvenc::with_signal(&probe, &Signal::default());
+        if let Err(why) = &result {
+            log::info!("no hardware AV1 Main 10 encoder: {why}");
+        }
+        result.is_ok()
+    })
+}
+
+/// The answer of [`av1_hdr_available`], once asked.
+static AV1_HDR_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether [`av1_hdr_available`] has its answer yet (diagnostics and tests).
+pub fn av1_hdr_probed() -> bool {
+    AV1_HDR_AVAILABLE.get().is_some()
+}
+
+/// Whether [`av1_available`] has its answer yet (diagnostics and tests).
+pub fn av1_probed() -> bool {
+    AV1_AVAILABLE.get().is_some()
+}
+
 impl Nvenc {
     /// Open an encoder with the default BT.709 signal, or say why NVENC does not take this configuration.
     pub fn new(cfg: &Config) -> Result<Self, String> {
@@ -242,7 +340,7 @@ impl Nvenc {
     /// Open an 8-bit encoder that takes straight RGBA8 pictures ([`Nvenc::encode_rgba`]) and converts
     /// them to 4:2:0 on the GPU, or say why not (Main 10, or a driver that refuses RGB input).
     pub fn with_rgba_input(cfg: &Config, signal: &Signal) -> Result<Self, String> {
-        if cfg.profile == Profile::HevcMain10 {
+        if cfg.profile == Profile::HevcMain10 || cfg.profile == Profile::Av1Main10 {
             return Err("RGBA input is 8-bit only".into());
         }
         Self::open(cfg, signal, true)
@@ -257,6 +355,9 @@ impl Nvenc {
             return Err("frame rate".into());
         }
         let codec = cfg.profile.codec();
+        if codec == Codec::Av1 && !cfg!(target_os = "windows") {
+            return Err("AV1 NVENC encoding is only supported on Windows".into());
+        }
         if codec == Codec::H264 && *signal != Signal::default() {
             return Err("H.264 here is BT.709 without SEI messages".into());
         }
@@ -268,6 +369,7 @@ impl Nvenc {
                 let max_kbps = if cfg.cbr { cfg.bitrate_kbps } else { cfg.max_bitrate_kbps.max(cfg.bitrate_kbps) };
                 hevc::main_tier_level(w, h, cfg.fps, max_kbps).and_then(hevc::level_code)
             }
+            (Codec::Av1, _) => None,
             (_, l) => l,
         };
         let mut session = Session::open()?;
@@ -276,12 +378,13 @@ impl Nvenc {
         if w < caps.min_size.0 || h < caps.min_size.1 || w > caps.max_size.0 || h > caps.max_size.1 {
             return Err(format!("{w}x{h} is outside NVENC's {}x{} - {}x{}", caps.min_size.0, caps.min_size.1, caps.max_size.0, caps.max_size.1));
         }
-        // NVENC wants a GOP longer than the B-frame pattern: HEVC with a keyframe every one or two
+        // NVENC wants a GOP longer than the B-frame pattern: HEVC/AV1 with a keyframe every one or two
         // pictures is simply written without B-frames (H.264 keeps declining those, to the software encoder)
         let room_for_bframes = codec == Codec::H264 || cfg.keyint > 2;
         let bframes = u32::from(cfg.bframes && cfg.profile != Profile::Baseline && caps.max_bframes >= 1 && room_for_bframes);
-        let ten_bit = cfg.profile == Profile::HevcMain10;
-        let params = Params {
+        let ten_bit = cfg.profile == Profile::HevcMain10 || cfg.profile == Profile::Av1Main10;
+        let av1_metadata = if codec == Codec::Av1 { av1::hdr_metadata(signal)? } else { Vec::new() };
+        let mut params = Params {
             codec,
             width: w,
             height: h,
@@ -292,7 +395,7 @@ impl Nvenc {
             gop: cfg.keyint.max(1),
             profile: match cfg.profile {
                 Profile::Baseline => 0,
-                Profile::Main | Profile::HevcMain | Profile::HevcMain10 => 1,
+                Profile::Main | Profile::HevcMain | Profile::HevcMain10 | Profile::Av1Main | Profile::Av1Main10 => 1,
                 Profile::High => 2,
             },
             ten_bit,
@@ -302,18 +405,25 @@ impl Nvenc {
             sar: cfg.sar,
             bframes,
         };
+        if codec == Codec::Av1 {
+            params.signal.sei.clear();
+        }
         session.initialize(&params, RING)?;
         let params = session.sequence_params()?;
-        let (vps, sps, pps, hvcc) = match codec {
+        let (vps, sps, pps, hvcc, av1c) = match codec {
             Codec::H264 => {
                 let (sps, pps) = split_parameter_sets(&params)?;
-                (Vec::new(), sps, pps, None)
+                (Vec::new(), sps, pps, None, None)
             }
             Codec::Hevc => {
                 let (vps, sps, pps) = split_hevc_parameter_sets(&params)?;
                 // validated now: a stream whose parameter sets we cannot describe is a declined export
                 let record = hevc::hevc_config(&vps, &sps, &pps, (w, h), if ten_bit { 10 } else { 8 })?;
-                (vps, sps, pps, Some(record))
+                (vps, sps, pps, Some(record), None)
+            }
+            Codec::Av1 => {
+                let record = av1::av1_config(&params, ten_bit)?;
+                (Vec::new(), Vec::new(), Vec::new(), None, Some(record))
             }
         };
         let slots = session.slots();
@@ -324,6 +434,8 @@ impl Nvenc {
             sps,
             pps,
             hvcc,
+            av1c,
+            av1_metadata,
             delay: bframes,
             free: (0..slots).rev().collect(),
             pending: VecDeque::new(),
@@ -345,14 +457,19 @@ impl Nvenc {
         (&self.sps, &self.pps)
     }
 
-    /// The video parameter set (HEVC; empty for H.264).
+    /// The video parameter set (HEVC; empty for H.264 and AV1).
     pub fn vps(&self) -> &[u8] {
         &self.vps
     }
 
-    /// The `hvcC` record of an HEVC stream (`None` for H.264).
+    /// The `hvcC` record of an HEVC stream (`None` for H.264 and AV1).
     pub fn hevc_config(&self) -> Option<&HevcConfig> {
         self.hvcc.as_ref()
+    }
+
+    /// The `av1C` record of an AV1 stream (`None` for H.264 and HEVC).
+    pub fn av1_config(&self) -> Option<&Av1Config> {
+        self.av1c.as_ref()
     }
 
     /// Frames the decoding time runs behind the presentation time (B-frame reordering).
@@ -463,11 +580,16 @@ impl Nvenc {
         let r = self.session.read(slot);
         self.free.push(slot);
         let o = r?;
-        let data = annex_b_to_length_prefixed_for(self.codec, &o.data)?;
+        let key = o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR;
+        let data = match self.codec {
+            Codec::Av1 if key && !self.av1_metadata.is_empty() => av1::insert_metadata(&o.data, &self.av1_metadata)?,
+            Codec::Av1 => o.data,
+            Codec::H264 | Codec::Hevc => annex_b_to_length_prefixed_for(self.codec, &o.data)?,
+        };
         let k = self.emitted;
         self.emitted = self.emitted.saturating_add(1);
         let pts = i64::try_from(o.pts).unwrap_or(i64::MAX);
-        Ok(Packet { data, key: o.pic_type == ffi::NV_ENC_PIC_TYPE_IDR, pts, dts: k.saturating_sub(i64::from(self.delay)) })
+        Ok(Packet { data, key, pts, dts: k.saturating_sub(i64::from(self.delay)) })
     }
 }
 
@@ -542,8 +664,8 @@ fn fill_p010(l: Locked<'_>, y: &[u16], u: &[u16], v: &[u16], w: usize, h: usize)
 
 /// Why this GPU's encoder cannot take `cfg` (beyond its size limits), or `Ok`: Main 10 needs 10-bit support.
 fn check_caps(caps: &Caps, cfg: &Config) -> Result<(), String> {
-    if cfg.profile == Profile::HevcMain10 && !caps.ten_bit {
-        return Err("this GPU's encoder has no 10-bit (HEVC Main 10) support".into());
+    if (cfg.profile == Profile::HevcMain10 || cfg.profile == Profile::Av1Main10) && !caps.ten_bit {
+        return Err("this GPU's encoder has no 10-bit (Main 10) support".into());
     }
     Ok(())
 }
@@ -589,6 +711,8 @@ pub fn nal_type(codec: Codec, nal: &[u8]) -> Option<u8> {
             [b, _, ..] => Some((b >> 1) & 0x3f),
             _ => None,
         },
+        // AV1 uses OBUs, not NAL units.
+        Codec::Av1 => None,
     }
 }
 
@@ -603,6 +727,7 @@ pub fn annex_b_to_length_prefixed_for(codec: Codec, data: &[u8]) -> Result<Vec<u
     let mut out = Vec::with_capacity(data.len());
     for n in nals {
         let dropped = match (codec, nal_type(codec, n)) {
+            (Codec::Av1, _) => false,
             (_, None) => true,
             (Codec::H264, Some(t)) => matches!(t, 7..=9),
             (Codec::Hevc, Some(t)) => matches!(t, 32..=37),
