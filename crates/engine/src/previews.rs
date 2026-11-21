@@ -275,7 +275,7 @@ impl PreviewStore {
     /// The rendered frames of `seg`, counted from its start: sorted, merged, within the segment.
     pub fn coverage(&self, seg: &Segment) -> Vec<(i64, i64)> {
         let video = self.video.read().unwrap_or_else(|e| e.into_inner());
-        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        let Some(parts) = video.get(&seg.hash).filter(|_| seg.cacheable) else { return Vec::new() };
         let n = seg.frames.max(0);
         let mut iv: Vec<(i64, i64)> = parts.iter().map(|p| (p.off.clamp(0, n), p.off.saturating_add(p.len).clamp(0, n))).filter(|(a, b)| a < b).collect();
         iv.sort_unstable();
@@ -300,7 +300,7 @@ impl PreviewStore {
             return Vec::new();
         }
         let video = self.video.read().unwrap_or_else(|e| e.into_inner());
-        let Some(parts) = video.get(&seg.hash) else { return Vec::new() };
+        let Some(parts) = video.get(&seg.hash).filter(|_| seg.cacheable) else { return Vec::new() };
         parts.iter().filter(|p| p.off < b && a < p.off.saturating_add(p.len)).map(|p| p.name.clone()).collect()
     }
 
@@ -441,7 +441,7 @@ impl PreviewStore {
         while pos < end {
             let i = segs.partition_point(|g| g.first_sample <= pos);
             let seg = i.checked_sub(1).map(|i| &segs[i]).filter(|g| pos < g.first_sample + g.samples);
-            let preview = seg.filter(|g| self.has_audio(&g.hash)).and_then(|g| self.load_audio(&g.hash).map(|a| (g, a)));
+            let preview = seg.filter(|g| g.cacheable && self.has_audio(&g.hash)).and_then(|g| self.load_audio(&g.hash).map(|a| (g, a)));
             let next = match seg {
                 Some(g) => (g.first_sample + g.samples).min(end),
                 None => segs.get(i).map(|g| g.first_sample).unwrap_or(end).min(end),
@@ -532,7 +532,7 @@ impl PreviewStore {
             return None;
         }
         let segs = self.segments(project, seq);
-        let seg = segment_at(&segs, frame)?;
+        let seg = segment_at(&segs, frame).filter(|g| g.cacheable)?;
         let rel = frame.checked_sub(seg.first_frame)?;
         let (name, off) = {
             let video = self.video.read().unwrap_or_else(|e| e.into_inner());
@@ -644,7 +644,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
     let mut todo: Vec<Todo> = Vec::new();
-    for g in segs.iter().filter(|g| mode.renders(g.need)) {
+    for g in segs.iter().filter(|g| g.cacheable && mode.renders(g.need)) {
         let (a, b) = match mode {
             RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
             RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
@@ -655,12 +655,30 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
     }
     if todo.is_empty() {
-        s.toast(if mode == RenderMode::EffectsInToOut {
-            "Nothing to render: no red segments without previews between In and Out"
+        // segments a nest budget left uncacheable are not "up to date": say they cannot be previewed
+        let skipped = segs
+            .iter()
+            .filter(|g| {
+                !g.cacheable
+                    && mode.renders(g.need)
+                    && match mode {
+                        // only segments the request reaches, as for the queued work above
+                        RenderMode::EffectsInToOut | RenderMode::InToOut => {
+                            let (a, b) = rel_range(g, rate, &range);
+                            a < b
+                        }
+                        RenderMode::Selection => g.clips.iter().any(|c| selection.contains(c)),
+                    }
+            })
+            .count();
+        s.toast(if skipped > 0 {
+            format!("Nothing to render: {skipped} segment{} too deeply nested to be previewed", if skipped == 1 { " is" } else { "s are" })
+        } else if mode == RenderMode::EffectsInToOut {
+            "Nothing to render: no red segments without previews between In and Out".into()
         } else {
-            "Nothing to render: previews are up to date"
+            "Nothing to render: previews are up to date".into()
         });
-        return Ok(json!({"job": null, "segments": 0}));
+        return Ok(json!({"job": null, "segments": 0, "skipped": skipped}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
     let frames: i64 = todo.iter().map(|t| t.len).fold(0, i64::saturating_add);
@@ -707,7 +725,14 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
                 sdr: true,
                 ..Default::default()
             };
+            let refused = filmcraft_render::refused_renders();
             match filmcraft_export::export(&project, seq, &settings, &provider, &prog) {
+                // a frame left out for a spent nest budget makes the file incomplete: never register it
+                Ok(_) if filmcraft_render::refused_renders() != refused => {
+                    let _ = std::fs::remove_file(&part);
+                    outcome = Err("a segment is too deeply nested to be previewed".into());
+                    break;
+                }
                 Ok(r) => {
                     bytes += r.bytes;
                     done_frames += r.frames;
@@ -760,15 +785,18 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = store.dir().ok_or_else(|| EngineError::Other("render previews are not available here (no preview folder)".into()))?;
     let sr = s.project.sequence(seq).map(|q| q.settings.sample_rate).unwrap_or(48_000) as i64;
     let (a, b) = (range.start.to_units_floor(sr), range.end().to_units_floor(sr));
-    let todo: Vec<AudioSegment> = store
-        .audio_segments(&s.project, seq)
-        .iter()
-        .filter(|g| g.first_sample < b && a < g.first_sample + g.samples && !store.has_audio(&g.hash))
-        .cloned()
-        .collect();
+    let in_range = |g: &&AudioSegment| g.first_sample < b && a < g.first_sample + g.samples;
+    let all = store.audio_segments(&s.project, seq);
+    let todo: Vec<AudioSegment> = all.iter().filter(in_range).filter(|g| g.cacheable && !store.has_audio(&g.hash)).cloned().collect();
     if todo.is_empty() {
-        s.toast("Nothing to render: audio previews are up to date");
-        return Ok(json!({"job": null, "segments": 0}));
+        // segments a nest budget left uncacheable are not "up to date": say they cannot be previewed
+        let skipped = all.iter().filter(in_range).filter(|g| !g.cacheable).count();
+        s.toast(if skipped > 0 {
+            format!("Nothing to render: {skipped} audio segment{} too deeply nested to be previewed", if skipped == 1 { " is" } else { "s are" })
+        } else {
+            "Nothing to render: audio previews are up to date".into()
+        });
+        return Ok(json!({"job": null, "segments": 0, "skipped": skipped}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
     let total: i64 = todo.iter().map(|g| g.samples).sum();
@@ -795,6 +823,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
             static PART: AtomicU64 = AtomicU64::new(0);
             let part = dir.join(format!("{}.wav.{}-{}.part", g.hash, std::process::id(), PART.fetch_add(1, Ordering::Relaxed)));
             let fin = dir.join(audio_name(&g.hash));
+            let refused = filmcraft_render::refused_renders();
             let written = (|| -> std::io::Result<Option<u64>> {
                 use std::io::Write;
                 let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
@@ -817,6 +846,9 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
                     prog.done.fetch_add(n as u64, Ordering::Relaxed);
                 }
                 file.flush()?;
+                if filmcraft_render::refused_renders() != refused {
+                    return Err(std::io::Error::other("an audio segment is too deeply nested to be previewed"));
+                }
                 Ok(Some(header.len() as u64 + g.samples as u64 * 8))
             })();
             let data_len = match written {

@@ -891,6 +891,11 @@ pub(crate) fn mix_graph_at(
     // the same bounded clock `audio::nested_mix` sizes its requests with: a damaged rate (1 Hz)
     // would otherwise multiply every nested request by the clamp at each level
     let sr = crate::audio::bounded_sample_rate(seq.settings.sample_rate);
+    let visit = crate::nest_budget::Visit::enter();
+    if visit.exhausted() {
+        crate::nest_budget::note_refused();
+        return AudioBuffer::silence(sr, 2, frames);
+    }
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
     let key = plan.structure_hash(sr);
@@ -929,10 +934,13 @@ pub(crate) fn mix_graph_at(
     // tracks: independent, in parallel
     let ntr = plan.strips.iter().take_while(|s| s.kind == Kind::Track).count();
     let (track_states, rest) = st.strips.split_at_mut(ntr);
+    // the tasks share this call's nested-mix budget (a worker has no visit of its own)
+    let budget = crate::nest_budget::current();
     let track_outs: Vec<Option<StripOut>> = track_states
         .par_iter_mut()
         .enumerate()
         .map(|(si, ss)| {
+            let _shared = crate::nest_budget::Adopt::new(&budget);
             let s = &plan.strips[si];
             if s.silent {
                 ss.delays.iter_mut().for_each(DelayLine::clear);
