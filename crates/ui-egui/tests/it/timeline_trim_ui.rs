@@ -72,6 +72,10 @@ impl Driver {
         self.ok("engine.execute", json!({"command": command, "params": params}))
     }
 
+    fn menu_command(&mut self, command: &str, params: Value) -> Value {
+        self.ok("ui.menu.invoke", json!({"id": command, "params": params}))
+    }
+
     fn app(&self) -> &FilmcraftApp {
         self.harness.state()
     }
@@ -284,7 +288,7 @@ fn linked_trim_monitor() -> Driver {
     let picture = q.find_item(video).unwrap().1;
     let audio = q.audio_tracks[0].items.iter().find(|i| i.link.is_some() && i.link == picture.link).unwrap().id;
     let cut = picture.end();
-    d.exec("tool.rolling", json!({}));
+    d.menu_command("tool.rolling", json!({}));
     d.frames(4);
     let (_, x, y) = d.edges(video.0);
     d.drag(pos2(x - 2.0, y), pos2(x - 2.0, y), 1);
@@ -729,12 +733,19 @@ fn locked_edges_do_not_preview_a_trim() {
     }
 }
 
-fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
+fn move_existing_clip_to_a_new_track(audio: bool, linked: bool, lock_boundary: bool) {
     let mut d = Driver::demo();
     d.exec("sequence.linkedSelection", json!({"on": linked}));
     d.exec("sequence.snap", json!({"on": false}));
     d.ok("ui.set", json!({"timeline":{"videoTrackHeight":32,"audioTrackHeight":32}}));
     d.frames(6);
+    if lock_boundary {
+        let q = d.app().session.active_sequence().unwrap();
+        let tracks = if audio { &q.audio_tracks } else { &q.video_tracks };
+        assert!(tracks.len() > 1, "the source and boundary rows must be distinct");
+        d.exec("timeline.setTrack", json!({"track": tracks.last().unwrap().id.0, "locked": true}));
+        d.frames(3);
+    }
     let q = d.app().session.active_sequence().unwrap();
     let tracks = if audio { &q.audio_tracks } else { &q.video_tracks };
     let count = tracks.len();
@@ -802,22 +813,28 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
 
 #[test]
 fn existing_video_clip_drag_above_tracks_adds_a_track() {
-    move_existing_clip_to_a_new_track(false, false);
+    move_existing_clip_to_a_new_track(false, false, false);
 }
 
 #[test]
 fn existing_audio_clip_drag_below_tracks_adds_a_track() {
-    move_existing_clip_to_a_new_track(true, false);
+    move_existing_clip_to_a_new_track(true, false, false);
 }
 
 #[test]
 fn linked_video_drag_adds_video_and_audio_tracks() {
-    move_existing_clip_to_a_new_track(false, true);
+    move_existing_clip_to_a_new_track(false, true, false);
 }
 
 #[test]
 fn linked_audio_drag_adds_audio_and_video_tracks() {
-    move_existing_clip_to_a_new_track(true, true);
+    move_existing_clip_to_a_new_track(true, true, false);
+}
+
+#[test]
+fn a_locked_boundary_row_does_not_block_a_new_track_drop() {
+    move_existing_clip_to_a_new_track(false, false, true);
+    move_existing_clip_to_a_new_track(true, false, true);
 }
 
 /// #3300: with Alt held, dragging the edge of one side of a linked clip trims only that side; the
