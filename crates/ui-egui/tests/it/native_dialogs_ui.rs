@@ -172,6 +172,36 @@ fn cancelled_or_lost_dialogs_do_nothing_and_one_dialog_is_open_at_a_time() {
     assert!(matches!(d.asked().0, FileDialog::OpenProject));
 }
 
+/// #2421: File ▸ Open from Home shows the project; a cancelled or failed open stays on Home.
+#[test]
+fn a_project_opened_from_home_shows_in_edit() {
+    use filmcraft_ui_egui::state::Mode;
+    let mut d = Driver::new(true);
+    let path = std::env::temp_dir().join(format!("fc-open-from-home-{}.fcproj", std::process::id()));
+    let path = path.to_string_lossy().into_owned();
+    d.ok("engine.execute", json!({"command": "file.saveAs", "params": {"path": path}}));
+    d.ok("ui.set", json!({"mode": "import"}));
+
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    let (_, answer) = d.asked();
+    answer.send(vec![]).unwrap();
+    d.frames(4);
+    assert_eq!(d.app().ui.mode, Mode::Import, "cancelled");
+
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    let (_, answer) = d.asked();
+    answer.send(vec![format!("{path}.missing.fcproj")]).unwrap();
+    d.frames(4);
+    assert_eq!(d.app().ui.mode, Mode::Import, "failed");
+
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    let (_, answer) = d.asked();
+    answer.send(vec![path.clone()]).unwrap();
+    d.frames(4);
+    assert_eq!(d.app().ui.mode, Mode::Edit, "opened");
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn a_panel_folder_arrives_in_its_open_dialog_and_nowhere_once_it_is_closed() {
     let mut d = Driver::new(true);

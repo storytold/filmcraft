@@ -124,6 +124,21 @@ fn recovery_prompt_buttons_show_the_pointing_hand() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// #2421: the prompt opens over Home at start-up, and Recover shows the recovered project.
+#[test]
+fn recovering_from_the_prompt_over_home_shows_the_project_in_edit() {
+    use filmcraft_ui_egui::state::Mode;
+    let data = temp_dir("recovery-home");
+    let mut d = Driver::new(session_after_crash(&data));
+    d.ok("ui.set", json!({"mode": "import"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "recovery.recover"}));
+    d.frames(4);
+    assert_eq!(d.harness.state().ui.mode, Mode::Edit);
+    drop(d);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 #[test]
 fn revert_confirmation_buttons_show_the_pointing_hand() {
     let data = temp_dir("revert");
