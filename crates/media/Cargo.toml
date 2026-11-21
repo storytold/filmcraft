@@ -15,6 +15,7 @@ craft-hdr = { workspace = true }
 craft-psd = { workspace = true }
 craft-tiff-ycbcr = { workspace = true }
 craft-tga = { workspace = true }
+craft-sniff = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }

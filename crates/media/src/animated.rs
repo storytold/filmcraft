@@ -65,14 +65,12 @@ pub enum Format {
 impl Format {
     /// Identify an animated image format from its container signature.
     fn sniff(b: &[u8]) -> Option<Format> {
-        if b.starts_with(b"\x89PNG\r\n\x1a\n") {
-            Some(Format::Apng)
-        } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
-            Some(Format::Gif)
-        } else if b.get(0..4) == Some(&b"RIFF"[..]) && b.get(8..12) == Some(&b"WEBP"[..]) {
-            Some(Format::WebP)
-        } else {
-            None
+        let header = b.get(..12).unwrap_or(b);
+        match craft_sniff::identify(header) {
+            Some(craft_sniff::Kind::Png) => Some(Format::Apng),
+            Some(craft_sniff::Kind::Gif) => Some(Format::Gif),
+            Some(craft_sniff::Kind::WebP) => Some(Format::WebP),
+            _ => None,
         }
     }
 
