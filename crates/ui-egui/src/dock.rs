@@ -633,9 +633,11 @@ pub enum SeqAction {
 fn sequence_widths(ui: &egui::Ui, seqs: &SeqTabs) -> Vec<f32> {
     seqs.open
         .iter()
-        .map(|(id, name)| {
+        .map(|(_, name)| {
             let label = ui.painter().layout_no_wrap(name.clone(), Tokens::ui(12.0), egui::Color32::WHITE).size().x;
-            label + 16.0 + if seqs.active == Some(*id) { 16.0 } else { 0.0 }
+            // Room for the × on every tab, not only on the active one: a tab that grew when it
+            // was selected pushed every tab after it sideways on each switch (#5024).
+            label + 32.0
         })
         .collect()
 }
@@ -701,13 +703,17 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         ui.ctx().data_mut(|d| d.remove::<f32>(wheel_id));
     }
     let mut x = strip.min.x + 12.0;
+    // A tab can ask for more room than the strip has (a long name, a narrow panel). Its own
+    // rectangle stops at the » list and at the strip's edge, so the × at its far end stays
+    // inside the strip instead of being clipped out of reach (#5130).
+    let right_limit = strip.max.x - if more.is_some() { 24.0 } else { 0.0 };
     let mut seq_rects: Vec<(u64, Rect)> = Vec::new();
     let mut dragged: Option<u64> = None;
     for (i, (id, name)) in seqs.open.iter().enumerate().take(last + 1).skip(first) {
         let is_active = seqs.active == Some(*id);
         let galley = painter.layout_no_wrap(name.clone(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
-        let close_w = if is_active { 16.0 } else { 0.0 };
         let w = widths.get(i).copied().unwrap_or(0.0);
+        let w = (x + w).min(right_limit.max(x + 8.0)) - x;
         let tab_rect = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, strip.height()));
         // a sequence tab keeps its identity when the tabs are reordered under the pointer
         let resp = ui.interact(tab_rect, egui::Id::unique(("tab-seq", *id)), Sense::click_and_drag());
@@ -733,14 +739,19 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             actions.push(SeqAction::Move(*id, at));
         }
         reg.add_response(&format!("timeline.tab.{id}"), &resp, name);
-        let label_x = tab_rect.min.x + 8.0 + close_w;
+        let label_x = tab_rect.min.x + 8.0;
         let col = if is_active || resp.hovered() { t.tab_text_active } else { t.tab_text };
         let label_w = galley.size().x;
-        painter.galley_with_override_text_color(pos2(label_x, text_y - galley.size().y / 2.0), galley, col);
+        // A tab stops at the strip's edge now, so a name longer than that is cut before the ×
+        // instead of being painted under it (#5130).
+        let label_right = (tab_rect.max.x - if is_active { 18.0 } else { 8.0 }).max(label_x + 1.0);
+        let label_clip = Rect::from_min_max(pos2(label_x, tab_rect.min.y), pos2(label_right, tab_rect.max.y));
+        painter.with_clip_rect(label_clip).galley_with_override_text_color(pos2(label_x, text_y - galley.size().y / 2.0), galley, col);
         let mut closed = false;
         if is_active {
-            // × closes the sequence's tab (the sequence stays in the project)
-            let cr = Rect::from_center_size(pos2(tab_rect.min.x + 10.0, text_y), vec2(8.0, 8.0));
+            // × closes the sequence's tab (the sequence stays in the project). It sits after the
+            // label, at the tab's far end, so the label keeps the same x on every tab (#5024).
+            let cr = Rect::from_center_size(pos2(tab_rect.max.x - 10.0, text_y), vec2(8.0, 8.0));
             let cresp = ui.interact(cr.expand(4.0), egui::Id::unique(("tab-close", *id)), Sense::click());
             cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, cresp.enabled(), "close sequence"));
             reg.add_response(&format!("timeline.tab.{id}.close"), &cresp, "close sequence");
@@ -753,7 +764,8 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
                 closed = true;
             }
             let uy = strip.max.y - 2.0;
-            painter.line_segment([pos2(label_x, uy), pos2(label_x + label_w, uy)], Stroke::new(1.0, t.tab_text_active));
+            let under_right = (label_x + label_w).min(label_right);
+            painter.line_segment([pos2(label_x, uy), pos2(under_right, uy)], Stroke::new(1.0, t.tab_text_active));
         }
         if (resp.clicked() || resp.drag_started_by(egui::PointerButton::Primary)) && !closed && !is_active {
             actions.push(SeqAction::Open(*id));
