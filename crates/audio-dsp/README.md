@@ -204,3 +204,20 @@ heard twice).
 - Time stretch: a single read whose source span exceeds 2^24 samples (a very fast clip read in
   one long request) is not stretched; the renderer resamples it instead (varispeed, so the pitch
   changes for that read).
+
+
+## Phrase-aware remix planning
+
+Remix analysis retains beat RMS and ordered pitch-register similarities. A bounded beam search
+compares melodic phrases, local context and four-beat phase while preserving source tempo.
+The phrase-aware planner and strict matching reserve the closing phrase for the final piece. Ordinary
+shortening may skip into it: forward cuts cannot repeat it. Strict matching can suggest
+other lengths without modifying the clip when a duration/phrase search has no suitable result.
+The engine preserves invalid-input, missing-beat and insufficient-source errors instead of
+reporting them as a duration mismatch. These are heuristics; listening remains necessary.
+
+Strict phrase search accepts targets up to sixteen times the source length. Larger targets
+report a duration-limit error rather than malformed analysis. Ordinary extensions
+can fall back to the upstream planner when the closing reservation prevents a result or the
+request exceeds that budget. The fallback has a 1024-joint limit and does not guarantee phrase
+matching or closing-phrase protection; closing material may recur.
