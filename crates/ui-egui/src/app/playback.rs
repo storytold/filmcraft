@@ -29,7 +29,7 @@ impl FilmcraftApp {
             && !self.session.voiceover.recording()
             && self.session.playhead() >= dur - self.session.sequence_rate().frame_duration()
         {
-            self.session.set_playhead(Tick::ZERO);
+            self.session.set_playhead_from_playback(Tick::ZERO);
         }
         // A loop restart keeps counting into the same meter.
         if !self.playback.playing || self.playback.speed != speed {
@@ -308,25 +308,28 @@ impl FilmcraftApp {
             (Tick::ZERO, dur)
         };
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
-            self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
+            self.session.set_playhead_from_playback(self.playback.rest_at.unwrap_or(end));
             self.mark_automatic_playhead_stop();
+            self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
             self.stop();
         } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
             if self.playback.looping {
-                self.session.set_playhead(lo);
+                self.session.set_playhead_from_playback(lo);
                 self.play(self.playback.speed);
             } else {
-                self.session.set_playhead(hi - rate.frame_duration());
+                self.session.set_playhead_from_playback(hi - rate.frame_duration());
                 self.mark_automatic_playhead_stop();
+                self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
                 self.stop();
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
-            self.session.set_playhead(Tick::ZERO);
+            self.session.set_playhead_from_playback(Tick::ZERO);
             self.mark_automatic_playhead_stop();
+            self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
             self.stop();
         } else {
-            self.session.set_playhead(t);
+            self.session.set_playhead_from_playback(t);
             self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
         }
         ctx.request_repaint();
