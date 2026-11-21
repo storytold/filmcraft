@@ -194,15 +194,15 @@ fn placement(app: &FilmcraftApp, it: &TrackItem, e: &EffectInstance, mt: Tick, p
 }
 
 /// The selected effect (its clip and index), its clip and its definition, while it is an enabled
-/// effect of a selected clip under the playhead.
+/// effect of a selected clip under the playhead, on a track that is not locked (#4162).
 fn selected_effect(app: &FilmcraftApp) -> Option<(Target, &TrackItem, &EffectInstance, &'static EffectDef)> {
     let sel = app.session.state.selected_effect.as_ref()?;
     if !app.session.state.selection.contains(&sel.clip) {
         return None;
     }
     let seq = app.session.active_sequence()?;
-    let (_, it) = seq.find_item(sel.clip)?;
-    if !it.range().contains(app.session.playhead()) {
+    let (track, it) = seq.find_item(sel.clip)?;
+    if seq.track(track).is_some_and(|t| t.locked) || !it.range().contains(app.session.playhead()) {
         return None;
     }
     let index = sel.index(&it.effects)?;
@@ -511,13 +511,13 @@ fn rotate_pointer(painter: &egui::Painter, at: Pos2, out: egui::Vec2) {
     }
 }
 
-/// The top-most clip at the playhead whose picture is under `p`.
+/// The top-most clip at the playhead whose picture is under `p`, past those of locked tracks (#4162).
 fn clip_under(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), p: Pos2) -> Option<ClipId> {
     let seq = app.session.active_sequence()?;
     let t = app.session.playhead();
     let view = frame_to_screen(pic, frame);
     let project = &app.session.project;
-    seq.video_tracks.iter().rev().filter(|tr| tr.enabled).filter_map(|tr| tr.item_at(t)).filter(|it| it.enabled).find_map(|it| {
+    seq.video_tracks.iter().rev().filter(|tr| tr.enabled && !tr.locked).filter_map(|tr| tr.item_at(t)).filter(|it| it.enabled).find_map(|it| {
         let size = filmcraft_render::source_size(project, it.item).unwrap_or(frame);
         let m = view.then_apply(&filmcraft_render::motion_matrix(seq, it, size, filmcraft_render::source_par(project, it.item), it.effect_time_at(t)));
         inside(&quad_of(&m, size), p).then_some(it.id)
@@ -527,7 +527,7 @@ fn clip_under(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), p: Pos2) -> Opti
 /// The selected effect's box (or Corner Pin's corners) on the Program monitor picture `pic`, and
 /// double-clicking a clip's picture to select its Motion.
 pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32, u32)) {
-    if app.ui.tool != Tool::Selection || app.ui.mask_pen.is_some() {
+    if app.ui.tool != Tool::Selection || crate::panels::masks::pen_drawing(app) {
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();

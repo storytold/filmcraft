@@ -24,6 +24,26 @@ fn text_of(l: &filmcraft_project::graphic::LayerSpec) -> String {
     }
 }
 
+/// A graphic on a locked track takes no new layer, as a locked track takes no other edit (#4162).
+#[test]
+fn a_locked_tracks_graphic_takes_no_new_layer() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Title"})).unwrap()["clip"].as_u64().unwrap());
+    let track = s.active_sequence().unwrap().find_item(clip).unwrap().0;
+    s.execute("timeline.setTrack", json!({"track": track.0, "locked": true})).unwrap();
+    let undo = s.history.undo.len();
+    for (command, params) in
+        [("graphics.newText", json!({"clip": clip.0, "text": "More"})), ("graphics.newShape", json!({"clip": clip.0, "shape": "rectangle"}))]
+    {
+        assert!(s.execute(command, params).is_err(), "{command} on a locked track");
+    }
+    assert_eq!(layers(&s, clip).len(), 1);
+    assert_eq!(s.history.undo.len(), undo, "nothing to undo");
+    s.execute("timeline.setTrack", json!({"track": track.0, "locked": false})).unwrap();
+    s.execute("graphics.newText", json!({"clip": clip.0, "text": "More"})).unwrap();
+    assert_eq!(layers(&s, clip).len(), 2, "unlocked, it takes the layer");
+}
+
 #[test]
 fn graphic_duration_does_not_set_its_timeline_position() {
     for command in ["graphics.newText", "graphics.newShape"] {
