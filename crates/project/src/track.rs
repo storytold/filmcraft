@@ -197,6 +197,14 @@ impl TrackItem {
         }
         self.moving_source_time_at(t)
     }
+    /// The playhead `ph` held on one of the clip's frames, where an edit at the playhead keys its
+    /// effects: past the out point that is the start of the clip's last frame. The tick before the
+    /// out point lies between two frames, where the playhead never stops, so a keyframe there
+    /// could not be reached by the keyframe navigator (#4840).
+    pub fn playhead_frame_in(&self, ph: Tick, rate: super::FrameRate) -> Tick {
+        let last = rate.snap(self.end() - Tick(1)).max(self.start);
+        ph.clamp(self.start, last)
+    }
     /// Media time at which effects and intrinsic attributes are evaluated at timeline time `t`: a
     /// frame hold freezes them only with Hold Filters on; otherwise they animate through the hold.
     pub fn effect_time_at(&self, t: Tick) -> Tick {
