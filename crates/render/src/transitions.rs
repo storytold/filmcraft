@@ -13,8 +13,9 @@
 //!
 //! Contract (tested for every transition): `p = 0` is exactly the outgoing frame, `p = 1` exactly
 //! the incoming frame, the output is finite and deterministic, and it changes continuously near
-//! both ends. There is no GPU transition path: the GPU plan pre-renders transition layers on the
-//! CPU (see `plan.rs`), so this module is the only implementation.
+//! both ends. The CPU path is the reference. Push and the common field wipes have matching GPU
+//! implementations; transitions outside that set are rendered here before the GPU composites the
+//! resulting image (see `plan.rs`).
 //!
 //! Immersive (VR) transitions are flat approximations on the equirectangular frame: sampling wraps
 //! horizontally and the iris uses great-circle distance, but there is no sphere re-projection.

@@ -8,14 +8,15 @@
 //! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
 //! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
 //! layers other than [`PlanStep::Adjust`]'s, nested sequences, transitions other than dissolves,
-//! dips and Push — is rendered on the CPU for that layer (or the whole frame) and handed over as a
-//! pre-composited image, so the GPU path is always exact with respect to the CPU reference.
+//! dips, Push and the field wipes — is rendered on the CPU for that layer (or the whole frame) and
+//! handed over as a pre-composited image, so the GPU path is always exact with respect to the CPU
+//! reference.
 //!
-//! A Push transition is planned as ordered [`PlanStep`] operations on isolated clip inputs: each
-//! side is drawn into its own image, the two are pushed together, and the result is composited (Normal) over
-//! the canvas of the lower tracks, which is preserved for the blends above it. An adjustment layer
-//! is a [`PlanStep::Adjust`] on the canvas of the tracks below it. [`execute_cpu`] runs the same
-//! steps on the CPU and is the reference.
+//! Push and field-wipe transitions are planned as ordered [`PlanStep`] operations on isolated clip
+//! inputs: each side is drawn into its own image, the transition combines them, and the result is
+//! composited (Normal) over the canvas of the lower tracks, which is preserved for the blends above
+//! it. An adjustment layer is a [`PlanStep::Adjust`] on the canvas of the tracks below it.
+//! [`execute_cpu`] runs the same steps on the CPU and is the reference.
 
 use std::sync::Arc;
 
@@ -248,6 +249,31 @@ fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
+/// Transitions that can be planned as GPU operations instead of rendering a full CPU frame.
+pub fn gpu_transition_supported(id: &str) -> bool {
+    matches!(
+        id,
+        "push"
+            | "linear_wipe"
+            | "soft_wipe"
+            | "clock_wipe"
+            | "radial_wipe"
+            | "iris_round"
+            | "iris_box"
+            | "iris_diamond"
+            | "iris_cross"
+            | "barn_doors"
+            | "inset"
+            | "wipe"
+    )
+}
+
+/// Whether a transition remains on the GPU playback path (including transitions expressed as
+/// ordinary compositing layers).
+pub fn transition_uses_gpu(id: &str) -> bool {
+    simple_transition(id) || gpu_transition_supported(id)
+}
+
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
 /// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
 /// with effects off). None: the clip is rendered on the CPU.
@@ -370,7 +396,7 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick, scale: f32,
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
+            if !transition_uses_gpu(&trn.effect.effect) {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
@@ -416,7 +442,7 @@ fn push_tracks(sc: Scene, layers: &mut PlanStack) {
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
-                "push" => {
+                id if gpu_transition_supported(id) => {
                     let mut inputs = [Vec::new(), Vec::new()];
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
