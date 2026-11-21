@@ -56,9 +56,8 @@ fn a_lifted_clip_leaves_a_black_gap_error() {
     // a V1 clip with nothing above it, followed by more picture
     let gap_clip = {
         let q = s.active_sequence().unwrap();
-        let clips = crate::pacing::picture_clips(&s.project, q);
         let segs = crate::pacing::segments(&s.project, q);
-        segs[..segs.len() - 1].iter().filter_map(|g| g.clip).find(|c| clips.iter().all(|(i, x)| x.id != *c || *i == 0)).unwrap().0
+        segs[..segs.len() - 1].iter().filter_map(|g| g.clip).find(|c| q.video_tracks[0].item(*c).is_some()).unwrap().0
     };
     s.execute("edit.clear", json!({"clips": [gap_clip]})).unwrap();
     let r = review(&mut s, json!({}));

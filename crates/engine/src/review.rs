@@ -14,7 +14,7 @@ use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, always, bad, f64_p, u64_p};
-use crate::pacing::{Segment, is_through_edit, picture_at, picture_clips, segments};
+use crate::pacing::{Segment, is_through_edit, picture_at, segments};
 use crate::{EngineError, Result, Session};
 
 const ID: &str = "sequence.review";
@@ -63,7 +63,6 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
     let fd = q.settings.frame_rate.frame_duration();
     let name = |c: Option<filmcraft_project::ClipId>| c.and_then(|c| q.find_item(c)).map(|(_, it)| it.name.clone()).unwrap_or_default();
     let picture_end = segs.iter().rev().find(|g| g.clip.is_some()).map_or(Tick::ZERO, |g| g.end);
-    let clips = picture_clips(p, q);
     for (k, g) in segs.iter().enumerate() {
         match g.clip {
             None if g.end <= picture_end => out.push(issue(
@@ -99,7 +98,7 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
                 }
                 // a jump: the next shot continues the same media further on
                 if let Some(next) = segs.get(k + 1).filter(|n| n.clip.is_some()) {
-                    let (Some(a), Some(b)) = (picture_at(&clips, g.end - Tick(1)), picture_at(&clips, next.start)) else { continue };
+                    let (Some(a), Some(b)) = (picture_at(p, q, g.end - Tick(1)), picture_at(p, q, next.start)) else { continue };
                     // the media times on either side of the instant the picture switches (`a` may
                     // run on under `b`, or `b` start before it shows)
                     let (a_at, b_at) = (a.source_time_at(next.start), b.source_time_at(next.start));

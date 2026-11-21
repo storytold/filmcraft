@@ -116,3 +116,38 @@ fn through_edits_follow_direction_holds_and_angles() {
     b.multicam = Some(filmcraft_project::MulticamSel { enabled: false, angle: 1 });
     assert!(through(&a, &b), "a disabled selection's angle is not a cut");
 }
+
+/// Overlapping clips on one track (a loaded project can have them) show what playback shows:
+/// the latest start at or before a time, and nothing once that clip has ended (#5167).
+#[test]
+fn overlapping_clips_on_a_track_follow_playback() {
+    use filmcraft_project::{ClipId, ItemId, TrackKind};
+    use filmcraft_time::{Tick, TimeRange};
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let sec = Tick::from_seconds_f64;
+    let item = |name: &str| s.project.items.iter().find(|(_, i)| i.name == name).map(|(id, _)| *id).unwrap();
+    let (city, desert): (ItemId, ItemId) = (item("City_Night_Drive.mp4"), item("Desert_Dunes.mp4"));
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let mut clip = |item: ItemId, at: f64, len: f64| {
+        let mut c = p.make_track_item(item, TrackKind::Video, sec(at), TimeRange::new(Tick::ZERO, sec(len)), rate).unwrap();
+        c.id = ClipId(p.alloc_id());
+        c
+    };
+    let (a, b) = (clip(city, 0.0, 10.0), clip(desert, 3.0, 2.0));
+    let (a_id, b_id, b_end) = (a.id, b.id, b.end());
+    let q = p.sequence_mut(seq).unwrap();
+    for t in &mut q.video_tracks {
+        t.items.clear();
+    }
+    q.video_tracks[0].items = vec![a, b];
+    let q = s.project.sequence(seq).unwrap();
+    let segs = super::segments(&s.project, q);
+    let at = |x: f64| segs.iter().find(|g| g.start <= sec(x) && sec(x) < g.end).unwrap();
+    assert_eq!(at(1.0).clip, Some(a_id));
+    assert_eq!(at(4.0).clip, Some(b_id));
+    assert_eq!(at(6.0).clip, None, "B has ended and playback shows nothing on V1: {segs:?}");
+    assert_eq!(at(6.0).start, b_end, "the black starts where B ends");
+}

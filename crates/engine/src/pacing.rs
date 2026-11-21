@@ -75,28 +75,19 @@ pub(crate) fn is_through_edit(p: &Project, a: &TrackItem, b: &TrackItem) -> bool
     filmcraft_edit::through::is_through_edit(a, &b)
 }
 
-/// The clips that can be the picture: (track index, clip) on enabled video tracks, enabled, with
-/// media that replaces the picture. A higher index is a higher track, drawn on top.
-pub(crate) fn picture_clips<'a>(p: &Project, q: &'a Sequence) -> Vec<(usize, &'a TrackItem)> {
-    q.video_tracks
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.enabled)
-        .flat_map(|(i, t)| t.items.iter().filter(|c| c.enabled && c.duration > Tick::ZERO && is_picture(p, c.item)).map(move |c| (i, c)))
-        .collect()
-}
-
-/// The clip that is the picture at `t`, from [`picture_clips`].
-pub(crate) fn picture_at<'a>(clips: &[(usize, &'a TrackItem)], t: Tick) -> Option<&'a TrackItem> {
-    clips.iter().filter(|(_, c)| c.start <= t && c.end() > t).max_by_key(|(i, _)| *i).map(|(_, c)| *c)
+/// The clip that is the picture at `t`: from the top enabled video track down, the clip playback
+/// takes on that track (`Track::item_at`: the latest start at or before `t`, nothing once it has
+/// ended), if it is enabled and replaces the picture (graphics and adjustment layers sit over it).
+pub(crate) fn picture_at<'a>(p: &Project, q: &'a Sequence, t: Tick) -> Option<&'a TrackItem> {
+    q.video_tracks.iter().rev().filter(|tr| tr.enabled).find_map(|tr| tr.item_at(t).filter(|c| c.enabled && c.duration > Tick::ZERO && is_picture(p, c.item)))
 }
 
 /// The program picture of `q` from 0 to its end, as shots and black gaps.
 pub fn segments(p: &Project, q: &Sequence) -> Vec<Segment> {
-    let clips = picture_clips(p, q);
     let end = q.duration();
     let mut bounds: Vec<Tick> = vec![Tick::ZERO, end];
-    for (_, c) in &clips {
+    // the picture can only change where a clip on an enabled video track starts or ends
+    for c in q.video_tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.items.iter()) {
         bounds.push(c.start);
         bounds.push(c.end());
     }
@@ -109,7 +100,7 @@ pub fn segments(p: &Project, q: &Sequence) -> Vec<Segment> {
     let mut prev: Option<&TrackItem> = None;
     for w in bounds.windows(2) {
         let (a, b) = (w[0], w[1]);
-        let top = picture_at(&clips, a);
+        let top = picture_at(p, q, a);
         let same_shot = match (out.last(), prev, top) {
             (Some(last), _, None) => last.clip.is_none(),
             (Some(last), Some(pc), Some(tc)) => last.clip.is_some() && (pc.id == tc.id || is_through_edit(p, pc, tc)),
