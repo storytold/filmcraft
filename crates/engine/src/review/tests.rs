@@ -44,8 +44,9 @@ fn removing_the_middle_of_a_shot_is_reported_as_a_jump_cut_with_the_change() {
     let r = review(&mut s, json!({"againstUndo": 1}));
     let jump = r["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "jumpCut").unwrap_or_else(|| panic!("no jump cut: {r}"));
     assert_eq!(jump["time"].as_i64(), Some(t1.0), "the jump is where the pieces now meet");
-    assert!(r["after"]["pictureSeconds"].as_f64() < r["before"]["pictureSeconds"].as_f64(), "{r}");
-    assert!(r["after"]["shotCount"].as_u64() > r["before"]["shotCount"].as_u64(), "{r}");
+    let num = |side: &str, k: &str| r[side][k].as_f64().unwrap_or_else(|| panic!("{side}.{k} missing: {r}"));
+    assert!(num("after", "pictureSeconds") < num("before", "pictureSeconds"), "{r}");
+    assert!(num("after", "shotCount") > num("before", "shotCount"), "{r}");
 }
 
 #[test]
@@ -61,7 +62,7 @@ fn a_lifted_clip_leaves_a_black_gap_error() {
     };
     s.execute("edit.clear", json!({"clips": [gap_clip]})).unwrap();
     let r = review(&mut s, json!({}));
-    assert!(r["errors"].as_u64() > Some(0), "{r}");
+    assert!(r["errors"].as_u64().unwrap() > 0, "{r}");
     assert!(kinds(&r).contains(&"gap".to_string()), "{r}");
 }
 
@@ -99,4 +100,25 @@ fn a_razor_inside_a_word_is_a_mid_word_cut_with_a_boundary_to_trim_to() {
         let fix = i["fix"].as_str().unwrap();
         assert!(edges.iter().any(|e| fix.contains(&format!("{e:.3}"))), "{fix} names neither word edge {edges:?}");
     }
+}
+
+#[test]
+fn media_made_offline_is_reported_once_and_only_on_enabled_tracks() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    let path = tmp_dir("review-offline").join("shot.mov");
+    make_movie(&path, filmcraft_media::DemoScene::Forest, 160, 90, 24);
+    let (mut s, items, _) = session_with(&[&path]);
+    assert!(!kinds(&review(&mut s, json!({}))).contains(&"offlineMedia".to_string()));
+    s.execute("media.makeOffline", json!({"items": [items[0].0]})).unwrap();
+    let r = review(&mut s, json!({}));
+    let offline: Vec<&Value> = r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "offlineMedia").collect();
+    assert_eq!(offline.len(), 1, "one issue per offline item, not per clip or track: {r}");
+    assert_eq!(offline[0]["severity"], "error");
+    // a disabled track doesn't render, so its offline clips don't matter
+    let tracks: Vec<u64> = s.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+    for t in tracks {
+        s.execute("timeline.setTrack", json!({"track": t, "enabled": false})).unwrap();
+    }
+    let r = review(&mut s, json!({}));
+    assert!(!kinds(&r).contains(&"offlineMedia".to_string()), "{r}");
 }

@@ -100,8 +100,13 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
                 // a jump: the next shot continues the same media further on
                 if let Some(next) = segs.get(k + 1).filter(|n| n.clip.is_some()) {
                     let (Some(a), Some(b)) = (picture_at(&clips, g.end - Tick(1)), picture_at(&clips, next.start)) else { continue };
-                    if a.item == b.item && !a.reverse && !b.reverse && a.speed == b.speed && !is_through_edit(p, a, b) && b.source_in > a.source_out() {
-                        let skipped = (b.source_in - a.source_out()).seconds();
+                    // the media times on either side of the instant the picture switches (`a` may
+                    // run on under `b`, or `b` start before it shows)
+                    let (a_at, b_at) = (a.source_time_at(next.start), b.source_time_at(next.start));
+                    let root = |c: &TrackItem| p.resolve_media(c.item).map_or(c.item, |(r, _, _)| r);
+                    let moving = a.frame_hold.is_none() && b.frame_hold.is_none() && a.multicam == b.multicam;
+                    if root(a) == root(b) && moving && !a.reverse && !b.reverse && a.speed == b.speed && b_at > a_at {
+                        let skipped = (b_at - a_at).seconds() / a.speed.max(f64::EPSILON);
                         out.push(issue(
                             "jumpCut",
                             "info",
@@ -117,10 +122,18 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
     }
 }
 
+/// Whether the media behind a clip is offline: marked so in the project, or found offline when the
+/// media pool tried to open it (`Session::source` records that).
+fn is_offline(s: &Session, item: ItemId) -> bool {
+    let Some((media, clip, _)) = s.project.resolve_media(item) else { return false };
+    let _ = s.source(item);
+    clip.offline || s.media.offline_status(media).is_some()
+}
+
 fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
     let mut seen = std::collections::BTreeSet::new();
-    for it in q.video_tracks.iter().chain(&q.audio_tracks).flat_map(|t| t.items.iter()) {
-        if it.enabled && needs_media(&s.project, it.item) && s.source(it.item).is_none() && seen.insert(it.item) {
+    for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()) {
+        if it.enabled && needs_media(&s.project, it.item) && !seen.contains(&it.item) && is_offline(s, it.item) && seen.insert(it.item) {
             out.push(issue(
                 "offlineMedia",
                 "error",
@@ -136,7 +149,7 @@ fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
 /// Audio clip edges whose source time lands inside a spoken word, where the sound doesn't carry
 /// on: a razor that leaves the audio continuous (a through edit) cuts no word.
 fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
-    for t in q.audio_tracks.iter().filter(|t| t.enabled) {
+    for t in q.audio_tracks.iter().filter(|t| t.enabled && !t.muted) {
         let items: Vec<&TrackItem> = t.items.iter().filter(|it| it.enabled).collect();
         for (k, it) in items.iter().enumerate() {
             if it.reverse || it.speed <= 0.0 {
