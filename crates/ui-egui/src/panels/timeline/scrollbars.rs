@@ -1,4 +1,4 @@
-use super::layout::{min_pps, timeline_extent};
+use super::layout::{min_pps, timeline_extent, zoom_by_drag};
 use super::{Drag, FilmcraftApp, Rect, Sense, Stroke, Tokens, pos2, vec2};
 use crate::widgets::ZoomThumbPart;
 
@@ -79,9 +79,10 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         v.target_pps = start_pps;
         v.pps = start_pps;
     }
-    if let Some(Drag::ZoomBar { grab, start, mode, .. }) = app.tl.drag.clone()
+    if let Some(Drag::ZoomBar { grab, start, start_pps, mode }) = app.tl.drag.clone()
         && resp.dragged()
     {
+        let playhead = app.session.playhead().seconds();
         let v = &mut app.ui.timeline;
         match mode {
             // the thumb's middle: scroll, the thumb staying under the pointer
@@ -91,21 +92,22 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
                     v.scroll = v.target_scroll;
                 }
             }
-            // a handle: zoom, the other end of the view staying where it is
+            // a handle: zoom about the playhead, the thumb's edge following the pointer (the right
+            // handle out to the right, the left handle out to the left)
             _ => {
-                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64 * total;
-                let floor = min_pps(seq_seconds, bar.width());
-                if mode == 1 {
-                    let end = v.scroll + vis;
-                    let ns = (v.scroll + dx).clamp(0.0, (end - 0.05).max(0.0));
-                    v.pps = (bar.width() as f64 / (end - ns).max(0.05)).clamp(floor, 24_000.0);
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let (_, thumb_w, _) = zoom_thumb(bar, seq_seconds, start, start_pps);
+                    let grow = (pos.x - grab) as f64 / thumb_w.max(1.0) as f64 * if mode == 1 { -1.0 } else { 1.0 };
+                    let floor = min_pps(seq_seconds, bar.width());
+                    let min_span = (bar.width() as f64 / 24_000.0).max(0.05);
+                    let start_span = bar.width() as f64 / start_pps.max(1e-9);
+                    // `total` follows the live view, which the drag itself shrinks: keep room for the view pressed
+                    let (ns, ne) = zoom_by_drag(start, start_span, grow, playhead, total.max(start_span), min_span);
+                    v.pps = (bar.width() as f64 / (ne - ns).max(min_span)).clamp(floor, 24_000.0);
                     v.scroll = ns;
                     v.target_scroll = ns;
-                } else {
-                    let ne = (v.scroll + vis + dx).max(v.scroll + 0.05);
-                    v.pps = (bar.width() as f64 / (ne - v.scroll)).clamp(floor, 24_000.0);
+                    v.target_pps = v.pps;
                 }
-                v.target_pps = v.pps;
             }
         }
     }
