@@ -328,6 +328,34 @@ fn transparency_grid_paints_a_checkerboard_behind_the_picture() {
     assert!(!covers(&rects) && !verts.contains(&GRID_DARK), "the grid goes when it is turned off");
 }
 
+/// Safe Margins draws the action- and title-safe boxes Project Settings ▸ General sets. Each
+/// percent is the margin taken from that axis, so the default 10 % and 20 % leave boxes 90 % and
+/// 80 % of the picture, and a title-safe area of 30 % by 10 % leaves one 70 % wide and 90 % high.
+/// The boxes used to be fixed at 90 % and 80 % whatever the project said.
+#[test]
+fn safe_margins_follow_the_project_safe_areas() {
+    let mut d = Driver::demo();
+    d.menu("view.safeMargins");
+    assert_eq!(d.program()["safe_margins"], true);
+    let r = d.rect("program.picture");
+    let pic = egui::Rect::from_min_size(egui::pos2(r[0] as f32, r[1] as f32), egui::vec2(r[2] as f32, r[3] as f32));
+    // outlines (no fill) painted over the picture
+    let outlines = |d: &Driver| fills_in(d, pic).0.into_iter().filter(|(_, fill)| *fill == egui::Color32::TRANSPARENT).map(|(r, _)| r).collect::<Vec<_>>();
+    let drawn = |boxes: &[egui::Rect], w: f32, h: f32| {
+        let want = egui::Rect::from_center_size(pic.center(), egui::vec2(pic.width() * w, pic.height() * h));
+        boxes.iter().any(|b| (b.min - want.min).length() < 1.0 && (b.max - want.max).length() < 1.0)
+    };
+    let boxes = outlines(&d);
+    assert!(drawn(&boxes, 0.9, 0.9) && drawn(&boxes, 0.8, 0.8), "the default boxes: {boxes:?} in {pic:?}");
+
+    d.exec("file.projectSettings.general", json!({"titleSafe": [30, 10], "actionSafe": [6, 4]}));
+    d.frames(2);
+    let boxes = outlines(&d);
+    assert!(drawn(&boxes, 0.94, 0.96), "action safe 6 % by 4 %: {boxes:?} in {pic:?}");
+    assert!(drawn(&boxes, 0.7, 0.9), "title safe 30 % by 10 %: {boxes:?} in {pic:?}");
+    assert!(!drawn(&boxes, 0.9, 0.9) && !drawn(&boxes, 0.8, 0.8), "no fixed boxes: {boxes:?}");
+}
+
 /// Display Mode ▸ Alpha shows a live render of the sequence (render previews are opaque); Red
 /// keeps the usual frames.
 #[test]

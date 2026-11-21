@@ -98,3 +98,23 @@ impl Default for ProjectSettings {
         }
     }
 }
+
+impl ProjectSettings {
+    /// Width and height of the title-safe box as fractions of the frame. Each percent is the
+    /// margin taken from that axis, half on each side, so the default 20 % leaves 0.8.
+    pub fn title_safe_box(&self) -> (f64, f64) {
+        (safe_fraction(self.title_safe.0), safe_fraction(self.title_safe.1))
+    }
+
+    /// Width and height of the action-safe box as fractions of the frame (default 10 %, 0.9).
+    pub fn action_safe_box(&self) -> (f64, f64) {
+        (safe_fraction(self.action_safe.0), safe_fraction(self.action_safe.1))
+    }
+}
+
+/// The part of an axis left inside a safe margin of `percent`, held to the Project Settings range
+/// (0–50 %) because a project file can carry any number.
+fn safe_fraction(percent: f64) -> f64 {
+    let p = if percent.is_finite() { percent.clamp(0.0, 50.0) } else { 0.0 };
+    1.0 - p / 100.0
+}
