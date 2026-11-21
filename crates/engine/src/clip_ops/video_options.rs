@@ -118,7 +118,12 @@ pub(crate) fn add_frame_hold(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn insert_frame_hold_segment(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    // `seconds` is the segment's length here, not the time parser's alias for where it goes
+    let mut at = p.clone();
+    if let Some(params) = at.as_object_mut() {
+        params.remove("seconds");
+    }
+    let t = time_p(s, &at, "").unwrap_or(s.playhead());
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let rate = q.settings.frame_rate;
     let pick = |c: &ClipId| q.video_tracks.iter().find_map(|tr| tr.item(*c).filter(|i| i.start <= t && t < i.end()).map(|i| (tr.id, i.clone())));
