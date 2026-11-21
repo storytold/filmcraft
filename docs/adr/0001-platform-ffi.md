@@ -67,6 +67,7 @@ remain in effect; implementation differences are not exceptions to those rules.
 | Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
 | Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
+| Linux (64-bit) | [`vulkan`](../../crates/platform/src/vulkan/mod.rs) | libvulkan loading and the instance that probes whether a VA-API DMABUF can be imported. |
 | Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
 
 The media allowances are on module declarations in
@@ -243,3 +244,40 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum (2026-10-24): VA-API surface export as DMABUF (Linux)
+
+The first half of zero-copy playback on Linux adds no `unsafe` module: `vaapi::va` gained
+`Display::export_surface` (`vaExportSurfaceHandle`, DRM PRIME 2). The declarations are transcribed
+from libva's MIT-licensed `va.h` / `va_drmcommon.h` and checked in `vaapi/abi_tests.rs`, as before.
+The driver hands over file descriptors; every one is owned (`OwnedFd`) before anything else is
+checked, so an error closes them all and none leaks. The driver's counts are clamped to the arrays
+and every plane's object index is checked. The public result (`SurfaceDmabuf`) is plain data and
+owned descriptors, no raw pointers. Nothing imports it yet, so the readback stays the only path and
+the fallback guarantee is unchanged.
+
+## Addendum (2026-10-24): Vulkan DMABUF import probe (Linux)
+
+Importing a VA-API DMABUF into the compositor needs Vulkan's external-memory import, which wgpu's
+safe API does not have. Before that path is taken, the compositor must know whether it can work:
+whether the Vulkan device it draws on is the decoder's GPU and takes the DMABUF memory and plane
+layout the VA driver produced. `vulkan` is that probe, and the one new FFI module:
+
+- `libvulkan.so.1` is loaded at run time through `libloading`, as libva is; building needs no Vulkan
+  headers, and on a system without a loader `import_capability` returns an error and
+  `import_possible()` is false; playback is as before. The declarations
+  (`vulkan/ffi.rs`) are transcribed from Khronos's `vulkan.h` (Apache-2.0 OR MIT), and
+  `vulkan/abi_tests.rs` pins every structure and constant against it. Those layouts are the LP64
+  ones, so the module is built on 64-bit Linux only; elsewhere there is no probe.
+- It creates one instance, only to enumerate physical devices, their properties, device extensions
+  and (`VK_EXT_physical_device_drm`) DRM render nodes, and destroys it. No device, memory or image
+  is created. Driver-reported counts are capped (64 devices, 4096 extensions) before anything is
+  allocated, and `VK_INCOMPLETE` is accepted.
+- There are no callbacks into Rust, every `unsafe` block has a `// SAFETY:` comment, and the public
+  API (`import_capability`, `import_possible`, `ImportCapability::ready`) is safe plain data.
+
+It is a coarse prerequisite check: the extensions and the render node. It does not establish that
+a given surface's fourcc, DRM format modifier and plane layout can be imported, or that the device
+is the one wgpu chose; an importer still has to validate each surface and fall back to the
+readback. It is still OS media FFI for hardware decoding: the probe exists only to decide whether
+a decoded picture can stay on the GPU. The rules above hold, and the readback remains the fallback.
