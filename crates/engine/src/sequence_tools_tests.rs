@@ -142,6 +142,36 @@ fn through_edits_show_and_join() {
     assert_eq!(s.execute("sequence.throughEdits", json!({})).unwrap().as_array().unwrap().len(), n - 2);
 }
 
+#[test]
+fn clear_joins_only_the_selected_through_cut() {
+    let mut s = demo();
+    for frame in [30, 60] {
+        s.execute("playhead.set", json!({"frame": frame})).unwrap();
+        s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    }
+    let before = s.active_sequence().unwrap().clone();
+    let v1 = &before.video_tracks[0];
+    let cut = filmcraft_edit::through::track_through_edits(v1)[0];
+    s.execute("trim.selectEditPoint", json!({"clip": cut.right.0, "edge": "in", "kind": "roll"})).unwrap();
+    assert!(s.is_enabled("edit.clear"));
+    let result = s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(result["joined"], json!(2), "linked audio and video join together");
+    let q = s.active_sequence().unwrap();
+    let remaining = filmcraft_edit::through::track_through_edits(&q.video_tracks[0]);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].time, f(&s, 60));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items, v1.items);
+
+    let last = v1.items.last().unwrap().id;
+    s.execute("trim.selectEditPoint", json!({"clip": last.0, "edge": "out"})).unwrap();
+    assert!(!s.is_enabled("edit.clear"), "the end of a clip is not a through cut");
+    assert!(s.execute("edit.clear", json!({})).is_err());
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items, v1.items);
+    s.execute("edit.clear", json!({"clip": last.0})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(last).is_none(), "an explicit clip target still deletes the clip");
+}
+
 /// The demo project with a new empty sequence active, and its first two movie items.
 fn demo_with_empty_sequence() -> (Session, u64, u64) {
     let mut s = demo();
