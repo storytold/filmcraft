@@ -141,7 +141,9 @@ and an entry without a `clip`, `track` or `time` is refused by its index. With L
 partners of a listed clip that are not listed themselves move by the same time offset and stay on
 their own tracks, so picture and sound stay in sync. Like a listed clip, a partner overwrites
 what is at its destination (or inserts, with `insert`). A partner on a locked track stays where it
-is, and so does one whose position would not change (the listed clip only changed track). `moved`
+is, and so does one whose position would not change (the listed clip only changed track), except in
+an insert move, which places it again at its own time so the gap the insert opens does not push it
+away from its clip. `moved`
 lists every clip that moved, partners included. No clip is moved before the sequence
 start: if one would be, all clips of the call land later by the same amount (their spacing is
 kept). A `time` beyond the representable range is an "invalid parameters" error. The timeline

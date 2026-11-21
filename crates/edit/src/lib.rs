@@ -326,6 +326,14 @@ pub fn overwrite(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx:
 
 /// Insert edits: open a gap on target tracks and all sync-locked unlocked tracks, then place.
 pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
+    let at = placements.iter().map(|p| p.1.start).min().unwrap_or_default();
+    let dur = placements.iter().map(|p| p.1.end()).max().unwrap_or_default() - at;
+    insert_gap_and_place(seq, placements, at, dur, ctx)
+}
+
+/// [`insert`] with the gap given: open `[at, at + dur)` on target tracks and all sync-locked
+/// unlocked tracks, then place.
+fn insert_gap_and_place(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, at: Tick, dur: Tick, ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
     if placements.is_empty() {
         return Err(EditError::Nothing);
     }
@@ -334,8 +342,6 @@ pub fn insert(seq: &mut Sequence, placements: Vec<(TrackId, TrackItem)>, ctx: &m
             return Err(EditError::Locked);
         }
     }
-    let at = placements.iter().map(|p| p.1.start).min().unwrap_or_default();
-    let dur = placements.iter().map(|p| p.1.end()).max().unwrap_or_default() - at;
     let targets: Vec<TrackId> = placements.iter().map(|p| p.0).collect();
     let mut links = HashMap::new();
     for t in seq.all_tracks_mut() {
@@ -564,6 +570,11 @@ pub fn closable_gap(seq: &Sequence, track: TrackId, t: Tick) -> Result<TimeRange
 
 /// Move items by (track, time) offsets with overwrite (default drag) or insert (Cmd-drag) semantics.
 /// `moves`: (item, destination track, new start).
+///
+/// A clip listed at its own start on its own track goes back where it was: an insert move's
+/// linked partner whose clip only changes track is placed this way, so the gap does not push it
+/// away from that clip. Such a clip keeps every transition whose clips all still sit where they
+/// sat, and an insert opens its gap from the clips that change place (`move_gap`).
 pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_mode: bool, ctx: &mut EditCtx) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for (clip, _, _) in moves {
@@ -573,6 +584,7 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     }
     let mut work = seq.clone();
     let mut placed = Vec::new();
+    let mut stays = Vec::new();
     for (c, dest, start) in moves {
         let (src, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
         if work.track(src).is_some_and(|t| t.locked) {
@@ -582,14 +594,20 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         if work.track(*dest).ok_or(EditError::NoTrack(*dest))?.locked {
             return Err(EditError::Locked);
         }
+        let was = it.start;
         it.start = (*start).max(Tick::ZERO);
+        if src == *dest && it.start == was {
+            stays.push(it.id);
+        }
         placed.push((*dest, it));
     }
     let carried = carried_transitions(&work, &placed);
+    let kept = transitions_at(&work, &stays);
     // a transition whose partner stays behind is dropped, as in Premiere
     delete_items(&mut work, &moves.iter().map(|m| m.0).collect::<Vec<_>>());
     if insert_mode {
-        insert(&mut work, placed, ctx)?;
+        let (at, dur) = move_gap(&work, &placed, &stays);
+        insert_gap_and_place(&mut work, placed, at, dur, ctx)?;
     } else {
         overwrite(&mut work, placed, ctx)?;
     }
@@ -600,8 +618,73 @@ pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
             t.sort();
         }
     }
+    restore_transitions(&mut work, kept)?;
     *seq = work;
     Ok(())
+}
+
+/// The transitions on unlocked tracks that sit on any of `clips`, each with its track and the
+/// (id, start, end) of every clip it sits on.
+fn transitions_at(seq: &Sequence, clips: &[ClipId]) -> Vec<(TrackId, Transition, Vec<(ClipId, Tick, Tick)>)> {
+    let mut out = Vec::new();
+    for t in seq.all_tracks().filter(|t| !t.locked) {
+        for tr in &t.transitions {
+            let ends: Vec<ClipId> = [tr.from, tr.to].into_iter().flatten().collect();
+            if ends.iter().any(|c| clips.contains(c)) {
+                let spans = ends.iter().filter_map(|c| t.item(*c).map(|i| (i.id, i.start, i.end()))).collect::<Vec<_>>();
+                if spans.len() == ends.len() {
+                    out.push((t.id, tr.clone(), spans));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Put back the transitions [`delete_items`] dropped from clips that went back to their own place
+/// ([`transitions_at`], read before the delete): one whose clips all still sit where they sat is
+/// still on its cut. A transition already back on its track is not added twice.
+fn restore_transitions(seq: &mut Sequence, kept: Vec<(TrackId, Transition, Vec<(ClipId, Tick, Tick)>)>) -> Result<()> {
+    for (track, tr, clips) in kept {
+        let t = track_mut(seq, track)?;
+        let in_place = clips.iter().all(|&(c, start, end)| t.item(c).is_some_and(|i| i.start == start && i.end() == end));
+        if in_place && !t.transitions.iter().any(|x| x.id == tr.id) {
+            t.transitions.push(tr);
+            t.sort();
+        }
+    }
+    Ok(())
+}
+
+/// The gap an insert move opens, as (start, length), on `seq` after the moved clips were removed.
+///
+/// 1. The clips that change place give the gap, as an [`insert`] of them would.
+/// 2. A clip that goes back to its own place (`stays`) fits in the room its removal left, so it
+///    does not move the gap's start or add length. A split edit's lead or tail would otherwise cut
+///    the clip before it on every sync-locked track, or push every later clip further.
+/// 3. The gap pushes what follows its start on each track by its length. When a piece pushed that
+///    way would land on a clip that goes back, the gap reaches that clip's end, so everything it
+///    pushes lands after the clip. Each such clip lengthens the gap at most once.
+/// 4. With every clip going back, the gap covers them all, as for an [`insert`] of them.
+fn move_gap(seq: &Sequence, placed: &[(TrackId, TrackItem)], stays: &[ClipId]) -> (Tick, Tick) {
+    let moving: Vec<&TrackItem> = placed.iter().map(|p| &p.1).filter(|it| !stays.contains(&it.id)).collect();
+    let all: Vec<&TrackItem> = placed.iter().map(|p| &p.1).collect();
+    let basis = if moving.is_empty() { &all } else { &moving };
+    let at = basis.iter().map(|it| it.start).min().unwrap_or_default();
+    let mut end = basis.iter().map(|it| it.end()).max().unwrap_or_default();
+    for _ in 0..=stays.len() {
+        let dur = end - at;
+        // a piece [max(start, at), end) of a clip ending after `at` lands `dur` later
+        let lands_on = |t: &Track, it: &TrackItem| {
+            t.items.iter().any(|o| o.end() > at && o.start < it.start && o.start.max(at) + dur < it.end() && o.end() + dur > it.start)
+        };
+        let hit = placed.iter().find(|(tid, it)| stays.contains(&it.id) && it.end() > end && seq.track(*tid).is_some_and(|t| lands_on(t, it)));
+        match hit {
+            Some((_, it)) => end = it.end(),
+            None => break,
+        }
+    }
+    (at, end - at)
 }
 
 /// Copy items to (track, time) with overwrite or insert semantics, leaving the originals where

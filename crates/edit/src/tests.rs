@@ -1392,3 +1392,90 @@ fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
         assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
+
+/// An insert move whose clip only changes track lists the clip's linked sound at its own place, so
+/// the gap does not push the sound away. Taking the sound out and back dropped a crossfade into it
+/// from a clip that stays where it is, though the two still meet at the same cut.
+#[test]
+fn a_clip_that_goes_back_to_its_place_keeps_the_crossfades_it_still_sits_on() {
+    // V1: c [0,10), v [10,20), w [20,30); A1: s [0,10), p [10,20), q [20,30) with crossfades s→p and p→q
+    let mut fx = Fx::new();
+    let (v1, v3, a1) = (fx.v(0), fx.v(2), fx.a(0));
+    fx.put(v1, 0, 10, 0);
+    let v = fx.put(v1, 10, 10, 0);
+    fx.put(v1, 20, 10, 0);
+    let s = fx.put(a1, 0, 10, 10);
+    let p = fx.put(a1, 10, 10, 10);
+    let q = fx.put(a1, 20, 10, 10);
+    let cross = |id, start, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(start),
+        duration: f(4),
+        from: Some(from),
+        to: Some(to),
+        align: Default::default(),
+        reverse: false,
+    };
+    fx.seq.track_mut(a1).unwrap().transitions = vec![cross(1, 8, s, p), cross(2, 18, p, q)];
+    let at = |fx: &Fx| -> Vec<(u64, i64)> { fx.seq.track(a1).unwrap().transitions.iter().map(|t| (t.id.0, R.frame_at(t.start))).collect() };
+    let mut n = fx.next;
+    // the picture to V3 at its own time, its sound back at its own place
+    move_items(&mut fx.seq, &[(v, v3, f(10)), (p, a1, f(10))], true, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(v1), fx.spans(v3), fx.spans(a1)), (vec![(0, 10), (30, 10)], vec![(10, 10)], vec![(0, 10), (10, 10), (30, 10)]));
+    // s still ends where p starts: their crossfade stays; q went on with the gap, so p→q is dropped
+    assert_eq!(at(&fx), vec![(1, 8)]);
+    fx.seq.check().unwrap();
+    // an overwrite move of a clip to its own place keeps its crossfade too
+    move_items(&mut fx.seq, &[(p, a1, f(10))], false, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!((fx.spans(a1), at(&fx)), (vec![(0, 10), (10, 10), (30, 10)], vec![(1, 8)]));
+    fx.seq.check().unwrap();
+}
+
+/// The gap of an insert move comes from the clips that change place. A linked sound that goes back
+/// to its own place with a split edit (starting before its picture, or ending after it) sized the
+/// gap as well: its lead cut the clip before the picture on every sync-locked track, and its tail
+/// pushed every later clip further than the picture's length.
+#[test]
+fn an_insert_move_gap_leaves_out_clips_that_go_back_to_their_place() {
+    // V1: c [0,10), v [10,20), w [20,30); A1: s [0, s_len), v's sound p at [p_at, p_at + p_len), q after it
+    let layout = |s_len: i64, p_at: i64, p_len: i64| {
+        let mut fx = Fx::new();
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        fx.put(v1, 0, 10, 0);
+        let v = fx.put(v1, 10, 10, 0);
+        fx.put(v1, 20, 10, 0);
+        fx.put(a1, 0, s_len, 0);
+        let p = fx.put(a1, p_at, p_len, 0);
+        fx.put(a1, p_at + p_len, 10, 0);
+        (fx, v, p)
+    };
+    // (s_len, p_at, p_len) -> (V1, A1) after an insert move of v to V3 at 10 with p at its own place
+    let cases: [((i64, i64, i64), Vec<(i64, i64)>, Vec<(i64, i64)>); 5] = [
+        // the sound starts 4 frames early: c stays whole, everything later moves by v's 10 frames
+        ((6, 6, 14), vec![(0, 10), (30, 10)], vec![(0, 6), (6, 14), (30, 10)]),
+        // the sound ends 4 frames late: still 10 frames
+        ((10, 10, 14), vec![(0, 10), (30, 10)], vec![(0, 10), (10, 14), (34, 10)]),
+        // the sound starts 4 frames late after room of its own: 10 frames
+        ((10, 14, 10), vec![(0, 10), (30, 10)], vec![(0, 10), (14, 10), (34, 10)]),
+        // ...over the end of s: s is cut at the gap, and the gap reaches p's end so s's tail lands after p
+        ((14, 14, 10), vec![(0, 10), (34, 10)], vec![(0, 10), (14, 10), (24, 4), (38, 10)]),
+        // ...far enough after s that s's tail, pushed 10 frames, still lands before p: 10 frames
+        ((12, 24, 10), vec![(0, 10), (30, 10)], vec![(0, 10), (20, 2), (24, 10), (44, 10)]),
+    ];
+    for ((s_len, p_at, p_len), v1_after, a1_after) in cases {
+        let (mut fx, v, p) = layout(s_len, p_at, p_len);
+        let (v1, v3, a1) = (fx.v(0), fx.v(2), fx.a(0));
+        let mut n = fx.next;
+        move_items(&mut fx.seq, &[(v, v3, f(10)), (p, a1, f(p_at))], true, &mut Fx::ctx(&mut n)).unwrap();
+        assert_eq!((fx.spans(v1), fx.spans(v3), fx.spans(a1)), (v1_after, vec![(10, 10)], a1_after), "s {s_len}, p at {p_at} for {p_len}");
+        fx.seq.check().unwrap();
+    }
+    // with every clip going back to its place, the gap covers them all, as before
+    let (mut fx, v, _) = layout(10, 10, 10);
+    let v1 = fx.v(0);
+    let mut n = fx.next;
+    move_items(&mut fx.seq, &[(v, v1, f(10))], true, &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(fx.spans(v1), vec![(0, 10), (10, 10), (30, 10)]);
+    fx.seq.check().unwrap();
+}
