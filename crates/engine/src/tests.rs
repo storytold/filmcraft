@@ -140,6 +140,76 @@ fn trim_linked_and_ripple_delete() {
     assert_eq!(q.video_tracks[0].items[0].start, s.sequence_rate().tick_of(12), "the trim gap remains");
 }
 
+/// `"linked"` decides for one trim or rate stretch whether the linked partner goes along, whatever
+/// Linked Selection says, as it does for `timeline.move`; without it the toggle decides. `true`
+/// used to defer to the toggle, so with Linked Selection off the edit split its pair (#4274).
+#[test]
+fn linked_overrides_linked_selection_for_trim_and_rate_stretch() {
+    // (toggle, `linked` param, whether the audio partner should follow)
+    let cases = [
+        (false, Some(true), true),
+        (true, Some(false), false),
+        (false, None, false),
+        (true, None, true),
+        (true, Some(true), true),
+        (false, Some(false), false),
+    ];
+    for (toggle, linked, follows) in cases {
+        for stretch in [false, true] {
+            let mut s = demo();
+            s.execute("sequence.linkedSelection", json!({"on": toggle})).unwrap();
+            let v = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+            let a0 = s.active_sequence().unwrap().audio_tracks[0].items.iter().find(|i| i.link == v.link).unwrap().clone();
+            let mut p = json!({"clip": v.id.0, "edge": "out"});
+            if stretch {
+                p["delta"] = json!(-s.sequence_rate().tick_of(6).0);
+            } else {
+                p["mode"] = json!("regular");
+                p["deltaFrames"] = json!(-6);
+            }
+            if let Some(l) = linked {
+                p["linked"] = json!(l);
+            }
+            s.execute(if stretch { "timeline.rateStretch" } else { "timeline.trim" }, p).unwrap();
+            let q = s.active_sequence().unwrap();
+            let (_, nv) = q.find_item(v.id).unwrap();
+            let (_, na) = q.find_item(a0.id).unwrap();
+            assert_eq!(nv.duration, v.duration - s.sequence_rate().tick_of(6), "the clip itself changes ({toggle}, {linked:?}, stretch {stretch})");
+            let what = if stretch { "rate stretch" } else { "trim" };
+            if follows {
+                assert_eq!((na.duration, na.speed), (nv.duration, nv.speed), "{what}: the partner follows (toggle {toggle}, linked {linked:?})");
+            } else {
+                assert_eq!((na.duration, na.speed), (a0.duration, a0.speed), "{what}: the partner stays (toggle {toggle}, linked {linked:?})");
+            }
+            q.check().unwrap();
+        }
+    }
+}
+
+/// The delta the Timeline previews for a linked edge drag is the one `timeline.trim` applies with
+/// `"linked": true`, Linked Selection on or off: the preview takes the partners along too, so a
+/// partner with less media left stops the edge where the trim will (#4274).
+#[test]
+fn a_linked_trim_preview_is_clamped_by_the_partner_whatever_the_toggle() {
+    for toggle in [false, true] {
+        let mut s = demo();
+        s.execute("sequence.linkedSelection", json!({"on": toggle})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let v = q.video_tracks[0].items.iter().rev().find(|i| i.link.is_some()).unwrap().clone();
+        let a = q.audio_tracks[0].items.iter().find(|i| i.link == v.link).unwrap().id;
+        // Shorten the video alone, so its partner has less media left after it.
+        s.execute("timeline.trim", json!({"clip": v.id.0, "edge": "out", "mode": "regular", "deltaFrames": -12, "linked": false})).unwrap();
+        let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+        let alone = commands::trim_delta_linked(&s, v.id, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far, false).unwrap();
+        let shown = commands::trim_delta_linked(&s, v.id, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far, true).unwrap();
+        assert!(shown < alone, "the partner stops the edge first (toggle {toggle}): {shown:?} vs {alone:?}");
+        let a0 = s.active_sequence().unwrap().find_item(a).unwrap().1.duration;
+        let r = s.execute("timeline.trim", json!({"clip": v.id.0, "edge": "out", "mode": "regular", "delta": far.0, "linked": true})).unwrap();
+        assert_eq!(r["delta"], json!(shown.0), "the preview and the trim agree (toggle {toggle})");
+        assert_eq!(s.active_sequence().unwrap().find_item(a).unwrap().1.duration, a0 + shown, "the partner went along (toggle {toggle})");
+    }
+}
+
 #[test]
 fn slide_moves_linked_audio_with_the_video() {
     let mut s = demo();
