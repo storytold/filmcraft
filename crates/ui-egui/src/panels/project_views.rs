@@ -1111,10 +1111,15 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     let n = bins.len() + ids.len();
     egui::ScrollArea::vertical().id_salt((&v.prefix, "icon-scroll")).auto_shrink([false, false]).show(ui, |ui| {
         let bg = background(ui, v);
-        let per_row = ((rect.width() - 12.0) / cell.x).floor().max(1.0) as usize;
+        // The nearest whole number of cards fills the row, each card a little wider or narrower
+        // than the icon size, so no empty strip is left on the right.
+        let per_row = ((rect.width() - 12.0) / cell.x).round().max(1.0) as usize;
         if v.inst == Inst::Main {
             app.ui.keys.icon_columns = per_row;
         }
+        let size = ((rect.width() - 12.0) / per_row as f32 - 20.0).max(16.0);
+        let th_h = size * 9.0 / 16.0;
+        let cell = vec2(size + 20.0, th_h + 34.0);
         let rows = n.div_ceil(per_row);
         for rr in 0..rows {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell.y), Sense::hover());
