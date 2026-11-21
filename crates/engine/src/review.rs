@@ -100,7 +100,7 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
                 // a jump: the next shot continues the same media further on
                 if let Some(next) = segs.get(k + 1).filter(|n| n.clip.is_some()) {
                     let (Some(a), Some(b)) = (picture_at(&clips, g.end - Tick(1)), picture_at(&clips, next.start)) else { continue };
-                    if a.item == b.item && !a.reverse && !b.reverse && a.speed == b.speed && !is_through_edit(a, b) && b.source_in > a.source_out() {
+                    if a.item == b.item && !a.reverse && !b.reverse && a.speed == b.speed && !is_through_edit(p, a, b) && b.source_in > a.source_out() {
                         let skipped = (b.source_in - a.source_out()).seconds();
                         out.push(issue(
                             "jumpCut",
@@ -143,8 +143,8 @@ fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
                 continue;
             }
             let Some(tr) = p.transcripts.get(&it.item) else { continue };
-            let continued_from = k.checked_sub(1).and_then(|j| items.get(j)).is_some_and(|prev| is_through_edit(prev, it));
-            let continues = items.get(k + 1).is_some_and(|next| is_through_edit(it, next));
+            let continued_from = k.checked_sub(1).and_then(|j| items.get(j)).is_some_and(|prev| is_through_edit(p, prev, it));
+            let continues = items.get(k + 1).is_some_and(|next| is_through_edit(p, it, next));
             for (edge, at, src) in [("starts", it.start, it.source_in), ("ends", it.end(), it.source_out())] {
                 if (edge == "starts" && continued_from) || (edge == "ends" && continues) {
                     continue;
@@ -185,7 +185,7 @@ fn pop_issues(s: &Session, q: &Sequence, pop_db: f64, out: &mut Vec<Issue>) {
                 // a through edit plays on without a change
                 let prev = items.get(k.wrapping_sub(1)).filter(|p| p.end() == at && at == it.start);
                 let next = items.get(k + 1).filter(|n| n.start == at && at == it.end());
-                if prev.is_some_and(|p| is_through_edit(p, it)) || next.is_some_and(|n| is_through_edit(it, n)) {
+                if prev.is_some_and(|pv| is_through_edit(&s.project, pv, it)) || next.is_some_and(|n| is_through_edit(&s.project, it, n)) {
                     continue;
                 }
                 if !edits.iter().any(|(e, _)| *e == at) {
