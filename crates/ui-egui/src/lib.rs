@@ -101,7 +101,7 @@ mod raw_input;
 use audio::shuttle_mix_rate;
 pub use audio::{AUDIO_RETRY_S, AUDIO_STALL_S, playback_mix};
 pub use gpu::{gpu_compositor_unsupported, software_rasterizer};
-pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, RelinkHint, SystemThemeFn};
+pub use hooks::{AudioDevices, AudioOut, ClipboardMedia, HostHooks, OsEvent, OsEventsFn, RelinkHint, SystemThemeFn};
 pub(crate) use raw_input::rewrite_native_window_input;
 
 pub use ime_reset::install_ime_reset_callbacks;
