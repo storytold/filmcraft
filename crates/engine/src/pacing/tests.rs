@@ -106,4 +106,8 @@ fn through_edits_follow_direction_holds_and_angles() {
     a.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 0 });
     b.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 1 });
     assert!(!through(&a, &b), "an angle change is a cut");
+    // with multi-camera off the clip plays like a nest: a stored angle doesn't show
+    a.multicam = Some(filmcraft_project::MulticamSel { enabled: false, angle: 0 });
+    b.multicam = Some(filmcraft_project::MulticamSel { enabled: false, angle: 1 });
+    assert!(through(&a, &b), "a disabled selection's angle is not a cut");
 }

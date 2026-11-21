@@ -57,12 +57,14 @@ fn is_picture(p: &Project, item: ItemId) -> bool {
 }
 
 /// `b` continues `a` with no visible change: the same media (subclips of one file count as the
-/// same, as their clips use the parent's media time), the same multi-camera angle, and picked up
+/// same, as their clips use the parent's media time), the same multi-camera angle (when enabled), and picked up
 /// where `a` stops, at the same speed and direction (backwards when reversed). Held frames continue
 /// only into the same held frame.
 pub(crate) fn is_through_edit(p: &Project, a: &TrackItem, b: &TrackItem) -> bool {
     let root = |c: &TrackItem| p.resolve_media(c.item).map_or(c.item, |(r, _, _)| r);
-    if a.end() != b.start || root(a) != root(b) || a.multicam != b.multicam {
+    // a disabled multi-camera selection plays like a nest: its angle doesn't show
+    let angle = |c: &TrackItem| c.multicam.filter(|m| m.enabled).map(|m| m.angle);
+    if a.end() != b.start || root(a) != root(b) || angle(a) != angle(b) {
         return false;
     }
     match (a.frame_hold, b.frame_hold) {
