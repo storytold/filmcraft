@@ -221,20 +221,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
-    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch
-    // Warning asks first, from a menu (`engine.execute` keeps the sequence settings, #1540)
-    if !app.engine_call && matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
+    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
-    }
-    // From a menu, a shortcut or `ui.menu.invoke`, a command without parameters opens the dialog
-    // that asks for them. From the control channel's `engine.execute` it does not (#1540): an agent
-    // can neither see nor close a dialog, so the engine command runs with what was given, and
-    // Sequence Settings… answers the settings it would have shown.
-    let menu = !app.engine_call;
-    if !menu && id == "sequence.settings" && (params.is_null() || params.as_object().is_some_and(|m| m.is_empty())) {
-        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-        let seq = app.session.execute("sequence.inspect", json!({})).map_err(|e| e.to_string())?;
-        return Ok(json!({"settings": seq["settings"]}));
     }
     // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
     // Sequence and Color Matte take it when they open); a `bin` of the caller wins, null included
@@ -317,7 +306,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             let source = targets_source(app, &params);
             params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
         }
-        if menu && params.get("path").is_none() {
+        if params.get("path").is_none() {
             return crate::panels::frame_export::open(app, ctx, &params);
         }
     }
@@ -355,13 +344,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params, menu) {
+    if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
         return r;
     }
-    // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
-    if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
-        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
-    {
+    if matches!(id, "file.closeProject" | "file.closeAllProjects" | "file.open" | "file.revert" | "app.quit") {
+        app.sync_timeline_view();
+    }
+    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
@@ -379,16 +368,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         return r;
     }
-    // The dialogs answer only the menu (#1540): from `engine.execute` the command goes on to the
-    // engine with the parameters given, and answers an error when it needs some. The UI commands
-    // the menu-dialog route also carries (dynamic waveforms, reveal, …) answer either way.
-    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params, menu) {
+    if let Some(r) = crate::panels::menu_dialogs::route(app, ctx, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
         return r;
     }
-    if menu && let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
+    if let Some(r) = crate::panels::media_dialogs::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -497,8 +483,21 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
+            let width = app.last_timeline_width;
+            if !width.is_finite() || width <= 1.0 {
+                return Ok(Value::Null);
+            }
+            let center_on_playhead = app.session.state.timeline_ui.playhead_centering;
+            let anchor = if center_on_playhead { ph } else { app.ui.timeline.target_scroll + f64::from(width) / (2.0 * app.ui.timeline.target_pps.max(1e-6)) };
+            if center_on_playhead {
+                app.ui.timeline.scroll = (ph - f64::from(width) / (2.0 * app.ui.timeline.pps.max(1e-6))).max(0.0);
+                app.ui.timeline.target_scroll = app.ui.timeline.scroll;
+            }
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, anchor, width, app.session.state.timeline_ui.max_zoom_secs());
+            app.tl.zoom_anchor = Some((anchor, app.last_timeline_center_x));
+            if center_on_playhead {
+                app.ui.timeline.target_scroll = (ph - f64::from(width) / (2.0 * app.ui.timeline.target_pps.max(1e-6))).max(0.0);
+            }
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
@@ -542,24 +541,24 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(Value::Null);
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
-        "file.exportAaf" | "file.exportOmf" if menu && params.get("path").is_none() => {
+        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
         }
         // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
         // settings (#3365); with a path it exports directly.
-        "captions.export" if menu && params.get("path").is_none() => {
+        "captions.export" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
-        "file.exportMedia" if menu && params.get("path").is_none() => {
+        "file.exportMedia" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.mode = Mode::Export;
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.
-        "clip.audioGain" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.audioGain" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command("clip.audioGain").map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             if app.ui.audio_gain.mode.is_empty() {
                 app.ui.audio_gain.mode = "adjust".into();
@@ -568,19 +567,19 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(json!({"dialog": "audioGain"}));
         }
         // Colour dialogs from the menus; with params the engine command applies directly.
-        "clip.interpretFootage" if menu && params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
+        "clip.interpretFootage" if params.get("colorSpace").is_none() && params.get("pixelAspect").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_interpret(app, &params);
             return Ok(json!({"dialog": "interpretFootage"}));
         }
         // Remix Properties… from the menu opens the dialog; with params it applies directly.
-        "clip.remix.properties" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "clip.remix.properties" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::remix::open(app, ctx);
         }
         // Add Tracks… from the menu opens the dialog (new tracks after the last ones, as Premiere
         // offers); with params it adds the tracks directly.
-        "sequence.addTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.addTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             let seq = app.session.active_sequence();
             let count = |f: fn(&filmcraft_engine::project::Sequence) -> usize| seq.map_or(0, f);
@@ -593,7 +592,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             app.dialog = Some(crate::Dialog::AddTracks);
             return Ok(json!({"dialog": "addTracks"}));
         }
-        "sequence.deleteTracks" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.deleteTracks" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.delete_tracks = Default::default();
             app.dialog = Some(crate::Dialog::DeleteTracks);
@@ -601,18 +600,18 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         }
         // Sequence Settings… from the menu opens the dialog; with params the engine command applies
         // them directly.
-        "sequence.settings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.settings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::sequence_settings::open(app);
             return Ok(json!({"dialog": "sequenceSettings"}));
         }
         // File ▸ New ▸ Sequence… (Cmd+N) opens New Sequence; with params (a clip, an agent) it
         // makes the sequence directly
-        "file.newSequence" if menu && (params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some()) => {
+        "file.newSequence" if params.as_object().is_none_or(|m| m.is_empty()) || crate::panels::project::bin_only(&params).is_some() => {
             crate::panels::sequence_settings::open_new(app, crate::panels::project::bin_only(&params));
             return Ok(json!({"dialog": "newSequence"}));
         }
-        "sequence.colorSettings" if menu && params.as_object().is_none_or(|m| m.is_empty()) => {
+        "sequence.colorSettings" if params.as_object().is_none_or(|m| m.is_empty()) => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             crate::panels::color_dialogs::open_sequence(app);
             return Ok(json!({"dialog": "sequenceColor"}));
@@ -627,7 +626,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return r;
         }
         // From menus/shortcuts (no params) these ask first; agents pass params to act directly.
-        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.is_dirty() => {
+        "file.revert" if params.as_object().is_none_or(|m| m.is_empty()) && app.session.has_unsaved_changes() => {
             if app.session.path.is_none() {
                 return Err("the project has not been saved yet".into());
             }
@@ -675,17 +674,21 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
         return Ok(Value::Null);
     }
+    // A command can arrive after Timeline drawing changed the view but before the next normal
+    // sync pass. Save commands must checkpoint that geometry before serializing ProjectView.
+    if matches!(id, "file.autoSaveNow" | "file.save" | "file.saveAs" | "file.saveCopy" | "file.saveAll") {
+        app.sync_timeline_view();
+    }
     // File dialogs for commands that need a path.
-    if menu
-        && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
-            || (id == "file.importImageSequence" && params.get("path").is_none())
-            || (id == "file.saveAs" && params.get("path").is_none())
-            || (id == "file.saveCopy" && params.get("path").is_none())
-            || (id == "file.open" && params.get("path").is_none())
-            || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-            || (id == "captions.import" && params.get("path").is_none())
-            || (id == "graphics.newFromFile" && params.get("path").is_none())
-            || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none()))
+    if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
+        || (id == "file.importImageSequence" && params.get("path").is_none())
+        || (id == "file.saveAs" && params.get("path").is_none())
+        || (id == "file.saveCopy" && params.get("path").is_none())
+        || (id == "file.open" && params.get("path").is_none())
+        || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+        || (id == "captions.import" && params.get("path").is_none())
+        || (id == "graphics.newFromFile" && params.get("path").is_none())
+        || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
         return app.file_dialog(id, &params);
     }
@@ -1241,6 +1244,20 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     use filmcraft_engine::shortcuts::CommandInfo;
     let mut v: Vec<CommandInfo> =
         UI_COMMANDS.iter().chain(crate::panels::keyboard::COMMANDS).map(|c| CommandInfo::new(c.id, c.label, c.menu, c.shortcut)).collect();
+    for (id, label, default) in [
+        ("timeline.sliderCenter", "Timeline Slider: Center on Playhead", Some("Double Click")),
+        ("timeline.sliderExplode", "Timeline Slider: Explode", Some("Triple Click")),
+        ("timeline.sliderAlternate", "Timeline Slider: Alternate Drag Speed", Some("Shift+Drag")),
+        ("timeline.trackSliderMirror", "Track Sliders: Mirror", Some("Double Click")),
+        ("timeline.trackSliderExplode", "Track Sliders: Explode", Some("Shift+Double Click")),
+        ("timeline.trackSliderAlternate", "Track Sliders: Alternate Drag Speed", Some("Shift+Drag")),
+        ("timeline.adjustTrackHeight", "Track Sliders: Adjust Track Height", Some("Shift+Scroll")),
+        ("timeline.fastScroll", "Timeline: Fast Scroll", None),
+        ("timeline.scrollTrackRows", "Track Sliders: Scroll Track Rows", Some("Cmd+Scroll")),
+        ("timeline.zoomScroll", "Timeline: Zoom", Some("Alt+Scroll")),
+    ] {
+        v.push(CommandInfo::new(id, label, &["Timeline"], default));
+    }
     for p in PanelKind::ALL {
         v.push(CommandInfo::new(&panel_command_id(p), p.title(), &["Window"], p.window_shortcut()));
     }
@@ -1553,6 +1570,16 @@ mod chord_held_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_zoom_waits_for_usable_timeline_width() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.last_timeline_width = 0.0;
+        app.ui.timeline.target_pps = 10_000.0;
+        let result = invoke_command(&mut app, &egui::Context::default(), "view.zoomIn", json!({}));
+        assert!(result.is_ok());
+        assert_eq!(app.ui.timeline.target_pps, 10_000.0);
+    }
 
     /// A clipboard image is premultiplied inside `Color32`. The PNG writer expects straight
     /// alpha, so a semi-transparent pixel must come back with its colour, not darkened.

@@ -68,6 +68,14 @@ const ACTIVE_FILE: &str = "active.json";
 
 /// Every key the editor's keyboard shows, in canonical spelling (row order).
 pub const KEYS: &[&str] = &[
+    "Modifiers",
+    "Double Click",
+    "Triple Click",
+    "Left Click",
+    "Right Click",
+    "Middle Click",
+    "Scroll",
+    "Drag",
     "Escape",
     "F1",
     "F2",
@@ -263,9 +271,16 @@ impl Chord {
                 c => text.push(c),
             }
         }
-        let text = text.replace("++", "+").trim_end_matches('+').to_string();
+        // A literal `+` key is written as `+` on its own or as a final `++` after a modifier
+        // (`Ctrl++`). Preserve that final plus as the key instead of treating it as a separator.
+        let plus_key = text == "+" || text.ends_with("++");
+        let text = if plus_key {
+            text.strip_suffix('+').unwrap_or(&text).trim_end_matches('+').to_string()
+        } else {
+            text.replace("++", "+").trim_end_matches('+').to_string()
+        };
         let mut mods = Mods::default();
-        let mut key = None;
+        let mut key = plus_key.then_some("+");
         let parts: Vec<&str> = text.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
         for (i, p) in parts.iter().enumerate() {
             let low = p.to_ascii_lowercase();
@@ -287,12 +302,16 @@ impl Chord {
                 _ => return Err(format!("unknown modifier `{p}`")),
             }
         }
-        let key = key.ok_or_else(|| format!("`{s}` has no key"))?;
+        let key = match key {
+            Some(key) => key,
+            None if mods.count() >= 2 => "Modifiers",
+            None => return Err(format!("`{s}` has no key")),
+        };
         Ok(Chord { mods, key })
     }
 
     pub fn canonical(&self) -> String {
-        format!("{}{}", self.mods.prefix(), self.key)
+        if self.key == "Modifiers" { self.mods.prefix().trim_end_matches('+').to_string() } else { format!("{}{}", self.mods.prefix(), self.key) }
     }
 
     /// The chord as this OS sees it: off macOS the Control key is the primary modifier, so `Ctrl`
@@ -329,7 +348,9 @@ impl Chord {
                 "PageDown" => "Page Down",
                 k => k,
             };
-            s.push_str(k);
+            if k != "Modifiers" {
+                s.push_str(k);
+            }
             s
         } else {
             let e = self.effective(p);
@@ -338,6 +359,9 @@ impl Chord {
                 if on {
                     s.push_str(n);
                 }
+            }
+            if self.key == "Modifiers" {
+                return s.trim_end_matches('+').to_string();
             }
             s.push_str(match self.key {
                 "PageUp" => "Page Up",
@@ -1275,7 +1299,19 @@ pub fn commands() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod naming_tests {
-    use super::{Binding, CommandInfo, Platform, check_panel, convert};
+    use super::{Binding, Chord, CommandInfo, Platform, check_panel, convert};
+
+    #[test]
+    fn plus_shortcut_parses_as_a_key_with_or_without_modifiers() {
+        let plus = Chord::parse("+").expect("a literal plus is a key");
+        assert_eq!(plus.key, "+");
+        assert_eq!(plus.canonical(), "+");
+
+        let modified = Chord::parse_for("Ctrl++", Platform::Windows).expect("Ctrl+Plus is a key");
+        assert!(modified.mods.cmd);
+        assert_eq!(modified.key, "+");
+        assert_eq!(modified.canonical(), "Cmd++");
+    }
 
     #[test]
     fn grading_shortcut_category_preserves_legacy_command_identity() {
