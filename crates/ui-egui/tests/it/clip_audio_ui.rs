@@ -249,3 +249,29 @@ fn volume_keyframes_on_the_timeline() {
     d.click(&format!("{id}.kf.0.delete"));
     assert_eq!(d.level(pair.audio).1, keys[1..]);
 }
+
+/// #1746: "G" worked, but the Audio Gain dialog was not reachable from a clip's right-click menu.
+/// The clip context menu now offers Audio Options ▸ Audio Gain…, enabled and opening the dialog,
+/// for a video clip with linked audio and for an audio clip.
+#[test]
+fn the_clip_right_click_menu_opens_audio_gain() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let enabled = |d: &mut Driver, id: &str| -> bool {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        v.as_array().and_then(|a| a.iter().find(|e| e["id"] == id)).is_some_and(|e| e["enabled"] == json!(true))
+    };
+    for clip in [pair.video, pair.audio] {
+        let area = d.rect(&format!("timeline.clip.{clip}"));
+        d.ok("ui.click", json!({"x": area[0] + area[2] / 2.0, "y": area[1] + area[3] / 2.0, "button": "right"}));
+        d.frames(3);
+        d.rect("timeline.clipMenu.clip.audioOptions");
+        d.click("timeline.clipMenu.clip.audioOptions");
+        assert!(enabled(&mut d, "timeline.clipMenu.clip.audioGain"), "Audio Gain… is enabled on clip {clip}");
+        d.click("timeline.clipMenu.clip.audioGain");
+        d.frames(3);
+        assert!(d.find("audioGain.ok").is_some(), "the Audio Gain dialog opened for clip {clip}");
+        d.click("audioGain.cancel");
+        d.frames(2);
+        assert!(d.find("audioGain.ok").is_none(), "Cancel closed the dialog");
+    }
+}
