@@ -3,6 +3,12 @@ use std::ffi::c_void;
 
 #[cfg(target_os = "linux")]
 pub use cuda::Device;
+/// The CUDA driver API context NVDEC reads decoded pictures back with (Linux: also NVENC's device).
+#[cfg(target_os = "windows")]
+pub(crate) use cuda::Device as CudaDevice;
+#[cfg(target_os = "linux")]
+pub(crate) use cuda::Device as CudaDevice;
+pub(crate) use cuda::load_library;
 #[cfg(target_os = "windows")]
 pub use directx::Device;
 
@@ -64,9 +70,30 @@ mod directx {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 mod cuda {
     use super::c_void;
+
+    /// The CUDA driver library (installed with NVIDIA's display driver).
+    const LIBRARY: &str = if cfg!(windows) { "nvcuda.dll" } else { "libcuda.so.1" };
+
+    /// Load one of NVIDIA's driver libraries by name. On Windows only the system directory is
+    /// searched (`LOAD_LIBRARY_SEARCH_SYSTEM32`), never the application folder or the current
+    /// directory, so a stray DLL beside the executable or in a project folder is not picked up in
+    /// the driver's place.
+    pub(crate) fn load_library(name: &str) -> Result<libloading::Library, libloading::Error> {
+        #[cfg(windows)]
+        {
+            // SAFETY: a driver DLL from System32; its initialisation routine is NVIDIA's own.
+            unsafe { libloading::os::windows::Library::load_with_flags(name, libloading::os::windows::LOAD_LIBRARY_SEARCH_SYSTEM32) }.map(Into::into)
+        }
+        #[cfg(not(windows))]
+        {
+            // SAFETY: the system's own driver library; its initialisation routine is NVIDIA's own.
+            unsafe { libloading::Library::new(name) }
+        }
+    }
     use std::marker::PhantomData;
     use std::rc::Rc;
     type Init = unsafe extern "C" fn(u32) -> i32;
@@ -99,7 +126,7 @@ mod cuda {
             // SAFETY: CUDA driver API signatures from NVIDIA's public Driver API reference.
             // Resolve all symbols before retaining; keep the library alive until after release.
             unsafe {
-                let library = libloading::Library::new("libcuda.so.1").map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
+                let library = load_library(LIBRARY).map_err(|e| format!("no NVIDIA CUDA driver: {e}"))?;
                 let init: libloading::Symbol<Init> = library.get(b"cuInit\0").map_err(|e| e.to_string())?;
                 let get: libloading::Symbol<GetDevice> = library.get(b"cuDeviceGet\0").map_err(|e| e.to_string())?;
                 let retain: libloading::Symbol<Retain> = library.get(b"cuDevicePrimaryCtxRetain\0").map_err(|e| e.to_string())?;

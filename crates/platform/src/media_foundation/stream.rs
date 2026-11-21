@@ -175,10 +175,14 @@ impl Stream {
     /// until the first VP9 key frame says (colour and size come from its header).
     pub fn first_geometry(&self, format: SurfaceFormat) -> Geometry {
         match self {
-            Self::Nal(i) => Geometry { crop: i.crop, bits: format.bits(), color: i.color, par: i.par },
-            Self::Frame(i) => {
-                Geometry { crop: (0, 0, i.size.0, i.size.1), bits: format.bits(), color: i.color.unwrap_or(filmcraft_color::ColorInfo::REC709), par: (1, 1) }
-            }
+            Self::Nal(i) => Geometry { crop: i.crop, bits: format.bits(), color: i.color, par: i.par, chroma_422: false },
+            Self::Frame(i) => Geometry {
+                crop: (0, 0, i.size.0, i.size.1),
+                bits: format.bits(),
+                color: i.color.unwrap_or(filmcraft_color::ColorInfo::REC709),
+                par: (1, 1),
+                chroma_422: false,
+            },
         }
     }
 
@@ -226,7 +230,7 @@ impl Stream {
             return None;
         }
         let p = i.picture_params(sample)?;
-        Some(Geometry { crop: (0, 0, p.size.0, p.size.1), bits: p.bit_depth, color: p.color, par: (1, 1) })
+        Some(Geometry { crop: (0, 0, p.size.0, p.size.1), bits: p.bit_depth, color: p.color, par: (1, 1), chroma_422: false })
     }
 }
 
