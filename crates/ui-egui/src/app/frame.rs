@@ -171,7 +171,11 @@ impl FilmcraftApp {
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                // The job's own label: an export says "Exporting", while ingesting, proxies,
+                // scene detection and mask tracking say what they are. Calling every one of them
+                // "Exporting" told the user the wrong thing was running (#4394 reported the
+                // tracking job as "Exporting 0%").
+                let verb = crate::i18n::t(&job.label).to_string();
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
@@ -307,5 +311,28 @@ mod job_status_tests {
         let (later, label) = draw(&mut app, 11.0);
         assert_eq!(label.as_deref(), Some("77% · 23:15 left"));
         assert_eq!(later, start, "the shorter text starts where the longer one did");
+    }
+
+    /// A background job that is not an export says what it is doing. Mask tracking, ingest,
+    /// proxies and scene detection all run as jobs; the status bar called every one "Exporting".
+    #[test]
+    fn a_background_job_that_is_not_an_export_shows_its_own_label() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.jobs.push(filmcraft_engine::Job {
+            id: 9,
+            label: "Ingest: transcode 2 clip(s)".into(),
+            progress: Default::default(),
+            result: Default::default(),
+        });
+        let (ctx, t) = (egui::Context::default(), Tokens::for_kind(crate::theme::ThemeKind::Dark));
+        let sb = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 24.0));
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.job_status(ui, sb, &t);
+        })
+        .textures_delta
+        .clear();
+        let text = app.job_text.as_ref().expect("the job text is drawn").text.clone();
+        assert!(text.starts_with("Ingest: transcode 2 clip(s)…"), "{text}");
+        assert!(!text.starts_with("Exporting"), "an ingest is not an export: {text}");
     }
 }
