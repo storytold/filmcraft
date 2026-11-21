@@ -68,3 +68,42 @@ fn a_through_edit_is_not_a_cut_but_a_jump_cut_is() {
     let shown = |r: &Value| r["shots"].as_array().unwrap().iter().map(|g| g["seconds"].as_f64().unwrap()).sum::<f64>();
     assert!(shown(&after) < shown(&before), "before {before}\nafter {after}");
 }
+
+/// A through edit is decided by what plays: reverse playback that carries on backwards is one
+/// shot, a jump in reverse is a cut, so is a change of held frame or of multi-camera angle.
+#[test]
+fn through_edits_follow_direction_holds_and_angles() {
+    use filmcraft_time::Tick;
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let base = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+    let d = Tick::from_seconds_f64(1.0);
+    let x = base.source_in;
+    // two pieces of the same media, `a` then `b`, each `d` long
+    let piece = |start: Tick, src: Tick, reverse: bool| {
+        let mut c = base.clone();
+        (c.start, c.duration, c.source_in, c.speed, c.reverse) = (start, d, src, 1.0, reverse);
+        c
+    };
+    let through = |a: &filmcraft_project::TrackItem, b: &filmcraft_project::TrackItem| super::is_through_edit(&s.project, a, b);
+
+    assert!(through(&piece(Tick::ZERO, x, false), &piece(d, x + d, false)), "forward, continuous");
+    assert!(!through(&piece(Tick::ZERO, x, false), &piece(d, x + d + d, false)), "forward jump");
+    // reversed: `a` plays x+d+d → x+d, `b` carries on x+d → x
+    assert!(through(&piece(Tick::ZERO, x + d, true), &piece(d, x, true)), "reverse, continuous");
+    assert!(!through(&piece(Tick::ZERO, x + d + d, true), &piece(d, x, true)), "reverse jump");
+    assert!(!through(&piece(Tick::ZERO, x, false), &piece(d, x + d, true)), "direction change");
+
+    let held = |c: &mut filmcraft_project::TrackItem, at: Tick| c.frame_hold = Some(at);
+    let (mut a, mut b) = (piece(Tick::ZERO, x, false), piece(d, x + d, false));
+    held(&mut a, x);
+    held(&mut b, x);
+    assert!(through(&a, &b), "the same held frame carries on");
+    held(&mut b, x + d);
+    assert!(!through(&a, &b), "another held frame is a cut");
+
+    let (mut a, mut b) = (piece(Tick::ZERO, x, false), piece(d, x + d, false));
+    a.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 0 });
+    b.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 1 });
+    assert!(!through(&a, &b), "an angle change is a cut");
+}

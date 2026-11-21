@@ -56,9 +56,23 @@ fn is_picture(p: &Project, item: ItemId) -> bool {
     !matches!(p.item(item).map(|i| &i.kind), Some(ItemKind::Graphic { .. } | ItemKind::AdjustmentLayer { .. }))
 }
 
-/// `b` continues `a` with no visible change: same media, picked up at the frame `a` stops at.
-pub(crate) fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
-    a.end() == b.start && a.item == b.item && a.speed == b.speed && a.reverse == b.reverse && !a.reverse && a.source_out() == b.source_in
+/// `b` continues `a` with no visible change: the same media (subclips of one file count as the
+/// same, as their clips use the parent's media time), the same multi-camera angle, and picked up
+/// where `a` stops, at the same speed and direction (backwards when reversed). Held frames continue
+/// only into the same held frame.
+pub(crate) fn is_through_edit(p: &Project, a: &TrackItem, b: &TrackItem) -> bool {
+    let root = |c: &TrackItem| p.resolve_media(c.item).map_or(c.item, |(r, _, _)| r);
+    if a.end() != b.start || root(a) != root(b) || a.multicam != b.multicam {
+        return false;
+    }
+    match (a.frame_hold, b.frame_hold) {
+        (None, None) => {
+            let continuous = if a.reverse { b.source_out() == a.source_in } else { a.source_out() == b.source_in };
+            a.speed == b.speed && a.reverse == b.reverse && continuous
+        }
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// The clips that can be the picture: (track index, clip) on enabled video tracks, enabled, with
@@ -98,7 +112,7 @@ pub fn segments(p: &Project, q: &Sequence) -> Vec<Segment> {
         let top = picture_at(&clips, a);
         let same_shot = match (out.last(), prev, top) {
             (Some(last), _, None) => last.clip.is_none(),
-            (Some(last), Some(pc), Some(tc)) => last.clip.is_some() && (pc.id == tc.id || is_through_edit(pc, tc)),
+            (Some(last), Some(pc), Some(tc)) => last.clip.is_some() && (pc.id == tc.id || is_through_edit(p, pc, tc)),
             _ => false,
         };
         match out.last_mut() {
