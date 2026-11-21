@@ -223,6 +223,20 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert!(d.has("panel.tab.Program") && d.has("panel.tab.Timeline"));
 }
 
+/// #4446: a panel menu is sized to its items, not stretched across a wide window by its separators.
+#[test]
+fn panel_menu_popup_is_sized_to_its_contents() {
+    let mut d = Driver::demo();
+    for panel in ["Timeline", "Project", "Source"] {
+        d.click(&format!("panel.menu.{panel}"));
+        let scroll = d.rects("panel.menu.scroll");
+        let r = scroll.iter().find(|(id, _)| id == "panel.menu.scroll").expect("menu scroll area").1;
+        assert!(r.width() <= 360.0, "{panel} menu is {} px wide", r.width());
+        d.ok("ui.key", json!({"key": "Escape"}));
+        d.frames(2);
+    }
+}
+
 /// The History panel menu: Delete Redoable Actions asks for OK and then forgets the dimmed steps
 /// (Backspace in the History panel asks the same), and Clear History forgets every step. The
 /// project stays as it is.
