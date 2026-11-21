@@ -389,3 +389,14 @@ fn variable_rate_track_with_a_coarse_unit_keeps_its_off_grid_frame() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The standard-rate window is 0.1%: the averaged 30 fps clips in #1700 sit inside it (30.02 and
+/// 29.95 fps are 0.067% off 30 and 29.97 and read as the standard rate they are near), while a clip
+/// averaging 29.9 fps, 0.23% off 29.97, keeps its own rate instead of being rounded onto it.
+#[test]
+fn mp4_with_average_durations_just_off_a_standard_rate_read_as_it() {
+    let read = |durations: &[u32]| crate::open_bytes("synthetic.mov", mp4_90k(durations)).unwrap().info().video.as_ref().map(|v| v.frame_rate);
+    assert_eq!(read(&[2998; 90]), Some(FrameRate::FPS_30), "30.02 fps");
+    assert_eq!(read(&[3005; 90]), Some(FrameRate::FPS_29_97), "29.95 fps");
+    assert_eq!(read(&[3010; 90]), Some(FrameRate::new(299, 10)), "29.9 fps stays 29.9");
+}
