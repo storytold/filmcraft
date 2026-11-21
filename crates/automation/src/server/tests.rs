@@ -402,10 +402,11 @@ async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
     assert_eq!(v["sequence"]["id"].as_u64(), Some(HUGE), "an id above i64::MAX must still be inspected, not dropped to a null sequence: {v}");
 }
 
-/// Bridge `render_frame` with `seconds` moves the app's single playhead, screenshots the single
-/// Program monitor and moves the playhead back. Parallel calls (the tool is annotated read-only and
-/// idempotent, so clients send them that way) interleaved those steps and got each other's frames
-/// (#3837). Each call has to return the frame at its own time.
+/// Parallel bridge `render_frame` calls (the tool is annotated read-only and idempotent, so clients
+/// send them that way) once moved the app's single playhead and screenshotted the single Program
+/// monitor, interleaved those steps and got each other's frames (#3837). The app now renders each
+/// frame off-screen with `file.exportFrame` at the requested time, so a hidden window can't stall
+/// it either. Each call has to return the frame at its own time, and the playhead must not move.
 #[tokio::test]
 async fn parallel_bridge_render_frames_each_return_their_own_frame() {
     use base64::Engine as _;
@@ -414,9 +415,12 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let app_playhead = playhead.clone();
+    let moved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let app_moved = moved.clone();
     tokio::spawn(async move {
         while let Ok((s, _)) = listener.accept().await {
             let playhead = app_playhead.clone();
+            let moved = app_moved.clone();
             tokio::spawn(async move {
                 let (r, mut w) = s.into_split();
                 let mut lines = tokio::io::BufReader::new(r).lines();
@@ -428,6 +432,14 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
                         (_, "playhead.set") => {
                             let t = params["seconds"].as_f64().map(|x| x as i64).or_else(|| params["time"].as_i64()).unwrap_or(0);
                             playhead.store(t, std::sync::atomic::Ordering::SeqCst);
+                            moved.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Value::Null
+                        }
+                        (_, "file.exportFrame") => {
+                            // the off-screen render draws the frame at the requested time
+                            let secs = params["time"].as_i64().unwrap_or(0) / 254_016_000_000;
+                            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([secs as u8, 0, 0, 255]));
+                            img.save(params["path"].as_str().unwrap()).unwrap();
                             Value::Null
                         }
                         ("ui.screenshot", _) => {
@@ -456,6 +468,7 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
         assert_eq!(px[0], want, "frame at {want} s came from another call's playhead");
     }
     assert_eq!(playhead.load(std::sync::atomic::Ordering::SeqCst), 200, "the playhead must end where it started");
+    assert!(!moved.load(std::sync::atomic::Ordering::SeqCst), "rendering a frame must not move the app's playhead at all");
 }
 
 /// A client that floods malformed lines and never reads its output stalls its own input: parse

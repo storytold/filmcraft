@@ -35,9 +35,6 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 #[derive(Clone)]
 pub struct FilmcraftMcp {
     backend: Arc<Backend>,
-    /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
-    /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
-    render_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -200,10 +197,10 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
+        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
+        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -360,7 +357,7 @@ impl FilmcraftMcp {
 
     #[tool(
         title = "Render a preview",
-        description = "The active sequence's frame at `seconds` (default: the playhead) as PNG, same as render_frame (bridge mode: Program monitor screenshot).",
+        description = "The active sequence's frame at `seconds` (default: the playhead) as PNG, same as render_frame (rendered off-screen in both modes, so it works while the app window is hidden).",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn render_preview(&self, p: Parameters<RenderParams>) -> Result<CallToolResult, McpError> {
@@ -421,34 +418,42 @@ impl FilmcraftMcp {
                     Err(e) => fail(e),
                 })
             }
-            Backend::Bridge(b) => {
-                // held until the playhead is back, also for the no-`seconds` screenshot, which must not catch another call's seek
-                let _turn = self.render_lock.lock().await;
-                let Some(sec) = p.seconds else {
-                    return self.screenshot(&b.clone(), Some("Program".into()), max).await;
+            Backend::Bridge(_) => {
+                // The app renders the frame off-screen with `file.exportFrame` (the Program picture
+                // with captions, as headless renders it), so this works while the window is hidden
+                // or minimised (a hidden window presents no frames, so a screenshot would time out)
+                // and leaves the playhead and selection alone (#114). Each call has its own file, so
+                // parallel calls don't wait for each other.
+                let dir = match tempfile::tempdir() {
+                    Ok(dir) => dir,
+                    Err(e) => return Ok(fail(format!("render_frame: {e}"))),
                 };
-                // The Program monitor shows the playhead's frame, so the live playhead has to move
-                // for the screenshot; put it (and the selection, which may follow it) back after,
-                // so the tool stays read-only (#114).
-                let before = match self.run("sequence.inspect", json!({})).await {
-                    Ok(v) => v,
-                    Err(e) => return Ok(fail(e)),
-                };
-                if let Err(e) = self.run("playhead.set", json!({"seconds": sec})).await {
+                let path = dir.path().join("frame.png");
+                let mut params = json!({"path": path.to_string_lossy(), "target": "program"});
+                if let Some(sec) = p.seconds {
+                    if !sec.is_finite() || sec < 0.0 {
+                        return Ok(fail("render_frame: seconds must be a finite, non-negative number"));
+                    }
+                    params["time"] = json!(filmcraft_time::Tick::from_seconds_f64(sec).0);
+                }
+                if let Err(e) = self.run("file.exportFrame", params).await {
                     return Ok(fail(e));
                 }
-                let shot = self.screenshot(&b.clone(), Some("Program".into()), max).await;
-                if let Some(t) = before.get("playhead").and_then(Value::as_i64) {
-                    let _ = self.run("playhead.set", json!({"time": t})).await;
-                }
-                // only when it changed: selecting also leaves trim mode
-                let now = self.run("sequence.inspect", json!({})).await.ok();
-                if let Some(sel) = before.get("selection").filter(|v| v.is_array())
-                    && now.as_ref().and_then(|n| n.get("selection")) != Some(sel)
-                {
-                    let _ = self.run("timeline.select", json!({"clips": sel})).await;
-                }
-                shot
+                let bytes = match tokio::fs::read(&path).await {
+                    Ok(b) => b,
+                    Err(e) => return Ok(fail(format!("render_frame: {e}"))),
+                };
+                Ok(match image::load_from_memory(&bytes) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        match png_rgba(w, h, rgba.into_raw(), max) {
+                            Ok(png) => png_result(&png, "rendered frame"),
+                            Err(e) => fail(e),
+                        }
+                    }
+                    Err(e) => fail(format!("render_frame: {e}")),
+                })
             }
         }
     }
