@@ -777,11 +777,12 @@ fn replace_from_bin_keeps_the_source_in_on_request() {
     assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": []}));
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*s.project, *before);
-    // keepSourceIn: the same place in the new media, everything else as before
-    let r = s.execute("clip.replaceFromBin", json!({"keepSourceIn": true})).unwrap();
+    // keepSourceIn: the same place in the new media, everything else as before (the clip already
+    // plays Desert_Dunes.mp4, so keeping its In there would change nothing and add no undo step)
+    let r = s.execute("clip.replaceFromBin", json!({"item": forest.0, "keepSourceIn": true})).unwrap();
     let got = clip(&s, c.id.0);
-    assert_eq!((got.item, got.source_in, got.start, got.duration), (dunes, trimmed.source_in, trimmed.start, trimmed.duration));
-    assert_eq!(r, json!({"clips": [c.id.0], "item": dunes.0, "short": [], "sourceInClamped": []}));
+    assert_eq!((got.item, got.source_in, got.start, got.duration), (forest, trimmed.source_in, trimmed.start, trimmed.duration));
+    assert_eq!(r, json!({"clips": [c.id.0], "item": forest.0, "short": [], "sourceInClamped": []}));
     let after = s.project.clone();
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*s.project, *before);

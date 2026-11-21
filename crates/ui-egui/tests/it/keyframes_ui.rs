@@ -706,13 +706,17 @@ fn graph_keyframes_offer_interpolation_and_clear_in_one_undo_step() {
             assert_eq!(changed.keyframes[0].time, before.keyframes[0].time);
             assert_eq!(changed.keyframes[0].value, before.keyframes[0].value);
             assert_eq!(changed.keyframes[1], before.keyframes[1]);
-            assert_eq!(d.undo_len(), undo + 1);
+            // the interpolation the keyframe already has changes nothing and adds no undo step
+            let edited = interpolation != before.keyframes[0].interp;
+            assert_eq!(d.undo_len(), undo + usize::from(edited), "{key}");
             assert!(d.find("effectControls.keyframeMenu.clear").is_none(), "choosing interpolation closes the menu");
-            d.exec("edit.undo", json!({}));
-            assert_eq!(d.parameter(&clip, effect, param), before);
-            d.exec("edit.redo", json!({}));
-            assert_eq!(d.parameter(&clip, effect, param), changed);
-            d.exec("edit.undo", json!({}));
+            if edited {
+                d.exec("edit.undo", json!({}));
+                assert_eq!(d.parameter(&clip, effect, param), before);
+                d.exec("edit.redo", json!({}));
+                assert_eq!(d.parameter(&clip, effect, param), changed);
+                d.exec("edit.undo", json!({}));
+            }
         }
         d.right_click(&target);
         d.click("effectControls.keyframeMenu.clear");
