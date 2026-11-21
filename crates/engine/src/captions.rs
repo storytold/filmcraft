@@ -263,7 +263,11 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
 fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("captions.export", "need `path`"))?.to_string();
     let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("");
-    let format = str_p(p, "format").and_then(Format::from_name).or_else(|| Format::from_name(ext)).unwrap_or(Format::Srt);
+    let format = if let Some(value) = p.get("format").filter(|value| !value.is_null()) {
+        value.as_str().and_then(Format::from_name).ok_or_else(|| bad("captions.export", "unknown caption format"))?
+    } else {
+        Format::from_name(ext).unwrap_or(Format::Srt)
+    };
     let tid = track_param(s, p).ok_or_else(|| bad("captions.export", "no caption track"))?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
