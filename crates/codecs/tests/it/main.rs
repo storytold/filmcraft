@@ -9,6 +9,7 @@ mod h264_draft;
 mod matroska_audio_oracle;
 mod media_oracle;
 mod mkv_mp1_oracle;
+mod mkv_opus_open_error;
 mod mp4_oracle;
 mod mp4_rtmd;
 mod mpeg_oracle;

@@ -529,8 +529,10 @@ impl filmcraft_render::SourceProvider for PoolProvider {
                 Some(src) => src.clone(),
                 None => {
                     let src = self.pool.own_source(&self.project, media, &*self.services);
-                    // the host is still fetching the file's bytes (the browser): try again next time
-                    if src.is_some() || !filmcraft_media::pending::is_set() {
+                    // A source opened while a read was deferred may be built from incomplete
+                    // data (#5013), and the host may still be fetching the file's bytes (the
+                    // browser): don't keep it, so the next request opens it again.
+                    if !filmcraft_media::pending::is_set() {
                         own.insert(media, src.clone());
                     }
                     src
@@ -852,6 +854,60 @@ mod tests {
         assert!(job.source(items[0]).is_some_and(|x| Arc::ptr_eq(&x, &monitor)), "shared while the bytes are fetched");
         assert!(filmcraft_media::pending::take());
         assert!(job.source(items[0]).is_some_and(|x| !Arc::ptr_eq(&x, &monitor)), "its own copy once they are there");
+    }
+
+    /// A reader whose first read was deferred (the bytes were still being fetched) but serves
+    /// it anyway: the open succeeds while `pending` is set.
+    struct ServingWhilePending {
+        data: Arc<[u8]>,
+        marked: std::sync::atomic::AtomicBool,
+    }
+
+    impl filmcraft_media::reader::ByteReader for ServingWhilePending {
+        fn len(&self) -> u64 {
+            self.data.len() as u64
+        }
+
+        fn read_at(&self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            if !self.marked.swap(true, Ordering::SeqCst) {
+                filmcraft_media::pending::mark();
+            }
+            let s = off as usize;
+            buf.copy_from_slice(self.data.get(s..s + buf.len()).ok_or(std::io::ErrorKind::UnexpectedEof)?);
+            Ok(())
+        }
+    }
+
+    /// A host whose reads are served while still marked pending (the browser's `BlobReader`
+    /// fetching a range that arrives mid-open).
+    struct ServingPending(Arc<[u8]>);
+    impl Services for ServingPending {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::other(format!("{path}: read whole")))
+        }
+        fn write_file(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn reader(&self, _path: &str) -> Option<std::io::Result<filmcraft_media::SharedReader>> {
+            Some(Ok(Arc::new(ServingWhilePending { data: self.0.clone(), marked: Default::default() })))
+        }
+    }
+
+    /// #5013: a job's own copy opened while a read was deferred is not kept: it may be built
+    /// from incomplete data, so the next request opens the file again.
+    #[test]
+    fn own_sources_do_not_keep_a_source_opened_while_pending() {
+        use filmcraft_render::SourceProvider;
+        let movie = crate::media_test_util::tmp_dir("own-sources-pending-open").join("a.mp4");
+        crate::media_test_util::make_movie(&movie, filmcraft_media::DemoScene::Aurora, 64, 36, 12);
+        let (s, items, _) = crate::media_test_util::session_with(&[&movie]);
+        let host = Arc::new(ServingPending(std::fs::read(&movie).unwrap().into()));
+        let job = s.media.full_res_provider(s.project.clone(), host).own_sources();
+        let first = job.source(items[0]).unwrap();
+        assert!(filmcraft_media::pending::take(), "the open did not mark pending");
+        let second = job.source(items[0]).unwrap();
+        assert!(filmcraft_media::pending::take(), "the second open did not mark pending");
+        assert!(!Arc::ptr_eq(&first, &second), "a source opened while pending was kept");
     }
 
     /// A background job reads its own copy of a file, so the monitors' source keeps its decoder

@@ -77,9 +77,9 @@ pub struct MkvSource {
 /// timestamp only across gaps of more than half a packet (and more than two ticks); see
 /// [`crate::audio::contiguous_starts`]. Opus packets: [`opus_starts`]. Other codecs start at their
 /// timestamps. Timestamps are taken with the exact `CodecDelay` off (see [`stamp_to_samples`]).
-fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec<i64> {
+fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> crate::Result<Vec<i64>> {
     use crate::audio::{FixedFrames, PacketTime, contiguous_starts, fixed_packet_samples};
-    let Some(t) = file.tracks.get(ti) else { return Vec::new() };
+    let Some(t) = file.tracks.get(ti) else { return Ok(Vec::new()) };
     if let Some(h) = opus_head(&t.codec) {
         return opus_starts(file, bytes, ti, &h, rate);
     }
@@ -94,27 +94,30 @@ fn audio_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, rate: i64) -> Vec
         _ => None,
     };
     let Some(frame) = frame else {
-        return t.samples.iter().map(|s| at(s.pts)).collect();
+        return Ok(t.samples.iter().map(|s| at(s.pts)).collect());
     };
     let packets = t.samples.iter().map(|s| PacketTime { stamp: at(s.pts), stamped: own_stamp(s), samples: Some(frame) });
-    contiguous_starts(packets, (frame / 2).max(stamp_tolerance(t, rate)))
+    Ok(contiguous_starts(packets, (frame / 2).max(stamp_tolerance(t, rate))))
 }
 
 /// Sample-exact Opus packet start positions (48 kHz frames, pre-skip removed).
 ///
 /// Starts are accumulated from each packet's TOC duration, resynchronising to the timestamp only
 /// across real gaps (more than two ticks off). Pre-skip is the exact `CodecDelay` (or the header's
-/// pre-skip when it is absent).
-fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &craft_audio::opus::OpusHead, rate: i64) -> Vec<i64> {
-    let Some(t) = file.tracks.get(ti) else { return Vec::new() };
+/// pre-skip when it is absent). A packet that cannot be read fails the open (#5013): treating its
+/// duration as unknown would fall back to its millisecond block timestamp and shift every later
+/// packet by up to 1 ms.
+fn opus_starts(file: &MkvFile, bytes: &crate::Src, ti: usize, head: &craft_audio::opus::OpusHead, rate: i64) -> crate::Result<Vec<i64>> {
+    let Some(t) = file.tracks.get(ti) else { return Ok(Vec::new()) };
     let skip = if t.codec_delay_ns > 0 { codec_delay_samples(t, rate) } else { head.pre_skip as i64 };
     let at = stamp_to_samples(t, rate, skip);
-    let packets = t.samples.iter().enumerate().map(|(i, s)| crate::audio::PacketTime {
-        stamp: at(s.pts),
-        stamped: own_stamp(s),
-        samples: file.read_sample(bytes, ti, i).ok().and_then(|p| crate::audio::opus_packet_samples(&p)).map(|k| k as i64),
-    });
-    crate::audio::contiguous_starts(packets, stamp_tolerance(t, rate))
+    let mut packets = Vec::with_capacity(t.samples.len());
+    for (i, s) in t.samples.iter().enumerate() {
+        let data = file.read_sample(bytes, ti, i).map_err(|e| CodecError::Container(e.to_string()))?;
+        let samples = crate::audio::opus_packet_samples(&data).map(|k| k as i64);
+        packets.push(crate::audio::PacketTime { stamp: at(s.pts), stamped: own_stamp(s), samples });
+    }
+    Ok(crate::audio::contiguous_starts(packets, stamp_tolerance(t, rate)))
 }
 
 /// A block timestamp (with the demuxer's rounded `CodecDelay` taken off) as a position in sample
@@ -454,24 +457,24 @@ impl MkvSource {
             file_size: Some(bytes.0.len()),
         };
         // `info.audio_streams[k]` was made from `atracks[k]`, so the two stay index-aligned
-        let audios: Vec<MkvAudio> = atracks
-            .iter()
-            .zip(&info.audio_streams)
-            .filter_map(|(&i, ainfo)| {
-                let t = file.tracks.get(i)?;
-                let rate = ainfo.sample_rate as i64;
-                let starts = audio_starts(&file, &bytes, i, rate);
-                let preroll = match t.codec {
-                    Codec::Opus { .. } => {
-                        let container = (t.seek_pre_roll_ns as u128 * rate as u128).div_ceil(1_000_000_000) as i64;
-                        container.max(crate::audio::OPUS_PRE_ROLL as i64 * rate / 48_000)
-                    }
-                    _ => 0,
-                };
-                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
-                Some(MkvAudio { track: i, state, starts, preroll })
-            })
-            .collect();
+        let mut audios: Vec<MkvAudio> = Vec::with_capacity(atracks.len());
+        for (&i, ainfo) in atracks.iter().zip(&info.audio_streams) {
+            let Some(t) = file.tracks.get(i) else { continue };
+            let rate = ainfo.sample_rate as i64;
+            // A packet that cannot be read fails the open (#5013): dropping the track
+            // instead would silently lose the audio, and keeping starts built from a
+            // millisecond timestamp would shift it.
+            let starts = audio_starts(&file, &bytes, i, rate)?;
+            let preroll = match t.codec {
+                Codec::Opus { .. } => {
+                    let container = (t.seek_pre_roll_ns as u128 * rate as u128).div_ceil(1_000_000_000) as i64;
+                    container.max(crate::audio::OPUS_PRE_ROLL as i64 * rate / 48_000)
+                }
+                _ => 0,
+            };
+            let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
+            audios.push(MkvAudio { track: i, state, starts, preroll });
+        }
         // WebM transparency: VP8 / VP9 alpha in each block's BlockAdditional (ID 1)
         let alpha = vtrack.and_then(|i| file.tracks.get(i)).filter(|t| {
             matches!(t.codec, Codec::Vp8 | Codec::Vp9 { .. })
