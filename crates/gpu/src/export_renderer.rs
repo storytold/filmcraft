@@ -84,8 +84,55 @@ fn mark_device_failed(why: &str) {
     }
 }
 
-fn device_failed() -> bool {
+pub(crate) fn device_failed() -> bool {
     DEVICE_FAILED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The off-screen device every GPU job shares (export frames, optical-flow overlays) and its
+/// adapter's name, or `None` when this host has no usable adapter, this build no wgpu backend, or
+/// the device failed earlier in this session.
+pub(crate) fn shared_device() -> Option<(wgpu::Instance, wgpu::Device, wgpu::Queue, String)> {
+    // `None` is kept too: a machine without an adapter does not search again on every export
+    #[allow(clippy::type_complexity)]
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue, String)>> = std::sync::OnceLock::new();
+    let shared = SHARED
+        .get_or_init(|| {
+            // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
+            // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
+            // panics there.
+            if wgpu::Instance::enabled_backend_features().is_empty() {
+                return None;
+            }
+            let instance = crate::adapter::native_instance();
+            // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
+            // overrides it, as for the window). With no preference the first adapter listed
+            // can be an integrated GPU whose read-back memory is uncached.
+            let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+            // the adapter `request_adapter` would return, except where that one's driver is
+            // known to crash creating the device (`adapter::choose`); among the backends
+            // `WGPU_BACKEND` names, as for the window, when this instance has any of them
+            let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+            if let Some(named) = wgpu::Backends::from_env()
+                && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+            {
+                adapters.retain(|a| named.contains(a.get_info().backend.into()));
+            }
+            let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+            log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
+            let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+            // wgpu's default handler panics on a validation or out-of-memory error; log it and
+            // send the remaining frames to the CPU instead.
+            device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
+            device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
+            let name = adapter.get_info().name;
+            Some((instance, device, queue, name))
+        })
+        .as_ref()?
+        .clone();
+    if device_failed() {
+        return None;
+    }
+    Some(shared)
 }
 
 pub struct ExportRenderer {
@@ -101,44 +148,7 @@ impl ExportRenderer {
     /// The off-screen device, or `None` when this host has no usable adapter or this build no
     /// wgpu backend.
     pub fn new() -> Option<Self> {
-        // `None` is kept too: a machine without an adapter does not search again on every export
-        static SHARED: std::sync::OnceLock<Option<(wgpu::Instance, wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
-        let (instance, device, queue) = SHARED
-            .get_or_init(|| {
-                // A build without a wgpu backend for this platform (`cargo build -p filmcraft-cli`
-                // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
-                // panics there.
-                if wgpu::Instance::enabled_backend_features().is_empty() {
-                    return None;
-                }
-                let instance = crate::adapter::native_instance();
-                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
-                // overrides it, as for the window). With no preference the first adapter listed
-                // can be an integrated GPU whose read-back memory is uncached.
-                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-                // the adapter `request_adapter` would return, except where that one's driver is
-                // known to crash creating the device (`adapter::choose`); among the backends
-                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
-                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-                if let Some(named) = wgpu::Backends::from_env()
-                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
-                {
-                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
-                }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
-                log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
-                // wgpu's default handler panics on a validation or out-of-memory error; log it and
-                // send the remaining frames to the CPU instead.
-                device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
-                device.set_device_lost_callback(|reason, msg| mark_device_failed(&format!("GPU device lost ({reason:?}): {msg}")));
-                Some((instance, device, queue))
-            })
-            .as_ref()?
-            .clone();
-        if device_failed() {
-            return None;
-        }
+        let (instance, device, queue, _) = shared_device()?;
         let compositor = GpuCompositor::new(&device, &queue);
         Some(Self { _instance: instance, device, queue, compositor })
     }

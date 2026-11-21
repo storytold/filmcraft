@@ -3758,3 +3758,9 @@
 	{count} selected	Odabrano: {count}
 	{frames} frames ({seconds} s)	{frames} sličica ({seconds} s)
 	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} već postoji, pa ništa nije izvezeno. Da ga zamijenite, odaberite ga u dijalogu za čuvanje.
+	Optical Flow Track	Traka optičkog toka
+	Generate Optical Flow Track…	Generiraj traku optičkog toka…
+	HSV Neon Flow Wheel	HSV neonski kotač toka
+	Motion Vectors (UV Pass)	Vektori pokreta (UV prolaz)
+	Kinetic Motion Glow	Kinetički sjaj pokreta
+	Temporal Detail Enhancement	Poboljšanje vremenskih detalja

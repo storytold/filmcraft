@@ -73,7 +73,12 @@ fn menus_and_shortcuts_follow_premiere() {
             "Optical Flow",
             "Scale to Frame Size",
             "Fit to frame",
-            "Fill frame"
+            "Fill frame",
+            // FilmCraft's own Optical Flow Track submenu, after Premiere's items
+            "HSV Neon Flow Wheel",
+            "Motion Vectors (UV Pass)",
+            "Kinetic Motion Glow",
+            "Temporal Detail Enhancement"
         ]
     );
     let sc = |id: &str| crate::commands::find(id).unwrap().shortcut;

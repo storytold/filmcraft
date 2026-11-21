@@ -3745,3 +3745,9 @@
 	Toggle Color Grading Section	Переключить раздел грейдинга
 	Color Grading Section	Раздел грейдинга
 	Read Video Scopes	Считать данные видеоскопов
+	Optical Flow Track	Дорожка оптического потока
+	Generate Optical Flow Track…	Создать дорожку оптического потока…
+	HSV Neon Flow Wheel	Неоновое HSV-колесо потока
+	Motion Vectors (UV Pass)	Векторы движения (UV-проход)
+	Kinetic Motion Glow	Кинетическое свечение движения
+	Temporal Detail Enhancement	Межкадровое улучшение деталей

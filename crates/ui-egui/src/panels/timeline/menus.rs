@@ -64,6 +64,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Scale to Frame Size", "clip.scaleToFrameSize"),
         ("Fit to frame", "clip.fitToFrame"),
         ("Fill frame", "clip.fillFrame"),
+        ("Optical Flow Track", "clip.opticalFlowOverlay"),
     ],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];
@@ -297,6 +298,36 @@ pub(super) fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &
     });
     if let Some((cmd, params)) = run {
         if let Err(e) = app.session.execute(cmd, params) {
+            app.ui.status = e.to_string();
+        }
+        ui.close();
+    }
+}
+
+/// The clip menu's Optical Flow Track submenu: generates an aligned ProRes overlay clip on the
+/// video track above using NVIDIA NVOFA (or CPU fallback).
+pub(super) fn optical_flow_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    let enabled = app.session.is_enabled("clip.opticalFlowOverlay");
+    let mut picked: Option<&str> = None;
+    ui.add_enabled_ui(enabled, |ui| {
+        let r = ui.menu_button(tl!("Optical Flow Track"), |ui| {
+            for (label, cmd) in [
+                (tl!("HSV Neon Flow Wheel"), "clip.opticalFlowOverlay.hsvWheel"),
+                (tl!("Motion Vectors (UV Pass)"), "clip.opticalFlowOverlay.motionVectors"),
+                (tl!("Kinetic Motion Glow"), "clip.opticalFlowOverlay.kineticGlow"),
+                (tl!("Temporal Detail Enhancement"), "clip.opticalFlowOverlay.temporalDetail"),
+            ] {
+                let b = ui.add_enabled(enabled, egui::Button::new(label));
+                app.auto.add(&format!("timeline.clipMenu.{cmd}"), b.rect, label);
+                if b.clicked() {
+                    picked = Some(cmd);
+                }
+            }
+        });
+        app.auto.add("timeline.clipMenu.clip.opticalFlowOverlay", r.response.rect, "Optical Flow Track");
+    });
+    if let Some(cmd) = picked {
+        if let Err(e) = app.session.execute(cmd, json!({})) {
             app.ui.status = e.to_string();
         }
         ui.close();

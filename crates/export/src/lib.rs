@@ -57,9 +57,11 @@ pub use convert::{
     Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv420_10, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10,
 };
 pub(crate) use encoders::FlacAudio;
+pub use encoders::{
+    PRORES_MOV_MAX_SIDE, ProResMovFormat, ProResMovFrame, apv_profile, dnx_profile, encode_prores_mov, encode_prores_mov_frames, prores_profile,
+};
 #[cfg(test)]
 use encoders::{aac_factory, h264_factory};
-pub use encoders::{apv_profile, dnx_profile, prores_profile};
 pub use format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use output::Out;
 pub use output::{OutputSink, path_is_file};
@@ -178,3 +180,6 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod prores_mov_tests;

@@ -807,7 +807,7 @@ fn placement(p: &Value, key: &str, letter: char, len: usize) -> Result<usize> {
 
 /// Give the tracks that still carry a default name (`<prefix> <number>`) the number of their
 /// place, as Premiere numbers its tracks; a track the user named keeps its name.
-fn renumber(tracks: &mut [filmcraft_project::Track], prefix: &str) {
+pub(crate) fn renumber(tracks: &mut [filmcraft_project::Track], prefix: &str) {
     for (i, t) in tracks.iter_mut().enumerate() {
         let default = t.name.strip_prefix(prefix).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
         if default {

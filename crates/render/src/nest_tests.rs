@@ -431,3 +431,31 @@ fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
     let _ = r.frame(s, Tick::ZERO);
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+#[test]
+fn the_single_track_render_never_burns_in_sequence_captions() {
+    let mut r = Rig::new();
+    let red = r.matte(RED, 320, 180);
+    let seq = r.seq("seq", 320, 180, FrameRate::FPS_24);
+    r.put(seq, red, 48);
+    let mut track = CaptionTrack::new(TrackId(9101), "Subtitles".into(), CaptionFormat::Subtitle);
+    track.captions.push(Caption {
+        id: ClipId(9102),
+        start: Tick::ZERO,
+        duration: Tick(TICKS_PER_SECOND),
+        text: "CAPTION".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    r.p.sequence_mut(seq).unwrap().caption_tracks.push(track);
+    let t = Tick(1000);
+    let asked = RenderOptions { captions: true, ..Default::default() };
+    // the whole-sequence render draws them when asked
+    assert!(worst(&render_sequence(&r.p, seq, t, asked, &r.map), &r.frame(seq, t)) > 0.1);
+    // a single track does not, even when asked, and even on an empty track
+    for track in [0, 1] {
+        let plain = render_sequence_track(&r.p, seq, track, t, RenderOptions::default(), &r.map);
+        assert!(worst(&render_sequence_track(&r.p, seq, track, t, asked, &r.map), &plain) < 1e-6, "V{}", track + 1);
+    }
+}

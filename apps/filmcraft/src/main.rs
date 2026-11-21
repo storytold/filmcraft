@@ -554,6 +554,8 @@ fn register_gpu_frame_renderer() {
     filmcraft_export::register_frame_renderer(|| {
         filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>)
     });
+    // optical-flow overlay tracks are drawn on the same device (Clip ▸ Video Options ▸ Optical Flow Track)
+    filmcraft_render::flow::register_flow_viz(filmcraft_gpu::flow_viz::factory);
 }
 
 /// Put the OS hardware video decoders in front of our own. Registered in a statement of its own:

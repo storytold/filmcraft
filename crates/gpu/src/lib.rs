@@ -40,11 +40,13 @@ use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
 pub mod export_renderer;
+pub mod flow_viz;
 pub mod fx;
 pub mod lut;
 pub mod mask;
 mod transition;
 pub use export_renderer::ExportRenderer;
+pub use flow_viz::GpuFlowViz;
 pub use lut::GpuLut;
 pub use mask::GpuMask;
 
@@ -1388,6 +1390,8 @@ fn quad_bounds(l: &PlanLayer, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
 
 #[cfg(test)]
 mod blend_tests;
+#[cfg(test)]
+mod flow_viz_tests;
 #[cfg(test)]
 mod fx_tests;
 #[cfg(test)]

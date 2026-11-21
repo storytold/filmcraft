@@ -550,6 +550,110 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     )
 }
 
+/// Largest frame side [`encode_prores_mov`] accepts.
+pub const PRORES_MOV_MAX_SIDE: u32 = 8192;
+
+/// Encode a stream of frames given as sRGB-encoded `R'G'B'` floats (`w * h * 3` values each, BT.709
+/// matrix) into a QuickTime ProRes `.mov` written to `out` as it goes: each frame's payload is
+/// written as soon as it is encoded, so only the muxer's index (a sample size and sync flag per
+/// frame, written out as `moov` at the end) grows with the number of frames. `profile` picks 4:2:2 (`Standard`, `Hq`, …) or 4:4:4 (`P4444`, …,
+/// no chroma subsampling, for data passes). Every frame is checked against `w × h`; an error from
+/// the iterator stops the encode and is returned. Returns `out` and the number of frames written.
+pub fn encode_prores_mov<W: std::io::Write + std::io::Seek>(
+    out: W,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    profile: craft_video::prores::Profile,
+    frames: impl IntoIterator<Item = Result<Vec<f32>>>,
+) -> Result<(W, u64)> {
+    let format = ProResMovFormat { profile, signal: ColorSignal::default(), alpha: false };
+    let frames = frames.into_iter().map(|f| f.map(|rgb| ProResMovFrame { rgb, alpha: None }));
+    encode_prores_mov_frames(out, w, h, rate, format, frames)
+}
+
+pub struct ProResMovFormat {
+    pub profile: craft_video::prores::Profile,
+    pub signal: ColorSignal,
+    pub alpha: bool,
+}
+
+/// Straight, transfer-encoded RGB and an optional full-resolution 10-bit alpha plane.
+pub struct ProResMovFrame {
+    pub rgb: Vec<f32>,
+    pub alpha: Option<Vec<u16>>,
+}
+
+pub fn encode_prores_mov_frames<W: std::io::Write + std::io::Seek>(
+    out: W,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    format: ProResMovFormat,
+    frames: impl IntoIterator<Item = Result<ProResMovFrame>>,
+) -> Result<(W, u64)> {
+    let ProResMovFormat { profile, signal, alpha } = format;
+    use craft_video::prores::{ChromaFormat, Encoder, EncoderConfig, Frame};
+    use filmcraft_isobmff::{Brand, FourCc, Mp4Writer, TrackConfig, WriteSample, WriterOptions};
+
+    if w == 0 || h == 0 || w > PRORES_MOV_MAX_SIDE || h > PRORES_MOV_MAX_SIDE {
+        return Err(ExportError::Unsupported(format!("invalid ProRes frame size {w}x{h}")));
+    }
+    let (Ok(timescale), Ok(sample_dur)) = (u32::try_from(rate.num), u32::try_from(rate.den)) else {
+        return Err(ExportError::Unsupported(format!("unsupported frame rate {}/{}", rate.num, rate.den)));
+    };
+    if timescale == 0 || sample_dur == 0 {
+        return Err(ExportError::Unsupported(format!("unsupported frame rate {}/{}", rate.num, rate.den)));
+    }
+    let (wu, hu) = (w as usize, h as usize);
+    let expected = wu.saturating_mul(hu).saturating_mul(3);
+    let chroma = profile.chroma();
+    if alpha && chroma != ChromaFormat::Yuv444 {
+        return Err(ExportError::Unsupported("ProRes alpha requires a 4444 profile".into()));
+    }
+    // `ColorSignal::kr_kb` converts with BT.709 or BT.2020 coefficients only: tagging any other
+    // matrix would tell readers to decode with coefficients the samples were not made with
+    if !matches!(signal.matrix, 1 | 9) {
+        return Err(ExportError::Unsupported(format!("ProRes colour matrix {} is not supported (BT.709 = 1, BT.2020 = 9)", signal.matrix)));
+    }
+    let mut cfg = EncoderConfig::new(profile, w, h);
+    cfg.encode_alpha = alpha;
+    cfg.color = craft_video::prores::ColorInfo { primaries: signal.primaries, transfer: signal.transfer, matrix: signal.matrix };
+    let mut enc = Encoder::with_config(cfg);
+    // the size check above keeps both sides within u16
+    let mut entry = SampleEntry::prores(FourCc(profile.fourcc()), w as u16, h as u16);
+    signal.apply_to(&mut entry, true);
+
+    let mut mux = Mp4Writer::new(out, WriterOptions::new(Brand::Mov)).map_err(|e| ExportError::Io(e.to_string()))?;
+    let vt = mux.add_track(TrackConfig::new(entry, timescale)).map_err(|e| ExportError::Io(e.to_string()))?;
+
+    let mut fr = Frame::new(w, h, chroma, 10, alpha).map_err(|e| ExportError::Encode(e.to_string()))?;
+    let (kr, kb) = signal.kr_kb();
+    let matrix = Matrix::new(kr, kb);
+    let mut written = 0u64;
+    for frame in frames {
+        let ProResMovFrame { rgb, alpha } = frame?;
+        match (fr.alpha.as_deref_mut(), alpha.as_deref()) {
+            (Some(dst), Some(src)) if dst.len() == src.len() && src.iter().all(|&a| a <= 1023) => dst.copy_from_slice(src),
+            (None, None) => {}
+            _ => return Err(ExportError::Encode(format!("frame {written} has invalid ProRes alpha"))),
+        }
+        if rgb.len() != expected {
+            return Err(ExportError::Encode(format!("frame {written} has {} values, expected {expected} for {w}x{h}", rgb.len())));
+        }
+        match chroma {
+            ChromaFormat::Yuv444 => to_yuv444_10(&[], Some(&rgb), wu, hu, matrix, Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: None }),
+            ChromaFormat::Yuv422 => rgbf_to_yuv422_10(&rgb, wu, hu, matrix, &mut fr.y, &mut fr.cb, &mut fr.cr),
+        }
+        let data = enc.encode(&fr).map_err(|e| ExportError::Encode(e.to_string()))?;
+        mux.write_sample(vt, WriteSample { data: &data, duration: sample_dur, composition_offset: 0, is_sync: true })
+            .map_err(|e| ExportError::Io(e.to_string()))?;
+        written += 1;
+    }
+    let out = mux.finish().map_err(|e| ExportError::Io(e.to_string()))?;
+    Ok((out, written))
+}
+
 #[cfg(test)]
 mod mjpeg_adapter_tests {
     use super::*;
