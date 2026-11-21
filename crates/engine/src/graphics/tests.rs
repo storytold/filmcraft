@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::Session;
 use filmcraft_project::graphic::{LayerContent, eval_layer, layer_indices};
-use filmcraft_project::{ClipId, ItemKind};
+use filmcraft_project::{ClipId, ItemKind, ParamValue};
 use filmcraft_time::Tick;
 
 fn demo() -> Session {
@@ -153,6 +153,112 @@ fn new_text_makes_a_graphic_clip_above_the_footage() {
     // undo removes the shape layer again
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(layers(&s, clip).len(), 2);
+}
+
+/// #5120: a Layer Name of only spaces is no name, so the clip falls back to the layer's text instead
+/// of showing a blank name, exactly as it does for an empty Layer Name.
+#[test]
+fn a_layer_name_of_only_spaces_falls_back_to_the_text() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Label"})).unwrap()["clip"].as_u64().unwrap());
+    let text_effect =
+        |s: &Session| -> usize { s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "graphic_text").unwrap() };
+    let clip_name = |s: &Session| -> String { s.active_sequence().unwrap().find_item(clip).unwrap().1.name.clone() };
+    let ei = text_effect(&s);
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": "   "})).unwrap();
+    assert_eq!(clip_name(&s), "Label", "the clip is not left without a name");
+    let list = s.execute("graphics.list", json!({"clip": clip.0})).unwrap();
+    assert_eq!(list["layers"][0]["name"], "Label", "the layer list shows the text, not a blank name");
+    // trimming keeps a layer findable by its name
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": "  Title  "})).unwrap();
+    assert_eq!(clip_name(&s), "Title");
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": "Title", "props": {"size": 60}})).unwrap();
+}
+
+/// #5120: renaming a text layer (Effect Controls ▸ fx Text ▸ Layer Name, or `graphics.set`) renames
+/// the graphic clip that holds it, so the timeline and the panel headers show the new name; undo
+/// takes both back together, and clearing the name falls back to the text as the layer list does.
+#[test]
+fn renaming_a_layer_renames_the_graphic_clip() {
+    let mut s = demo();
+    // a shape under the text: the text is the second layer of the clip and the fifth effect, so the
+    // name has to come from the layer that was renamed, not from a layer ordinal read as an index
+    let clip = ClipId(s.execute("graphics.newShape", json!({"shape": "rectangle"})).unwrap()["clip"].as_u64().unwrap());
+    s.execute("graphics.newText", json!({"text": "Label", "clip": clip.0})).unwrap();
+    let text_layer = |s: &Session| -> (usize, usize) {
+        let it = &s.active_sequence().unwrap().find_item(clip).unwrap().1;
+        let layers = layer_indices(&it.effects);
+        let l = layers.len() - 1;
+        (l, layers[l])
+    };
+    let clip_name = |s: &Session| -> String { s.active_sequence().unwrap().find_item(clip).unwrap().1.name.clone() };
+    let layer_name = |s: &Session| -> String {
+        let (_, ei) = text_layer(s);
+        let it = &s.active_sequence().unwrap().find_item(clip).unwrap().1;
+        match it.effects[ei].param("name").map(|p| p.value_at(Tick::ZERO)) {
+            Some(ParamValue::Text(t)) => t,
+            other => panic!("the text layer's Layer Name is text: {other:?}"),
+        }
+    };
+    let (l, ei) = text_layer(&s);
+    assert_ne!(ei, l, "the text layer's ordinal is not the index of its effect in the clip");
+    assert_eq!(clip_name(&s), "Shape", "a shape clip is named after its shape");
+    assert_eq!(layer_name(&s), "", "the layer has no Layer Name yet");
+
+    // Effect Controls ▸ fx Text ▸ Layer Name
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": "Title One"})).unwrap();
+    assert_eq!(layer_name(&s), "Title One", "the layer's own name changed");
+    assert_eq!(clip_name(&s), "Title One", "and the clip followed it");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((clip_name(&s), layer_name(&s)), ("Shape".to_string(), String::new()), "undo takes the clip name back with the layer name");
+
+    // Essential Graphics ▸ graphics.set
+    s.execute("graphics.set", json!({"clip": clip.0, "layer": l, "props": {"name": "Title Two"}})).unwrap();
+    assert_eq!((clip_name(&s), layer_name(&s)), ("Title Two".to_string(), "Title Two".to_string()));
+
+    // clearing it falls back to the layer's text, as the layer list does
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": ""})).unwrap();
+    assert_eq!((clip_name(&s), layer_name(&s)), ("Label".to_string(), String::new()));
+}
+
+/// #5120: the reset icon of a layer row and the double click on its label go through
+/// `effects.resetParam`, which empties the Layer Name: the clip goes back to the layer's text.
+#[test]
+fn resetting_the_layer_name_puts_the_clip_back_to_its_text() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Label"})).unwrap()["clip"].as_u64().unwrap());
+    let text_effect =
+        |s: &Session| -> usize { s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "graphic_text").unwrap() };
+    let clip_name = |s: &Session| -> String { s.active_sequence().unwrap().find_item(clip).unwrap().1.name.clone() };
+    let ei = text_effect(&s);
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": "Title One"})).unwrap();
+    assert_eq!(clip_name(&s), "Title One");
+    s.execute("effects.resetParam", json!({"clip": clip.0, "effect": ei, "param": "name"})).unwrap();
+    assert_eq!(clip_name(&s), "Label", "the clip goes back to the layer's text");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clip_name(&s), "Title One", "undo brings the renamed clip back");
+}
+
+/// #5120: resetting the whole layer effect (`effects.reset`) empties its Layer Name too — the keep
+/// list is only for `graphics.resetAllParameters` — so the clip follows the layer again instead of
+/// keeping the old name. A full reset empties the text as well, so the layer falls back to «Text»,
+/// the same name the layer list shows.
+#[test]
+fn resetting_the_layer_effect_makes_the_clip_follow_the_layer_again() {
+    let mut s = demo();
+    let clip = ClipId(s.execute("graphics.newText", json!({"text": "Label"})).unwrap()["clip"].as_u64().unwrap());
+    let text_effect =
+        |s: &Session| -> usize { s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "graphic_text").unwrap() };
+    let clip_name = |s: &Session| -> String { s.active_sequence().unwrap().find_item(clip).unwrap().1.name.clone() };
+    let ei = text_effect(&s);
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": ei, "param": "name", "value": "Title One"})).unwrap();
+    assert_eq!(clip_name(&s), "Title One");
+    s.execute("effects.reset", json!({"clip": clip.0, "index": ei})).unwrap();
+    let list = s.execute("graphics.list", json!({"clip": clip.0})).unwrap();
+    assert_eq!(list["layers"][0]["name"], "Text", "the reset layer has neither a name nor a text");
+    assert_eq!(clip_name(&s), "Text", "and the clip shows the layer's name again, not the old one");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clip_name(&s), "Title One", "undo brings the renamed clip back");
 }
 
 #[test]
