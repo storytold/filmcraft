@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::He => Some(include_str!("he.tsv")),
     }
 }
 
@@ -96,6 +97,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Pl, "Polski"),
         (Language::Sv, "Svenska"),
         (Language::Tr, "Türkçe"),
+        (Language::He, "עברית"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -907,6 +909,27 @@ fn system_language_picks_bosnian() {
         assert_eq!(l(&[tag]), Language::Bs, "{tag}");
     }
     assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
+}
+
+/// Hebrew locales (including the legacy `iw` code) map to Hebrew and enable RTL UI chrome.
+#[test]
+fn system_language_picks_hebrew_and_sets_rtl() {
+    let l = locales;
+    for tag in ["he", "HE", "he-IL", "he_IL.UTF-8", "iw", "iw-IL"] {
+        assert_eq!(l(&[tag]), Language::He, "{tag}");
+    }
+    assert!(Language::He.is_rtl());
+    assert!(!Language::En.is_rtl());
+    if hebrew_font_available() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &crate::theme::Tokens::for_kind(crate::theme::ThemeKind::default()));
+        switch_and_check(&mut app, &ctx, "hebrew", Language::He, "he", "עברית", None);
+        assert!(ctx.global_style().right_to_left);
+        switch(&mut app, &ctx, "app.language.english");
+        assert!(!ctx.global_style().right_to_left);
+        set_current(Language::En);
+    }
 }
 
 // Check presentation values, never compatibility ids, saved keys or user-supplied text.

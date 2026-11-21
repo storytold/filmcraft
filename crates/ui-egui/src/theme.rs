@@ -508,7 +508,13 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
         s.text_styles.insert(TextStyle::Heading, FontId::new(15.0, FontFamily::Name("semibold".into())));
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
         s.animation_time = ANIMATION_TIME;
+        s.set_right_to_left(crate::i18n::current().is_rtl());
     });
+}
+
+/// Apply the writing direction of `language` to every egui style on `ctx`.
+pub(crate) fn apply_direction(ctx: &egui::Context, language: crate::i18n::Language) {
+    ctx.all_styles_mut(|s| s.set_right_to_left(language.is_rtl()));
 }
 
 /// How long egui's fades and slides take (menus, collapsing sections, tooltips); 0 when

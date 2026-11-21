@@ -54,25 +54,32 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| SCRIPTS.iter().any(|x| x.code == *s)))
 }
 
-/// Installed faces for the scripts craft-fonts does not cover, looked up once per process (native
-/// builds only). A face that covers several scripts (Segoe UI) is added once.
-fn system_fonts() -> &'static [(String, Arc<FontData>)] {
-    static FONTS: OnceLock<Vec<(String, Arc<FontData>)>> = OnceLock::new();
+/// Installed faces for the scripts craft-fonts does not cover and which scripts (`SCRIPTS` order)
+/// are covered by either craft-fonts or an installed system face (native builds only).
+fn system_fonts_with_coverage() -> &'static (Vec<(String, Arc<FontData>)>, [bool; 2]) {
+    static FONTS: OnceLock<(Vec<(String, Arc<FontData>)>, [bool; 2])> = OnceLock::new();
     FONTS.get_or_init(|| {
-        if cfg!(target_arch = "wasm32") {
-            return Vec::new();
+        let mut coverage = [false; 2];
+        for (idx, s) in SCRIPTS.iter().enumerate() {
+            coverage[idx] = craft_fonts().any(|f| f.scripts.contains(&s.code));
         }
-        let missing: Vec<&Script> = SCRIPTS.iter().filter(|s| !craft_fonts().any(|f| f.scripts.contains(&s.code))).collect();
-        if missing.is_empty() {
-            return Vec::new();
+        if cfg!(target_arch = "wasm32") {
+            return (Vec::new(), coverage);
+        }
+        if coverage.iter().all(|c| *c) {
+            return (Vec::new(), coverage);
         }
         filmcraft_text::fonts::scan_system();
         let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
         let by_weight = |f: &&Arc<Face>| f.info.weight.abs_diff(400);
         let mut chosen: Vec<&Arc<Face>> = Vec::new();
         let mut out = Vec::new();
-        for s in missing {
+        for (idx, s) in SCRIPTS.iter().enumerate() {
+            if coverage[idx] {
+                continue;
+            }
             if chosen.iter().any(|f| f.covers_text(s.sample)) {
+                coverage[idx] = true;
                 continue;
             }
             let covers = |f: &&Arc<Face>| f.covers_text(s.sample);
@@ -87,9 +94,19 @@ fn system_fonts() -> &'static [(String, Arc<FontData>)] {
             let font = FontData::from_blob(Arc::new(data), face.info.index);
             out.push((format!("system-{}", s.code.to_lowercase()), Arc::new(font)));
             chosen.push(face);
+            coverage[idx] = true;
         }
-        out
+        (out, coverage)
     })
+}
+
+fn system_fonts() -> &'static [(String, Arc<FontData>)] {
+    &system_fonts_with_coverage().0
+}
+
+/// Whether craft-fonts or an installed system font covers Hebrew script (`Hebr`).
+pub(crate) fn hebrew_available() -> bool {
+    system_fonts_with_coverage().1[1]
 }
 
 /// Append the right-to-left faces (craft-fonts, else installed ones) after the other fallbacks of
