@@ -473,6 +473,29 @@ fn make_offline_delete_only_removes_the_media_the_item_was_linked_to() {
 }
 
 #[test]
+fn make_offline_delete_releases_cached_duplicate_references_outside_the_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("shared.mov");
+    let alias = root.path().join(".").join("shared.mov");
+    make_movie(&path, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&path]);
+    let duplicate_kind = s.project.item(items[0]).unwrap().kind.clone();
+    let duplicate = std::sync::Arc::make_mut(&mut s.project).add_item("Duplicate", filmcraft_project::Label::Iris, duplicate_kind, None);
+    // `follow` may preserve a relative path alias that still identifies the same open file.
+    set_media_path(&mut s, duplicate, &alias.to_string_lossy());
+    let _ = s.media.full_res_source(&s.project, items[0], &*s.services).unwrap();
+    let _ = s.media.full_res_source(&s.project, duplicate, &*s.services).unwrap();
+    assert!(s.media.cached(items[0]).is_some() && s.media.cached(duplicate).is_some());
+
+    let result = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
+    assert_eq!(result["deleted"].as_array().map(Vec::len), Some(1), "the unselected duplicate reader is released before deletion");
+    assert!(s.media.cached(items[0]).is_none());
+    assert!(s.media.cached(duplicate).is_none());
+    drop(s);
+    assert!(!path.exists());
+}
+
+#[test]
 fn new_offline_file_keeps_only_the_file_name() {
     let mut s = Session::default();
     for (given, want) in [

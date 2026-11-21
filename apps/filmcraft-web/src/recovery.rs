@@ -8,7 +8,7 @@
 //! - At start-up a dirty snapshot is reopened (`?norecover` skips it, `?fresh` also skips the media).
 //!   A skipped snapshot stays dirty until this session writes its own ([`crate::recovery_policy`]).
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use filmcraft_engine::Session;
@@ -55,30 +55,44 @@ impl Autosave {
                 Outcome::Clean { ok } => self.policy.cleaned(ok, now),
             }
         }
-        match self.policy.tick(now, s.revision, s.saved_revision) {
+        match self.policy.tick(now, s.revision, s.saved_revision, s.view_epoch, s.saved_view_epoch) {
             Action::Nothing => {}
             Action::WakeAfter(secs) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs)),
-            Action::WriteSnapshot(revision) => {
-                // Snapshot and meta both have to land; either failing retries the pair.
-                let failed = Rc::new(Cell::new(false));
-                let left = Rc::new(Cell::new(2u8));
-                let done = |out: Rc<RefCell<Vec<Outcome>>>, failed: Rc<Cell<bool>>, left: Rc<Cell<u8>>, ctx: egui::Context| -> opfs::Done {
-                    Box::new(move |ok| {
-                        failed.set(failed.get() || !ok);
-                        left.set(left.get().saturating_sub(1));
-                        if left.get() == 0 {
-                            out.borrow_mut().push(Outcome::Snapshot { revision, ok: !failed.get() });
-                            ctx.request_repaint();
-                        }
-                    })
-                };
+            Action::WriteSnapshot(write_id) => {
                 // No wall-clock timestamp: recovery policy scheduling uses the monotonic clock
                 // above, and the snapshot schema needs no display time.
-                let meta = json!({"dirty": true, "name": s.project.name, "revision": s.revision});
-                let d1 = done(self.outcomes.clone(), failed.clone(), left.clone(), ctx.clone());
-                let d2 = done(self.outcomes.clone(), failed, left, ctx.clone());
-                opfs::write_then(SNAPSHOT.into(), filmcraft_format::encode(&s.project, false), Some(d1));
-                opfs::write_then(META.into(), meta.to_string().into_bytes(), Some(d2));
+                let snapshot = format!("recovery/snapshot-{}-{}.fcproj", s.revision, s.view_epoch);
+                let meta = json!({"dirty": true, "contentDirty": s.is_dirty(), "viewDirty": s.view_epoch != s.saved_view_epoch,
+                    "name": s.project.name, "revision": s.revision, "viewEpoch": s.view_epoch, "snapshot": snapshot});
+                let out = self.outcomes.clone();
+                let ctx_done = ctx.clone();
+                let meta_done = meta.clone();
+                let snapshot_for_meta = snapshot.clone();
+                let callback: opfs::Done = Box::new(move |ok| {
+                    if ok {
+                        let out = out.clone();
+                        let ctx_done = ctx_done.clone();
+                        let done: opfs::Done = Box::new(move |meta_ok| {
+                            if meta_ok {
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    opfs::remove(SNAPSHOT).await;
+                                    for (name, _) in opfs::files_in("recovery").await {
+                                        if name.starts_with("snapshot-") && name != snapshot_for_meta.rsplit('/').next().unwrap_or("") {
+                                            opfs::remove(&format!("recovery/{name}")).await;
+                                        }
+                                    }
+                                });
+                            }
+                            out.borrow_mut().push(Outcome::Snapshot { revision: write_id, ok: meta_ok });
+                            ctx_done.request_repaint();
+                        });
+                        opfs::write_then(META.into(), meta_done.to_string().into_bytes(), Some(done));
+                    } else {
+                        out.borrow_mut().push(Outcome::Snapshot { revision: write_id, ok: false });
+                        ctx_done.request_repaint();
+                    }
+                });
+                opfs::write_then(snapshot, filmcraft_format::encode_with_view(&s.project, Some(&s.project_view()), false), Some(callback));
             }
             Action::WriteClean => {
                 let (out, ctx) = (self.outcomes.clone(), ctx.clone());
@@ -93,7 +107,7 @@ impl Autosave {
 }
 
 /// The unsaved snapshot of a session that ended without saving: (file name, bytes).
-pub async fn load_snapshot() -> Option<(String, Vec<u8>)> {
+pub async fn load_snapshot() -> Option<(String, Vec<u8>, bool, bool)> {
     if !opfs::available() {
         return None;
     }
@@ -101,9 +115,15 @@ pub async fn load_snapshot() -> Option<(String, Vec<u8>)> {
     if meta.get("dirty").and_then(Value::as_bool) != Some(true) {
         return None;
     }
-    let bytes = opfs::read(SNAPSHOT).await?;
+    let snapshot = meta.get("snapshot").and_then(Value::as_str).unwrap_or(SNAPSHOT);
+    let bytes = opfs::read(snapshot).await?;
     let name = meta.get("name").and_then(Value::as_str).unwrap_or("Recovered").to_string();
-    Some((format!("{name}.fcproj"), bytes))
+    Some((
+        format!("{name}.fcproj"),
+        bytes,
+        meta.get("contentDirty").and_then(Value::as_bool).unwrap_or(true),
+        meta.get("viewDirty").and_then(Value::as_bool).unwrap_or(false),
+    ))
 }
 
 /// Keep a copy of an imported file in OPFS (background).

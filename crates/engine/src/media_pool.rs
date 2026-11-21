@@ -183,6 +183,19 @@ impl MediaPool {
         self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
     }
 
+    /// Retire readers for a file and every lexical path alias before that file is deleted.
+    pub fn retire_file_sources(&self, path: &str) {
+        let identity = file_identity(path);
+        self.sources
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, (key, _)| key.strip_prefix("file:").is_none_or(|cached| file_identity(cached) != identity));
+        self.proxies
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, (key, _)| key.strip_prefix("proxy:").is_none_or(|cached| file_identity(cached) != identity));
+    }
+
     /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
     /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
     /// allows. A path already recorded keeps the document it came from first.
@@ -462,6 +475,11 @@ impl MediaPool {
     pub fn full_res_provider(self: &Arc<Self>, project: Arc<Project>, services: Arc<dyn Services>) -> PoolProvider {
         PoolProvider { pool: self.clone(), project, services, full_res: true, used: None, own: None }
     }
+}
+
+fn file_identity(path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 /// Implements [`filmcraft_render::SourceProvider`] over the pool for one project snapshot.
