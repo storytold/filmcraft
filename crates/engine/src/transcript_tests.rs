@@ -128,6 +128,28 @@ fn remove_fillers_pauses_and_create_captions() {
     q.check().unwrap();
 }
 
+/// A zero-length filler, as speech recognition often gives one, is removed with the time up to the
+/// next word, and counted (#4622): it was skipped while the command reported success.
+#[test]
+fn remove_fillers_takes_a_zero_length_filler() {
+    let (mut s, item, _) = session();
+    let sin = s.active_sequence().unwrap().audio_tracks[0].items[0].source_in;
+    let at = |x: f64| (sin + Tick::from_seconds_f64(x)).0;
+    let t = json!({"language": "en", "words": [
+        {"text": "Hello", "start": at(0.2), "end": at(0.5)},
+        {"text": "Um,", "start": at(0.66), "end": at(0.66)},
+        {"text": "world.", "start": at(1.7), "end": at(2.0)},
+    ]});
+    s.execute("transcript.set", json!({"item": item.0, "transcript": t})).unwrap();
+    let before = s.active_sequence().unwrap().duration();
+    let r = s.execute("transcript.removeFillers", json!({})).unwrap();
+    assert_eq!(r["removed"], 1, "{r}");
+    assert_eq!(words(&mut s), ["Hello", "world."]);
+    let cut = before - s.active_sequence().unwrap().duration();
+    assert!(cut > Tick::from_seconds_f64(1.0) && cut < Tick::from_seconds_f64(1.1), "the gap the Um sat in went with it: {cut:?}");
+    s.active_sequence().unwrap().check().unwrap();
+}
+
 #[test]
 fn set_delete_and_models() {
     let (mut s, item, _) = session();
