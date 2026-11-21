@@ -261,7 +261,9 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 `key=value` values are parsed as JSON when they can be (`3.5`, `true`, `[1,2]`), otherwise taken as
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
-`--save` writes back to `--project`; `--save-as path` writes elsewhere.
+`--save` writes back to `--project`; `--save-as path` writes elsewhere. Without either, edits last only
+as long as the process: a `--project` run that changed the project warns on stderr that nothing was
+saved, and still exits 0.
 
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
