@@ -46,9 +46,22 @@ impl Default for Params {
 const N_MELS: usize = 40;
 const N_MFCC: usize = 20;
 const FRAME_TICKS: i64 = TICKS_PER_SAMPLE * crate::mel::HOP as i64;
-/// Agglomerative linkage is cubic in the number of turns; beyond this, retain a safe single-speaker
-/// transcript instead of making a document-controlled amount of work.
+/// Agglomerative linkage is cubic in the number of chunks, so at most this many are clustered: one
+/// chunk from each of that many equal stretches of the file, at a quasi-random position in the
+/// stretch (see [`sample_chunks`]); every other chunk then joins the cluster whose clustered members
+/// it is closest to on average, which is linear in the number of chunks. Folding a small cluster
+/// afterwards compares each of its chunks with every other chunk, at worst quadratic, which
+/// `MAX_CHUNKS` bounds. A 48-minute interview has about 800 chunks.
 const MAX_CLUSTER_CHUNKS: usize = 256;
+/// Beyond this many chunks (about eight hours of dense dialogue) the assignment pass, the small-cluster
+/// fold and the per-chunk vectors would still be a document-controlled amount of work, so the
+/// transcript keeps a single speaker instead.
+const MAX_CHUNKS: usize = 8_192;
+/// Frames per analysis window (60 s). The spectrum, mel and MFCC buffers are built one window at a
+/// time, never for the whole file (eight hours of power spectrum would be 2.3 GB). A chunk longer than
+/// a window (a short chunk after a long gap joins the chunk before it, so a span can run to minutes)
+/// is read window by window.
+const MAX_CHUNK_FRAMES: usize = 6_000;
 
 /// Word index ranges of the chunks.
 pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
@@ -80,6 +93,10 @@ pub fn chunks(t: &Transcript, p: &Params) -> Vec<std::ops::Range<usize>> {
     merged
 }
 
+/// Per 10 ms frame of `audio`: the number of frames, each frame's energy (dB, the sum of its mel
+/// energies; negative infinity for a frame with no signal at all, so that digital silence is told
+/// from quiet sound before any log floor) and its `N_MFCC` MFCCs (the DCT-II of the log mel
+/// energies), frame-major.
 fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
     let (frames, mel) = crate::mel::mel_energies(audio, N_MELS);
     // per frame: log energies (dB-ish) and the DCT-II of the log mel
@@ -99,7 +116,7 @@ fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
             e += v;
             lm[m] = (v + 1e-10).ln();
         }
-        energy[f] = 10.0 * (e + 1e-10).log10();
+        energy[f] = if e > 0.0 { 10.0 * (e + 1e-10).log10() } else { f32::NEG_INFINITY };
         for k in 0..N_MFCC {
             mfcc[f * N_MFCC + k] = (0..N_MELS).map(|m| dct[k * N_MELS + m] * lm[m]).sum();
         }
@@ -107,8 +124,109 @@ fn mfcc_frames(audio: &[f32]) -> (usize, Vec<f32>, Vec<f32>) {
     (frames, energy, mfcc)
 }
 
+/// Energy and MFCCs of frames `a..b` of `audio`, computed from that stretch alone (plus one analysis
+/// window past it, so the last frames are centred as they would be in the whole file). Returns the
+/// number of frames produced, at most `b - a`.
+fn chunk_mfcc(audio: &[f32], a: usize, b: usize) -> (usize, Vec<f32>, Vec<f32>) {
+    let lo = a.saturating_mul(crate::mel::HOP).min(audio.len());
+    let hi = b.saturating_mul(crate::mel::HOP).saturating_add(crate::mel::N_FFT).min(audio.len());
+    let Some(slice) = audio.get(lo..hi) else { return (0, Vec::new(), Vec::new()) };
+    let (frames, mut energy, mut mfcc) = mfcc_frames(slice);
+    let keep = frames.min(b.saturating_sub(a));
+    energy.truncate(keep);
+    mfcc.truncate(keep * N_MFCC);
+    (keep, energy, mfcc)
+}
+
+/// A chunk's voice: mean and standard deviation of MFCC 1..N over its voiced frames (the vector the
+/// clustering compares), the number of voiced frames (its weight), and the sums the file-wide yardstick
+/// needs.
+struct ChunkVoice {
+    vector: Vec<f32>,
+    weight: f32,
+    sum: [f64; N_MFCC],
+    sumsq: [f64; N_MFCC],
+}
+
+/// The voice of frames `a..b`, read in windows of at most [`MAX_CHUNK_FRAMES`] so memory is bounded by
+/// a window however long the chunk. A frame is voiced when its energy is within 30 dB of the chunk's
+/// peak and it has any signal at all (a frame of digital silence has an energy of negative infinity
+/// and carries no voice and no weight; a quiet frame, however quiet, is still sound). A chunk longer
+/// than one window is read twice: once for its energies and peak, once for the MFCCs of its voiced
+/// frames.
+fn chunk_voice(audio: &[f32], a: usize, b: usize) -> ChunkVoice {
+    let mut out = ChunkVoice { vector: vec![0f32; 2 * (N_MFCC - 1)], weight: 0.0, sum: [0.0; N_MFCC], sumsq: [0.0; N_MFCC] };
+    let windows: Vec<(usize, usize)> = (a..b).step_by(MAX_CHUNK_FRAMES).map(|lo| (lo, lo.saturating_add(MAX_CHUNK_FRAMES).min(b))).collect();
+    let mut single = None;
+    let mut peak = f32::NEG_INFINITY;
+    for &(lo, hi) in &windows {
+        let (_, energy, mfcc) = chunk_mfcc(audio, lo, hi);
+        peak = energy.iter().copied().fold(peak, f32::max);
+        if windows.len() == 1 {
+            single = Some((energy, mfcc));
+        }
+    }
+    let floor = peak - 30.0;
+    let mut add = |energy: &[f32], mfcc: &[f32]| {
+        for (f, &e) in energy.iter().enumerate() {
+            if e.is_finite() && e > floor {
+                out.weight += 1.0;
+                for k in 1..N_MFCC {
+                    let x = mfcc.get(f * N_MFCC + k).copied().unwrap_or(0.0) as f64;
+                    out.sum[k] += x;
+                    out.sumsq[k] += x * x;
+                }
+            }
+        }
+    };
+    match single {
+        Some((energy, mfcc)) => add(&energy, &mfcc),
+        None => {
+            for &(lo, hi) in &windows {
+                let (_, energy, mfcc) = chunk_mfcc(audio, lo, hi);
+                add(&energy, &mfcc);
+            }
+        }
+    }
+    if out.weight > 0.0 {
+        let n = out.weight as f64;
+        for k in 1..N_MFCC {
+            let mean = out.sum[k] / n;
+            let var = (out.sumsq[k] / n - mean * mean).max(0.0);
+            out.vector[k - 1] = mean as f32;
+            out.vector[N_MFCC - 1 + k - 1] = var.sqrt() as f32;
+        }
+    }
+    out
+}
+
+/// Root-mean-square difference between two voice vectors (zero when either is empty).
 fn rms_distance(a: &[f32], b: &[f32]) -> f32 {
     (a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum::<f32>() / a.len().max(1) as f32).sqrt()
+}
+
+/// The chunks that take part in the agglomerative step: all of them when there are at most
+/// [`MAX_CLUSTER_CHUNKS`], otherwise one from each of that many equal stretches of the file. The
+/// pick inside a stretch follows the golden-ratio sequence, so it is spread over the stretch's
+/// positions rather than tied to one of them: taking the heaviest (or the first, or the last) chunk
+/// of every stretch would sample one voice only from a dialogue whose turns alternate two chunks per
+/// stretch, or whose answers always outweigh the questions. A chunk with no voiced frames carries no
+/// voice, so the heaviest chunk of the stretch stands in for it; a stretch of silence contributes nothing.
+fn sample_chunks(n: usize, weight: &[f32]) -> Vec<usize> {
+    if n <= MAX_CLUSTER_CHUNKS {
+        return (0..n).collect();
+    }
+    const GOLDEN: f64 = 0.618_033_988_749_895;
+    let w = |i: usize| weight.get(i).copied().unwrap_or(0.0);
+    (0..MAX_CLUSTER_CHUNKS)
+        .filter_map(|k| {
+            let lo = k * n / MAX_CLUSTER_CHUNKS;
+            let hi = ((k + 1) * n / MAX_CLUSTER_CHUNKS).clamp(lo + 1, n);
+            let pos = ((k + 1) as f64 * GOLDEN).fract();
+            let pick = lo + ((pos * (hi - lo) as f64) as usize).min(hi - lo - 1);
+            if w(pick) > 0.0 { Some(pick) } else { (lo..hi).max_by(|&a, &b| w(a).total_cmp(&w(b))).filter(|&i| w(i) > 0.0) }
+        })
+        .collect()
 }
 
 /// Label the speakers of `t` from `audio` (mono 16 kHz, the transcript's time base). Replaces
@@ -128,66 +246,64 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
     if ch.len() < 2 {
         return one(t);
     }
-    if ch.len() > MAX_CLUSTER_CHUNKS {
+    if ch.len() > MAX_CHUNKS {
         return one(t);
     }
-    let (frames, energy, mfcc) = mfcc_frames(audio);
-    // chunk vectors: mean and std of MFCC 1..N over voiced frames
-    let dim = 2 * (N_MFCC - 1);
+    let frames = audio.len() / crate::mel::HOP;
+    // chunk vectors: mean and std of MFCC 1..N over the chunk's voiced frames, computed chunk by chunk
+    // in bounded windows, so memory is bounded by a window, not by the file
     let mut vecs: Vec<Vec<f32>> = Vec::new();
     let mut weight: Vec<f32> = Vec::new();
+    // running sums of the MFCCs over every chunk's voiced frames, for the yardstick below
+    let mut sum = [0f64; N_MFCC];
+    let mut sumsq = [0f64; N_MFCC];
+    let mut count = 0f64;
     for c in &ch {
         let a = ((t.words[c.start].start.0 / FRAME_TICKS).max(0) as usize).min(frames);
         let b = ((t.words[c.end - 1].end.0 / FRAME_TICKS).max(0) as usize).min(frames).max(a);
-        let peak = energy[a..b].iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let voiced: Vec<usize> = (a..b).filter(|&f| energy[f] > peak - 30.0).collect();
-        let mut v = vec![0f32; dim];
-        if !voiced.is_empty() {
-            let n = voiced.len() as f32;
-            for k in 1..N_MFCC {
-                let mean = voiced.iter().map(|&f| mfcc[f * N_MFCC + k]).sum::<f32>() / n;
-                let var = voiced.iter().map(|&f| (mfcc[f * N_MFCC + k] - mean).powi(2)).sum::<f32>() / n;
-                v[k - 1] = mean;
-                v[N_MFCC - 1 + k - 1] = var.sqrt();
-            }
+        let cv = chunk_voice(audio, a, b);
+        for k in 1..N_MFCC {
+            sum[k] += cv.sum[k];
+            sumsq[k] += cv.sumsq[k];
         }
-        vecs.push(v);
-        weight.push(voiced.len() as f32);
+        count += cv.weight as f64;
+        vecs.push(cv.vector);
+        weight.push(cv.weight);
     }
-    // scale each dimension by its spread over all voiced frames of the file (an absolute yardstick:
-    // one voice stays close to itself however many chunks there are)
-    let all: Vec<usize> = {
-        let peak = energy.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        (0..frames).filter(|&f| energy[f] > peak - 40.0).collect()
-    };
-    let nf = all.len().max(1) as f32;
+    // scale each dimension by its spread over the voiced frames of every chunk (an absolute
+    // yardstick: one voice stays close to itself however many chunks there are)
+    let nf = count.max(1.0);
     for k in 1..N_MFCC {
-        let mean = all.iter().map(|&f| mfcc[f * N_MFCC + k]).sum::<f32>() / nf;
-        let sd = (all.iter().map(|&f| (mfcc[f * N_MFCC + k] - mean).powi(2)).sum::<f32>() / nf).sqrt().max(1e-6);
+        let mean = sum[k] / nf;
+        let sd = ((sumsq[k] / nf - mean * mean).max(0.0).sqrt() as f32).max(1e-6);
         for v in &mut vecs {
-            v[k - 1] = (v[k - 1] - mean) / sd;
+            v[k - 1] = (v[k - 1] - mean as f32) / sd;
             v[N_MFCC - 1 + k - 1] /= sd;
         }
     }
-    // average-linkage agglomerative clustering
+    // the chunks that take part in the agglomerative step (all of them on a short file)
     let n = vecs.len();
-    let mut dist = vec![0f32; n * n];
-    for i in 0..n {
-        for j in i + 1..n {
-            let d = rms_distance(&vecs[i], &vecs[j]);
-            dist[i * n + j] = d;
-            dist[j * n + i] = d;
+    let sample = sample_chunks(n, &weight);
+    let m = sample.len();
+    let vec_of = |s: usize| vecs.get(sample.get(s).copied().unwrap_or(0)).map(Vec::as_slice).unwrap_or(&[]);
+    // average-linkage agglomerative clustering over the sample (indices into `sample`)
+    let mut dist = vec![0f32; m * m];
+    for i in 0..m {
+        for j in i + 1..m {
+            let d = rms_distance(vec_of(i), vec_of(j));
+            dist[i * m + j] = d;
+            dist[j * m + i] = d;
         }
     }
-    let mut clusters: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut clusters: Vec<Vec<usize>> = (0..m).map(|i| vec![i]).collect();
     let link = |a: &[usize], b: &[usize]| -> f32 {
         let mut s = 0f32;
         for &i in a {
             for &j in b {
-                s += dist[i * n + j];
+                s += dist.get(i * m + j).copied().unwrap_or(0.0);
             }
         }
-        s / (a.len() * b.len()) as f32
+        s / (a.len() * b.len()).max(1) as f32
     };
     let max_speakers = p.max_speakers.max(1);
     loop {
@@ -209,26 +325,61 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         let b = clusters.remove(best.2);
         clusters[best.1].extend(b);
     }
-    // fold clusters with < 5 % of the voiced frames into their nearest neighbour
+    // every chunk's cluster: a sampled chunk keeps its own, any other joins the cluster whose
+    // sampled members it is closest to on average
+    let mut label = vec![usize::MAX; n];
+    for (ci, c) in clusters.iter().enumerate() {
+        for &s in c {
+            if let Some(l) = sample.get(s).and_then(|&i| label.get_mut(i)) {
+                *l = ci;
+            }
+        }
+    }
+    for i in 0..n {
+        if label[i] != usize::MAX {
+            continue;
+        }
+        let v = vecs.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let nearest = clusters
+            .iter()
+            .enumerate()
+            .map(|(ci, c)| (c.iter().map(|&s| rms_distance(v, vec_of(s))).sum::<f32>() / c.len().max(1) as f32, ci))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|x| x.1)
+            .unwrap_or(0);
+        label[i] = nearest;
+    }
+    // fold clusters with < 5 % of the voiced frames into their nearest neighbour (over all chunks)
+    let mut members: Vec<Vec<usize>> = (0..clusters.len()).map(|ci| (0..n).filter(|&i| label[i] == ci).collect()).collect();
+    let link_all = |a: &[usize], b: &[usize]| -> f32 {
+        let mut s = 0f32;
+        for &i in a {
+            for &j in b {
+                s += rms_distance(vecs.get(i).map(Vec::as_slice).unwrap_or(&[]), vecs.get(j).map(Vec::as_slice).unwrap_or(&[]));
+            }
+        }
+        s / (a.len() * b.len()).max(1) as f32
+    };
     let total: f32 = weight.iter().sum::<f32>().max(1.0);
     loop {
-        if clusters.len() <= 1 {
+        if members.len() <= 1 {
             break;
         }
-        let small = clusters.iter().position(|c| c.iter().map(|&i| weight[i]).sum::<f32>() < 0.05 * total);
+        let small = members.iter().position(|c| c.iter().map(|&i| weight.get(i).copied().unwrap_or(0.0)).sum::<f32>() < 0.05 * total);
         let Some(si) = small else { break };
-        let s = clusters.remove(si);
-        let near = (0..clusters.len()).min_by(|&a, &b| link(&s, &clusters[a]).total_cmp(&link(&s, &clusters[b]))).unwrap_or(0);
-        clusters[near].extend(s);
+        let s = members.remove(si);
+        let near = (0..members.len()).map(|a| (link_all(&s, &members[a]), a)).min_by(|x, y| x.0.total_cmp(&y.0)).map_or(0, |x| x.1);
+        members[near].extend(s);
     }
-    if clusters.len() == 1 {
+    if members.len() <= 1 {
         return one(t);
     }
     // number speakers by first appearance
-    let mut label = vec![0usize; n];
-    for (ci, c) in clusters.iter().enumerate() {
+    for (ci, c) in members.iter().enumerate() {
         for &i in c {
-            label[i] = ci;
+            if let Some(l) = label.get_mut(i) {
+                *l = ci;
+            }
         }
     }
     let mut order: Vec<usize> = Vec::new();
@@ -337,8 +488,145 @@ mod tests {
     }
 
     #[test]
-    fn excessive_turns_fall_back_without_clustering() {
-        let words = (0..=MAX_CLUSTER_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
+    fn a_long_file_with_more_chunks_than_are_clustered_still_gets_its_speakers() {
+        // two voices taking 300 turns of 1.5 s: about 300 chunks, more than MAX_CLUSTER_CHUNKS
+        let a = |s| voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 1.5, s);
+        let b = |s| voice(230.0, [(400.0, 80.0), (2600.0, 150.0)], 1.5, s);
+        let silence = vec![0f32; 8000];
+        let turns: Vec<bool> = (0..300).map(|k| matches!(k % 5, 0 | 2 | 3)).collect();
+        let mut audio = Vec::new();
+        let mut words = Vec::new();
+        for (k, &is_a) in turns.iter().enumerate() {
+            let t0 = audio.len() as f64 / 16_000.0;
+            audio.extend(if is_a { a(k as u32) } else { b(k as u32) });
+            for w in 0..3 {
+                let s = t0 + w as f64 * 0.5;
+                words.push(Word::new(format!("w{k}.{w}"), seconds_tick(s), seconds_tick(s + 0.45)));
+            }
+            audio.extend(&silence);
+        }
+        let mut t = Transcript { words, ..Default::default() };
+        assert!(chunks(&t, &Params::default()).len() > MAX_CLUSTER_CHUNKS);
+        let n = diarize(&audio, &mut t, &Params::default());
+        assert_eq!(n, 2);
+        let wrong = turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count();
+        assert_eq!(wrong, 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    /// `turns` of two voices (`true` is voice A) with per-voice turn lengths, 0.3 s apart; three
+    /// equal "words" per turn. Returns the audio and the transcript.
+    fn dialogue(turns: &[bool], secs_a: f32, secs_b: f32) -> (Vec<f32>, Transcript) {
+        let silence = vec![0f32; 4800];
+        let mut audio = Vec::new();
+        let mut words = Vec::new();
+        for (k, &is_a) in turns.iter().enumerate() {
+            let t0 = audio.len() as f64 / 16_000.0;
+            let secs = if is_a { secs_a } else { secs_b };
+            audio.extend(if is_a {
+                voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], secs, k as u32)
+            } else {
+                voice(230.0, [(400.0, 80.0), (2600.0, 150.0)], secs, k as u32)
+            });
+            let step = secs as f64 / 3.0;
+            for w in 0..3 {
+                let s = t0 + w as f64 * step;
+                words.push(Word::new(format!("w{k}.{w}"), seconds_tick(s), seconds_tick(s + step * 0.9)));
+            }
+            audio.extend(&silence);
+        }
+        (audio, Transcript { words, ..Default::default() })
+    }
+
+    /// How many turns of a `dialogue` transcript carry the wrong speaker (voice A is speaker 0).
+    fn wrong_turns(t: &Transcript, turns: &[bool]) -> usize {
+        turns.iter().enumerate().filter(|&(k, &is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count()
+    }
+
+    #[test]
+    fn strictly_alternating_equal_turns_are_sampled_from_both_voices() {
+        // 512 turns, A B A B..., all the same length: two chunks per sampling stretch, and the two
+        // weigh the same, so a tie-break that always takes the same side would sample one voice only
+        let turns: Vec<bool> = (0..512).map(|k| k % 2 == 0).collect();
+        let (audio, mut t) = dialogue(&turns, 0.8, 0.8);
+        assert_eq!(chunks(&t, &Params::default()).len(), 512);
+        assert_eq!(diarize(&audio, &mut t, &Params::default()), 2);
+        assert_eq!(wrong_turns(&t, &turns), 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn short_questions_between_long_answers_are_still_a_speaker() {
+        // 512 turns, a 0.8 s question then a 1.6 s answer: the answer outweighs the question in every
+        // two-chunk stretch, so a sample of the heaviest chunks would hold the answering voice only
+        let turns: Vec<bool> = (0..512).map(|k| k % 2 == 0).collect();
+        let (audio, mut t) = dialogue(&turns, 0.8, 1.6);
+        assert_eq!(chunks(&t, &Params::default()).len(), 512);
+        assert_eq!(diarize(&audio, &mut t, &Params::default()), 2);
+        assert_eq!(wrong_turns(&t, &turns), 0, "turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn a_chunk_longer_than_a_window_is_read_to_its_end() {
+        // 2 s of a voice, 90 s of nothing, 0.5 s of the voice again: one chunk spanning 92.5 s, longer
+        // than an analysis window, whose later speech must still count
+        let mut audio = voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 2.0, 1);
+        audio.extend(vec![0f32; 90 * 16_000]);
+        audio.extend(voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 0.5, 2));
+        let frames = audio.len() / crate::mel::HOP;
+        let whole = chunk_voice(&audio, 0, frames);
+        let first = chunk_voice(&audio, 0, 200);
+        assert!(whole.weight > first.weight + 30.0, "later speech counts: {} voiced frames in all, {} in the first 2 s", whole.weight, first.weight);
+        assert_eq!(chunk_voice(&audio, 400, 1000).weight, 0.0, "digital silence carries no weight");
+    }
+
+    #[test]
+    fn quiet_frames_are_voice_and_frames_of_nothing_are_not() {
+        // a voice 160 dB down is still a signal; samples that are exactly zero are not
+        let quiet: Vec<f32> = voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 1.0, 3).iter().map(|v| v * 1e-8).collect();
+        assert!(quiet.iter().any(|&v| v != 0.0));
+        let frames = quiet.len() / crate::mel::HOP;
+        assert!(chunk_voice(&quiet, 0, frames).weight > 50.0, "a quiet voice has voiced frames");
+        let nothing = vec![0f32; quiet.len()];
+        assert_eq!(chunk_voice(&nothing, 0, frames).weight, 0.0, "frames of nothing carry no weight");
+    }
+
+    #[test]
+    fn digital_silence_carries_no_weight() {
+        // 384 turns: A, B, then a "turn" of nothing at all (words over zero samples), more chunks than
+        // are clustered. The silent chunks must not be sampled as a voice of their own.
+        let silence = vec![0f32; 4800];
+        let mut audio = Vec::new();
+        let mut words = Vec::new();
+        let mut voiced_turns = Vec::new();
+        for k in 0..384usize {
+            let t0 = audio.len() as f64 / 16_000.0;
+            match k % 3 {
+                0 => audio.extend(voice(110.0, [(600.0, 90.0), (1100.0, 120.0)], 0.9, k as u32)),
+                1 => audio.extend(voice(230.0, [(400.0, 80.0), (2600.0, 150.0)], 0.9, k as u32)),
+                _ => audio.extend(vec![0f32; 14_400]),
+            }
+            for w in 0..3 {
+                let s = t0 + w as f64 * 0.3;
+                words.push(Word::new(format!("w{k}.{w}"), seconds_tick(s), seconds_tick(s + 0.27)));
+            }
+            if k % 3 < 2 {
+                voiced_turns.push((k, k % 3 == 0));
+            }
+            audio.extend(&silence);
+        }
+        let mut t = Transcript { words, ..Default::default() };
+        assert!(chunks(&t, &Params::default()).len() > MAX_CLUSTER_CHUNKS);
+        assert_eq!(diarize(&audio, &mut t, &Params::default()), 2);
+        let wrong = voiced_turns.iter().filter(|&&(k, is_a)| t.words[k * 3].speaker != Some(if is_a { 0 } else { 1 })).count();
+        assert_eq!(wrong, 0, "voiced turns labelled with the wrong speaker");
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn excessive_chunks_fall_back_without_clustering() {
+        let words = (0..=MAX_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
         let mut t = Transcript { words, ..Default::default() };
         assert_eq!(diarize(&[], &mut t, &Params::default()), 1);
         assert!(t.words.iter().all(|word| word.speaker == Some(0)));
