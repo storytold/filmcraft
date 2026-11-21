@@ -97,6 +97,32 @@ fn a_hidden_name_keeps_the_speed_label() {
     assert!(texts(&d).iter().any(|t| t.contains("[50%]")), "the speed is still drawn: {:?}", texts(&d));
 }
 
+#[test]
+fn a_clip_name_is_clipped_before_its_fx_badge() {
+    let mut d = Driver::demo();
+    let clip = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    let name = "An intentionally long timeline clip name ".repeat(20).trim_end().to_owned();
+    d.ok("engine.execute", json!({"command": "clip.rename", "params": {"clip": clip.0, "name": name}}));
+    d.ok("engine.execute", json!({"command": "effects.apply", "params": {"clips": [clip.0], "effect": "gaussian_blur"}}));
+
+    let shapes = &d.harness.output().shapes;
+    let label_clip = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().starts_with(&name) => Some(shape.clip_rect),
+            _ => None,
+        })
+        .expect("the timeline paints the clip name");
+    let badge_left = shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "fx" && shape.clip_rect.min == label_clip.min => Some(text.pos.x),
+            _ => None,
+        })
+        .expect("the same clip paints an fx badge");
+    assert!(label_clip.max.x < badge_left, "the clip name must end before the badge");
+}
+
 /// The Timeline panel's own menu has the same two toggles, each with an automation id.
 #[test]
 fn the_timeline_panel_menu_has_the_name_toggles() {
