@@ -501,6 +501,9 @@ fn layers_section(
             autos.push((format!("graphics.layers.{li}"), r, layer_display_name(e, li)));
             if eresp.clicked() {
                 actions.push(("graphics.set".into(), json!({"clip": clip.0, "layer": li, "props": {"enabled": !e.enabled}})));
+            } else if resp.double_clicked() && e.effect == graphic::TEXT_LAYER {
+                let uid = e.layer.as_ref().map_or(0, |x| x.uid);
+                super::overlay::start_edit_layer(app, ui.ctx(), clip, li, uid, actions);
             } else if resp.clicked() {
                 actions.push(("graphics.selectLayer".into(), json!({"clip": clip.0, "layers": [li]})));
             }
