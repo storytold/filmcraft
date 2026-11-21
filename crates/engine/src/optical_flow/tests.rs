@@ -151,6 +151,7 @@ fn pending(s: &Session, seq_id: ItemId, clips: Vec<Rendered>) -> PendingFlow {
         epoch: s.document_epoch,
         rate: seq.settings.frame_rate,
         size: filmcraft_render::output_size(seq, 1.0),
+        color: seq.settings.color,
         results: Arc::new(Mutex::new(Some(outcome))),
         hw_name: Arc::new(Mutex::new("hardware".into())),
     }
@@ -201,6 +202,11 @@ fn a_clip_that_cannot_be_placed_takes_back_the_whole_job_and_its_files() {
     assert!(!s.is_dirty(), "a placement that did not happen leaves a saved project saved");
     assert_eq!(s.history.merge_key.as_deref(), Some("fader"));
     assert!(!std::path::Path::new(&good.path).exists(), "generated files are deleted");
+    // the first clip was imported under the next id before the second failed: its source is not
+    // left cached for an item the rollback took away
+    let first_import = ItemId(project.next_id);
+    assert!(s.project.item(first_import).is_none());
+    assert!(s.media.cached(first_import).is_none(), "the rolled-back import is evicted from the media pool");
 }
 
 #[test]
@@ -349,8 +355,8 @@ fn a_clip_on_another_track_or_slipped_while_rendering_is_refused() {
 }
 
 #[test]
-fn a_track_rendered_before_the_frame_rate_or_size_changed_is_refused() {
-    for change in [0, 1] {
+fn a_track_rendered_before_the_frame_rate_size_or_colour_changed_is_refused() {
+    for change in [0, 1, 2] {
         let (mut s, seq_id, clip, _, _) = demo(4);
         let dir = tempfile::tempdir().unwrap();
         let r = rendered(&mut s, seq_id, clip, dir.path());
@@ -359,12 +365,14 @@ fn a_track_rendered_before_the_frame_rate_or_size_changed_is_refused() {
         let q = pr.sequence_mut(seq_id).unwrap();
         if change == 0 {
             q.settings.frame_rate = FrameRate { num: q.settings.frame_rate.num * 2, den: q.settings.frame_rate.den };
-        } else {
+        } else if change == 1 {
             q.settings.width += 16;
+        } else {
+            q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Pq;
         }
         let project = s.project.clone();
         let e = apply(&mut s, pj, true).unwrap_err();
-        assert!(e.to_string().contains("frame rate or frame size"), "{e}");
+        assert!(e.to_string().contains("frame rate, frame size or colour settings"), "{e}");
         assert_eq!(*s.project, *project);
     }
 }
@@ -426,9 +434,9 @@ fn temporal_detail_renders_working_light_and_the_other_looks_the_display_picture
     let working = render_sequence_track(&s.project, seq_id, 0, start, RenderOptions { working_output: true, ..RenderOptions::default() }, &provider);
     let display = render_sequence_track(&s.project, seq_id, 0, start, RenderOptions::default(), &provider);
     assert_ne!(working.px, display.px, "this sequence's display transform is not the identity");
-    assert_eq!(job_ctx(&s, seq_id, FlowVizMode::TemporalDetail).render(0, start).px, working.px, "Temporal Detail encodes working light itself");
+    assert_eq!(job_ctx(&s, seq_id, FlowVizMode::TemporalDetail).render(0, start).unwrap().px, working.px, "Temporal Detail encodes working light itself");
     for mode in [FlowVizMode::HsvWheel, FlowVizMode::MotionVectors, FlowVizMode::KineticGlow] {
-        assert_eq!(job_ctx(&s, seq_id, mode).render(0, start).px, display.px, "{mode:?} draws on the display picture");
+        assert_eq!(job_ctx(&s, seq_id, mode).render(0, start).unwrap().px, display.px, "{mode:?} draws on the display picture");
     }
 }
 
@@ -528,4 +536,68 @@ fn a_sequence_deleted_while_rendering_says_so() {
     let e = apply(&mut s, pj, true).unwrap_err();
     assert!(e.to_string().contains("deleted"), "{e}");
     assert!(!std::path::Path::new(&path).exists(), "the generated file is deleted");
+}
+
+#[test]
+fn a_clip_disabled_while_rendering_is_refused() {
+    let (mut s, seq_id, clip, _, _) = demo(4);
+    let dir = tempfile::tempdir().unwrap();
+    let r = rendered(&mut s, seq_id, clip, dir.path());
+    let pr = Arc::make_mut(&mut s.project);
+    pr.sequence_mut(seq_id).unwrap().find_item_mut(clip).unwrap().1.enabled = false;
+    let project = s.project.clone();
+    let e = {
+        let pj = pending(&s, seq_id, vec![r.clone()]);
+        apply(&mut s, pj, true)
+    }
+    .unwrap_err();
+    assert!(e.to_string().contains("disabled"), "{e}");
+    assert_eq!(*s.project, *project);
+    assert!(!std::path::Path::new(&r.path).exists());
+}
+
+#[test]
+fn a_single_named_clip_works_without_a_selection() {
+    let (mut s, seq_id, clip, start, dur) = demo(2);
+    s.state.selection.clear();
+    let dir = tempfile::tempdir().unwrap();
+    let res = s.execute("clip.opticalFlowOverlay.hsvWheel", json!({"clip": clip.0, "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
+    let (ti, it) = overlay_of(&s, seq_id, ClipId(res["clips"][0].as_u64().unwrap()));
+    assert!(ti > 0);
+    assert_eq!((it.start, it.duration), (start, dur));
+}
+
+/// A source whose pictures are still on their way, as a Blob read or a WebCodecs decode on the web.
+struct Loading(filmcraft_media::MediaInfo);
+
+impl filmcraft_media::MediaSource for Loading {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.0
+    }
+    fn video_frame(&self, _: filmcraft_media::FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        Err(filmcraft_media::MediaError::Io(filmcraft_media::pending::would_block().to_string()))
+    }
+    fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        Err(filmcraft_media::MediaError::Io(filmcraft_media::pending::would_block().to_string()))
+    }
+}
+
+#[test]
+fn a_source_frame_still_loading_fails_the_job_instead_of_drawing_a_blank_track() {
+    let (mut s, seq_id, clip, _, _) = demo(2);
+    let media = s.project.sequence(seq_id).unwrap().find_item(clip).unwrap().1.item;
+    let generator = s.media.cached(media).unwrap();
+    s.media.insert(media, Arc::new(Loading(generator.info().clone())));
+    let dir = tempfile::tempdir().unwrap();
+    let (project, undo) = (s.project.clone(), s.history.undo.len());
+    for mode in ["hsvWheel", "temporalDetail"] {
+        let e = s.execute("clip.opticalFlowOverlay", json!({"clips": [clip.0], "mode": mode, "dir": dir.path().to_string_lossy(), "wait": true})).unwrap_err();
+        assert!(e.to_string().contains("still loading"), "{mode}: {e}");
+        assert_eq!(*s.project, *project, "{mode}");
+        assert_eq!(s.history.undo.len(), undo, "{mode}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "{mode}: no file is left");
+    }
+    // once the pictures are there, the same command succeeds
+    s.media.insert(media, generator);
+    s.execute("clip.opticalFlowOverlay", json!({"clips": [clip.0], "dir": dir.path().to_string_lossy(), "wait": true})).unwrap();
 }

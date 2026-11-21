@@ -550,13 +550,13 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     )
 }
 
-
 /// Largest frame side [`encode_prores_mov`] accepts.
 pub const PRORES_MOV_MAX_SIDE: u32 = 8192;
 
 /// Encode a stream of frames given as sRGB-encoded `R'G'B'` floats (`w * h * 3` values each, BT.709
-/// matrix) into a QuickTime ProRes `.mov` written to `out` as it goes: memory use does not grow
-/// with the number of frames. `profile` picks 4:2:2 (`Standard`, `Hq`, …) or 4:4:4 (`P4444`, …,
+/// matrix) into a QuickTime ProRes `.mov` written to `out` as it goes: each frame's payload is
+/// written as soon as it is encoded, so only the muxer's index (a sample size and sync flag per
+/// frame, written out as `moov` at the end) grows with the number of frames. `profile` picks 4:2:2 (`Standard`, `Hq`, …) or 4:4:4 (`P4444`, …,
 /// no chroma subsampling, for data passes). Every frame is checked against `w × h`; an error from
 /// the iterator stops the encode and is returned. Returns `out` and the number of frames written.
 pub fn encode_prores_mov<W: std::io::Write + std::io::Seek>(
@@ -679,5 +679,4 @@ mod mjpeg_adapter_tests {
             }
         }
     }
-
 }

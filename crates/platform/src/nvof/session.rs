@@ -207,7 +207,11 @@ impl Drop for CurrentGuard<'_> {
     fn drop(&mut self) {
         let mut prev = std::ptr::null_mut();
         // SAFETY: balances one successful `cuCtxPushCurrent` on the same thread.
-        let _ = unsafe { (self.api.pop)(&mut prev) };
+        let st = unsafe { (self.api.pop)(&mut prev) };
+        if st != 0 {
+            // a drop cannot fail; the context stays current on this thread, and that is worth a note
+            log::warn!("cuCtxPopCurrent failed ({st}): the optical-flow CUDA context is still current on this thread");
+        }
     }
 }
 
@@ -682,15 +686,23 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // The buffers and the handle are released by their own `Drop`s right after this, in field
-        // order, with this context current (`push_current` failing leaves them to the driver's
-        // context teardown).
-        if let Ok(guard) = self.cuda.push_current() {
-            let buffers = std::mem::replace(&mut self.buffers, Buffers { of: self.of, input: [None, None], flow: None, cost: None });
-            drop(buffers);
-            let handle = std::mem::replace(&mut self.of_handle, OfHandle { of: self.of, handle: std::ptr::null_mut() });
-            drop(handle);
-            drop(guard);
+        // The buffers, then the handle, are released here with this context current. When it
+        // cannot be made current they are left to the driver's teardown of the context (released
+        // after this): their own `Drop`s would call the driver with another context, or none,
+        // current, so they are disarmed instead.
+        let buffers = std::mem::replace(&mut self.buffers, Buffers { of: self.of, input: [None, None], flow: None, cost: None });
+        let handle = std::mem::replace(&mut self.of_handle, OfHandle { of: self.of, handle: std::ptr::null_mut() });
+        match self.cuda.push_current() {
+            Ok(guard) => {
+                drop(buffers);
+                drop(handle);
+                drop(guard);
+            }
+            Err(why) => {
+                log::warn!("optical-flow session left to the CUDA context teardown: {why}");
+                std::mem::forget(buffers);
+                std::mem::forget(handle);
+            }
         }
     }
 }

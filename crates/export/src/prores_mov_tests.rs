@@ -46,8 +46,15 @@ fn a_frame_of_the_wrong_size_is_an_error_not_a_panic() {
 
 #[test]
 fn an_error_from_the_frame_source_stops_the_encode() {
-    let r = encode(Profile::Standard, vec![Ok(grey(48, 32, 0.5)), Err(ExportError::Cancelled), Ok(grey(48, 32, 0.5))]);
+    // the source is lazy: a frame asked for after the error would be rendered for nothing
+    let mut pulled = 0;
+    let frames = (0..3).map(|i| {
+        pulled += 1;
+        if i == 1 { Err(ExportError::Cancelled) } else { Ok(grey(48, 32, 0.5)) }
+    });
+    let r = encode_prores_mov(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), Profile::Standard, frames);
     assert!(matches!(r, Err(ExportError::Cancelled)), "{r:?}");
+    assert_eq!(pulled, 2, "no frame is asked for after the error");
 }
 
 #[test]
@@ -98,9 +105,24 @@ fn a_matrix_the_converter_does_not_implement_is_refused() {
         let r = encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, frames);
         assert!(matches!(r, Err(ExportError::Unsupported(_))), "matrix {matrix}");
     }
-    for matrix in [1u8, 9] {
+    // the two it does implement: a red frame's luma follows the matrix it is tagged with, in the
+    // `colr` box and in the frame header (grey would read the same under any matrix)
+    let mut lumas = Vec::new();
+    for (matrix, kr) in [(1u8, 0.2126f32), (9, 0.2627)] {
         let format = ProResMovFormat { profile: Profile::Standard, signal: ColorSignal { primaries: 1, transfer: 1, matrix }, alpha: false };
-        let frames = vec![Ok(ProResMovFrame { rgb: grey(48, 32, 0.5), alpha: None })];
-        assert!(encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, frames).is_ok(), "matrix {matrix}");
+        let red: Vec<f32> = [0.5f32, 0.0, 0.0].repeat(48 * 32);
+        let frames = vec![Ok(ProResMovFrame { rgb: red, alpha: None })];
+        let (writer, _) = encode_prores_mov_frames(Cursor::new(Vec::new()), 48, 32, FrameRate::new(25, 1), format, frames).unwrap();
+        let bytes = writer.into_inner();
+        let mov = filmcraft_isobmff::open(bytes.as_slice()).unwrap();
+        let vt = mov.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let tagged = mov.tracks[vt].entries[0].video.as_ref().unwrap().color.clone();
+        assert_eq!(tagged, Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: u16::from(matrix) }), "matrix {matrix}");
+        let frame = craft_video::prores::decode_frame(&mov.read_sample(bytes.as_slice(), vt, 0).unwrap()).unwrap();
+        assert_eq!(frame.color.matrix, matrix);
+        let y = f32::from(frame.y[0] >> frame.bit_depth.saturating_sub(10));
+        assert!((y - (64.0 + 876.0 * kr * 0.5)).abs() < 2.0, "matrix {matrix}: Y {y}");
+        lumas.push(y);
     }
+    assert!(lumas[1] > lumas[0], "BT.2020 weighs red more than BT.709: {lumas:?}");
 }

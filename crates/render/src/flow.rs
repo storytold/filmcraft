@@ -500,12 +500,11 @@ pub struct FlowField {
 }
 
 impl FlowField {
-    /// An empty zero-motion flow field for a frame of size `frame_w` × `frame_h`.
+    /// A zero-motion flow field for a frame of size `frame_w` × `frame_h`. It is one still cell:
+    /// that samples like a full zero grid (`sample_px` scales by the frame size and clamps to the
+    /// grid), and the frame size, which may be anything, does not size an allocation.
     pub fn zero(frame_w: usize, frame_h: usize) -> Self {
-        let w = frame_w.max(1);
-        let h = frame_h.max(1);
-        let n = w.saturating_mul(h);
-        Self { w, h, frame_w: w, frame_h: h, uv: vec![[0.0; 2]; n], cost: vec![0; n], hardware: false }
+        Self { w: 1, h: 1, frame_w: frame_w.max(1), frame_h: frame_h.max(1), uv: vec![[0.0; 2]], cost: vec![0], hardware: false }
     }
 
     #[inline]
@@ -588,12 +587,12 @@ pub fn optical_flow_registered() -> bool {
 }
 
 /// Convert a linear-light [`Image`] into an 8-bit perceptual luma buffer (`w * h` bytes) suitable
-/// for hardware optical-flow estimation (NVOFA `NV_OF_BUFFER_FORMAT_GRAYSCALE8`).
+/// for hardware optical-flow estimation (NVOFA `NV_OF_BUFFER_FORMAT_GRAYSCALE8`). An image whose
+/// pixels do not cover its size gives an empty buffer: its size is not trusted to allocate one.
 pub fn image_to_luma8(img: &Image) -> Vec<u8> {
-    let n = img.w.saturating_mul(img.h);
-    if n == 0 || img.px.len() < n.saturating_mul(4) {
-        return vec![0; n];
-    }
+    let Some(n) = img.w.checked_mul(img.h).filter(|&n| n > 0 && n.checked_mul(4).is_some_and(|len| img.px.len() >= len)) else {
+        return Vec::new();
+    };
     let mut out = vec![0u8; n];
     out.par_chunks_mut(img.w.max(1)).enumerate().for_each(|(y, row)| {
         for (x, dst) in row.iter_mut().enumerate() {
@@ -616,7 +615,7 @@ pub fn estimate_cpu(prev: &Image, curr: &Image) -> FlowField {
     // A rejected pair gets one still cell: it samples like a full zero grid (`sample_px` scales
     // by the frame size and clamps to the grid), and its size does not follow the rejected,
     // possibly hostile, dimensions.
-    let still = || FlowField { w: 1, h: 1, frame_w: w.max(1), frame_h: h.max(1), uv: vec![[0.0; 2]], cost: vec![0], hardware: false };
+    let still = || FlowField::zero(w, h);
     if (w, h) != (curr.w, curr.h) || w == 0 || h == 0 || prev.px.len() != n || curr.px.len() != n {
         return still();
     }
@@ -690,7 +689,11 @@ impl FlowEstimator {
     /// which backend computed it: a hardware failure drops the session and this frame (and every
     /// later one) is computed on the CPU.
     pub fn estimate(&mut self, prev: &Image, curr: &Image) -> FlowField {
-        if prev.w != self.width || prev.h != self.height || curr.w != self.width || curr.h != self.height {
+        // an image of the session's size whose pixels do not fill it would reach the hardware as a
+        // black frame (and report motion from it): the CPU path rejects that pair as still
+        let complete =
+            |img: &Image| (img.w, img.h) == (self.width, self.height) && Some(img.px.len()) == img.w.checked_mul(img.h).and_then(|n| n.checked_mul(4));
+        if !complete(prev) || !complete(curr) {
             self.last_curr_luma = None;
             return estimate_cpu(prev, curr);
         }
@@ -882,18 +885,23 @@ pub fn fuse_temporal_cpu(prev: Option<&Image>, curr: &Image, field: &FlowField) 
             // a pixel that came in from outside the previous frame has no history there: the
             // clamped fetch would blend in the old edge pixel instead
             let inside = wx >= 0.0 && wy >= 0.0 && wx <= w as f32 && wy <= h as f32;
-            let warped = p.sample_bilinear_clamped(wx, wy);
+            let warped = if inside { p.sample_bilinear_clamped(wx, wy) } else { [0.0; 4] };
             let lc = luma([c[0], c[1], c[2], c[3]]);
             let lw = luma(warped);
             let diff = (lc - lw).abs();
             let photo_agree = if diff.is_finite() { 1.0 / (1.0 + (diff / 0.06).powi(2)) } else { 0.0 };
-            let blend = if inside { (0.28 * conf.clamp(0.0, 1.0) * photo_agree).clamp(0.0, 0.35) } else { 0.0 };
+            let alpha = if c[3].is_finite() { c[3] } else { 1.0 };
+            // colour is premultiplied: the history is brought to this pixel's coverage before it
+            // blends in, so a transparent pixel stays transparent black and colour never exceeds
+            // its alpha (opaque history over an opaque pixel blends as before)
+            let cover = if warped[3].is_finite() && warped[3] > 1e-6 { alpha / warped[3] } else { 0.0 };
+            let blend = if inside && cover > 0.0 { (0.28 * conf.clamp(0.0, 1.0) * photo_agree).clamp(0.0, 0.35) } else { 0.0 };
             for k in 0..3 {
                 let ck = if c[k].is_finite() { c[k] } else { 0.0 };
-                let wk = if warped[k].is_finite() { warped[k] } else { ck };
+                let wk = if warped[k].is_finite() { warped[k] * cover } else { ck };
                 dst[k] = ck + (wk - ck) * blend;
             }
-            dst[3] = if c[3].is_finite() { c[3] } else { 1.0 };
+            dst[3] = alpha;
         }
     });
     out
@@ -906,7 +914,7 @@ pub struct NeuralEnhancer {
     width: usize,
     height: usize,
     hw: Option<Box<dyn NeuralSession>>,
-    has_history: bool,
+    history_of: Option<u64>,
     fallback_reason: Option<String>,
 }
 
@@ -922,7 +930,7 @@ impl NeuralEnhancer {
             },
             (Some(_), _, _) => (None, Some(format!("frame size {width}x{height} is too large for hardware neural enhancement"))),
         };
-        Self { width, height, hw, has_history: false, fallback_reason }
+        Self { width, height, hw, history_of: None, fallback_reason }
     }
 
     /// Whether this enhancer is backed by a hardware neural session.
@@ -942,29 +950,46 @@ impl NeuralEnhancer {
 
     /// Reconstruct `curr` with `prev` and `field`, returning `(reconstructed_image, used_hardware)`.
     pub fn enhance(&mut self, prev: Option<&Image>, curr: &Image, field: &FlowField) -> (Image, bool) {
-        if curr.w != self.width || curr.h != self.height {
-            self.has_history = false;
+        let len = self.width.checked_mul(self.height).and_then(|n| n.checked_mul(4));
+        // a frame of another size, or one whose pixels do not fill it, never reaches the backend
+        if (curr.w, curr.h) != (self.width, self.height) || Some(curr.px.len()) != len {
+            self.history_of = None;
             return (fuse_temporal_cpu(prev, curr, field), false);
         }
         if let Some(hw) = self.hw.as_mut() {
-            let sequential = self.has_history && prev.is_some_and(|p| (p.w, p.h) == (self.width, self.height));
+            // the backend's history is the last frame it reconstructed: it continues only when
+            // `prev` is that very picture (callers may pass any pair, after a seek or a cut)
+            let sequential = self.history_of.is_some() && prev.map(fingerprint) == self.history_of;
+            let current = fingerprint(curr);
             match hw.enhance(curr, field, sequential) {
-                Ok(img) if (img.w, img.h) == (self.width, self.height) => {
-                    self.has_history = true;
+                Ok(img) if (img.w, img.h) == (self.width, self.height) && Some(img.px.len()) == len => {
+                    self.history_of = Some(current);
                     return (img, true);
                 }
                 Ok(img) => {
-                    self.fallback_reason = Some(format!("{} returned {}x{} for a {}x{} frame", hw.backend(), img.w, img.h, self.width, self.height));
+                    self.fallback_reason =
+                        Some(format!("{} returned {}x{} ({} values) for a {}x{} frame", hw.backend(), img.w, img.h, img.px.len(), self.width, self.height));
                 }
                 Err(why) => {
                     self.fallback_reason = Some(format!("{} failed: {why}", hw.backend()));
                 }
             }
             self.hw = None;
-            self.has_history = false;
+            self.history_of = None;
         }
         (fuse_temporal_cpu(prev, curr, field), false)
     }
+}
+
+/// A fingerprint of an image's size and pixels, to recognise the same picture again.
+fn fingerprint(img: &Image) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    (img.w, img.h, img.px.len()).hash(&mut h);
+    for v in &img.px {
+        v.to_bits().hash(&mut h);
+    }
+    h.finish()
 }
 
 /// Visual representation mode for an optical-flow overlay track.
@@ -1101,12 +1126,13 @@ fn motion_vector_code(dx: f32, dy: f32, conf: f32, active: f32, scale: f32) -> [
 /// Encode a linear-light [`Image`] as sRGB-encoded `R'G'B'` floats (3 per pixel, alpha dropped,
 /// premultiplied colour composited over black), without the 8-bit rounding of
 /// [`Image::over_black_with_alpha_rgba8`]: the input of a 10/12-bit encoder.
+/// An image whose pixels do not cover its size gives an empty buffer (an encoder refuses it as a
+/// frame of the wrong size): its size is not trusted to allocate one.
 pub fn image_to_encoded_rgb_f32(img: &Image) -> Vec<f32> {
-    let n = img.w.saturating_mul(img.h);
-    let mut out = vec![0.0f32; n.saturating_mul(3)];
-    if img.px.len() < n.saturating_mul(4) {
-        return out;
-    }
+    let Some(len) = img.w.checked_mul(img.h).filter(|&n| n.checked_mul(4).is_some_and(|l| img.px.len() >= l)).and_then(|n| n.checked_mul(3)) else {
+        return Vec::new();
+    };
+    let mut out = vec![0.0f32; len];
     out.par_chunks_mut(3).zip(img.px.par_chunks(4)).for_each(|(o, p)| {
         for (dst, &c) in o.iter_mut().zip(p.iter()) {
             *dst = if c.is_finite() { filmcraft_color::linear_to_srgb(c.clamp(0.0, 1.0)) } else { 0.0 };
@@ -1127,6 +1153,10 @@ pub fn render_flow_viz(curr: &Image, field: &FlowField, mode: FlowVizMode, max_m
     let scale = if max_motion_px.is_finite() { max_motion_px.clamp(0.5, 512.0) } else { 16.0 };
     let deadzone = 0.25f32; // sub-pixel noise floor so static camera grain stays pure black
     let mut out = Image::new(w, h);
+    if (out.w, out.h) != (w, h) {
+        // `Image::new` refused the size (too many pixels): there is nothing to draw into
+        return out;
+    }
     out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         for (x, dst) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
@@ -1562,6 +1592,46 @@ mod tests {
         assert!(!ne.is_hardware());
         assert_eq!(ne.backend(), CPU_NEURAL_BACKEND);
         assert!(ne.fallback_reason().is_some_and(|r| r.contains("device lost")));
+
+        // a result of the right size without its pixels is not passed on as the reconstruction
+        struct NoPixels;
+        impl NeuralSession for NoPixels {
+            fn backend(&self) -> &'static str {
+                "Fake hardware"
+            }
+            fn enhance(&mut self, curr: &Image, _field: &FlowField, _sequential: bool) -> Result<Image, String> {
+                Ok(Image { w: curr.w, h: curr.h, px: Vec::new() })
+            }
+        }
+        register_neural_enhancer(|_, _| Ok(Box::new(NoPixels)));
+        let mut ne = NeuralEnhancer::new(48, 32);
+        let (img, on_hw) = ne.enhance(None, &a, &field);
+        assert!(!on_hw && img.px.len() == 48 * 32 * 4, "the CPU reconstructs the frame instead");
+        assert!(ne.fallback_reason().is_some_and(|r| r.contains("0 values")), "{:?}", ne.fallback_reason());
+
+        // history continues only from the frame the backend last reconstructed, and a frame
+        // without its pixels never reaches the backend
+        static SEQUENTIAL: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+        struct Recording;
+        impl NeuralSession for Recording {
+            fn backend(&self) -> &'static str {
+                "Fake hardware"
+            }
+            fn enhance(&mut self, curr: &Image, _field: &FlowField, sequential: bool) -> Result<Image, String> {
+                SEQUENTIAL.lock().unwrap().push(sequential);
+                Ok(curr.clone())
+            }
+        }
+        register_neural_enhancer(|_, _| Ok(Box::new(Recording)));
+        let mut ne = NeuralEnhancer::new(48, 32);
+        let other = texture(48, 32, 5.0, 3.0);
+        assert!(ne.enhance(None, &a, &field).1);
+        assert!(ne.enhance(Some(&a), &b, &field).1, "a -> b continues from a");
+        assert!(ne.enhance(Some(&other), &a, &field).1, "other -> a does not continue from b");
+        let hollow = Image { w: 48, h: 32, px: Vec::new() };
+        assert!(!ne.enhance(Some(&a), &hollow, &field).1);
+        assert_eq!(*SEQUENTIAL.lock().unwrap(), [false, true, false], "the hollow frame never reached the backend");
+        assert!(ne.is_hardware(), "an input the wrapper refuses does not disable the backend");
     }
 
     #[test]
@@ -1626,7 +1696,80 @@ mod tests {
             let out = render_flow_viz(&frame, &huge, mode, 16.0);
             assert_eq!((out.w, out.h), (4, 4));
         }
-        let rgb = FlowVizEncoder::new().encode(&frame, &huge, FlowVizMode::HsvWheel, 16.0).0;
+        // the CPU encoder directly: a `FlowVizEncoder` could pick up the fake GPU renderer another
+        // test registers, and change that test's call count
+        let rgb = encode_flow_viz_cpu(&frame, &huge, FlowVizMode::HsvWheel, 16.0);
         assert_eq!(rgb.len(), 4 * 4 * 3);
+    }
+
+    #[test]
+    fn sizes_that_no_pixels_back_allocate_nothing() {
+        // public sizes: a zero field, a luma buffer or encoded RGB sized by them used to be allocated
+        // whole (a capacity-overflow panic), whatever the pixels said
+        let still = FlowField::zero(usize::MAX, 1);
+        assert_eq!((still.frame_w, still.frame_h, still.uv.len()), (usize::MAX, 1, 1));
+        assert_eq!(still.sample_px(1e9, 0.5), ([0.0, 0.0], 1.0));
+        let hollow = Image { w: usize::MAX, h: 1, px: Vec::new() };
+        assert!(image_to_luma8(&hollow).is_empty());
+        assert!(image_to_encoded_rgb_f32(&hollow).is_empty());
+        // complete images convert as before
+        assert_eq!(image_to_luma8(&Image::new(4, 2)).len(), 8);
+        assert_eq!(image_to_encoded_rgb_f32(&Image::new(4, 2)).len(), 24);
+    }
+
+    #[test]
+    fn an_image_without_its_pixels_never_reaches_the_hardware_estimator() {
+        struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl FlowSession for Counting {
+            fn backend(&self) -> &'static str {
+                "Counting"
+            }
+            fn estimate(&mut self, _: &[u8], _: &[u8], _: bool) -> Result<FlowField, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut f = FlowField::zero(29, 13);
+                f.hardware = true;
+                Ok(f)
+            }
+        }
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut est = FlowEstimator { hw: Some(Box::new(Counting(calls.clone()))), ..FlowEstimator::new(29, 13) };
+        let (full, hollow) = (Image::new(29, 13), Image { w: 29, h: 13, px: Vec::new() });
+        for (p, c) in [(&hollow, &full), (&full, &hollow)] {
+            assert!(!est.estimate(p, c).hardware);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(est.estimate(&full, &full).hardware, "a complete pair still goes to the hardware");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn temporal_fusion_never_gives_a_transparent_pixel_colour() {
+        // opaque dark red before, transparent now, with confident still flow: the luma is close
+        // enough for history to blend in, but this pixel covers nothing
+        let (w, h) = (4, 4);
+        let mut prev = Image::new(w, h);
+        for p in prev.px.as_chunks_mut::<4>().0 {
+            *p = [0.05, 0.0, 0.0, 1.0];
+        }
+        let curr = Image::new(w, h);
+        let out = fuse_temporal_cpu(Some(&prev), &curr, &FlowField::zero(w, h));
+        assert!(out.px.iter().all(|&v| v == 0.0), "transparent black stays transparent black");
+        // an opaque pixel still takes in its history
+        let mut lit = Image::new(w, h);
+        for p in lit.px.as_chunks_mut::<4>().0 {
+            *p = [0.06, 0.0, 0.0, 1.0];
+        }
+        assert!(fuse_temporal_cpu(Some(&prev), &lit, &FlowField::zero(w, h)).get(1, 1)[0] < 0.06);
+    }
+
+    #[test]
+    fn a_size_the_image_refuses_draws_an_empty_overlay() {
+        // `Image::new` refuses this size; the stride was still taken from it (`w * 4` overflows)
+        let huge = Image { w: usize::MAX / 4 + 1, h: 1, px: Vec::new() };
+        for mode in [FlowVizMode::HsvWheel, FlowVizMode::MotionVectors, FlowVizMode::KineticGlow, FlowVizMode::TemporalDetail] {
+            let out = render_flow_viz(&huge, &FlowField::zero(1, 1), mode, 16.0);
+            assert!(out.px.is_empty(), "{mode:?}");
+        }
+        assert!(encode_flow_viz_cpu(&huge, &FlowField::zero(1, 1), FlowVizMode::HsvWheel, 16.0).is_empty());
     }
 }
