@@ -65,6 +65,13 @@ fn captions_import_edit_export_and_burn_in() {
         assert_eq!(texts[0], "Hi!", "{ext}");
     }
 
+    let invalid = dir.join("invalid.vtt");
+    for format in [json!("vvt"), json!(7)] {
+        let error = s.execute("captions.export", json!({"path": invalid.to_string_lossy(), "format": format})).unwrap_err();
+        assert!(error.to_string().contains("unknown caption format"));
+        assert!(!invalid.exists());
+    }
+
     // the program renders captions; hiding the track removes them
     s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
     let with = s.render_program(0.25).unwrap();
