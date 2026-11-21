@@ -181,6 +181,52 @@ fn forced_relink_takes_the_new_files_properties() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Offline to online: a clip cut on a half-size proxy is linked to its full-size original. The
+/// Motion anchor (source pixels) keeps its spot in the picture, keyframes too, so the picture
+/// stays centred instead of moving right and down by half the proxy's size. Position and Scale
+/// are untouched.
+#[test]
+fn relinking_to_another_frame_size_keeps_the_anchor_on_the_same_spot_of_the_picture() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Keyframe, ParamValue};
+    let root = tmp_dir("relink-anchor-size");
+    std::fs::create_dir_all(root.join("proxy")).unwrap();
+    std::fs::create_dir_all(root.join("original")).unwrap();
+    let (proxy, original) = (root.join("proxy/a.mov"), root.join("original/a.mov"));
+    make_movie(&proxy, DemoScene::Aurora, W, H, 12);
+    make_movie(&original, DemoScene::Aurora, W * 2, H * 2, 12);
+    let (mut s, items, seq) = session_with(&[&proxy]);
+    let motion = |s: &Session| s.project.sequence(seq).unwrap().video_tracks[0].items[0].effect("motion").unwrap().clone();
+    let anchor = |s: &Session| {
+        let m = motion(s);
+        let p = m.param("anchor").unwrap();
+        (p.value.as_vec2().unwrap(), p.keyframes.iter().map(|k| k.value.as_vec2().unwrap()).collect::<Vec<_>>())
+    };
+    // an animated anchor: the centre, then a point of the user's own
+    let mut p = (*s.project).clone();
+    let clip = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+    let a = clip.effect_mut("motion").unwrap().param_mut("anchor").unwrap();
+    a.keyframes = vec![
+        Keyframe::new(filmcraft_time::Tick::ZERO, ParamValue::Vec2(Vec2::new(80.0, 45.0))),
+        Keyframe::new(filmcraft_time::FrameRate::FPS_24.tick_of(6), ParamValue::Vec2(Vec2::new(40.0, 30.0))),
+    ];
+    s.project = std::sync::Arc::new(p);
+    let before = motion(&s);
+    assert_eq!(anchor(&s), (Vec2::new(80.0, 45.0), vec![Vec2::new(80.0, 45.0), Vec2::new(40.0, 30.0)]));
+    s.execute("media.relink", json!({"item": items[0].0, "path": original.to_string_lossy(), "force": true, "alignTimecode": true})).unwrap();
+    assert_eq!(s.project.source_size(items[0]), Some((W * 2, H * 2)));
+    assert_eq!(anchor(&s), (Vec2::new(160.0, 90.0), vec![Vec2::new(160.0, 90.0), Vec2::new(80.0, 60.0)]), "the same spots of the bigger picture");
+    let after = motion(&s);
+    for k in ["position", "scale", "rotation"] {
+        assert_eq!(after.param(k).map(|p| &p.value), before.param(k).map(|p| &p.value), "{k} does not depend on the source size");
+    }
+    // one undo step takes the link and the anchor back together
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.source_size(items[0]), Some((W, H)));
+    assert_eq!(anchor(&s), (Vec2::new(80.0, 45.0), vec![Vec2::new(80.0, 45.0), Vec2::new(40.0, 30.0)]));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn make_offline_shows_the_slate_until_relinked() {
     let root = tmp_dir("relink-offline");
