@@ -983,6 +983,15 @@ pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Resu
     clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
 }
 
+/// Use the source's display name, trimming a suffix only when it is the media file extension.
+fn sequence_name_from_source(item: &filmcraft_project::ProjectItem) -> &str {
+    let name = item.name.as_str();
+    let Some(MediaRef::File { path }) = item.as_media().map(|media| &media.media) else { return name };
+    let Some((stem, suffix)) = name.rsplit_once('.').filter(|(stem, suffix)| !stem.is_empty() && !suffix.is_empty()) else { return name };
+    let extension = std::path::Path::new(path).extension().and_then(|ext| ext.to_str());
+    if extension.is_some_and(|ext| ext.eq_ignore_ascii_case(suffix)) { stem } else { name }
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -1706,7 +1715,10 @@ fn build() -> Vec<CommandSpec> {
                     return Err(bad("file.newSequence", "at most 256 video and 256 audio tracks are supported"));
                 }
                 let n = s.project.sequences().count() + 1;
-                let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
+                let name = str_p(p, "name")
+                    .or_else(|| from_ids.first().and_then(|id| s.project.item(*id)).map(sequence_name_from_source).filter(|name| !name.trim().is_empty()))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
                 let id = s.edit("New Sequence", |pr, st2| {
                     let id = pr.new_sequence(&name, st, nv as usize, na as usize, bin);
