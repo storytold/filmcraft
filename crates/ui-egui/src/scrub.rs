@@ -4,8 +4,11 @@
 //! While the playhead moves with a mouse button down (the Timeline ruler, a monitor's scrub bar,
 //! a dragged timecode) and playback is stopped, a short grain of the sequence's sound plays from
 //! the new position. One output stream stays open for the whole scrub: each move only re-aims it,
-//! so the device is not reopened every frame. The stream closes when the button is released and
-//! the grain has played, when the setting is off, or when playback starts.
+//! so the device is not reopened every frame. A grain that is playing finishes first and the next
+//! starts from the latest position: cut off mid-sound, a grain clicks, and on a backward scrub,
+//! where every grain jumps away from the last, those clicks are all you hear (#3482). The stream
+//! closes when the button is released and the grain has played, when the setting is off, or when
+//! playback starts.
 //!
 //! The grain plays on [`ScrubOut`], a separate output from playback's: opening an output stream
 //! starts the OS audio engine, which can take most of a second (0.5-1 s measured on WASAPI,
@@ -48,12 +51,14 @@ pub trait ScrubOut {
     fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
 }
 
-/// What the audio callback plays next: `left` of `total` frames from `cursor`.
+/// What the audio callback plays next: `left` of `total` frames from `cursor`, then a grain from
+/// `next` if a move asked for one meanwhile.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Grain {
     cursor: i64,
     left: i64,
     total: i64,
+    next: Option<i64>,
 }
 
 #[derive(Default)]
@@ -130,7 +135,12 @@ impl FilmcraftApp {
         let total = ((GRAIN_S * sr as f64) as i64).max(1);
         {
             let mut g = self.scrub.grain.lock().unwrap_or_else(PoisonError::into_inner);
-            *g = Grain { cursor: at.to_units_floor(sr as i64), left: total, total };
+            let cursor = at.to_units_floor(sr as i64);
+            if self.scrub.open && g.left > 0 {
+                g.next = Some(cursor);
+            } else {
+                *g = Grain { cursor, left: total, total, next: None };
+            }
         }
         self.scrub.last_move = now;
         if self.scrub.open {
@@ -159,6 +169,12 @@ fn grain_fill(mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, grai
         let n = (buf.len() / ch) as i64;
         let (g, take) = {
             let mut g = grain.lock().unwrap_or_else(PoisonError::into_inner);
+            if g.left <= 0
+                && let Some(cursor) = g.next.take()
+            {
+                g.cursor = cursor;
+                g.left = g.total;
+            }
             let now = *g;
             let take = g.left.clamp(0, n);
             g.cursor = g.cursor.saturating_add(take);
@@ -192,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_grain_plays_once_from_its_cursor_then_silence() {
-        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300 }));
+        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300, next: None }));
         let starts = Arc::new(Mutex::new(Vec::new()));
         let seen = starts.clone();
         let mix = move |c: i64, b: &mut [f32], _: usize| {
@@ -210,9 +226,34 @@ mod tests {
         assert!(b[44 * 2..].iter().all(|s| *s == 0.0), "then silence");
         assert!(c.iter().all(|s| *s == 0.0));
         // a new move re-aims it
-        *grain.lock().unwrap() = Grain { cursor: 5000, left: 300, total: 300 };
+        *grain.lock().unwrap() = Grain { cursor: 5000, left: 300, total: 300, next: None };
         run(&mut fill, 256);
         assert_eq!(starts.lock().unwrap().last(), Some(&5000));
+    }
+
+    /// #3482: a move during a grain doesn't cut it off, which is the click of a backward scrub. The
+    /// grain fades out as it would have, and only the latest move plays next, faded in.
+    #[test]
+    fn moves_during_a_grain_wait_for_it_to_fade_out() {
+        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300, next: None }));
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let seen = starts.clone();
+        let mix = move |c: i64, b: &mut [f32], _: usize| {
+            seen.lock().unwrap().push(c);
+            b.fill(1.0);
+        };
+        let mut fill = grain_fill(mix, grain.clone(), 10);
+        let a = run(&mut fill, 256);
+        assert_eq!(a[255 * 2], 1.0);
+        grain.lock().unwrap().next = Some(800);
+        grain.lock().unwrap().next = Some(500);
+        let b = run(&mut fill, 256);
+        assert!(b[43 * 2] < 0.2 && b[..44 * 2].iter().all(|s| *s <= 1.0), "the grain ran on to its fade-out");
+        assert!(b[44 * 2..].iter().all(|s| *s == 0.0));
+        let c = run(&mut fill, 256);
+        assert_eq!(*starts.lock().unwrap(), vec![1000, 1256, 500], "the latest position, not every one");
+        assert_eq!(c[0], 0.0, "fades in");
+        assert_eq!(grain.lock().unwrap().next, None);
     }
 
     type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
@@ -296,6 +337,15 @@ mod tests {
         app.session.set_playhead(rate.tick_of(72));
         assert!(app.scrub_tick(0.04, true));
         assert!(loudness(&fill) > 0.0, "the next move plays again on the same stream");
+        // a move before the grain has played doesn't replace it: it waits as `next`
+        app.session.set_playhead(rate.tick_of(84));
+        assert!(app.scrub_tick(0.045, true));
+        let playing = *app.scrub.grain.lock().unwrap();
+        app.session.set_playhead(rate.tick_of(40));
+        assert!(app.scrub_tick(0.048, true));
+        let waiting = *app.scrub.grain.lock().unwrap();
+        assert_eq!((waiting.cursor, waiting.left), (playing.cursor, playing.left));
+        assert_eq!(waiting.next, Some(rate.tick_of(40).to_units_floor(48_000)));
         assert!(app.scrub_tick(0.05, false), "lingers briefly after release");
         assert!(!app.scrub_tick(0.05 + LINGER_S, false), "then closes");
         assert!(fill.lock().unwrap().is_none());
