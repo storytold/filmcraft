@@ -159,8 +159,15 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
 
 - Whenever the project has unsaved changes, a snapshot is written to
   `<data dir>/Recovery/<started>-<pid>[-<n>]/snapshot.fcproj`, plus `session.json` (time, revision, project
-  name and path). It is written about 1 s after the last edit, or after at most
-  `recoveryIntervalSeconds` while edits keep coming. Saving the project deletes the snapshot.
+  name and path, and the label and time of the newest action). It is written about 1 s after the last
+  edit, or after at most `recoveryIntervalSeconds` while edits keep coming. Saving the project deletes
+  the snapshot.
+- Beside it, `actions.jsonl` holds the newest **100** commands that changed the project, oldest first:
+  command id, the History panel's label (`Delete 3 clips`), the parameters, the revision and the time.
+  `file.recoveryList` returns them per session (with `lastAction`, `lastActionAt` and a local `at` per
+  record), and the recovery prompt shows the last action and lists them. Recording is a few kilobytes of
+  JSON written by the auto-save thread with the snapshot, never on the UI thread. The list survives
+  recovery: the recovered session starts with the crashed session's actions.
 - Each running FilmCraft holds an OS file lock on `<session>/lock`. When the process dies (crash,
   `kill -9`, power loss) the OS releases the lock.
 - At startup, every other session directory whose lock can be taken and that has a snapshot is a
