@@ -298,6 +298,9 @@ fn absolute(path: &str) -> String {
 
 #[tokio::main]
 async fn main() {
+    // Linux/glibc: start again with two malloc arenas (see the module); `exec` replaces the
+    // runtime's threads too
+    filmcraft_engine::malloc_arenas::limit_and_restart();
     cli().await;
     if STDOUT_ERROR.load(Ordering::Relaxed) {
         std::process::exit(1);
