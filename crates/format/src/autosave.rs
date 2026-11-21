@@ -135,10 +135,16 @@ pub fn list_auto_saves(dir: &Path, name: &str) -> Vec<PathBuf> {
 
 /// Delete the oldest auto-saves of `name` so at most `max` remain. Returns the deleted paths.
 pub fn rotate(dir: &Path, name: &str, max: usize) -> io::Result<Vec<PathBuf>> {
+    rotate_keeping(dir, name, max, None)
+}
+
+/// Like [`rotate`], but never deletes `keep` (the file just written, which may sort as the oldest
+/// when the clock went backwards).
+fn rotate_keeping(dir: &Path, name: &str, max: usize, keep: Option<&Path>) -> io::Result<Vec<PathBuf>> {
     let all = list_auto_saves(dir, name);
     let n = all.len().saturating_sub(max.max(1));
     let mut gone = Vec::new();
-    for p in all.into_iter().take(n) {
+    for p in all.into_iter().filter(|p| Some(p.as_path()) != keep).take(n) {
         fs::remove_file(&p)?;
         gone.push(p);
     }
@@ -182,7 +188,7 @@ pub fn write_auto_save(dir: &Path, name: &str, unix: i64, offset_secs: i32, data
             Err(e) => return Err(e),
         }
     }
-    rotate(dir, name, max)?;
+    rotate_keeping(dir, name, max, Some(&path))?;
     Ok(path)
 }
 
@@ -237,6 +243,18 @@ mod tests {
         let new = write_auto_save(&d, "Cut", t0 + 2400, 3600, b"new", 1).unwrap();
         assert!(new.exists(), "the newest auto-save was deleted by rotation");
         assert!(!old.exists(), "the oldest auto-save should be rotated out");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn rotation_keeps_the_file_just_written_when_the_clock_went_back() {
+        let d = std::env::temp_dir().join(format!("filmcraft-rotate-clock-back-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let old = write_auto_save(&d, "P", 2_000_000, 0, b"new", 1).unwrap();
+        let newest = write_auto_save(&d, "P", 1_000_000, 0, b"newest-data", 1).unwrap();
+        assert!(newest.exists(), "the auto-save just written was rotated away");
+        assert_eq!(fs::read(&newest).unwrap(), b"newest-data");
+        assert!(!old.exists());
         fs::remove_dir_all(&d).unwrap();
     }
 
