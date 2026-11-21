@@ -1208,7 +1208,14 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         let src_len = it.source_out() - it.source_in;
         // a tiny speed saturates the cast: keep the clip's end representable
         let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
-        let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).min(room).max(ctx.min_duration);
+        // whole frames, rounded down as the Speed/Duration dialog shows them: a clip that starts on
+        // a frame still ends on one, and a ripple moves the later clips by whole frames. A thousandth
+        // of a frame of slack keeps a length that float rounding left just short of a frame on that
+        // frame (a Duration typed in the dialog arrives here as a speed).
+        let rate = work.settings.frame_rate;
+        let slack = Tick(rate.frame_duration().0 / 1000);
+        let exact = Tick((src_len.0 as f64 / speed).round() as i64).min(room);
+        let mut new_dur = rate.snap(Tick(exact.0.saturating_add(slack.0))).min(rate.snap(room)).max(ctx.min_duration);
         let old_end = it.end();
         let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
         let (_, next_start) = neighbours(tr, *clip);
