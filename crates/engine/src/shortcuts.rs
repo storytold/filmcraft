@@ -17,8 +17,8 @@
 //! the macOS Control key.
 //!
 //! Built-in presets: **FilmCraft Default** (each command's default plus the Premiere-default audit,
-//! see [`Shortcuts::audit`]), **Premiere Pro Compatible**, **Final Cut Pro Compatible** and
-//! **Avid Media Composer Compatible** ([`crate::shortcut_presets`]). Custom presets are JSON files in
+//! see [`Shortcuts::audit`]), **Premiere Pro Compatible**, **Final Cut Pro Compatible**,
+//! **Avid Media Composer Compatible** and **DaVinci Resolve Compatible** ([`crate::shortcut_presets`]). Custom presets are JSON files in
 //! `<data dir>/Keyboard Shortcuts/`; the active set persists in `active.json` there.
 //!
 //! Commands the frontend owns (tools, transport, panels, workspaces) are registered with
@@ -60,7 +60,8 @@ pub const DEFAULT_PRESET: &str = "FilmCraft Default";
 pub const PREMIERE_PRESET: &str = "Premiere Pro Compatible";
 pub const FCP_PRESET: &str = "Final Cut Pro Compatible";
 pub const AVID_PRESET: &str = "Avid Media Composer Compatible";
-pub const BUILTIN_PRESETS: [&str; 4] = [DEFAULT_PRESET, PREMIERE_PRESET, FCP_PRESET, AVID_PRESET];
+pub const RESOLVE_PRESET: &str = "DaVinci Resolve Compatible";
+pub const BUILTIN_PRESETS: [&str; 5] = [DEFAULT_PRESET, PREMIERE_PRESET, FCP_PRESET, AVID_PRESET, RESOLVE_PRESET];
 
 const FILE_FORMAT: &str = "filmcraft-keyboard-shortcuts";
 const DIR_NAME: &str = "Keyboard Shortcuts";
@@ -622,6 +623,7 @@ impl Shortcuts {
             PREMIERE_PRESET => presets::premiere(),
             FCP_PRESET => presets::FINAL_CUT.to_vec(),
             AVID_PRESET => presets::AVID.to_vec(),
+            RESOLVE_PRESET => presets::RESOLVE.to_vec(),
             _ => return None,
         };
         self.apply_table(&mut b, &table);

@@ -220,6 +220,16 @@ fn compat_presets_map_other_editors() {
     assert_eq!(s.shortcuts.primary("sequence.lift").as_deref(), Some("Z"));
     assert_eq!(s.shortcuts.for_command("markers.markIn").len(), 2, "I and E");
     assert!(!s.shortcuts.modified);
+    // DaVinci Resolve (cahier des charges 4.1): F9 / F10, blade on B, Backspace ripple delete
+    s.execute("shortcuts.loadPreset", json!({"name": "DaVinci Resolve Compatible"})).unwrap();
+    assert_eq!(s.shortcuts.primary("source.insert").as_deref(), Some("F9"));
+    assert_eq!(s.shortcuts.primary("source.overwrite").as_deref(), Some("F10"));
+    assert_eq!(s.shortcuts.primary("tool.razor").as_deref(), Some("B"));
+    assert_eq!(s.shortcuts.primary("edit.rippleDelete").as_deref(), Some("Backspace"));
+    assert_eq!(s.shortcuts.primary("sequence.matchFrame").as_deref(), Some("F"));
+    let p = crate::shortcuts::Platform::current();
+    assert!(s.shortcuts.conflicts(p).is_empty(), "{:?}", s.shortcuts.conflicts(p));
+    assert!(!s.shortcuts.modified);
     assert!(s.execute("shortcuts.loadPreset", json!({"name": "Nope"})).is_err());
     s.execute("shortcuts.loadPreset", json!({"name": "FilmCraft Default"})).unwrap();
     assert_eq!(s.shortcuts.primary("source.insert").as_deref(), Some(","));

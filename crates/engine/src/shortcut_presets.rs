@@ -415,6 +415,47 @@ pub const FINAL_CUT: &[Entry] = &[
     ("sequence.renderInToOut", "Ctrl+Shift+R", ""),
 ];
 
+/// DaVinci Resolve's default keys (its Edit page) for the equivalent FilmCraft commands: blade and
+/// trim modes, F9 / F10 insert and overwrite, Backspace ripple delete and Delete lift, F match frame,
+/// D enable. Keys whose Resolve meaning has no FilmCraft equivalent are left to the defaults.
+pub const RESOLVE: &[Entry] = &[
+    ("tool.selection", "A", ""),
+    ("tool.razor", "B", ""),
+    ("tool.ripple", "T", ""),
+    ("source.insert", "F9", ""),
+    ("source.overwrite", "F10", ""),
+    ("sequence.addEdit", "Cmd+B", ""),
+    ("edit.rippleDelete", "Backspace", ""),
+    ("edit.clear", "Delete", ""),
+    ("markers.markIn", "I", ""),
+    ("markers.markOut", "O", ""),
+    ("markers.markClip", "X", ""),
+    ("markers.clearIn", "Alt+I", ""),
+    ("markers.clearOut", "Alt+O", ""),
+    ("markers.clearInOut", "Alt+X", ""),
+    ("markers.goToIn", "Shift+I", ""),
+    ("markers.goToOut", "Shift+O", ""),
+    ("markers.add", "M", ""),
+    ("playhead.nextEdit", "Down", ""),
+    ("playhead.prevEdit", "Up", ""),
+    ("playback.toggle", "Space", ""),
+    ("playback.reverse", "J", ""),
+    ("playback.stop", "K", ""),
+    ("playback.forward", "L", ""),
+    ("playback.loop", "Cmd+/", ""),
+    ("sequence.snap", "N", ""),
+    ("view.zoomIn", "Cmd+=", ""),
+    ("view.zoomOut", "Cmd+-", ""),
+    ("view.zoomToSequence", "Shift+Z", ""),
+    ("sequence.applyVideoTransition", "Cmd+T", ""),
+    ("clip.speedDuration", "Cmd+R", ""),
+    ("clip.enable", "D", ""),
+    ("sequence.matchFrame", "F", ""),
+    ("trim.backward", ",", ""),
+    ("trim.forward", ".", ""),
+    ("file.import", "Cmd+I", ""),
+];
+
 /// Avid Media Composer's default keys for the equivalent FilmCraft commands.
 pub const AVID: &[Entry] = &[
     ("playback.reverse", "J", ""),
