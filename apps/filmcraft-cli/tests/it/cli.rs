@@ -28,6 +28,31 @@ fn help_and_usage_errors() {
 }
 
 #[test]
+fn bench_decode_rejects_invalid_frame_counts_before_opening_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.mp4");
+    let path = path.to_str().unwrap();
+    for flags in [
+        &["--frames", "nope"][..],
+        &["--frames", "0"],
+        &["--frames", "-5"],
+        &["--frames", "9223372036854775808"],
+        &["--frames"],
+        &["--frames="],
+    ] {
+        let mut args = vec!["bench-decode", path];
+        args.extend_from_slice(flags);
+        let result = cli(&args);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(2), "{flags:?}: {stderr}");
+        assert!(stderr.contains("--frames needs a positive integer"), "{stderr}");
+        assert!(result.stdout.is_empty());
+    }
+    assert_eq!(cli(&["bench-decode", path, "--frames", "5"]).status.code(), Some(1));
+    assert_eq!(cli(&["bench-decode", path]).status.code(), Some(1));
+}
+
+#[test]
 fn version_after_global_options() {
     let want = format!("filmcraft-cli {}\n", env!("CARGO_PKG_VERSION"));
     for args in [&["--version"][..], &["-V"], &["version"], &["--demo", "--version"], &["--compact", "-V"], &["--demo", "version"]] {
