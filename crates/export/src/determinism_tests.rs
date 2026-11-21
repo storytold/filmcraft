@@ -382,3 +382,51 @@ fn max_threads_is_a_setting_of_the_json_interface() {
     assert_eq!(ExportSettings::default().max_threads, 0, "all cores unless asked");
     assert_eq!(serde_json::to_value(&s).unwrap()["maxThreads"], serde_json::json!(2));
 }
+
+/// A provider whose audio item answers like a web reader that is still fetching for the calls numbered
+/// in `loading` (marks pending, offers no source); every other request is served at once.
+struct AudioLoading<'a> {
+    inner: &'a SourceMap,
+    audio: ItemId,
+    calls: AtomicUsize,
+    loading: std::ops::Range<usize>,
+}
+
+impl SourceProvider for AudioLoading<'_> {
+    fn source(&self, item: ItemId) -> Option<SharedSource> {
+        if item == self.audio && self.loading.contains(&self.calls.fetch_add(1, Ordering::SeqCst)) {
+            filmcraft_media::pending::mark();
+            return None;
+        }
+        self.inner.source(item)
+    }
+}
+
+#[test]
+fn a_batch_retried_for_missing_audio_keeps_its_audio() {
+    // stepped like the web app: one frame per step, no rendering ahead
+    let settings = |name: &str| ExportSettings { format: Format::Mjpeg, path: tmp(name), ..Default::default() };
+    let (reference, _) = export_overlapped(1, 1, false, &settings("audio-pending-ref.mov"));
+    let (p, seq, m) = project();
+    let audio = p.sequence(seq).unwrap().audio_tracks[0].items[0].item;
+    // the tone is missing for its first few requests, which come from the audio pull of a batch
+    let provider = AudioLoading { inner: &m, audio, calls: AtomicUsize::new(0), loading: 0..3 };
+    let s = settings("audio-pending.mov");
+    let pendings = pool(1).install(|| {
+        let prog = Progress::default();
+        let mut ex = Exporter::new(p, seq, &s, &prog).unwrap();
+        ex.set_batch(1);
+        ex.set_overlap(false);
+        let mut pendings = 0;
+        for _ in 0..1000 {
+            match ex.step(&provider, &prog).unwrap() {
+                Step::Done(_) => return pendings,
+                Step::Pending => pendings += 1,
+                Step::Progress => {}
+            }
+        }
+        panic!("the export did not finish");
+    });
+    assert!(pendings > 0, "the missing audio was never noticed");
+    assert!(std::fs::read(&s.path).unwrap() == reference, "a retried batch lost its audio");
+}
