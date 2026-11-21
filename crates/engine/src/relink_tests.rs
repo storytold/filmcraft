@@ -223,6 +223,29 @@ fn relink_search_does_not_follow_directory_symlinks() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// #3937: the Link Media dialog walks the search folder on another thread and checks what it
+/// found on the UI thread. The walk stops when it is cancelled (the dialog closed), and checking
+/// a finished index gives what `media.search` gives.
+#[test]
+fn a_search_split_into_walk_and_check_finds_what_media_search_finds() {
+    use std::sync::atomic::AtomicBool;
+    let root = tmp_dir("relink-search-split");
+    let (path, items) = saved_project(&root);
+    let dest = root.join("Archive");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::rename(root.join("Media"), dest.join("Media")).unwrap();
+    let s = open(&path);
+    let params = json!({"folder": root.to_string_lossy(), "item": items[1].0});
+
+    assert!(crate::relink::index_folder_until(&root, crate::relink::SEARCH_LIMIT, &AtomicBool::new(true)).is_none(), "a cancelled walk lists nothing");
+    let index = crate::relink::index_folder_until(&root, crate::relink::SEARCH_LIMIT, &AtomicBool::new(false)).expect("not cancelled");
+    let split = crate::relink::search_index(&s, &params, &index).unwrap();
+    let whole = crate::relink::search(&s, &params).unwrap();
+    assert_eq!(split, whole);
+    assert_eq!(split["results"][0]["candidates"][0]["identityMatch"], json!(true), "{split}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // Regression test for issue #110: after `file.import` re-imports a file at a path the project
 // already listed as offline, `s.offline.missing` must drop that item so the slate and the
 // "Media missing" badge clear without reopening the project. Before the fix (the patch in
