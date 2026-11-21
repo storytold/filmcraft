@@ -96,6 +96,10 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+On a long sequence, read one stretch at a time: `command_run` `sequence.inspect` with `from` / `to`
+(ticks, or `{"seconds": n}`, `{"frame": n}`, `{"timecode": "…"}`) lists only the clips, transitions
+and markers that touch that window; every track is still listed.
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not
