@@ -304,7 +304,7 @@ fn escape_drops_the_slip_and_its_monitor() {
     assert!(d.slip_elements().is_empty(), "and closed the Slip Monitor");
     d.release(at + egui::vec2(60.0, 0.0));
     assert_eq!(d.clip(clip), before, "nothing slipped");
-    assert_eq!(*d.app().session.project, *project);
+    assert_eq!(*d.app().session.project, project);
     assert_eq!(d.app().session.history.undo.len(), undo0, "no undo step");
 }
 
