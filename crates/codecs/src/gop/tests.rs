@@ -1084,7 +1084,7 @@ fn a_decode_whose_only_fallback_was_evicted_still_returns_it() {
     let mut st = c.shared.state.lock().unwrap();
     st.pin = 1000;
     let big = |pts| crate::video::DecodedFrame { pts, frame: VideoFrame::rgba8(8192, 6400, vec![0; 8192 * 6400 * 4]), draft: false };
-    let nearest = c.store_output(&mut st, vec![big(0), big(2000)], 1500).expect("the frame at 0");
+    let nearest = c.store_output(&mut st, vec![big(0), big(2000)], 1500, i64::MIN).expect("the frame at 0");
     assert_eq!(nearest.pts, 0);
     assert!(!st.frames.contains_key(&0), "the cache dropped it");
     assert_eq!((nearest.frame.width, nearest.frame.height), (8192, 6400));
@@ -1182,4 +1182,97 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
     assert!(matches!(r, Err(CodecError::Cancelled)));
+}
+
+/// Unlike HEVC RASL decoders that drop unreferenced leading pictures, H.264 decoders emit them
+/// with corrupted pixels when a run starts at a non-IDR I picture. Those leading pictures must
+/// not be cached, so a subsequent seek to one restarts at the previous GOP.
+#[test]
+fn broken_leading_pictures_from_open_gop_run_are_not_cached() {
+    struct BrokenLeadingDec {
+        run_start: Option<i64>,
+    }
+    impl VideoDecoder for BrokenLeadingDec {
+        fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            let start = *self.run_start.get_or_insert(pts);
+            if pts < start {
+                Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![255, 255, 0, 255]), draft: false }])
+            } else {
+                Ok(vec![picture((pts, false))])
+            }
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+        fn reset(&mut self) {
+            self.run_start = None;
+        }
+        fn name(&self) -> &str {
+            "broken leading open gop"
+        }
+    }
+    struct BrokenOpenGop(OpenGop);
+    impl VideoSamples for BrokenOpenGop {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            self.0.sync_before(i)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(BrokenLeadingDec { run_start: None }))
+        }
+    }
+    let s = BrokenOpenGop(OpenGop::new(6));
+    let c = GopCache::new(None);
+    // Start a run at the open-GOP I picture (pts 16_000) by seeking to 17_000.
+    assert_eq!(index_of(&c.frame(&s, 17_000).expect("frame 17")), 17);
+    {
+        let st = c.shared.state.lock().unwrap();
+        assert!(!st.frames.contains_key(&14_000), "leading picture 14 must not be cached");
+        assert!(!st.frames.contains_key(&15_000), "leading picture 15 must not be cached");
+    }
+    // Seeking back to the leading pictures must restart at GOP 1 and decode clean pixels.
+    assert_eq!(index_of(&c.frame(&s, 15_000).expect("frame 15")), 15);
+    assert_eq!(index_of(&c.frame(&s, 14_000).expect("frame 14")), 14);
+}
+
+/// Contrast: for closed-GOP (with B-frame reordering) and IDR-only runs, every output frame has
+/// `pts >= floor`, so `floor` leaves the cached frame count and keys unchanged.
+#[test]
+fn closed_gop_and_idr_store_the_same_frame_count_with_floor() {
+    let small = |pts| DecodedFrame { pts, frame: VideoFrame::rgba8(1, 1, vec![0, 0, 0, 255]), draft: false };
+    // Closed GOP with B-frame reordering: key at 10_000, outputs 10_000..=14_000.
+    let c_unbounded = GopCache::new(None);
+    let c_floored = GopCache::new(None);
+    let batch = || vec![small(10_000), small(13_000), small(11_000), small(12_000), small(14_000)];
+    {
+        let mut st_u = c_unbounded.shared.state.lock().unwrap();
+        let mut st_f = c_floored.shared.state.lock().unwrap();
+        c_unbounded.store_output(&mut st_u, batch(), 12_000, i64::MIN);
+        c_floored.store_output(&mut st_f, batch(), 12_000, 10_000);
+        assert_eq!(st_f.frames.len(), 5);
+        assert_eq!(st_f.frames.len(), st_u.frames.len());
+        assert_eq!(st_f.frames.keys().collect::<Vec<_>>(), st_u.frames.keys().collect::<Vec<_>>());
+    }
+    // IDR-only: single picture per run at `floor`.
+    let idr_u = GopCache::new(None);
+    let idr_f = GopCache::new(None);
+    {
+        let mut st_u = idr_u.shared.state.lock().unwrap();
+        let mut st_f = idr_f.shared.state.lock().unwrap();
+        idr_u.store_output(&mut st_u, vec![small(20_000)], 20_000, i64::MIN);
+        idr_f.store_output(&mut st_f, vec![small(20_000)], 20_000, 20_000);
+        assert_eq!(st_f.frames.len(), 1);
+        assert_eq!(st_f.frames.len(), st_u.frames.len());
+    }
 }
