@@ -658,8 +658,9 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
 }
 
 /// The Source Monitor's audio waveform (Audio Waveform display mode, audio-only clips and the
-/// split view) over `shown`, the part of the clip the time ruler shows: click to move the source
-/// playhead.
+/// split view) over `shown`, the part of the clip the time ruler shows: click or drag sideways to move
+/// the source playhead, which stops Source playback (a vertical drag lifts the marked audio to the
+/// Timeline).
 #[allow(clippy::too_many_arguments)]
 pub fn waveform(
     app: &mut FilmcraftApp,
@@ -722,6 +723,8 @@ pub fn waveform(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - area.min.x) / area.width()).clamp(0.0, 1.0) as f64;
+        // a scrub stops Source playback, as the scrub bar does (#4609)
+        app.stop_source();
         let _ = app.session.execute("source.setPlayhead", json!({"time": shown.0.0.saturating_add((f * dur) as i64)}));
     }
 }
