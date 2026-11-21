@@ -95,7 +95,8 @@
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
-        <string>public.json</string>
+        <!-- Keep the FilmCraft icon available for Finder previews of project documents. -->
+        <string>public.content</string>
       </array>
       <key>UTTypeIconFile</key>
       <string>FilmCraft</string>
