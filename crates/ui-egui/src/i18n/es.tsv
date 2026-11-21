@@ -13,7 +13,6 @@
 # localisation resource, string table or product UI was consulted or copied; add entries the same
 # way. Product and technology names (FilmCraft, ArtCraft, ProRes, LUFS…) keep their
 # spelling. "video" is written without an accent, as in the rest of this catalog.
-
 	About FilmCraft	Acerca de FilmCraft
 	Add Audio Submix Track	Añadir pista de submezcla de audio
 	Add Caption at Playhead	Añadir subtítulo en el cabezal
@@ -3576,7 +3575,6 @@
 	tracks	pistas
 	Clear Transition	Borrar transición
 	Set Transition Duration	Establecer duración de la transición
-
 # System appearance modes and theme cards.
 	Active	Activo
 	Appearance Mode	Modo de apariencia
@@ -3597,7 +3595,6 @@
 	Composite on the GPU when available	Componer en la GPU cuando esté disponible
 	Text to Speech	Texto a voz
 	Edit Narration	Editar narración
-
 	Dock Panel	Acoplar panel
 	Undock Panel	Desacoplar panel
 	Docking Action	Acción de acoplamiento
@@ -3607,11 +3604,8 @@
 	Edit Project Notes	Editar notas del proyecto
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Notas de este proyecto: tareas pendientes, instrucciones, números de fotograma… Se guardan con el proyecto.
 	Use Effect Shutter Angle	Usar el ángulo de obturación del efecto
-
 	Appearance Settings…	Ajustes de apariencia…
-
 	Add to favorites	Añadir a favoritos
-
 	Remove from favorites	Quitar de favoritos
 	Compression	Compresión
 	ZIP (1 scan line)	ZIP (1 línea de exploración)
@@ -3659,12 +3653,9 @@
 	Show Audio Names	Mostrar nombres de audio
 	Video Names	Nombres de vídeo
 	Audio Names	Nombres de audio
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	El servidor de control está desactivado: FILMCRAFT_CONTROL_TOKEN debe contener 64 caracteres hexadecimales aleatorios (ver docs/control-protocol.md)
-
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
-
 # Clip Mismatch Warning dialog.
 	Clip Mismatch Warning	Aviso de discrepancia de clip
 	This clip does not match the sequence settings.	Este clip no coincide con los ajustes de la secuencia.
@@ -3744,7 +3735,6 @@
 	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes preestablecidos actualizada: {imported} cargados, {removed} eliminados
 	Preset library updated	Biblioteca de ajustes preestablecidos actualizada
 	Preset library is up to date	La biblioteca de ajustes preestablecidos está actualizada
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	Color de 10 bits
@@ -3760,3 +3750,99 @@
 	Toggle Color Grading Section	Alternar sección de gradación de color
 	Color Grading Section	Sección de gradación de color
 	Read Video Scopes	Leer medidores de vídeo
+
+	Alternate Drag Speed:	Velocidad de arrastre alternativa:
+	Center on Playhead:	Centrar en el cabezal:
+	Controls	Controles
+	Enter Shortcut	Introducir atajo
+	Explode Slider:	Expandir el control deslizante:
+	Invert Scrolling	Invertir desplazamiento
+	Playhead Centering Range	Rango de centrado del cabezal
+	Snap to Tracks	Ajustar a pistas
+	Smooth Animations	Animaciones suaves
+	Playhead Centering	Centrado del cabezal de reproducci├│n
+	Hide Slider	Ocultar control deslizante
+	Unhide Slider	Mostrar control deslizante
+	Maximum Zoom Level	Nivel máximo de zoom
+	Alternate Drag Speed (Shift + Drag)	Velocidad de arrastre alternativa (Shift + arrastre)
+	Playhead Centering Range (Double Click)	Rango de centrado del cabezal (clic doble)
+	Alternate Drag Speed	Velocidad de arrastre alternativa
+	Value:	Valor:
+	Closest	Más cerca
+	Very Slow	Muy lenta
+	Far	Lejos
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Color del indicador de posición:
+	Video Indicator Color:	Color del indicador de vídeo:
+	Audio Indicator Color:	Color del indicador de audio:
+	Offline Indicator Color:	Color del indicador de medios sin conexión:
+	Timeline Slider Settings	Ajustes del control deslizante de la línea de tiempo
+	Track Slider Settings	Ajustes del control deslizante de pistas
+	Unhide Timeline Slider	Mostrar control deslizante de la línea de tiempo
+	Unhide Track Slider	Mostrar control deslizante de pistas
+	Inverted Controls	Controles invertidos
+	Slider Minimap	Minimapa del control deslizante
+	Show Whole Timeline	Mostrar toda la línea de tiempo
+	Prioritise Audio	Priorizar audio
+	Position Indicator	Indicador de posición
+	Fill Clips	Rellenar clips
+	Decouple Edges	Desacoplar extremos
+	Alternate Slider Position	Posición alternativa del control deslizante
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Puedes recuperarlo en cualquier momento haciendo clic derecho en la línea de tiempo y seleccionando "{row}" al final de la lista.
+	Maximum zoom level in seconds	Nivel máximo de zoom en segundos
+	Alternate drag speed multiplier	Multiplicador de la velocidad de arrastre alternativa
+	Playhead centering range in seconds	Rango de centrado del cabezal en segundos
+	Alternate drag speed for the track sliders	Velocidad de arrastre alternativa de los controles deslizantes de pistas
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	Al activarlo, los bordes de los deslizadores, Centrar en el cabezal y Reflejar deslizador se animan suavemente.
+	Reverses timeline scrolling and zooming when holding the center of the slider.	Invierte el desplazamiento y el zoom de la línea de tiempo al mantener pulsado el centro del deslizador.
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	Arrastra el deslizador de la línea de tiempo verticalmente para cambiar el tamaño de ambas secciones de pistas. Recomendado cuando los deslizadores de pistas están ocultos.
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	Cuando el cabezal entra en la zona visible de la línea de tiempo, al ampliar la vista esta se acerca a él.
+	Moves the timeline slider to the top.	Mueve el deslizador de la línea de tiempo a la parte superior.
+	Sets the maximum amount you can zoom in.	Establece el nivel máximo de ampliación.
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Imita la función de Blender. Un multiplicador alto puede hacerlo más rápido que arrastrar normalmente.
+	Sets how much of the timeline is visible on each side of the playhead.	Establece cuánto se ve de la línea de tiempo a cada lado del cabezal.
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	Invierte el zoom al mantener pulsado el centro de un deslizador y desplazar verticalmente la línea de tiempo.
+	Use Alternate Drag Speed for fine adjustments when enabled.	Usa la velocidad alternativa de arrastre para ajustes precisos cuando está activada.
+	Keeps the opposite slider edge fixed while resizing.	Mantiene fijo el borde opuesto del deslizador al cambiar su tamaño.
+	Moves the track sliders to the left side.	Mueve los deslizadores de pistas al lado izquierdo.
+	Adjust Track Height:	Ajustar altura de pista:
+	Fast Timeline Scroll:	Desplazamiento rápido de la línea de tiempo:
+	Mirror Sliders:	Reflejar deslizadores:
+	Scroll Track Rows:	Desplazar filas de pistas:
+	Timeline Slider: Alternate Drag Speed	Deslizador de línea de tiempo: velocidad alternativa de arrastre
+	Timeline Slider: Center on Playhead	Deslizador de línea de tiempo: centrar en el cabezal
+	Timeline Slider: Explode	Deslizador de línea de tiempo: expandir
+	Timeline: Fast Scroll	Línea de tiempo: desplazamiento rápido
+	Timeline: Zoom	Línea de tiempo: zoom
+	Track Sliders: Adjust Track Height	Deslizadores de pistas: ajustar altura de pista
+	Track Sliders: Alternate Drag Speed	Deslizadores de pistas: velocidad alternativa de arrastre
+	Track Sliders: Explode	Deslizadores de pistas: expandir
+	Track Sliders: Mirror	Deslizadores de pistas: reflejar
+	Track Sliders: Scroll Track Rows	Deslizadores de pistas: desplazar filas de pistas
+	Zoom In:	Ampliar:
+	Zoom Out:	Reducir:
+	Zoom Timeline:	Zoom de la línea de tiempo:
+	Shortcut unavailable	Atajo no disponible
+	Left click is reserved for controlling the application and cannot be assigned.	El clic izquierdo está reservado para controlar la aplicación y no se puede asignar.
+	Right click is reserved for opening slider settings and cannot be assigned.	El clic derecho está reservado para abrir los ajustes del deslizador y no se puede asignar.
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	Activa Desvincular bordes para usar Ajustar a pistas; los bordes vinculados no pueden ajustarse de forma independiente.
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	Este atajo ya está asignado. Abre Atajos de teclado para revisarlo.
+	Copy of the project saved to {path}	Copia del proyecto guardada en {path}
+	Project saved to {path}	Proyecto guardado en {path}
+	Ticked attributes are removed from the selected clips.	Los atributos marcados se eliminan de los clips seleccionados.
+	No bin {id}	No existe la bandeja {id}
+	Unbound	Sin asignar
+	Track Control Angle:	Ángulo de control de pista:
+	to	a
+	Control Track Sliders	Controlar deslizadores de pistas
+	Full Screen Program Monitor	Monitor de programa a pantalla completa
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, escalado para llenar, VBR de 1 pasada, 10 Mbps, sonoridad normalizada a −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, escalado para llenar, VBR de 1 pasada, 12 Mbps, sonoridad normalizada a −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 vertical 9:16, escalado para llenar, VBR de 1 pasada, 8 Mbps, sonoridad normalizada a −14 LUFS
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	Eliminar altas luces
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920

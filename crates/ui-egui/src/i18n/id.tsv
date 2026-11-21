@@ -20,7 +20,6 @@
 # wipe = sapuan, glow = pendar, noise = derau, error = galat, file = berkas, guide = garis bantu,
 # thumbnail = gambar mini, voice-over = sulih suara, default = bawaan, preferences (also the native
 # macOS Settings menu) = Preferensi, settings = pengaturan.
-
 	About FilmCraft	Tentang FilmCraft
 	Add Audio Submix Track	Tambah Trek Submix Audio
 	Add Caption at Playhead	Tambah Takarir di Kepala Putar
@@ -3585,7 +3584,6 @@
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Catatan untuk proyek ini: daftar tugas, instruksi, nomor bingkai… Disimpan bersama proyek.
 	Use Effect Shutter Angle	Gunakan Sudut Rana Efek
 	Settings	Preferensi
-
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
@@ -3600,10 +3598,8 @@
 	Show Audio Names	Tampilkan Nama Audio
 	Video Names	Nama Video
 	Audio Names	Nama Audio
-
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
-
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	Edit Penanda…
 	In:	Masuk:
@@ -3674,7 +3670,6 @@
 	Previous	Sebelumnya
 	Next	Berikutnya
 	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
-
 # Export: H.264 High 10 and all-intra (#1221).
 	High 10	High 10
 	10-bit color	Warna 10-bit
@@ -3690,3 +3685,113 @@
 	Toggle Color Grading Section	Aktifkan/Nonaktifkan Bagian Gradasi Warna
 	Color Grading Section	Bagian Gradasi Warna
 	Read Video Scopes	Baca Skop Video
+
+	Alternate Drag Speed:	Kecepatan Seret Alternatif:
+	Center on Playhead:	Pusatkan ke Kepala Putar:
+	Controls	Kontrol
+	Enter Shortcut	Masukkan Pintasan
+	Explode Slider:	Ledakkan Penggeser:
+	Invert Scrolling	Balik Arah Gulir
+	Playhead Centering Range	Rentang Pemusatan Kepala Putar
+	Snap to Tracks	Tempel ke Trek
+	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
+	Hide Slider	Sembunyikan Penggeser
+	Unhide Slider	Tampilkan Penggeser
+	Maximum Zoom Level	Tingkat Zoom Maksimum
+	Alternate Drag Speed (Shift + Drag)	Kecepatan Seret Alternatif (Shift + seret)
+	Playhead Centering Range (Double Click)	Rentang Pemusatan Kepala Putar (Klik Dua Kali)
+	Alternate Drag Speed	Kecepatan Seret Alternatif
+	Value:	Nilai:
+	Closest	Terdekat
+	Very Slow	Sangat Lambat
+	Far	Jauh
+	3s	3 dtk
+	5s	5 dtk
+	10s	10 dtk
+	30s	30 dtk
+	Position Indicator Color:	Warna Indikator Posisi:
+	Video Indicator Color:	Warna Indikator Video:
+	Audio Indicator Color:	Warna Indikator Audio:
+	Offline Indicator Color:	Warna Indikator Luring:
+	Timeline Slider Settings	Pengaturan Penggeser Linimasa
+	Track Slider Settings	Pengaturan Penggeser Trek
+	Unhide Timeline Slider	Tampilkan Penggeser Linimasa
+	Unhide Track Slider	Tampilkan Penggeser Trek
+	Inverted Controls	Kontrol Terbalik
+	Slider Minimap	Peta Mini Penggeser
+	Show Whole Timeline	Tampilkan Seluruh Linimasa
+	Prioritise Audio	Prioritaskan Audio
+	Position Indicator	Indikator Posisi
+	Fill Clips	Isi Klip
+	Decouple Edges	Lepaskan Sisi
+	Alternate Slider Position	Posisi Penggeser Alternatif
+	Playhead Centering	Pemusatan Kepala Putar
+	Smooth Animations	Animasi Halus
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Anda dapat mengembalikannya kapan saja dengan mengklik kanan linimasa dan memilih "{row}" di bagian bawah daftar.
+	Maximum zoom level in seconds	Tingkat zoom maksimum dalam detik
+	Alternate drag speed multiplier	Pengali kecepatan seret alternatif
+	Playhead centering range in seconds	Rentang pemusatan kepala putar dalam detik
+	Alternate drag speed for the track sliders	Kecepatan seret alternatif untuk penggeser trek
+	The edges of sliders, Center on Playhead, and Mirror Slider have smooth animations when enabled.	Jika diaktifkan, tepi penggeser, pemusatan pada playhead, dan pencerminan penggeser dianimasikan dengan halus.
+	Reverses timeline scrolling and zooming when holding the center of the slider.	Membalik arah gulir dan zoom linimasa saat bagian tengah penggeser ditahan.
+	Drag the timeline slider vertically to resize both track sections. Recommended for when Track Sliders are hidden.	Seret penggeser linimasa secara vertikal untuk mengubah ukuran kedua bagian trek. Disarankan saat penggeser trek disembunyikan.
+	When the playhead enters the visible timeline, zooming in gravitates the view toward it.	Saat playhead masuk ke linimasa yang terlihat, memperbesar tampilan akan mengarahkannya ke playhead.
+	Moves the timeline slider to the top.	Memindahkan penggeser linimasa ke atas.
+	Sets the maximum amount you can zoom in.	Menetapkan tingkat pembesaran maksimum.
+	Mimics the feature in Blender. A high multiplier can make it faster than dragging normally.	Meniru fitur di Blender. Pengali tinggi dapat membuatnya lebih cepat daripada menyeret biasa.
+	Sets how much of the timeline is visible on each side of the playhead.	Menentukan bagian linimasa yang terlihat di setiap sisi playhead.
+	Reverses zooming when holding the center of a slider and scrolling vertically on the timeline.	Membalik arah zoom saat bagian tengah penggeser ditahan dan linimasa digulir secara vertikal.
+	Use Alternate Drag Speed for fine adjustments when enabled.	Gunakan kecepatan seret alternatif untuk penyesuaian halus saat diaktifkan.
+	Keeps the opposite slider edge fixed while resizing.	Menahan tepi penggeser yang berlawanan saat ukuran diubah.
+	Moves the track sliders to the left side.	Memindahkan penggeser trek ke sisi kiri.
+	Adjust Track Height:	Sesuaikan tinggi trek:
+	Fast Timeline Scroll:	Gulir cepat linimasa:
+	Mirror Sliders:	Cerminkan penggeser:
+	Scroll Track Rows:	Gulir baris trek:
+	Timeline Slider: Alternate Drag Speed	Penggeser linimasa: kecepatan seret alternatif
+	Timeline Slider: Center on Playhead	Penggeser linimasa: pusatkan pada playhead
+	Timeline Slider: Explode	Penggeser linimasa: perluas
+	Timeline: Fast Scroll	Linimasa: gulir cepat
+	Timeline: Zoom	Linimasa: zoom
+	Track Sliders: Adjust Track Height	Penggeser trek: sesuaikan tinggi trek
+	Track Sliders: Alternate Drag Speed	Penggeser trek: kecepatan seret alternatif
+	Track Sliders: Explode	Penggeser trek: perluas
+	Track Sliders: Mirror	Penggeser trek: cerminkan
+	Track Sliders: Scroll Track Rows	Penggeser trek: gulir baris trek
+	Zoom In:	Perbesar:
+	Zoom Out:	Perkecil:
+	Zoom Timeline:	Zoom linimasa:
+	Shortcut unavailable	Pintasan tidak tersedia
+	Left click is reserved for controlling the application and cannot be assigned.	Klik kiri dicadangkan untuk mengendalikan aplikasi dan tidak dapat ditetapkan.
+	Right click is reserved for opening slider settings and cannot be assigned.	Klik kanan dicadangkan untuk membuka pengaturan penggeser dan tidak dapat ditetapkan.
+	Turn on Decouple Edges to use Snap to Tracks; linked edges cannot snap independently.	Aktifkan Pisahkan Tepi untuk menggunakan Lekatkan ke Trek; tepi yang terhubung tidak dapat melekat secara terpisah.
+	This shortcut is already assigned. Open Keyboard Shortcuts to review it.	Pintasan ini sudah ditetapkan. Buka Pintasan Keyboard untuk memeriksanya.
+	Copy of the project saved to {path}	Salinan proyek disimpan ke {path}
+	From preset file:	Dari berkas preset:
+	Imported {n} preset(s)	{n} preset diimpor
+	Imported {n} preset(s); {skipped} skipped	{n} preset diimpor; {skipped} dilewati
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} preset diimpor; {warnings} dengan parameter yang tidak didukung
+	Imported {n} preset(s); not imported: {error}	{n} preset diimpor; tidak diimpor: {error}
+	No presets folder: the app has no data directory	Tidak ada folder preset: aplikasi tidak memiliki direktori data
+	Open Presets Folder	Buka folder preset
+	Preset library is up to date	Pustaka preset sudah terbaru
+	Preset library updated	Pustaka preset diperbarui
+	Preset library updated: {imported} loaded, {removed} removed	Pustaka preset diperbarui: {imported} dimuat, {removed} dihapus
+	Project saved to {path}	Proyek disimpan ke {path}
+	Scan Presets Folder	Pindai folder preset
+	Ticked attributes are removed from the selected clips.	Atribut yang dicentang dihapus dari klip yang dipilih.
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} preset diimpor; {skipped} dilewati, {warnings} dengan parameter yang tidak didukung
+	No bin {id}	Tidak ada bin {id}
+	Unbound	Tidak ditetapkan
+	Track Control Angle:	Sudut kontrol trek:
+	to	hingga
+	Control Track Sliders	Kendalikan penggeser trek
+	Full Screen Program Monitor	Monitor Program Layar Penuh
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 potret 9:16, diskalakan hingga penuh, VBR 1 lintasan, 10 Mbps, kenyaringan dinormalisasi ke −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 potret 9:16, diskalakan hingga penuh, VBR 1 lintasan, 12 Mbps, kenyaringan dinormalisasi ke −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 potret 9:16, diskalakan hingga penuh, VBR 1 lintasan, 8 Mbps, kenyaringan dinormalisasi ke −14 LUFS
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	Key Out Brights	Hilangkan bagian terang
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	Compression	Kompresi
