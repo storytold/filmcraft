@@ -373,10 +373,20 @@ impl NalStreamInfo {
         })
     }
 
-    /// As the software decoder's [`crate::VideoDecoder::is_random_access`] for this stream
-    /// (length-prefixed samples: unknown, the container's sync flags are trusted).
-    pub fn is_random_access(&self, _sample: &[u8]) -> Option<bool> {
-        None
+    /// As the software decoder's [`crate::VideoDecoder::is_random_access`] for this stream:
+    /// the NAL units are walked (IDR / recovery-point SEI for H.264, IRAP for HEVC), so a
+    /// length-prefixed sample is answered from the bitstream instead of the container's sync
+    /// flags (`None`: the sample is truncated and cannot be told).
+    pub fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+        let nals = if self.length_size == 0 {
+            filmcraft_bitstream::annexb_nals(sample)
+        } else {
+            filmcraft_bitstream::length_prefixed_nals(sample, self.length_size).ok()?
+        };
+        Some(match self.codec {
+            NalCodec::H264 => crate::video::h264_random_access(nals.into_iter()),
+            NalCodec::Hevc => crate::video::hevc_random_access(nals.into_iter()),
+        })
     }
 
     /// As the software decoder's [`crate::VideoDecoder::is_disposable`] for this stream.
