@@ -52,6 +52,7 @@ pub use dock_ui::area_id as dock_area_id;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
 
+pub mod frame_timing;
 pub mod frames;
 pub mod graphics_notice;
 pub mod header;
@@ -367,6 +368,8 @@ pub struct FilmcraftApp {
     window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
+    /// The opt-in per-frame timing log's state for the current UI pass ([`frame_timing`]).
+    pub timing: frame_timing::PassTimer,
     last_time: f64,
     bindings: Vec<menus::KeyBinding>,
     /// Shortcut-set revision `bindings` were built from.

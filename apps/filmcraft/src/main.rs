@@ -143,6 +143,8 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // FILMCRAFT_FRAME_TIMING=1: per-frame playback / scrubbing timings in the log (frame_timing.rs).
+    filmcraft_ui_egui::frame_timing::init_from_env();
     // Which graphics backends and adapter the window starts with: `--graphics`, else the saved
     // mode, which moves on after starts that died before their window painted (a driver crash),
     // see graphics.rs.
@@ -330,6 +332,13 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 }
             }),
         );
+        // FILMCRAFT_DECODE_ADAPTER=renderer: hardware decoding on the GPU the window renders with
+        // (Windows; off by default, see filmcraft_platform::set_decode_adapter). Set before a
+        // project opens and its first decoder is made.
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let info = rs.adapter.get_info();
+            filmcraft_platform::set_decode_adapter(info.vendor, info.device);
+        }
         let mut session = Session::default();
         if let Some(dir) = data_dir.clone().or_else(default_data_dir) {
             let mut cfg = AutosaveConfig::new(dir);

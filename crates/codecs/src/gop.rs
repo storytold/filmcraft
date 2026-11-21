@@ -77,6 +77,66 @@ fn timed<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// Per-thread trace of the frame requests a thread makes of GOP caches (the desktop app's
+/// frame-timing log). Off by default; while off, requests record nothing.
+///
+/// Decoding itself runs on the decode pool, so the trace is kept on the *requesting* thread: the
+/// time it waited for a cache's lock, whether the frame was cached, and the wall time it waited
+/// for the decode pool to produce it. [`take`] returns and clears the calling thread's trace.
+pub mod trace {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+
+    /// What one thread's frame requests cost since its last [`take`].
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct RequestTrace {
+        /// Requests answered from the decoded-frame cache.
+        pub hits: u32,
+        /// Requests that had to decode.
+        pub misses: u32,
+        /// Decoder restarts at a sync sample caused by these requests.
+        pub seeks: u32,
+        /// Samples fed to decoders for these requests.
+        pub samples: u32,
+        /// Time spent waiting for caches' locks (another request decoding the same source).
+        pub lock_wait: Duration,
+        /// Wall time of the decoding these requests waited for (hardware or software decoder,
+        /// including the decode pool's cropping / rotation and, for hardware, the GPU readback).
+        pub decode: Duration,
+    }
+
+    thread_local! {
+        static CURRENT: Cell<RequestTrace> = const { Cell::new(RequestTrace {
+            hits: 0, misses: 0, seeks: 0, samples: 0, lock_wait: Duration::ZERO, decode: Duration::ZERO,
+        }) };
+    }
+
+    /// Turn tracing on or off for every thread.
+    pub fn set_enabled(on: bool) {
+        ENABLED.store(on, Ordering::Relaxed);
+    }
+
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    /// The calling thread's trace since its last `take`, cleared.
+    pub fn take() -> RequestTrace {
+        CURRENT.with(|c| c.replace(RequestTrace::default()))
+    }
+
+    pub(super) fn add(f: impl FnOnce(&mut RequestTrace)) {
+        CURRENT.with(|c| {
+            let mut t = c.get();
+            f(&mut t);
+            c.set(t);
+        });
+    }
+}
+
 /// The counters so far (they only grow; subtract two snapshots to measure an interval).
 pub fn gop_stats() -> GopStats {
     GopStats {
@@ -216,6 +276,10 @@ struct State {
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
     background: bool,
+    /// Decoder restarts and samples fed by this cache (frame-timing trace: the difference
+    /// across one request, read on the requesting thread).
+    seeks: u64,
+    fed: u64,
 }
 
 impl State {
@@ -655,6 +719,8 @@ impl GopCache {
                 last_used: Instant::now(),
                 pin: i64::MIN,
                 background: false,
+                seeks: 0,
+                fed: 0,
             }),
             pool: pool.clone(),
         });
@@ -871,26 +937,44 @@ impl GopCache {
         let i = s.sample_at(target.max(0)).or_else(|| (n > 0).then(|| n - 1)).ok_or_else(|| CodecError::Decode("empty track".into()))?;
         let want_pts = s.pts(i);
         let me = self as *const Self as usize;
+        let traced = trace::enabled();
         if DecodingGuard::active(me) {
-            return Ok(Taken { pts: want_pts, frame: self.private_frame(s, i, want_pts, n)?, raw: false });
+            let t0 = traced.then(Instant::now);
+            let r = self.private_frame(s, i, want_pts, n);
+            if let Some(t0) = t0 {
+                trace::add(|t| {
+                    t.misses += 1;
+                    t.decode += t0.elapsed();
+                });
+            }
+            return Ok(Taken { pts: want_pts, frame: r?, raw: false });
         }
         let draft = filmcraft_media::cancel::draft();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
         // after the guard on every return path: dropping a decoder can block (a hardware session
         // waits for its frames in flight) and must not hold this cache's lock.
         let mut released: Vec<Box<dyn VideoDecoder>> = Vec::new();
+        let lock_t0 = traced.then(Instant::now);
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(t0) = lock_t0 {
+            trace::add(|t| t.lock_wait += t0.elapsed());
+        }
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
         st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
+            if traced {
+                trace::add(|t| t.hits += 1);
+            }
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
             st.background &= background;
             return Ok(Taken { pts: want_pts, frame, raw: st.raw.contains(&want_pts) });
         }
         MISSES.fetch_add(1, Ordering::Relaxed);
+        // (making a decoder counts as decoding: a hardware session can take a while to open)
+        let decode_t0 = traced.then(Instant::now);
         if !background {
             st.background = false;
         } else if st.decoder.is_none() {
@@ -914,11 +998,30 @@ impl GopCache {
             return Err(CodecError::Cancelled);
         }
         if st.intra {
-            return self.intra_frame(st, s, i, want_pts);
+            let r = self.intra_frame(st, s, i, want_pts);
+            if let Some(t0) = decode_t0 {
+                trace::add(|t| {
+                    t.misses += 1;
+                    t.samples += 1;
+                    t.decode += t0.elapsed();
+                });
+            }
+            return r;
         }
         // with the lock held: see `isolated`
         let st = &mut *st;
-        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
+        let (seeks0, fed0) = (st.seeks, st.fed);
+        let r = isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft));
+        if let Some(t0) = decode_t0 {
+            let (seeks, fed) = (st.seeks.saturating_sub(seeks0), st.fed.saturating_sub(fed0));
+            trace::add(|t| {
+                t.misses += 1;
+                t.seeks = t.seeks.saturating_add(u32::try_from(seeks).unwrap_or(u32::MAX));
+                t.samples = t.samples.saturating_add(u32::try_from(fed).unwrap_or(u32::MAX));
+                t.decode += t0.elapsed();
+            });
+        }
+        r
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
@@ -937,6 +1040,7 @@ impl GopCache {
         let continuing = running && (st.next > key || near) && (i >= st.next || (st.start <= i && want_pts > st.out_max));
         if !continuing {
             SEEKS.fetch_add(1, Ordering::Relaxed);
+            st.seeks += 1;
             key = random_access_at_or_before(s, key, |data| st.decoder.as_ref().and_then(|d| d.is_random_access(data)))?;
             if let Some(d) = st.decoder.as_mut() {
                 d.reset();
@@ -977,6 +1081,7 @@ impl GopCache {
             };
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
+            st.fed += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
             keep(&mut mine, self.store_output(st, out, want_pts));
             if st.cached(want_pts, draft).is_some() {

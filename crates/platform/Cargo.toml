@@ -56,7 +56,9 @@ windows = { version = "0.62", features = [
 
 # Linux: libva (VA-API) is loaded at run time with libloading (ISC; already in the lockfile through
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
-[target.'cfg(target_os = "linux")'.dependencies]
+# Windows: NVDEC (nvcuvid.dll) and the CUDA driver (nvcuda.dll) of NVIDIA's display driver, loaded
+# the same way: no CUDA toolkit to build, and a system without them uses Media Foundation.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 libloading = "0.8"
 
 [dev-dependencies]

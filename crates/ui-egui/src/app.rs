@@ -110,6 +110,7 @@ impl FilmcraftApp {
             window_files: Vec::new(),
             timeline_view_last: None,
             fps: 60.0,
+            timing: crate::frame_timing::PassTimer::default(),
             last_time: 0.0,
             bindings: Vec::new(),
             bindings_rev: 0,
@@ -317,6 +318,9 @@ impl FilmcraftApp {
     /// logic subsystems, advance playback, poll jobs, then drain completed screenshots and ask
     /// for hidden paints. Safe on hidden logic-only callbacks.
     pub fn logic_inner(&mut self, ctx: &egui::Context) {
+        use crate::frame_timing::{Stage, start};
+        self.timing.begin_logic();
+        let logic_t0 = start();
         // Remember the pass's clock before anything reads `now()`. A hidden logic-only tick keeps
         // the last UI time (which is stale there), so `now()` never runs behind the host clock.
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
@@ -328,11 +332,14 @@ impl FilmcraftApp {
         self.logic_background(ctx, now);
         self.logic_session_events();
         self.logic_command_inbox(ctx);
+        let t = start();
         self.advance_playback(ctx);
+        self.timing.stop(Stage::AudioClock, t);
         self.advance_source_playback(ctx);
         self.poll_jobs(ctx);
         capture::drain(self, ctx);
         capture::request_hidden_paint(self, ctx);
+        self.timing.stop(Stage::Logic, logic_t0);
     }
 
     /// Draw one real UI pass. Establish the UI clock offset once, run first-pass input handling,
@@ -340,6 +347,7 @@ impl FilmcraftApp {
     /// this pass's commands ran. Screenshots are offered to `capture::issue`, which issues only
     /// on an accepted pass.
     fn ui_inner(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ui_t0 = crate::frame_timing::start();
         if self.ui_clock_offset.is_none() {
             let egui_time = ui.ctx().input(|input| input.time);
             if egui_time.is_finite() {
@@ -386,7 +394,9 @@ impl FilmcraftApp {
             self.latch_escape_cancel(&ctx);
             self.handle_shortcuts(&ctx);
             self.sync_native_menu(&ctx);
+            let t = crate::frame_timing::start();
             self.scrub_audio(&ctx);
+            self.timing.stop(crate::frame_timing::Stage::ScrubAudio, t);
         } else {
             // Pass 1+ redraws the same frame; drop the discarded pass's registrations so lookups
             // and `ui.elements` see one entry per widget, from the layout that is accepted.
@@ -433,6 +443,12 @@ impl FilmcraftApp {
         // Only a real, accepted UI pass may issue a capture: it observes the final layout for this
         // pass and `screenshot` itself forces the paint needed when the window is hidden.
         capture::issue(self, &ctx);
+        self.timing.stop(crate::frame_timing::Stage::Ui, ui_t0);
+        if ui_t0.is_some() && !ctx.will_discard() {
+            self.timing.note_causes(&ctx.repaint_causes());
+            let (playing, playhead, meter) = (self.playback.playing, self.session.playhead().0, self.playback.meter.counts());
+            self.timing.end_pass(playing, playhead, meter);
+        }
     }
 }
 

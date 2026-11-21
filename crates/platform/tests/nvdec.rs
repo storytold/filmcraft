@@ -6,7 +6,7 @@
 //! errors or fall back, never crash or hang. Skips without ffmpeg (fixture generator) or without
 //! an NVIDIA GPU. Its own test binary: one test turns the process-wide Hardware decoding switch
 //! off and on.
-#![cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#![cfg(any(all(target_os = "linux", target_pointer_width = "64"), all(target_os = "windows", target_pointer_width = "64")))]
 
 #[path = "it/common/mod.rs"]
 mod common;
@@ -180,5 +180,50 @@ fn damaged_samples_never_crash_or_hang() {
                 Err(_) => panic!("{name} seed {seed}: hung"),
             }
         }
+    }
+}
+
+/// Bit-exactness on real camera files, which the generated fixtures do not cover:
+/// `FILMCRAFT_NVDEC_CLIPS` lists MP4 / MOV paths (separated by the platform's path separator), and
+/// the first two GOPs of each must decode identically in NVDEC and in our software decoder, also
+/// after a reset and reseek. Skips when the variable is unset (CI) or a file has no NVDEC decoder.
+#[test]
+fn camera_clips_are_bit_exact_with_the_software_decoder() {
+    let Some(list) = std::env::var_os("FILMCRAFT_NVDEC_CLIPS") else {
+        eprintln!("SKIPPED: FILMCRAFT_NVDEC_CLIPS is not set");
+        return;
+    };
+    for path in std::env::split_paths(&list) {
+        let name = path.display().to_string();
+        let s = read_stream(&path);
+        let Some(mut hw) = hardware(&s) else { continue };
+        let mut sw = software(&s);
+        // up to the third sync sample (two GOPs), at most 240 samples: software decoding of 4K
+        // HEVC takes tens of milliseconds a picture
+        let syncs: Vec<usize> = (0..s.samples.len()).filter(|&i| s.sync[i]).collect();
+        let end = syncs.get(2).copied().unwrap_or(s.samples.len()).clamp(1, 240.min(s.samples.len()));
+        let part = &s.samples[..end];
+        let a = decode_all(hw.as_mut(), part);
+        assert!(!a.is_empty(), "{name}: no pictures");
+        assert_same(&name, &a, &decode_all(sw.as_mut(), part));
+        if let Some(&k) = syncs.get(1).filter(|&&k| k < end) {
+            hw.reset();
+            sw.reset();
+            let stop = (k + 17).min(end);
+            let mut a = decode_all(hw.as_mut(), &s.samples[k..stop]);
+            let mut b = decode_all(sw.as_mut(), &s.samples[k..stop]);
+            // as in `bit_exact_with_the_software_decoder`: after a seek to a non-IDR H.264 I picture
+            // (open GOP) the pictures shown before it are concealed differently
+            let info = NalStreamInfo::from_entry(&s.entry).unwrap().unwrap();
+            if info.codec == NalCodec::H264 && !info.nal_types(&s.samples[k].0).contains(&5) {
+                let start = s.samples[k].1;
+                a.retain(|f| f.pts >= start);
+                b.retain(|f| f.pts >= start);
+            }
+            assert!(!a.is_empty(), "{name}: pictures after seeking to {k}");
+            assert_same(&format!("{name} from sample {k}"), &a, &b);
+        }
+        assert!(hw.name().starts_with("NVDEC"), "{name}: stayed in hardware ({})", hw.name());
+        eprintln!("{name}: {} pictures bit-exact", a.len());
     }
 }

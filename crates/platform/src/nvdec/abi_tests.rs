@@ -54,6 +54,8 @@ fn cuviddecodecaps_layout_matches_the_header() {
     assert_eq!(offset_of!(CUVIDDECODECAPS, reserved3), 52);
 }
 
+/// Linux (LP64): C `unsigned long` is 64-bit.
+#[cfg(target_os = "linux")]
 #[test]
 fn cuviddecodecreateinfo_layout_matches_the_header() {
     assert_eq!((size_of::<CUVIDDECODECREATEINFO>(), align_of::<CUVIDDECODECREATEINFO>()), (176, 8));
@@ -101,6 +103,7 @@ fn cuvidparserparams_layout_matches_the_header() {
     assert_eq!(offset_of!(CUVIDPARSERPARAMS, pExtVideoInfo), 128);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn cuvidsourcedatapacket_layout_matches_the_header() {
     assert_eq!((size_of::<CUVIDSOURCEDATAPACKET>(), align_of::<CUVIDSOURCEDATAPACKET>()), (32, 8));
@@ -108,6 +111,47 @@ fn cuvidsourcedatapacket_layout_matches_the_header() {
     assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, payload_size), 8);
     assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, payload), 16);
     assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, timestamp), 24);
+}
+
+/// 64-bit Windows (LLP64): C `unsigned long` is 32-bit, so every `ulXxx` field is 4 bytes and the
+/// pointer `vidLock` is the first field padded to 8.
+#[cfg(target_os = "windows")]
+#[test]
+fn cuviddecodecreateinfo_layout_matches_the_header_on_windows() {
+    assert_eq!(size_of::<std::ffi::c_ulong>(), 4);
+    assert_eq!((size_of::<CUVIDDECODECREATEINFO>(), align_of::<CUVIDDECODECREATEINFO>()), (112, 8));
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulWidth), 0);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulHeight), 4);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulNumDecodeSurfaces), 8);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, CodecType), 12);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ChromaFormat), 16);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulCreationFlags), 20);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, bitDepthMinus8), 24);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulIntraDecodeOnly), 28);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulMaxWidth), 32);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulMaxHeight), 36);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, Reserved1), 40);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, display_area), 44);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, OutputFormat), 52);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, DeinterlaceMode), 56);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulTargetWidth), 60);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulTargetHeight), 64);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, ulNumOutputSurfaces), 68);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, vidLock), 72);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, target_rect), 80);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, enableHistogram), 88);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, enableDecodeFeatures), 92);
+    assert_eq!(offset_of!(CUVIDDECODECREATEINFO, Reserved2), 96);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn cuvidsourcedatapacket_layout_matches_the_header_on_windows() {
+    assert_eq!((size_of::<CUVIDSOURCEDATAPACKET>(), align_of::<CUVIDSOURCEDATAPACKET>()), (24, 8));
+    assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, flags), 0);
+    assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, payload_size), 4);
+    assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, payload), 8);
+    assert_eq!(offset_of!(CUVIDSOURCEDATAPACKET, timestamp), 16);
 }
 
 #[test]

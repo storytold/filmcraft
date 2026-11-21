@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 use filmcraft_codecs::hw::{NalCodec, StreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
+pub use self::gpu::{DECODE_ADAPTER_ENV, set_preferred_adapter};
 use self::gpu::{Gpu, Readback, SurfaceFormat};
 use self::mft::{MfApi, Mft, Poll};
 use self::stream::Stream;

@@ -195,7 +195,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().text(r.center(), Align2::CENTER_CENTER, text, font, t.text_dim);
     }
     if app.playback.playing {
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(super::mixer::METER_REFRESH);
     }
     app.auto.add("audioMeters", area, "Audio Meters");
 }
