@@ -101,7 +101,7 @@ eframe = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
 craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", features = ["egui"] }
-rfd = "0.17"
+rfd = "0.18"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
