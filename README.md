@@ -378,10 +378,12 @@ duplicate. With one driver per GPU the adapter is the one wgpu picks, as before.
 | Flatpak | `filmcraft-<ver>-linux-x86_64.flatpak` | `filmcraft-<ver>-linux-aarch64.flatpak` | Sandboxed; `flatpak install --user <file>` |
 | Debian/Ubuntu | `filmcraft-<ver>-linux-x86_64.deb` | `filmcraft-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `filmcraft-<ver>-linux-x86_64.rpm` | `filmcraft-<ver>-linux-aarch64.rpm` | |
+| Arch Linux | `filmcraft-<ver>-linux-x86_64.pkg.tar.zst` | `filmcraft-<ver>-linux-aarch64.pkg.tar.zst` | |
 | Tarball | `filmcraft-<ver>-linux-x86_64.tar.gz` | `filmcraft-<ver>-linux-aarch64.tar.gz` | Unpack and run `./install.sh` |
 
-RISC-V (riscv64): `filmcraft-<ver>-linux-riscv64.tar.gz` (tarball only; needs glibc 2.39+, e.g. Ubuntu 24.04
-or Debian 13).
+RISC-V (riscv64): `filmcraft-<ver>-linux-riscv64.deb`, `filmcraft-<ver>-linux-riscv64.rpm`, and
+`filmcraft-<ver>-linux-riscv64.tar.gz`. These packages require glibc 2.39+ (e.g. Ubuntu 24.04 or
+Debian 13).
 
 The tarball installer places FilmCraft, its command-line tool and desktop integration in
 `~/.local`, without administrator permissions. For all users, run
@@ -403,6 +405,7 @@ emerge --ask media-video/filmcraft-bin
 | Build | File |
 |---|---|
 | x86_64 | `filmcraft-<ver>-freebsd-x86_64.tar.gz` |
+| aarch64 (ARM64) | `filmcraft-<ver>-freebsd-aarch64.tar.gz` |
 
 ### Web (WebAssembly)
 
