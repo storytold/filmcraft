@@ -342,3 +342,122 @@ fn a_wheel_turn_past_the_end_of_the_video_scroll_does_not_move_the_box() {
     d.frames(2);
     assert_eq!(d.selection(), before, "the release keeps what the box showed");
 }
+
+impl Driver {
+    /// Two caption tracks over the last clip of Video 1: C1 holds one block caption, C2 three word
+    /// captions, all inside that clip's time. Returns (block, words).
+    fn captions_over(&mut self, clip: u64) -> (u64, Vec<u64>) {
+        let (s, e) = {
+            let seq = self.harness.state().session.active_sequence().unwrap();
+            let it = seq.find_item(ClipId(clip)).unwrap().1;
+            (it.start.seconds(), it.end().seconds())
+        };
+        let len = e - s;
+        assert!(len > 1.0, "the clip is long enough for the captions");
+        self.exec("captions.newTrack", json!({"name": "Words"}));
+        self.exec("captions.newTrack", json!({"name": "Blocks"}));
+        let add = |d: &mut Driver, track: &str, at: f64, dur: f64, text: &str| {
+            d.exec("captions.add", json!({"track": track, "seconds": at, "durationSeconds": dur, "text": text}))["caption"].as_u64().expect("caption id")
+        };
+        let block = add(self, "C1", s + len * 0.2, len * 0.6, "a block caption");
+        let words = ["one", "two", "three"].iter().enumerate().map(|(i, w)| add(self, "C2", s + len * (0.2 + 0.2 * i as f64), len * 0.15, w)).collect();
+        self.exec("captions.select", json!({"captions": []}));
+        self.exec("timeline.select", json!({"clips": []}));
+        self.frames(4);
+        (block, words)
+    }
+
+    fn captions_selected(&self) -> Vec<u64> {
+        let mut s: Vec<u64> = self.harness.state().session.state.caption_selection.iter().map(|c| c.0).collect();
+        s.sort();
+        s
+    }
+
+    fn lane_y(&mut self, track: &str) -> f32 {
+        self.rect(&format!("timeline.captionTrack.{track}")).center().y
+    }
+}
+
+/// #4488: a box from empty space on a caption track down over Video 1 selects the caption blocks of
+/// every caption track it crosses together with the clips, so they can move by the same offset.
+#[test]
+fn a_box_over_captions_and_clips_selects_both() {
+    let mut d = Driver::demo();
+    let (_, b, _, _, _) = d.setup();
+    let (block, words) = d.captions_over(b);
+    let rb = d.rect(&format!("timeline.clip.{b}"));
+    let start = egui::pos2(rb.max.x + 12.0, d.lane_y("C1"));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    let over = egui::pos2(rb.center().x - rb.width() * 0.45, rb.center().y);
+    d.move_to(start, over);
+    let mut all = words.clone();
+    all.push(block);
+    all.sort();
+    assert!(d.selected(b), "the box selects the clip");
+    assert_eq!(d.captions_selected(), all, "the box selects the captions as it grows");
+    d.button(over, false);
+    d.frames(2);
+    assert!(d.selected(b), "the release keeps the clip");
+    assert_eq!(d.captions_selected(), all, "the release keeps the captions");
+}
+
+/// #4488: a box over only the caption rows selects the captions it touches on both tracks and no clips.
+#[test]
+fn a_box_over_only_the_caption_rows_selects_their_captions() {
+    let mut d = Driver::demo();
+    let (_, b, _, _, _) = d.setup();
+    let (block, words) = d.captions_over(b);
+    let rb = d.rect(&format!("timeline.clip.{b}"));
+    let start = egui::pos2(rb.max.x + 12.0, d.lane_y("C1"));
+    // back to the second word only: the first word stays out of the box
+    let word2 = d.rect(&format!("timeline.caption.{}", words[1]));
+    let over = egui::pos2(word2.center().x, d.lane_y("C2"));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    d.move_to(start, over);
+    d.button(over, false);
+    d.frames(2);
+    let mut want = vec![block, words[1], words[2]];
+    want.sort();
+    assert_eq!(d.captions_selected(), want);
+    assert!(d.harness.state().session.state.selection.is_empty(), "no clips selected: {:?}", d.harness.state().session.state.selection);
+}
+
+/// #4488: Escape puts back the caption selection the box began with.
+#[test]
+fn escape_restores_the_caption_selection() {
+    let mut d = Driver::demo();
+    let (_, b, _, _, _) = d.setup();
+    let (block, words) = d.captions_over(b);
+    let rb = d.rect(&format!("timeline.clip.{b}"));
+    d.exec("captions.select", json!({"captions": [words[0]]}));
+    let start = egui::pos2(rb.max.x + 12.0, d.lane_y("C1"));
+    let over = egui::pos2(d.rect(&format!("timeline.caption.{block}")).center().x, d.lane_y("C2"));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    d.move_to(start, over);
+    d.send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    d.button(over, false);
+    d.frames(2);
+    assert_eq!(d.captions_selected(), vec![words[0]], "Escape put back the caption selection");
+}
+
+/// #4488: a locked caption track keeps its captions out of the box.
+#[test]
+fn a_box_skips_captions_on_a_locked_track() {
+    let mut d = Driver::demo();
+    let (_, b, _, _, _) = d.setup();
+    let (block, words) = d.captions_over(b);
+    let rb = d.rect(&format!("timeline.clip.{b}"));
+    d.exec("captions.setTrack", json!({"track": "C2", "locked": true}));
+    d.frames(2);
+    let start = egui::pos2(rb.max.x + 12.0, d.lane_y("C1"));
+    let over = egui::pos2(rb.center().x - rb.width() * 0.45, d.lane_y("C2"));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    d.move_to(start, over);
+    d.button(over, false);
+    d.frames(2);
+    assert_eq!(d.captions_selected(), vec![block], "only the unlocked track's captions: {words:?} are locked");
+}
