@@ -380,6 +380,11 @@ pub fn poll(s: &mut Session) {
             continue;
         }
         for ix in results {
+            // the item was relinked or replaced while it was analysed: this result describes media
+            // it no longer shows, and must not replace a newer analysis of what it shows now
+            if ix.media != media_ref(s, ix.item) {
+                continue;
+            }
             s.media_index.insert(ix.item, Arc::new(ix));
         }
     }
