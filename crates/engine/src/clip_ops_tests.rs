@@ -346,6 +346,19 @@ fn close_project_and_save_all() {
 }
 
 #[test]
+fn close_project_rejects_view_only_unsaved_changes_unless_forced() {
+    let mut s = demo();
+    s.view_changed();
+    assert!(s.has_unsaved_changes());
+    assert!(!s.is_dirty());
+    assert!(s.execute("file.closeProject", json!({})).is_err());
+    assert!(!s.project.items.is_empty(), "a refused close retains the open project");
+    s.execute("file.closeProject", json!({"force": true})).unwrap();
+    assert!(s.project.items.is_empty());
+    assert!(!s.has_unsaved_changes());
+}
+
+#[test]
 fn make_and_edit_subclips() {
     let mut s = demo();
     let ocean = item_named(&s, "Ocean_Sunset.mp4");

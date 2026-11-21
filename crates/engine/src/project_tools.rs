@@ -669,11 +669,13 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         templates_dir(s).map(|d| d.join(format!("{}.fcproj", sanitize(t))).to_string_lossy().to_string()).unwrap_or_else(|| t.to_string())
     };
-    let bytes = s.services.read_file_bounded(&path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
-    if s.is_dirty() && !bool_p(p, "force").unwrap_or(false) {
+    if s.has_unsaved_changes() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
+    let fence_arc = s.project_file_fence.clone();
+    let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let name = str_p(p, "name").unwrap_or("Untitled").to_string();
     proj.name = name.clone();
     proj.root.name = name;
@@ -693,6 +695,10 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.media.add_stored(&s.project, Some(path.as_str()));
     s.revision += 1;
     s.saved_revision = s.revision;
+    s.saved_view_epoch = s.view_epoch;
+    fence.revision = s.revision;
+    fence.view_epoch = s.view_epoch;
+    fence.path.clone_from(&s.path);
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));
@@ -1129,11 +1135,6 @@ fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
             paths.push(path.to_string());
         }
     }
-    // the files as media access resolves them: a stored path it refuses is not handed to the system
-    let paths = paths
-        .iter()
-        .map(|path| s.media.follow(path).map_err(|why| bad("edit.editOriginal", format!("{path} is not opened: {why}"))))
-        .collect::<Result<Vec<String>>>()?;
     if paths.is_empty() {
         return Err(EngineError::Other("select a clip with a media file".into()));
     }
@@ -1217,15 +1218,7 @@ fn update_metadata(s: &mut Session, p: &Value) -> Result<Value> {
     for id in targets(s, p) {
         let Some(it) = s.project.item(id) else { continue };
         let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m)) else { continue };
-        // the media file as media access resolves it: a refused stored path gets no sidecar written beside it
-        let file = match s.media.follow(path) {
-            Ok(file) => file,
-            Err(why) => {
-                skipped.push(json!({"item": id.0, "path": path, "reason": format!("{path} is not opened: {why}")}));
-                continue;
-            }
-        };
-        let side = sidecar_path(&file);
+        let side = sidecar_path(path);
         if let Ok(old) = s.services.read_file(&side)
             && !String::from_utf8_lossy(&old).contains("xmp:CreatorTool=\"FilmCraft\"")
         {
