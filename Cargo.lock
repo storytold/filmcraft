@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "craft-exr"
 version = "0.1.0"
-source = "git+https://github.com/Terra854/craft-libs?rev=5f556c6db66a7e063ab2200edfd7493dfeea65e0#5f556c6db66a7e063ab2200edfd7493dfeea65e0"
+source = "git+https://github.com/storytold/craft-libs?rev=8b40f1a4b0718916e7c136c1b91b38a5c7531a0e#8b40f1a4b0718916e7c136c1b91b38a5c7531a0e"
 dependencies = [
  "flate2",
  "serde_json",
