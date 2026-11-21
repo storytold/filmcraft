@@ -408,7 +408,7 @@ fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
         assert!(op.gpu_ok(), "{id} {params:?}: not GPU-capable");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] };
+        let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op], mix: None };
         let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{id} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
@@ -446,7 +446,7 @@ fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
     let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
     assert_eq!(cpu.px, px, "the CPU leaves a neutral corrector's input untouched");
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op], mix: None }).expect("effect image");
     let (worst, flips) = compare(&px, &gpu);
     assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
 }
@@ -465,7 +465,7 @@ fn gpu_extract_zero_softness_has_no_fractional_edge() {
     for invert in [false, true] {
         let e = effect("extract", &[("black", fl(90.0)), ("white", fl(160.0)), ("invert", ParamValue::Bool(invert))]);
         let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap();
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).unwrap();
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op], mix: None }).unwrap();
         for (src, out) in px.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()) {
             assert_eq!(out[3], src[3], "Extract must preserve alpha");
             assert!(out[0] == 0.0 || out[0] == out[3], "zero softness produced a fractional edge: {out:?}");
@@ -520,7 +520,7 @@ fn gpu_effect_chains_match_cpu() {
             op.apply(&mut cpu);
         }
         let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops, mix: None }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{names:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
         assert!(worst < EXACT * 2.0 && flips == 0.0, "{names:?}: {worst}, {flips}");
@@ -554,7 +554,7 @@ fn keyframed_effects_follow_time() {
         for op in &ops {
             op.apply(&mut cpu);
         }
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops, mix: None }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst < EXACT && flips == 0.0, "t = {s}: {worst}, {flips}");
         assert_ne!(last.as_ref(), Some(&gpu), "t = {s}: the keyframes change the picture");
@@ -626,11 +626,11 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("bokeh_blur", &[("amount", fl(f64::NAN))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, turns: 0, ops }).expect("effect image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, turns: 0, ops, mix: None }).expect("effect image");
     assert!(t0.elapsed().as_secs() < 30);
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
-    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).is_none());
+    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite], mix: None }).is_none());
     // and the refusal ends its frame: the next frame, which uses no effect, releases the working
     // images the first one pooled
     c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] });
@@ -735,7 +735,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::IDENTITY,
                     opacity: 1.0,
                     blend: Blend::Normal,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, turns: 0, ops: ops(&chain_c, 320, 180, 0.5) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, turns: 0, ops: ops(&chain_c, 320, 180, 0.5), mix: None })),
                     input: None,
                 },
                 PlanLayer {
@@ -743,7 +743,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(1.1, 1.1), 17.0, Vec2::new(80.0, 60.0)),
                     opacity: 0.8,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops: ops(&chain_a, 160, 120, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops: ops(&chain_a, 160, 120, 1.0), mix: None })),
                     input: None,
                 },
                 PlanLayer::new(ramp.clone(), Affine::translate(10.0, 20.0), 0.5, Blend::Normal),
@@ -752,7 +752,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(250.0, 70.0), Vec2::new(0.45, 0.45), -9.0, Vec2::new(160.0, 90.0)),
                     opacity: 0.7,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, turns: 0, ops: ops(&chain_b, 320, 180, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, turns: 0, ops: ops(&chain_b, 320, 180, 1.0), mix: None })),
                     input: None,
                 },
             ],
@@ -768,6 +768,118 @@ fn gpu_effect_layers_match_cpu_plan() {
     }
 }
 
+/// Frame Blending (#4589): the next frame is drawn onto a second working image and mixed into the
+/// layer's before its effects run, as the CPU plan executor mixes them: with and without effects,
+/// at partial opacity, across the weight's range.
+#[test]
+fn frame_blending_mixes_the_next_frame_before_the_effects() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (320u32, 180u32);
+    let a = yuv_frame(w, h);
+    // the next frame: the same frame with its luma flipped end to end
+    let mut next = (*a).clone();
+    if let PixelData::Yuv8 { planes, .. } = &mut next.data {
+        let mut y = planes[0].as_ref().clone();
+        y.reverse();
+        planes[0] = Arc::new(y);
+    }
+    let next = Arc::new(next);
+    let tint = FxOp::eval(&effect("tint", &[("amount", fl(60.0))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("tint op");
+    let mut ends = Vec::new();
+    for ops in [Vec::new(), vec![tint]] {
+        for weight in [0.0, 0.3, 1.0] {
+            let mix = Some(filmcraft_render::plan::FrameMix { frame: next.clone(), weight, flow: false });
+            let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.clone(), mix };
+            let plan = FramePlan::Layers {
+                width: w as usize,
+                height: h as usize,
+                layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(a.clone(), Affine::IDENTITY, 0.7, Blend::Normal) }],
+            };
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            c.composite(&plan);
+            let (_, _, gpu) = c.read_output().expect("readback");
+            let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+            eprintln!("{} ops, weight {weight}: 8-bit p99 {p99} mean {mean:.3} max {max}", ops.len());
+            assert!(p99 <= 6 && mean < 1.5, "{} ops, weight {weight}: p99 {p99}, mean {mean}", ops.len());
+            if weight != 0.3 {
+                ends.push(cpu);
+            }
+        }
+    }
+    // (the two frames differ, so a stage that dropped the next frame could not match at weight 1)
+    let (_, mean, _) = stats8(&ends[0], &ends[1], &vec![true; (w * h) as usize]);
+    assert!(mean > 10.0, "the next frame should change the picture: mean difference {mean}");
+}
+
+/// A textured 8-bit Y'CbCr frame with its content moved `dx` pixels right, and a bright square
+/// that moves twice as far.
+fn moving_frame(w: u32, h: u32, dx: f32) -> Arc<VideoFrame> {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut y = Vec::with_capacity((w * h) as usize);
+    for j in 0..h {
+        for i in 0..w {
+            let (u, v) = (i as f32 + 0.5 - dx, j as f32 + 0.5);
+            let l = 110.0 + 45.0 * (u * 0.21).sin() * (v * 0.17).cos() + 30.0 * ((u + v) * 0.11).sin();
+            let sq = (u - dx - w as f32 * 0.4).abs() < 14.0 && (v - h as f32 * 0.5).abs() < 14.0;
+            y.push(if sq { 230 } else { l.clamp(16.0, 235.0) as u8 });
+        }
+    }
+    let u: Vec<u8> = (0..cw * ch).map(|i| (100 + (i / cw) * 40 / ch) as u8).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| (150 - (i % cw) * 30 / cw) as u8).collect();
+    Arc::new(VideoFrame {
+        width: w,
+        height: h,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: filmcraft_frame::Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    })
+}
+
+/// Optical Flow on the GPU: the in-between frame of two frames with motion, interpolated before
+/// the effects as the CPU plan executor (`flow::interpolate`) interpolates it, on a frame narrower
+/// than the flow's working width (the pyramid's finest level is the working image's size) and a
+/// wider one (estimated on a reduced copy), with and without effects.
+#[test]
+fn optical_flow_interpolates_the_next_frame_on_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (w, h) in [(320u32, 180u32), (1280, 200)] {
+        let (a, next) = (moving_frame(w, h, 0.0), moving_frame(w, h, 6.0));
+        let tint = FxOp::eval(&effect("tint", &[("amount", fl(60.0))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("tint op");
+        for ops in [Vec::new(), vec![tint]] {
+            for weight in [0.25, 0.5] {
+                let layer = |flow| {
+                    let mix = Some(filmcraft_render::plan::FrameMix { frame: next.clone(), weight, flow });
+                    let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.clone(), mix };
+                    FramePlan::Layers {
+                        width: w as usize,
+                        height: h as usize,
+                        layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(a.clone(), Affine::IDENTITY, 1.0, Blend::Normal) }],
+                    }
+                };
+                let plan = layer(true);
+                let cpu = execute_cpu(&plan).over_black_rgba8();
+                c.composite(&plan);
+                let (_, _, gpu) = c.read_output().expect("readback");
+                let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+                let (_, apart, _) = stats8(&cpu, &execute_cpu(&layer(false)).over_black_rgba8(), &interior(&plan));
+                eprintln!("{w}x{h}, {} ops, weight {weight}: 8-bit p99 {p99} mean {mean:.3} max {max} (flow vs blend mean {apart:.3})", ops.len());
+                assert!(p99 <= 2 && mean < 1.0, "{w}x{h}, {} ops, weight {weight}: p99 {p99}, mean {mean}", ops.len());
+                // (the flow must move the picture: a stage that only blended would not match)
+                assert!(apart > 3.0 * mean.max(0.1), "{w}x{h}: Optical Flow should differ from the blend ({apart} vs {mean})");
+            }
+        }
+    }
+}
+
 /// Plans without effects never create working textures.
 #[test]
 fn plain_layers_skip_the_effect_stage() {
@@ -779,7 +891,7 @@ fn plain_layers_skip_the_effect_stage() {
     let plan = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
     c.composite(&plan);
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
-    let fx = LayerFx { size: (64, 36), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] };
+    let fx = LayerFx { size: (64, 36), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite], mix: None };
     let with = FramePlan::Layers {
         width: 64,
         height: 36,
@@ -810,7 +922,7 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         layers: vec![
             PlanLayer::new(yuv_frame(200, 150), Affine::IDENTITY, 1.0, Blend::Normal),
             PlanLayer {
-                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops })),
+                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, turns: 0, ops, mix: None })),
                 ..PlanLayer::new(
                     ramp_layer(160, 120, 2),
                     Affine::motion(Vec2::new(100.0, 75.0), Vec2::new(0.9, 0.9), 8.0, Vec2::new(80.0, 60.0)),
@@ -847,7 +959,7 @@ fn effect_source_identity_preserves_odd_sized_half_float_texels() {
         let px = picture(w, h);
         let frame = VideoFrame::rgba_f32(w, h, px.clone());
         for n in [0, 1] {
-            let (ow, oh, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: n, turns: 0, ops: Vec::new() }).expect("source image");
+            let (ow, oh, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: n, turns: 0, ops: Vec::new(), mix: None }).expect("source image");
             assert_eq!((ow, oh, gpu.len()), (w, h, px.len()));
             for (i, (expected, actual)) in px.iter().zip(&gpu).enumerate() {
                 assert_eq!(actual.to_bits(), expected.to_bits(), "{w}x{h} n{n} source component{i}: {actual} != {expected}");
@@ -869,7 +981,7 @@ fn alpha_invert_does_not_amplify_invented_opacity_at_odd_source_pixels() {
     let op = FxOp::Invert { channel: 4, blend: 0.2 };
     let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("alpha invert image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op], mix: None }).expect("alpha invert image");
     assert_eq!(gpu.len(), px.len());
     let (worst, flips) = compare(&cpu.px, &gpu);
     assert!(worst <= EXACT && flips == 0.0, "alpha invert: {worst}, {flips}");
@@ -898,7 +1010,7 @@ fn effect_source_quarter_turns_match_the_cpu() {
             for turns in 1..4u8 {
                 let (dw, dh) = ((w / n) as usize, (h / n) as usize);
                 let size = if turns % 2 == 1 { (dh as u32, dw as u32) } else { (dw as u32, dh as u32) };
-                let fx = LayerFx { size, decimation: n, turns, ops: Vec::new() };
+                let fx = LayerFx { size, decimation: n, turns, ops: Vec::new(), mix: None };
                 let cpu = filmcraft_render::plan::effect_image(&frame, &fx);
                 let (gw, gh, gpu) = c.effect_image(&frame, &fx).expect("turned source image");
                 assert_eq!((gw as usize, gh as usize, gpu.len()), (cpu.w, cpu.h, cpu.px.len()));
@@ -921,8 +1033,9 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
         let frame = VideoFrame::rgba_f32(w, h, picture(w, h));
         for n in [2, 4, 8] {
             let (ow, oh, cpu) = frame.to_linear_f32_decimated(n as usize);
-            let (gw, gh, gpu) =
-                c.effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, turns: 0, ops: Vec::new() }).expect("decimated source image");
+            let (gw, gh, gpu) = c
+                .effect_image(&frame, &LayerFx { size: (ow as u32, oh as u32), decimation: n, turns: 0, ops: Vec::new(), mix: None })
+                .expect("decimated source image");
             assert_eq!((gw as usize, gh as usize, gpu.len()), (ow, oh, cpu.len()));
             let (worst, flips) = compare(&cpu, &gpu);
             assert!(worst <= EXACT && flips == 0.0, "{w}x{h} n{n} source box: {worst}, {flips}");
