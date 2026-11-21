@@ -616,6 +616,32 @@ impl GpuCompositor {
     }
 
     /// The uniforms drawing `frame` onto `fx`'s working image: box-decimated, then turned.
+    /// The source draw of `frame` (uploaded as `key`) onto `fx`'s working image, colour managed
+    /// by `input` (the layer's, [`PlanLayer::input`]). None when the frame is not uploaded.
+    fn fx_source_group(
+        &self,
+        frame: &VideoFrame,
+        key: (usize, u32, u32),
+        input: Option<&Arc<filmcraft_color::InputTransform>>,
+        fx: &filmcraft_render::plan::LayerFx,
+    ) -> Option<wgpu::BindGroup> {
+        let src = self.src_info(frame, key)?;
+        let src = SrcInfo { input: input.filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
+        let views = &self.uploads.get(&key)?.views;
+        let sbuf = self.uniform_buffer(&Self::fx_source_uniforms(&src, frame, fx));
+        Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fx-source"),
+            layout: &self.layer_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+            ],
+        }))
+    }
+
     fn fx_source_uniforms(src: &SrcInfo, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> [f32; UNIFORM_FLOATS] {
         let n = fx.decimation.max(1) as f64;
         let m = filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n).then_apply(&filmcraft_render::plan::quarter_turns(
@@ -788,6 +814,9 @@ impl GpuCompositor {
                 self.upload(&l.frame, p)
             })
             .collect();
+        // Frame Blending: each next frame, uploaded right after its layer's own
+        let mix_keys: Vec<Option<(usize, u32, u32)>> =
+            layers.iter().map(|l| l.fx.as_ref().and_then(|f| f.mix.as_ref()).map(|m| self.upload(&m.frame, None))).collect();
         // (bind group, None for a fixed-function layer or Some(region of the accumulator to copy
         // into the backdrop) for a layer that reads the destination; Some(None): off the output)
         let mut bind_groups = Vec::with_capacity(layers.len());
@@ -796,7 +825,7 @@ impl GpuCompositor {
         if let Some(f) = self.fx.as_mut() {
             f.begin_frame();
         }
-        for (l, k) in layers.iter().zip(&keys) {
+        for ((l, k), mk) in layers.iter().zip(&keys).zip(&mix_keys) {
             // (every frame was just uploaded; a missing upload draws transparent texels)
             let src = self.src_info(&l.frame, *k).unwrap_or(SrcInfo {
                 kind: 1,
@@ -827,8 +856,12 @@ impl GpuCompositor {
                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
                         ],
                     });
+                    let mbg = match (&lfx.mix, mk) {
+                        (Some(m), Some(mk)) => self.fx_source_group(&m.frame, *mk, l.input.as_ref(), lfx),
+                        _ => None,
+                    };
                     match self.fx.as_mut() {
-                        Some(f) => f.job(&self.device, &self.queue, lfx, sbg, &self.dummy),
+                        Some(f) => f.job(&self.device, &self.queue, lfx, sbg, mbg, &self.dummy),
                         None => None,
                     }
                 }
@@ -1064,8 +1097,8 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
-        let lfx = filmcraft_render::plan::LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.to_vec() };
-        let job = self.fx.as_mut()?.job(&self.device, &self.queue, &lfx, sbg, &self.dummy)?;
+        let lfx = filmcraft_render::plan::LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.to_vec(), mix: None };
+        let job = self.fx.as_mut()?.job(&self.device, &self.queue, &lfx, sbg, None, &self.dummy)?;
         let buf = self.uniform_buffer(&Self::uniforms(&rgba, &identity, 1.0, Blend::Normal, (w, h)));
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("adjust-result"),
@@ -1110,25 +1143,16 @@ impl GpuCompositor {
     /// CPU from the same frame). None when the working image does not fit in a texture.
     pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
         let key = self.upload(frame, None);
-        let src = self.src_info(frame, key)?;
-        let views = self.uploads.get(&key)?.views.clone();
+        let mix_key = fx.mix.as_ref().map(|m| self.upload(&m.frame, None));
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
-        let su = Self::fx_source_uniforms(&src, frame, fx);
-        let sbuf = self.uniform_buffer(&su);
-        let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fx-source"),
-            layout: &self.layer_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sbuf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
-            ],
-        });
+        let sbg = self.fx_source_group(frame, key, None, fx)?;
+        let mbg = match (&fx.mix, mix_key) {
+            (Some(m), Some(k)) => Some(self.fx_source_group(&m.frame, k, None, fx)?),
+            _ => None,
+        };
         let stage = self.fx.as_mut()?;
         stage.begin_frame();
-        let Some(job) = stage.job(&self.device, &self.queue, fx, sbg, &self.dummy) else {
+        let Some(job) = stage.job(&self.device, &self.queue, fx, sbg, mbg, &self.dummy) else {
             stage.end_frame();
             return None;
         };
