@@ -992,3 +992,37 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     }
     check(s, clip, "video clip");
 }
+
+/// A title made from the menu or Cmd+T is centred on the frame, on both axes, so it reads
+/// centred and survives a 9:16 export crop; a title placed at a point keeps left alignment and
+/// its anchor.
+#[test]
+fn a_title_without_a_place_is_centred() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let (w, h) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap();
+    // the text layer's evaluated properties and its laid-out bounds in frame pixels
+    let text_of = |s: &Session, clip: u64| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let e = it.effects.iter().find(|e| e.effect == "graphic_text").expect("a text layer");
+        let spec = filmcraft_project::graphic::eval_layer(e, Tick::ZERO, (w, h)).expect("evaluates");
+        let filmcraft_project::graphic::LayerContent::Text(tp) = spec.content else { panic!("not text") };
+        let b = filmcraft_render::graphic_clip::text_layout(&tp).bounds;
+        let pos = match e.params.get("position").map(|p| p.value.clone()) {
+            Some(filmcraft_project::ParamValue::Vec2(v)) => v,
+            other => panic!("position {other:?}"),
+        };
+        (tp.align, pos, b)
+    };
+    let r = s.execute("graphics.newText", json!({"text": "Vacances 2026"})).unwrap();
+    let (align, pos, b) = text_of(&s, r["clip"].as_u64().unwrap());
+    assert_eq!(align, 1, "centred");
+    assert!((pos.x - f64::from(w) / 2.0).abs() < 1e-9);
+    let middle = pos.y + (f64::from(b[1]) + f64::from(b[3])) / 2.0;
+    assert!((middle - f64::from(h) / 2.0).abs() < 1.0, "the lines sit around the frame's middle: {middle} vs {}", h / 2);
+    let r = s.execute("graphics.newText", json!({"text": "Ici", "position": [100.0, 200.0], "newClip": true})).unwrap();
+    let (align, pos, _) = text_of(&s, r["clip"].as_u64().unwrap());
+    assert_eq!(align, 0, "placed text keeps left alignment");
+    assert_eq!((pos.x, pos.y), (100.0, 200.0), "and its anchor");
+}
