@@ -749,6 +749,13 @@ fn decode_adts(bytes: &[u8]) -> Result<Option<(u32, Vec<Vec<f32>>)>> {
         }
     }
     let Some(asc) = frames.first().map(|f| f.0.clone()) else { return Ok(None) };
+    // Framing found at least one frame but could not account for the whole stream: a file cut
+    // mid-frame, or trailing bytes that are not the next frame. Importing what survived would
+    // silently drop the tail (#2598), so fail instead. The byte-at-a-time resync above means a
+    // stream that resumes at a real frame later still lands here only if it never does.
+    if p < bytes.len() {
+        return Err(CodecError::Decode("truncated or damaged ADTS stream".into()));
+    }
     let Some(rate) = aac_output_rate(&asc, frames.iter().take(8).map(|f| f.1)) else { return Ok(None) };
     let mut dec = PacketDecoder::aac(&asc, rate)?;
     let mut out: Vec<Vec<f32>> = Vec::new();
