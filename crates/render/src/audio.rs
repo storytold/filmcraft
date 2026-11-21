@@ -439,9 +439,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     if w == 2 {
         // a 5.1 source (or a six-channel pick) folds down with ITU-R BS.775, as the Mix and the
         // Source Monitor do: picking its first two channels would drop C (dialogue) and surrounds
-        if let Some(six) = source_51_fold(item, buf.channel_count()) {
-            let picked: Vec<&[f32]> = six.iter().filter_map(|&c| buf.channels.get(c).map(Vec::as_slice)).collect();
-            let conv = chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear);
+        if let Some(conv) = fold_source_to_stereo(item, &buf) {
             for (dst, ch) in out.iter_mut().zip(&conv) {
                 let m = n.min(ch.len());
                 dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -456,11 +454,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         }
         return out;
     }
-    // 5.1 track: pick or upmix the source channels
-    let picked: Vec<&[f32]> = source_51(item, buf.channel_count()).iter().map(|&c| buf.channels[c].as_slice()).collect();
-    let layout = Layout::from_channels(picked.len());
-    let conv =
-        if picked.len() == 6 { picked.iter().map(|c| c.to_vec()).collect() } else { chans::convert(&picked, layout, Layout::Surround51, Mixdown::FrontRear) };
+    let conv = source_to_surround(item, &buf);
     for (dst, ch) in out.iter_mut().zip(&conv) {
         let m = n.min(ch.len());
         dst[off..off + m].copy_from_slice(&ch[..m]);
@@ -468,9 +462,42 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     out
 }
 
+fn fold_source_to_stereo(item: &TrackItem, audio: &AudioBuffer) -> Option<Vec<Vec<f32>>> {
+    let six = source_51_fold(item, audio.channel_count())?;
+    let picked: Vec<&[f32]> = six.iter().filter_map(|&c| audio.channels.get(c).map(Vec::as_slice)).collect();
+    Some(chans::convert(&picked, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear))
+}
+
+fn source_to_surround(item: &TrackItem, audio: &AudioBuffer) -> Vec<Vec<f32>> {
+    if audio.channels.is_empty() {
+        return Vec::new();
+    }
+    // Keep one entry per output pick, including repeated source channels.
+    let picked: Vec<&[f32]> = source_51(item, audio.channel_count()).into_iter().map(|index| audio.channels[index].as_slice()).collect();
+    if picked.len() == 6 {
+        picked.iter().map(|samples| samples.to_vec()).collect()
+    } else {
+        chans::convert(&picked, Layout::from_channels(picked.len()), Layout::Surround51, Mixdown::FrontRear)
+    }
+}
+
+/// Source channels as heard on the target track for remix seam measurement.
+pub fn seam_measurement_channels(item: &TrackItem, audio: AudioBuffer, track_width: usize) -> Vec<Vec<f32>> {
+    if track_width == 2
+        && let Some(folded) = fold_source_to_stereo(item, &audio)
+    {
+        return folded;
+    }
+    if track_width != 2 {
+        return source_to_surround(item, &audio);
+    }
+    let picked = played_channels(item, audio.channel_count(), track_width);
+    audio.channels.into_iter().enumerate().filter_map(|(index, channel)| picked.contains(&index).then_some(channel)).collect()
+}
+
 /// The source channels (of `available`) a clip plays on a track of `w` channels (2 or 6), as
 /// [`raw_channels`] picks them: a six-channel fold-down, its [`source_pair`], or its [`source_51`]
-/// channels. Maintain Audio Pitch aligns its grains on these and stretches only these.
+/// channels. Maintain Audio Pitch and Remix seam analysis both use this selection.
 pub(crate) fn played_channels(item: &TrackItem, available: usize, w: usize) -> Vec<usize> {
     let mut v = if w == 2 {
         source_51_fold(item, available).unwrap_or_else(|| {
@@ -548,6 +575,24 @@ mod tests {
     fn ramp(m: i64, len: usize) -> Option<AudioBuffer> {
         let ch: Vec<f32> = (0..len as i64).map(|k| (m + k) as f32 / 1e6).collect();
         Some(AudioBuffer { sample_rate: 48_000, channels: vec![ch.clone(), ch] })
+    }
+
+    #[test]
+    fn remix_seam_measurement_matches_surround_playback() {
+        let mut it = item(1.0);
+        let source = |_: i64, _: usize| Some(AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.25], vec![0.75]] });
+        let cases = [
+            (vec![1], [0.0, 0.0, 0.75, 0.0, 0.0, 0.0]),
+            (vec![1, 0], [0.75, 0.25, 0.0, 0.0, 0.0, 0.0]),
+            (vec![1, 0, 1, 1, 1, 1], [0.75, 0.25, 0.75, 0.75, 0.75, 0.75]),
+        ];
+        for (picks, outputs) in cases {
+            it.source_channels = picks;
+            let expected: Vec<_> = outputs.into_iter().map(|sample| vec![sample]).collect();
+            let playback = raw_channels(&it, &source, 0, 1, 48_000, 6);
+            assert_eq!(playback, expected);
+            assert_eq!(seam_measurement_channels(&it, source(0, 1).unwrap(), 6), playback);
+        }
     }
 
     #[test]

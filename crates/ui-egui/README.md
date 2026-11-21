@@ -226,3 +226,21 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Remix waveform and Out trim
+
+Remixed peaks are generated through the same reader as playback, including crossfades and
+optional persisted gain envelopes. Splice markers use output-piece boundaries. Work and peak
+memory are bounded. Normal Selection-tool Out trimming uses the stored remix output extent,
+so an extended clip can be shortened below its current end without snapping to source length.
+Trim leaves the saved plan and gain envelopes intact and is one undo step; a trimmed tail can
+be restored up to the plan end. Older plans without joinLevels retain their playback behavior.
+
+Local seam-level matching is optional: arrangements exceeding its 33-piece budget, or an
+unavailable additional seam read, keep the original crossfades instead of failing the remix.
+The engine regression covers a 30-second source extended to 15 minutes, persisted playback
+at the tail and undo/redo.
+
+The Out-trim output-bound helper and splice markers currently cover up to 33 pieces.
+Longer plans still play, but retain the upstream source-length trim limit and have no splice markers.
+This limit is independent of the optional seam-level analysis budget.
