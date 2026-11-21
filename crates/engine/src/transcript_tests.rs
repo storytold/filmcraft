@@ -179,3 +179,45 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// The Text panel's Transcribe runs on a worker thread: the command returns a job at once and the
+/// transcript is added, as one undo step, when the job has finished and been polled.
+#[test]
+fn background_generate_returns_a_job_and_applies_the_transcript() {
+    let (mut s, item, _) = session();
+    let r = s.execute("transcript.generate", json!({"items": [item.0], "background": true})).unwrap();
+    assert!(r["job"].is_u64(), "{r}");
+    assert!(
+        s.execute("transcript.generate", json!({"items": [item.0], "background": true})).is_err() || s.transcript_jobs.is_empty(),
+        "a second job while one runs is refused"
+    );
+    let t0 = std::time::Instant::now();
+    while !s.transcript_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(s.transcript_jobs.is_empty(), "the job finished and was applied");
+    assert_eq!(s.project.transcripts[&item].words.len(), 6);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(!s.project.transcripts.contains_key(&item), "one undo step removes it");
+}
+
+#[test]
+fn background_generate_waits_when_asked_and_ignores_a_replaced_project() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0], "background": true, "wait": true})).unwrap();
+    assert!(s.transcript_jobs.is_empty());
+    assert_eq!(s.project.transcripts[&item].words.len(), 6);
+
+    // a job whose project was replaced must not write into the new one
+    s.execute("transcript.delete", json!({})).unwrap();
+    let before = s.project.transcripts.len();
+    s.execute("transcript.generate", json!({"items": [item.0], "background": true})).unwrap();
+    s.document_epoch = s.document_epoch.wrapping_add(1);
+    let t0 = std::time::Instant::now();
+    while !s.transcript_jobs.is_empty() && t0.elapsed().as_secs() < 60 {
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(s.project.transcripts.len(), before, "nothing written after the project changed");
+}

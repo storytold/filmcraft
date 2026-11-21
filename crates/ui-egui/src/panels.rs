@@ -489,6 +489,7 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
 
 pub(crate) mod transcript_cache;
 
+pub mod caption_split;
 pub mod custom_colors;
 pub mod marker_properties;
 

@@ -131,6 +131,34 @@ pub fn set_caption(seq: &mut Sequence, id: ClipId, text: Option<&str>, speaker: 
     Ok(())
 }
 
+/// Give caption `id` several texts, one caption each, back to back over its time span: it is cut
+/// at `cuts` (one fewer than `texts`, rising, strictly inside it) and piece `i` takes `texts[i]`.
+/// Nothing changes when a piece would be shorter than the minimum duration. Returns the ids of the
+/// pieces, first to last (the first is `id`).
+pub fn split_caption_into(seq: &mut Sequence, id: ClipId, cuts: &[Tick], texts: &[String], ctx: &mut EditCtx) -> Result<Vec<ClipId>> {
+    if texts.is_empty() || cuts.len() + 1 != texts.len() {
+        return Err(EditError::Nothing);
+    }
+    let (tid, c) = seq.find_caption(id).ok_or(EditError::NoItem(id))?;
+    let (start, end) = (c.start, c.end());
+    track_mut(seq, tid)?;
+    let edges = std::iter::once(start).chain(cuts.iter().copied()).chain(std::iter::once(end));
+    let edges: Vec<Tick> = edges.collect();
+    if edges.windows(2).any(|w| w[1] - w[0] < ctx.min_duration) {
+        return Err(EditError::TooShort);
+    }
+    let mut ids = vec![id];
+    let mut cur = id;
+    for t in cuts {
+        cur = split_caption(seq, cur, *t, ctx)?;
+        ids.push(cur);
+    }
+    for (c, text) in ids.iter().zip(texts) {
+        set_caption(seq, *c, Some(text), None)?;
+    }
+    Ok(ids)
+}
+
 /// Set a caption's in and out points directly (Captions panel timecode fields).
 pub fn set_caption_times(seq: &mut Sequence, id: ClipId, start: Tick, end: Tick, ctx: &EditCtx) -> Result<()> {
     let tid = owner(seq, id)?;
