@@ -282,6 +282,51 @@ fn a_source_drag_drops_on_a_timeline_in_its_own_window() {
     assert_eq!(clips(&d), 1, "status: {}", d.app().ui.status);
 }
 
+/// A drag from a Source Monitor in its own OS window reaches the Timeline in the main window,
+/// and drops the clip there (#4784).
+#[test]
+fn a_source_drag_from_its_own_window_drops_on_the_main_timeline() {
+    drag_from_a_native_window_to_the_main_timeline("Source", "source.drag.video");
+}
+
+/// A drag from a Project panel in its own OS window reaches the Timeline in the main window,
+/// and drops the clip there (#4784).
+#[test]
+fn a_project_item_drag_from_its_own_window_drops_on_the_main_timeline() {
+    drag_from_a_native_window_to_the_main_timeline("Project", "project.item.5");
+}
+
+/// Float `panel` into its own OS window, drag the element `from` there onto V1 of the main
+/// window's Timeline, and see one clip land.
+fn drag_from_a_native_window_to_the_main_timeline(panel: &str, from: &str) {
+    let mut d = Driver::new(5);
+    // the clip at the top of the Project panel, not in a bin
+    let root = d.app().session.project.root.id.0;
+    d.ok("engine.execute", json!({"command": "project.moveToBin", "params": {"items": [5], "bin": root}}));
+    let place = egui::pos2(900.0, 120.0);
+    d.float(panel, [place.x, place.y, 680.0, 420.0]);
+    let clips = |d: &Driver| d.app().session.active_sequence().map_or(0, |q| q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>());
+    assert_eq!(clips(&d), 0);
+    let handle = d.element(from);
+    assert!(handle["window"].is_u64(), "the floated {panel} is in its own OS window: {handle}");
+    let row = d.element("timeline.track.V1.target");
+    assert!(row["window"].is_null(), "{row}");
+    // In the native window's coordinates: the main window's content starts at the desktop
+    // origin, so a main-window point is the desktop point less the native window's place.
+    let from = rect(&handle).center();
+    let to = egui::pos2(rect(&d.element("panel.Timeline")).min.x + d.app().ui.timeline.header_w + 60.0, rect(&row).center().y) - place.to_vec2();
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    WINDOW.with(|w| w.borrow_mut().focused = true);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(from)]);
+    window_frame(&mut d, vec![button(from, true)]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(from + egui::vec2(0.0, 9.0))]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(to)]);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(to)]);
+    window_frame(&mut d, vec![button(to, false)]);
+    d.frames(3);
+    assert_eq!(clips(&d), 1, "status: {}", d.app().ui.status);
+}
+
 /// The window's events for its next frame, and that frame.
 fn window_frame(d: &mut Driver, events: Vec<egui::Event>) {
     WINDOW.with(|w| w.borrow_mut().events.extend(events));
