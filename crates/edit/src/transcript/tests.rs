@@ -278,6 +278,56 @@ fn captions_follow_line_length_speaker_and_pause_rules() {
     assert_eq!(all, (0..20).collect::<Vec<_>>());
 }
 
+/// Continuous speech fills blocks to the brim, so a caption used to stop mid-sentence ("… une
+/// petite" / "vidéo … Le" / "soleil …"). A full block now ends after its last sentence, or clause.
+#[test]
+fn full_captions_end_at_sentence_or_clause_boundaries() {
+    let text = "Bonjour et bienvenue dans Film Craft. Aujourd'hui, nous allons monter une petite vidéo de vacances au bord de la mer. Le soleil se couche sur la plage et les vagues arrivent doucement.";
+    let words: Vec<SeqWord> = text
+        .split(' ')
+        .enumerate()
+        .map(|(i, t)| SeqWord {
+            text: t.into(),
+            start: s(i as f64 * 0.3),
+            end: s(i as f64 * 0.3 + 0.25),
+            clip: ClipId(1),
+            item: MEDIA,
+            index: i,
+            track: 0,
+            speaker: Some("Speaker 1".into()),
+            confidence: 1.0,
+        })
+        .collect();
+    let rules = CaptionRules::default();
+    let b = caption_blocks(&words, &rules, R);
+    check_blocks(&b, &rules);
+    let texts: Vec<String> = b.iter().map(|x| x.text.replace('\n', " ")).collect();
+    assert_eq!(
+        texts,
+        [
+            "Bonjour et bienvenue dans Film Craft.",
+            "Aujourd'hui, nous allons monter une petite vidéo de vacances au bord de la mer.",
+            "Le soleil se couche sur la plage et les vagues arrivent doucement."
+        ]
+    );
+    // without punctuation it still fills blocks, every word once and in order
+    let bare: Vec<SeqWord> = words.iter().map(|w| SeqWord { text: w.text.trim_end_matches(['.', ',']).into(), ..w.clone() }).collect();
+    let b = caption_blocks(&bare, &rules, R);
+    check_blocks(&b, &rules);
+    assert_eq!(b.iter().flat_map(|x| x.words.clone()).collect::<Vec<_>>(), (0..bare.len()).collect::<Vec<_>>());
+    // a clause mark is used when no sentence ends in the block
+    let one = "Quand le soleil se couche lentement sur la plage, les vagues arrivent doucement et les mouettes repartent vers le large sans bruit";
+    let w2: Vec<SeqWord> = one.split(' ').enumerate().map(|(i, t)| SeqWord { text: t.into(), index: i, ..words[0].clone() }).collect();
+    let b = caption_blocks(&w2, &rules, R);
+    assert!(b[0].text.ends_with("plage,"), "{:?}", b[0].text);
+    // the block's last word may be the break: "Done now. Go." when "Unfortunately," overflows
+    let one_line = CaptionRules { max_chars: 24, lines: 1, ..CaptionRules::default() };
+    let w3: Vec<SeqWord> =
+        "Done now. Go. Unfortunately, it rained.".split(' ').enumerate().map(|(i, t)| SeqWord { text: t.into(), index: i, ..words[0].clone() }).collect();
+    let b = caption_blocks(&w3, &one_line, R);
+    assert_eq!(b[0].text, "Done now. Go.");
+}
+
 #[test]
 fn captions_never_overlap_with_dense_words() {
     // 30 one-frame words back to back

@@ -405,6 +405,92 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
+/// A well-formed BCP 47 language tag (RFC 5646 2.1, `langtag` and `privateuse`; grandfathered
+/// tags are not accepted). Subtags come in this order, each kind at most where the grammar allows:
+/// language (2-3 letters, up to three 3-letter extlangs; or 4 or 5-8 letters), script (4 letters),
+/// region (2 letters or 3 digits), variants (5-8 alphanumerics, or a digit and 3 alphanumerics),
+/// extensions (a singleton other than `x`, then subtags of 2-8), and private use (`x`, then subtags
+/// of 1-8). A tag that is only private use (`x-…`) is accepted too.
+pub(crate) fn valid_language_tag(tag: &str) -> bool {
+    if tag.is_empty() || tag.len() > 64 {
+        return false;
+    }
+    let subs: Vec<&str> = tag.split('-').collect();
+    let alpha = |s: &str| s.bytes().all(|b| b.is_ascii_alphabetic());
+    let digit = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    let alnum = |s: &str| !s.is_empty() && s.len() <= 8 && s.bytes().all(|b| b.is_ascii_alphanumeric());
+    if !subs.iter().all(|s| alnum(s)) {
+        return false;
+    }
+    let mut i = 0;
+    let at = |i: usize| subs.get(i).copied();
+    // private use from `i` on: `x` then one or more subtags of 1-8
+    let private_from = |i: usize| at(i).is_some_and(|s| s.eq_ignore_ascii_case("x")) && subs.len() > i + 1;
+    if private_from(0) {
+        return true;
+    }
+    // language
+    match at(i) {
+        Some(l) if alpha(l) && matches!(l.len(), 2 | 3) => {
+            i += 1;
+            let mut ext = 0;
+            while ext < 3 && at(i).is_some_and(|s| s.len() == 3 && alpha(s)) {
+                i += 1;
+                ext += 1;
+            }
+        }
+        Some(l) if alpha(l) && (4..=8).contains(&l.len()) => i += 1,
+        _ => return false,
+    }
+    // script
+    if at(i).is_some_and(|s| s.len() == 4 && alpha(s)) {
+        i += 1;
+    }
+    // region
+    if at(i).is_some_and(|s| (s.len() == 2 && alpha(s)) || (s.len() == 3 && digit(s))) {
+        i += 1;
+    }
+    // variants
+    while at(i).is_some_and(|s| (5..=8).contains(&s.len()) || (s.len() == 4 && s.bytes().next().is_some_and(|b| b.is_ascii_digit()))) {
+        i += 1;
+    }
+    // extensions: a singleton (not x), then one or more subtags of 2-8
+    while at(i).is_some_and(|s| s.len() == 1 && !s.eq_ignore_ascii_case("x")) {
+        i += 1;
+        let first = i;
+        while at(i).is_some_and(|s| (2..=8).contains(&s.len())) {
+            i += 1;
+        }
+        if i == first {
+            return false;
+        }
+    }
+    if i == subs.len() {
+        return true;
+    }
+    // private use ends the tag
+    private_from(i)
+}
+
+/// The language most of `words` were recognised in (each transcript's `language`), when it is a
+/// well-formed language tag ("fr", "pt-BR"); None otherwise.
+fn spoken_language(s: &Session, words: &[SeqWord]) -> Option<String> {
+    majority_language(words.iter().filter_map(|w| s.project.transcripts.get(&w.item).map(|t| t.language.as_str())))
+}
+
+/// The most frequent well-formed tag among `tags`. Tags differing only in case are one language
+/// (BCP 47 compares them case-insensitively) and count together, under the first spelling seen.
+pub(crate) fn majority_language<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for l in tags.filter(|l| valid_language_tag(l)) {
+        match counts.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(l)) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((l, 1)),
+        }
+    }
+    counts.into_iter().max_by_key(|(_, n)| *n).map(|(l, _)| l.to_string())
+}
+
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
     let d = CaptionRules::default();
@@ -419,10 +505,16 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
+    let language = spoken_language(s, &words);
     let n = blocks.len();
     let tid = s.edit_sequence("Create Captions", |q, ctx, st| {
         let tid = TrackId(ctx.alloc());
         let mut t = CaptionTrack::new(tid, name, format);
+        // the track says what language it is in (subtitle files and platforms read it), as the
+        // words were recognised; a new track is English otherwise
+        if let Some(l) = language {
+            t.language = l;
+        }
         t.captions = tx::blocks_to_captions(&blocks, ctx);
         q.caption_tracks.insert(0, t);
         st.caption_selection.clear();
