@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::panels::effect_controls::PROP_INDENT;
 use crate::theme::Tokens;
 
 const ROW_H: f32 = 22.0;
@@ -57,7 +58,7 @@ pub(crate) fn effect_rows(
     .into_iter()
     .enumerate()
     {
-        let br = Rect::from_center_size(pos2(r.min.x + 40.0 + i as f32 * 24.0, r.center().y), vec2(20.0, 18.0));
+        let br = Rect::from_center_size(pos2(r.min.x + 40.0 + PROP_INDENT + i as f32 * 24.0, r.center().y), vec2(20.0, 18.0));
         let resp = ui.interact(br, egui::Id::unique(("mask-new", clip.0, idx, kind)), Sense::click()).on_hover_text(tip);
         if resp.hovered() {
             ui.painter().rect_filled(br, 3.0, t.hover);
@@ -89,12 +90,12 @@ pub(crate) fn effect_rows(
             ui.painter().rect_filled(crate::panels::effect_controls::row_fill(r), 0.0, t.hover);
         }
         crate::panels::effect_controls::row_line(ui, r, lane, &t);
-        let tw = Rect::from_center_size(pos2(r.min.x + 26.0, r.center().y), vec2(10.0, 10.0));
+        let tw = Rect::from_center_size(pos2(r.min.x + 26.0 + PROP_INDENT, r.center().y), vec2(10.0, 10.0));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         let twresp = ui.interact(tw.expand(3.0), egui::Id::unique(("mask-twirl", clip.0, idx, k)), Sense::click());
         // shape glyph: ellipse for smooth paths, square for polygons
         let path = m.path_at(mt);
-        let glyph = Rect::from_center_size(pos2(r.min.x + 42.0, r.center().y), vec2(12.0, 12.0));
+        let glyph = Rect::from_center_size(pos2(r.min.x + 42.0 + PROP_INDENT, r.center().y), vec2(12.0, 12.0));
         let gi = if path.vertices.iter().all(|v| v.is_corner()) {
             Icon::Rectangle
         } else if path.len() == 4 {
@@ -106,9 +107,9 @@ pub(crate) fn effect_rows(
         // (the mode dropdown starts 118 points from the row's right end)
         crate::panels::effect_controls::row_label(
             ui,
-            pos2(r.min.x + 54.0, r.center().y),
+            pos2(r.min.x + 54.0 + PROP_INDENT, r.center().y),
             &m.name,
-            r.max.x - 122.0 - (r.min.x + 54.0),
+            r.max.x - 122.0 - (r.min.x + 54.0 + PROP_INDENT),
             Tokens::ui(12.0),
             t.text,
         );
@@ -164,7 +165,7 @@ pub(crate) fn effect_rows(
         // Inverted
         let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
         crate::panels::effect_controls::row_line(ui, r, lane, &t);
-        ui.painter().text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, tl!("Inverted"), Tokens::ui(12.0), t.text);
+        ui.painter().text(pos2(r.min.x + 40.0 + PROP_INDENT, r.center().y), Align2::LEFT_CENTER, tl!("Inverted"), Tokens::ui(12.0), t.text);
         let cr = Rect::from_min_size(pos2(r.min.x + (r.width() * 0.5).max(150.0), r.min.y + 2.0), vec2(20.0, ROW_H - 4.0));
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         crate::panels::effect_controls::fit_to_row(&mut cui);
