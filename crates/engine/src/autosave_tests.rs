@@ -210,6 +210,32 @@ fn crash_recovery_end_to_end() {
 }
 
 #[test]
+fn recover_does_not_replace_dirty_session() {
+    let d = temp_dir("recover-dirty-session");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let snapshot = old_dir.join("snapshot.fcproj");
+    let snapshot_bytes = filmcraft_format::encode(&filmcraft_project::Project::default(), false);
+    std::fs::write(&snapshot, &snapshot_bytes).unwrap();
+
+    let mut session = demo();
+    start(&mut session, &d);
+    session.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    assert!(session.is_dirty());
+    let current_project = (*session.project).clone();
+    let current_revision = session.revision;
+    let error = session.execute("file.recover", json!({"id": "1-1"})).unwrap_err().to_string();
+
+    assert!(error.contains("unsaved"), "{error}");
+    assert_eq!(*session.project, current_project);
+    assert_eq!(session.revision, current_revision);
+    assert_eq!(std::fs::read(&snapshot).unwrap(), snapshot_bytes);
+    assert!(session.recovery_candidates().iter().any(|candidate| candidate.id == "1-1"));
+    session.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
 fn quitting_with_unsaved_changes_keeps_them_for_next_launch() {
     let d = temp_dir("quitdirty");
     let mut a = demo();
@@ -303,6 +329,37 @@ fn recovery_can_retry_after_a_failed_journal_write() {
     assert_eq!(journaled(&mut s), s.revision);
     s.shutdown();
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn recovery_retry_does_not_discard_newer_edits() {
+    let d = temp_dir("recover-retry-newer-edits");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = (*demo().project).clone();
+    let snapshot = old_dir.join("snapshot.fcproj");
+    let snapshot_bytes = filmcraft_format::encode(&project, false);
+    std::fs::write(&snapshot, &snapshot_bytes).unwrap();
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&d);
+    cfg.journal_debounce = std::time::Duration::from_secs(60);
+    s.start_autosave(cfg).unwrap();
+    let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
+    std::fs::create_dir(&obstruction).unwrap();
+    assert!(s.execute("file.recover", json!({"id": "1-1"})).is_err());
+    std::fs::remove_dir(&obstruction).unwrap();
+    s.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    let edited = (*s.project).clone();
+    let revision = s.revision;
+
+    let error = s.execute("file.recover", json!({"id": "1-1"})).unwrap_err().to_string();
+    assert!(error.contains("unsaved"), "{error}");
+    assert_eq!(*s.project, edited);
+    assert_eq!(s.revision, revision);
+    assert_eq!(std::fs::read(&snapshot).unwrap(), snapshot_bytes);
+    assert!(s.recovery_candidates().iter().any(|candidate| candidate.id == "1-1"));
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 #[cfg(windows)]
