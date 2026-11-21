@@ -850,6 +850,97 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
     }
 }
 
+/// #4287: with the Rolling Edit tool and Alt held, dragging a linked A/V cut rolls only the
+/// picture cut, so the sound cut stays (an L-cut, as in Premiere), both in the preview while the
+/// button is down and on release.
+#[test]
+fn alt_rolling_a_linked_cut_rolls_only_that_side() {
+    roll_linked_cut(true, true);
+}
+
+/// Without Alt the sound cut rolls along with the picture cut (#855), in the preview and on
+/// release.
+#[test]
+fn plain_rolling_a_linked_cut_rolls_the_sound_cut_along() {
+    roll_linked_cut(false, true);
+}
+
+/// With linked selection off, a plain roll does not follow links either: only the picture cut
+/// rolls.
+#[test]
+fn plain_rolling_without_linked_selection_rolls_only_that_side() {
+    roll_linked_cut(false, false);
+}
+
+/// Roll the City / Dunes picture cut right with the Rolling Edit tool, Alt held or not, and check
+/// the previewed clips mid-drag and the exact ranges on release: the cut lands at the previewed
+/// delta, the outer edges and the total length stay, and the linked sound cut follows only when
+/// the drag follows links.
+fn roll_linked_cut(alt: bool, linked_selection: bool) {
+    use filmcraft_ui_egui::panels::timeline::Drag;
+    let mut d = Driver::demo();
+    d.exec("sequence.linkedSelection", json!({"on": linked_selection}));
+    let follows = linked_selection && !alt;
+    let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let partner = |v: u64| {
+        let link = seq.find_item(ClipId(v)).and_then(|(_, i)| i.link);
+        seq.audio_tracks.iter().flat_map(|t| &t.items).find(|a| link.is_some() && a.link == link).map(|a| a.id.0).expect("linked sound")
+    };
+    let (city_a, dunes_a) = (partner(city), partner(dunes));
+    let (city0, dunes0, city_a0, dunes_a0) = (d.span(city), d.span(dunes), d.span(city_a), d.span(dunes_a));
+    let cut0 = city0.1;
+    assert_eq!((city_a0.1, dunes_a0.0, dunes0.0), (cut0, cut0, cut0), "the sound cut is at the picture cut");
+    d.ok("ui.menu.invoke", json!({"id": "tool.rolling"}));
+    // half the way the cut can roll right with its linked sound, so neither roll is clamped
+    let far = filmcraft_time::Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+    let room = filmcraft_engine::commands::roll_delta(&d.app().session, ClipId(city), ClipId(dunes), far).expect("limit");
+    let (tpp, frame) = (d.ticks_per_px(dunes), d.frame());
+    let by = (room.0 as f64 / 2.0 / tpp).round() as f32;
+    assert!(by > 20.0, "room to drag past the drag threshold: {by} px");
+    let (cut, _, y) = d.edges(dunes);
+    let (from, to) = (pos2(cut + 3.0, y), pos2(cut + 3.0 + by, y));
+    let x_of = |d: &mut Driver, clip: u64| {
+        let id = format!("timeline.clip.{clip}");
+        let els = d.ok("ui.elements", json!({"prefix": id}));
+        let el = els.as_array().expect("elements").iter().find(|e| e["id"] == id.as_str()).unwrap_or_else(|| panic!("no {id}: {els}")).clone();
+        let r: Vec<f32> = el["rect"].as_array().expect("rect").iter().map(|v| v.as_f64().expect("number") as f32).collect();
+        (r[0], r[0] + r[2])
+    };
+    let (city_ax, dunes_ax) = (x_of(&mut d, city_a), x_of(&mut d, dunes_a));
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers { alt, ..Default::default() }));
+    d.press_and_move(from, to, by as usize);
+    // mid-drag: the roll follows links only without Alt, and nothing is edited yet
+    let delta = match &d.app().tl.drag {
+        Some(Drag::Roll { delta, linked, .. }) => {
+            assert_eq!(*linked, !alt, "alt={alt}: the drag remembers whether it follows links");
+            delta.0
+        }
+        other => panic!("not rolling: {other:?}"),
+    };
+    assert_eq!(delta % frame, 0, "the previewed cut is on a frame: {delta}");
+    assert!((delta as f64 - f64::from(by) * tpp).abs() <= frame as f64, "the cut follows the pointer: {delta} ticks for {by} px");
+    assert_eq!((d.span(city), d.span(dunes), d.span(city_a), d.span(dunes_a)), (city0, dunes0, city_a0, dunes_a0), "nothing is edited before release");
+    let (city_x, dunes_x) = (x_of(&mut d, city), x_of(&mut d, dunes));
+    assert!(city_x.1 > cut + by / 2.0, "the previewed picture cut moved right: {city_x:?}");
+    assert_eq!(dunes_x.0, city_x.1, "the previewed picture clips meet");
+    if follows {
+        assert_eq!((x_of(&mut d, city_a).1, x_of(&mut d, dunes_a).0), (city_x.1, city_x.1), "the previewed sound cut rolls along");
+    } else {
+        assert_eq!((x_of(&mut d, city_a), x_of(&mut d, dunes_a)), (city_ax, dunes_ax), "the previewed sound clips stay");
+    }
+    d.release(to);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(1);
+    let cut1 = cut0 + delta;
+    assert_eq!(d.span(city), (city0.0, cut1), "the left picture clip's In stays and it ends at the previewed cut");
+    assert_eq!(d.span(dunes), (cut1, dunes0.1), "the right picture clip's Out stays");
+    assert_eq!(d.span(dunes).1 - d.span(city).0, dunes0.1 - city0.0, "the total length is kept");
+    let want = if follows { cut1 } else { cut0 };
+    assert_eq!(d.span(city_a), (city_a0.0, want), "the sound cut");
+    assert_eq!(d.span(dunes_a), (want, dunes_a0.1), "the sound cut");
+}
+
 impl Driver {
     /// Press at `from` and move to `to` over `steps` frames, the button still down.
     fn press_and_move(&mut self, from: Pos2, to: Pos2, steps: usize) {
