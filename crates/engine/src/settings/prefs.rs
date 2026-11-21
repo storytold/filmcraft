@@ -13,6 +13,8 @@ pub struct GeneralPrefs {
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.
     pub at_startup: String,
+    /// Desktop: check for a newer release during startup.
+    pub check_for_updates_at_startup: bool,
     /// "When Opening a Project": `showOpenDialog` | `showHome`.
     pub when_opening_project: String,
     /// Bins ▸ Double-click / + Cmd / + Opt: `openInPlace` | `openNewTab` | `openNewWindow`.
@@ -39,6 +41,7 @@ impl Default for GeneralPrefs {
         Self {
             interface_language: "system".into(),
             at_startup: "showHome".into(),
+            check_for_updates_at_startup: true,
             when_opening_project: "showOpenDialog".into(),
             bins_double_click: "openInPlace".into(),
             bins_cmd_double_click: "openNewTab".into(),

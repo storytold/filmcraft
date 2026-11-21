@@ -12,7 +12,7 @@ use craft_update::{CheckResultDialog, CheckResultResponse};
 pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
     updater: Updater,
-    /// The desktop app turns the check at start on; tests and the web build leave it off.
+    /// The desktop app opts in at launch if the saved preference allows it.
     #[cfg(not(target_arch = "wasm32"))]
     startup_check: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -40,10 +40,10 @@ impl Default for Runtime {
 }
 
 impl FilmcraftApp {
-    /// Whether the app asks for a newer release when it starts (off until the desktop app turns it on).
+    /// Allow the host to request a startup check once it has loaded the preferences.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_startup_update_check(&mut self, on: bool) {
-        self.updates_rt.startup_check = on;
+        self.updates_rt.startup_check = on && self.session.prefs.general.check_for_updates_at_startup;
     }
 }
 
@@ -198,6 +198,37 @@ mod tests {
             wait.recv().unwrap();
             updater.tick(&ctx);
         }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn startup_update_preference_skips_automatic_checks_but_keeps_the_manual_check() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let schema = app.session.execute("prefs.schema", serde_json::json!({"category": "general"})).unwrap();
+        let fields = schema["categories"][0]["fields"].as_array().expect("General fields");
+        let update = fields.iter().find(|field| field["key"] == "general.checkForUpdatesAtStartup").expect("startup update preference");
+        assert_eq!(update["wired"], true, "the schema identifies the preference as implemented");
+        app.set_startup_update_check(true);
+        assert!(app.updates_rt.startup_check, "a desktop launch keeps the default check");
+        app.session.execute("prefs.set", serde_json::json!({"key": "general.checkForUpdatesAtStartup", "value": false})).unwrap();
+        let (called, calls) = mpsc::channel();
+        app.updates_rt.updater = Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_source(Arc::new(move || {
+            let _ = called.send(());
+            Ok(None)
+        }));
+        let ctx = egui::Context::default();
+        app.set_startup_update_check(true);
+        assert!(!app.updates_rt.startup_check, "the desktop startup path honors the saved preference");
+        tick(&mut app, &ctx);
+        assert_eq!(app.updates_rt.updater.status(), &Status::Idle);
+        assert!(calls.try_recv().is_err(), "startup did not ask for a release");
+
+        crate::menus::invoke(&mut app, &ctx, "app.checkForUpdates", serde_json::json!({})).unwrap();
+        tick(&mut app, &ctx);
+        calls.recv_timeout(Duration::from_secs(5)).expect("the manual request reached the updater");
     }
 
     #[test]

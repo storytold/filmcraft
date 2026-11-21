@@ -433,6 +433,31 @@ fn appearance_labels_and_tooltips_take_effect() {
 }
 
 #[test]
+fn startup_update_preference_defaults_on_and_is_saved_from_settings() {
+    let mut d = Driver::demo();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preferences.json");
+    let json = r#"{"general":{"atStartup":"emptyProject"}}"#;
+    let old: filmcraft_engine::autosave::Preferences = serde_json::from_str(json).unwrap();
+    d.harness.state_mut().session.prefs = old;
+    d.harness.state_mut().session.prefs_path = Some(path.clone());
+
+    let key = "general.checkForUpdatesAtStartup";
+    assert_eq!(d.pref(key), true, "existing preferences default to checking at startup");
+    d.menu("app.settings.general");
+    d.click("settings.general.checkForUpdatesAtStartup");
+    d.click("settings.cancel");
+    assert_eq!(d.pref(key), true, "Cancel retains the saved preference");
+    d.menu("app.settings.general");
+    d.click("settings.general.checkForUpdatesAtStartup");
+    d.click("settings.ok");
+    assert_eq!(d.pref(key), false);
+    let saved: filmcraft_engine::autosave::Preferences = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(!saved.general.check_for_updates_at_startup);
+    assert_eq!(saved.general.at_startup, "emptyProject");
+}
+
+#[test]
 fn hex_field_takes_typing_a_character_at_a_time() {
     let mut d = Driver::demo();
     d.menu("app.settings.appearance");
