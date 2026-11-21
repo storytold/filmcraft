@@ -471,6 +471,23 @@ impl Nvenc {
     }
 }
 
+impl Drop for Nvenc {
+    fn drop(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        if let Err(e) = self.session.end_of_stream() {
+            log::warn!("NVENC cleanup failed: {e}");
+            return;
+        }
+        while let Some(slot) = self.pending.pop_front() {
+            if let Err(e) = self.session.read(slot) {
+                log::warn!("NVENC cleanup failed: {e}");
+            }
+        }
+    }
+}
+
 /// Copy planar 4:2:0 into an NV12 input buffer.
 fn fill_nv12(l: Locked<'_>, y: &[u8], u: &[u8], v: &[u8], w: usize, h: usize) {
     let pitch = l.pitch;
