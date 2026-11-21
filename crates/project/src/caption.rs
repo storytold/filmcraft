@@ -243,8 +243,13 @@ pub fn plain_text(s: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '<' => {
-                // A tag runs to the next '>'.  Scan forward once; preserving an unterminated
-                // tag as literal text must not rescan every later opening bracket.
+                // A tag starts only before a letter, '/' or '!' and runs to the next '>'.
+                // Scan forward once; preserving an unterminated tag as literal text must not
+                // rescan every later opening bracket.
+                if !chars.peek().is_some_and(|n| n.is_alphabetic() || *n == '/' || *n == '!') {
+                    out.push('<');
+                    continue;
+                }
                 let mut literal = String::new();
                 let mut closed = false;
                 for next in chars.by_ref() {
@@ -330,6 +335,14 @@ mod tests {
         let ssa = format!("{{\\{}", "{".repeat(10_000));
         assert_eq!(plain_text(&angle), angle);
         assert_eq!(plain_text(&ssa), ssa);
+    }
+
+    #[test]
+    fn plain_stray_lt_keeps_prose() {
+        assert_eq!(plain_text("if x < 3 and y > 2"), "if x < 3 and y > 2");
+        assert_eq!(plain_text("1<2>3"), "1<2>3");
+        assert_eq!(plain_text("x <= y and y >= z"), "x <= y and y >= z");
+        assert_eq!(plain_text("<i>hi</i>"), "hi");
     }
 
     #[test]
