@@ -8,8 +8,10 @@
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
-//! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
+//! Automation ids: `export.fileName`, `export.location` (the folder link, also
+//! `export.location.browse`; opens the save dialog), `export.preset`, `export.preset.more`,
+//! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`
+//! (`export.audio.include` is the Audio section's switch),
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
@@ -49,6 +51,7 @@ use queue::queue_column;
 pub use quick::quick_export;
 #[cfg(test)]
 pub(crate) use settings::PARS;
+pub(crate) use settings::location_link;
 use settings::settings_column;
 #[cfg(test)]
 use settings::{MAX_LOCATION_DISPLAY_BYTES, location_tail};
@@ -155,7 +158,9 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
 pub fn output_path(ex: &ExportUi) -> String {
     let name = if ex.file_name.trim().is_empty() { "Export" } else { ex.file_name.trim() };
     let dir = filmcraft_engine::export_tools::expand_home(ex.location.trim());
-    let file = format!("{name}.{}", ex.settings.extension());
+    let ext = ex.settings.extension();
+    let has_ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| filmcraft_engine::export_tools::extension_matches(ext, e));
+    let file = if has_ext { name.to_string() } else { format!("{name}.{ext}") };
     if dir.is_empty() { file } else { std::path::Path::new(&dir).join(file).to_string_lossy().to_string() }
 }
 
@@ -168,6 +173,25 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
         p["endSeconds"] = json!(ex.custom_end);
     }
     p
+}
+
+/// `e` is the extension of one of the export formats.
+fn known_ext(app: &FilmcraftApp, e: &str) -> bool {
+    !e.is_empty() && app.session.export_presets.all().iter().any(|p| p.settings.extension().eq_ignore_ascii_case(e))
+}
+
+/// Set the folder and file name from a full path (the save dialog, a pasted path). An export
+/// format's extension is dropped, because the chosen format adds its own.
+fn set_output_path(app: &mut FilmcraftApp, path: &str) {
+    let p = std::path::Path::new(path.trim());
+    if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+        app.ui.export.location = d.to_string_lossy().to_string();
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let name = if known_ext(app, ext) { p.file_stem() } else { p.file_name() };
+    if let Some(n) = name.map(|n| n.to_string_lossy().to_string()).filter(|n| !n.trim().is_empty()) {
+        app.ui.export.file_name = n;
+    }
 }
 
 fn sync_sequence(app: &mut FilmcraftApp) {
@@ -244,5 +268,20 @@ mod location_tests {
         assert!(tail.len() <= MAX_LOCATION_DISPLAY_BYTES);
         assert!(tail.ends_with('終'));
         assert!(std::str::from_utf8(tail.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_name_that_ends_in_the_formats_alias_gets_no_second_extension() {
+        for (format, name, out) in [
+            (Format::TiffSequence, "shot.tiff", "shot.tiff"),
+            (Format::TiffSequence, "shot.TIF", "shot.TIF"),
+            (Format::JpegSequence, "shot.jpeg", "shot.jpeg"),
+            (Format::Aiff, "take.aiff", "take.aiff"),
+            (Format::H264, "take.aiff", "take.aiff.mp4"),
+        ] {
+            let ex =
+                ExportUi { file_name: name.into(), location: String::new(), settings: ExportSettings { format, ..Default::default() }, ..Default::default() };
+            assert_eq!(output_path(&ex), out);
+        }
     }
 }
