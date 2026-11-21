@@ -486,3 +486,138 @@ fn trim_delta_stops_at_the_end_of_the_media() {
     let back = commands::trim_delta(&s, clip, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, -small).unwrap();
     assert_eq!(back, -small, "a trim within the media is not clamped");
 }
+
+/// Two selected A/V clips of different lengths on V1/A1 and V2/A2, ending at different times.
+fn selected_pair() -> (Session, [(ClipId, ClipId); 2]) {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Selection trim", "video": 2, "audio": 2})).unwrap();
+    let rate = s.sequence_rate();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).unwrap().id;
+    for (track, audio, frame, len) in [("V1", "A1", 12, 48), ("V2", "A2", 36, 72)] {
+        let p = json!({"item": item.0, "track": track, "audioTrack": audio, "frame": frame, "sourceIn": rate.tick_of(48).0, "duration": rate.tick_of(len).0});
+        s.execute("timeline.place", p).unwrap();
+    }
+    let q = s.active_sequence().unwrap();
+    let clips = [0, 1].map(|n| (q.video_tracks[n].items[0].id, q.audio_tracks[n].items[0].id));
+    s.execute("timeline.select", json!({"clips": [clips[0].0.0, clips[1].0.0]})).unwrap();
+    (s, clips)
+}
+
+fn range_of(s: &Session, clip: ClipId) -> (Tick, Tick) {
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1;
+    (it.start, it.end())
+}
+
+/// #3044: dragging an edge of one selected clip trims the same edge of every selected clip (and
+/// their linked sound) by the same amount, in one undo step, and keeps the selection.
+#[test]
+fn trimming_a_selected_clip_trims_the_whole_selection() {
+    for edge in ["in", "out"] {
+        for frames in [-6, 6] {
+            let (mut s, clips) = selected_pair();
+            let d = s.sequence_rate().tick_of(frames);
+            let all = clips.iter().flat_map(|(v, a)| [*v, *a]).collect::<Vec<_>>();
+            let before = all.iter().map(|c| range_of(&s, *c)).collect::<Vec<_>>();
+            let selection = s.state.selection.clone();
+            let undo = s.history.undo.len();
+            let r = s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": edge, "delta": d.0, "selection": true})).unwrap();
+            assert_eq!(r["delta"], json!(d.0), "{edge} {frames}");
+            for (c, (start, end)) in all.iter().zip(&before) {
+                let want = if edge == "in" { (*start + d, *end) } else { (*start, *end + d) };
+                assert_eq!(range_of(&s, *c), want, "{edge} {frames}: every selected clip and its sound move by {frames} frames");
+            }
+            assert_eq!(s.state.selection, selection);
+            assert_eq!(s.history.undo.len(), undo + 1);
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(all.iter().map(|c| range_of(&s, *c)).collect::<Vec<_>>(), before);
+        }
+    }
+}
+
+/// #3044: without `selection`, a ripple trim, or an unselected clip, only the clip under the pointer (and its linked sound) is trimmed, as before.
+#[test]
+fn a_trim_outside_a_selection_trims_one_clip() {
+    for case in 0..3 {
+        let (mut s, clips) = selected_pair();
+        let d = s.sequence_rate().tick_of(-6);
+        let (grabbed, other) = (range_of(&s, clips[0].0), range_of(&s, clips[1].0));
+        let p = match case {
+            0 => json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0}),
+            1 => {
+                for t in ["V2", "A2"] {
+                    s.execute("timeline.setTrack", json!({"track": t, "syncLock": false})).unwrap();
+                }
+                json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true, "mode": "ripple"})
+            }
+            _ => {
+                s.execute("timeline.select", json!({"clips": [clips[1].0.0]})).unwrap();
+                json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true})
+            }
+        };
+        s.execute("timeline.trim", p.clone()).unwrap();
+        assert_eq!(range_of(&s, clips[0].0).1, grabbed.1 + d, "{p}");
+        assert_eq!(range_of(&s, clips[1].0), other, "{p}: the other clip stays");
+    }
+}
+
+/// #3044: the selection stops together at the tightest limit of any of its clips, and a clip on a
+/// locked track (or an id no longer in the sequence) is left out instead of refusing the trim.
+#[test]
+fn a_selection_trim_stops_at_its_tightest_limit() {
+    for edge in [filmcraft_edit::Edge::In, filmcraft_edit::Edge::Out] {
+        let (mut s, clips) = selected_pair();
+        let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+        let far = if edge == filmcraft_edit::Edge::In { -far } else { far };
+        let each = clips.map(|(v, _)| commands::trim_delta(&s, v, edge, filmcraft_edit::TrimMode::Regular, far).unwrap());
+        let tightest = if each[0].abs() < each[1].abs() { each[0] } else { each[1] };
+        assert_ne!(each[0], each[1], "the clips have different handles");
+        let e = if edge == filmcraft_edit::Edge::In { "in" } else { "out" };
+        let before = clips.map(|(v, _)| range_of(&s, v));
+        let r = s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": e, "delta": far.0, "selection": true})).unwrap();
+        assert_eq!(r["delta"], json!(tightest.0), "{e}");
+        for (n, (v, _)) in clips.iter().enumerate() {
+            let (start, end) = range_of(&s, *v);
+            assert_eq!(if edge == filmcraft_edit::Edge::In { before[n].0 - start } else { end - before[n].1 }, tightest.abs(), "{e}");
+        }
+    }
+    let (mut s, clips) = selected_pair();
+    s.state.selection.push(ClipId(u64::MAX));
+    s.execute("timeline.setTrack", json!({"track": "V2", "locked": true})).unwrap();
+    let (locked, grabbed) = (range_of(&s, clips[1].0), range_of(&s, clips[0].0));
+    let d = s.sequence_rate().tick_of(-6);
+    s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true})).unwrap();
+    assert_eq!(range_of(&s, clips[0].0).1, grabbed.1 + d);
+    assert_eq!(range_of(&s, clips[1].0), locked, "the clip on the locked track stays");
+}
+
+/// #3044: a selected clip whose Out point is already past the end of its media cannot extend with
+/// the others, and would trim the other way: the selection does not move, whether it is one
+/// frame past (the trim would shorten every clip by that frame) or far past.
+#[test]
+fn a_selection_trim_does_not_move_when_one_clip_cannot_follow() {
+    for frames_past in [1, 3600 * 25] {
+        let (mut s, clips) = selected_pair();
+        let rate = s.sequence_rate();
+        let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+        let room = commands::trim_delta(&s, clips[1].0, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).unwrap();
+        let seq = s.state.active_sequence.unwrap();
+        {
+            let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+            let (_, it) = q.find_item_mut(clips[1].0).unwrap();
+            it.duration += room + rate.tick_of(frames_past);
+        }
+        let before = clips.map(|(v, _)| range_of(&s, v));
+        let d = rate.tick_of(6);
+        let shown = commands::trim_delta_of(
+            &s,
+            &commands::trim_targets(&s, clips[0].0, filmcraft_edit::TrimMode::Regular, true, true),
+            filmcraft_edit::Edge::Out,
+            filmcraft_edit::TrimMode::Regular,
+            d,
+        );
+        assert_eq!(shown.unwrap(), Tick::ZERO, "{frames_past} frames past");
+        let r = s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true})).unwrap();
+        assert_eq!(r["delta"], json!(0), "{frames_past} frames past");
+        assert_eq!(clips.map(|(v, _)| range_of(&s, v)), before, "{frames_past} frames past");
+    }
+}
