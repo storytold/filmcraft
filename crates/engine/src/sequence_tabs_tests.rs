@@ -31,6 +31,24 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn timeline_view_changes_are_unsaved_until_the_project_is_written() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let active = s.state.active_sequence.unwrap();
+    s.state.timeline_views.insert(active, view(80.0, 4.0));
+    s.view_changed();
+    assert!(s.has_unsaved_changes());
+    assert!(!s.is_dirty(), "view state does not count as project-content editing");
+    let dir = temp_dir("view-dirty");
+    let path = dir.join("view.fcproj");
+    s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+    assert!(!s.has_unsaved_changes());
+    let loaded = filmcraft_format::decode(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(loaded.view.unwrap().sequences.get(&active), Some(&view(80.0, 4.0)));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn close_others_keeps_one_tab_and_shows_it() {
     let (mut s, [main, b, c]) = three_tabs();
     // from the active tab
@@ -45,6 +63,26 @@ fn close_others_keeps_one_tab_and_shows_it() {
     // a sequence that is not open cannot be the one to keep
     s.execute("sequence.close", json!({})).unwrap();
     assert!(s.execute("sequence.closeOthers", json!({"item": main.0})).is_err());
+}
+
+#[test]
+fn only_real_sequence_tab_changes_advance_the_view_epoch() {
+    let (mut s, [main, b, c]) = three_tabs();
+    let epoch = s.view_epoch;
+    s.execute("sequence.open", json!({"item": c.0})).unwrap();
+    s.execute("sequence.moveTab", json!({"item": c.0, "index": 2})).unwrap();
+    assert_eq!(s.view_epoch, epoch, "opening the active tab and moving it to its current index are no-ops");
+
+    s.execute("sequence.closeOthers", json!({"item": c.0})).unwrap();
+    assert_eq!(s.view_epoch, epoch + 1);
+    let changed = s.view_epoch;
+    s.execute("sequence.closeOthers", json!({"item": c.0})).unwrap();
+    s.execute("sequence.close", json!({"item": main.0})).unwrap();
+    assert_eq!(s.view_epoch, changed, "closing other tabs twice or closing an unopened tab is a no-op");
+
+    s.execute("sequence.open", json!({"item": b.0})).unwrap();
+    assert_eq!(s.view_epoch, changed + 1);
+    assert!(s.has_unsaved_changes());
 }
 
 #[test]

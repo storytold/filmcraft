@@ -82,7 +82,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     // the bin may have been deleted while the dialog was open
                     match bin.filter(|b| app.session.project.root.find_bin(filmcraft_project::BinId(*b)).is_none()) {
                         Some(b) => {
-                            app.ui.status = format!("no bin {b}");
+                            app.ui.status = tlf!("No bin {id}", id = b);
                             close = true;
                         }
                         None => run = Some(("project.freeform.saveArrangement".into(), json!({"name": name, "bin": bin, "width": width}))),
