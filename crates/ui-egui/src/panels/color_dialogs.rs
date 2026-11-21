@@ -4,6 +4,7 @@
 //! `colorDialog.working.<id>`, `colorDialog.wideGamut`, `colorDialog.autoToneMap`,
 //! `colorDialog.ok`, `colorDialog.cancel`.
 
+use crate::widgets::DragCheckbox as _;
 use filmcraft_color::{ColorSpace, WorkingSpace};
 use serde_json::{Value, json};
 
@@ -115,9 +116,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                     }
                     ui.add_space(4.0);
-                    let r = ui.checkbox(wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
+                    let r = ui.checkbox_drag(wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
                     app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
-                    let r = ui.checkbox(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
+                    let r = ui.checkbox_drag(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
                     app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
                     let (ok, cancel) = buttons(app, ui);
                     if ok {
