@@ -40,7 +40,8 @@ pub fn ffmpeg_out(ff: &Path, args: &[&str]) -> Vec<u8> {
 
 /// Decoded frames of the first video stream as raw planes in `pix_fmt`.
 pub fn ffmpeg_frames(ff: &Path, file: &Path, pix_fmt: &str) -> Vec<u8> {
-    ffmpeg_out(ff, &["-i", file.to_str().unwrap(), "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])
+    let [fm, pt] = filmcraft_testkit::fps_passthrough_args(ff);
+    ffmpeg_out(ff, &["-i", file.to_str().unwrap(), "-map", "0:v:0", fm, pt, "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"])
 }
 
 /// Interleaved f32 samples of the first audio stream (all channels).
