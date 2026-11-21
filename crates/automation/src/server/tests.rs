@@ -405,7 +405,7 @@ async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
 /// Parallel bridge `render_frame` calls (the tool is annotated read-only and idempotent, so clients
 /// send them that way) once moved the app's single playhead and screenshotted the single Program
 /// monitor, interleaved those steps and got each other's frames (#3837). The app now renders each
-/// frame off-screen with `file.exportFrame` at the requested time, so a hidden window can't stall
+/// frame off-screen with `program.render` at the requested time, so a hidden window can't stall
 /// it either. Each call has to return the frame at its own time, and the playhead must not move.
 #[tokio::test]
 async fn parallel_bridge_render_frames_each_return_their_own_frame() {
@@ -435,11 +435,11 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
                             moved.store(true, std::sync::atomic::Ordering::SeqCst);
                             Value::Null
                         }
-                        (_, "file.exportFrame") => {
+                        ("program.render", _) => {
                             // the off-screen render draws the frame at the requested time
-                            let secs = params["time"].as_i64().unwrap_or(0) / 254_016_000_000;
+                            let secs = req["params"]["seconds"].as_f64().unwrap_or(0.0);
                             let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([secs as u8, 0, 0, 255]));
-                            img.save(params["path"].as_str().unwrap()).unwrap();
+                            img.save(req["params"]["path"].as_str().unwrap()).unwrap();
                             Value::Null
                         }
                         ("ui.screenshot", _) => {

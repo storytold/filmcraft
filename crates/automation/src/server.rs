@@ -418,25 +418,25 @@ impl FilmcraftMcp {
                     Err(e) => fail(e),
                 })
             }
-            Backend::Bridge(_) => {
-                // The app renders the frame off-screen with `file.exportFrame` (the Program picture
-                // with captions, as headless renders it), so this works while the window is hidden
-                // or minimised (a hidden window presents no frames, so a screenshot would time out)
-                // and leaves the playhead and selection alone (#114). Each call has its own file, so
-                // parallel calls don't wait for each other.
+            Backend::Bridge(b) => {
+                // The app renders the frame off-screen as headless mode does (`program.render`: the
+                // Program preview's media, over black), so this works while the window is hidden or
+                // minimised (a hidden window presents no frames, so a screenshot would time out). It
+                // is a query: the playhead, the selection, the command journal and a pending trim
+                // stay as they were (#114). Each call has its own file, so parallel calls don't wait.
                 let dir = match tempfile::tempdir() {
                     Ok(dir) => dir,
                     Err(e) => return Ok(fail(format!("render_frame: {e}"))),
                 };
                 let path = dir.path().join("frame.png");
-                let mut params = json!({"path": path.to_string_lossy(), "target": "program"});
+                let mut params = json!({"path": path.to_string_lossy(), "maxSide": max});
                 if let Some(sec) = p.seconds {
                     if !sec.is_finite() || sec < 0.0 {
                         return Ok(fail("render_frame: seconds must be a finite, non-negative number"));
                     }
-                    params["time"] = json!(filmcraft_time::Tick::from_seconds_f64(sec).0);
+                    params["seconds"] = json!(sec);
                 }
-                if let Err(e) = self.run("file.exportFrame", params).await {
+                if let Err(e) = b.call("program.render", params).await {
                     return Ok(fail(e));
                 }
                 let bytes = match tokio::fs::read(&path).await {
