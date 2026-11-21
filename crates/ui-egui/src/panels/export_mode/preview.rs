@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
     Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params, format_bytes,
-    is_export_busy, json, output_path, pos2, vec2,
+    is_export_busy, json, output_path, pos2, validate_output_filename, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -150,18 +150,21 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), if busy { Sense::hover() } else { Sense::click() });
-    let stroke_color = if busy {
+    // Starting an export needs a usable file name. Cancelling a running one does not.
+    let can_export = validate_output_filename(&ex.file_name).is_ok();
+    let queue_enabled = !busy && can_export;
+    let qresp = ui.add_enabled_ui(queue_enabled, |ui| ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click())).inner;
+    let stroke_color = if !queue_enabled {
         t.text_faint
     } else if qresp.hovered() {
         t.text
     } else {
         t.text_dim
     };
-    let text_color = if busy { t.text_faint } else { t.text };
+    let text_color = if queue_enabled { t.text } else { t.text_faint };
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
     ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), text_color);
-    reg.add("export.sendToQueue", queue, "Send to Queue");
+    reg.add_response("export.sendToQueue", &qresp, "Send to Queue");
 
     let button_label = if queue_active {
         tl!("Exporting")
@@ -170,8 +173,8 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     } else {
         tl!("Export")
     };
-    let go_enabled = !queue_active;
-    let resp = ui.interact(go, egui::Id::unique("export-go"), if go_enabled { Sense::click() } else { Sense::hover() });
+    let go_enabled = !queue_active && (active_job.is_some() || can_export);
+    let resp = ui.add_enabled_ui(go_enabled, |ui| ui.interact(go, egui::Id::unique("export-go"), Sense::click())).inner;
     let fill_color = if !go_enabled {
         t.field_bg
     } else if active_job.is_some() {
@@ -183,7 +186,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     };
     ui.painter().rect_filled(go, 15.0, fill_color);
     ui.painter().text(go.center(), Align2::CENTER_CENTER, button_label, Tokens::semibold(13.0), if go_enabled { Color32::WHITE } else { t.text_faint });
-    reg.add("export.button", go, button_label);
+    reg.add_response("export.button", &resp, button_label);
     reg.flush(app);
 
     if resp.clicked() && go_enabled {
