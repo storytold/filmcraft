@@ -23,6 +23,9 @@
 //! in `Voice-over Recordings` in the data directory or the system temporary directory. They are
 //! mono 32-bit float WAV at the input's sample rate.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -183,6 +186,7 @@ pub struct VoiceOver {
     /// Host input (None = a [`SyntheticInput`] is created on first use).
     pub input: Option<Box<dyn AudioInput>>,
     pub rec: Option<Recording>,
+    capturing: Arc<AtomicBool>,
     /// Frames already read from the input in this recording (captured before stop).
     captured: Vec<f32>,
     /// A stopped take awaiting a successful save; retries keep its original end point.
@@ -193,6 +197,17 @@ impl VoiceOver {
     pub fn recording(&self) -> bool {
         self.rec.is_some()
     }
+    /// Read the input state from the playback worker. A stopped take can still await saving.
+    pub fn capture_status(&self) -> impl Fn() -> bool + Send + 'static + use<> {
+        let capturing = self.capturing.clone();
+        move || capturing.load(Ordering::Relaxed)
+    }
+
+    fn stop_input(&mut self) {
+        self.input().stop();
+        self.capturing.store(false, Ordering::Relaxed);
+    }
+
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
     }
@@ -373,6 +388,7 @@ fn start(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.captured.clear();
     s.voiceover.pending_stop = None;
     s.voiceover.rec = Some(Recording { seq: seq_id, track, record_start, capture_start, punch_out, format, channel, epoch: s.document_epoch });
+    s.voiceover.capturing.store(true, Ordering::Relaxed);
     let cues: Vec<i64> = if vo.countdown_sound_cues { cue_times(capture_start, record_start).into_iter().map(|t| t.0).collect() } else { Vec::new() };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     Ok(json!({
@@ -448,7 +464,7 @@ pub(crate) fn unique_wav_path(s: &Session, dir: &str, base: &str) -> Result<Stri
 fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     let rec = s.voiceover.rec.clone().ok_or_else(|| bad("audio.voiceover.stop", "no voice-over is recording"))?;
     if bool_p(p, "discard").unwrap_or(false) {
-        s.voiceover.input().stop();
+        s.voiceover.stop_input();
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
@@ -456,7 +472,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if rec.epoch != s.document_epoch {
         // another project was installed since the take started: its ids name other tracks now
-        s.voiceover.input().stop();
+        s.voiceover.stop_input();
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
@@ -475,9 +491,9 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     let have = s.voiceover.captured.len();
     s.voiceover.captured.try_reserve(want.saturating_sub(have)).map_err(|e| bad("audio.voiceover.stop", format!("unable to allocate the recording: {e}")))?;
     s.voiceover.pending_stop = Some(t_stop);
+    s.voiceover.stop_input();
     let (got, input_error) = {
         let input = s.voiceover.input();
-        input.stop();
         let got = input.read(want.saturating_sub(have));
         let input_error = input.error();
         if input_error.is_some() {

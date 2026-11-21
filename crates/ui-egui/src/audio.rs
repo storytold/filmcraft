@@ -37,6 +37,8 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
     // Preferences ▸ Audio ▸ 5.1 Mixdown Type: how a 5.1 Mix plays on a stereo device
     let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&session.prefs.audio.mixdown_type).unwrap_or_default();
     let cues = panels::voiceover::cues(session, sr);
+    let mute_during_capture = session.prefs.audio.mute_sequence_playback_during_recording;
+    let capture_active = session.voiceover.capture_status();
     previews.live.publish_project(project.clone());
     let mut resampler = None;
     move |cursor: i64, buf: &mut [f32], ch: usize| {
@@ -79,6 +81,56 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         } else {
             filmcraft_engine::settings::map_output(&mix.channels[0], &mix.channels[1.min(mix.channels.len() - 1)], buf, ch, map);
         }
+        if mute_during_capture && capture_active() {
+            buf.fill(0.0);
+        }
         panels::voiceover::mix_cues(buf, ch, cursor, &cues);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[test]
+    fn voiceover_playback_mute_is_opt_in_and_releases_when_capture_stops() {
+        for mute in [false, true] {
+            let mut session = Session::default();
+            session.execute("file.openDemoProject", json!({})).unwrap();
+            session.execute("audio.voiceover.settings", json!({"countdownSoundCues":false})).unwrap();
+            let path = "audio.muteSequencePlaybackDuringRecording";
+            let schema = session.execute("prefs.schema", json!({"category":"audio"})).unwrap();
+            let row = schema["categories"][0]["fields"].as_array().unwrap().iter().find(|field| field["key"] == path).expect("the preference belongs in Audio");
+            assert_eq!(row["wired"], true);
+            assert_eq!(row["value"], false);
+            session.execute("prefs.set", json!({"key":path,"value":mute})).unwrap();
+
+            let seq = session.state.active_sequence.unwrap();
+            let rate = session.active_sequence().unwrap().settings.sample_rate;
+            let mut mix = playback_mix(&session, seq, rate);
+            let mut output = [0.0; 8192];
+            let has_sound = |samples: &[f32]| samples.iter().any(|x| x.abs() > 0.001);
+            let project = Arc::clone(&session.project);
+            let undo = session.undo_mark();
+            mix(0, &mut output, 2);
+            assert!(has_sound(&output), "the demo fixture plays before capture");
+
+            session.execute("audio.voiceover.start", json!({"track":"A1","preroll":0})).unwrap();
+            assert!(session.voiceover.recording());
+            mix(0, &mut output, 2);
+            if mute {
+                assert!(output.iter().all(|x| *x == 0.0));
+            } else {
+                assert!(has_sound(&output));
+            }
+
+            session.execute("audio.voiceover.stop", json!({"discard":true})).unwrap();
+            mix(0, &mut output, 2);
+            assert!(has_sound(&output), "the same playback callback is audible again");
+            assert!(Arc::ptr_eq(&session.project, &project));
+            assert_eq!(session.undo_mark(), undo);
+        }
     }
 }
