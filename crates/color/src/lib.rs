@@ -243,7 +243,7 @@ pub fn hlg_oetf(l: f32) -> f32 {
 }
 pub fn hlg_inverse_oetf(e: f32) -> f32 {
     let (a, b, c) = (0.178_832_77_f32, 0.284_668_92_f32, 0.559_910_7_f32);
-    if e <= 0.5 { e * e / 3.0 } else { (((e - c) / a).exp() + b) / 12.0 }
+    if e <= 0.5 { e.max(0.0) * e.max(0.0) / 3.0 } else { (((e - c) / a).exp() + b) / 12.0 }
 }
 
 /// 256-entry table: sRGB-encoded u8 → linear f32.
@@ -351,6 +351,12 @@ pub fn to_hex(c: [f32; 4]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hlg_inverse_oetf_clamps_negative() {
+        assert_eq!(hlg_inverse_oetf(-0.3), 0.0);
+        assert_eq!(to_linear(-0.3, Transfer::Hlg), 0.0);
+    }
 
     #[test]
     fn parse_hex_rejects_signs() {
