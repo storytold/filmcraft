@@ -1008,9 +1008,24 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 carries && source.is_none_or(|s| if *kind == TrackKind::Video { s.video } else { s.audio })
             },
         );
+        // #4916: a drop fills only targeted tracks. An untargeted destination keeps its
+        // stream out of the placement and out of the preview; a track the drop itself
+        // creates is not in the targeting yet and is never suppressed.
+        let tg = app.session.targeting();
+        let (v_dest, a_dest) = match (&row, new_track) {
+            (Some(row), _) => match row.kind {
+                TrackKind::Video => (Some(row.track), seq.audio_tracks.get(row.index).or(seq.audio_tracks.first()).map(|t| t.id)),
+                TrackKind::Audio => (seq.video_tracks.get(row.index).or(seq.video_tracks.first()).map(|t| t.id), Some(row.track)),
+            },
+            (None, Some((TrackKind::Video, _))) => (None, seq.audio_tracks.get(seq.video_tracks.len()).map(|t| t.id)),
+            (None, Some((TrackKind::Audio, _))) => (seq.video_tracks.get(seq.audio_tracks.len()).map(|t| t.id), None),
+            (None, None) => (None, None),
+        };
+        let video_ok = v_dest.is_none_or(|t| tg.targeted.contains(&t));
+        let audio_ok = a_dest.is_none_or(|t| tg.targeted.contains(&t));
         // #1887: a preview on every track the drop fills, not only the one under the pointer
         let range = source.map_or(filmcraft_time::TimeRange::new(Tick::ZERO, dur), |s| s.range);
-        let lanes = app.session.placement_lanes(item, range, source.is_none_or(|s| s.video), source.is_none_or(|s| s.audio));
+        let lanes = app.session.placement_lanes(item, range, source.is_none_or(|s| s.video) && video_ok, source.is_none_or(|s| s.audio) && audio_ok);
         for (k, (band, id)) in drop_preview_bands(seq, layout, lanes, row.as_ref(), new_track).iter().enumerate() {
             let r = Rect::from_min_max(pos2(layout.x_of(t), band.min.y + 1.0), pos2(layout.x_of(t + dur), band.max.y - 1.0));
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
@@ -1048,6 +1063,15 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 params["duration"] = json!(source.range.duration.0);
                 params["video"] = json!(source.video);
                 params["audio"] = json!(source.audio);
+            }
+            // #4916: suppress a stream whose drop destination is not targeted. Omitting
+            // the track instead would let `timeline.place` fall back to the source patch
+            // destination, which is the untargeted track itself.
+            if !video_ok {
+                params["video"] = json!(false);
+            }
+            if !audio_ok {
+                params["audio"] = json!(false);
             }
             if let Err(e) = crate::panels::clip_mismatch::execute(app, "timeline.place", params) {
                 app.ui.status = e;
@@ -1095,7 +1119,15 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             let start = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
             // one command, one undo step: the files go end to end from the drop point
             let ids: Vec<u64> = items.iter().map(|i| i.0).collect();
-            let params = json!({"items": ids, "track": vt, "audioTrack": at, "time": start.0, "insert": false});
+            let mut params = json!({"items": ids, "track": vt, "audioTrack": at, "time": start.0, "insert": false});
+            // #4916: as with a Project drop, an untargeted destination gets no stream
+            let tg = app.session.targeting();
+            if vt.is_some_and(|v| !tg.targeted.contains(&TrackId(v))) {
+                params["video"] = json!(false);
+            }
+            if at.is_some_and(|a| !tg.targeted.contains(&TrackId(a))) {
+                params["audio"] = json!(false);
+            }
             if let Err(e) = crate::panels::clip_mismatch::execute(app, "timeline.place", params) {
                 app.ui.status = e;
             }
