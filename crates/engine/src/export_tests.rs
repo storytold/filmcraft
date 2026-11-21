@@ -766,6 +766,60 @@ fn queue_cancels_a_running_export_and_retries_a_failed_one() {
     assert!(queue(&mut s).iter().all(|i| i["id"] != bad));
 }
 
+/// #3551: while an export runs, its destination can't be imported or relinked to, however the path
+/// is spelled; once the export ends it can, and other files never notice.
+#[test]
+fn a_file_an_export_is_writing_cannot_become_media() {
+    use filmcraft_export::Format;
+
+    use crate::export_tools::{ExportTarget, exporting_to};
+    let mut s = demo();
+    let dir = Scratch::new("target");
+    let path = dir.path("out.wav");
+    let other = dir.path("other.wav");
+    for p in [&path, &other] {
+        s.execute("file.exportMedia", json!({"path": p, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true})).unwrap();
+    }
+    assert!(!exporting_to(&s, &path), "a finished export holds nothing");
+    let item = s.execute("file.import", json!({"paths": [other]})).unwrap()["items"][0].as_u64().unwrap();
+
+    let result = std::sync::Arc::default();
+    s.export_targets.push(ExportTarget::new(&path, Format::Wav, std::sync::Arc::clone(&result)));
+    let folder = dir.0.file_name().unwrap().to_string_lossy().to_string();
+    let spelled = dir.0.join("..").join(folder).join("out.wav").to_string_lossy().to_string();
+    for p in [&path, &spelled] {
+        let e = s.execute("file.import", json!({"paths": [p]})).unwrap_err().to_string();
+        assert!(e.contains("an export is writing this file"), "{e}");
+    }
+    let e = s.execute("media.relink", json!({"item": item, "path": spelled, "force": true})).unwrap_err().to_string();
+    assert!(e.contains("an export is writing this file"), "{e}");
+    assert!(s.execute("file.import", json!({"paths": [other]})).is_ok(), "other files are unaffected");
+
+    *result.lock().unwrap() = Some(Err("cancelled".to_string()));
+    assert!(s.execute("file.import", json!({"paths": [path]})).is_ok(), "released when the export ends");
+}
+
+/// #3551: an image sequence writes numbered frames and OP-Atom its audio beside the destination.
+#[test]
+fn an_exports_side_files_are_held_too() {
+    use filmcraft_export::Format;
+
+    use crate::export_tools::{ExportTarget, exporting_to};
+    let mut s = demo();
+    let dir = Scratch::new("side-files");
+    let held = |s: &mut Session, format, dest: &str, path: &str| {
+        s.export_targets = vec![ExportTarget::new(&dir.path(dest), format, std::sync::Arc::default())];
+        exporting_to(s, &dir.path(path))
+    };
+    assert!(held(&mut s, Format::PngSequence, "shot.png", "shot0042.png"));
+    assert!(!held(&mut s, Format::PngSequence, "shot.png", "shot0042.jpg"));
+    assert!(!held(&mut s, Format::PngSequence, "shot.png", "shot-a.png"));
+    assert!(!held(&mut s, Format::PngSequence, "shot.png", "shots0042.png"));
+    assert!(held(&mut s, Format::MxfOpAtom, "atom.mxf", "atom_A2.mxf"));
+    assert!(!held(&mut s, Format::MxfOpAtom, "atom.mxf", "atom_B2.mxf"));
+    assert!(!held(&mut s, Format::Wav, "out.wav", "out0001.wav"), "one file, no frames");
+}
+
 #[test]
 fn jobs_and_queue_items_report_the_time_they_have_left() {
     use std::sync::atomic::Ordering;

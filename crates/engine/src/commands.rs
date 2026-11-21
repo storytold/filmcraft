@@ -1848,6 +1848,10 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if crate::export_tools::exporting_to(s, &path) {
+                    errors.push(format!("{path}: {}", crate::export_tools::EXPORTING));
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
