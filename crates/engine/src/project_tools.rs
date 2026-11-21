@@ -693,6 +693,11 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.media.add_stored(&s.project, Some(path.as_str()));
     s.revision += 1;
     s.saved_revision = s.revision;
+    s.saved_view_epoch = s.view_epoch;
+    fence.revision = s.revision;
+    fence.view_epoch = s.view_epoch;
+    fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));

@@ -340,6 +340,11 @@ fn close_project_and_save_all() {
     assert!(!s.is_dirty());
     s.execute("edit.label.tan", json!({})).unwrap();
     assert!(s.execute("file.closeProject", json!({})).is_err(), "unsaved changes");
+    s.execute("file.save", json!({})).unwrap();
+    s.view_changed();
+    assert!(!s.is_dirty());
+    assert!(s.has_unsaved_changes());
+    assert!(s.execute("file.closeProject", json!({})).is_err(), "unsaved Timeline view changes");
     s.execute("file.closeProject", json!({"force": true})).unwrap();
     assert!(s.project.items.is_empty() && s.path.is_none() && s.state.active_sequence.is_none());
     assert!(!s.history.can_undo());

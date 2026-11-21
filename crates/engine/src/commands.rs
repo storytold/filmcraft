@@ -1615,6 +1615,8 @@ fn build() -> Vec<CommandSpec> {
         // ================= File =================
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            let fence_arc = s.project_file_fence.clone();
+            let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             crate::masks::discard_jobs(s);
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
@@ -1627,12 +1629,19 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
+            fence.revision = s.revision;
+            fence.view_epoch = s.view_epoch;
+            fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
+            let fence_arc = s.project_file_fence.clone();
+            let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1647,6 +1656,11 @@ fn build() -> Vec<CommandSpec> {
             }
             s.revision += 1;
             s.saved_revision = s.revision;
+            s.saved_view_epoch = s.view_epoch;
+            fence.revision = s.revision;
+            fence.view_epoch = s.view_epoch;
+            fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
@@ -2688,19 +2702,28 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.open", "Open in Timeline", [], None, r#"{"item":id}"#, always, |s, p| {
             let id = item_p(p, "item").ok_or_else(|| bad("sequence.open", "need `item`"))?;
             s.project.sequence(id).ok_or_else(|| bad("sequence.open", "not a sequence"))?;
+            let before = (s.state.active_sequence, s.state.open_sequences.clone());
             s.state.active_sequence = Some(id);
             if !s.state.open_sequences.contains(&id) {
                 s.state.open_sequences.push(id);
             }
             s.state.selection.clear();
             s.events.push(crate::Event::OpenSequence(id));
+            // the open tabs are part of the saved view
+            if before != (s.state.active_sequence, s.state.open_sequences.clone()) {
+                s.view_changed();
+            }
             Ok(Value::Null)
         }),
         cmd!("sequence.close", "Close Sequence", [], None, r#"{"item":id?}"#, has_seq, |s, p| {
             let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
+            let before = (s.state.active_sequence, s.state.open_sequences.clone());
             s.state.open_sequences.retain(|x| *x != id);
             if s.state.active_sequence == Some(id) {
                 s.state.active_sequence = s.state.open_sequences.last().copied();
+            }
+            if before != (s.state.active_sequence, s.state.open_sequences.clone()) {
+                s.view_changed();
             }
             Ok(Value::Null)
         }),
@@ -2709,12 +2732,16 @@ fn build() -> Vec<CommandSpec> {
             if !s.state.open_sequences.contains(&id) {
                 return Err(bad("sequence.closeOthers", "that sequence is not open"));
             }
+            let before = (s.state.active_sequence, s.state.open_sequences.clone());
             let closed = s.state.open_sequences.len().saturating_sub(1);
             s.state.open_sequences = vec![id];
             if s.state.active_sequence != Some(id) {
                 s.state.active_sequence = Some(id);
                 s.state.selection.clear();
                 s.events.push(crate::Event::OpenSequence(id));
+            }
+            if before != (s.state.active_sequence, s.state.open_sequences.clone()) {
+                s.view_changed();
             }
             Ok(json!({"closed": closed}))
         }),
@@ -2724,8 +2751,13 @@ fn build() -> Vec<CommandSpec> {
             let from = s.state.open_sequences.iter().position(|x| *x == id).ok_or_else(|| bad("sequence.moveTab", "that sequence is not open"))?;
             // past the end is the end
             let to = usize::try_from(to).unwrap_or(usize::MAX).min(s.state.open_sequences.len().saturating_sub(1));
-            let tab = s.state.open_sequences.remove(from);
-            s.state.open_sequences.insert(to, tab);
+            if from != to {
+                let tab = s.state.open_sequences.remove(from);
+                s.state.open_sequences.insert(to, tab);
+                // the tab order is part of the saved view: it must reach the autosave journal even
+                // on a clean project (view-only change: no cache invalidation, project stays clean)
+                s.view_changed();
+            }
             Ok(json!({"index": to}))
         }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
@@ -5345,6 +5377,8 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
+    let fence_arc = s.project_file_fence.clone();
+    let mut fence = if adopt { Some(fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) } else { None };
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
         && let Some(name) = project_name_for(path)
@@ -5359,7 +5393,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
         if s.services.read_file(&b).is_err()
-            && let Ok(old) = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES)
+            && let Ok(old) = s.services.read_file(path)
         {
             s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
             backup = Some(b);
@@ -5371,7 +5405,15 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         s.previews_follow_path();
         s.note_recent_project();
         s.saved_revision = s.revision;
+        // the file now holds this view: a later zoom or scroll is new unsaved state again
+        s.saved_view_epoch = s.view_epoch;
         s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
+        if let Some(fence) = fence.as_mut() {
+            fence.revision = s.revision;
+            fence.view_epoch = s.view_epoch;
+            fence.path.clone_from(&s.path);
+            fence.project_name.clone_from(&s.project.name);
+        }
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
 }
@@ -5409,19 +5451,25 @@ pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Proj
     s.revision += 1;
     // A recovered project is unsaved: its saved revision is one that never existed.
     s.saved_revision = if clean { s.revision } else { 0 };
+    s.saved_view_epoch = s.view_epoch;
     s.loaded_schema = filmcraft_format::SCHEMA_VERSION;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
-    let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let fence_arc = s.project_file_fence.clone();
+    let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
-    if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
-        s.restore_project_view(view);
+    if let Some(view) = loaded.view {
+        s.state.timeline_ui = view.timeline_ui.clone().checked();
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        }
     }
     // the frontend shows the project's active sequence (with its own view, when one was restored)
     if let Some(seq) = s.state.active_sequence {
@@ -5433,6 +5481,10 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
     let missing = crate::relink::on_open(s);
+    fence.revision = s.revision;
+    fence.view_epoch = s.view_epoch;
+    fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
@@ -5445,12 +5497,22 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     };
     let c = per.candidates.get(idx).cloned().ok_or_else(|| bad("file.recover", "no recovery session"))?;
     let saved_at = per.local_time(c.meta.saved_unix);
+    let fence_arc = s.project_file_fence.clone();
+    let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    if let Some(view) = loaded.view {
+        s.restore_project_view(view);
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
     crate::relink::on_open(s);
+    fence.revision = s.revision;
+    fence.view_epoch = s.view_epoch;
+    fence.path.clone_from(&s.path);
+    fence.project_name.clone_from(&s.project.name);
+    drop(fence);
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
     let per = s.persistence.as_mut().ok_or_else(|| EngineError::Other("recovery is not running".into()))?;
