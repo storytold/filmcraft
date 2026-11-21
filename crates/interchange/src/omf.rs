@@ -69,7 +69,7 @@ pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<Extra
     let doc = shared_model::from_shared(doc);
     let (imported, extracted) = comp::to_project(doc, opts, &mut report)?;
     let mut imported = imported;
-    crate::bound_start_timecodes(&mut imported, &mut report);
+    crate::finish_import(&mut imported, &mut report)?;
     Ok((imported, extracted, report))
 }
 
