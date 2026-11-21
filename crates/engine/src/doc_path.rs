@@ -8,6 +8,11 @@
 //! are not stored-document paths and are followed as given. The media pool tells them apart
 //! ([`crate::MediaPool::follow`]): it records the paths of each document it loads, with that
 //! document, and forgets a path once the user picks it again.
+//!
+//! The network shares the user names in Settings ▸ Media ▸ Trusted Network Folders
+//! ([`trusted_shares`]) are followed from any document, as the document's own share is
+//! ([`resolve_trusting`]): a project saved on the local disk, or an interchange document imported
+//! from it, keeps finding its media on a NAS.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -50,6 +55,31 @@ pub fn resolve(stored: &str, document: Option<&Path>) -> Result<String, NotFollo
     path.into_os_string().into_string().map_err(|_| NotFollowed::Refused(Refused::Invalid))
 }
 
+/// [`resolve`], also following a network path on one of the `trusted` shares (`\\server\share`
+/// roots, [`trusted_shares`]). A trusted share is treated as the document's own share would be,
+/// with the same lexical checks (`craft_docpath`), so `..` cannot step out of it.
+pub fn resolve_trusting(stored: &str, document: Option<&Path>, trusted: &[String]) -> Result<String, NotFollowed> {
+    match resolve(stored, document) {
+        Err(NotFollowed::Refused(Refused::Network)) => trusted
+            .iter()
+            .find_map(|root| {
+                // A document at the share's root: paths on the same share are followed.
+                let doc = format!("{}/_", root.trim_end_matches(['\\', '/']));
+                craft_docpath::resolve_absolute(stored, Some(Path::new(&doc))).ok()
+            })
+            .and_then(|p| p.into_os_string().into_string().ok())
+            .ok_or(NotFollowed::Refused(Refused::Network)),
+        other => other,
+    }
+}
+
+/// The trusted network shares of the setting `text` (Settings ▸ Media ▸ Trusted Network Folders):
+/// `\\server\share` roots separated by `;` or line breaks; entries that are not a share are
+/// ignored.
+pub fn trusted_shares(text: &str) -> Vec<String> {
+    text.split([';', '\n', '\r']).map(str::trim).filter(|t| craft_docpath::classify(t) == craft_docpath::PathKind::Network).map(str::to_string).collect()
+}
+
 /// Whether an unresolved `craft_docpath::resolve` result starts with a drive (`C:`) or a share
 /// root (`\\`) outside Windows. Such a path names no file here, and no document folder makes it one.
 fn foreign_root(path: &Path) -> bool {
@@ -81,6 +111,28 @@ mod tests {
             assert_eq!(resolve("media/take:2.mp4", Some(&doc)), Ok(dir.join("media").join("take:2.mp4").to_string_lossy().into_owned()));
             assert_eq!(resolve("take:2.mp4", Some(&doc)), Ok(dir.join("take:2.mp4").to_string_lossy().into_owned()));
         }
+    }
+
+    /// A path on another computer is followed only from a document on that share, or when the
+    /// share is one of the user's trusted network folders; `..` cannot leave a trusted share.
+    #[test]
+    fn trusted_shares_are_followed_from_any_document() {
+        let doc = std::env::temp_dir().join("films").join("cut.fcproj");
+        let nas = r"\\nas\media\shots\clip_01.png";
+        assert_eq!(resolve_trusting(nas, Some(&doc), &[]), Err(NotFollowed::Refused(Refused::Network)));
+        let trusted = trusted_shares(" \\\\NAS\\media ; not a share;C:\\local\n//other/share/");
+        assert_eq!(trusted, vec![r"\\NAS\media".to_string(), "//other/share/".to_string()]);
+        // A share path is a file only on Windows; elsewhere it stays refused (not absolute there).
+        assert_eq!(resolve_trusting(nas, Some(&doc), &trusted).is_ok_and(|p| p.ends_with("clip_01.png")), cfg!(windows));
+        // A `file://host/` URL is never followed (`craft_docpath` refuses it on any share).
+        assert_eq!(resolve_trusting("file://nas/media/x.mp4", Some(&doc), &trusted), Err(NotFollowed::Refused(Refused::Network)));
+        assert_eq!(resolve_trusting(r"\\other\share\x.mp4", Some(&doc), &trusted).is_ok(), cfg!(windows));
+        for refused in [r"\\nas\other\x.mp4", r"\\nas\media\..\other\x.mp4", r"\\third\media\x.mp4"] {
+            assert!(resolve_trusting(refused, Some(&doc), &trusted).is_err(), "{refused}");
+        }
+        // Local paths and other refusals are unaffected.
+        assert_eq!(resolve_trusting("clip.mp4", Some(&doc), &trusted), resolve("clip.mp4", Some(&doc)));
+        assert_eq!(resolve_trusting("jar:take.mp4", Some(&doc), &trusted), Err(NotFollowed::Refused(Refused::Url)));
     }
 
     /// Without a document a relative path waits for the document's folder; outside Windows a

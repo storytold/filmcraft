@@ -62,6 +62,9 @@ pub struct MediaPool {
     /// Media and proxy paths that came from a document, with that document's path (see
     /// [`Self::follow`]).
     stored: RwLock<HashMap<String, Option<PathBuf>>>,
+    /// Network shares whose stored paths are followed from any document (Settings ▸ Media ▸
+    /// Trusted Network Folders, [`crate::doc_path::trusted_shares`]).
+    trusted: RwLock<Arc<Vec<String>>>,
 }
 
 impl Default for MediaPool {
@@ -75,6 +78,7 @@ impl Default for MediaPool {
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
             stored: RwLock::default(),
+            trusted: RwLock::default(),
         }
     }
 }
@@ -208,20 +212,39 @@ impl MediaPool {
         self.stored.write().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
+    /// The network shares followed from any document ([`crate::doc_path::resolve_trusting`]).
+    pub fn trusted_shares(&self) -> Arc<Vec<String>> {
+        self.trusted.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Settings ▸ Media ▸ Trusted Network Folders changed: returns whether the list is different.
+    /// Sources opened (or refused) under the old list are forgotten so they are looked up again.
+    pub fn set_trusted_shares(&self, shares: Vec<String>) -> bool {
+        let mut trusted = self.trusted.write().unwrap_or_else(PoisonError::into_inner);
+        if **trusted == shares {
+            return false;
+        }
+        *trusted = Arc::new(shares);
+        drop(trusted);
+        self.clear();
+        true
+    }
+
     /// The user picked `path` in this session (import, Link Media): open it as given.
     pub fn allow(&self, path: &str) {
         self.stored.write().unwrap_or_else(PoisonError::into_inner).remove(path);
     }
 
     /// The file to open for `path`, a media or proxy path of the project: a stored path as
-    /// [`crate::doc_path::resolve`] resolves it, any other path as given.
+    /// [`crate::doc_path::resolve_trusting`] resolves it (with the trusted network shares), any
+    /// other path as given.
     pub fn follow(&self, path: &str) -> Result<String, crate::doc_path::NotFollowed> {
         // The web host reads only the files the user gave it, under its own virtual paths.
         if cfg!(target_arch = "wasm32") {
             return Ok(path.to_string());
         }
         match self.stored.read().unwrap_or_else(PoisonError::into_inner).get(path) {
-            Some(document) => crate::doc_path::resolve(path, document.as_deref()),
+            Some(document) => crate::doc_path::resolve_trusting(path, document.as_deref(), &self.trusted_shares()),
             None => Ok(path.to_string()),
         }
     }
