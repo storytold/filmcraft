@@ -3750,3 +3750,64 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
+	Transcribe Sequence: transcribing in the background (see Progress)	Transcrire la séquence : transcription en arrière-plan (voir Progression)
+	Saved	Enregistré
+	The gap was left open: {e}	L'espace vide a été conservé : {e}
+	this edit would break sync: {track} is sync-locked and has a clip in the way (turn off its sync lock, or lock the track, to make this edit)	ce montage casserait la synchronisation : {track} est verrouillée en synchro et un clip gêne (désactivez son verrouillage de synchro ou verrouillez la piste pour faire ce montage)
+	Transcription finished: no speech was found	Transcription terminée : aucune parole détectée
+	Transcription finished: {words} words	Transcription terminée : {words} mots
+	Transcription: {e}	Transcription : {e}
+	Transcription: the project was replaced; nothing was changed	Transcription : le projet a été remplacé, rien n'a été modifié
+	Scene Edit Detection found no cut points	La détection des changements de scène n'a trouvé aucun point de coupe
+	Scene Edit Detection: {e}	Détection des changements de scène : {e}
+	Scene Edit Detection: the project was replaced; nothing was changed	Détection des changements de scène : le projet a été remplacé, rien n'a été modifié
+	Exported frame to {path}	Image exportée vers {path}
+	Nothing to render: audio previews are up to date	Rien à rendre : les prévisualisations audio sont à jour
+	the project was replaced; mask tracking stopped	le projet a été remplacé, le suivi du masque est arrêté
+	Stopped: nothing was changed	Arrêté : rien n'a été modifié
+	a transcription is already running	une transcription est déjà en cours
+	there are no audio clips to transcribe	il n'y a aucun clip audio à transcrire
+	none of the clips has audio to transcribe	aucun des clips n'a d'audio à transcrire
+	command `{0}` is not available right now: {1}	la commande `{0}` n'est pas disponible pour l'instant : {1}
+	nothing selected	rien n'est sélectionné
+	nothing to undo	rien à annuler
+	nothing to redo	rien à rétablir
+	no clips selected	aucun clip sélectionné
+	no clips or captions selected	aucun clip ni sous-titre sélectionné
+	no edit points selected	aucun point de montage sélectionné
+	clipboard is empty	le presse-papiers est vide
+	cancelled	annulé
+	mark an In or Out point first	placez d'abord un point d'entrée ou de sortie
+	select a clip with audio	sélectionnez un clip contenant de l'audio
+	select a clip in the Project panel	sélectionnez un clip dans le panneau Projet
+	select an item in the Project panel	sélectionnez un élément dans le panneau Projet
+	select clips in the Project panel	sélectionnez des clips dans le panneau Projet
+	select clips in the Project panel or the Timeline	sélectionnez des clips dans le panneau Projet ou dans la timeline
+	select clips or project items	sélectionnez des clips ou des éléments du projet
+	select clips or edit points	sélectionnez des clips ou des points de montage
+	select at least two clips to synchronize	sélectionnez au moins deux clips à synchroniser
+	select footage in the Project panel or clips in the timeline	sélectionnez des médias dans le panneau Projet ou des clips dans la timeline
+	there are no captions	il n'y a aucun sous-titre
+	there are no transcripts	il n'y a aucune transcription
+	there are no render files	il n'y a aucun fichier de rendu
+	there are no unsaved changes to recover	il n'y a aucune modification non enregistrée à récupérer
+	the sequence has no caption track	la séquence n'a pas de piste de sous-titres
+	the sequence has no transcript (Transcribe first)	la séquence n'a pas de transcription (transcrivez-la d'abord)
+	the sequence has no audio track	la séquence n'a pas de piste audio
+	the sequence has no audio clips	la séquence n'a aucun clip audio
+	the sequence has no graphics	la séquence n'a aucun graphique
+	the project is empty	le projet est vide
+	the project has not been saved yet	le projet n'a pas encore été enregistré
+	the project has no sequences	le projet n'a aucune séquence
+	the history is empty	l'historique est vide
+	the natural voices are not downloaded yet	les voix naturelles ne sont pas encore téléchargées
+	Transcribing 1 clip	Transcription d'1 clip
+	Transcribing {n} clips	Transcription de {n} clips
+	Downloading {name}	Téléchargement de {name}
+	Loading the speech model…	Chargement du modèle vocal…
+	{words} words transcribed ({secs} s)	{words} mots transcrits ({secs} s)
+	Scene Edit Detection ({n} clip)	Détection des changements de scène ({n} clip)
+	Scene Edit Detection ({n} clips)	Détection des changements de scène ({n} clips)
+	Create Proxies ({n} clip)	Création de proxys ({n} clip)
+	Create Proxies ({n} clips)	Création de proxys ({n} clips)
+	Project Manager: {name}	Gestionnaire de projets : {name}
