@@ -59,8 +59,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
 proptest = "1"
 roxmltree = "0.21"
-# Shared OpenEXR ZIP chunk compressor.
-craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
+# Shared OpenEXR ZIP chunk compression and inflation.
+craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "8b40f1a4b0718916e7c136c1b91b38a5c7531a0e" }
 # DPX still reader, on the same commit as craft-media.
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 # Shared YUV4MPEG2 parser and frame index.

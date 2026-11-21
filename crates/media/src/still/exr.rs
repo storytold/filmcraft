@@ -10,10 +10,12 @@
 //! it the data window does not cover are transparent. Tiled, deep and multi-part files, chroma
 //! subsampled channels and the PIZ, B44 and DWA compressions are refused with a clear error.
 
+#[cfg(test)]
 mod inflate;
 
 use std::sync::Arc;
 
+use craft_exr::zlib::inflate_exact_without_checksum;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
@@ -492,11 +494,11 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
             match h.compression {
                 Compression::None => return Err(bad(format!("chunk {i} has the wrong size"))),
                 Compression::Rle => unpredict(unrle(data, expected).ok_or_else(|| bad(format!("chunk {i}: bad RLE data")))?).into(),
-                Compression::Zip => unpredict(inflate::zlib(data, expected).map_err(|e| bad(format!("chunk {i}: {e}")))?).into(),
+                Compression::Zip => unpredict(inflate_exact_without_checksum(data, expected).map_err(|e| bad(format!("chunk {i}: {e}")))?).into(),
                 Compression::Pxr24 => {
                     let per_line = h.channels.iter().try_fold(0usize, |t, c| t.checked_add(plane_count(c.ty).checked_mul(dw)?));
                     let planes = per_line.and_then(|l| l.checked_mul(n)).ok_or_else(|| bad("chunk size".into()))?;
-                    let inflated = inflate::zlib(data, planes).map_err(|e| bad(format!("chunk {i}: {e}")))?;
+                    let inflated = inflate_exact_without_checksum(data, planes).map_err(|e| bad(format!("chunk {i}: {e}")))?;
                     unpxr24(&inflated, &h.channels, dw, n).ok_or_else(|| bad(format!("chunk {i}: bad PXR24 data")))?.into()
                 }
             }
