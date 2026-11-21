@@ -136,6 +136,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Evidence:** export stopped producing frames with iPhone HEVC clips on Linux (#480); WebM shows
   black (#432); only the first audio track imported (#397, #416, #601; multi-stream support landed
   in #361, reporters not yet confirmed); bitrate target produced 6.1 Mb/s for 40 (#371).
+- **Damaged MP4 workflow:** a mixed batch reports the truncated file, then uses the healthy clip
+  for an extract and an H.264/AAC export that preserves the clip's picture and sound.
 - **Done when:** corpus fetched pinned and sha256-verified (as PhotoCraft's `cargo xtask corpus`), runs nightly, ≥ 50 files. **40–70 h.**
 
 ## G7. No measured parity tool in CI
