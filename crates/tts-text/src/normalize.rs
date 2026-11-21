@@ -7,6 +7,8 @@ pub enum Lang {
     EnUs,
     /// British English: day/month dates, "pounds and pence".
     EnGb,
+    /// French (France): French counting, decimal comma, `14h30`, euros.
+    Fr,
 }
 
 /// A piece of a normalized script.
@@ -58,6 +60,9 @@ const MAX_PAUSE_MARKER_BYTES: usize = 64;
 pub fn normalize(text: &str, lang: Lang) -> Result<Vec<Token>, NormalizeError> {
     if text.len() > MAX_INPUT {
         return Err(NormalizeError::TooLong);
+    }
+    if lang == Lang::Fr {
+        return fr::normalize(text);
     }
     let mut out: Vec<Token> = Vec::new();
     let mut pos = 0usize;
@@ -531,7 +536,7 @@ fn parse_date(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     }
     let (month, day) = match lang {
         Lang::EnUs => (a, b),
-        Lang::EnGb => (b, a),
+        Lang::EnGb | Lang::Fr => (b, a),
     };
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
@@ -561,7 +566,7 @@ fn date_words(month: u64, day: u64, lang: Lang) -> Vec<Token> {
             out.push(Token::Word(month_name.into()));
             out.push(Token::Word(english_ordinal(day)));
         }
-        Lang::EnGb => {
+        Lang::EnGb | Lang::Fr => {
             out.push(Token::Word("the".into()));
             out.push(Token::Word(english_ordinal(day)));
             out.push(Token::Word("of".into()));
@@ -1163,6 +1168,8 @@ fn symbol_word(c: char) -> &'static str {
         _ => "",
     }
 }
+
+mod fr;
 
 #[cfg(test)]
 mod tests;

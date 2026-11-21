@@ -87,6 +87,13 @@ fn settings(cmd: &str, p: &Value, base: Option<&Narration>) -> Result<Narration>
     Ok(n)
 }
 
+/// The sample sentence in the language of the voice the request (or the clip) uses.
+fn sample_for(q: &Value, base: Option<&Narration>) -> &'static str {
+    let voice = str_p(q, "voice").map(str::to_string).or_else(|| base.map(|b| b.voice.clone())).unwrap_or_else(|| tts::default_voice_id().to_string());
+    let language = tts::voices_in(None).into_iter().find(|v| v.id == voice).map(|v| v.language).unwrap_or("en-US");
+    tts::sample_sentence(language)
+}
+
 /// Synthesized narrations by settings, newest last (`tts.render` fills it in the background so
 /// the UI's create / edit / preview don't block).
 pub type SynthCache = Arc<Mutex<Vec<(String, Arc<tts::Audio>)>>>;
@@ -167,7 +174,7 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        q["text"] = json!(sample_for(&q, base.as_ref()));
     }
     let n = settings(cmd, &q, base.as_ref())?;
     let audio = synthesize(s, cmd, &n)?;
@@ -433,7 +440,7 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        q["text"] = json!(sample_for(&q, base.as_ref()));
     }
     let n = settings(cmd, &q, base.as_ref())?;
     let key = cache_key(&n);
