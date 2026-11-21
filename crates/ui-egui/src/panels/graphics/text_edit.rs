@@ -539,7 +539,7 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     if state.changed && state.text != tp.text {
         let text = std::mem::take(&mut state.text);
         if let Err(e) = app.session.execute("graphics.setText", json!({"clip": state.ed.clip, "layer": state.ed.layer, "text": text, "merge": true})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     app.ui.gfx_edit = Some(state.ed);

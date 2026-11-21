@@ -249,7 +249,7 @@ impl Interaction {
                                 app.ui.keyframe_selection = keys;
                             }
                         }
-                        Err(error) => app.ui.status = error.to_string(),
+                        Err(error) => app.ui.fail(error.to_string()),
                     }
                 }
                 self.state.gesture = None;

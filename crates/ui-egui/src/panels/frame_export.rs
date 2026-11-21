@@ -257,7 +257,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Ok(_) => replace && d.replace.as_deref() == Some(path.as_str()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
             Err(e) => {
-                app.ui.status = format!("Cannot check export destination: {e}");
+                app.ui.fail(format!("Cannot check export destination: {e}"));
                 d.error = Some(app.ui.status.clone());
                 false
             }
@@ -276,7 +276,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     close = true;
                 }
                 Err(e) => {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                     d.error = Some(e.to_string());
                 }
             }

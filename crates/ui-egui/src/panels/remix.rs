@@ -97,7 +97,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let p = json!({"clip": d.clip, "seconds": d.seconds, "segments": d.segments, "variations": d.variations});
         match app.session.execute("clip.remix.properties", p) {
             Ok(v) => app.ui.status = tlf!("Remixed to {seconds} s", seconds = format!("{:.2}", v["seconds"].as_f64().unwrap_or(0.0))),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
         close = true;
     }

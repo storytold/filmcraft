@@ -234,7 +234,7 @@ impl FilmcraftApp {
                 self.source_playback.clock.audio_retry_at = 0.0;
             }
             Err(e) => {
-                self.ui.status = format!("Source audio output failed: {e}");
+                self.ui.fail(format!("Source audio output failed: {e}"));
                 self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
             }
         }
@@ -254,7 +254,7 @@ impl FilmcraftApp {
         let error = self.source_playback.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(error) = error {
             self.stop_source();
-            self.ui.status = error;
+            self.ui.fail(error);
             return;
         }
         let now = self.now();
@@ -301,7 +301,7 @@ impl FilmcraftApp {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
-            self.ui.status = "Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)".into();
+            self.ui.fail("Source audio output stopped responding: playing without sound (check Settings > Audio Hardware)");
         }
         let elapsed = match reading {
             Some((frames, sr)) if clock.audio_clock && sr > 0 => frames as f64 / f64::from(sr),
@@ -315,7 +315,7 @@ impl FilmcraftApp {
                 Ok(_) => self.source_playback.shown = self.session.state.source_playhead,
                 Err(e) => {
                     self.stop_source();
-                    self.ui.status = e.to_string();
+                    self.ui.fail(e.to_string());
                     return;
                 }
             }
@@ -332,7 +332,7 @@ impl FilmcraftApp {
             let start = self.source_playback.range_start.unwrap_or(range.start).max(view.start);
             if let Err(e) = self.session.execute("source.setPlayhead", json!({"time":start.0})) {
                 self.stop_source();
-                self.ui.status = e.to_string();
+                self.ui.fail(e.to_string());
                 return;
             }
             let time = self.session.state.source_playhead;
@@ -349,7 +349,7 @@ impl FilmcraftApp {
             Ok(_) => self.source_playback.shown = self.session.state.source_playhead,
             Err(e) => {
                 self.stop_source();
-                self.ui.status = e.to_string();
+                self.ui.fail(e.to_string());
                 return;
             }
         }
