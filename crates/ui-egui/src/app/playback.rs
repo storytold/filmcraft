@@ -150,6 +150,24 @@ impl FilmcraftApp {
         }
     }
 
+    /// The playhead was moved while playback runs (`playhead.set`): re-base the playback clock
+    /// on the new position (`now` = the frame's time), so the next tick continues from it instead
+    /// of snapping back to the old anchor — the pump sets the playhead every frame and would
+    /// otherwise overwrite the move (#1622). Does nothing while stopped, or during the preroll:
+    /// the clock then starts from wherever the playhead is.
+    pub(crate) fn reanchor_playback(&mut self, now: f64) {
+        if !self.playback.playing || self.playback.preroll.is_some() {
+            return;
+        }
+        self.playback.anchor_tick = self.session.playhead();
+        self.playback.anchor_time = now;
+        if self.playback.audio_clock {
+            // re-aim the audio stream at the new position; its played-frame count restarts there
+            self.playback.audio_seen = (0, now);
+            self.start_audio(now);
+        }
+    }
+
     /// Give the scrub output's device back before playback opens its own stream (#2633). The scrub
     /// stream lingers for a few seconds after the last grain, and a device that takes one stream
     /// at a time (a raw ALSA `hw:` device, an exclusive-mode output) would refuse playback's.
