@@ -16,7 +16,7 @@
 //!
 //! With `report: true` the analysis runs at once (as with `wait`) and only reports: `shots` lists
 //! each clip's shots (timeline start, end and length; media start and end), nothing is applied
-//! (not even other finished jobs), no undo step is added, the call isn't journaled, and the apply
+//! (not even other finished scene detection jobs), no undo step is added, the call isn't journaled, and the apply
 //! options are ignored. Agents use it to see the shots of footage they
 //! can't watch before deciding what to cut.
 
