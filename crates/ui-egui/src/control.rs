@@ -735,7 +735,7 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
     }
 }
 
-/// `program.render {path?, time?|seconds?, maxSide=960}`: the active sequence's frame rendered
+/// `program.render {path?, time?|seconds?, maxSide=960 (0: full size)}`: the active sequence's frame rendered
 /// off-screen, as headless mode renders it (the Program preview's media, proxies included, over
 /// black), written to `path` as PNG (in the reply as `pngBase64` on the web). A query, not an
 /// edit: it doesn't move the playhead, isn't journaled and doesn't settle a pending trim, and it
@@ -752,9 +752,10 @@ fn render_program(app: &mut FilmcraftApp, p: &Value) -> Outcome {
         },
         (None, None) => app.session.playhead(),
     };
-    let max = p.get("maxSide").and_then(Value::as_u64).unwrap_or(960).clamp(16, 16_384) as f32;
+    // 0 means no limit, as for the bridge's other images
+    let max = p.get("maxSide").and_then(Value::as_u64).unwrap_or(960);
     let Some((w, h)) = app.session.active_sequence().map(|q| (q.settings.width, q.settings.height)) else { return err("no sequence is open") };
-    let scale = (max / w.max(h).max(1) as f32).min(1.0);
+    let scale = if max == 0 { 1.0 } else { (max as f32 / w.max(h).max(1) as f32).min(1.0) };
     let img = match app.session.try_render_program_at(scale, time) {
         Ok(img) => img,
         Err(e) => return err(e),

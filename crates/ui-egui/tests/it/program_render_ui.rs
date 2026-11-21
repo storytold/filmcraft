@@ -71,6 +71,11 @@ fn program_render_is_the_headless_frame_and_changes_nothing() {
     assert_eq!(v["ok"], json!(true), "{v}");
     assert!(decode(&path).pixels().all(|p| p.0 == [0, 0, 0, 255]));
 
+    // maxSide 0 is no limit: the sequence's own size
+    let v = d.call("program.render", json!({"path": path.to_string_lossy(), "seconds": 1.0, "maxSide": 0}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    assert_eq!((v["result"]["width"].as_u64(), v["result"]["height"].as_u64()), (Some(u64::from(w)), Some(u64::from(h))), "{v}");
+
     // without a path the PNG comes back in the reply; a bad time is refused
     let v = d.call("program.render", json!({"maxSide": 64}));
     assert!(v["result"]["pngBase64"].as_str().is_some_and(|b| !b.is_empty()), "{v}");
