@@ -112,6 +112,15 @@ the project or adds an undo step.
 `audio.levels` and a report run decode media while the command runs, so measure a range, not
 hours at once.
 
+**Raw footage.** `media.analyze {items:[id]?, fps=6, wait=false}` indexes media items from the
+Project panel in a background job (`jobs.list` shows it, `jobs.cancel` stops it). Then
+`media.index {item, shotsLimit=200}` returns that item's shots in media time, each with
+`brightness`, `blown`, `crushed`, `sharpness`, `motion`, `stillSeconds`, `flags` (`black`,
+`dark`, `overexposed`, `crushedShadows`, `soft`, `static` (nothing moves), `frozen` (the picture stops for 1 s or more inside a moving shot)), a `score` (0–100,
+for ranking takes of the same item, not an absolute grade) and the transcript `text` spoken in the
+shot. It also returns `bestShots` and the audio level over time. The index is session state:
+it is not saved and the project doesn't change. Shake, faces and composition are not measured.
+
 **Before saying an edit is done**, run `sequence.review {againstUndo?: n, flashFrames=3,
 longSeconds=5, wordMarginSeconds=0.04, popDb=-30}`. It lists `issues` with `severity`, `seconds`,
 `clip`, `detail` and a `fix`:

@@ -30,6 +30,7 @@ mod marker_edit;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
+pub mod media_index;
 pub mod media_pool;
 #[cfg(not(target_arch = "wasm32"))]
 mod media_queue;
@@ -573,6 +574,10 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// `media.analyze` jobs whose results go into `media_index` when they finish.
+    pub index_jobs: Vec<media_index::PendingIndex>,
+    /// Footage indexes made by `media.analyze` (session only, not saved with the project).
+    pub media_index: std::collections::BTreeMap<filmcraft_project::ItemId, Arc<media_index::MediaIndex>>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -682,6 +687,8 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            index_jobs: Vec::new(),
+            media_index: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -780,6 +787,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        media_index::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
