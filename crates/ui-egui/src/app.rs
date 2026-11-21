@@ -202,6 +202,25 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
+    /// The window's full screen state as the app tracks it, adopting a windowing report of
+    /// `true`: the window manager may have put the window into full screen itself. A report
+    /// of `false` is never adopted, because on Wayland it can be a stale configure from
+    /// before the app's own request, which is how the toggle used to get stuck entering
+    /// full screen (#4933).
+    pub fn fullscreen_tracked(&mut self, ctx: &egui::Context) -> bool {
+        if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            self.ui.window_fullscreen = true;
+        }
+        self.ui.window_fullscreen
+    }
+
+    /// Flip the tracked full screen state and ask the window for the new one.
+    pub fn toggle_window_fullscreen(&mut self, ctx: &egui::Context) -> bool {
+        self.ui.window_fullscreen = !self.fullscreen_tracked(ctx);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.ui.window_fullscreen));
+        self.ui.window_fullscreen
+    }
+
     /// Install the theme once, then keep fonts ready; a saved language without its system face
     /// falls back to English as before.
     fn logic_theme(&mut self, ctx: &egui::Context) {

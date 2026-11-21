@@ -157,14 +157,13 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             Ok(toggle_maximize(app, p))
         }
         "window.toggleFullScreen" => {
-            let fs = !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
+            let fs = app.toggle_window_fullscreen(ctx);
             Ok(json!({"fullScreen": fs}))
         }
         "view.fullScreenProgram" => {
             let entering = !app.ui.fullscreen_program;
             if entering {
-                app.ui.cinema_was_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                app.ui.cinema_was_fullscreen = app.fullscreen_tracked(ctx);
                 app.ui.cinema_prev_focus = Some(app.ui.focused);
                 app.ui.focused = PanelKind::Program;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
