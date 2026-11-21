@@ -299,6 +299,10 @@ pub fn extend_to_playhead(s: &mut Session) -> Result<Value> {
 /// `trim.toPlayhead {side: "previous"|"next", ripple}` (Q/W, ⌥Q/⌥W): remove the material between
 /// the playhead and the previous (Q) or next (W) edit point on the targeted tracks. Ripple variants
 /// extract the range (later material moves left, sync locks respected); the others lift it.
+///
+/// On empty space the ripple variants close the part of the gap on that side of the playhead: Q
+/// from the previous edit (or the sequence start), W up to the next edit. Nothing is cut, so they
+/// refuse if a clip or caption on a track that would move lies inside that range.
 pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
     let next = p.get("side").and_then(Value::as_str) == Some("next");
     let ripple = p.get("ripple").and_then(Value::as_bool).unwrap_or(true);
@@ -310,21 +314,39 @@ pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
     let sel = crate::commands::with_links(s, &s.state.selection);
     let selected: Vec<TrackId> =
         seq.video_tracks.iter().chain(seq.audio_tracks.iter()).filter(|t| !t.locked && under(t, &|c| sel.contains(&c))).map(|t| t.id).collect();
-    let tracks = if selected.is_empty() {
+    let mut tracks: Vec<TrackId> = if selected.is_empty() {
         let targeted = s.targeting().targeted;
         seq.video_tracks.iter().chain(seq.audio_tracks.iter()).filter(|t| targeted.contains(&t.id) && !t.locked && under(t, &|_| true)).map(|t| t.id).collect()
     } else {
         selected
     };
-    if tracks.is_empty() {
-        return Err(EngineError::Other("no clip under the playhead on the targeted tracks".into()));
+    let in_gap = tracks.is_empty();
+    if in_gap {
+        if ripple {
+            let targeted = s.targeting().targeted;
+            tracks = seq.video_tracks.iter().chain(seq.audio_tracks.iter()).filter(|t| targeted.contains(&t.id) && !t.locked).map(|t| t.id).collect();
+        }
+        if tracks.is_empty() {
+            return Err(EngineError::Other("no clip under the playhead on the targeted tracks".into()));
+        }
     }
     // nearest edit point on those tracks
     let edits =
         seq.video_tracks.iter().chain(seq.audio_tracks.iter()).filter(|t| tracks.contains(&t.id)).flat_map(|t| t.items.iter().flat_map(|i| [i.start, i.end()]));
     let edge = if next { edits.filter(|e| *e > ph).min() } else { edits.filter(|e| *e < ph).max() };
+    // a gap before the first clip reaches back to the start of the sequence
+    let edge = if in_gap && !next && edge.is_none() && ph > Tick::ZERO { Some(Tick::ZERO) } else { edge };
     let edge = edge.ok_or_else(|| EngineError::Other("no edit point".into()))?;
     let range = if next { TimeRange::from_bounds(ph, edge) } else { TimeRange::from_bounds(edge, ph) };
+    if in_gap {
+        let overlaps = |start: Tick, end: Tick| start < range.end() && range.start < end;
+        let moving = |t: &&filmcraft_project::Track| !t.locked && (tracks.contains(&t.id) || t.sync_lock);
+        let clip_inside = seq.all_tracks().filter(moving).any(|t| t.items.iter().any(|i| overlaps(i.start, i.end())));
+        let caption_inside = seq.caption_tracks.iter().filter(|c| !c.locked && c.sync_lock).any(|c| c.captions.iter().any(|i| overlaps(i.start, i.end())));
+        if clip_inside || caption_inside {
+            return Err(EngineError::Other("no empty space on that side of the playhead to close".into()));
+        }
+    }
     let label = match (next, ripple) {
         (true, true) => "Ripple Trim Next Edit to Playhead",
         (false, true) => "Ripple Trim Previous Edit to Playhead",
