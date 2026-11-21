@@ -17,7 +17,6 @@
 //! dialogs: `exportTemplate.name|category|control.<n>|ok|cancel`, `replaceFonts.from|to|ok|cancel`.
 //! The UI state (`UiState::gfx_templates`) is serde, so agents can read and set it.
 
-use crate::widgets::CenteredDialog as _;
 use std::sync::Arc;
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -270,7 +269,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     b.add_space(4.0);
     let sel_entry = selected.as_ref().and_then(|s| lib.iter().find(|e| &e.template.id == s));
     b.horizontal(|ui| {
-        let r = ui.add_enabled(sel_entry.is_some(), egui::Button::new(tl!("Apply")));
+        let r = ui.add_enabled(sel_entry.is_some(), crate::dialog_style::primary(&app.tokens, tl!("Apply")));
         elems.push(("gfxTemplates.apply".into(), r.rect, "Apply".into()));
         if r.clicked() {
             apply = selected.clone();
@@ -653,7 +652,7 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.gfx_templates.export.clone() else { return };
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new(tl!("Export As Motion Graphics Template"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Export As Motion Graphics Template"))
         .id(egui::Id::unique("Export As Motion Graphics Template"))
         .collapsible(false)
         .resizable(false)
@@ -693,11 +692,11 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xff, 0x80, 0x80), &d.error);
             }
-            ui.horizontal(|ui| {
-                let ok = ui.button(tl!("Export"));
-                elems.push(("exportTemplate.ok".into(), ok.rect, "Export".into()));
-                let cancel = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let cancel = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 elems.push(("exportTemplate.cancel".into(), cancel.rect, "Cancel".into()));
+                let ok = ui.add(crate::dialog_style::primary(&app.tokens, tl!("Export")));
+                elems.push(("exportTemplate.ok".into(), ok.rect, "Export".into()));
                 if ok.clicked() {
                     action = Some(true);
                 }
@@ -735,7 +734,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let used = filmcraft_engine::graphic_templates::fonts_used(&app.session);
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new(tl!("Replace Fonts in Projects"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Replace Fonts in Projects"))
         .id(egui::Id::unique("Replace Fonts in Projects"))
         .collapsible(false)
         .resizable(false)
@@ -778,11 +777,11 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xff, 0x80, 0x80), &d.error);
             }
-            ui.horizontal(|ui| {
-                let ok = ui.button(tl!("OK"));
-                elems.push(("replaceFonts.ok".into(), ok.rect, "OK".into()));
-                let cancel = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let cancel = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 elems.push(("replaceFonts.cancel".into(), cancel.rect, "Cancel".into()));
+                let ok = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
+                elems.push(("replaceFonts.ok".into(), ok.rect, "OK".into()));
                 if ok.clicked() {
                     action = Some(true);
                 }

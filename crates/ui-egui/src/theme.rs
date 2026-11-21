@@ -333,6 +333,13 @@ impl Tokens {
         }
     }
 
+    /// Legible foreground for primary actions, including a custom Appearance highlight.
+    pub fn accent_text(&self) -> Color32 {
+        let c = egui::Rgba::from(self.accent);
+        let luminance = 0.2126 * c.r() + 0.7152 * c.g() + 0.0722 * c.b();
+        if luminance > 0.179 { Color32::BLACK } else { Color32::WHITE }
+    }
+
     /// Settings ▸ Appearance on top of a theme: the highlight colour (selections, primary buttons,
     /// the focus outline, the playhead, timecodes, drag values and track targeting) and accessible
     /// colour contrast (brighter secondary text and borders).
