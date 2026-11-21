@@ -159,7 +159,7 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 
 /// Window ▸ Workspaces: the user's own workspaces and saved changes to the built-in ones, and the
 /// workspace in use (reopened at launch).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
@@ -169,6 +169,12 @@ pub struct WorkspacePrefs {
     /// Premiere (#2421). Reset to Saved Layout still returns to the saved layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<SavedWorkspace>,
+}
+
+impl Default for WorkspacePrefs {
+    fn default() -> Self {
+        Self { saved: Vec::new(), current: "Editing".into(), last: None }
+    }
 }
 
 /// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable

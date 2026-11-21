@@ -49,12 +49,7 @@ fn layout() -> Layout {
 fn active_tab_underline_follows_selection_even_when_another_tab_is_hovered() {
     let mut session = Session::default();
     session.prefs.appearance.accessible_contrast = true;
-    let mut app = FilmcraftApp::new(session);
-    app.ui.dock = layout();
-    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
-    for _ in 0..4 {
-        step(&mut h);
-    }
+    let mut h = custom_layout_harness(FilmcraftApp::new(session), vec2(1200.0, 760.0), layout());
     let underlined = |h: &Harness<'_, FilmcraftApp>, panel: PanelKind| {
         let tab = rect(h, &format!("panel.tab.{}", panel.id()));
         h.output().shapes.iter().find_map(|shape| match &shape.shape {
@@ -357,12 +352,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
 
 #[test]
 fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
-    let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout();
-    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
-    for _ in 0..4 {
-        step(&mut h);
-    }
+    let mut h = custom_layout_harness(FilmcraftApp::new(Session::default()), vec2(1200.0, 760.0), layout());
     let from = rect(&h, "panel.tab.Info").center();
     let leftmost = rect(&h, "panel.Info");
     // The outer edge of the leftmost group: without the window-edge zone this splits only that group.
@@ -382,12 +372,7 @@ fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
 /// nothing floats and nothing moves. Only Ctrl/Cmd or leaving the window floats.
 #[test]
 fn a_release_over_no_target_cancels_the_drag() {
-    let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout();
-    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
-    for _ in 0..4 {
-        step(&mut h);
-    }
+    let mut h = custom_layout_harness(FilmcraftApp::new(Session::default()), vec2(1200.0, 760.0), layout());
     let before = h.state().ui.dock.clone();
     let info = rect(&h, "panel.Info");
     for to in [pos2(600.0, 10.0), pos2(info.right() + 2.0, info.center().y)] {
@@ -582,12 +567,8 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     };
     std::sync::Arc::make_mut(&mut session.project).narrations.insert(clip.item, narration.clone());
     let project = session.project.clone();
-    let mut app = FilmcraftApp::new(session);
-    app.show_panel(PanelKind::TextToSpeech);
-    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
-    for _ in 0..4 {
-        step(&mut h);
-    }
+    let mut h = custom_layout_harness(FilmcraftApp::new(session), vec2(1200.0, 760.0), layout());
+    h.state_mut().show_panel(PanelKind::TextToSpeech);
     let ctx = h.ctx.clone();
     for panel in ["TextToSpeech", "Info"] {
         menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": panel, "rect": [400, 220, 450, 360]})).unwrap();
@@ -731,6 +712,19 @@ fn demo_harness() -> Harness<'static, FilmcraftApp> {
     session.execute("file.openDemoProject", json!({})).unwrap();
     let app = FilmcraftApp::new(session);
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    h
+}
+
+/// Let startup restore its saved workspace before a docking test installs a custom frame tree.
+fn custom_layout_harness(app: FilmcraftApp, size: egui::Vec2, dock: Layout) -> Harness<'static, FilmcraftApp> {
+    let mut h = Harness::builder().with_size(size).build_eframe(move |_| app);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    h.state_mut().ui.dock = dock;
     for _ in 0..4 {
         step(&mut h);
     }
@@ -951,13 +945,11 @@ fn close_panel_group_keeps_the_timeline_and_closes_the_sequence() {
 /// viewport is drawn below the strip, where a press on it cannot move the app window.
 #[test]
 fn a_floating_panel_stays_out_of_the_integrated_titlebar() {
-    let mut app = FilmcraftApp::new(Session::default());
-    app.ui.dock = layout();
-    app.integrated_titlebar = true;
-    let ctx = egui::Context::default();
-    menus::invoke(&mut app, &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
-    app.ui.dock.floating.iter_mut().find(|window| window.contains(&PanelKind::Info)).unwrap().rect[1] = 0.0;
-    let mut h = Harness::builder().with_size(vec2(1200.0, 760.0)).build_eframe(move |_| app);
+    let mut h = custom_layout_harness(FilmcraftApp::new(Session::default()), vec2(1200.0, 760.0), layout());
+    h.state_mut().integrated_titlebar = true;
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    h.state_mut().ui.dock.floating.iter_mut().find(|window| window.contains(&PanelKind::Info)).unwrap().rect[1] = 0.0;
     for _ in 0..3 {
         step(&mut h);
     }
