@@ -82,11 +82,15 @@ pub fn read_png(path: &Path) -> Result<Rgba8, String> {
 }
 
 pub fn write_png(path: &Path, img: &Rgba8) -> Result<u64, String> {
-    let bytes = encode_png(img)?;
+    write_bytes(path, &encode_png(img)?)
+}
+
+/// Write `bytes` to `path`, creating its parent folders. Returns the byte count.
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<u64, String> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(bytes.len() as u64)
 }
 
@@ -130,21 +134,27 @@ pub fn diff(a: &Rgba8, b: &Rgba8) -> Result<Diff, String> {
         max = max.max(m);
         differing += (m > 0) as usize;
     }
-    let pixels = (a.w as usize * a.h as usize).max(1);
-    let target = (pixels * 99).div_ceil(100);
-    let mut acc = 0;
+    let pixels = (u64::from(a.w) * u64::from(a.h)).max(1);
+    let target = p99_rank(pixels);
+    let mut acc = 0u64;
     let mut p99 = 0u8;
     for (v, n) in hist.iter().enumerate() {
-        acc += n;
+        acc += *n as u64;
         if acc >= target {
             p99 = v as u8;
             break;
         }
     }
-    let n = (pixels * 4) as f64;
+    let n = pixels as f64 * 4.0;
     let mse = sq as f64 / n;
     let psnr = if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
     Ok(Diff { max_abs: max, mean_abs: sum as f64 / n, p99, psnr, differing })
+}
+
+/// Nearest-rank position of the 99th percentile among `pixels` values: `ceil(99 * pixels / 100)`,
+/// computed as `pixels - pixels / 100` so it holds for every `u64`.
+fn p99_rank(pixels: u64) -> u64 {
+    pixels - pixels / 100
 }
 
 /// Acceptance thresholds; every set limit must hold.
@@ -245,12 +255,20 @@ pub fn attribution_row(rel: &str, generated_by: &str) -> String {
 /// Compare `actual` with the golden PNG at `golden` (or bless it). `title` and `generated_by`
 /// fill the attribution sidecar written on bless. Returns the difference on success.
 pub fn check_golden(golden: &Path, actual: &Rgba8, tol: Tolerance, title: &str, generated_by: &str) -> Result<Diff, String> {
+    check_golden_with(golden, actual, tol, title, generated_by, blessing())
+}
+
+/// [`check_golden`] with the bless choice passed in. An image over [`MAX_GOLDEN_BYTES`] is rejected
+/// before anything is written, so an existing reference and sidecar stay as they were.
+fn check_golden_with(golden: &Path, actual: &Rgba8, tol: Tolerance, title: &str, generated_by: &str, bless: bool) -> Result<Diff, String> {
     let name = golden.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    if blessing() {
-        let size = write_png(golden, actual)?;
+    if bless {
+        let bytes = encode_png(actual)?;
+        let size = bytes.len() as u64;
         if size > MAX_GOLDEN_BYTES {
             return Err(format!("{}: {size} bytes exceeds the {MAX_GOLDEN_BYTES}-byte golden limit; render smaller", golden.display()));
         }
+        write_bytes(golden, &bytes)?;
         let side = PathBuf::from(format!("{}.attribution", golden.display()));
         if !side.exists() {
             let file = golden.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -361,6 +379,73 @@ mod tests {
         let e = check_golden(&path, &far, Tolerance::RENDER, "t", "unit test").unwrap_err();
         assert!(e.contains("PSNR"), "{e}");
         assert!(check_golden(&dir.path().join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FILMCRAFT_BLESS"));
+    }
+
+    #[test]
+    fn p99_rank_is_the_nearest_rank_for_every_count() {
+        for n in [0u64, 1, 2, 99, 100, 101, 199, 200, 43_383_508, 43_383_509, u64::from(u32::MAX), u64::MAX - 1, u64::MAX] {
+            let want = (u128::from(n) * 99).div_ceil(100);
+            assert_eq!(u128::from(p99_rank(n)), want, "{n}");
+        }
+    }
+
+    #[test]
+    fn diff_p99_counts_the_top_percent() {
+        let a = ramp(10, 10, 255);
+        let mut b = a.clone();
+        b.px[0] = b.px[0].wrapping_add(10);
+        b.px[4] = b.px[4].wrapping_add(7);
+        // Two of 100 pixels differ: rank 99 lands on the smaller of the two differences.
+        assert_eq!(diff(&a, &b).unwrap().p99, 7);
+    }
+
+    /// Opaque noise from a fixed xorshift seed; PNG cannot compress it below the golden limit.
+    fn noise(w: u32, h: u32) -> Rgba8 {
+        let mut s = 0x2545_f491_4f6c_dd1du64;
+        let px = (0..w * h)
+            .flat_map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                let [r, g, b, ..] = s.to_le_bytes();
+                [r, g, b, 255]
+            })
+            .collect();
+        Rgba8::new(w, h, px)
+    }
+
+    #[test]
+    fn oversized_bless_keeps_the_existing_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        write_png(&path, &ramp(32, 16, 255)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let big = noise(192, 192);
+        assert!(encode_png(&big).unwrap().len() as u64 > MAX_GOLDEN_BYTES);
+        let e = check_golden_with(&path, &big, Tolerance::EXACT, "t", "unit test", true).unwrap_err();
+        assert!(e.contains("golden limit"), "{e}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!dir.path().join("big.png.attribution").exists());
+    }
+
+    #[test]
+    fn oversized_bless_writes_nothing_for_a_new_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub").join("new.png");
+        assert!(check_golden_with(&path, &noise(192, 192), Tolerance::EXACT, "t", "unit test", true).is_err());
+        assert!(!path.exists());
+        assert!(!dir.path().join("sub").join("new.png.attribution").exists());
+    }
+
+    #[test]
+    fn bless_writes_the_reference_and_its_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.png");
+        let img = ramp(32, 16, 255);
+        let d = check_golden_with(&path, &img, Tolerance::EXACT, "t", "unit test", true).unwrap();
+        assert_eq!(d.differing, 0);
+        assert_eq!(read_png(&path).unwrap(), img);
+        assert!(dir.path().join("small.png.attribution").exists());
     }
 
     #[test]
