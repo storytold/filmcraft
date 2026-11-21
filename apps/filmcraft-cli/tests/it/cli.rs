@@ -523,6 +523,32 @@ fn run_with_closed_stdout(args: &[&str], script: &[u8]) -> Output {
 }
 
 #[test]
+fn run_accepts_a_leading_bom_in_a_file_or_stdin() {
+    let script = "\u{feff}# Script comment\r\n{\"id\":\"project.inspect\"}\r\n";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("inspect.jsonl");
+    std::fs::write(&path, script).unwrap();
+    let from_file = cli(&["--demo", "run", path.to_str().unwrap()]);
+
+    let mut child = crate::filmcraft_command()
+        .args(["--demo", "run", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    let from_stdin = child.wait_with_output().unwrap();
+
+    for result in [from_file, from_stdin] {
+        let reply = json_out(&result);
+        assert_eq!(reply["line"], 2);
+        assert_eq!(reply["id"], "project.inspect");
+        assert_eq!(reply["ok"], true);
+    }
+}
+
+#[test]
 fn closed_stdout_still_runs_the_script_and_saves() {
     let dir = private_dir("fc-cli-pipe");
     let proj = dir.join("p.fcproj");
