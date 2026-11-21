@@ -29,37 +29,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
     }
-    let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
-    // Home
-    let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
-    let hresp = ui.interact(home, egui::Id::unique("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
-    app.auto.add("header.home", home, "Home");
-    if hresp.hovered() {
-        p.rect_filled(home, 4.0, t.hover);
-    }
-    icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
-    if hresp.clicked() {
-        app.ui.mode = Mode::Import;
-    }
-    x = home.max.x + 16.0;
-    // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
-    for (m, label, shown) in [(Mode::Import, "Import", tl!("Import")), (Mode::Edit, "Edit", tl!("Edit")), (Mode::Export, "Export", tl!("Export"))] {
-        let active = app.ui.mode == m;
-        let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
-        let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
-        let resp = ui.interact(r, egui::Id::unique(("mode", label)), Sense::click());
-        app.auto.add(&format!("header.mode.{}", label.to_ascii_lowercase()), r, label);
-        let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
-        let gw = galley.size().x;
-        p.galley_with_override_text_color(pos2(x, rect.center().y - galley.size().y / 2.0), galley, col);
-        if active {
-            p.line_segment([pos2(x, rect.min.y + 29.0), pos2(x + gw, rect.min.y + 29.0)], Stroke::new(2.0, t.tab_text_active));
-        }
-        if resp.clicked() {
-            app.ui.mode = m;
-        }
-        x += gw + 24.0;
-    }
+    let x = home_and_mode_tabs(app, ui, rect, rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 });
     let mut left_end = x;
     // In-window menus when there is no native menu bar.
     if app.ui.show_menu_bar {
@@ -202,6 +172,60 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
     }
+}
+
+/// Draws Home and the Import / Edit / Export tabs from `x` and handles their clicks; returns
+/// where the menus start.
+fn home_and_mode_tabs(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, mut x: f32) -> f32 {
+    let t = app.tokens;
+    let p = ui.painter().clone();
+    // Home
+    let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
+    let hresp = ui.interact(home, egui::Id::unique("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
+    hresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, hresp.enabled(), tl!("Home")));
+    app.auto.add_response("header.home", &hresp, "Home");
+    if hresp.hovered() {
+        p.rect_filled(home, 4.0, t.hover);
+    }
+    icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
+    crate::dock::paint_widget_focus(&p, &hresp, &t);
+    if hresp.clicked() {
+        app.ui.mode = Mode::Import;
+    }
+    // A divider keeps Home apart from the mode tabs, and another keeps the tabs apart from the
+    // menus, so the Edit tab and the Edit menu don't read as one strip.
+    let divider = |x: f32| p.line_segment([pos2(x, rect.center().y - 9.0), pos2(x, rect.center().y + 9.0)], Stroke::new(1.0, t.separator));
+    divider(home.max.x + 8.0);
+    x = home.max.x + 17.0;
+    // Mode tabs: each fills the bar's height. The active one has a semibold label, a tinted
+    // background and a 3 pt accent bar along the bottom; hover tints the others.
+    for (m, label, shown) in [(Mode::Import, "Import", tl!("Import")), (Mode::Edit, "Edit", tl!("Edit")), (Mode::Export, "Export", tl!("Export"))] {
+        let active = app.ui.mode == m;
+        let font = if active { Tokens::semibold(14.0) } else { Tokens::ui(14.0) };
+        let galley = p.layout_no_wrap(shown.to_string(), font, t.tab_text_active);
+        let r = Rect::from_min_size(pos2(x, rect.min.y), vec2(galley.size().x + 24.0, rect.height() - 1.0));
+        let resp = ui.interact(r, egui::Id::unique(("mode", label)), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, resp.enabled(), active, shown));
+        app.auto.add_response(&format!("header.mode.{}", label.to_ascii_lowercase()), &resp, label);
+        if active || resp.hovered() {
+            p.rect_filled(r, 0.0, t.hover);
+        }
+        if active {
+            p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 3.0), r.max), 0.0, t.accent);
+        }
+        let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
+        p.galley_with_override_text_color(pos2(r.min.x + 12.0, rect.center().y - galley.size().y / 2.0), galley, col);
+        crate::dock::paint_widget_focus(&p, &resp, &t);
+        if resp.clicked() {
+            app.ui.mode = m;
+        }
+        x = r.max.x;
+    }
+    if app.ui.show_menu_bar {
+        divider(x + 8.0);
+        x += 10.0;
+    }
+    x
 }
 
 #[cfg(test)]
