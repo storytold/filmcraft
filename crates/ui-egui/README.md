@@ -3,6 +3,12 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Transition context menus
+
+Right-clicking a Timeline transition selects it and offers Clear (`timeline.transitionMenu.clear`).
+Right-clicking an already selected transition keeps the selected transition group; Clear removes
+that group in one undoable command while leaving its clips intact.
+
 ## Selected text strokes
 
 With characters selected using the Type tool, both Stroke rows read and write that range's
