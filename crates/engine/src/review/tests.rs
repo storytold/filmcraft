@@ -142,3 +142,36 @@ fn audio_pops_come_from_the_edited_sound_not_other_tracks() {
     let quiet = review(&mut s, json!({}));
     assert_eq!(pops_on_a1(&quiet), 0, "silent A1 clips under the music bed: {quiet}");
 }
+
+/// What a clip plays at a cut counts, not its raw media: a Volume effect at -96 dB or Essential
+/// Sound ▸ Mute silences it, so its cuts are not pops.
+#[test]
+fn volume_and_essential_mute_silence_a_clips_cuts() {
+    for silence in ["volume", "mute"] {
+        let mut s = demo();
+        let (seq, edges) = {
+            let q = s.active_sequence().unwrap();
+            let end = q.duration();
+            (
+                s.state.active_sequence.unwrap(),
+                q.audio_tracks[0].items.iter().flat_map(|c| [c.start, c.end()]).filter(|x| x.0 > 0 && *x < end).map(|x| x.0).collect::<Vec<_>>(),
+            )
+        };
+        let pops_on_a1 =
+            |r: &Value| r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "audioPop" && edges.contains(&i["time"].as_i64().unwrap())).count();
+        assert!(pops_on_a1(&review(&mut s, json!({}))) > 0, "the demo's A1 cuts are loud");
+        if silence == "volume" {
+            let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+            for c in &mut q.audio_tracks[0].items {
+                let fx = c.effects.iter_mut().find(|e| e.effect == "volume").expect("audio clips carry Volume");
+                fx.params.get_mut("level").unwrap().value = filmcraft_project::ParamValue::Float(-96.0);
+            }
+        } else {
+            let clips: Vec<u64> = s.active_sequence().unwrap().audio_tracks[0].items.iter().map(|c| c.id.0).collect();
+            s.execute("essentialSound.setType", json!({"clips": clips, "type": "dialogue"})).unwrap();
+            s.execute("essentialSound.set", json!({"clips": clips, "key": "mute", "value": true})).unwrap();
+        }
+        let r = review(&mut s, json!({}));
+        assert_eq!(pops_on_a1(&r), 0, "{silence}: {r}");
+    }
+}

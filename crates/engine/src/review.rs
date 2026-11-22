@@ -150,7 +150,7 @@ fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
 /// on: a razor that leaves the audio continuous (a through edit) cuts no word.
 fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
     for t in q.audio_tracks.iter().filter(|t| t.enabled && !t.muted) {
-        let items: Vec<&TrackItem> = t.items.iter().filter(|it| it.enabled).collect();
+        let items: Vec<&TrackItem> = t.items.iter().filter(|it| audible(it)).collect();
         for (k, it) in items.iter().enumerate() {
             if it.reverse || it.speed <= 0.0 {
                 continue;
@@ -183,20 +183,41 @@ fn word_issues(p: &Project, q: &Sequence, margin: Tick, out: &mut Vec<Issue>) {
     }
 }
 
-/// Peak (dBFS, with the clip's gain) of `c`'s own sound in the few milliseconds it plays next to
-/// its start or end (`at_end`), in playing direction. None when it has no sound to read.
+/// Whether the clip is heard: Essential Sound ▸ Mute takes it out of the mix.
+fn audible(c: &TrackItem) -> bool {
+    c.enabled && !c.essential.as_ref().is_some_and(|e| e.mute)
+}
+
+/// The clip's Volume effect level (dB, keyframes included) at clip time `t`; 0 without one.
+fn volume_db_at(c: &TrackItem, t: Tick) -> f64 {
+    c.effects
+        .iter()
+        .filter(|e| e.enabled && e.effect == "volume")
+        .filter(|e| !matches!(e.params.get("bypass").map(|p| p.value_at(t)), Some(filmcraft_project::ParamValue::Bool(true))))
+        .filter_map(|e| match e.params.get("level").map(|p| p.value_at(t)) {
+            Some(filmcraft_project::ParamValue::Float(db)) => Some(db),
+            _ => None,
+        })
+        .sum()
+}
+
+/// Peak (dBFS) of what `c` plays in the few milliseconds next to its start or end (`at_end`), in
+/// playing direction: its own audio stream and routed channels, with its gain and Volume level
+/// there. None when it has no sound to read.
 fn edge_peak_db(s: &Session, c: &TrackItem, at_end: bool) -> Option<f64> {
     let src = s.source(c.item)?;
-    let sr = src.info().audio_streams.first()?.sample_rate.max(1);
+    let sr = src.info().audio_streams.get(c.audio_stream)?.sample_rate.max(1);
     let n = ((POP_WINDOW_SECONDS * f64::from(sr)).ceil() as usize).max(1);
     // the media time at the edge: a reversed clip starts at its Out point and ends at its In point
     let edge = if at_end != c.reverse { c.source_out() } else { c.source_in };
     let pos = edge.to_units_floor(i64::from(sr));
     // the media that plays next to the edge lies before `pos` at a forward end or a reversed start
     let from = if at_end != c.reverse { pos - n as i64 } else { pos };
-    let b = src.audio(from.max(0), n, sr).ok()?;
-    let pk = b.channels.iter().flat_map(|ch| ch.iter()).fold(0f32, |m, x| m.max(x.abs()));
-    Some(if pk > 0.0 { 20.0 * f64::from(pk).log10() + c.gain_db } else { -120.0 })
+    let b = src.audio_stream(c.audio_stream, from.max(0), n, sr).ok()?;
+    let routed = |k: usize| c.source_channels.is_empty() || c.source_channels.iter().any(|&ch| usize::from(ch) == k);
+    let pk = b.channels.iter().enumerate().filter(|(k, _)| routed(*k)).flat_map(|(_, ch)| ch.iter()).fold(0f32, |m, x| m.max(x.abs()));
+    let clip_t = if at_end { c.duration - Tick(1) } else { Tick::ZERO };
+    Some(if pk > 0.0 { 20.0 * f64::from(pk).log10() + c.gain_db + volume_db_at(c, clip_t) } else { -120.0 })
 }
 
 /// Hard audio edits where an edited clip is loud at the cut: likely clicks. Each side is measured
@@ -206,7 +227,7 @@ fn pop_issues(s: &Session, q: &Sequence, pop_db: f64, out: &mut Vec<Issue>) {
     let mut found: Vec<(Tick, u64, f64, f64)> = Vec::new();
     for t in q.audio_tracks.iter().filter(|t| t.enabled && !t.muted) {
         let covered = |at: Tick| t.transitions.iter().any(|tr| tr.start <= at && at <= tr.start + tr.duration);
-        let items: Vec<&TrackItem> = t.items.iter().filter(|it| it.enabled).collect();
+        let items: Vec<&TrackItem> = t.items.iter().filter(|it| audible(it)).collect();
         let mut times: Vec<Tick> = items.iter().flat_map(|it| [it.start, it.end()]).filter(|at| *at > Tick::ZERO && *at < end && !covered(*at)).collect();
         times.sort();
         times.dedup();
