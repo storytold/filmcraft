@@ -1,7 +1,7 @@
 //! `register` asks the NVENC HEVC probe on a thread of its own, so the first draw of Export's format
 //! list does not open an encoder session on the UI thread. Its own test binary: anything else asking
 //! `hevc_available` first would make the wait meaningless.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::time::{Duration, Instant};
 
