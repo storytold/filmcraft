@@ -82,6 +82,8 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// OpenGL only (Windows fallback between DirectX 12 and software rendering).
+    Gl,
     /// The low-power (integrated) GPU (Linux): on a laptop with two GPUs the high-performance one
     /// can claim the window's surface and still fail to draw to it (NVIDIA 470 on Wayland, #2553).
     LowPower,
@@ -96,6 +98,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::Gl => "gl",
             Mode::LowPower => "low-power",
             Mode::Software => "software",
         }
@@ -106,19 +109,20 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::Gl => "OpenGL only",
             Mode::LowPower => "integrated GPU",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::Gl, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
 /// The modes tried in order on this platform. macOS has only Metal, and no software adapter.
 pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
-    &[Mode::Default, Mode::Dx12, Mode::Software]
+    &[Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software]
 } else if cfg!(target_os = "macos") {
     &[Mode::Default]
 } else {
@@ -559,6 +563,7 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        Mode::Gl => create.instance_descriptor.backends = Backends::GL,
         // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
         Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
         Mode::Software => {

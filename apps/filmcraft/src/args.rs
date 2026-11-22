@@ -20,7 +20,7 @@ Options:
   --data-dir <dir>   folder for auto-save, crash recovery and logs
                      (also: FILMCRAFT_DATA_DIR)
   --graphics <mode>  start with this graphics mode and keep it: default,
-                     dx12 (Windows), low-power (Linux),
+                     dx12 (Windows), gl (Windows), low-power (Linux),
                      software (Windows, Linux);
                      `--graphics default` undoes an automatic fallback
   --version          print the version and exit
@@ -315,7 +315,7 @@ mod tests {
             assert_eq!(launch(&["--graphics", mode.name()]).graphics, Some(*mode));
         }
         // a mode this platform has not is refused, not ignored
-        for mode in [Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
+        for mode in [Mode::Dx12, Mode::Gl, Mode::LowPower, Mode::Software].into_iter().filter(|m| !LADDER.contains(m)) {
             assert!(parse_args(&["--graphics", mode.name()]).unwrap_err().contains("not available"));
         }
         assert!(parse_args(&["--graphics"]).is_err(), "missing mode");

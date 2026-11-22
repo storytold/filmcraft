@@ -1,6 +1,6 @@
 use super::*;
 
-const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Software];
+const WINDOWS: &[Mode] = &[Mode::Default, Mode::Dx12, Mode::Gl, Mode::Software];
 const LINUX: &[Mode] = &[Mode::Default, Mode::LowPower, Mode::Software];
 const MACOS: &[Mode] = &[Mode::Default];
 
@@ -18,7 +18,7 @@ fn no_mode_validates_indirect_calls() {
     if std::env::var_os("WGPU_VALIDATION_INDIRECT_CALL").is_some() {
         return;
     }
-    for mode in [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software] {
+    for mode in [Mode::Default, Mode::Dx12, Mode::Gl, Mode::LowPower, Mode::Software] {
         let mut options = NativeOptions::default();
         apply_for(&mut options, mode, None, false);
         let WgpuSetup::CreateNew(create) = options.wgpu_options.wgpu_setup else {
@@ -48,9 +48,10 @@ fn windows_default_leaves_out_gl() {
 fn only_the_windows_default_and_software_modes_choose_the_adapter() {
     for backend_override in [None, Some(Backends::VULKAN), Some(Backends::DX12)] {
         assert!(configured(Mode::Default, backend_override, true).1);
-        // elsewhere, and in DirectX 12 only mode, the adapter is wgpu's own choice
+        // elsewhere, and in DirectX 12 only and OpenGL modes, the adapter is wgpu's own choice
         assert!(!configured(Mode::Default, backend_override, false).1);
         assert!(!configured(Mode::Dx12, backend_override, true).1);
+        assert!(!configured(Mode::Gl, backend_override, true).1);
     }
     assert!(configured(Mode::Software, None, true).1 && configured(Mode::Software, None, false).1);
 }
@@ -66,6 +67,8 @@ fn explicit_backend_override_is_preserved() {
 fn fallback_modes_leave_out_the_crashing_backends() {
     // DX12 only: Intel's and AMD's Vulkan drivers are what crashed (#512, #413).
     assert_eq!(configured(Mode::Dx12, None, true), (Backends::DX12, false));
+    // OpenGL only: fallback when DirectX 12 shader compiler or driver fails.
+    assert_eq!(configured(Mode::Gl, None, true), (Backends::GL, false));
     // Software on Windows is WARP (DX12), never GL (atio6axx.dll, #477).
     assert_eq!(configured(Mode::Software, None, true), (Backends::DX12, true));
     assert_eq!(configured(Mode::Software, None, false), (Backends::VULKAN | Backends::GL, true));
@@ -107,9 +110,10 @@ fn two_failed_starts_in_a_row_move_on_to_the_next_mode_and_keep_it() {
     assert_eq!(mode_after(None, &[], WINDOWS), (Mode::Default, 0, false));
     // one start died: counted, but the same mode is tried again
     assert_eq!(mode_after(None, &[dead(Mode::Default)], WINDOWS), (Mode::Default, 1, false));
-    // the second in a row moves on: DX12, then software
+    // the second in a row moves on: DX12, then GL, then software
     assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], WINDOWS), (Mode::Dx12, 0, true));
-    assert_eq!(mode_after(saved(Mode::Dx12, 1), &[dead(Mode::Dx12)], WINDOWS), (Mode::Software, 0, true));
+    assert_eq!(mode_after(saved(Mode::Dx12, 1), &[dead(Mode::Dx12)], WINDOWS), (Mode::Gl, 0, true));
+    assert_eq!(mode_after(saved(Mode::Gl, 1), &[dead(Mode::Gl)], WINDOWS), (Mode::Software, 0, true));
     // on Linux the integrated GPU comes before software
     assert_eq!(mode_after(saved(Mode::Default, 1), &[dead(Mode::Default)], LINUX), (Mode::LowPower, 0, true));
     assert_eq!(mode_after(saved(Mode::LowPower, 1), &[dead(Mode::LowPower)], LINUX), (Mode::Software, 0, true));
@@ -411,11 +415,12 @@ fn a_failed_fallback_goes_back_up_to_a_mode_not_tried() {
     assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Software]), Some(Mode::Default));
     // down the ladder first, as before
     assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Default]), Some(Mode::Dx12));
-    assert_eq!(next_untried(WINDOWS, Mode::Dx12, &[Mode::Dx12]), Some(Mode::Software));
+    assert_eq!(next_untried(WINDOWS, Mode::Dx12, &[Mode::Dx12]), Some(Mode::Gl));
+    assert_eq!(next_untried(WINDOWS, Mode::Gl, &[Mode::Gl]), Some(Mode::Software));
     // a saved DirectX 12 that fails, then software that fails, ends at the default
-    assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Dx12, Mode::Software]), Some(Mode::Default));
+    assert_eq!(next_untried(WINDOWS, Mode::Software, &[Mode::Dx12, Mode::Gl, Mode::Software]), Some(Mode::Default));
     // every mode tried: nothing left
-    assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Dx12, Mode::Software, Mode::Default]), None);
+    assert_eq!(next_untried(WINDOWS, Mode::Default, &[Mode::Dx12, Mode::Gl, Mode::Software, Mode::Default]), None);
     assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::Default]), Some(Mode::LowPower));
     assert_eq!(next_untried(LINUX, Mode::Default, &[Mode::Software, Mode::LowPower, Mode::Default]), None);
     assert_eq!(next_untried(MACOS, Mode::Default, &[Mode::Default]), None);
