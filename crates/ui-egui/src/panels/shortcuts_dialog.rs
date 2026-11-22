@@ -38,6 +38,9 @@ pub struct EditorState {
     pub selected: Option<String>,
     /// Waiting for a key press: (command, add instead of replace).
     pub recording: Option<(String, bool)>,
+    /// Exact shortcut conflict group currently being reviewed from a Controls warning.
+    pub conflict_commands: Option<Vec<String>>,
+    pub conflict_chord: Option<String>,
     /// Modifier filter toggled on the drawn keyboard.
     pub mods: Mods,
     /// Key whose assignments the "Key:" list shows.
@@ -58,6 +61,35 @@ pub fn open(app: &mut FilmcraftApp) {
     app.session.shortcuts.begin_editing();
     app.shortcut_editor = EditorState { context: APPLICATION.into(), ..Default::default() };
     app.dialog = Some(crate::Dialog::Shortcuts);
+}
+
+/// Open the shortcut editor filtered to every command sharing this chord. Matching uses parsed
+/// chords so display spacing and platform modifier names cannot hide other members of a conflict.
+pub(crate) fn open_conflict_review(app: &mut FilmcraftApp, keys: &str, commands: &[String]) {
+    let chord = Chord::parse(keys).ok();
+    open(app);
+    app.shortcut_editor.conflict_commands = Some(commands.to_vec());
+    app.shortcut_editor.conflict_chord = Some(chord.as_ref().map_or_else(|| keys.trim().to_string(), Chord::canonical));
+    let Some(chord) = chord else {
+        app.shortcut_editor.search = keys.to_string();
+        app.shortcut_editor.selected = commands.first().cloned();
+        return;
+    };
+    let platform = Platform::current();
+    let effective = chord.effective(platform);
+    app.shortcut_editor.search = chord.display(platform);
+    app.shortcut_editor.key = Some(chord.key.to_string());
+    app.shortcut_editor.selected = app
+        .session
+        .shortcuts
+        .bindings
+        .iter()
+        .find(|binding| {
+            commands.iter().any(|command| command == &binding.command)
+                && binding.panel.as_deref().is_none_or(|panel| panel == "Timeline")
+                && Chord::parse(&binding.keys).ok().is_some_and(|other| other.effective(platform) == effective)
+        })
+        .map(|binding| binding.command.clone());
 }
 
 /// The egui key for a canonical key name.
@@ -117,6 +149,19 @@ fn is_modifier_key(key: egui::Key) -> bool {
 /// the chord is recorded when the key they modify is pressed, with them as its modifiers.
 fn record(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some((cmd, add)) = app.shortcut_editor.recording.clone() else { return };
+    let wheel = ctx.input(|i| {
+        i.events.iter().find_map(|event| match event {
+            egui::Event::MouseWheel { modifiers, .. } => Some(*modifiers),
+            _ => None,
+        })
+    });
+    if let Some(m) = wheel {
+        let mods = Mods { cmd: m.command || m.mac_cmd, ctrl: m.ctrl && cfg!(target_os = "macos"), alt: m.alt, shift: m.shift };
+        app.shortcut_editor.recording = None;
+        assign(app, &cmd, &format!("{}Scroll", mods.prefix()), add);
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::MouseWheel { .. })));
+        return;
+    }
     let got = ctx.input_mut(|i| {
         let mut got = None;
         i.events.retain(|e| match e {
@@ -770,11 +815,16 @@ fn legend(ui: &mut egui::Ui, t: &Tokens) {
             (APP_KEY, tl!("Application shortcuts work whatever panel has focus")),
             (PANEL_KEY, tl!("Panel shortcuts override application shortcuts while that panel has focus")),
             (MOD_KEY, tl!("Modifier held / selected")),
+        let previous = q.clone();
         ] {
             let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
             ui.painter().rect_filled(r, 2.0, c);
             ui.label(RichText::new(text).size(12.0).color(t.text_dim));
             ui.add_space(14.0);
+        if q != previous {
+            app.shortcut_editor.conflict_commands = None;
+            app.shortcut_editor.conflict_chord = None;
+        }
         }
     });
 }
@@ -797,7 +847,15 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     let rows = app.session.execute("shortcuts.list", json!({})).unwrap_or_default();
     let rows = rows.as_array().cloned().unwrap_or_default();
     let query = app.shortcut_editor.search.trim();
-    let rows: Vec<_> = rows.into_iter().filter(|row| matches_search(row, query)).collect();
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            app.shortcut_editor.conflict_commands.as_ref().map_or_else(
+                || matches_search(row, query),
+                |commands| row.get("id").and_then(serde_json::Value::as_str).is_some_and(|id| conflict_command_matches(id, Some(commands))),
+            )
+        })
+        .collect();
     let w = ui.available_width();
     // column header
     let (hr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
@@ -833,6 +891,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 t.text,
             );
             app.auto.add(&format!("shortcuts.row.{id}"), r, row["label"].as_str().unwrap_or(""));
+                    .filter(|binding| app.shortcut_editor.conflict_chord.as_deref().is_none_or(|query| binding_matches_conflict(binding, query)))
             if resp.clicked() {
                 app.shortcut_editor.selected = Some(id.clone());
             }
@@ -847,7 +906,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                     .into_iter()
                     .flatten()
                     .map(|b| {
-                        let d = b["display"].as_str().unwrap_or("").to_string();
+                        let d = b["display"].as_str().or_else(|| b["keys"].as_str()).unwrap_or("").to_string();
                         match b["panel"].as_str() {
                             Some(pn) => format!("{d} ({pn})"),
                             None => d,
@@ -878,12 +937,84 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 if presp.hovered() { t.tab_text_active } else { t.text_faint },
             );
             app.auto.add(&format!("shortcuts.add.{id}"), plus, "Add shortcut");
+    let chord_query = Chord::parse(query).ok().map(|chord| chord.effective(Platform::current()));
             if presp.clicked() {
                 app.shortcut_editor.selected = Some(id.clone());
                 app.shortcut_editor.recording = Some((id.clone(), true));
+                || chord_query.as_ref().is_some_and(|expected| {
+                    binding
+                        .get("keys")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|keys| Chord::parse(keys).ok())
+                        .is_some_and(|actual| actual.effective(Platform::current()) == *expected)
+                })
             }
         }
         if rows.is_empty() {
+fn conflict_command_matches(command: &str, conflict_commands: Option<&[String]>) -> bool {
+    conflict_commands.is_none_or(|commands| commands.iter().any(|candidate| candidate == command))
+}
+
+fn binding_matches_conflict(binding: &serde_json::Value, query: &str) -> bool {
+    let Some(keys) = binding.get("keys").and_then(serde_json::Value::as_str) else { return false };
+    if let Ok(expected) = Chord::parse(query) {
+        return Chord::parse(keys).ok().is_some_and(|actual| actual.effective(Platform::current()) == expected.effective(Platform::current()));
+    }
+    let compact = |value: &str| value.chars().filter(|ch| !ch.is_whitespace() && *ch != '+').flat_map(char::to_lowercase).collect::<String>();
+    Chord::parse(keys).is_err() && compact(keys) == compact(query)
+}
+
+#[cfg(test)]
+mod conflict_search_tests {
+    use super::{binding_matches_conflict, conflict_command_matches, matches_search, open_conflict_review};
+    use serde_json::json;
+
+    #[test]
+    fn normalized_conflict_search_returns_every_matching_command() {
+        let rows = ["first.command", "second.command", "third.command"].map(|id| {
+            json!({
+                "id": id,
+                "label": id,
+                "category": "Test",
+                "shortcuts": [{"keys": "Ctrl+Shift+Alt+K", "display": "Ctrl+Shift+Alt+K", "panel": "Timeline"}]
+            })
+        });
+        let query = "Ctrl + Shift + Alt + K";
+
+        assert!(rows.iter().all(|row| matches_search(row, query)), "all three commands sharing the chord should appear");
+        assert!(
+            !matches_search(&json!({"id": "other.command", "label": "Other", "category": "Test", "shortcuts": [{"keys": "Ctrl+K"}]}), query),
+            "a distinct chord should stay out of the conflict results"
+        );
+    }
+
+    #[test]
+    fn conflict_review_excludes_every_nonparticipant_even_when_its_label_matches_the_key() {
+        let conflicts = vec!["timeline.sliderCenter".to_string(), "timeline.sliderExplode".to_string(), "timeline.fastScroll".to_string()];
+        for command in &conflicts {
+            assert!(conflict_command_matches(command, Some(&conflicts)));
+        }
+        assert!(!conflict_command_matches("timeline.zoomScroll", Some(&conflicts)));
+        assert!(conflict_command_matches("timeline.zoomScroll", None), "ordinary shortcut searches keep their existing behavior");
+    }
+
+    #[test]
+    fn conflict_review_keeps_only_the_exact_commands_and_binding() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let conflicts = vec!["timeline.sliderCenter".to_string(), "timeline.sliderExplode".to_string(), "timeline.fastScroll".to_string()];
+
+        open_conflict_review(&mut app, "L", &conflicts);
+
+        assert_eq!(app.shortcut_editor.search, "L");
+        assert_eq!(app.shortcut_editor.conflict_chord.as_deref(), Some("L"));
+        assert_eq!(app.shortcut_editor.conflict_commands.as_deref(), Some(conflicts.as_slice()));
+        assert!(binding_matches_conflict(&serde_json::json!({"keys": "L"}), "L"));
+        assert!(!binding_matches_conflict(&serde_json::json!({"keys": "Ctrl+L"}), "L"));
+        assert!(conflict_command_matches("timeline.sliderExplode", app.shortcut_editor.conflict_commands.as_deref()));
+        assert!(!conflict_command_matches("timeline.zoomScroll", app.shortcut_editor.conflict_commands.as_deref()));
+    }
+}
+
             ui.label(RichText::new(tl!("No matching commands")).color(t.text_dim));
         }
     });
@@ -891,6 +1022,20 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
 }
 
 fn matches_search(row: &serde_json::Value, query: &str) -> bool {
+    if let Ok(chord) = Chord::parse(query) {
+        let platform = Platform::current();
+        if row.get("shortcuts").and_then(serde_json::Value::as_array).into_iter().flatten().any(|binding| {
+            binding
+                .get("keys")
+                .and_then(serde_json::Value::as_str)
+    let conflict_commands = app.shortcut_editor.conflict_commands.clone();
+    let conflict_chord = app.shortcut_editor.conflict_chord.clone();
+                .and_then(|keys| Chord::parse(keys).ok())
+                .is_some_and(|other| other.effective(platform) == chord.effective(platform))
+        }) {
+            return true;
+        }
+    }
     ["id", "label", "category"].iter().any(|key| crate::i18n::matches_query(row.get(key).and_then(serde_json::Value::as_str).unwrap_or(""), query))
         || row.get("shortcuts").and_then(serde_json::Value::as_array).into_iter().flatten().any(|binding| {
             ["keys", "display", "panel"].iter().any(|key| crate::i18n::matches_query(binding.get(key).and_then(serde_json::Value::as_str).unwrap_or(""), query))
@@ -912,7 +1057,18 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
     let list = key.as_ref().and_then(|k| app.session.execute("shortcuts.forKey", json!({"key": k})).ok()).unwrap_or_default();
     egui::ScrollArea::vertical().id_salt("shortcuts-key").max_height(height - 90.0).auto_shrink([false, false]).show(ui, |ui| {
         let w = ui.available_width();
-        for (i, b) in list.as_array().into_iter().flatten().enumerate() {
+        for (i, b) in list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|binding| {
+                let command_matches =
+                    binding.get("command").and_then(serde_json::Value::as_str).is_some_and(|id| conflict_command_matches(id, conflict_commands.as_deref()));
+                let chord_matches = conflict_chord.as_deref().is_none_or(|query| binding_matches_conflict(binding, query));
+                command_matches && chord_matches
+            })
+            .enumerate()
+        {
             let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
             ui.painter().rect_filled(r, 0.0, if i % 2 == 0 { t.app_bg } else { t.row_alt });
             let keys = b["keys"].as_str().unwrap_or("");
@@ -949,10 +1105,14 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
     }
 }
 
+fn slider_pair_only(commands: &[String]) -> bool {
+    commands.len() == 2 && commands.iter().any(|c| c.starts_with("timeline.slider")) && commands.iter().any(|c| c.starts_with("timeline.trackSlider"))
+}
+
 /// Bottom row: messages / conflicts, Undo / Redo / Clear, Cancel / OK. Returns Some(ok) to close.
 fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool> {
     let plat = Platform::current();
-    let conflicts = app.session.shortcuts.conflicts(plat);
+    let conflicts: Vec<_> = app.session.shortcuts.conflicts(plat).into_iter().filter(|(_, _, commands)| !slider_pair_only(commands)).collect();
     let mut close = None;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -1012,6 +1172,14 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
 #[cfg(test)]
 mod localization_tests {
     use super::*;
+
+    #[test]
+    fn slider_pair_exception_does_not_hide_a_third_conflicting_command() {
+        let mut commands = vec!["timeline.sliderCenter".to_string(), "timeline.trackSliderMirror".to_string()];
+        assert!(slider_pair_only(&commands));
+        commands.push("timeline.other".to_string());
+        assert!(!slider_pair_only(&commands));
+    }
 
     #[test]
     fn command_search_accepts_translated_labels_ids_and_keys() {
