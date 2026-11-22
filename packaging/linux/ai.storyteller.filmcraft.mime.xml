@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
 <!-- shared-mime-info definitions for types the system database doesn't have.
      Installed to /usr/share/mime/packages/ (update-mime-database runs on install).
      The type name matches the macOS UTI's public.mime-type in packaging/macos/Info.plist.in. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-filmcraft">
     <comment>FilmCraft project</comment>
+    <comment xml:lang="ru">Проект FilmCraft</comment>
     <sub-class-of type="application/json"/>
     <icon name="ai.storyteller.filmcraft"/>
     <glob pattern="*.fcproj"/>

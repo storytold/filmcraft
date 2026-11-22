@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
 <!-- AppStream metadata (software centres, Flathub). Template: package.sh and the Flatpak
      manifest substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
 <component type="desktop-application">
@@ -7,12 +9,16 @@
   <project_license>MIT OR Apache-2.0</project_license>
   <name>FilmCraft</name>
   <summary>Edit video, color and sound</summary>
+  <summary xml:lang="ru">Монтаж видео, работа с цветом и звуком</summary>
   <developer id="ai.storyteller">
     <name>Learning Machines LLC</name>
   </developer>
   <description>
     <p>
       FilmCraft is a video editor. Edit video, color and sound
+    </p>
+    <p xml:lang="ru">
+      FilmCraft — видеоредактор. Монтаж видео, работа с цветом и звуком
     </p>
   </description>
   <launchable type="desktop-id">ai.storyteller.filmcraft.desktop</launchable>
@@ -29,14 +35,20 @@
   </categories>
   <keywords>
     <keyword>video</keyword>
+    <keyword xml:lang="ru">видео</keyword>
     <keyword>video editor</keyword>
+    <keyword xml:lang="ru">видеоредактор</keyword>
     <keyword>timeline</keyword>
+    <keyword xml:lang="ru">таймлайн</keyword>
     <keyword>color grading</keyword>
+    <keyword xml:lang="ru">цветокоррекция</keyword>
     <keyword>nle</keyword>
+    <keyword xml:lang="ru">nle</keyword>
   </keywords>
   <screenshots>
     <screenshot type="default">
       <caption>Color workspace: a documentary cut with Color Grading, scopes, captions and loudness meters</caption>
+      <caption xml:lang="ru">Рабочая среда «Цвет»: монтаж документального фильма с грейдингом, видеоскопами, субтитрами и измерителями громкости</caption>
       <image>https://raw.githubusercontent.com/storytold/filmcraft/main/docs/images/filmcraft-hero.png</image>
     </screenshot>
   </screenshots>
