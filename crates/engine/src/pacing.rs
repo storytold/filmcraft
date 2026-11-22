@@ -93,9 +93,10 @@ pub fn segments(p: &Project, q: &Sequence) -> Vec<Segment> {
     for c in q.video_tracks.iter().filter(|tr| tr.enabled).flat_map(|tr| tr.items.iter()) {
         bounds.push(c.start);
         bounds.push(c.end());
-        // a shortened nest stops showing where its contents end
+        // a shortened nest shows nothing over its overhang: at the end, or at the start when reversed
         if let Some(r) = p.nest_overhang(c) {
             bounds.push(r.start);
+            bounds.push(r.end());
         }
     }
     bounds.retain(|t| *t >= Tick::ZERO && *t <= end);

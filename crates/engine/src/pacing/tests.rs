@@ -175,6 +175,9 @@ fn a_nest_past_its_contents_is_black() {
     let mut nest = p.make_track_item(child, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(6.0)), rate).unwrap();
     nest.id = ClipId(p.alloc_id());
     nest.duration = sec(10.0);
+    let mut reversed = nest.clone();
+    reversed.reverse = true;
+    let reversed_overhang = p.nest_overhang(&reversed).expect("reversed, the overhang comes first");
     let nest_id = nest.id;
     let overhang = p.nest_overhang(&nest).expect("the nest outlasts its contents");
     let q = p.sequence_mut(seq).unwrap();
@@ -189,4 +192,13 @@ fn a_nest_past_its_contents_is_black() {
     let tail = at(overhang.start);
     assert_eq!((tail.clip, tail.start), (None, overhang.start), "black from where the contents end: {segs:?}");
     assert!(tail.end >= overhang.end());
+
+    // reversed, the nest plays its contents backwards from where they end: black first, then picture
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    q.video_tracks[0].items[0].reverse = true;
+    let q = s.project.sequence(seq).unwrap();
+    let segs = super::segments(&s.project, q);
+    let at = |t: Tick| segs.iter().find(|g| g.start <= t && t < g.end).unwrap();
+    assert_eq!(at(reversed_overhang.start).clip, None, "{segs:?}");
+    assert_eq!(at(reversed_overhang.end()).clip, Some(nest_id), "picture from where the overhang ends: {segs:?}");
 }
