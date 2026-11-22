@@ -69,7 +69,7 @@ fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long:
         .iter()
         .filter(|tr| tr.enabled)
         .flat_map(|tr| tr.items.iter())
-        .filter(|c| c.enabled && is_picture(p, c.item))
+        .filter(|c| c.enabled && c.duration > Tick::ZERO && is_picture(p, c.item))
         .map(|c| c.end())
         .max()
         .unwrap_or(Tick::ZERO);
