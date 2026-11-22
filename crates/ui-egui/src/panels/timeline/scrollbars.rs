@@ -3299,13 +3299,13 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         p.circle_filled(pos2(x, cy), RING_OUT, t.icon_active);
         p.circle_filled(pos2(x, cy), RING_OUT - ring_w, t.panel_bg);
     }
-    // hovering an end circle reads as a resize handle
+    // hovering an end circle reads as a clickable control
     // only (never the slider's middle), and it stays through the press and the WHOLE edge drag --
     // the slider can run away from the cursor while it zooms. Shift drags hide the cursor (it is
     // pinned), so it stays hidden there.
     app.tl.zoombar_point_cursor = app.tl.zoombar_cursor_lock.is_none() && (on_circle || edge_grab);
     if app.tl.zoombar_point_cursor {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     // The "you are here" marker on the fixed minimap: the true visible window in the plain linear
     // map, drawn as one blue line (2 pt) with a 1 pt gap to the slider -- above it normally, below
