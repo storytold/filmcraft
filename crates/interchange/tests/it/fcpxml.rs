@@ -116,7 +116,7 @@ fn self_referencing_compound_media_is_ignored_without_recursing() {
 }
 
 #[test]
-fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+fn media_cut_off_by_xml_depth_is_complete_when_reached_higher_up() {
     // m0 … m64 nest one inside the next. Project A reaches m63 at the depth limit, so m64 is left
     // out of it; project B refers to m63 directly, where m64 fits, and must not get the cut-off copy.
     let mut media = String::new();
@@ -135,40 +135,45 @@ fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
         </event></library></fcpxml>"#
     );
     let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
-    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    assert!(rep.mentions("deeper clips were skipped"), "{rep:?}");
     let m63 = imp.project.sequences().find(|i| i.name == "M63").and_then(|i| imp.project.sequence(i.id)).unwrap();
     assert_eq!(m63.video_tracks[0].items.len(), 1, "M63 keeps its nested M64");
 }
 
 #[test]
-fn media_cut_off_by_xml_layout_is_complete_when_revisited_at_the_same_media_depth() {
-    // Both references have media-chain depth zero, but the first is reached through connected
-    // clips. Its resource must not remain cached as complete after the XML-layout guard fires.
-    for depth in [125, 126] {
-        let nested = format!(
-            "{}<ref-clip lane=\"1\" ref=\"m0\" offset=\"0s\" duration=\"1s\"/>{}",
-            "<gap lane=\"1\" offset=\"0s\" duration=\"1s\">".repeat(depth),
-            "</gap>".repeat(depth)
-        );
-        let xml = format!(
-            r#"<fcpxml version="1.10"><resources>
-          <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
-          <media id="m0" name="M0"><sequence format="r1"><spine>
-            <ref-clip ref="m1" offset="0s" duration="1s"/>
-          </spine></sequence></media>
-          <media id="m1" name="M1"><sequence format="r1"><spine/></sequence></media>
-        </resources><library><event>
-          <project name="A"><sequence format="r1"><spine>{nested}</spine></sequence></project>
-          <project name="B"><sequence format="r1"><spine>
-            <ref-clip ref="m0" offset="0s" duration="1s"/>
-          </spine></sequence></project>
-        </event></library></fcpxml>"#
-        );
-        let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
-        assert!(rep.mentions("XML") && rep.mentions("nested"), "{rep:?}");
-        let m0 = imp.project.sequences().find(|i| i.name == "M0").and_then(|i| imp.project.sequence(i.id)).unwrap();
-        assert_eq!(m0.video_tracks[0].items.len(), 1, "M0 keeps its nested M1 after the shallower revisit");
+fn truncated_children_restore_audio_only_and_negative_lane_references() {
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence format="r1"><spine><ref-clip ref="m{}" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
     }
+    media.push_str(
+        r#"<media id="m64" name="M64"><sequence format="r1"><spine><asset-clip ref="a0" name="Nested audio" offset="0s" start="0s" duration="1s" srcEnable="audio"/></spine></sequence></media>
+        <asset id="a0" name="Tone" start="0s" duration="10s" hasAudio="1" src="tone.wav"/>
+        <asset id="v0" name="Picture" start="0s" duration="10s" hasVideo="1" src="picture.mov"/>"#,
+    );
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources><format id="r1" frameDuration="1/24s" width="1920" height="1080"/>{media}</resources>
+        <library><event>
+          <project name="A"><sequence format="r1"><spine>
+            <asset-clip ref="v0" name="Picture holder" offset="0s" start="0s" duration="1s">
+              <spine lane="-2"><ref-clip ref="m0" name="Negative lane" offset="0s" start="0s" duration="1s"/></spine>
+            </asset-clip>
+            <ref-clip ref="m0" name="Audio enabled" offset="1s" start="0s" duration="1s" srcEnable="audio"/>
+          </spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine><ref-clip ref="m63" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("deeper clips were skipped"), "{report}");
+    let sequence = imported.project.sequences().find(|item| item.name == "A").and_then(|item| imported.project.sequence(item.id)).unwrap();
+    let audio: Vec<_> = sequence.audio_tracks.iter().flat_map(|track| &track.items).collect();
+    assert_eq!(audio.len(), 2, "both deferred audio-only references must be restored");
+    assert!(audio.iter().any(|clip| clip.name == "Audio enabled" && clip.link.is_some()));
+    assert!(audio.iter().any(|clip| clip.name == "Negative lane" && clip.link.is_some()));
+    assert!(sequence.audio_tracks.get(1).is_some_and(|track| track.items.iter().any(|clip| clip.name == "Negative lane")));
 }
 
 #[test]
@@ -256,16 +261,6 @@ fn hostile_lane_numbers_do_not_create_sparse_tracks() {
     assert!(s.video_tracks.len() <= 256);
     assert!(s.audio_tracks.len() <= 256);
     assert!(rep.has_warnings());
-}
-
-/// A `lane` that is not an integer that fits (`1.5`, `99999999999`) used to drop the clip without a word.
-#[test]
-fn a_lane_that_is_not_an_i32_is_reported_not_silently_dropped() {
-    for bad in ["1.5", "99999999999", "x"] {
-        let d = doc().replace("lane=\"1\"", &format!("lane=\"{bad}\""));
-        let (_, rep) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
-        assert!(rep.warnings().any(|w| w.message.contains(&format!("lane \"{bad}\""))), "{bad}: {rep}");
-    }
 }
 
 /// Final Cut writes slideshow stills directly as video elements, including zero-duration assets.

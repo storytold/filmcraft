@@ -174,7 +174,6 @@ fn split_root(p: &str) -> (&str, bool, &str) {
 /// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
 /// [`resolve_path`], with a relative URL percent-decoded as a `file://` URL is (`Clip%20A.mov` is
 /// `Clip A.mov`, #2195). Plain file names (EDL, AAF) go through [`resolve_path`] untouched.
-#[cfg(test)]
 pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
     let r = reference.trim();
     let is_file_url = r.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("file:"));
@@ -230,14 +229,12 @@ pub(crate) fn file_stem(path: &str) -> &str {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn extension(path: &str) -> String {
     let n = file_name(path);
     n.rfind('.').map(|i| n[i + 1..].to_ascii_lowercase()).unwrap_or_default()
 }
 
 /// Media kind guess from a file extension.
-#[cfg(test)]
 pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
     match extension(path).as_str() {
         "wav" | "aif" | "aiff" | "mp3" | "aac" | "m4a" | "flac" | "ogg" | "opus" | "bwf" => MediaKind::AudioOnly,
@@ -553,7 +550,6 @@ impl Builder {
 
     /// Place `item` on the first track at or after `preferred` where it does not overlap anything,
     /// creating tracks as needed. Returns the track index.
-    #[cfg(test)]
     pub fn place(&mut self, seq: &mut Sequence, kind: TrackKind, preferred: usize, item: TrackItem) -> Option<usize> {
         let mut i = preferred;
         loop {
@@ -697,7 +693,6 @@ pub(crate) fn set_param(ti: &mut TrackItem, effect: &str, param: &str, value: Pa
 }
 
 /// Whether a parameter differs from its definition default or is animated.
-#[cfg(test)]
 pub(crate) fn param_modified(ti: &TrackItem, effect: &str, param_id: &str) -> bool {
     let Some(p) = param(ti, effect, param_id) else { return false };
     if p.is_animated() {

@@ -1063,9 +1063,26 @@ fn write_fcpxml_adjust_conform(project: &film::Project, seq: film::ItemId, text:
 }
 
 pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
-    let mut imported = import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?;
-    report_unusable_fcpxml_lanes(text, report);
-    apply_fcpxml_adjust_conform(text, &mut imported, report);
+    // The shared reader currently loses deferred audio when a nested media sequence is cut off
+    // and then repaired later in the same import. Use FilmCraft's importer for nested media so
+    // its retry pass can restore parent chains and audio-only references.
+    let nested_media_refs = roxmltree::Document::parse(text).ok().is_some_and(|document| {
+        let nested_ids: std::collections::HashSet<_> = document
+            .descendants()
+            .filter(|node| node.has_tag_name("media") && node.children().any(|child| child.has_tag_name("sequence")))
+            .filter_map(|node| node.attribute("id"))
+            .collect();
+        document.descendants().any(|node| node.has_tag_name("ref-clip") && node.attribute("ref").is_some_and(|id| nested_ids.contains(id)))
+    });
+    let mut imported = if nested_media_refs {
+        crate::fcpxml::import(text, opts, report)?
+    } else {
+        import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?
+    };
+    if !nested_media_refs {
+        report_unusable_fcpxml_lanes(text, report);
+        apply_fcpxml_adjust_conform(text, &mut imported, report);
+    }
     Ok(imported)
 }
 pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {

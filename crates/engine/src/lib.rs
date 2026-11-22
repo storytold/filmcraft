@@ -974,7 +974,9 @@ impl Session {
             open_sequences: self.state.open_sequences.iter().copied().filter(is_seq).collect(),
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
+            pending_fits: Default::default(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: Default::default(),
         }
     }
 
