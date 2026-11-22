@@ -175,3 +175,35 @@ fn volume_and_essential_mute_silence_a_clips_cuts() {
         assert_eq!(pops_on_a1(&r), 0, "{silence}: {r}");
     }
 }
+
+/// Volume keyframes are keyed in media time: a trimmed clip's edge reads the level at its own
+/// media time, not at the start of its media.
+#[test]
+fn volume_keyframes_are_read_at_the_edges_media_time() {
+    use filmcraft_project::{Interpolation, Keyframe, ParamValue};
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let (edges, ids): (Vec<i64>, Vec<u64>) = {
+        let q = s.active_sequence().unwrap();
+        let end = q.duration();
+        let items = &q.audio_tracks[0].items;
+        (items.iter().flat_map(|c| [c.start, c.end()]).filter(|x| x.0 > 0 && *x < end).map(|x| x.0).collect(), items.iter().map(|c| c.id.0).collect())
+    };
+    let pops = |r: &Value| r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "audioPop" && edges.contains(&i["time"].as_i64().unwrap())).count();
+    assert!(pops(&review(&mut s, json!({}))) > 0);
+    // Volume at 0 dB before the clip's media In point, -96 dB from it: silent wherever the clip plays
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    for c in q.audio_tracks[0].items.iter_mut().filter(|c| ids.contains(&c.id.0)) {
+        let at = c.source_in;
+        let fx = c.effects.iter_mut().find(|e| e.effect == "volume").unwrap();
+        let level = fx.params.get_mut("level").unwrap();
+        let key = |time: Tick, v: f64| {
+            let mut k = Keyframe::new(time, ParamValue::Float(v));
+            k.interp = Interpolation::Hold;
+            k
+        };
+        level.keyframes = vec![key(Tick::ZERO, 0.0), key(at, -96.0)];
+    }
+    let r = review(&mut s, json!({}));
+    assert_eq!(pops(&r), 0, "{r}");
+}

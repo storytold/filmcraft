@@ -188,7 +188,8 @@ fn audible(c: &TrackItem) -> bool {
     c.enabled && !c.essential.as_ref().is_some_and(|e| e.mute)
 }
 
-/// The clip's Volume effect level (dB, keyframes included) at clip time `t`; 0 without one.
+/// The clip's Volume effect level (dB, keyframes included) at media time `t` (where effect
+/// keyframes are keyed); 0 without one.
 fn volume_db_at(c: &TrackItem, t: Tick) -> f64 {
     c.effects
         .iter()
@@ -216,8 +217,9 @@ fn edge_peak_db(s: &Session, c: &TrackItem, at_end: bool) -> Option<f64> {
     let b = src.audio_stream(c.audio_stream, from.max(0), n, sr).ok()?;
     let routed = |k: usize| c.source_channels.is_empty() || c.source_channels.iter().any(|&ch| usize::from(ch) == k);
     let pk = b.channels.iter().enumerate().filter(|(k, _)| routed(*k)).flat_map(|(_, ch)| ch.iter()).fold(0f32, |m, x| m.max(x.abs()));
-    let clip_t = if at_end { c.duration - Tick(1) } else { Tick::ZERO };
-    Some(if pk > 0.0 { 20.0 * f64::from(pk).log10() + c.gain_db + volume_db_at(c, clip_t) } else { -120.0 })
+    // effect keyframes are keyed in media time: evaluate at the media time of the edge frame
+    let at = if at_end { c.end() - Tick(1) } else { c.start };
+    Some(if pk > 0.0 { 20.0 * f64::from(pk).log10() + c.gain_db + volume_db_at(c, c.effect_time_at(at)) } else { -120.0 })
 }
 
 /// Hard audio edits where an edited clip is loud at the cut: likely clicks. Each side is measured
