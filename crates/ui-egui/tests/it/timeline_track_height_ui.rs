@@ -259,11 +259,13 @@ fn a_height_that_is_not_a_number_keeps_the_per_track_overrides() {
     d.frames(3);
     let after = d.video_bands()[0].1;
     assert!((after - own).abs() < 0.6, "V1 kept its own height: {own} -> {after}");
-    // a real number is a new default for every track, so it does clear them
-    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 39.0}}));
+    // a real number is a new default for every track, so it does clear them.
+    // 60, not the 39 the drag above left on V1: with the dragged height as the default V1 reads
+    // 39 whether the override survived or was cleared, so the test could not tell the two apart.
+    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 60.0}}));
     d.frames(3);
     let applied = d.video_bands()[0].1;
-    assert!((applied - 39.0).abs() < 2.0, "the number applies to every track: {applied}");
+    assert!((applied - 60.0).abs() < 2.0, "the number applies to every track: {applied}");
 }
 
 /// #5091 review: the two actions in the Timeline's own settings menu have to reach a track with
