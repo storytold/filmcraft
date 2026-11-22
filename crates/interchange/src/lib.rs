@@ -32,8 +32,7 @@ pub mod essence;
 #[cfg(test)]
 #[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
 mod fcp7;
-#[cfg(test)]
-#[allow(dead_code, reason = "Legacy parser fixtures retained for their regression tests")]
+#[allow(dead_code, reason = "Legacy parser preserves deferred audio for nested FCPXML imports")]
 mod fcpxml;
 pub mod omf;
 #[cfg(test)]
@@ -44,7 +43,7 @@ mod common;
 mod comp;
 mod timeline_model;
 pub use craft_audio::essence_pcm as wav;
-#[cfg(test)]
+#[allow(dead_code, reason = "Legacy FCPXML parser uses the XML reader helpers")]
 mod xml;
 
 use std::collections::{BTreeMap, HashMap};
