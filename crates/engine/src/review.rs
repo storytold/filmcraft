@@ -202,13 +202,16 @@ struct Offline {
     nest: Option<String>,
 }
 
-/// Keep, per media item, only the occurrence that starts first and the one that ends last: a
-/// nest maps times one way or the other (reversed), so the first in any parent is one of the two.
-/// This bounds what a walk returns by the number of offline items, not of their occurrences.
-fn keep_extremes(found: Vec<Offline>) -> Vec<Offline> {
-    let mut by: std::collections::BTreeMap<ItemId, (Offline, Offline)> = Default::default();
-    for f in found {
-        match by.get_mut(&f.media) {
+/// Offline occurrences kept per media item: only the one that starts first and the one that ends
+/// last. A nest maps times one way or the other (reversed), so the first in any parent is one of
+/// the two. Merging as results arrive bounds memory by the number of offline items, not of their
+/// occurrences.
+#[derive(Default)]
+struct Extremes(std::collections::BTreeMap<ItemId, (Offline, Offline)>);
+
+impl Extremes {
+    fn add(&mut self, f: Offline) {
+        match self.0.get_mut(&f.media) {
             Some((first, last)) => {
                 if f.lo < first.lo {
                     *first = f.clone();
@@ -218,11 +221,14 @@ fn keep_extremes(found: Vec<Offline>) -> Vec<Offline> {
                 }
             }
             None => {
-                by.insert(f.media, (f.clone(), f));
+                self.0.insert(f.media, (f.clone(), f));
             }
         }
     }
-    by.into_values().flat_map(|(a, b)| if a.lo == b.lo && a.hi == b.hi { vec![a] } else { vec![a, b] }).collect()
+
+    fn into_vec(self) -> Vec<Offline> {
+        self.0.into_values().flat_map(|(a, b)| if a.lo == b.lo && a.hi == b.hi { vec![a] } else { vec![a, b] }).collect()
+    }
 }
 
 /// The offline-media check's walk through a sequence and its nests.
@@ -245,7 +251,7 @@ impl MediaWalk<'_> {
     /// or both (the reviewed sequence itself).
     fn walk(&mut self, q: &Sequence, window: (Tick, Tick), depth: u32, video: Option<bool>) -> Vec<Offline> {
         let s = self.s;
-        let mut found = Vec::new();
+        let mut found = Extremes::default();
         let tracks = q.video_tracks.iter().map(|t| (t, true)).chain(q.audio_tracks.iter().map(|t| (t, false)));
         for (it, on_video) in tracks.filter(|(t, v)| t.enabled && video.is_none_or(|want| want == *v)).flat_map(|(t, v)| t.items.iter().map(move |it| (it, v)))
         {
@@ -295,17 +301,24 @@ impl MediaWalk<'_> {
                     let d = if it.reverse { it.source_out() - ct } else { ct - it.source_in };
                     (it.start + Tick((d.0 as f64 / it.speed).round() as i64)).clamp(a, b)
                 };
+                // expanding a cached result is work too: it counts against the budget
+                if inner.len() > self.budget {
+                    self.budget = 0;
+                    self.stopped = true;
+                    break;
+                }
+                self.budget -= inner.len();
                 for f in inner {
                     let (x, y) = if it.frame_hold.is_some() { (a, b) } else { (to_q(f.lo), to_q(f.hi)) };
-                    found.push(Offline { lo: x.min(y), hi: x.max(y), clip: it.id.0, nest: Some(it.name.clone()), ..f });
+                    found.add(Offline { lo: x.min(y), hi: x.max(y), clip: it.id.0, nest: Some(it.name.clone()), ..f });
                 }
                 continue;
             }
             if needs_media(&s.project, it.item) && is_offline(s, it.item) {
-                found.push(Offline { media: it.item, lo: a, hi: b, clip: it.id.0, name: it.name.clone(), nest: None });
+                found.add(Offline { media: it.item, lo: a, hi: b, clip: it.id.0, name: it.name.clone(), nest: None });
             }
         }
-        keep_extremes(found)
+        found.into_vec()
     }
 }
 

@@ -442,3 +442,64 @@ fn a_nest_is_checked_for_the_tracks_it_plays() {
     assert_eq!(errors(&mut s, on_video), 1, "the picture nest shows the offline movie");
     assert_eq!(errors(&mut s, on_audio), 0, "the sound nest plays only the child's audio tracks");
 }
+
+/// Many offline items shown through many repeated nests: expanding cached results counts against
+/// the walk's budget, so the check ends quickly, says it is incomplete and still reports footage.
+#[test]
+fn repeated_nests_of_many_offline_items_stay_bounded() {
+    use crate::media_test_util::{make_movie, tmp_dir};
+    use filmcraft_project::{ClipId, ItemId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let dir = tmp_dir("review-nested-many");
+    let first = dir.join("m0.mov");
+    make_movie(&first, filmcraft_media::DemoScene::Forest, 64, 36, 2);
+    // 400 items through 40 nests on each of 7 levels: about 112 000 cached records to expand
+    let paths: Vec<String> = (0..400)
+        .map(|k| {
+            let p = dir.join(format!("m{k}.mov"));
+            if k > 0 {
+                std::fs::copy(&first, &p).unwrap();
+            }
+            p.to_string_lossy().into_owned()
+        })
+        .collect();
+    let mut s = Session::default();
+    let items: Vec<u64> = s.execute("file.import", json!({"paths": paths})).unwrap()["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    s.execute("file.newSequence", json!({"name": "seed"})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let top = {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let settings = p.sequence(seq).unwrap().settings.clone();
+        let child = p.new_sequence("child", settings.clone(), 1, 0, None);
+        let clips: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(k, i)| {
+                let mut c =
+                    p.make_track_item(ItemId(*i), TrackKind::Video, rate.tick_of(k as i64 * 2), TimeRange::new(Tick::ZERO, rate.tick_of(2)), rate).unwrap();
+                c.id = ClipId(p.alloc_id());
+                c
+            })
+            .collect();
+        p.sequence_mut(child).unwrap().video_tracks[0].items = clips;
+        let mut below = child;
+        for _ in 0..7 {
+            let q = p.new_sequence("level", settings.clone(), 40, 0, None);
+            let len = p.sequence(below).unwrap().duration();
+            for k in 0..40 {
+                let mut n = p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, len), rate).unwrap();
+                n.id = ClipId(p.alloc_id());
+                p.sequence_mut(q).unwrap().video_tracks[k].items = vec![n];
+            }
+            below = q;
+        }
+        below
+    };
+    s.execute("media.makeOffline", json!({"items": items})).unwrap();
+    let t0 = std::time::Instant::now();
+    let r = review(&mut s, json!({"sequence": top.0}));
+    assert!(t0.elapsed().as_secs() < 20, "bounded: {:?}", t0.elapsed());
+    assert_eq!(r["offlineCheckComplete"], false, "the budget ran out and says so");
+    assert!(r["errors"].as_u64().unwrap() > 0, "what was found is still reported");
+}
