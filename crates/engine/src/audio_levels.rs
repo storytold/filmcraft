@@ -44,20 +44,6 @@ fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
-/// One measured window: (rms dBFS, peak dBFS).
-pub(crate) fn measure(channels: &[Vec<f32>]) -> (f64, f64) {
-    let (mut sum, mut n, mut peak) = (0f64, 0usize, 0f32);
-    for c in channels {
-        for &x in c {
-            sum += f64::from(x) * f64::from(x);
-            peak = peak.max(x.abs());
-        }
-        n += c.len();
-    }
-    let rms = if n > 0 { (sum / n as f64).sqrt() } else { 0.0 };
-    (db(rms), db(f64::from(peak)))
-}
-
 /// Runs of windows below `quiet_db` lasting at least `min_windows`, as (first, last exclusive).
 pub(crate) fn quiet_runs(rms: &[f64], quiet_db: f64, min_windows: usize) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -124,20 +110,33 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     // silence. Report that instead of measuring it (as file.exportFrame does, #228).
     let _ = filmcraft_media::pending::take();
     let (mut rms, mut peak) = (Vec::new(), Vec::new());
-    let (mut sum_sq, mut n_all, mut max_peak) = (0f64, 0usize, FLOOR_DB);
+    // a u64 count: hours of multichannel audio at high rates overflow a 32-bit usize (web)
+    let (mut sum_sq, mut n_all, mut max_peak) = (0f64, 0u64, FLOOR_DB);
+    // rendered in blocks of at most a second, the size playback asks for, so a long window takes
+    // the same render path (time stretching has a span limit) as what is heard
+    let block = i64::from(sr).max(1);
     let mut pos = first;
     while pos < last {
-        let n = (last - pos).min(per) as usize;
-        let b = filmcraft_render::audio::mix_sequence(&s.project, q, pos, n, &provider);
-        let (r, pk) = measure(&b.channels);
-        for c in &b.channels {
-            sum_sq += c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>();
-            n_all += c.len();
+        let n = (last - pos).min(per);
+        let (mut w_sq, mut w_n, mut w_pk) = (0f64, 0u64, 0f32);
+        let mut at = pos;
+        while at < pos + n {
+            let m = (pos + n - at).min(block) as usize;
+            let b = filmcraft_render::audio::mix_sequence(&s.project, q, at, m, &provider);
+            for c in &b.channels {
+                w_sq += c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>();
+                w_n += c.len() as u64;
+                w_pk = c.iter().fold(w_pk, |m, x| m.max(x.abs()));
+            }
+            at += m as i64;
         }
+        let (r, pk) = (if w_n > 0 { db((w_sq / w_n as f64).sqrt()) } else { FLOOR_DB }, db(f64::from(w_pk)));
+        sum_sq += w_sq;
+        n_all += w_n;
         max_peak = max_peak.max(pk);
         rms.push(r);
         peak.push(pk);
-        pos += n as i64;
+        pos += n;
     }
     if filmcraft_media::pending::take() {
         return Err(EngineError::Other("the audio is still loading; measure again in a moment".into()));

@@ -85,3 +85,18 @@ fn a_quiet_stretch_of_exactly_the_minimum_is_kept() {
         assert_eq!(r["quiet"].as_array().unwrap().len(), 1, "{start}..{end} by {window}: {r}");
     }
 }
+
+/// Long windows are measured in blocks: a window wider than a block reads the same level as the
+/// same audio measured in narrower windows.
+#[test]
+fn a_wide_window_measures_what_narrow_windows_do() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let wide = levels(&mut s, json!({"startSeconds": 0.0, "endSeconds": 6.0, "windowSeconds": 6.0}));
+    let narrow = levels(&mut s, json!({"startSeconds": 0.0, "endSeconds": 6.0, "windowSeconds": 0.5}));
+    let peak = |r: &Value| r["peakDb"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).fold(f64::MIN, f64::max);
+    assert_eq!(wide["rmsDb"].as_array().unwrap().len(), 1);
+    assert!((peak(&wide) - peak(&narrow)).abs() < 0.11, "{} vs {}", peak(&wide), peak(&narrow));
+    let (w, n) = (wide["overallRmsDb"].as_f64().unwrap(), narrow["overallRmsDb"].as_f64().unwrap());
+    assert!((w - n).abs() < 0.11, "{w} vs {n}");
+}
