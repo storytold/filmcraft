@@ -96,16 +96,7 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
             craft_png::write_16bit(&mut out, w, h, craft_png::Layout::Rgba, &u16_samples).map_err(|e| ExportError::Encode(e.to_string()))?;
             Ok(out)
         }
-        StillFormat::Tiff => {
-            let capacity = samples.checked_mul(2).ok_or_else(bad)?;
-            let mut bytes = Vec::with_capacity(capacity);
-            for sample in u16_samples {
-                bytes.extend_from_slice(&sample.to_ne_bytes());
-            }
-            let mut out = std::io::Cursor::new(Vec::new());
-            image::ImageEncoder::write_image(image::codecs::tiff::TiffEncoder::new(&mut out), &bytes, w, h, image::ExtendedColorType::Rgba16).map_err(err)?;
-            Ok(out.into_inner())
-        }
+        StillFormat::Tiff => craft_tiff::plain::encode_rgba16(w, h, &u16_samples).map_err(|e| ExportError::Encode(e.to_string())),
         _ => Err(ExportError::Unsupported("16-bit still format".into())),
     }
 }
@@ -126,6 +117,28 @@ mod tests {
             assert_ne!(a[0] % 257, 0, "must not be padded 8-bit values");
             assert_eq!(&a[..3], &b[..3]);
             assert_eq!(b[3], 32768);
+        }
+    }
+    #[test]
+    fn sixteen_bit_tiff_bytes_match_the_previous_encoder() {
+        // Self-generated pixels with distinct channels and partial alpha; the tall frame spans
+        // more than one strip.
+        for (w, h) in [(3usize, 2usize), (4, 31_253)] {
+            let px = (0..w * h * 4).map(|i| ((i * 7919) % 1000) as f32 / 1000.0).collect();
+            let img = Image { w, h, px };
+            let bytes = encode(&img, StillFormat::Tiff, 16).unwrap();
+            let samples = image::load_from_memory(&bytes).unwrap().to_rgba16().into_raw();
+            let packed: Vec<u8> = samples.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            let mut previous = std::io::Cursor::new(Vec::new());
+            image::ImageEncoder::write_image(
+                image::codecs::tiff::TiffEncoder::new(&mut previous),
+                &packed,
+                w as u32,
+                h as u32,
+                image::ExtendedColorType::Rgba16,
+            )
+            .unwrap();
+            assert!(bytes == previous.into_inner(), "{w}×{h}: 16-bit TIFF bytes changed");
         }
     }
     #[test]

@@ -1400,6 +1400,7 @@ source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa3
 dependencies = [
  "serde",
  "thiserror 2.0.21",
+ "tiff",
 ]
 
 [[package]]
@@ -2473,6 +2474,7 @@ dependencies = [
  "craft-media",
  "craft-png",
  "craft-tga",
+ "craft-tiff",
  "craft-video",
  "filmcraft-audio-dsp",
  "filmcraft-codecs",
