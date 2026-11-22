@@ -52,7 +52,7 @@ use layout::{track_scroll_max, video_row_tops};
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
-pub(crate) use scrollbars::reconcile_controls_capture;
+pub(crate) use scrollbars::{capture_controls, reconcile_controls_capture};
 pub use scrollbars::{
     controls_listening, flush_pending_zoombar_view_change, route_forwarded_slider_shortcut, route_slider_shortcut, set_track_slider_hidden, set_zoombar_hidden,
     sync_slider_bindings, zoombar_cursor_watchdog,
@@ -449,8 +449,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let ah = app.ui.timeline.audio_track_h;
     let mut rows = Vec::new();
     let (video_tops, _) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
-    let target_vh = app.tl.track_anim.map_or(vh, |target| target[0].max(min_v));
-    let max_vs = track_scroll_max(nv as f32 + 1.0 / 3.0, target_vh, video_area.height());
     for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
@@ -459,8 +457,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // track), the same reveal the video side keeps above its topmost row
     let current_max_as = track_scroll_max(na as f32 + 1.0 / 3.0, ah, audio_area.height());
     app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, current_max_as);
-    let target_ah = app.tl.track_anim.map_or(ah, |target| target[2].max(min_a));
-    let max_as = track_scroll_max(na as f32 + 1.0 / 3.0, target_ah, audio_area.height());
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
@@ -756,7 +752,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             &mut app.tl,
             vbar,
             &mut app.ui.timeline.v_scroll,
-            max_vs,
             video_area.height(),
             nv as f32 + 1.0 / 3.0,
             &mut app.ui.timeline.video_track_h,
@@ -775,7 +770,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             &mut app.tl,
             abar,
             &mut app.ui.timeline.a_scroll,
-            max_as,
             audio_area.height(),
             na as f32 + 1.0 / 3.0,
             &mut app.ui.timeline.audio_track_h,
@@ -1581,7 +1575,7 @@ mod reveal_tests {
         app.session.saved_view_epoch = app.session.view_epoch;
 
         let playhead = (seq.duration() - seq.settings.frame_rate.frame_duration()).seconds();
-        app.session.set_playhead(seq.duration() - seq.settings.frame_rate.frame_duration());
+        app.session.set_playhead_from_playback(seq.duration() - seq.settings.frame_rate.frame_duration());
         app.tl.playback_stop_reveal = Some((sequence, playhead));
         animate_view(&mut app, &egui::Context::default(), Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 300.0)), sequence, &seq);
 

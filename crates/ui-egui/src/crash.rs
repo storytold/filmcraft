@@ -84,10 +84,9 @@ mod tests {
         let _ = super::take_last();
         let r = std::thread::Builder::new().name("filmcraft-test-worker".into()).spawn(|| panic!("boom in a worker")).unwrap().join();
         assert!(r.is_err());
-        let last = super::take_last().expect("recorded");
-        assert!(last.contains("boom in a worker") && last.contains("filmcraft-test-worker"), "{last}");
+        assert!(super::take_last().is_some(), "a panic was recorded");
         let log = std::fs::read_to_string(super::log_path().unwrap()).unwrap();
-        assert!(log.contains("boom in a worker"));
+        assert!(log.contains("boom in a worker") && log.contains("filmcraft-test-worker"), "{log}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

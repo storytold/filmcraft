@@ -473,6 +473,35 @@ fn make_offline_delete_only_removes_the_media_the_item_was_linked_to() {
 }
 
 #[test]
+fn make_offline_delete_invalidates_cached_sources_for_path_aliases() {
+    let root = tmp_dir("relink-delete-cache-alias");
+    let a = root.join("a.mov");
+    let b = root.join("b.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    make_movie(&b, DemoScene::CityNight, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a, &b]);
+    let alias_dir = root.join("alias");
+    std::fs::create_dir_all(&alias_dir).unwrap();
+    let alias = alias_dir.join("..").join("a.mov").to_string_lossy().into_owned();
+    let identity = crate::relink::identity_of(&*s.services, &a.to_string_lossy()).unwrap();
+    set_media_path(&mut s, items[1], &alias);
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[1]).and_then(|i| i.as_media_mut()).unwrap().identity = Some(identity);
+
+    assert!(s.media.full_res_source(&s.project, items[0], &*s.services).is_some());
+    assert!(s.media.full_res_source(&s.project, items[1], &*s.services).is_some());
+    assert!(s.media.cached(items[1]).is_some(), "the alias source is cached before deletion");
+
+    let result = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
+    assert_eq!(result["deleted"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(!a.exists());
+    assert!(s.media.cached(items[1]).is_none(), "the cache for the equivalent spelling was invalidated");
+
+    assert!(s.media.full_res_source(&s.project, items[1], &*s.services).is_some());
+    assert_eq!(s.media.offline_status(items[1]).map(|status| status.reason), Some(OfflineReason::Missing));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn new_offline_file_keeps_only_the_file_name() {
     let mut s = Session::default();
     for (given, want) in [

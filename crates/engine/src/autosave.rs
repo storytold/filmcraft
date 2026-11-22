@@ -560,9 +560,19 @@ fn snapshot_fingerprint(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
+const MAX_RECOVERY_META_BYTES: u64 = 1024 * 1024;
+
+fn read_recovery_snapshot(path: &Path) -> io::Result<Vec<u8>> {
+    filmcraft_media::reader::read_regular_file_bounded(path, filmcraft_format::MAX_PROJECT_FILE_BYTES)
+}
+
+fn read_recovery_metadata(path: &Path) -> io::Result<Vec<u8>> {
+    filmcraft_media::reader::read_regular_file_bounded(path, MAX_RECOVERY_META_BYTES)
+}
+
 fn matching_journal_pair(snapshot: &Path, metadata: &Path) -> Option<(PathBuf, JournalMeta)> {
-    let bytes = fs::read(snapshot).ok()?;
-    let meta: JournalMeta = serde_json::from_slice(&fs::read(metadata).ok()?).ok()?;
+    let bytes = read_recovery_snapshot(snapshot).ok()?;
+    let meta: JournalMeta = serde_json::from_slice(&read_recovery_metadata(metadata).ok()?).ok()?;
     if meta.snapshot_fingerprint.is_some_and(|fingerprint| fingerprint != snapshot_fingerprint(&bytes)) {
         return None;
     }
@@ -589,6 +599,7 @@ const PREVIOUS_SNAPSHOT: &str = "snapshot.previous.fcproj";
 const PREVIOUS_META: &str = "session.previous.json";
 const PENDING_META: &str = "session.pending.json";
 const LOCK: &str = "lock";
+const STARTING: &str = ".starting";
 
 pub fn recovery_root(data_dir: &Path) -> PathBuf {
     data_dir.join("Recovery")
@@ -629,6 +640,9 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
     let mut out = Vec::new();
     for e in rd.filter_map(|e| e.ok()) {
         let dir = e.path();
+        if dir.join(STARTING).exists() {
+            continue;
+        }
         if !dir.is_dir() || Some(dir.as_path()) == skip || lock_is_stale(&dir) != LockState::Stale {
             continue;
         }
@@ -636,6 +650,16 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         let previous_snap = dir.join(PREVIOUS_SNAPSHOT);
         if !snap.is_file() && !previous_snap.is_file() {
             // Empty leftover dirs (clean exit, or a crash before the first snapshot).
+            // A newly created directory can be visible just before its owner makes the lock; do
+            // not let another launch classify and remove that startup window as a stale session.
+            let recent = fs::metadata(&dir)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_none_or(|age| age < Duration::from_secs(60));
+            if recent {
+                continue;
+            }
             let _ = fs::remove_dir_all(&dir);
             continue;
         }
@@ -663,7 +687,10 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
 
 /// Load a candidate's snapshot.
 pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded, String> {
-    let b = fs::read(&c.snapshot_path).map_err(|e| format!("{}: {e}", c.snapshot_path.display()))?;
+    let b = read_recovery_snapshot(&c.snapshot_path).map_err(|e| format!("{}: {e}", c.snapshot_path.display()))?;
+    if c.meta.snapshot_fingerprint.is_some_and(|fingerprint| fingerprint != snapshot_fingerprint(&b)) {
+        return Err(format!("{} changed after recovery candidates were scanned; rescan before recovery", c.snapshot_path.display()));
+    }
     filmcraft_format::decode(&b).map_err(|e| e.to_string())
 }
 
@@ -827,10 +854,33 @@ impl Persistence {
         static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let session_dir = root.join(if seq == 0 { format!("{started}-{pid}") } else { format!("{started}-{pid}-{seq}") });
-        fs::create_dir_all(&session_dir)?;
-        let lock = File::options().create(true).truncate(false).read(true).write(true).open(session_dir.join(LOCK))?;
-        // Unsupported locking only weakens stale detection; it must not stop the app.
-        let _ = lock.try_lock();
+        fs::create_dir(&session_dir)?;
+        let starting = session_dir.join(STARTING);
+        if let Err(error) = File::create(&starting) {
+            let _ = fs::remove_dir_all(&session_dir);
+            return Err(error);
+        }
+        let lock_path = session_dir.join(LOCK);
+        let lock = match File::options().create(true).truncate(false).read(true).write(true).open(&lock_path) {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = fs::remove_file(&starting);
+                let _ = fs::remove_dir_all(&session_dir);
+                return Err(error);
+            }
+        };
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                let _ = fs::remove_file(&starting);
+                let _ = fs::remove_dir_all(&session_dir);
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "new recovery session lock is already held"));
+            }
+            // Unsupported locking only weakens stale detection; it must not stop the app. Scans
+            // keep lock errors as Unknown, so they will leave this directory alone.
+            Err(fs::TryLockError::Error(e)) => log::warn!("recovery session lock is unavailable: {e}"),
+        }
+        let _ = fs::remove_file(starting);
         let candidates = scan_candidates(&cfg.data_dir, Some(&session_dir));
         let (tx, rx) = channel();
         let (etx, events) = channel();
@@ -972,7 +1022,7 @@ impl Persistence {
         let snap = self.session_dir.join(SNAPSHOT);
         self.lock.take();
         if snap.is_file() {
-            if let Some(mut m) = fs::read(self.session_dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()) {
+            if let Some(mut m) = read_recovery_metadata(&self.session_dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok()) {
                 m.clean_exit = true;
                 let _ = filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&m).unwrap_or_default());
             }
@@ -1254,14 +1304,17 @@ fn project_snapshot_is_current(path: &str, revision: u64, view_epoch: u64, fence
 /// Keep dirty metadata ahead of a dirty snapshot and clean metadata behind a clean snapshot.
 /// Otherwise an interruption can leave a dirty snapshot labelled clean and the scan deletes it.
 fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut write: impl FnMut(&Path, &[u8]) -> io::Result<()>) -> io::Result<()> {
+    if snapshot.len() as u64 > filmcraft_format::MAX_PROJECT_FILE_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "recovery snapshot exceeds the project file size limit"));
+    }
     let meta_path = dir.join(META);
     let snapshot_path = dir.join(SNAPSHOT);
     let previous_snapshot = dir.join(PREVIOUS_SNAPSHOT);
     let previous_meta = dir.join(PREVIOUS_META);
     let pending_meta = dir.join(PENDING_META);
-    if let Ok(old_snapshot) = fs::read(&snapshot_path) {
-        let mut old_meta =
-            serde_json::from_slice::<JournalMeta>(&fs::read(&meta_path).unwrap_or_default()).unwrap_or(JournalMeta { dirty: true, ..JournalMeta::default() });
+    if let Ok(old_snapshot) = read_recovery_snapshot(&snapshot_path) {
+        let mut old_meta = serde_json::from_slice::<JournalMeta>(&read_recovery_metadata(&meta_path).unwrap_or_default())
+            .unwrap_or(JournalMeta { dirty: true, ..JournalMeta::default() });
         if old_meta.snapshot_fingerprint.is_some_and(|fingerprint| fingerprint != snapshot_fingerprint(&old_snapshot)) {
             old_meta = JournalMeta { dirty: true, ..JournalMeta::default() };
         }
@@ -1286,6 +1339,24 @@ fn write_recovery_pair(dir: &Path, snapshot: &[u8], meta: &JournalMeta, mut writ
 #[cfg(test)]
 mod durability_tests {
     use super::*;
+
+    #[test]
+    fn recovery_snapshots_and_metadata_are_bounded_before_reading() {
+        let dir = std::env::temp_dir().join(format!("fc-recovery-read-limits-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let snapshot = dir.join(SNAPSHOT);
+        let metadata = dir.join(META);
+        File::create(&snapshot).unwrap().set_len(filmcraft_format::MAX_PROJECT_FILE_BYTES + 1).unwrap();
+        File::create(&metadata).unwrap().set_len(MAX_RECOVERY_META_BYTES + 1).unwrap();
+
+        assert!(read_recovery_snapshot(&snapshot).is_err());
+        assert!(read_recovery_metadata(&metadata).is_err());
+        assert!(matching_journal_pair(&snapshot, &metadata).is_none());
+        let candidate = RecoveryCandidate { id: "oversized".into(), dir: dir.clone(), snapshot_path: snapshot, meta: JournalMeta::default() };
+        assert!(load_candidate(&candidate).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn lock_errors_do_not_classify_sessions_as_stale() {

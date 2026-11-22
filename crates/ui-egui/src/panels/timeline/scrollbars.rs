@@ -237,7 +237,6 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.set_max_width(CONTENT_W + 16.0);
     let mut changed = false;
     family_reset(ui);
-    capture_controls(app, ui);
     let content_w = CONTENT_W.min(ui.available_width());
 
     // The very top row: Hide Slider (red) while the bar is showing -- pressing it hides the bar at
@@ -846,6 +845,10 @@ fn is_modifier_key(key: egui::Key) -> bool {
     matches!(key, ShiftLeft | ShiftRight | ControlLeft | ControlRight | AltLeft | AltRight | SuperLeft | SuperRight)
 }
 
+fn modifier_count(modifiers: egui::Modifiers) -> u8 {
+    u8::from(modifiers.shift) + u8::from(modifiers.alt) + u8::from(modifiers.ctrl || modifiers.mac_cmd)
+}
+
 fn key_binding_name(key: egui::Key) -> String {
     match key {
         egui::Key::Plus => "+".into(),
@@ -948,7 +951,7 @@ fn slider_command(track: bool, slot: usize) -> Option<(&'static str, &'static st
         (false, 0) => Some(("timeline.sliderCenter", "Double Click")),
         (false, 1) => Some(("timeline.sliderExplode", "Triple Click")),
         (false, 2) => Some(("timeline.sliderAlternate", "Shift+Drag")),
-        (false, 4) | (true, 4) => Some(("timeline.adjustTrackHeight", "Shift+Scroll")),
+        (false, 4) | (true, 4) => Some(("timeline.adjustTrackHeight", "")),
         (false, 5) => Some(("timeline.fastScroll", "")),
         (false, 6) | (true, 6) => Some(("timeline.scrollTrackRows", "Cmd+Scroll")),
         (false, 7) => Some(("timeline.zoomScroll", "Alt+Scroll")),
@@ -972,13 +975,42 @@ fn set_slider_binding(app: &mut FilmcraftApp, track: bool, slot: usize, value: &
     };
     let result = if value.is_empty() || value == "Unbound" {
         app.session.shortcuts.clear(command, None, None).map(|_| ())
+    } else if filmcraft_engine::shortcuts::Chord::parse(value).is_err() {
+        app.session.shortcuts.set_gesture(command, value)
     } else {
         app.session.shortcuts.set(command, value, None, false, true).map(|_| ())
     };
     if let Err(error) = result {
         app.ui.status = error;
     }
-    sync_slider_bindings(app);
+    refresh_slider_binding(app, track, slot);
+}
+
+fn reset_slider_binding(app: &mut FilmcraftApp, track: bool, slot: usize) {
+    let Some((command, _)) = slider_command(track, slot) else { return };
+    if let Err(error) = app.session.shortcuts.reset_command_to_default(command) {
+        app.ui.status = error;
+    }
+    refresh_slider_binding(app, track, slot);
+}
+
+fn refresh_slider_binding(app: &mut FilmcraftApp, track: bool, slot: usize) {
+    let Some((id, _)) = slider_command(track, slot) else { return };
+    let value = app
+        .session
+        .shortcuts
+        .primary(id)
+        .map(|binding| {
+            filmcraft_engine::shortcuts::Chord::parse(&binding)
+                .map(|chord| chord.display(filmcraft_engine::shortcuts::Platform::current()).replace('+', " + "))
+                .unwrap_or(binding)
+        })
+        .unwrap_or_else(|| "Unbound".into());
+    if track {
+        *track_control_binding(app, slot) = value;
+    } else {
+        *control_binding(app, slot) = value;
+    }
 }
 
 /// Refresh the Timeline's gesture cache from the shared keyboard shortcut set.
@@ -1003,19 +1035,7 @@ pub fn sync_slider_bindings(app: &mut FilmcraftApp) {
         (true, 1),
         (true, 2),
     ] {
-        let Some((id, _)) = slider_command(track, slot) else { continue };
-        let value = app
-            .session
-            .shortcuts
-            .primary(id)
-            .and_then(|s| filmcraft_engine::shortcuts::Chord::parse(&s).ok())
-            .map(|c| c.display(filmcraft_engine::shortcuts::Platform::current()).replace('+', " + "))
-            .unwrap_or_else(|| "Unbound".into());
-        if track {
-            *track_control_binding(app, slot) = value;
-        } else {
-            *control_binding(app, slot) = value;
-        }
+        refresh_slider_binding(app, track, slot);
     }
 }
 /// Which kind of menu (zoom bar = false, track slider = true) the listening Controls box
@@ -1060,14 +1080,16 @@ pub fn route_slider_shortcut(app: &FilmcraftApp, ctx: &egui::Context) {
         if mods.ctrl || mods.mac_cmd {
             parts.push("Ctrl");
         }
-        if mods.alt {
-            parts.push("Alt");
-        }
         if mods.shift {
             parts.push("Shift");
         }
-        ctx.data_mut(|d| d.insert_temp(combo_key, parts.join(" + ")));
-        None
+        if mods.alt {
+            parts.push("Alt");
+        }
+        let text = parts.join(" + ");
+        let prior = ctx.data(|d| d.get_temp::<String>(combo_key));
+        ctx.data_mut(|d| d.insert_temp(combo_key, text.clone()));
+        (prior.as_deref() != Some(text.as_str())).then_some(text)
     } else if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::ModifiersChanged(_) | egui::Event::Key { pressed: false, .. }))) {
         ctx.data_mut(|d| d.remove_temp::<String>(combo_key))
     } else {
@@ -1234,6 +1256,110 @@ fn controls_popup_open(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
 mod slider_clipboard_shortcut_tests {
     use super::chord_and_button;
     use egui::{Event, Modifiers};
+
+    #[test]
+    fn zoom_and_track_slider_reset_restore_their_declared_defaults() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.shortcuts.set("timeline.sliderCenter", "Ctrl+K", None, false, true).expect("assign zoom-slider key");
+        app.session.shortcuts.set("timeline.sliderExplode", "Ctrl+J", None, false, true).expect("assign zoom-slider explode key");
+        app.session.shortcuts.set("timeline.trackSliderMirror", "Ctrl+L", None, false, true).expect("assign track-slider key");
+        app.session.state.timeline_ui.control_center_on_playhead = "Ctrl + K".into();
+        app.session.state.timeline_ui.control_explode_slider = "Ctrl + J".into();
+
+        super::reset_slider_binding(&mut app, true, 0);
+        assert_eq!(app.session.shortcuts.primary("timeline.trackSliderMirror").as_deref(), Some("Double Click"));
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Ctrl+K"));
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderExplode").as_deref(), Some("Ctrl+J"));
+        assert_eq!(app.session.state.timeline_ui.control_center_on_playhead, "Ctrl + K");
+        assert_eq!(app.session.state.timeline_ui.control_explode_slider, "Ctrl + J");
+        super::reset_slider_binding(&mut app, false, 0);
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Double Click"));
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderExplode").as_deref(), Some("Ctrl+J"));
+        assert_eq!(app.session.state.timeline_ui.control_center_on_playhead, "Double Click");
+        assert_eq!(app.session.state.timeline_ui.control_explode_slider, "Ctrl + J");
+        assert_eq!(app.session.state.timeline_ui.track_control_mirror, "Double Click");
+    }
+
+    #[test]
+    fn controls_capture_persists_pointer_gestures_and_multi_modifier_chords() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        super::set_slider_binding(&mut app, false, 0, "Double Click");
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Double Click"));
+        assert_eq!(app.session.state.timeline_ui.control_center_on_playhead, "Double Click");
+        super::set_slider_binding(&mut app, false, 1, "Triple Click");
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderExplode").as_deref(), Some("Triple Click"));
+        assert_eq!(app.session.state.timeline_ui.control_explode_slider, "Triple Click");
+
+        super::set_slider_binding(&mut app, false, 0, "Ctrl + Shift + Alt + K");
+        let chord = app.session.shortcuts.primary("timeline.sliderCenter").expect("the key chord was recorded");
+        let parsed = filmcraft_engine::shortcuts::Chord::parse(&chord).expect("the multi-modifier chord is valid");
+        assert_eq!(parsed.key, "K");
+        assert!(parsed.mods.shift && parsed.mods.alt && (parsed.mods.ctrl || parsed.mods.cmd));
+    }
+
+    #[test]
+    fn modifier_only_controls_chord_is_saved_on_release_and_fires_when_pressed() {
+        use egui::{Event, Key, Modifiers, RawInput};
+
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = crate::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.tl.zoombar_settings_pos = Some(egui::pos2(10.0, 10.0));
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(super::controls_listen_key(), Some(0usize));
+            d.insert_temp(super::controls_listen_track_key(), false);
+            d.insert_temp(super::controls_listen_document_epoch_key(), app.session.document_epoch);
+        });
+        let ctrl = Modifiers { ctrl: true, ..Default::default() };
+        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
+        let all = Modifiers { ctrl: true, shift: true, alt: true, ..Default::default() };
+        let press = RawInput {
+            time: Some(1.0),
+            events: vec![
+                Event::ModifiersChanged(all),
+                Event::Key { key: Key::ControlLeft, physical_key: Some(Key::ControlLeft), pressed: true, repeat: false, modifiers: ctrl },
+                Event::Key { key: Key::ShiftLeft, physical_key: Some(Key::ShiftLeft), pressed: true, repeat: false, modifiers: ctrl_shift },
+                Event::Key { key: Key::AltLeft, physical_key: Some(Key::AltLeft), pressed: true, repeat: false, modifiers: all },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(press, |ui| super::capture_controls(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        let release = RawInput {
+            time: Some(1.1),
+            events: vec![
+                Event::ModifiersChanged(Modifiers { ctrl: true, ..Default::default() }),
+                Event::Key { key: Key::AltLeft, physical_key: Some(Key::AltLeft), pressed: false, repeat: false, modifiers: ctrl },
+                Event::Key { key: Key::ShiftLeft, physical_key: Some(Key::ShiftLeft), pressed: false, repeat: false, modifiers: ctrl },
+            ],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(release, |ui| super::capture_controls(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Ctrl + Shift + Alt"));
+
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0)));
+        });
+        let input = RawInput { time: Some(1.2), events: vec![Event::PointerMoved(egui::pos2(50.0, 50.0)), Event::ModifiersChanged(all)], ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| super::route_slider_shortcut(&app, ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(super::zoom_trigger_key())), Some(0));
+    }
+
+    #[test]
+    fn click_gesture_conflicts_include_existing_defaults_and_fast_scroll() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        super::set_slider_binding(&mut app, false, 1, "Double Click");
+        assert!(super::binding_conflicts(&app, false, 1, "Double Click"), "Explode must warn on Center's default Double Click");
+
+        super::reset_slider_binding(&mut app, false, 1);
+        super::set_slider_binding(&mut app, false, 5, "Triple Click");
+        assert_eq!(app.session.shortcuts.primary("timeline.fastScroll").as_deref(), Some("Triple Click"));
+        assert!(super::binding_conflicts(&app, false, 5, "Triple Click"), "Fast Scroll must warn on Explode's default Triple Click");
+    }
 
     #[test]
     fn paste_event_matches_a_custom_ctrl_v_slider_binding() {
@@ -1792,16 +1918,16 @@ fn controls_capturing(ui: &egui::Ui) -> bool {
 }
 
 /// Capture the next gesture, or unbind after three seconds of inactivity.
-fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
+pub(crate) fn capture_controls(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let key = controls_listen_key();
-    let Some(slot) = ui.ctx().data(|d| d.get_temp::<Option<usize>>(key)).flatten() else {
+    let Some(slot) = ctx.data(|d| d.get_temp::<Option<usize>>(key)).flatten() else {
         return;
     };
-    let frame_time = ui.input(|i| i.time);
-    ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-controls-consumed-frame"), frame_time));
-    let track = ui.ctx().data(|d| d.get_temp::<bool>(controls_listen_track_key()).unwrap_or(false));
+    let frame_time = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("tl-controls-consumed-frame"), frame_time));
+    let track = ctx.data(|d| d.get_temp::<bool>(controls_listen_track_key()).unwrap_or(false));
     let pending_key = egui::Id::unique("tl-controls-pending-click");
-    let key_text = ui.input(|i| {
+    let key_text = ctx.input(|i| {
         chord_and_button(
             &i.events
                 .iter()
@@ -1811,12 +1937,16 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
             i.modifiers,
         )
     });
-    let wheel_text = ui
+    let wheel_text = ctx
         .input(|i| i.events.iter().find(|e| matches!(e, egui::Event::MouseWheel { .. })).and_then(|e| chord_and_button(std::slice::from_ref(e), i.modifiers)));
     let modifier_key = egui::Id::unique("timeline-controls-modifiers");
-    let modifiers = ui.input(|i| i.modifiers);
-    let count = u8::from(modifiers.shift) + u8::from(modifiers.alt) + u8::from(modifiers.ctrl || modifiers.mac_cmd);
-    let modifier_text = if count >= 2 {
+    let modifiers = ctx.input(|i| i.modifiers);
+    let count = modifier_count(modifiers);
+    let prior_modifiers = ctx.data(|d| d.get_temp::<(String, egui::Modifiers)>(modifier_key));
+    let modifier_text = if prior_modifiers.as_ref().is_some_and(|(_, previous)| modifier_count(*previous) > count) {
+        ctx.data_mut(|d| d.remove_temp::<(String, egui::Modifiers)>(modifier_key));
+        prior_modifiers.map(|(text, _)| text)
+    } else if count >= 2 {
         let mut parts = Vec::new();
         if modifiers.ctrl || modifiers.mac_cmd {
             parts.push("Ctrl");
@@ -1827,9 +1957,9 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
         if modifiers.alt {
             parts.push("Alt");
         }
-        ui.data_mut(|d| d.insert_temp(modifier_key, parts.join(" + ")));
+        ctx.data_mut(|d| d.insert_temp(modifier_key, (parts.join(" + "), modifiers)));
         None
-    } else if ui.input(|i| {
+    } else if ctx.input(|i| {
         i.events.iter().any(|e| {
             matches!(
                 e,
@@ -1847,11 +1977,11 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
             )
         })
     }) {
-        ui.data_mut(|d| d.remove_temp::<String>(modifier_key))
+        ctx.data_mut(|d| d.remove_temp::<(String, egui::Modifiers)>(modifier_key).map(|(text, _)| text))
     } else {
         None
     };
-    let clicks = ui.input(|i| {
+    let clicks = ctx.input(|i| {
         i.events
             .iter()
             .filter_map(|e| match e {
@@ -1860,7 +1990,7 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
             })
             .collect::<Vec<_>>()
     });
-    let now = ui.input(|i| i.time);
+    let now = ctx.input(|i| i.time);
     for (button, modifiers) in clicks {
         let prefix = format!(
             "{}{}{}",
@@ -1874,13 +2004,13 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
             egui::PointerButton::Middle => "Middle",
             _ => "Extra",
         };
-        let prior = ui.data(|d| d.get_temp::<(String, u8, f64)>(pending_key));
+        let prior = ctx.data(|d| d.get_temp::<(String, u8, f64)>(pending_key));
         let base = format!("{prefix}{name}");
         let count = prior.filter(|(s, _, t)| *s == base && now - *t <= 0.35).map_or(1, |(_, n, _)| n.saturating_add(1).min(3));
-        ui.data_mut(|d| d.insert_temp(pending_key, (base, count, now)));
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(360));
+        ctx.data_mut(|d| d.insert_temp(pending_key, (base, count, now)));
+        ctx.request_repaint_after(std::time::Duration::from_millis(360));
     }
-    let pending = ui.data(|d| d.get_temp::<(String, u8, f64)>(pending_key));
+    let pending = ctx.data(|d| d.get_temp::<(String, u8, f64)>(pending_key));
     let mouse_text = pending.filter(|(_, n, t)| *n == 3 || now - *t >= 0.35).map(|(base, count, _)| {
         if count == 1 {
             format!("{base} Click")
@@ -1891,31 +2021,35 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
         }
     });
     let last_input = egui::Id::unique("tl-controls-last-input");
-    if ui.input(|i| !i.events.is_empty()) {
-        ui.data_mut(|d| d.insert_temp(last_input, now));
+    if ctx.input(|i| !i.events.is_empty()) {
+        ctx.data_mut(|d| d.insert_temp(last_input, now));
     }
-    let idle = now - ui.data(|d| d.get_temp::<f64>(last_input)).unwrap_or(now) >= 3.0;
+    let idle = now - ctx.data(|d| d.get_temp::<f64>(last_input)).unwrap_or(now) >= 3.0;
     if !idle {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
-    if idle || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if idle || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         if track {
             set_slider_binding(app, true, slot, "Unbound");
         } else {
             set_slider_binding(app, false, slot, "Unbound");
         }
-        ui.ctx().data_mut(|d| d.insert_temp(key, None::<usize>));
-        ui.data_mut(|d| d.remove_temp::<(String, u8, f64)>(pending_key));
+        ctx.data_mut(|d| d.insert_temp(key, None::<usize>));
+        ctx.data_mut(|d| {
+            d.remove_temp::<(String, u8, f64)>(pending_key);
+            d.remove_temp::<(String, egui::Modifiers)>(modifier_key);
+        });
         app.session.project_view_changed();
     } else if let Some(text) = key_text.or(mouse_text).or(wheel_text).or(modifier_text) {
         if (text.contains("Right ") && text.ends_with("Click")) || text == "Left Click" {
-            ui.ctx().data_mut(|d| {
+            ctx.data_mut(|d| {
                 d.insert_temp(egui::Id::unique("timeline-right-click-dialog"), true);
                 d.insert_temp(egui::Id::unique("timeline-left-click-rejected"), text == "Left Click");
                 d.insert_temp(key, None::<usize>);
                 d.remove_temp::<(String, u8, f64)>(pending_key);
+                d.remove_temp::<(String, egui::Modifiers)>(modifier_key);
             });
-            ui.ctx().request_repaint();
+            ctx.request_repaint();
             return;
         }
         if track {
@@ -1923,17 +2057,18 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
         } else {
             set_slider_binding(app, false, slot, &text);
         }
-        ui.data_mut(|d| {
+        ctx.data_mut(|d| {
             d.remove_temp::<(String, u8, f64)>(pending_key);
+            d.remove_temp::<(String, egui::Modifiers)>(modifier_key);
         });
         app.session.project_view_changed();
-        ui.ctx().data_mut(|d| d.insert_temp(key, None::<usize>));
+        ctx.data_mut(|d| d.insert_temp(key, None::<usize>));
     }
     // While a Controls box is naming a shortcut NOTHING else in the application may hear an
     // input: the shortcut matcher is gated on `controls_listening` upstream, and this takes
     // key, text and mouse-button events off the frame's input so no panel's own Escape/Enter
     // handler -- and no later pass of the same frame -- can act on them either.
-    ui.input_mut(|i| {
+    ctx.input_mut(|i| {
         i.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. }))
     });
 }
@@ -1948,22 +2083,51 @@ fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
 /// moment the pointer left its row. Only `trigger` (a real hover of the row, after the pointer has
 /// moved) OPENS it; everything else merely keeps it open. No settings in it yet.
 fn binding_conflicts(app: &FilmcraftApp, track: bool, slot: usize, shown: &str) -> bool {
-    let Ok(chord) = filmcraft_engine::shortcuts::Chord::parse(shown) else { return false };
+    !conflicting_commands(app, track, slot, shown).is_empty()
+}
+
+fn conflicting_commands(app: &FilmcraftApp, track: bool, slot: usize, shown: &str) -> Vec<String> {
+    let Some((own_command, _)) = slider_command(track, slot) else { return Vec::new() };
+    if shown.is_empty() || shown == "Unbound" {
+        return Vec::new();
+    }
+    let chord = filmcraft_engine::shortcuts::Chord::parse(shown).ok();
     let platform = filmcraft_engine::shortcuts::Platform::current();
-    app.session.shortcuts.bindings.iter().any(|binding| {
-        if binding.panel.as_deref().is_some_and(|p| p != "Timeline") {
-            return false;
-        }
-        if slider_command(track, slot).is_some_and(|(own, _)| own == binding.command) {
-            return false;
-        }
-        if (shown.ends_with("Click") || shown.ends_with("Drag"))
-            && ((!track && binding.command.starts_with("timeline.trackSlider")) || (track && binding.command.starts_with("timeline.slider")))
-        {
-            return false;
-        }
-        filmcraft_engine::shortcuts::Chord::parse(&binding.keys).ok().is_some_and(|other| other.effective(platform) == chord.effective(platform))
-    })
+    let mut commands = app
+        .session
+        .shortcuts
+        .bindings
+        .iter()
+        .filter_map(|binding| {
+            if binding.panel.as_deref().is_some_and(|p| p != "Timeline") {
+                return None;
+            }
+            if own_command == binding.command {
+                return None;
+            }
+            if (shown.ends_with("Click") || shown.ends_with("Drag"))
+                && ((!track && binding.command.starts_with("timeline.trackSlider")) || (track && binding.command.starts_with("timeline.slider")))
+            {
+                return None;
+            }
+            let matches = if let Some(chord) = &chord {
+                filmcraft_engine::shortcuts::Chord::parse(&binding.keys).ok().is_some_and(|other| other.effective(platform) == chord.effective(platform))
+            } else {
+                filmcraft_engine::shortcuts::Chord::parse(&binding.keys).is_err() && normalize_slider_gesture(shown) == normalize_slider_gesture(&binding.keys)
+            };
+            matches.then(|| binding.command.clone())
+        })
+        .collect::<Vec<_>>();
+    commands.sort();
+    commands.dedup();
+    if commands.is_empty() {
+        Vec::new()
+    } else {
+        commands.push(own_command.to_string());
+        commands.sort();
+        commands.dedup();
+        commands
+    }
 }
 
 // The flyout rows share their capture and popup state in one drawing pass.
@@ -2098,8 +2262,8 @@ fn hover_flyout(
                 // the control list: an action and the input that does it (the default gesture in
                 // the dark box until the user rebinds it). Clicking a box listens for the next
                 // input -- a key chord or a mouse button -- which becomes the new way to do it;
-                // the circular arrow at the row's end restores the default. (The listening itself
-                // happens in [`capture_controls`], from the menus, every frame.)
+                // the circular arrow at the row's end restores its binding(s). (The listening
+                // itself happens in [`capture_controls`], from the menus, every frame.)
                 let listening = ui.ctx().data(|d| d.get_temp::<Option<usize>>(controls_listen_key())).flatten();
                 for (idx, &(name, default, slot)) in items.iter().enumerate() {
                     // the row spans the flyout's content width, exactly as the Minimap colour
@@ -2146,7 +2310,7 @@ fn hover_flyout(
                         let started = ui.input(|i| i.time);
                         ui.ctx().data_mut(|d| {
                             d.insert_temp(egui::Id::unique("tl-controls-last-input"), started);
-                            d.remove_temp::<String>(egui::Id::unique("timeline-controls-modifiers"));
+                            d.remove_temp::<(String, egui::Modifiers)>(egui::Id::unique("timeline-controls-modifiers"));
                             d.insert_temp(controls_listen_key(), Some(slot));
                             d.insert_temp(controls_listen_track_key(), track);
                             d.insert_temp(controls_listen_document_epoch_key(), app.session.document_epoch);
@@ -2168,7 +2332,7 @@ fn hover_flyout(
                             let started = ui.input(|i| i.time);
                             ui.ctx().data_mut(|d| {
                                 d.insert_temp(egui::Id::unique("tl-controls-last-input"), started);
-                                d.remove_temp::<String>(egui::Id::unique("timeline-controls-modifiers"));
+                                d.remove_temp::<(String, egui::Modifiers)>(egui::Id::unique("timeline-controls-modifiers"));
                                 d.insert_temp(controls_listen_key(), Some(11usize));
                                 d.insert_temp(controls_listen_track_key(), false);
                                 d.insert_temp(controls_listen_document_epoch_key(), app.session.document_epoch);
@@ -2188,7 +2352,8 @@ fn hover_flyout(
                             "sequenceConflict".to_owned(),
                         )))
                     {
-                        if listening != Some(warn_slot) && binding_conflicts(app, track, warn_slot, warn_text) {
+                        let conflicts = conflicting_commands(app, track, warn_slot, warn_text);
+                        if listening != Some(warn_slot) && !conflicts.is_empty() {
                             let center = warn_rect.right() + if second && warn_slot == slot { 6.0 } else { 8.0 };
                             let warning =
                                 Rect::from_center_size(pos2(center, warn_rect.center().y), vec2(if second && warn_slot == slot { 10.0 } else { 12.0 }, 16.0));
@@ -2209,8 +2374,7 @@ fn hover_flyout(
                                     app.tl.zoombar_settings_pos = None;
                                     close_zoombar_popup(ui.ctx());
                                 }
-                                crate::panels::shortcuts_dialog::open(app);
-                                app.shortcut_editor.search = query;
+                                crate::panels::shortcuts_dialog::open_conflict_review(app, &query, &conflicts);
                             }
                             app.auto.add(&format!("{auto_id}.{warn_id}"), warning, "This shortcut is already assigned.");
                         }
@@ -2223,11 +2387,11 @@ fn hover_flyout(
                     icons::paint(ui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { app.tokens.text } else { app.tokens.text_dim });
                     if rresp.clicked() {
                         if track {
-                            set_slider_binding(app, true, slot, "");
+                            reset_slider_binding(app, true, slot);
                         } else {
-                            set_slider_binding(app, false, slot, "");
+                            reset_slider_binding(app, false, slot);
                             if second {
-                                set_slider_binding(app, false, 11, "");
+                                reset_slider_binding(app, false, 11);
                             }
                         }
                         app.session.project_view_changed();
@@ -2727,6 +2891,51 @@ fn track_thumb(track_h: f32, bar_h: f32, min_h: f32) -> f32 {
     MIN_THUMB_W + f.clamp(0.0, 1.0) * (bar_h - MIN_THUMB_W).max(1.0)
 }
 
+/// Content coordinate held still when the opposite thumb edge changes height.
+#[cfg(test)]
+fn fixed_edge_anchor(scroll: f32, window_h: f32, track_h: f32, outer: bool, offset: f32) -> f32 {
+    ((scroll + if outer { 0.0 } else { window_h }) + offset) / track_h
+}
+
+/// Scroll value that keeps a captured viewport edge at the same content coordinate.
+fn scroll_for_fixed_edge(anchor: f32, track_h: f32, window_h: f32, offset: f32, outer: bool) -> f32 {
+    anchor * track_h - if outer { offset } else { window_h + offset }
+}
+
+/// Keep a real rendered row boundary when the viewport edge is already on one; otherwise keep
+/// the exact visible content coordinate. Quantizing a mid-row viewport edge to its nearest line
+/// can push it outside the legal scroll range after a resize and trap the opposite edge.
+fn capture_fixed_view_anchor(value: f32, window_h: f32, track_h: f32, outer: bool) -> Option<(f32, f32, bool)> {
+    if !(value.is_finite() && window_h.is_finite() && track_h.is_finite() && track_h > 0.0) {
+        return None;
+    }
+    let viewport_edge = if outer { value } else { value + window_h };
+    let raw_anchor = viewport_edge / track_h;
+    let nearest_line = raw_anchor.round();
+    let line_offset = nearest_line * track_h - viewport_edge;
+    let (anchor, offset) = if line_offset.abs() <= 1.25 { (nearest_line, line_offset) } else { (raw_anchor, 0.0) };
+    (anchor.is_finite() && offset.is_finite()).then_some((anchor, offset, outer))
+}
+
+/// Exact track height for a snapped boundary while the opposite viewport edge is fixed.
+fn height_for_fixed_edge_detent(anchor: f32, window_h: f32, offset: f32, outer: bool, detent: f32) -> Option<f32> {
+    let (numerator, divisor) = if outer { (window_h - offset + 1.0, detent - anchor) } else { (window_h + offset + 1.0, anchor - detent) };
+    (numerator.is_finite() && divisor.is_finite() && numerator > 0.0 && divisor > 1e-6).then_some(numerator / divisor)
+}
+
+#[derive(Clone, Copy, Default)]
+struct TrackResizeState {
+    mode: u8,
+    fixed: f32,
+    center: f32,
+    free_len: f32,
+    /// (row boundary index, its screen offset from that viewport edge, anchored edge orientation)
+    view_anchor: Option<(f32, f32, bool)>,
+    /// The detent currently latched during a resize and the raw boundary coordinate last seen.
+    snap_detent: Option<f32>,
+    last_snap_q: Option<f32>,
+}
+
 /// Its inverse: the track height a thumb `len` points long stands for.
 fn track_height_of(len: f32, bar_h: f32, min_h: f32) -> f32 {
     let f = ((len - MIN_THUMB_W) / (bar_h - MIN_THUMB_W).max(1.0)).clamp(0.0, 1.0);
@@ -3090,7 +3299,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         p.circle_filled(pos2(x, cy), RING_OUT, t.icon_active);
         p.circle_filled(pos2(x, cy), RING_OUT - ring_w, t.panel_bg);
     }
-    // hovering an end circle reads as a resize handle: a horizontal resize cursor on the circles
+    // hovering an end circle reads as a resize handle
     // only (never the slider's middle), and it stays through the press and the WHOLE edge drag --
     // the slider can run away from the cursor while it zooms. Shift drags hide the cursor (it is
     // pinned), so it stays hidden there.
@@ -3641,7 +3850,7 @@ fn right_click_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let left = ctx.data(|d| d.get_temp::<bool>(egui::Id::unique("timeline-left-click-rejected"))).unwrap_or(false);
     egui::Window::new(tl!("Shortcut unavailable"))
         .id(egui::Id::unique("timeline-right-click-dialog-window"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Tooltip)
         .collapsible(false)
         .resizable(false)
         .fixed_size(egui::vec2(440.0, 0.0))
@@ -3675,7 +3884,7 @@ fn snap_requires_decoupling_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) 
     let mut dismiss = false;
     egui::Window::new(tl!("Snap to Tracks"))
         .id(egui::Id::unique("timeline-snap-requires-decoupling-window"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Tooltip)
         .collapsible(false)
         .resizable(false)
         .fixed_size(egui::vec2(440.0, 0.0))
@@ -3704,7 +3913,7 @@ pub(super) fn promote_slider_dialogs(app: &FilmcraftApp, ctx: &egui::Context) {
     }
     for track in [false, true] {
         if if track { app.tl.track_hide_dialog_open } else { app.tl.zoombar_hide_dialog_open } {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("timeline-zoombar-hide-dialog", track))));
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(("timeline-zoombar-hide-dialog", track))));
         }
     }
     for (state, window) in [
@@ -3712,7 +3921,7 @@ pub(super) fn promote_slider_dialogs(app: &FilmcraftApp, ctx: &egui::Context) {
         ("timeline-snap-requires-decoupling", "timeline-snap-requires-decoupling-window"),
     ] {
         if ctx.data(|d| d.get_temp::<bool>(egui::Id::unique(state))).unwrap_or(false) {
-            ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(window)));
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(window)));
         }
     }
 }
@@ -3726,7 +3935,7 @@ fn hide_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, track: bool) {
     let mut dismiss = false;
     egui::Window::new(tl!("Hide Slider"))
         .id(egui::Id::unique(("timeline-zoombar-hide-dialog", track)))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Tooltip)
         .collapsible(false)
         .resizable(false)
         .fixed_size(egui::vec2(440.0, 0.0))
@@ -3804,27 +4013,201 @@ pub fn zoombar_cursor_watchdog(tl: &mut super::TlState, ctx: &egui::Context, set
     }
 }
 
-/// The side (track) sliders: the zoom bar's exact look turned on its end -- a rounded pill
-/// track, a pill thumb, and the two ringed end circles (a dark disc with a white ring around it;
-/// hovering an end brings the rings in 1.5x, pressing or dragging 2.25x). The middle drags the
-/// scroll 1:1, a click beside the thumb jumps there, and dragging an end circle (or the edge
-/// zone under it) zooms the tracks' height: an outward pull on EITHER end (top up, bottom down)
-/// grows the thumb (shorter tracks), an inward pull shrinks it, always about the view's CENTER.
-/// Double-click copies
-/// the thumb's length and position to the other slider, Shift+double-click fits every track.
-/// Shift drags run at a fraction of the ordinary speed (the Alternate Drag Speed setting's own
-/// rate -- the same rate on both sliders). Right-click opens the settings popup, to the left of the sliders. Returns
-/// (pointer on an end circle, the thumb's rect for automation ids, 1 = double-click,
-/// 2 = Shift+double-click).
 // one parameter per piece of slider state keeps the two sliders (video/audio) symmetric at
 // their call sites; the drag logic is one state machine like the zoom bar's
 #[allow(clippy::type_complexity, clippy::too_many_arguments, clippy::cognitive_complexity)]
+fn snap_edge_height(
+    q: f32,
+    min_height: f32,
+    max_height: f32,
+    anchor: f32,
+    window_h: f32,
+    offset: f32,
+    outer: bool,
+    slots: f32,
+    q_delta: f32,
+    previous: Option<f32>,
+) -> Option<(f32, f32)> {
+    let tracks = (slots - 1.0 / 3.0).round().max(1.0);
+    let first = if outer { 1.0 } else { 0.0 };
+    let last = if outer { slots } else { (tracks - 1.0).max(0.0) };
+    let last_predecessor = if outer { (last - 1.0 / 3.0).round().min(last) } else { (last - 1.0).max(first) };
+    let detent_height = |detent: f32| {
+        height_for_fixed_edge_detent(anchor, window_h, offset, outer, detent)
+            .filter(|height| height.is_finite() && *height >= min_height && *height <= max_height)
+            .map(|height| (height, detent))
+    };
+    if q_delta.abs() <= 0.0001
+        && let Some(previous) = previous.filter(|previous| previous.is_finite() && *previous >= first && *previous <= last)
+    {
+        return detent_height(previous);
+    }
+    let toward_high = q_delta > 0.0001;
+    // Resolve the fractional reveal endpoint before the general latch. Its final whole-row
+    // neighbor is only one-third of a track away, so the ordinary midpoint latch would otherwise
+    // keep snapping back to that whole row while the pointer advances toward the endpoint.
+    if ((q - last).abs() <= 0.01 || (toward_high && q > last_predecessor + 0.001))
+        && let Some(result) = detent_height(last)
+    {
+        return Some(result);
+    }
+    if ((q - first).abs() <= 0.01 || (!toward_high && q < first + 0.5))
+        && let Some(result) = detent_height(first)
+    {
+        return Some(result);
+    }
+    if let Some(previous) = previous.filter(|previous| previous.is_finite() && *previous >= first && *previous <= last) {
+        let next = if toward_high {
+            if outer && (previous - last_predecessor).abs() < 0.01 { last } else { (previous + 1.0).min(last) }
+        } else if outer && (previous - last).abs() < 0.01 {
+            last_predecessor
+        } else {
+            (previous - 1.0).max(first)
+        };
+        let gap = (next - previous).abs();
+        let hysteresis = (gap * 0.05).min(0.04);
+        let midpoint = (next + previous) * 0.5;
+        let keep_previous = if toward_high { q <= midpoint + hysteresis } else { q >= midpoint - hysteresis };
+        if gap > 0.0
+            && keep_previous
+            && (q - previous).abs() <= gap + hysteresis
+            && let Some(result) = detent_height(previous)
+        {
+            return Some(result);
+        }
+    }
+    let nearest = q.round().clamp(first, last);
+    let mut candidates = [nearest, nearest - 1.0, nearest + 1.0, first, last];
+    candidates.sort_by(|a, b| {
+        let distance = (q - *a).abs().total_cmp(&(q - *b).abs());
+        if distance.is_eq() { if toward_high { b.total_cmp(a) } else { a.total_cmp(b) } } else { distance }
+    });
+    for detent in candidates {
+        if detent < first || detent > last || (q - detent).abs() > 0.5 {
+            continue;
+        }
+        let Some(height) = height_for_fixed_edge_detent(anchor, window_h, offset, outer, detent) else { continue };
+        if height.is_finite() && height >= min_height && height <= max_height {
+            return Some((height, detent));
+        }
+    }
+    None
+}
+
+// These values form one resize calculation; keeping them explicit makes the geometry and
+// hostile-value bounds visible at the call site.
+#[allow(clippy::too_many_arguments)]
+fn resize_track_edge(
+    state: TrackResizeState,
+    dy: f32,
+    shift_on: bool,
+    snap: bool,
+    invert: bool,
+    decouple: bool,
+    value: f32,
+    slots: f32,
+    window_h: f32,
+    min_height: f32,
+    bar: Rect,
+    min_thumb: f32,
+) -> Option<(f32, f32, f32, Option<f32>, Option<f32>)> {
+    if !matches!(state.mode, 1 | 2) || !dy.is_finite() || !state.free_len.is_finite() || !state.fixed.is_finite() || !state.center.is_finite() {
+        return None;
+    }
+    let bar_h = bar.height();
+    let slots = slots.max(1.0);
+    let min_height = min_height.max(0.0);
+    let lo = min_thumb.min(bar_h);
+    let max_height = track_max_height(min_height).max(min_height);
+    let visual_outer = (invert && state.mode == 1) || (!invert && state.mode == 2);
+    let default_offset = 0.0;
+    let (anchor, offset, outer) = state.view_anchor.map_or((None, default_offset, visual_outer), |(a, o, edge)| (Some(a), o, edge));
+    let anchor_floor = anchor.map_or(min_height, |a| {
+        let (numerator, divisor) = if outer { (window_h + offset, slots - a) } else { (window_h - offset, a) };
+        if divisor > 1e-6 && numerator.is_finite() { (numerator / divisor).max(min_height) } else { max_height }
+    });
+    let room = if !decouple {
+        bar_h
+    } else if state.mode == 1 {
+        state.fixed - bar.min.y
+    } else {
+        bar.max.y - state.fixed
+    }
+    .max(0.0);
+    // The grabbed edge may overhang the rail by one point. Apply that same endpoint allowance
+    // to the available drag length, its zoom floor, and snapping so a detent cannot be undone
+    // by the next no-motion frame.
+    let available = (room + 1.0).clamp(0.0, bar_h);
+    if available < lo || anchor_floor > max_height {
+        return None;
+    }
+    let geometry_floor = track_height_of(available.max(lo), bar_h, min_height).max(min_height);
+    let floor = anchor_floor.max(geometry_floor).min(max_height);
+    let hi = track_thumb(floor, bar_h, min_height).clamp(lo, available);
+    if hi <= lo || !hi.is_finite() {
+        return None;
+    }
+    let out = if state.mode == 1 { -dy } else { dy };
+    let home = snap && outer && value <= 0.5;
+    let speed = if decouple || home { 1.0 } else { 2.0 };
+    let base_len = if shift_on { state.free_len.clamp(lo, hi) } else { state.free_len };
+    let free_len = (base_len + speed * out).clamp(lo, hi);
+    let height_of = |len: f32| track_height_of(len, bar_h, min_height).clamp(floor, max_height);
+    let scroll_for = |height: f32, length: f32| {
+        let max_scroll = (slots * height - window_h).max(0.0);
+        if let Some(a) = anchor {
+            scroll_for_fixed_edge(a, height, window_h, offset, outer).clamp(0.0, max_scroll)
+        } else {
+            let top = if decouple { if state.mode == 1 { state.fixed - length } else { state.fixed } } else { state.center - length * 0.5 }
+                .clamp(bar.min.y, (bar.max.y - length).max(bar.min.y));
+            let travel = (bar_h - length).max(0.0);
+            let position = if travel > 0.001 { ((top - bar.min.y) / travel).clamp(0.0, 1.0) } else { 0.5 };
+            (if invert { 1.0 - position } else { position }) * max_scroll
+        }
+    };
+    let snapping = snap && !shift_on && anchor.is_some();
+    let mut height = height_of(free_len);
+    let mut snap_detent = state.snap_detent;
+    let mut last_snap_q = state.last_snap_q;
+    if snapping && let Some(a) = anchor {
+        let free_scroll = scroll_for(height, free_len);
+        let q = if outer { (window_h + free_scroll + 1.0) / height } else { (free_scroll - 1.0) / height };
+        if q.is_finite() {
+            let q_delta = last_snap_q.map_or(0.0, |previous| q - previous);
+            if let Some((snapped, detent)) = snap_edge_height(q, min_height, max_height, a, window_h, offset, outer, slots, q_delta, snap_detent) {
+                // Keep the content boundary on its exact detent even if its ideal thumb is a
+                // fraction longer than the currently captured rail room. The active thumb is
+                // clipped to `hi` below, then its live rail anchor is synchronized for the next
+                // frame. Rejecting this detent cleared the latch, making audio bounce between
+                // the last whole row and the one-third endpoint during a held drag.
+                height = snapped;
+                snap_detent = Some(detent);
+            } else {
+                snap_detent = None;
+            }
+            last_snap_q = Some(q);
+        }
+    } else {
+        snap_detent = None;
+        last_snap_q = None;
+    }
+    let length = track_thumb(height, bar_h, min_height).clamp(lo, hi);
+    let scroll = scroll_for(height, length);
+    Some((height, scroll, free_len, snap_detent, last_snap_q))
+}
+
+/// The mirrored audio/video track slider. Its handle is a representation of the visible
+/// timeline range: edge drags resize that range, and detents are computed from timeline row
+/// boundaries while preserving the opposite visible boundary when detached edges are enabled.
+/// Returns (pointer on an end circle, thumb rect for automation ids, and the double-click action).
+// Pointer, animation, resize and popup state must be processed in a fixed order within one egui
+// frame. Keep this event handler together so its response state cannot be split across frames.
+#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 pub(super) fn vertical_scrollbar(
     ui: &mut egui::Ui,
     tl: &mut super::TlState,
     bar: Rect,
     value: &mut f32,
-    max: f32,
     window_h: f32,
     // how many track slots the content has (the rows plus the empty slot for a new track): the
     // thumb and the zoom maths need it, and it cannot be recovered from `max` (which is 0
@@ -3845,9 +4228,6 @@ pub(super) fn vertical_scrollbar(
     if bar.height() < 2.0 || bar.width() < 6.0 {
         return (false, bar, 0);
     }
-    /// The thumb's shortest length: the exact same minimum as the zoom bar's thumb
-    /// ([`MIN_THUMB_W`]); the two end circles fit inside it.
-    const THUMB_MIN: f32 = MIN_THUMB_W;
     let p = ui.painter();
     p.rect_filled(bar, bar.width() / 2.0, t.separator);
     // with nothing to scroll the thumb fills the track -- the slider is always there, it never
@@ -3856,65 +4236,31 @@ pub(super) fn vertical_scrollbar(
     // and 220 pt leave the MIN_THUMB_W minimum. (A cap here once kept the scroll a travel to use,
     // but it also made full zoom-out unreachable and the drag fought the cap and vibrated.)
     let min_height = track_min_height(window_h, slots);
-    let mut h = track_thumb(*track_h, bar.height(), min_height).min(bar.height()).max(bar.width() + 4.0);
-    let travel = (bar.height() - h).max(0.0);
-    // with nothing to scroll the thumb sits in the MIDDLE of the track: pinned to an end it
-    // could never collapse about its middle (the dragged edge then barely moved while the other
-    // one swung the whole way)
-    let visual_pos_key = egui::Id::unique(("tl-vs-visual-position", id));
-    let visual_top_key = egui::Id::unique(("tl-vs-visual-top", id));
-    let visual_state_key = egui::Id::unique(("tl-vs-visual-state", id));
-    let mode_key = egui::Id::unique(("tl-vs-mode", id));
-    let saved_visual_pos = ui.data(|d| d.get_temp::<f32>(visual_pos_key));
-    let saved_visual_top = ui.data(|d| d.get_temp::<f32>(visual_top_key));
-    let saved_visual_state = ui.data(|d| d.get_temp::<(f32, f32, f32, f32, f32, f32)>(visual_state_key));
-    let active_mode = ui.data(|d| d.get_temp::<u8>(mode_key)).unwrap_or(0);
-    let visual_geometry_matches = saved_visual_state.is_some_and(|(_, _, saved_top, saved_bar_h, saved_window_h, saved_slots)| {
-        (saved_top - bar.min.y).abs() < 0.01
-            && (saved_bar_h - bar.height()).abs() < 0.01
-            && (saved_window_h - window_h).abs() < 0.01
-            && (saved_slots - slots).abs() < 0.01
+    let live_max = (slots.max(1.0) * *track_h - window_h).max(0.0);
+    let min_thumb = MIN_THUMB_W.min(bar.height()).max((bar.width() + 4.0).min(bar.height()));
+    let resize_key = egui::Id::unique(("tl-vs-resize", id));
+    let mut resize = ui.data(|d| d.get_temp::<TrackResizeState>(resize_key)).filter(|s| {
+        s.fixed.is_finite() && s.center.is_finite() && s.free_len.is_finite() && s.view_anchor.is_none_or(|(a, o, _)| a.is_finite() && o.is_finite())
     });
-    // The normal (non-inverted) lower outer edge keeps the upper useful viewport edge fixed.
-    // If the logarithmic thumb reaches the lane's bottom clamp, shrinking its available length
-    // here prevents that clamp from dragging the opposite, inner edge along with it.
-    let anchor_key = egui::Id::unique(("tl-vs-fixed-edge", id));
+    let active_mode = resize.map_or(0, |s| s.mode);
+    let mut h = track_thumb(*track_h, bar.height(), min_height).clamp(min_thumb, bar.height());
     if decouple
-        && active_mode == 2
-        && !invert
-        && let Some((2, top, _)) = ui.data(|d| d.get_temp::<(u8, f32, f32)>(anchor_key))
+        && matches!(active_mode, 1 | 2)
+        && let Some(s) = resize
     {
-        h = h.min((bar.max.y - top).max(bar.width() + 4.0));
+        let room = if s.mode == 1 { s.fixed - bar.min.y } else { bar.max.y - s.fixed };
+        // The ring and its center sit just beyond the rail at an endpoint. Preserve a one-point
+        // capture margin so the last fractional-track detent remains attainable.
+        h = h.min((room + 1.0).max(min_thumb));
     }
-    let visual_rest_matches = saved_visual_state.is_some_and(|(_, saved_height, saved_top, saved_bar_h, saved_window_h, saved_slots)| {
-        (saved_height - *track_h).abs() < 0.01
-            && (saved_top - bar.min.y).abs() < 0.01
-            && (saved_bar_h - bar.height()).abs() < 0.01
-            && (saved_window_h - window_h).abs() < 0.01
-            && (saved_slots - slots).abs() < 0.01
-    });
-    let pos = if (decouple && matches!(active_mode, 1 | 2) && visual_geometry_matches) || visual_rest_matches {
-        saved_visual_pos.unwrap_or(0.5).clamp(0.0, 1.0)
-    } else if max > 0.5 {
-        (if invert { 1.0 - *value / max } else { *value / max }).clamp(0.0, 1.0)
+    let travel = (bar.height() - h).max(0.0);
+    let position = if live_max > 0.5 { (if invert { 1.0 - *value / live_max } else { *value / live_max }).clamp(0.0, 1.0) } else { 0.5 };
+    let y = if decouple && matches!(active_mode, 1 | 2) {
+        resize.map(|s| if s.mode == 1 { s.fixed - h } else { s.fixed }).unwrap_or(bar.min.y + travel * position)
     } else {
-        saved_visual_pos.unwrap_or(0.5).clamp(0.0, 1.0)
+        bar.min.y + travel * position
     };
-    let y = if decouple && active_mode == 2 && !invert {
-        ui.data(|d| d.get_temp::<(u8, f32, f32)>(anchor_key))
-            .map(|(_, top, _)| top.clamp(bar.min.y, (bar.max.y - h).max(bar.min.y)))
-            .unwrap_or(bar.min.y + travel * pos)
-    } else if (decouple && matches!(active_mode, 1 | 2) && visual_geometry_matches) || visual_rest_matches {
-        saved_visual_top.unwrap_or(bar.min.y + travel * pos).clamp(bar.min.y, (bar.max.y - h).max(bar.min.y))
-    } else if decouple && max <= 0.5 && ui.input(|i| i.pointer.primary_down()) {
-        if let Some((mode, fixed, _)) = ui.data(|d| d.get_temp::<(u8, f32, f32)>(anchor_key)) {
-            (if mode == 1 { fixed - h } else { fixed }).clamp(bar.min.y, (bar.max.y - h).max(bar.min.y))
-        } else {
-            bar.min.y + travel * pos
-        }
-    } else {
-        bar.min.y + travel * pos
-    };
+    let y = if decouple && matches!(active_mode, 1 | 2) { y } else { y.clamp(bar.min.y, (bar.max.y - h).max(bar.min.y)) };
     let thumb = Rect::from_min_size(pos2(bar.min.x, y), vec2(bar.width(), h));
     let resp = ui.interact(bar, egui::Id::unique(("tl-vs", id)), Sense::click_and_drag());
     let hover = ui.rect_contains_pointer(thumb) || resp.dragged();
@@ -3926,9 +4272,6 @@ pub(super) fn vertical_scrollbar(
     let wi = thumb.width();
     let circle_t = thumb.min.y + wi / 2.0;
     let circle_b = thumb.max.y - wi / 2.0;
-    // what the press grabbed (end circle / edge = zoom, middle = scroll), remembered for the drag
-    let free_key = egui::Id::unique(("tl-vs-free-length", id));
-    let view_anchor_key = egui::Id::unique(("tl-vs-view-anchor", id));
     if resp.drag_started() && !controls_capturing(ui) {
         let mode = if let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
             if (q.y - circle_t).abs() <= CIRCLE && (q.x - cx).abs() <= CIRCLE {
@@ -3945,29 +4288,33 @@ pub(super) fn vertical_scrollbar(
         } else {
             0u8
         };
-        ui.data_mut(|d| d.insert_temp(mode_key, mode));
-        if mode == 1 || mode == 2 {
-            ui.data_mut(|d| d.insert_temp(anchor_key, (mode, if mode == 1 { thumb.max.y } else { thumb.min.y }, thumb.center().y)));
-            if decouple && track_h.is_finite() && *track_h > 0.0 {
-                let outer = (invert && mode == 1) || (!invert && mode == 2);
-                // The anchor is the actual content coordinate at the fixed viewport edge. Keep
-                // the half-point separator alignment in that coordinate so a snap can resize
-                // tracks without pulling the visible row boundary away from the edit area.
-                let offset = if invert { -0.5 } else { 0.5 };
-                let anchor = ((if outer { *value } else { window_h + *value }) + offset) / *track_h;
-                if anchor.is_finite() {
-                    ui.data_mut(|d| d.insert_temp(view_anchor_key, (anchor, offset)));
-                }
-            }
+        let fixed = if mode == 1 { thumb.max.y } else { thumb.min.y };
+        let outer = (invert && mode == 1) || (!invert && mode == 2);
+        // Capture the nearest visible row boundary and its exact screen offset. Keeping the
+        // normalized viewport edge alone makes a nearby row drift as track height changes.
+        let view_anchor = (decouple && matches!(mode, 1 | 2)).then(|| capture_fixed_view_anchor(*value, window_h, *track_h, outer)).flatten();
+        let last_snap_q = view_anchor.map(|(_, _, edge)| if edge { (window_h + *value + 1.0) / *track_h } else { (*value - 1.0) / *track_h });
+        resize = Some(TrackResizeState { mode, fixed, center: thumb.center().y, free_len: h, view_anchor, snap_detent: None, last_snap_q });
+        if let Some(state) = resize {
+            ui.data_mut(|d| d.insert_temp(resize_key, state));
         }
-        ui.data_mut(|d| d.insert_temp(free_key, h));
     }
-    let mode: u8 = ui.data(|d| d.get_temp(mode_key)).unwrap_or(0);
+    let mode = resize.map_or(0, |s| s.mode);
     if resp.drag_stopped() {
-        ui.data_mut(|d| d.remove_temp::<u8>(mode_key));
-        ui.data_mut(|d| d.remove_temp::<f32>(free_key));
-        ui.data_mut(|d| d.remove_temp::<(u8, f32, f32)>(anchor_key));
-        ui.data_mut(|d| d.remove_temp::<(f32, f32)>(view_anchor_key));
+        ui.data_mut(|d| d.remove_temp::<TrackResizeState>(resize_key));
+        resize = None;
+        // Track sliders share the zoom bar's Shift-drag cursor pin. Release it on this
+        // response's end so a completed drag never leaves the OS cursor confined.
+        if !matches!(tl.drag, Some(Drag::ZoomBar { .. })) && tl.zoombar_cursor_lock.take().is_some() {
+            tl.zoombar_unlock_catchup = true;
+            release_zoombar_cursor(ui.ctx(), tl.zoombar_cursor_viewport.take());
+        }
+    }
+    // Lost OS releases must not leave a resize mode active forever. A live egui drag always has
+    // primary held; otherwise discard the captured geometry and rebuild from the current view.
+    if !resp.dragged() && !ui.input(|i| i.pointer.primary_down()) {
+        ui.data_mut(|d| d.remove_temp::<TrackResizeState>(resize_key));
+        resize = None;
     }
     let hp = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     // while the MIDDLE is dragged the end circles ignore the pointer entirely (the pinned
@@ -4062,228 +4409,65 @@ pub(super) fn vertical_scrollbar(
         // moves the CONTENT (0.2 content points): each rate is a constant, never one the track
         // count or the scroll range can skew
         let dy = (moved * if shift_on { rate * SHIFT_THUMB_RATE } else { 1.0 }) as f32;
-        match mode {
-            // an end circle or the edge zone under it: zoom the tracks' height. The dragged edge
-            // follows the mouse 1:1 and the other edge mirrors it, so the thumb collapses/grows
-            // about its own middle (never toward the dragged circle). The motion is linear in the
-            // THUMB's length -- linear in the track height felt exponential -- and hard-stops at
-            // the ends of the range: once the thumb is at its smallest the drag does nothing at
-            // all (no drift, no scroll, nothing).
-            1 | 2 => {
-                let bar_h = bar.height();
-                let slots = slots.max(1.0);
-                // The DRAWN thumb is the source of truth and the height is its log-meter
-                // inverse ([`track_height_of`]): a bijection, so the drag can neither explode
-                // nor compound over its frames.
-                let height_of = |len: f32| track_height_of(len, bar_h, min_height);
-                // a short (but non-collapsed) Timeline can leave the bar under the 34 pt thumb
-                // minimum: every clamp must keep its bounds in order or it panics
-                let lo = THUMB_MIN.min(bar_h);
-                let edge = decouple;
-                // geometry is in drawn-thumb points (the thumb cannot leave its track)
-                let (_, fixed, center) =
-                    ui.data(|d| d.get_temp::<(u8, f32, f32)>(anchor_key)).unwrap_or((mode, if mode == 1 { y + h } else { y }, y + h / 2.0));
-                // Keep the opposite edge in track coordinates: the thumb is only a
-                // logarithmic representation of the view and cannot serve as its anchor.
-                let outer = (invert && mode == 1) || (!invert && mode == 2);
-                let view_anchor = if edge {
-                    ui.data(|d| d.get_temp::<(f32, f32)>(view_anchor_key)).filter(|(anchor, offset)| anchor.is_finite() && offset.is_finite())
+        if matches!(mode, 1 | 2) {
+            if let Some(state) = resize
+                && let Some((new_height, new_scroll, free_len, snap_detent, last_snap_q)) =
+                    resize_track_edge(state, dy, shift_on, snap, invert, decouple, *value, slots, window_h, min_height, bar, min_thumb)
+            {
+                *track_h = new_height;
+                *value = new_scroll;
+                // Keep the active thumb on the same scroll-to-rail mapping used on the next
+                // frame after release. Previously the active layout stayed pinned to the
+                // press-time rail edge while the view range changed; once the resize state was
+                // removed, the canonical position was recomputed from `new_scroll` and jumped.
+                // The content boundary remains fixed by `view_anchor`; this only synchronizes
+                // the thumb's rail-space opposite edge in real time.
+                let mut fixed = state.fixed;
+                if decouple {
+                    let max_scroll = (slots.max(1.0) * new_height - window_h).max(0.0);
+                    let position =
+                        if max_scroll > 0.5 { (if invert { 1.0 - new_scroll / max_scroll } else { new_scroll / max_scroll }).clamp(0.0, 1.0) } else { 0.5 };
+                    let thumb_len = track_thumb(new_height, bar.height(), min_height).clamp(min_thumb, bar.height());
+                    let thumb_y = bar.min.y + (bar.height() - thumb_len).max(0.0) * position;
+                    fixed = if mode == 1 { thumb_y + thumb_len } else { thumb_y };
+                }
+                let next_state = TrackResizeState { fixed, free_len, snap_detent, last_snap_q, ..state };
+                ui.data_mut(|d| d.insert_temp(resize_key, next_state));
+                ui.ctx().request_repaint();
+            }
+        } else {
+            let live_max = (slots.max(1.0) * *track_h - window_h).max(0.0);
+            if live_max > 0.5 {
+                if shift_on {
+                    let delta = (moved * rate * SHIFT_CONTENT_RATE) as f32;
+                    *value = (*value + if invert { -delta } else { delta }).clamp(0.0, live_max);
                 } else {
-                    None
-                };
-                let anchor_floor = view_anchor.map_or(min_height, |(anchor, offset)| {
-                    let divisor = if outer { slots - anchor } else { anchor };
-                    let numerator = if outer { window_h - offset } else { window_h + offset };
-                    if divisor > 1e-6 { (numerator / divisor).max(min_height) } else { (*track_h).max(min_height) }
-                });
-                // Keep the fixed thumb edge inside the slider after release as well as during the
-                // drag. The visual edge is clamped to the bar while dragging; without this bound,
-                // the inverse height mapping can produce a thumb longer than the remaining bar
-                // and it jumps when the temporary drag anchor is discarded.
-                let available_thumb = if outer { if mode == 1 { fixed - bar.min.y } else { bar.max.y - fixed } } else { bar.height() };
-                let geometry_floor = track_height_of(available_thumb.clamp(lo, bar_h), bar_h, min_height).max(min_height);
-                let floor = anchor_floor.max(geometry_floor).min(track_max_height(min_height));
-                let hi = track_thumb(floor, bar_h, min_height).clamp(lo, bar_h);
-                let top_of = |len: f32| {
-                    let len = len.clamp(lo, hi);
-                    if edge { if mode == 1 { fixed - len } else { fixed } } else { center - len / 2.0 }
-                };
-                let out = if mode == 1 { -dy } else { dy };
-                // a bar too short for the minimum thumb cannot host the height zoom at all:
-                // with `lo == hi` every drag frame would clamp to the bar and snap the tracks
-                // to their tallest
-                if hi > lo {
-                    // Keep the unsnapped hand position, rather than feeding the detent back
-                    // into the next frame's movement. It is discarded at drag release.
-                    // Resizing the outer circle at the divider keeps the divider-side
-                    // circle there. Otherwise zooming would scroll the rows away from it.
-                    let home = snap && !shift_on && outer && *value <= 0.5;
-                    let free = if shift_on { h } else { ui.data(|d| d.get_temp::<f32>(free_key)).unwrap_or(h) };
-                    let free = (free + if edge || home { out } else { 2.0 * out }).clamp(lo, hi);
-                    ui.data_mut(|d| d.insert_temp(free_key, free));
-                    let mut len = free;
-                    // Preserve the actual content coordinate at the fixed viewport edge while the
-                    // other edge changes track height. This anchor is independent of the thumb's
-                    // logarithmic length.
-                    let scroll_for = |height: f32| {
-                        if let Some((anchor, offset)) = view_anchor {
-                            let max_scroll = (slots * height - window_h).max(0.0);
-                            let anchored_scroll = if outer { anchor * height - offset } else { anchor * height - window_h - offset };
-                            return anchored_scroll.clamp(0.0, max_scroll);
-                        }
-                        let length = track_thumb(height, bar_h, min_height).clamp(lo, hi);
-                        let top = if home { if invert { bar.max.y - length } else { bar.min.y } } else { top_of(length).clamp(bar.min.y, bar.max.y - length) };
-                        let travel = (bar_h - length).max(0.0);
-                        let max_scroll = (slots * height - window_h).max(0.0);
-                        if travel <= 0.001 {
-                            let fraction = if max > 0.5 { (*value / max).clamp(0.0, 1.0) } else { 0.0 };
-                            return if home { 0.0 } else { fraction * max_scroll };
-                        }
-                        let position = ((top - bar.min.y) / travel).clamp(0.0, 1.0);
-                        if invert { (1.0 - position) * max_scroll } else { position * max_scroll }
-                    };
-                    let snapping = snap && !shift_on;
-                    let anchor_allows_fit = view_anchor.is_none_or(|(anchor, offset)| {
-                        let anchored_scroll = if outer { anchor * *track_h - offset } else { anchor * *track_h - window_h - offset };
-                        anchored_scroll.abs() <= 0.5
-                    });
-                    let fit_detent = snapping && outer && anchor_allows_fit && hi >= bar_h - 0.01 && slots * min_height <= window_h + 0.01 && free >= hi - 1.0;
-                    if fit_detent {
-                        len = hi;
-                    } else if snapping {
-                        let free_h = height_of(free);
-                        let tracks = (slots - 1.0 / 3.0).round().max(1.0);
-                        // Video and audio share the exact same detent calculation; `invert` only
-                        // changes which end of the vertical range each circle represents.
-                        // Audio's useful lower edge sits two points above its track separator.
-                        // Keep this adjustment in the actual edit-area snap target, independent of
-                        // the thumb geometry; video retains its original one-point clip inset.
-                        let snap_inset = if outer && !invert { 2.0 } else { 1.0 };
-                        let q = if outer { (window_h + scroll_for(free_h) + snap_inset) / free_h } else { (scroll_for(free_h) - 1.0) / free_h };
-                        let first = if outer { 1.0 } else { 0.0 };
-                        // Either pane's outer edge can reveal the one-third slot beyond its last
-                        // track. `slots` includes that detent, while `tracks` is the last whole
-                        // track boundary.
-                        let reveal = outer;
-                        let last = if outer { if reveal { slots } else { tracks } } else { (tracks - 1.0).max(0.0) };
-                        let nearest = q.round().clamp(first, last);
-                        let mut candidates = [nearest, nearest - 1.0, nearest + 1.0, if reveal { slots } else { nearest }];
-                        candidates.sort_by(|a, b| (q - *a).abs().total_cmp(&(q - *b).abs()));
-                        for k in candidates {
-                            if k < first || k > last || (q - k).abs() > 0.5 {
-                                continue;
-                            }
-                            // Clips are inset one point from the track edge. Align the clip
-                            // itself with the viewport so the separator is completely outside.
-                            let d = |height: f32| {
-                                if outer { window_h + scroll_for(height) - k * height + snap_inset } else { scroll_for(height) - k * height - 1.0 }
-                            };
-                            let max_height = track_max_height(min_height);
-                            let mut bracket = None;
-                            let lower_height = height_of(hi).max(min_height);
-                            let mut previous_h = lower_height;
-                            let mut previous_d = d(previous_h);
-                            for step in 1..=64 {
-                                let next_h = lower_height + (max_height - lower_height) * step as f32 / 64.0;
-                                let next_d = d(next_h);
-                                if previous_d * next_d <= 0.0 {
-                                    let distance = (free_h - (previous_h + next_h) * 0.5).abs();
-                                    if bracket.is_none_or(|(_, _, best): (f32, f32, f32)| distance < best) {
-                                        bracket = Some((previous_h, next_h, distance));
-                                    }
-                                }
-                                previous_h = next_h;
-                                previous_d = next_d;
-                            }
-                            let Some((mut lower, mut upper, _)) = bracket else { continue };
-                            let mut dl = d(lower);
-                            for _ in 0..32 {
-                                let mid = (lower + upper) * 0.5;
-                                let dm = d(mid);
-                                if (dm >= 0.0) == (dl >= 0.0) {
-                                    lower = mid;
-                                    dl = dm;
-                                } else {
-                                    upper = mid;
-                                }
-                            }
-                            let solved = (lower + upper) * 0.5;
-                            if d(solved).abs() > 0.01 {
-                                continue;
-                            }
-                            len = track_thumb(solved, bar_h, min_height).clamp(lo, hi);
-                            break;
-                        }
-                    }
-                    if (len - h).abs() > f32::EPSILON {
-                        let new_h = height_of(len);
-                        let new_scroll = if fit_detent { 0.0 } else { scroll_for(new_h) };
-                        *value = new_scroll;
-                        *track_h = new_h;
-                        if edge {
-                            let travel = (bar_h - len).max(0.0);
-                            if travel > 0.001 {
-                                let top = top_of(len).clamp(bar.min.y, bar.max.y - len);
-                                let position = ((top - bar.min.y) / travel).clamp(0.0, 1.0);
-                                ui.data_mut(|d| {
-                                    d.insert_temp(visual_pos_key, position);
-                                    d.insert_temp(visual_top_key, top);
-                                    d.insert_temp(visual_state_key, (new_scroll, new_h, bar.min.y, bar_h, window_h, slots));
-                                });
-                            }
-                        }
-                        ui.ctx().request_repaint();
-                    }
+                    let position = ((y + dy - bar.min.y) / travel.max(1.0)).clamp(0.0, 1.0);
+                    *value = (if invert { 1.0 - position } else { position }) * live_max;
                 }
             }
-            // the middle: 1:1 scroll, as the zoom bar's middle (Inverted controls never touches
-            // it). The wheel while the middle is held zooms the tracks' height about the thumb's
-            // middle, like the end circles -- the other way with Inverted controls. Shift slows
-            // the wheel down (the Alternate Drag Speed setting on top of a tenth of the ordinary
-            // effect) and counts a sideways gesture too. The wheel and the drag run together:
-            // while the middle is dragged the scroll keeps its fraction of the new range, so the
-            // slider never freezes for the length of a wheel gesture.
-            _ => {
-                if max > 0.5 {
-                    // plain: the thumb follows the pointer 1:1; Shift: the content moves at the
-                    // fixed Shift rate above. A thumb that fills the bar (22 pt tracks) leaves no
-                    // travel to follow, so the scroll per point is floored -- one pixel can never
-                    // sweep the whole range again.
-                    let d = if shift_on { (moved * rate * SHIFT_CONTENT_RATE) as f32 } else { dy / travel.max(24.0) * max };
-                    *value = (*value + if invert { -d } else { d }).clamp(0.0, max);
-                }
-                let shift = ui.input(|i| i.modifiers.shift);
-                let (wy, wx) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x));
-                let mut wheel = if shift { wy + wx } else { wy };
-                if shift {
-                    // Custom 10x is a real speed-up (2.5x the plain wheel), not a wash
-                    wheel *= shift_speed.max(0.01) / 4.0;
-                }
-                if inverted {
-                    wheel = -wheel;
-                }
-                let factor = (wheel / 600.0).clamp(-0.30, 0.30);
-                if wheel.is_finite() && factor != 0.0 {
-                    let bar_h = bar.height();
-                    let slots = slots.max(1.0);
-                    let new_h = (*track_h * (1.0 + factor)).clamp(min_height, track_max_height(min_height));
-                    let glen = track_thumb(new_h, bar_h, min_height).clamp(THUMB_MIN.min(bar_h), bar_h);
-                    let max_new = (slots * new_h - window_h).max(0.0);
-                    // a drag writes the scroll this frame already: keep its fraction of the new
-                    // range (the thumb's position fraction, the same `p2` the drawn geometry
-                    // gave). Deriving it from the drawn thumb instead threw every frame of the
-                    // drag away and froze the slider until the wheel gesture ended.
-                    let frac = if resp.dragged() {
-                        if max > 0.5 { (if invert { 1.0 - *value / max } else { *value / max }).clamp(0.0, 1.0) } else { 0.5 }
-                    } else {
-                        let mid_y = y + h / 2.0;
-                        let travel2 = (bar_h - glen).max(1.0);
-                        ((mid_y - glen / 2.0 - bar.min.y) / travel2).clamp(0.0, 1.0)
-                    };
-                    *value = if invert { (1.0 - frac) * max_new } else { frac * max_new };
-                    *track_h = new_h;
-                    tl.track_anim = None;
-                }
+
+            let shift = ui.input(|i| i.modifiers.shift);
+            let (wy, wx) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x));
+            let mut wheel = if shift { wy + wx } else { wy };
+            if shift {
+                wheel *= shift_speed.max(0.01) / 4.0;
+            }
+            if inverted {
+                wheel = -wheel;
+            }
+            let factor = (wheel / 600.0).clamp(-0.30, 0.30);
+            if wheel.is_finite() && factor != 0.0 {
+                let new_height = (*track_h * (1.0 + factor)).clamp(min_height, track_max_height(min_height));
+                let new_len = track_thumb(new_height, bar.height(), min_height).clamp(min_thumb, bar.height());
+                let center_y = y + h * 0.5;
+                let new_top = (center_y - new_len * 0.5).clamp(bar.min.y, (bar.max.y - new_len).max(bar.min.y));
+                let new_travel = (bar.height() - new_len).max(0.0);
+                let position = if new_travel > 0.001 { ((new_top - bar.min.y) / new_travel).clamp(0.0, 1.0) } else { 0.5 };
+                let new_max = (slots.max(1.0) * new_height - window_h).max(0.0);
+                *value = (if invert { 1.0 - position } else { position }) * new_max;
+                *track_h = new_height;
+                tl.track_anim = None;
             }
         }
     }
@@ -4299,6 +4483,12 @@ pub(super) fn vertical_scrollbar(
     } else if bindings[1].is_empty() && mouse.as_deref() == Some("Ctrl + Shift + Double Click") {
         clicks = 3;
     }
+    // A mirror is a discrete gesture, so it must never inherit a cursor pin left by a
+    // just-completed slider drag. Keep the zoom bar's own active drag as the sole owner.
+    if clicks != 0 && !matches!(tl.drag, Some(Drag::ZoomBar { .. })) && tl.zoombar_cursor_lock.take().is_some() {
+        tl.zoombar_unlock_catchup = true;
+        release_zoombar_cursor(ui.ctx(), tl.zoombar_cursor_viewport.take());
+    }
     // a click beside the thumb jumps the view there, as on the zoom bar
     if clicks == 0
         && !controls_capturing(ui)
@@ -4308,7 +4498,7 @@ pub(super) fn vertical_scrollbar(
     {
         tl.track_anim = None;
         let f = ((q.y - bar.min.y - h / 2.0) / travel.max(1.0)).clamp(0.0, 1.0);
-        *value = if invert { (1.0 - f) * max } else { f * max };
+        *value = if invert { (1.0 - f) * live_max } else { f * live_max };
     }
     // right-click: the settings popup, always to the LEFT of the sliders (their alternate
     // position comes later), at the pointer's height
@@ -4350,7 +4540,6 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // narrower width left an uneven gap on the right of the Hide Slider row
     let row_w = ui.available_width();
     let hidden = app.session.state.timeline_ui.track_slider_hidden;
-    capture_controls(app, ui);
     // the top row: Hide Slider (red) while the sliders show, Unhide Slider (blue) while hidden
     let (r, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::click());
     let hide_resp = ui.interact(r, egui::Id::unique(if hidden { "timeline-track-slider-unhide" } else { "timeline-track-slider-hide" }), Sense::click());
@@ -4392,7 +4581,7 @@ fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             (tl!("Explode Slider:"), "Shift + Double Click", 1),
             (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
             (tl!("Scroll Track Rows:"), "Ctrl + Scroll", 6),
-            (tl!("Adjust Track Height:"), "Shift + Scroll", 4),
+            (tl!("Adjust Track Height:"), "Unbound", 4),
         ],
     );
     controls_arrow(ui, arow, content_w, r.max.x, controls_right, t.text_dim);
@@ -4836,7 +5025,176 @@ mod zoom_limit_geometry_tests {
 
 #[cfg(test)]
 mod track_detent_tests {
-    use super::{resize_tracks_from_timeline, track_min_height};
+    use super::{
+        TrackResizeState, capture_fixed_view_anchor, fixed_edge_anchor, height_for_fixed_edge_detent, resize_track_edge, resize_tracks_from_timeline,
+        scroll_for_fixed_edge, snap_edge_height, track_min_height, track_thumb,
+    };
+
+    #[test]
+    fn detached_anchor_keeps_midrow_coordinates_exact_and_snapped_lines_pixel_pinned() {
+        let midrow = capture_fixed_view_anchor(6.333 * 100.0, 300.0, 100.0, true).expect("finite mid-row anchor");
+        assert!((midrow.0 - 6.333).abs() < 1e-5);
+        assert_eq!(midrow.1, 0.0, "a mid-row edge must not quantize to its nearest divider");
+
+        let divider = capture_fixed_view_anchor(101.0, 300.0, 100.0, true).expect("finite divider anchor");
+        assert_eq!(divider.0, 1.0);
+        assert_eq!(divider.1, -1.0, "an already snapped white line retains its exact rendered inset");
+    }
+
+    #[test]
+    fn snapped_track_detents_hold_until_the_pointer_crosses_the_next_midpoint() {
+        let (window, slots, anchor, offset) = (214.0, 9.0 + 1.0 / 3.0, 1.0, 0.5);
+        let min_height = 22.0;
+        let max_height = 220.0;
+        let before_midpoint = snap_edge_height(4.54, min_height, max_height, anchor, window, offset, true, slots, 0.54, Some(4.0))
+            .expect("the current whole-track detent stays latched through jitter");
+        assert_eq!(before_midpoint.1, 4.0);
+        let beyond_midpoint = snap_edge_height(4.56, min_height, max_height, anchor, window, offset, true, slots, 0.56, Some(4.0))
+            .expect("the next detent becomes available after the midpoint");
+        assert_eq!(beyond_midpoint.1, 5.0);
+        let endpoint = snap_edge_height(9.18, min_height, max_height, anchor, window, offset, true, slots, 0.18, Some(9.0))
+            .expect("the fractional reveal edge is reachable from the last whole row");
+        assert_eq!(endpoint.1, slots);
+        let stationary = snap_edge_height(9.18, min_height, max_height, anchor, window, offset, true, slots, 0.0, Some(slots))
+            .expect("the fractional detent remains latched on a stationary frame");
+        assert_eq!(stationary.1, slots);
+    }
+
+    #[test]
+    fn snapped_fractional_endpoint_does_not_bounce_back_on_a_stationary_frame() {
+        let (window, slots, bar_h) = (214.0, 9.0 + 1.0 / 3.0, 240.0);
+        let min_height = track_min_height(window, slots);
+        let target_height = (window + 0.5) / (slots - 1.0);
+        let target_len = track_thumb(target_height, bar_h, min_height);
+        let bar = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(12.0, bar_h));
+        let state = TrackResizeState {
+            mode: 2,
+            fixed: bar.max.y - (target_len - 0.5),
+            center: bar.center().y,
+            free_len: 34.0,
+            view_anchor: Some((1.0, 0.5, true)),
+            snap_detent: None,
+            last_snap_q: Some(1.0),
+        };
+        let first = resize_track_edge(state, target_len - state.free_len + 1.0, false, true, false, true, 0.0, slots, window, min_height, bar, 34.0)
+            .expect("the outer fractional detent is reachable");
+        let steady_state = TrackResizeState { free_len: first.2, snap_detent: first.3, last_snap_q: first.4, ..state };
+        let second = resize_track_edge(steady_state, 0.0, false, true, false, true, first.1, slots, window, min_height, bar, 34.0)
+            .expect("the captured resize remains valid without new motion");
+
+        assert!((first.0 - target_height).abs() < 0.01, "the first frame reaches the one-third reveal detent");
+        assert!((second.0 - first.0).abs() < 0.01, "a stationary frame must not snap back to the last whole track");
+        assert!((second.1 - first.1).abs() < 0.01, "the visible viewport must stay at the endpoint");
+    }
+
+    #[test]
+    fn outer_endpoint_snap_latches_from_last_track_during_a_live_drag_for_both_orientations() {
+        let (window, bar_h, slots, min_thumb) = (420.0, 240.0, 9.0 + 1.0 / 3.0, 34.0);
+        let bar = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(12.0, bar_h));
+        let min_height = track_min_height(window, slots);
+        let last_whole = (slots - 1.0 / 3.0).round();
+
+        // Video grabs its upper edge (mode 1, inverted rail); audio grabs its lower edge
+        // (mode 2, normal rail). Both represent the same outer timeline boundary.
+        for (mode, invert, offset) in [(1, true, -0.5), (2, false, 0.5)] {
+            for anchor in [1.5, 2.5, 5.5] {
+                let start_height =
+                    height_for_fixed_edge_detent(anchor, window, offset, true, last_whole).expect("the final whole-track detent has a finite height");
+                let start_scroll = scroll_for_fixed_edge(anchor, start_height, window, offset, true);
+                let start_len = track_thumb(start_height, bar_h, min_height);
+                let max_scroll = (slots * start_height - window).max(0.0);
+                let position = if invert { 1.0 - start_scroll / max_scroll } else { start_scroll / max_scroll };
+                let thumb_y = bar.min.y + (bar_h - start_len) * position;
+                let fixed = if mode == 1 { thumb_y + start_len } else { thumb_y };
+                let mut state = TrackResizeState {
+                    mode,
+                    fixed,
+                    center: thumb_y + start_len * 0.5,
+                    free_len: start_len,
+                    view_anchor: Some((anchor, offset, true)),
+                    snap_detent: Some(last_whole),
+                    last_snap_q: Some(last_whole),
+                };
+                let mut value = start_scroll;
+                let mut reached_endpoint = false;
+
+                for _ in 0..80 {
+                    let dy = if mode == 1 { -0.1 } else { 0.1 };
+                    let (height, scroll, free_len, snap_detent, last_snap_q) =
+                        resize_track_edge(state, dy, false, true, invert, true, value, slots, window, min_height, bar, min_thumb)
+                            .expect("the anchored drag remains within range");
+                    let detent = snap_detent.expect("the visible boundary remains snapped");
+                    let visible_outer = (window + scroll + 1.0) / height;
+                    assert!(
+                        (visible_outer - detent).abs() < 0.02,
+                        "the {mode} orientation's visible timeline boundary must match its detent: {visible_outer} vs {detent}"
+                    );
+                    if detent == slots {
+                        reached_endpoint = true;
+                    }
+                    assert!(
+                        !reached_endpoint || detent == slots,
+                        "the {mode} orientation bounced from the one-third endpoint back to a whole track (anchor {anchor}, detent {detent})"
+                    );
+
+                    let length = track_thumb(height, bar_h, min_height).clamp(min_thumb, bar_h);
+                    let max_scroll = (slots * height - window).max(0.0);
+                    let position = if max_scroll > 0.5 { (if invert { 1.0 - scroll / max_scroll } else { scroll / max_scroll }).clamp(0.0, 1.0) } else { 0.5 };
+                    let thumb_y = bar.min.y + (bar_h - length).max(0.0) * position;
+                    state = TrackResizeState { fixed: if mode == 1 { thumb_y + length } else { thumb_y }, free_len, snap_detent, last_snap_q, ..state };
+                    value = scroll;
+                }
+
+                assert!(reached_endpoint, "the {mode} orientation never snapped to the final one-third slot (anchor {anchor})");
+            }
+        }
+    }
+
+    #[test]
+    fn snapped_audio_outer_edge_preserves_the_inner_viewport_edge() {
+        let (window, old_height, old_scroll, offset) = (300.0, 120.0, 84.0, 0.5);
+        let mut height = old_height;
+        let mut scroll = old_scroll;
+        for new_height in [140.0, 100.0, 160.0] {
+            let anchor = fixed_edge_anchor(scroll, window, height, true, offset);
+            let new_scroll = scroll_for_fixed_edge(anchor, new_height, window, offset, true);
+            let after = fixed_edge_anchor(new_scroll, window, new_height, true, offset);
+            assert!((after - anchor).abs() < 1e-6, "repeatedly snapping the audio outer edge must leave its inner edge fixed");
+            scroll = new_scroll;
+            height = new_height;
+        }
+
+        // The video slider follows the same outer-edge mapping, with its existing opposite
+        // half-point inset. Keep that working mapping unchanged.
+        let video_anchor = fixed_edge_anchor(old_scroll, window, old_height, true, -offset);
+        let video_scroll = scroll_for_fixed_edge(video_anchor, old_height + 20.0, window, -offset, true);
+        assert!((fixed_edge_anchor(video_scroll, window, old_height + 20.0, true, -offset) - video_anchor).abs() < 1e-6);
+    }
+
+    #[test]
+    fn audio_inner_outer_inner_snap_sequence_keeps_each_fixed_edge_stable() {
+        let (window, offset) = (300.0, 0.5);
+        let (mut height, mut scroll) = (120.0, 84.0);
+
+        // Inner edge moves first: the opposite (outer) viewport edge stays fixed.
+        let outer_anchor = fixed_edge_anchor(scroll, window, height, false, offset);
+        height = 130.0;
+        scroll = scroll_for_fixed_edge(outer_anchor, height, window, offset, false);
+        assert!((fixed_edge_anchor(scroll, window, height, false, offset) - outer_anchor).abs() < 1e-6);
+
+        // Outer edge moves next: the inner viewport edge stays fixed.
+        let inner_anchor = fixed_edge_anchor(scroll, window, height, true, offset);
+        height = 140.0;
+        scroll = scroll_for_fixed_edge(inner_anchor, height, window, offset, true);
+        assert!((fixed_edge_anchor(scroll, window, height, true, offset) - inner_anchor).abs() < 1e-6);
+
+        // Moving the inner edge again must still preserve the latest outer anchor.
+        let outer_anchor = fixed_edge_anchor(scroll, window, height, false, offset);
+        height = 150.0;
+        scroll = scroll_for_fixed_edge(outer_anchor, height, window, offset, false);
+        assert!((fixed_edge_anchor(scroll, window, height, false, offset) - outer_anchor).abs() < 1e-6);
+        assert!(height.is_finite() && scroll.is_finite() && scroll >= 0.0);
+    }
 
     #[test]
     fn linked_resize_respects_fit_and_preserves_each_scroll_independently() {

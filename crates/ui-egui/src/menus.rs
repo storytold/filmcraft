@@ -1264,8 +1264,8 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
         ("timeline.trackSliderMirror", "Track Sliders: Mirror", Some("Double Click")),
         ("timeline.trackSliderExplode", "Track Sliders: Explode", Some("Shift+Double Click")),
         ("timeline.trackSliderAlternate", "Track Sliders: Alternate Drag Speed", Some("Shift+Drag")),
-        ("timeline.adjustTrackHeight", "Track Sliders: Adjust Track Height", Some("Shift+Scroll")),
-        ("timeline.fastScroll", "Timeline: Fast Scroll", None),
+        ("timeline.adjustTrackHeight", "Track Sliders: Adjust Track Height", None),
+        ("timeline.fastScroll", "Timeline: Fast Scroll", Some("Shift+Scroll")),
         ("timeline.scrollTrackRows", "Track Sliders: Scroll Track Rows", Some("Cmd+Scroll")),
         ("timeline.zoomScroll", "Timeline: Zoom", Some("Alt+Scroll")),
     ] {

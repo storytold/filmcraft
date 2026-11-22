@@ -217,7 +217,12 @@ impl FilmcraftApp {
             // reopen the workspace in use when the app last closed
             if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
                 self.workspace_restored = true;
-                self.set_workspace(&w);
+                // With no saved workspace data, UiState already starts in the built-in Editing
+                // layout. Leave it alone: callers can also configure an initial layout before
+                // the first frame (tests, embedded hosts, and new-document startup).
+                if !self.workspaces.saved.is_empty() || self.workspaces.last.is_some() || self.ui.workspace != w {
+                    self.set_workspace(&w);
+                }
                 self.restore_remembered_layout(&w);
             }
         }

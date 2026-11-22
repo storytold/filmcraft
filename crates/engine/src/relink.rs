@@ -560,6 +560,23 @@ fn deletable_media(s: &Session, id: ItemId, path: &str) -> bool {
     recorded.is_some_and(|want| identity_of(&*s.services, path).is_ok_and(|have| have == want))
 }
 
+/// Cached project items that resolve to the same existing file. The canonical path is computed
+/// before deletion so spelling aliases (including `..` and symlink paths) are invalidated too.
+fn cached_items_for_file(s: &Session, canonical: &Path) -> Vec<ItemId> {
+    s.project
+        .items
+        .values()
+        .filter_map(|it| {
+            let path = match &it.as_media()?.media {
+                MediaRef::File { path } if s.media.cached(it.id).is_some() => path,
+                _ => return None,
+            };
+            let followed = s.media.follow(path).ok()?;
+            (std::fs::canonicalize(followed).ok().as_deref() == Some(canonical)).then_some(it.id)
+        })
+        .collect()
+}
+
 /// `media.makeOffline {items?, deleteFiles?}`.
 pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
@@ -593,9 +610,14 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
             // it is a regular media file that is still the one the item was linked to.
             if let Ok(path) = s.media.follow(path)
                 && deletable_media(s, *id, &path)
-                && std::fs::remove_file(&path).is_ok()
             {
-                deleted.push(path.clone());
+                let aliases = std::fs::canonicalize(&path).ok().map(|canonical| cached_items_for_file(s, &canonical)).unwrap_or_default();
+                if std::fs::remove_file(&path).is_ok() {
+                    deleted.push(path);
+                    for item in aliases {
+                        s.media.remove(item);
+                    }
+                }
             }
         }
     }

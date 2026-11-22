@@ -69,6 +69,9 @@ pub const MIGRATIONS: &[Migration] = &[
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
 
+/// Largest project document accepted from disk. Projects contain references and metadata, not media.
+pub const MAX_PROJECT_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Oldest schema this build can still upgrade.
 pub const OLDEST_SCHEMA: u32 = 1;
 
@@ -86,6 +89,8 @@ pub enum FormatError {
     Migration { from: u32, msg: String },
     #[error("project file is damaged: {0}")]
     Corrupt(String),
+    #[error("project file is too large (limit: {limit} bytes)")]
+    TooLarge { limit: u64 },
 }
 
 /// A project read from disk.
@@ -207,6 +212,9 @@ fn probe_version(p: &Probe) -> Result<u32, FormatError> {
 
 /// Read a project file (any supported schema).
 pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
+    if bytes.len() as u64 > MAX_PROJECT_FILE_BYTES {
+        return Err(FormatError::TooLarge { limit: MAX_PROJECT_FILE_BYTES });
+    }
     let probe: Probe = serde_json::from_slice(bytes)
         .map_err(|e| if e.is_syntax() || e.is_eof() { FormatError::Corrupt(e.to_string()) } else { FormatError::NotAProject(e.to_string()) })?;
     let found = probe_version(&probe)?;
@@ -247,7 +255,9 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
         let name = item.name.clone();
         match &mut item.kind {
             filmcraft_project::ItemKind::Media(m) => {
-                if let Some(video) = &m.info.video {
+                if let Some(video) = &m.info.video
+                    && (video.width != 0 || video.height != 0)
+                {
                     filmcraft_project::validate_frame_size(video.width, video.height).map_err(|e| FormatError::Corrupt(format!("media `{name}`: {e}")))?;
                 }
                 if m.info.audio_streams.len() > max {

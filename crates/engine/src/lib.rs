@@ -83,6 +83,56 @@ pub fn temp_dir() -> std::path::PathBuf {
     if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
 }
 
+/// Return a per-user private FilmCraft temp directory, creating it once per process.
+pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    static DIR: std::sync::Mutex<Option<(std::path::PathBuf, Option<(u64, u64)>)>> = std::sync::Mutex::new(None);
+    fn identity(path: &std::path::Path) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::symlink_metadata(path).ok().map(|metadata| (metadata.dev(), metadata.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    }
+    let mut cached = DIR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((dir, _)) = cached
+        .as_ref()
+        .filter(|(dir, id)| cfg!(target_arch = "wasm32") || (std::fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir()) && identity(dir) == *id))
+    {
+        return Ok(dir.clone());
+    }
+    let mut last = None;
+    for _ in 0..16 {
+        let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
+        if cfg!(target_arch = "wasm32") {
+            *cached = Some((path.clone(), None));
+            return Ok(path);
+        }
+        #[cfg(unix)]
+        let dir = {
+            let mut builder = std::fs::DirBuilder::new();
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+        };
+        #[cfg(not(unix))]
+        let dir = std::fs::DirBuilder::new();
+        match dir.create(&path) {
+            Ok(()) => {
+                *cached = Some((path.clone(), identity(&path)));
+                return Ok(path);
+            }
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no private temp folder")))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]
@@ -106,6 +156,19 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
+    /// Read at most `max` bytes, refusing larger files before allocating their contents when the
+    /// host can inspect file size without reading it.
+    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
+        let size = self.file_size(path)?;
+        if size > max {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("file is larger than the {max}-byte limit")));
+        }
+        let bytes = self.read_file(path)?;
+        if bytes.len() as u64 > max {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("file grew beyond the {max}-byte limit while reading")));
+        }
+        Ok(bytes)
+    }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
     /// Publish a complete new file only when the final path is unoccupied. Publication must
     /// reject a concurrent collision; a prior existence check alone is insufficient.
@@ -167,6 +230,9 @@ pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
+    }
+    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
+        filmcraft_media::reader::read_regular_file_bounded(std::path::Path::new(path), max)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -830,7 +896,7 @@ impl Session {
 
     /// Mark a project-file view setting as changed and journal its current project view.
     pub fn project_view_changed(&mut self) {
-        self.bump();
+        self.view_changed();
         self.sync_persistence();
     }
 

@@ -161,6 +161,15 @@ fn crash_recovery_end_to_end() {
     let proj = d.join("film.fcproj").to_string_lossy().to_string();
     // Session A: saved project, then unsaved edits, then a crash.
     let mut a = demo();
+    let timeline_ui = filmcraft_project::TimelineUiSettings {
+        smooth_animations: true,
+        alternate_slider_position: true,
+        playhead_side_seconds: 23.0,
+        shift_drag_speed: 2.5,
+        control_center_on_playhead: "Alt + P".into(),
+        ..Default::default()
+    };
+    a.state.timeline_ui = timeline_ui.clone();
     start(&mut a, &d);
     a.execute("file.saveAs", json!({"path": proj})).unwrap();
     a.execute("sequence.addEdit", json!({"seconds": 1.5})).unwrap();
@@ -174,6 +183,8 @@ fn crash_recovery_end_to_end() {
     let mut b = Session::default();
     start(&mut b, &d);
     assert!(b.recovery_candidates().is_empty(), "a live session's journal is never offered");
+    b.execute("file.open", json!({"path": proj})).unwrap();
+    assert_eq!(b.state.timeline_ui, timeline_ui, "Save and Open preserve project Timeline settings");
     b.shutdown();
     a.persistence.take().unwrap().simulate_crash();
 
@@ -188,6 +199,7 @@ fn crash_recovery_end_to_end() {
     assert_eq!(list[0]["savedAt"].as_str().unwrap().len(), 19);
     c.execute("file.recover", json!({})).unwrap();
     assert_eq!(*c.project, edited);
+    assert_eq!(c.state.timeline_ui, timeline_ui, "recovery restores project Timeline settings");
     assert!(c.is_dirty(), "recovered changes are unsaved");
     assert_eq!(c.path.as_deref(), Some(proj.as_str()));
     assert!(c.recovery_candidates().is_empty());
@@ -195,6 +207,9 @@ fn crash_recovery_end_to_end() {
     // The recovered state is already in C's own journal (a crash now loses nothing).
     assert_eq!(journaled(&mut c), c.revision);
     c.execute("file.save", json!({})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": proj})).unwrap();
+    assert_eq!(reopened.state.timeline_ui, timeline_ui, "saving recovered settings keeps them on the next open");
     wait_for("journal cleared", || {
         c.poll_persistence();
         !c.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj").exists()
@@ -409,6 +424,40 @@ fn scan_keeps_snapshot_when_session_metadata_is_unreadable() {
 }
 
 #[test]
+fn recovery_rechecks_snapshot_fingerprint_after_scan() {
+    use sha2::Digest;
+
+    let d = temp_dir("recover-snapshot-changed");
+    let session = autosave::recovery_root(&d).join("123-1");
+    std::fs::create_dir_all(&session).unwrap();
+    let snapshot = filmcraft_format::encode(&filmcraft_project::Project::new("Scanned"), false);
+    let fingerprint: [u8; 32] = sha2::Sha256::digest(&snapshot).into();
+    std::fs::write(session.join("snapshot.fcproj"), &snapshot).unwrap();
+    let metadata = autosave::JournalMeta { snapshot_fingerprint: Some(fingerprint), dirty: true, ..Default::default() };
+    std::fs::write(session.join("session.json"), serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let candidate = autosave::scan_candidates(&d, None).pop().unwrap();
+    let replacement = filmcraft_format::encode(&filmcraft_project::Project::new("Replaced"), false);
+    std::fs::write(&candidate.snapshot_path, replacement).unwrap();
+    let error = autosave::load_candidate(&candidate).unwrap_err();
+    assert!(error.contains("changed after"), "{error}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn recovery_scan_leaves_starting_session_directories_alone() {
+    let d = temp_dir("recover-startup-stage");
+    let staging = autosave::recovery_root(&d).join("123-1");
+    std::fs::create_dir_all(&staging).unwrap();
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(staging.is_dir(), "a concurrent scan must not remove a just-created directory before its lock is installed");
+    std::fs::write(staging.join(".starting"), []).unwrap();
+    assert!(autosave::scan_candidates(&d, None).is_empty());
+    assert!(staging.is_dir(), "a concurrent scan must leave a session with its startup marker alone");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn portable_marker_keeps_data_next_to_the_executable() {
     // #139: a portable install must not write to %APPDATA%.
     let d = temp_dir("portable");
@@ -520,7 +569,7 @@ fn project_captured_folder_outside_the_project_is_not_used() {
             Ok(())
         })
         .unwrap();
-        assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), beside, "{dir}");
+        assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured").unwrap(), beside, "{dir}");
         let paths = crate::project_tools::scratch_paths(&s);
         assert_eq!(paths["captured"]["path"], json!(beside), "{dir}");
         assert_eq!(paths["audioPreviews"]["path"], json!(beside), "{dir}");
@@ -531,7 +580,7 @@ fn project_captured_folder_outside_the_project_is_not_used() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured"), inner);
+    assert_eq!(crate::voiceover::media_dir(&s, &serde_json::Value::Null, "Captured").unwrap(), inner);
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }

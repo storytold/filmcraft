@@ -141,6 +141,126 @@ fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
 }
 
 #[test]
+fn audio_only_nested_media_reimport_keeps_parent_audio_without_video() {
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence format="r1"><spine><ref-clip ref="m{}" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
+    }
+    media.push_str(r#"<media id="m64" name="M64"><sequence format="r1"><spine><asset-clip ref="audio" srcEnable="audio" name="Audio" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#);
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources>
+          <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+          <asset id="audio" name="Audio" hasAudio="1" audioRate="48k"><media-rep src="audio.wav"/></asset>
+          {media}
+        </resources><library><event>
+          <project name="A"><sequence format="r1"><spine><ref-clip ref="m0" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine><ref-clip ref="m63" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("nested too deeply"), "{report:?}");
+    let sequence_id = imported.project.sequences().find(|item| item.name == "M63").unwrap().id;
+    let sequence = imported.project.sequence(sequence_id).unwrap();
+    assert!(sequence.video_tracks.iter().all(|track| track.items.is_empty()));
+    assert_eq!(sequence.audio_tracks.iter().map(|track| track.items.len()).sum::<usize>(), 1);
+
+    let parent_id = imported.project.sequences().find(|item| item.name == "B").unwrap().id;
+    let parent = imported.project.sequence(parent_id).unwrap();
+    assert!(parent.video_tracks.iter().all(|track| track.items.is_empty()));
+    assert_eq!(parent.audio_tracks.iter().map(|track| track.items.len()).sum::<usize>(), 1);
+    assert_eq!(parent.audio_tracks[0].items[0].item, sequence_id);
+}
+
+#[test]
+fn shallower_reimport_rejects_cached_nested_sequence_cycles() {
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence><spine><ref-clip ref="m{}" duration="1s"/></spine></sequence></media>"#,
+            (i + 1) % 64
+        ));
+    }
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources>{media}</resources>
+        <project name="A"><sequence><spine><ref-clip ref="m0" duration="1s"/></spine></sequence></project>
+        <project name="B"><sequence><spine><ref-clip ref="m62" duration="1s"/></spine></sequence></project></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("cached media"), "{report:?}");
+
+    fn visit(
+        project: &Project,
+        id: filmcraft_project::ItemId,
+        active: &mut std::collections::HashSet<filmcraft_project::ItemId>,
+        done: &mut std::collections::HashSet<filmcraft_project::ItemId>,
+    ) {
+        if done.contains(&id) {
+            return;
+        }
+        assert!(active.insert(id), "the imported sequence graph contains a cycle at {id:?}");
+        if let Some(sequence) = project.sequence(id) {
+            for item in sequence.all_tracks().flat_map(|track| &track.items) {
+                visit(project, item.item, active, done);
+            }
+        }
+        active.remove(&id);
+        done.insert(id);
+    }
+    let mut active = std::collections::HashSet::new();
+    let mut done = std::collections::HashSet::new();
+    for id in imported.project.items.keys().copied() {
+        visit(&imported.project, id, &mut active, &mut done);
+    }
+}
+
+#[test]
+fn cached_self_reference_is_skipped_while_reimporting_a_truncated_resource() {
+    let mut media = String::new();
+    for i in 0..63 {
+        media.push_str(&format!(r#"<media id="m{i}" name="M{i}"><sequence><spine><ref-clip ref="m{}" duration="1s"/></spine></sequence></media>"#, i + 1));
+    }
+    media.push_str(
+        r#"<media id="m63" name="M63"><sequence><spine>
+          <ref-clip ref="m64" duration="1s"/><ref-clip ref="m63" duration="1s"/>
+        </spine></sequence></media><media id="m64" name="M64"><sequence><spine/></sequence></media>"#,
+    );
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources>{media}</resources>
+        <project name="A"><sequence><spine><ref-clip ref="m0" duration="1s"/></spine></sequence></project>
+        <project name="B"><sequence><spine><ref-clip ref="m63" duration="1s"/></spine></sequence></project></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("recursive FCPXML media"), "{report:?}");
+
+    fn visit(
+        project: &Project,
+        id: filmcraft_project::ItemId,
+        active: &mut std::collections::HashSet<filmcraft_project::ItemId>,
+        done: &mut std::collections::HashSet<filmcraft_project::ItemId>,
+    ) {
+        if done.contains(&id) {
+            return;
+        }
+        assert!(active.insert(id), "the imported sequence graph contains a cycle at {id:?}");
+        if let Some(sequence) = project.sequence(id) {
+            for item in sequence.all_tracks().flat_map(|track| &track.items) {
+                visit(project, item.item, active, done);
+            }
+        }
+        active.remove(&id);
+        done.insert(id);
+    }
+    let mut active = std::collections::HashSet::new();
+    let mut done = std::collections::HashSet::new();
+    for id in imported.project.items.keys().copied() {
+        visit(&imported.project, id, &mut active, &mut done);
+    }
+}
+
+#[test]
 fn media_cut_off_by_xml_layout_is_complete_when_revisited_at_the_same_media_depth() {
     // Both references have media-chain depth zero, but the first is reached through connected
     // clips. Its resource must not remain cached as complete after the XML-layout guard fires.
@@ -169,6 +289,79 @@ fn media_cut_off_by_xml_layout_is_complete_when_revisited_at_the_same_media_dept
         let m0 = imp.project.sequences().find(|i| i.name == "M0").and_then(|i| imp.project.sequence(i.id)).unwrap();
         assert_eq!(m0.video_tracks[0].items.len(), 1, "M0 keeps its nested M1 after the shallower revisit");
     }
+}
+
+#[test]
+fn parent_rebuild_after_incomplete_import_does_not_restore_duplicate_audio() {
+    let mut media = String::new();
+    for i in 0..39 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence><spine><ref-clip ref="m{}" srcEnable="audio" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
+    }
+    media.push_str(
+        r#"<media id="m39" name="M39"><sequence><spine><asset-clip ref="audio" srcEnable="audio" duration="1s"/></spine></sequence></media>
+        <asset id="audio" name="Audio" hasAudio="1" duration="2s" src="audio.wav"/>"#,
+    );
+    let nested = format!(
+        "{}<ref-clip lane=\"1\" ref=\"m0\" srcEnable=\"audio\" duration=\"1s\"/>{}",
+        "<gap lane=\"1\" offset=\"0s\" duration=\"1s\">".repeat(126),
+        "</gap>".repeat(126)
+    );
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources>{media}</resources><library><event>
+          <project name="Deep"><sequence><spine>{nested}</spine></sequence></project>
+          <project name="Shallow"><sequence><spine><ref-clip ref="m0" srcEnable="audio" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("XML") && report.mentions("nested"), "{report}");
+    let parent = imported.project.sequences().find(|item| item.name == "M0").and_then(|item| imported.project.sequence(item.id)).unwrap();
+    let audio: Vec<_> = parent.audio_tracks.iter().flat_map(|track| &track.items).collect();
+    assert_eq!(audio.len(), 1, "the rebuilt parent has exactly one recovered audio reference");
+}
+
+#[test]
+fn truncated_children_restore_audio_only_and_negative_lane_references() {
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence format="r1"><spine><ref-clip ref="m{}" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
+    }
+    media.push_str(
+        r#"<media id="m64" name="M64"><sequence format="r1"><spine><asset-clip ref="a0" name="Nested audio" offset="0s" start="0s" duration="1s" srcEnable="audio"/></spine></sequence></media>
+        <asset id="a0" name="Tone" start="0s" duration="10s" hasAudio="1" src="tone.wav"/>
+        <asset id="v0" name="Picture" start="0s" duration="10s" hasVideo="1" src="picture.mov"/>"#,
+    );
+    let xml = format!(
+        r#"<!DOCTYPE fcpxml><fcpxml version="1.10"><resources><format id="r1" frameDuration="1/24s" width="1920" height="1080"/>{media}</resources>
+        <library><event>
+          <project name="A"><sequence format="r1"><spine>
+            <asset-clip ref="v0" name="Picture holder" offset="0s" start="0s" duration="1s">
+              <spine lane="-2"><ref-clip ref="m0" name="Negative lane" offset="0s" start="0s" duration="1s"/></spine>
+            </asset-clip>
+            <ref-clip ref="m0" name="Audio enabled" offset="1s" start="0s" duration="1s" srcEnable="audio">
+              <timeMap><timept time="1s" value="3s"/><timept time="2s" value="3s"/></timeMap>
+            </ref-clip>
+          </spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine><ref-clip ref="m63" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imported, report) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(report.mentions("nested too deeply"), "{report}");
+    let sequence = imported.project.sequences().find(|item| item.name == "A").and_then(|item| imported.project.sequence(item.id)).unwrap();
+    let audio: Vec<_> = sequence.audio_tracks.iter().flat_map(|track| &track.items).collect();
+    assert_eq!(audio.len(), 2, "both deferred audio-only references must be restored");
+    assert!(audio.iter().any(|clip| clip.name == "Audio enabled" && clip.link.is_some()));
+    assert!(audio.iter().any(|clip| clip.name == "Negative lane" && clip.link.is_some()));
+    assert_eq!(
+        audio.iter().find(|clip| clip.name == "Audio enabled").and_then(|clip| clip.frame_hold),
+        Some(filmcraft_time::Tick(3 * filmcraft_time::TICKS_PER_SECOND))
+    );
+    assert!(sequence.audio_tracks.get(1).is_some_and(|track| track.items.iter().any(|clip| clip.name == "Negative lane")));
 }
 
 #[test]

@@ -24,7 +24,7 @@
 //! Commands the frontend owns (tools, transport, panels, workspaces) are registered with
 //! [`Shortcuts::register_external`] so they can be listed, bound and resolved here too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -775,6 +775,45 @@ impl Shortcuts {
         Ok(reassigned)
     }
 
+    /// Assign a pointer gesture to a command exposed by a Controls binding.
+    /// Keyboard chords continue to use [`Self::set`], which validates them as `Chord`s.
+    pub fn set_gesture(&mut self, command: &str, gesture: &str) -> std::result::Result<(), String> {
+        if self.command(command).is_none() {
+            return Err(format!("unknown command `{command}`"));
+        }
+        if !is_controls_gesture(gesture) {
+            return Err(format!("invalid Controls gesture `{gesture}`"));
+        }
+        let before = self.snapshot();
+        let binding = Binding { command: command.to_string(), keys: gesture.trim().to_string(), panel: None };
+        if self.bindings.iter().any(|current| same_shortcut_command(&current.command, command) && current.panel.is_none() && current.keys == binding.keys) {
+            return Ok(());
+        }
+        self.bindings.retain(|current| !(same_shortcut_command(&current.command, command) && current.panel.is_none()));
+        self.bindings.push(binding);
+        self.modified = true;
+        self.changed(before);
+        Ok(())
+    }
+
+    /// Restore one command's declared default bindings, including pointer gestures that are not
+    /// keyboard chords and therefore cannot be passed through [`Self::set`].
+    pub fn reset_command_to_default(&mut self, command: &str) -> std::result::Result<(), String> {
+        let info = self.command(command).ok_or_else(|| format!("unknown command `{command}`"))?;
+        let defaults: Vec<Binding> = info.defaults.iter().map(|(keys, panel)| Binding::new(command, keys, panel.as_deref())).collect();
+        let current: Vec<Binding> = self.bindings.iter().filter(|binding| same_shortcut_command(&binding.command, command)).cloned().collect();
+        if current == defaults {
+            return Ok(());
+        }
+
+        let before = self.snapshot();
+        self.bindings.retain(|binding| !same_shortcut_command(&binding.command, command));
+        self.bindings.extend(defaults);
+        self.modified = true;
+        self.changed(before);
+        Ok(())
+    }
+
     /// Remove shortcuts of `command` (one key, or all; in one context, or all).
     pub fn clear(&mut self, command: &str, keys: Option<&str>, panel: Option<&str>) -> std::result::Result<usize, String> {
         let chord = keys.map(Chord::parse).transpose()?;
@@ -1025,6 +1064,39 @@ impl Shortcuts {
     fn binding_json(&self, b: &Binding, p: Platform) -> Value {
         json!({"keys": b.keys, "panel": b.panel, "display": b.chord().map(|c| c.display(p)).unwrap_or_else(|| b.keys.clone())})
     }
+}
+
+fn is_controls_gesture(gesture: &str) -> bool {
+    if gesture.len() > 96 {
+        return false;
+    }
+    let mut parts = gesture.split(" + ").collect::<Vec<_>>();
+    let modifiers = parts.iter().take_while(|part| matches!(**part, "Ctrl" | "Shift" | "Alt")).copied().collect::<Vec<_>>();
+    for _ in 0..modifiers.len() {
+        parts.remove(0);
+    }
+    if parts.is_empty() {
+        return modifiers.len() >= 2 && modifiers.len() <= 3 && modifiers.iter().copied().collect::<HashSet<_>>().len() == modifiers.len();
+    }
+    let body = parts.join(" + ");
+    matches!(
+        body.as_str(),
+        "Left Click"
+            | "Right Click"
+            | "Middle Click"
+            | "Extra Click"
+            | "Double Click"
+            | "Triple Click"
+            | "Middle Double Click"
+            | "Middle Triple Click"
+            | "Extra Double Click"
+            | "Extra Triple Click"
+            | "Scroll"
+            | "Drag"
+            | "Left Drag"
+            | "Right Drag"
+            | "Middle Drag"
+    )
 }
 
 fn panel_opt(p: &str) -> Option<&str> {
@@ -1295,5 +1367,60 @@ mod naming_tests {
             assert_eq!(bindings.len(), 1);
             assert_eq!(bindings[0].panel.as_deref(), Some("Color Grading"));
         }
+    }
+}
+
+#[cfg(test)]
+mod reset_default_tests {
+    use super::{CommandInfo, Shortcuts};
+
+    #[test]
+    fn reset_command_restores_a_declared_pointer_gesture_and_is_undoable() {
+        let mut shortcuts = Shortcuts::new();
+        shortcuts.register_external(vec![CommandInfo::new("timeline.sliderCenter", "Center on Playhead", &["Timeline"], Some("Double Click"))]);
+        shortcuts.set("timeline.sliderCenter", "Ctrl+K", None, false, true).expect("assign a keyboard shortcut");
+
+        shortcuts.reset_command_to_default("timeline.sliderCenter").expect("restore the declared gesture default");
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Double Click"));
+        assert!(shortcuts.undo(), "resetting a binding should remain undoable");
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Ctrl+K"));
+    }
+
+    #[test]
+    fn reset_command_clears_bindings_when_the_declared_default_is_unbound() {
+        let mut shortcuts = Shortcuts::new();
+        shortcuts.register_external(vec![CommandInfo::new("timeline.fastScroll", "Fast Scroll", &["Timeline"], None)]);
+        shortcuts.set("timeline.fastScroll", "Ctrl+K", None, false, true).expect("assign a keyboard shortcut");
+
+        shortcuts.reset_command_to_default("timeline.fastScroll").expect("restore the unbound default");
+        assert_eq!(shortcuts.primary("timeline.fastScroll"), None);
+    }
+
+    #[test]
+    fn controls_can_assign_double_and_triple_click_gestures() {
+        let mut shortcuts = Shortcuts::new();
+        shortcuts.register_external(vec![CommandInfo::new("timeline.sliderCenter", "Center on Playhead", &["Timeline"], Some("Double Click"))]);
+        shortcuts.set_gesture("timeline.sliderCenter", "Double Click").expect("keep the double-click gesture");
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Double Click"));
+        shortcuts.set_gesture("timeline.sliderCenter", "Triple Click").expect("assign the triple-click gesture");
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Triple Click"));
+        assert!(shortcuts.undo());
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Double Click"));
+    }
+
+    #[test]
+    fn controls_gesture_assignment_rejects_unrecognized_input() {
+        let mut shortcuts = Shortcuts::new();
+        shortcuts.register_external(vec![
+            CommandInfo::new("timeline.sliderCenter", "Center on Playhead", &["Timeline"], Some("Double Click")),
+            CommandInfo::new("timeline.fastScroll", "Fast Scroll", &["Timeline"], None),
+        ]);
+        assert!(shortcuts.set_gesture("timeline.sliderCenter", "Ctrl + Ctrl").is_err());
+        assert!(shortcuts.set_gesture("timeline.sliderCenter", &"x".repeat(128)).is_err());
+        shortcuts.set_gesture("timeline.sliderCenter", "Ctrl + Shift + Alt").expect("a modifiers-only shortcut can be saved");
+        assert_eq!(shortcuts.primary("timeline.sliderCenter").as_deref(), Some("Ctrl + Shift + Alt"));
+        shortcuts.set_gesture("timeline.fastScroll", "Double Click").expect("a command without a default gesture can accept one");
+        shortcuts.set_gesture("timeline.fastScroll", "Triple Click").expect("triple-click is available for Fast Scroll too");
+        assert_eq!(shortcuts.primary("timeline.fastScroll").as_deref(), Some("Triple Click"));
     }
 }

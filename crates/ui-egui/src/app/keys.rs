@@ -5,6 +5,12 @@ impl FilmcraftApp {
     /// to a focused text field except dock dividers.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         panels::timeline::reconcile_controls_capture(self, ctx);
+        // Controls capture owns the whole input pass. Record its input and remove it before any
+        // editor panel can interpret the same key or pointer gesture as an editing command.
+        if panels::timeline::controls_listening(ctx) {
+            panels::timeline::capture_controls(self, ctx);
+            return;
+        }
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
         let workspaces = (dock::names(&self.workspaces), self.ui.workspace.clone());
@@ -53,7 +59,7 @@ impl FilmcraftApp {
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
         panels::timeline::reconcile_controls_capture(self, ctx);
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || self.modal_open(ctx) {
+        if events.is_empty() || panels::timeline::controls_listening(ctx) || self.dialog == Some(Dialog::Shortcuts) || self.modal_open(ctx) {
             return;
         }
         let mut input = egui::InputState::default();
@@ -397,6 +403,34 @@ mod forwarded_key_tests {
         app.handle_forwarded_keys(&ctx, vec![key]);
 
         assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), Some(3));
+    }
+
+    #[test]
+    fn controls_capture_records_before_editor_shortcuts_and_consumes_the_key() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.shortcuts.set("file.closeProject", "K", None, false, true).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.tl.zoombar_settings_pos = Some(egui::pos2(20.0, 20.0));
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("tl-controls-listening"), Some(0usize));
+            d.insert_temp(egui::Id::unique("tl-controls-listening-track"), false);
+            d.insert_temp(egui::Id::unique("tl-controls-listening-document-epoch"), app.session.document_epoch);
+        });
+        let input = egui::RawInput {
+            events: vec![Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| app.handle_shortcuts(ui.ctx()));
+        output.textures_delta.clear();
+
+        assert!(app.session.state.active_sequence.is_some(), "the overlapping file command must not run");
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("K"));
+        assert!(!ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: Key::K, pressed: true, .. }))));
+        assert!(!crate::panels::timeline::controls_listening(&ctx));
     }
 
     #[test]

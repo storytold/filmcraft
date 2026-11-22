@@ -301,7 +301,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             };
             let min = super::scrollbars::track_min_height(window, slots);
             let max = 220.0f32.max(min * 2.0);
-            let factor = (wdy / 600.0).clamp(-0.3, 0.3) * if inv { -1.0 } else { 1.0 };
+            let factor = (wdy / 600.0).clamp(-0.3, 0.3) * if inv { 1.0 } else { -1.0 };
             let old_max = (slots * *height - window).max(0.0);
             let fraction = if old_max > 0.0 { (*scroll / old_max).clamp(0.0, 1.0) } else { 0.0 };
             *height = (*height * (1.0 + factor)).clamp(min, max);

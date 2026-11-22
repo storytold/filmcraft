@@ -132,7 +132,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
+    if (id == "file.closeProject" && !app.session.has_unsaved_changes()) || id == "app.quit" {
         return None;
     }
     meta(id)?;
@@ -141,7 +141,9 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         app.ui.status = e.clone();
         return Some(Err(e));
     }
-    if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
+    if id != "file.closeProject"
+        && let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))
+    {
         app.ui.status = e.clone();
         return Some(Err(e));
     }
@@ -391,7 +393,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
+    egui::Window::new(title).id(id).order(egui::Order::Tooltip).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         let mut valid = true;
         match d.command.as_str() {

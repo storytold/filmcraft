@@ -2483,6 +2483,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "web-time",
@@ -2531,8 +2532,10 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-time",
  "log",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

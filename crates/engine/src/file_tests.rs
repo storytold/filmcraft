@@ -77,6 +77,28 @@ fn legacy_project_opens_and_first_save_keeps_a_backup() {
 }
 
 #[test]
+fn oversized_projects_are_rejected_before_open_and_schema_backup_reads() {
+    let d = temp_dir("project-size-limit");
+    let path = d.join("old.fcproj");
+    let path_text = path.to_string_lossy().to_string();
+    let limit = filmcraft_format::MAX_PROJECT_FILE_BYTES;
+    std::fs::File::create(&path).unwrap().set_len(limit + 1).unwrap();
+    let mut session = Session::default();
+    let error = session.execute("file.open", json!({"path": path_text})).unwrap_err().to_string();
+    assert!(error.contains("byte limit") || error.contains("too large"), "{error}");
+
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../format/tests/fixtures/v1-edit.fcproj");
+    std::fs::copy(fixture, &path).unwrap();
+    session.execute("file.open", json!({"path": path_text})).unwrap();
+    std::fs::File::create(&path).unwrap().set_len(limit + 1).unwrap();
+    let error = session.execute("file.save", json!({})).unwrap_err().to_string();
+    assert!(error.contains("cannot preserve the original project") && error.contains("byte limit"), "{error}");
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), limit + 1, "failed backup must not overwrite the oversized original");
+    assert!(!d.join("old (schema v1 backup).fcproj").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn project_is_named_after_its_file() {
     let d = temp_dir("name");
     let mut s = demo();

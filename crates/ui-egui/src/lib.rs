@@ -351,6 +351,7 @@ pub struct FilmcraftApp {
     fonts_ready: bool,
     pub integrated_titlebar: bool,
     pub last_timeline_width: f32,
+    pub last_timeline_center_x: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
     timeline_view_of: Option<filmcraft_engine::project::ItemId>,

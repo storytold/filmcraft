@@ -158,7 +158,7 @@ pub struct TimelineUiSettings {
     pub track_control_alternate_drag_speed: String,
     pub track_control_settings: String,
     /// Additional Timeline Controls-flyout actions. Fixed slot meanings are owned by the UI;
-    /// empty strings retain each action's built-in gesture, except the optional fast-scroll row.
+    /// empty strings retain each action's built-in gesture.
     #[serde(default)]
     pub timeline_control_bindings: Vec<String>,
 }

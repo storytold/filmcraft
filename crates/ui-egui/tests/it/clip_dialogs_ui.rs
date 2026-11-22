@@ -269,6 +269,22 @@ fn close_project_prompt_and_nested_menus() {
 }
 
 #[test]
+fn close_project_prompt_remains_above_the_timeline_settings_menu() {
+    let mut d = Driver::new();
+    d.edit();
+    d.app().tl.track_slider_settings_pos = Some(egui::pos2(670.0, 280.0));
+    d.frames(3);
+    assert!(d.has("timeline.trackSlider.settings.controls"));
+
+    assert_eq!(d.menu("file.closeProject")["dialog"], "closeProject");
+    d.frames(2);
+    assert!(d.has("closeProject.cancel"));
+    d.click("closeProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none(), "the dialog above the settings menu receives the click");
+    assert!(!d.app().session.project.items.is_empty(), "the project remains open after cancel");
+}
+
+#[test]
 fn subclip_in_the_source_monitor_and_project_menu() {
     let mut d = Driver::new();
     let r24 = filmcraft_time::FrameRate::FPS_23_976;

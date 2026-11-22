@@ -1062,10 +1062,32 @@ fn write_fcpxml_adjust_conform(project: &film::Project, seq: film::ItemId, text:
     }
 }
 
+fn fcpxml_has_nested_media_refs(text: &str) -> crate::Result<bool> {
+    let document = crate::xml::parse(text).map_err(|e| crate::Error::parse(crate::Format::Fcpxml, e))?;
+    let nested_ids: std::collections::HashSet<_> = document
+        .descendants()
+        .filter(|node| node.has_tag_name("media") && node.children().any(|child| child.has_tag_name("sequence")))
+        .filter_map(|node| node.attribute("id"))
+        .collect();
+    Ok(document.descendants().any(|node| node.has_tag_name("ref-clip") && node.attribute("ref").is_some_and(|id| nested_ids.contains(id))))
+}
+
 pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
-    let mut imported = import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?;
+    // The shared reader currently loses deferred audio when a nested media sequence is cut off
+    // and then repaired later in the same import. Use FilmCraft's importer for nested media so
+    // its retry pass can restore parent chains and audio-only references.
+    // Use the shared bounded XML parser here. Besides enforcing the node ceiling during parsing,
+    // it accepts the plain FCPXML DOCTYPE declaration used by normal exports.
+    let nested_media_refs = fcpxml_has_nested_media_refs(text)?;
+    let mut imported = if nested_media_refs {
+        crate::fcpxml::import(text, opts, report)?
+    } else {
+        import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?
+    };
     report_unusable_fcpxml_lanes(text, report);
-    apply_fcpxml_adjust_conform(text, &mut imported, report);
+    if !nested_media_refs {
+        apply_fcpxml_adjust_conform(text, &mut imported, report);
+    }
     Ok(imported)
 }
 pub(crate) fn export_fcpxml(project: &film::Project, seq: film::ItemId, opts: &crate::ExportOptions, report: &mut crate::Report) -> crate::Result<String> {
@@ -1113,6 +1135,19 @@ mod tests {
         let mut report = crate::Report::default();
         report_unusable_fcpxml_lanes(r#"<title name="lane=x"/><!-- lane="x" --><clip foo-lane="x"/>"#, &mut report);
         assert!(!report.has_warnings(), "{report}");
+    }
+
+    #[test]
+    fn nested_fcpxml_selection_uses_the_bounded_dtd_aware_parser() {
+        let text = r#"<!DOCTYPE fcpxml><fcpxml><resources><media id="m1"><sequence/></media></resources><ref-clip ref="m1"/></fcpxml>"#;
+        assert!(fcpxml_has_nested_media_refs(text).unwrap());
+
+        let mut oversized = String::from("<fcpxml>");
+        for _ in 0..1_000_001 {
+            oversized.push_str("<x/>");
+        }
+        oversized.push_str("</fcpxml>");
+        assert!(fcpxml_has_nested_media_refs(&oversized).is_err());
     }
 
     #[test]

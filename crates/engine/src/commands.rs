@@ -5371,11 +5371,19 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
-        if s.services.read_file(&b).is_err()
-            && let Ok(old) = s.services.read_file(path)
-        {
-            s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
-            backup = Some(b);
+        match s.services.file_size(&b) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_FILE_BYTES) {
+                Ok(old) => {
+                    s.services.write_file(&b, &old).map_err(|e| EngineError::Other(format!("{b}: {e}")))?;
+                    backup = Some(b);
+                }
+                Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(read_error) => {
+                    return Err(EngineError::Other(format!("cannot preserve the original project before saving: {path}: {read_error}")));
+                }
+            },
+            Err(error) => return Err(EngineError::Other(format!("cannot check the schema-upgrade backup {b}: {error}"))),
         }
     }
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -5435,7 +5443,7 @@ pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project,
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let fence_arc = s.project_file_fence.clone();
     let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_FILE_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);

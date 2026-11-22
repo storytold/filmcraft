@@ -310,7 +310,6 @@ impl FilmcraftApp {
         if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
             self.session.set_playhead_from_playback(self.playback.rest_at.unwrap_or(end));
             self.mark_automatic_playhead_stop();
-            self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
             self.stop();
         } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
@@ -320,13 +319,11 @@ impl FilmcraftApp {
             } else {
                 self.session.set_playhead_from_playback(hi - rate.frame_duration());
                 self.mark_automatic_playhead_stop();
-                self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
                 self.stop();
             }
         } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
             self.session.set_playhead_from_playback(Tick::ZERO);
             self.mark_automatic_playhead_stop();
-            self.ui.timeline.seen_playhead = self.session.state.active_sequence.map(|id| (id, self.session.playhead().seconds()));
             self.stop();
         } else {
             self.session.set_playhead_from_playback(t);
