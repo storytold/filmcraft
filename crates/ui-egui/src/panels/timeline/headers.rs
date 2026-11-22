@@ -125,7 +125,11 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         }
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
-        let lock_r = small(49.0, hrect.center().y);
+        // Keep the lock with the row's upper control line. Centering it in the whole row made
+        // the icon drift vertically whenever the track height changed, even when the opposite
+        // timeline viewport edge was anchored in place.
+        let lock_y = r.rect.min.y + 11.0;
+        let lock_r = small(49.0, lock_y);
         let lresp = crate::widgets::icon_toggle_clipped(
             ui,
             lock_r,
@@ -217,7 +221,7 @@ fn header_line_buttons(
     actions: &mut Vec<(String, Value)>,
     vo_action: &mut Option<crate::panels::voiceover::Action>,
 ) {
-    let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
+    let upper_y = r.rect.min.y + 11.0;
     let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
     let mut x = 102.0;
     let sr = small(x, upper_y);
