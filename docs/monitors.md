@@ -20,6 +20,7 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
 | `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
+| `view.markerNotes` | Program wrench menu ▸ Marker Notes | while the Program playhead is parked on a sequence marker (its frame, or any frame of a range marker), the marker's name and notes are written on a dark plate at the bottom of the picture, with the marker's colour at its left edge; coincident markers stack (up to 3); markers with neither name nor notes show nothing. Not drawn while playing, in Cinema mode, or into renders and exports. On by default; takes `{"enabled": bool}` |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
@@ -27,7 +28,7 @@ Guides are in frame pixels. Drag out of the top ruler for a horizontal guide or 
 a vertical one; drag a guide to move it (unless locked) and drop it outside the picture to remove it.
 
 Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<level>`, `<monitor>.settings.<command suffix>`
-(wrench menu items, e.g. `program.settings.display.alpha`), `<monitor>.ruler.top|left`,
+(wrench menu items, e.g. `program.settings.display.alpha`), `program.markerNotes.<marker id>`, `<monitor>.ruler.top|left`,
 `<monitor>.guide.<n>`, `program.compare.reference|prev|next|set`, `source.waveform`, and in the
 dialogs `guides.add.vertical|horizontal|position|ok|cancel`, `guides.save.name|ok|cancel`,
 `guides.manage.row.<n>|apply|delete|close`.

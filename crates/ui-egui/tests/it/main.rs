@@ -37,6 +37,7 @@ mod keyframes_ui;
 mod links_ui;
 mod marked_playback_position;
 mod marker_edit_ui;
+mod marker_notes_ui;
 mod mask_roundness_ui;
 mod masks_ui;
 mod media_ui;
