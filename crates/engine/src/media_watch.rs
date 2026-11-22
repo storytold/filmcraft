@@ -162,9 +162,9 @@ impl Session {
                 if identity.is_some() {
                     m.identity = identity;
                 }
+                self.media.insert_reopened_file(id, &path, src, m.interpret.raw);
+                refreshed.push(id);
             }
-            self.media.insert_file(id, &path, src);
-            refreshed.push(id);
         }
         self.bump_view();
         Ok(json!({"refreshed": refreshed.iter().map(|i| i.0).collect::<Vec<_>>()}))

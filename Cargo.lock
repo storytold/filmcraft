@@ -1247,7 +1247,7 @@ dependencies = [
 [[package]]
 name = "craft-fcproj-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=3af2280ee3434a2c860012df2f440652621c2c81#3af2280ee3434a2c860012df2f440652621c2c81"
+source = "git+https://github.com/storytold/craft-libs?rev=3d8e6260f90272ba82792e22eea958287e670764#3d8e6260f90272ba82792e22eea958287e670764"
 dependencies = [
  "serde",
  "serde_json",
@@ -2397,6 +2397,7 @@ dependencies = [
  "craft-y4m",
  "filmcraft-bitstream",
  "filmcraft-color",
+ "filmcraft-dng",
  "filmcraft-frame",
  "filmcraft-isobmff",
  "filmcraft-matroska",
@@ -2650,6 +2651,7 @@ dependencies = [
  "png",
  "rayon",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -2810,6 +2812,7 @@ dependencies = [
  "filmcraft-captions",
  "filmcraft-codecs",
  "filmcraft-color",
+ "filmcraft-dng",
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",

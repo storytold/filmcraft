@@ -65,7 +65,7 @@ craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 # Shared YUV4MPEG2 parser and frame index.
 craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", features = ["async-lines"] }
-craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3af2280ee3434a2c860012df2f440652621c2c81" }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3d8e6260f90272ba82792e22eea958287e670764" }
 craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17", default-features = false }
 craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
