@@ -242,8 +242,9 @@ fn pop_issues(s: &Session, q: &Sequence, pop_db: f64, out: &mut Vec<Issue>) {
             {
                 continue;
             }
-            let before = outgoing.and_then(|c| edge_peak_db(s, c, true)).unwrap_or(-120.0);
-            let after = incoming.and_then(|c| edge_peak_db(s, c, false)).unwrap_or(-120.0);
+            // as the track plays it: its fader applies to every clip on it
+            let before = outgoing.and_then(|c| edge_peak_db(s, c, true)).map_or(-120.0, |db| db + t.volume_db);
+            let after = incoming.and_then(|c| edge_peak_db(s, c, false)).map_or(-120.0, |db| db + t.volume_db);
             let clip = incoming.or(outgoing).map_or(0, |c| c.id.0);
             if before.max(after) > pop_db && !found.iter().any(|f| f.0 == at) {
                 found.push((at, clip, before, after));

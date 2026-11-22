@@ -207,3 +207,20 @@ fn volume_keyframes_are_read_at_the_edges_media_time() {
     let r = review(&mut s, json!({}));
     assert_eq!(pops(&r), 0, "{r}");
 }
+
+/// The track's fader is part of what a cut sounds like: A1 pulled to -96 dB has no audible pops.
+#[test]
+fn a_tracks_volume_counts_for_pops() {
+    let mut s = demo();
+    let (a1, edges) = {
+        let q = s.active_sequence().unwrap();
+        let end = q.duration();
+        let t = &q.audio_tracks[0];
+        (t.id.0, t.items.iter().flat_map(|c| [c.start, c.end()]).filter(|x| x.0 > 0 && *x < end).map(|x| x.0).collect::<Vec<_>>())
+    };
+    let pops = |r: &Value| r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "audioPop" && edges.contains(&i["time"].as_i64().unwrap())).count();
+    assert!(pops(&review(&mut s, json!({}))) > 0);
+    s.execute("timeline.setTrack", json!({"track": a1, "volumeDb": -96.0})).unwrap();
+    let r = review(&mut s, json!({}));
+    assert_eq!(pops(&r), 0, "{r}");
+}
