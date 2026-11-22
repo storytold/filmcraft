@@ -74,6 +74,7 @@ craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # Shared Radiance HDR reader with bounded direct RGBA output.
 craft-hdr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
+craft-sniff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
 craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
