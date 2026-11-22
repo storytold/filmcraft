@@ -581,7 +581,7 @@ fn png_still_refactor_preserves_legacy_bytes_and_samples() {
             (state >> 24) as u8
         })
         .collect();
-    let rgb: Vec<_> = rgba.chunks_exact(4).flat_map(|pixel| pixel[..3].iter().copied()).collect();
+    let rgb: Vec<_> = rgba.as_chunks::<4>().0.iter().flat_map(|pixel| pixel[..3].iter().copied()).collect();
     for (alpha, samples, color) in [(false, &rgb, image::ExtendedColorType::Rgb8), (true, &rgba, image::ExtendedColorType::Rgba8)] {
         let mut previous = Vec::new();
         image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut previous), samples, w, h, color).unwrap();
