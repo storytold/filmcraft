@@ -13,6 +13,7 @@ workspace = true
 craft-audio = { workspace = true }
 craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17" }
 craft-exr = { workspace = true }
+craft-png = { git = "https://github.com/storytold/craft-libs", rev = "c42c34bfa127b095fb0a8d5ccaba0c168c254062" }
 craft-tga = { workspace = true }
 craft-dpx = { workspace = true }
 craft-video = { workspace = true }
