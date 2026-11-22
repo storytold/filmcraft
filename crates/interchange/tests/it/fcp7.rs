@@ -790,6 +790,34 @@ fn a_sequence_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
 }
 
 #[test]
+fn a_reimported_nested_sequence_keeps_its_parent_audio_clip() {
+    let n = 66;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        let clip = if i + 1 < n {
+            format!(
+                "<clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>",
+                i + 1
+            )
+        } else {
+            "<clipitem id=\"audio\"><name>sound</name><start>0</start><end>24</end><in>0</in><out>24</out><file id=\"audio-file\"><name>sound.wav</name><pathurl>file:///media/sound.wav</pathurl><rate><timebase>24</timebase></rate><duration>24</duration><media><audio><channelcount>2</channelcount></audio></media></file></clipitem>".into()
+        };
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><audio><track>{clip}</track></audio></media></sequence>"
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imported, report) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(report.mentions("nested too deeply"), "{report:?}");
+    let s63_id = imported.project.sequences().find(|item| item.name == "S63").unwrap().id;
+    let s63 = imported.project.sequence(s63_id).unwrap();
+    assert_eq!(s63.audio_tracks.iter().map(|track| track.items.len()).sum::<usize>(), 1);
+    let s62 = imported.project.sequences().find(|item| item.name == "S62").and_then(|item| imported.project.sequence(item.id)).unwrap();
+    assert_eq!(s62.audio_tracks.iter().map(|track| track.items.len()).sum::<usize>(), 1);
+    assert_eq!(s62.audio_tracks[0].items[0].item, s63_id, "the parent audio clip still references the re-imported sequence");
+}
+
+#[test]
 fn a_nested_clip_left_out_by_the_depth_limit_stays_as_an_offline_placeholder_with_its_extent() {
     let n = 400;
     let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");

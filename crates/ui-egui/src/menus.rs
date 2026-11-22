@@ -675,6 +675,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
         return Ok(Value::Null);
     }
+    // Checkpoint project-scoped Timeline view state before any save path serializes it.
+    if matches!(id, "file.autoSaveNow" | "file.save" | "file.saveAs" | "file.saveCopy" | "file.saveAll") {
+        app.sync_timeline_view();
+        if id == "file.autoSaveNow" {
+            app.session.sync_persistence();
+        }
+    }
     // File dialogs for commands that need a path.
     if menu
         && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
@@ -1553,6 +1560,29 @@ mod chord_held_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_save_checkpoints_the_pending_timeline_view() {
+        let dir = std::env::temp_dir().join(format!("filmcraft-ui-autosave-view-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).expect("open demo project");
+        session.start_autosave(filmcraft_engine::autosave::AutosaveConfig::new(&dir)).expect("start auto-save");
+        session.execute("sequence.addEdit", json!({"seconds": 1.0})).expect("make project dirty");
+        let sequence = session.state.active_sequence.expect("active sequence");
+        let mut app = FilmcraftApp::new(session);
+        app.timeline_view_of = Some(sequence);
+        app.ui.timeline.fit_pending = false;
+        app.ui.timeline.target_pps = 73.0;
+        app.ui.timeline.target_scroll = 12.5;
+
+        let result = invoke_command(&mut app, &egui::Context::default(), "file.autoSaveNow", json!({})).expect("auto-save");
+        let path = result["path"].as_str().expect("auto-save path");
+        let bytes = std::fs::read(path).expect("read auto-save");
+        let saved = filmcraft_format::decode(&bytes).expect("decode auto-save");
+        assert_eq!(saved.view.and_then(|view| view.sequences.get(&sequence).map(|view| (view.pps, view.scroll))), Some((73.0, 12.5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A clipboard image is premultiplied inside `Color32`. The PNG writer expects straight
     /// alpha, so a semi-transparent pixel must come back with its colour, not darkened.

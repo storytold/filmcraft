@@ -2797,6 +2797,7 @@ dependencies = [
  "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-gpu",
