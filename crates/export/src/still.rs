@@ -93,7 +93,7 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
     match format {
         StillFormat::Png => {
             let mut out = Vec::new();
-            craft_png::write_16bit(&mut out, w, h, craft_png::Layout::Rgba, &u16_samples).map_err(err)?;
+            craft_png::write_16bit(&mut out, w, h, craft_png::Layout::Rgba, &u16_samples).map_err(|e| ExportError::Encode(e.to_string()))?;
             Ok(out)
         }
         StillFormat::Tiff => {
