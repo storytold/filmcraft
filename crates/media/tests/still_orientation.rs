@@ -11,10 +11,11 @@
 use std::sync::Arc;
 
 use filmcraft_media::sequence::{FrameLoader, ImageSequenceSource};
-use filmcraft_media::still::{Raster, decode_raster};
+use filmcraft_media::still::{Raster, decode_raster, probe_geometry};
 use filmcraft_media::{FrameRequest, MediaSource, open_bytes};
 use filmcraft_time::{FrameRate, Tick};
 use image::ImageEncoder;
+use image::metadata::Orientation;
 
 const W: u32 = 3;
 const H: u32 = 2;
@@ -45,6 +46,7 @@ fn oriented(o: u16, x: u32, y: u32) -> (u32, u32) {
 fn assert_oriented(r: &Raster, o: u16, block: u32, tol: u8, what: &str) {
     let (w, h) = if (5..=8).contains(&o) { (H, W) } else { (W, H) };
     assert_eq!((r.width, r.height, r.rgba.len()), (w * block, h * block, (w * h * block * block * 4) as usize), "{what}: size");
+    assert_eq!(r.orientation, Orientation::from_exif(u8::try_from(o).unwrap_or(0)).unwrap_or(Orientation::NoTransforms), "{what}: orientation");
     for y in 0..H {
         for x in 0..W {
             let (ox, oy) = oriented(o, x, y);
@@ -212,7 +214,13 @@ fn opened_still_reports_the_upright_size() {
     let f = s.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
     assert_eq!((f.width, f.height), (v.width, v.height));
     let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-    assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, 6, 8, 8, "opened JPEG");
+    assert_oriented(
+        &Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false, orientation: Orientation::Rotate90 },
+        6,
+        8,
+        8,
+        "opened JPEG",
+    );
 }
 
 #[test]
@@ -225,7 +233,13 @@ fn image_sequence_frames_are_upright() {
     for i in 0..2 {
         let f = s.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
         let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-        assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, 8, 1, 0, &format!("sequence frame {i}"));
+        assert_oriented(
+            &Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false, orientation: Orientation::Rotate270 },
+            8,
+            1,
+            0,
+            &format!("sequence frame {i}"),
+        );
     }
 }
 
@@ -242,10 +256,24 @@ fn sequence_frames_with_different_orientations_each_decode_upright() {
     for (i, o) in [(0, 1), (1, 6)] {
         let f = s.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(i))).unwrap();
         let filmcraft_frame::PixelData::Rgba8(p) = &f.data else { panic!("not RGBA8") };
-        assert_oriented(&Raster { width: f.width, height: f.height, rgba: p.to_vec(), has_alpha: false }, o, 1, 0, &format!("sequence frame {i}"));
+        assert_oriented(
+            &Raster {
+                width: f.width,
+                height: f.height,
+                rgba: p.to_vec(),
+                has_alpha: false,
+                orientation: Orientation::from_exif(u8::try_from(o).unwrap_or(0)).unwrap_or(Orientation::NoTransforms),
+            },
+            o,
+            1,
+            0,
+            &format!("sequence frame {i}"),
+        );
     }
 }
 
+/// No EXIF, Orientation 1, out-of-range values and damaged EXIF or Orientation entries leave the
+/// picture as stored, and never fail the decode.
 #[test]
 fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     let six = orientation_exif(6);
@@ -273,28 +301,49 @@ fn missing_invalid_or_damaged_orientation_leaves_the_picture_alone() {
     for (what, o) in [("TIFF orientation 0", 0), ("TIFF orientation 9", 9), ("TIFF orientation 255", 255)] {
         assert_oriented(&decode_raster("scan.tiff", &rgb_tiff(o)).unwrap(), 1, 1, 0, what);
     }
+    for (what, o) in [("YCbCr TIFF orientation 0", 0), ("YCbCr TIFF orientation 9", 9), ("YCbCr TIFF orientation 65535", 65_535)] {
+        assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff(o)).unwrap(), 1, 1, 3, what);
+    }
+    // TIFF Orientation is one SHORT: an entry with more values is damaged and ignored
+    assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff_with(vec![6, 6])).unwrap(), 1, 1, 3, "YCbCr TIFF two orientation values");
 }
 
-/// YCbCr TIFFs go through our own decoder, which does not read Orientation yet: the tag is
-/// ignored, as before.
+/// The stored picture as an uncompressed 4:4:4 YCbCr TIFF (ITU-R BT.601 coefficients and full
+/// range, the TIFF 6.0 defaults) with Orientation `o`: our own decoder reads these, not the image
+/// crate.
+fn ycbcr_tiff(o: u16) -> Vec<u8> {
+    ycbcr_tiff_with(vec![o])
+}
+
+/// [`ycbcr_tiff`] with an Orientation entry holding all of `orientation` (a valid one holds one).
+fn ycbcr_tiff_with(orientation: Vec<u16>) -> Vec<u8> {
+    let data: Vec<u8> = picture(1)
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let [r, g, b] = p.map(f64::from);
+            let y = 0.299 * r + 0.587 * g + 0.114 * b;
+            [y, 128.0 + (b - y) / 1.772, 128.0 + (r - y) / 1.402].map(|v| v.round().clamp(0.0, 255.0) as u8)
+        })
+        .collect();
+    tiff(W, H, 6, &data, &[(274, orientation), (530, vec![1, 1])])
+}
+
+/// An uncompressed YCbCr TIFF's Orientation 1–8 turns the picture upright.
 #[test]
-fn ycbcr_tiff_orientation_is_not_applied_yet() {
-    // 4:4:4 grey levels (Cb = Cr = 128), one per pixel, full range
-    let levels = [10u8, 50, 90, 130, 170, 210];
-    let data: Vec<u8> = levels.iter().flat_map(|&y| [y, 128, 128]).collect();
-    let r = decode_raster("frame.tiff", &tiff(W, H, 6, &data, &[(274, vec![6]), (530, vec![1, 1])])).unwrap();
-    assert_eq!((r.width, r.height), (W, H));
-    for (i, &y) in levels.iter().enumerate() {
-        let got = &r.rgba[i * 4..i * 4 + 3];
-        assert!(got.iter().all(|c| c.abs_diff(y) <= 2), "pixel {i}: {got:?}, want grey {y}");
+fn ycbcr_tiff_orientation_tag_is_applied() {
+    for o in 1..=8 {
+        assert_oriented(&decode_raster("frame.tiff", &ycbcr_tiff(o)).unwrap(), o, 1, 3, &format!("YCbCr TIFF orientation {o}"));
     }
 }
 
+/// Truncated and bit-flipped oriented files of every format decode or fail with an error, never a panic.
 #[test]
 fn damaged_oriented_files_fail_without_panicking() {
     let good_jpeg = jpeg(Some(orientation_exif(6)));
     let mut cases: Vec<Vec<u8>> = Vec::new();
-    for good in [&good_jpeg, &png(6), &webp(6), &rgb_tiff(6)] {
+    for good in [&good_jpeg, &png(6), &webp(6), &rgb_tiff(6), &ycbcr_tiff(6)] {
         cases.extend((0..good.len()).map(|n| good[..n].to_vec()));
         for i in 0..good.len() {
             for bit in [0, 3, 7] {
@@ -316,4 +365,24 @@ fn damaged_oriented_files_fail_without_panicking() {
     let sof = huge.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     huge[sof + 5..sof + 9].copy_from_slice(&[0xFF; 4]);
     assert!(decode_raster("huge.jpg", &huge).is_err());
+}
+
+/// The engine's load-time still migration decides from `probe_geometry` alone, so the
+/// probe must report exactly what the decode reports — the upright size and the
+/// orientation applied — for every orientation-bearing format, without decoding.
+#[test]
+fn probe_geometry_agrees_with_the_decode() {
+    for o in 1..=8u16 {
+        let cases: [(&str, Vec<u8>); 5] = [
+            ("photo.jpg", jpeg(Some(orientation_exif(o)))),
+            ("photo.png", png(o)),
+            ("photo.webp", webp(o)),
+            ("photo.tif", rgb_tiff(o)),
+            ("ycbcr.tif", ycbcr_tiff(o)),
+        ];
+        for (name, bytes) in cases {
+            let r = decode_raster(name, &bytes).unwrap();
+            assert_eq!(probe_geometry(name, &bytes), Some((r.width, r.height, r.orientation)), "{name} orientation {o}");
+        }
+    }
 }
