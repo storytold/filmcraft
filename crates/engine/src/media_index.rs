@@ -374,7 +374,12 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
         }
         reply["done"] = json!(true);
     } else {
-        std::thread::Builder::new().name("filmcraft-media-index".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        if let Err(e) = std::thread::Builder::new().name("filmcraft-media-index".into()).spawn(run) {
+            // no worker will finish it: take the job back out rather than leave it running forever
+            s.jobs.retain(|j| j.id != id);
+            s.index_jobs.retain(|j| j.job != id);
+            return Err(EngineError::Other(format!("can't start the analysis: {e}")));
+        }
     }
     Ok(reply)
 }
