@@ -336,3 +336,21 @@ fn a_report_leaves_another_finished_job_for_the_next_poll() {
     s.poll_persistence();
     assert_eq!(s.history.undo.len(), n_undo + 1, "the finished job is applied by the next poll");
 }
+
+/// A held clip shows one frame: its report names that frame as the shot's media start and end.
+#[test]
+fn a_held_clip_reports_its_held_frame() {
+    let dir = tmp_dir("scene-report-hold");
+    let path = dir.join("cuts.mov");
+    make_cut_movie(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16)], 160, 90);
+    let (mut s, _, _) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    let held = rate.tick_of(5);
+    let seq = s.state.active_sequence.unwrap();
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items[0].frame_hold = Some(held);
+    select_v1(&mut s);
+    let r = s.execute("clip.sceneEditDetection", json!({"report": true})).unwrap();
+    let shots = r["shots"][0]["shots"].as_array().unwrap();
+    assert_eq!(shots.len(), 1, "one frame has no cuts: {r}");
+    assert_eq!((shots[0]["mediaStart"].as_i64(), shots[0]["mediaEnd"].as_i64()), (Some(held.0), Some(held.0)), "{r}");
+}

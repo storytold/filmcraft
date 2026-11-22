@@ -16,7 +16,8 @@
 //!
 //! With `report: true` the analysis runs at once (as with `wait`) and only reports: `shots` lists
 //! each clip's shots (timeline start, end and length; media start and end), nothing is applied
-//! (not even other finished scene detection jobs), no undo step is added, the call isn't journaled, and the apply
+//! (not even other finished scene detection jobs; like any command it runs after the session has
+//! applied finished mask tracking, which isn't part of this guarantee), no undo step is added, the call isn't journaled, and the apply
 //! options are ignored. Agents use it to see the shots of footage they
 //! can't watch before deciding what to cut.
 
@@ -311,9 +312,11 @@ fn shots_json(s: &Session, seq_id: ItemId, results: &[ClipScenes]) -> Value {
         .map(|r| {
             let it = q.and_then(|q| q.find_item(r.clip)).map(|(_, it)| it);
             let (start, end) = it.map_or((Tick::ZERO, Tick::ZERO), |it| (it.start, it.end()));
-            let first = (start, it.map_or(r.media_range.start, |it| it.source_time_at(it.start)));
-            // where the clip's picture stops in its media (a reversed clip ends at its In point)
-            let media_end = it.map_or(r.media_range.end(), |it| if it.reverse { it.source_in } else { it.source_out() });
+            // a held clip shows one frame throughout; otherwise the picture runs from where it starts
+            // to where it stops in its media (a reversed clip ends at its In point)
+            let held = it.and_then(|it| it.frame_hold);
+            let first = (start, held.unwrap_or_else(|| it.map_or(r.media_range.start, |it| it.source_time_at(it.start))));
+            let media_end = held.unwrap_or_else(|| it.map_or(r.media_range.end(), |it| if it.reverse { it.source_in } else { it.source_out() }));
             let bounds: Vec<(Tick, Tick)> = std::iter::once(first).chain(r.cuts.iter().copied()).collect();
             let shots: Vec<Value> = bounds
                 .iter()
