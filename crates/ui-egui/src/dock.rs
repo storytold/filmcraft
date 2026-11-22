@@ -159,16 +159,11 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 
 /// Window ▸ Workspaces: the user's own workspaces and saved changes to the built-in ones, and the
 /// workspace in use (reopened at launch).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
-    /// The layout in use when the app last closed (`name` is the workspace it belongs to): panel
-    /// changes made without Save Changes to this Workspace come back at the next launch, as in
-    /// Premiere (#2421). Reset to Saved Layout still returns to the saved layout.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last: Option<SavedWorkspace>,
 }
 
 /// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable
@@ -176,6 +171,12 @@ pub struct WorkspacePrefs {
 /// FilmCraft used craft-ui workspaces hold a frame tree in `layout` and floating groups in
 /// `floating` instead; [`saved_workspace`] reads them. [`SavedWorkspace::new`] writes
 /// `workspace`, and also `layout` and `floating` while every floating window is one tab
+impl Default for WorkspacePrefs {
+    fn default() -> Self {
+        Self { saved: Vec::new(), current: "Editing".into(), last: None }
+    }
+}
+
 /// group, so that earlier versions still open the workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -253,19 +254,16 @@ pub fn find(prefs: &WorkspacePrefs, query: &str) -> Option<String> {
 /// A workspace as saved: the user's saved version, else the built-in default. An entry that
 /// does not read or validate falls back to the default and stays in the file untouched.
 pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
-    prefs.saved.iter().find(|saved| saved.name == name).and_then(read_saved).unwrap_or_else(|| Workspace::new(workspace(name)))
-}
-
-/// A saved entry's workspace, or `None` when it does not read back or validate (an entry a newer
-/// version wrote, or a damaged file): the caller falls back.
-pub fn read_saved(saved: &SavedWorkspace) -> Option<Workspace> {
-    let workspace = if saved.workspace.is_null() {
-        Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
-    } else {
-        serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
-    };
-    workspace.validate().ok()?;
-    Some(workspace)
+    let saved = prefs.saved.iter().find(|saved| saved.name == name).and_then(|saved| {
+        let workspace = if saved.workspace.is_null() {
+            Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
+        } else {
+            serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
+        };
+        workspace.validate().ok()?;
+        Some(workspace)
+    });
+    saved.unwrap_or_else(|| Workspace::new(workspace(name)))
 }
 
 /// The saved layout of a workspace (see [`saved_workspace`]).
@@ -880,7 +878,7 @@ mod tests {
             "floating": [{"root": {"Split": {"axis": "Vertical", "size": {"FixedFirst": 100.0},
                 "first": {"Tabs": {"panels": ["Info"], "active": 0}}, "second": {"Tabs": {"panels": ["Effects"], "active": 0}}}},
                 "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
-        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into(), last: None };
+        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into() };
         let loaded = saved_docking(&prefs, "Mine");
         assert!(loaded.is_docked(PanelKind::Tools) && loaded.is_visible(PanelKind::Info) && loaded.is_visible(PanelKind::Effects), "{loaded:?}");
         let root = loaded.root.as_ref().unwrap();
@@ -927,7 +925,7 @@ mod tests {
         assert_eq!(*size, SplitSize::FixedFirst(300.0));
         assert_eq!(saved_docking(&prefs, "Broken"), workspace("Broken"));
         let saved = SavedWorkspace { name: "Mine".into(), workspace: serde_json::to_value(Workspace::new(mine.clone())).unwrap(), ..Default::default() };
-        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into(), last: None };
+        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into() };
         let text = serde_json::to_string(&prefs).unwrap();
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
@@ -970,7 +968,7 @@ mod tests {
             saved: Vec<OldSaved>,
         }
         let read = |layout: &Layout| {
-            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into(), last: None };
+            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into() };
             let text = serde_json::to_string(&prefs).unwrap();
             assert_eq!(saved_docking(&serde_json::from_str(&text).unwrap(), "Mine"), *layout, "{text}");
             let old: OldPrefs = serde_json::from_str(&text).unwrap();
