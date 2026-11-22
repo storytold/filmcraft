@@ -85,67 +85,6 @@ pub fn temp_dir() -> std::path::PathBuf {
     if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
 }
 
-/// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
-/// for and the same for the rest of the process (a new one if the cached folder was removed). Use it, not a fixed name in the shared temp folder:
-/// another local user can pre-create that name and plant links in it. An error when no folder could
-/// be created (a missing `TMPDIR`): callers must not fall back to creating the path themselves, which
-/// would make it with the default mode. On wasm32 the virtual filesystem has no owner, so the path is
-/// returned as is.
-pub fn private_temp_dir() -> std::io::Result<std::path::PathBuf> {
-    use std::hash::{BuildHasher, Hasher};
-    // The folder and, on unix, the (device, inode) it was created with.
-    static DIR: std::sync::Mutex<Option<(std::path::PathBuf, Option<(u64, u64)>)>> = std::sync::Mutex::new(None);
-    // Where a folder's identity cannot be read (non-unix) this is `None`, and the check below is only "still a real folder".
-    fn identity(p: &std::path::Path) -> Option<(u64, u64)> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = p;
-            None
-        }
-    }
-    let mut cached = DIR.lock().unwrap_or_else(|e| e.into_inner());
-    // A folder removed or swapped since (a temp cleaner, then another user's folder or link at the
-    // same name) is replaced by a new private one, not recreated by a caller with the default mode.
-    // shortcut: this is a check at reuse; a swap between the check and the write needs directory-handle I/O.
-    if let Some((d, _)) =
-        cached.as_ref().filter(|(d, id)| cfg!(target_arch = "wasm32") || (std::fs::symlink_metadata(d).is_ok_and(|m| m.is_dir()) && identity(d) == *id))
-    {
-        return Ok(d.clone());
-    }
-    let mut last = None;
-    for _ in 0..16 {
-        let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
-        let path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
-        if cfg!(target_arch = "wasm32") {
-            *cached = Some((path.clone(), None));
-            return Ok(path);
-        }
-        // Owner-only on Unix. Elsewhere there's no mode to set, and a `mut` would be unused.
-        #[cfg(unix)]
-        let dir = {
-            let mut dir = std::fs::DirBuilder::new();
-            std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
-            dir
-        };
-        #[cfg(not(unix))]
-        let dir = std::fs::DirBuilder::new();
-        // `create` fails when the name exists, so a folder someone else made is never accepted
-        match dir.create(&path) {
-            Ok(()) => {
-                *cached = Some((path.clone(), identity(&path)));
-                return Ok(path);
-            }
-            Err(e) => last = Some(e),
-        }
-    }
-    Err(last.unwrap_or_else(|| std::io::Error::other("no private temp folder")))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]
@@ -169,15 +108,6 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
-    /// Read a whole file, refusing one over `max` bytes. Hosts that can read natively override
-    /// this so an oversize file is refused before its bytes fill memory.
-    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
-        let bytes = self.read_file(path)?;
-        if bytes.len() as u64 > max {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{path}: {} bytes is over the {max} byte limit", bytes.len())));
-        }
-        Ok(bytes)
-    }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
     /// Publish a complete new file only when the final path is unoccupied. Publication must
     /// reject a concurrent collision; a prior existence check alone is insufficient.
@@ -239,9 +169,6 @@ pub struct FsServices;
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         filmcraft_media::reader::read_regular_file(std::path::Path::new(path))
-    }
-    fn read_file_bounded(&self, path: &str, max: u64) -> std::io::Result<Vec<u8>> {
-        filmcraft_media::reader::read_regular_file_bounded(std::path::Path::new(path), max)
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
@@ -386,6 +313,9 @@ impl EffectSel {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
     pub active_sequence: Option<ItemId>,
+    /// Per-project Timeline interaction settings, persisted in `ProjectView` and recovery state.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
     /// Item loaded in the Source monitor and its playhead (media time).
@@ -413,6 +343,9 @@ pub struct EditorState {
     /// and takes a sequence's view from here when it becomes the active one.
     #[serde(default)]
     pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
+    /// Sequences with an explicit track-height edit whose first fit is still pending.
+    #[serde(default)]
+    pub timeline_pending_fits: std::collections::BTreeSet<ItemId>,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -527,6 +460,15 @@ pub struct Session {
     /// owners) that belongs to the replaced document even if item ids are reused.
     pub document_epoch: u64,
     pub saved_revision: u64,
+    /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
+    /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
+    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
+    /// the autosave journal.
+    pub view_epoch: u64,
+    /// The view counter as of the last successful save: what the project file on disk holds.
+    /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
+    /// unsaved content.
+    pub saved_view_epoch: u64,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -544,6 +486,8 @@ pub struct Session {
     pub prefs_path: Option<std::path::PathBuf>,
     /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
     pub persistence: Option<autosave::Persistence>,
+    /// Serializes background project-file writes with explicit saves and document replacement.
+    pub(crate) project_file_fence: Arc<std::sync::Mutex<autosave::ProjectFileFence>>,
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
     /// save over it keeps a backup of the original).
     pub loaded_schema: u32,
@@ -650,6 +594,8 @@ impl Session {
             revision: 1,
             document_epoch: 0,
             saved_revision: 1,
+            view_epoch: 0,
+            saved_view_epoch: 0,
             path: None,
             state: EditorState {
                 snapping: true,
@@ -667,6 +613,7 @@ impl Session {
             prefs: Default::default(),
             prefs_path: None,
             persistence: None,
+            project_file_fence: Arc::new(std::sync::Mutex::new(autosave::ProjectFileFence::default())),
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),
@@ -737,7 +684,13 @@ impl Session {
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
-        self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
+        {
+            let mut fence = self.project_file_fence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            fence.revision = self.revision;
+            fence.view_epoch = self.view_epoch;
+            fence.path.clone_from(&self.path);
+        }
+        self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone(), self.project_file_fence.clone())?);
         self.sync_persistence();
         Ok(())
     }
@@ -758,14 +711,30 @@ impl Session {
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
-        let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
-        let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
-        if p.last_sent.as_ref() == Some(&cur) {
+        // the worker check and the revision check come first: the project view is a walk over
+        // every sequence and it must not repeat on every command while nothing changed (or when
+        // there is no worker to send it to at all)
+        if self.persistence.is_none() {
             return;
         }
-        if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+        let dirty = self.is_dirty();
+        let cur = autosave::Sent {
+            revision: self.revision,
+            saved_revision: self.saved_revision,
+            path: self.path.clone(),
+            view_epoch: self.view_epoch,
+            saved_view_epoch: self.saved_view_epoch,
+        };
+        if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
+            return;
+        }
+        // the view reaches the journal whenever it is newer than what the project file holds
+        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
+        // once a save catches up -- no matter what order the two arrive in
+        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        let Some(p) = self.persistence.as_mut() else { return };
+        if let Some(view) = view {
+            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
         } else {
             p.send_clean();
         }
@@ -783,10 +752,15 @@ impl Session {
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
-                autosave::WorkerEvent::SavedProject { path, revision }
-                    if self.path.as_deref() == Some(path.as_str()) && revision > self.saved_revision && revision <= self.revision =>
+                autosave::WorkerEvent::SavedProject { path, revision, view_epoch }
+                    if self.path.as_deref() == Some(path.as_str())
+                        && revision <= self.revision
+                        && (revision > self.saved_revision || view_epoch > self.saved_view_epoch) =>
                 {
-                    self.saved_revision = revision;
+                    self.saved_revision = self.saved_revision.max(revision);
+                    if view_epoch <= self.view_epoch {
+                        self.saved_view_epoch = self.saved_view_epoch.max(view_epoch);
+                    }
                 }
                 autosave::WorkerEvent::Error(m) => {
                     self.log.push(panels::Level::Error, "autosave", m.clone());
@@ -840,8 +814,26 @@ impl Session {
         }
     }
 
+    /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
+    /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
+    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    pub fn view_changed(&mut self) {
+        self.view_epoch = self.view_epoch.wrapping_add(1);
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+
+    /// Whether the project has content or Timeline view changes that a save could lose.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.is_dirty() || self.view_epoch != self.saved_view_epoch
+    }
+
+    /// Mark a project-file view setting as changed and journal its current project view.
+    pub fn project_view_changed(&mut self) {
+        self.view_changed();
+        self.sync_persistence();
     }
 
     /// Run a command by id.
@@ -974,7 +966,9 @@ impl Session {
             open_sequences: self.state.open_sequences.iter().copied().filter(is_seq).collect(),
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
+            pending_fits: self.state.timeline_pending_fits.iter().copied().filter(is_seq).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -984,6 +978,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
@@ -996,6 +991,7 @@ impl Session {
         }
         self.state.timeline_views =
             view.sequences.into_iter().filter(|(id, _)| self.project.sequence(*id).is_some()).filter_map(|(id, v)| Some((id, v.checked()?))).collect();
+        self.state.timeline_pending_fits = view.pending_fits.into_iter().filter(|id| self.project.sequence(*id).is_some()).collect();
         for (id, t) in view.playheads {
             if let Some(seq) = self.project.sequence(id) {
                 let t = t.clamp(Tick::ZERO, filmcraft_project::ProjectView::MAX_PLAYHEAD);
@@ -1286,9 +1282,24 @@ impl Session {
     }
 
     pub fn set_playhead(&mut self, t: Tick) {
+        self.set_playhead_inner(t, true);
+    }
+
+    /// Update the playhead from playback motion without treating the moving cursor as a user edit.
+    pub fn set_playhead_from_playback(&mut self, t: Tick) {
+        self.set_playhead_inner(t, false);
+    }
+
+    fn set_playhead_inner(&mut self, t: Tick, user_edit: bool) {
         if let Some(s) = self.state.active_sequence {
             let rate = self.active_sequence().map(|s| s.settings.frame_rate).unwrap_or_default();
-            self.state.playheads.insert(s, rate.snap(t.max(Tick::ZERO)));
+            let playhead = rate.snap(t.max(Tick::ZERO));
+            let changed = self.state.playheads.get(&s).copied().unwrap_or_default() != playhead;
+            self.state.playheads.insert(s, playhead);
+            if changed && user_edit {
+                self.view_changed();
+                self.sync_persistence();
+            }
             if self.state.selection_follows_playhead {
                 sequence_tools::select_under_playhead(self);
             }
@@ -1551,15 +1562,3 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
-
-#[cfg(all(test, unix))]
-mod private_temp_dir_tests {
-    #[test]
-    fn the_private_temp_dir_is_new_owner_only_and_stable() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = super::private_temp_dir().unwrap();
-        assert!(d.is_dir());
-        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(d, super::private_temp_dir().unwrap());
-    }
-}
