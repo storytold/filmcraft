@@ -912,3 +912,43 @@ fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
     assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
     d.release(to);
 }
+
+/// #5078 review (H5): the snap leaves out exactly the clips the drag moves, as the preview does. In
+/// a ripple trim that is the grabbed clip and its linked partners, not the whole selection, so a
+/// selected clip the ripple leaves where it is keeps its edges as magnets and the drag can land on
+/// a cut that does not move. The snap used to exclude `clips`, every selected clip, and this drag
+/// could not see the cut: it rippled Desert_Dunes by the 8 px instead of snapping to it.
+///
+/// A ripple trim of an In edge keeps the grabbed clip's start (the media it gains plays from the cut
+/// and what follows shifts right), so the start alone cannot tell a snapped drag from a rippled one.
+/// The whole span is the assertion, and the start is checked against the cut as the review asks.
+#[test]
+fn a_ripple_trim_snaps_to_a_selected_clip_it_does_not_move() {
+    let mut d = Driver::demo();
+    let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+    let (_, cut) = d.span(city);
+    let before = d.span(dunes);
+    assert_eq!(cut, before.0, "the demo's City_Night_Drive and Desert_Dunes share a cut");
+    // a click selects a clip and its linked sound, Shift adds the second pair
+    let (city_in, city_out, city_y) = d.edges(city);
+    let (dunes_in, dunes_out, dunes_y) = d.edges(dunes);
+    let at = pos2((city_in + city_out) / 2.0, city_y);
+    d.drag(at, at, 0);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    let at = pos2((dunes_in + dunes_out) / 2.0, dunes_y);
+    d.drag(at, at, 0);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    let sel = d.app().session.state.selection.clone();
+    assert!(sel.contains(&ClipId(city)) && sel.contains(&ClipId(dunes)), "both pairs are selected: {sel:?}");
+    // Driver::demo turns snapping off, and the demo has a transition on this cut, so the edge is
+    // grabbed in the band above it, which is the y `edges` returns
+    d.exec("sequence.snap", json!({"on": true}));
+    d.ok("ui.set", json!({"tool": "ripple"}));
+    // 3 px inside Desert_Dunes and 8 px left leaves the pointer 5 px short of the cut, inside the
+    // 9 px snap distance: the In edge snaps back onto City_Night_Drive's Out edge, which the ripple
+    // does not move, and the drag has nothing left to apply
+    d.drag(pos2(dunes_in + 3.0, dunes_y), pos2(dunes_in - 5.0, dunes_y), 8);
+    let after = d.span(dunes);
+    assert_eq!(after, before, "the drag snapped back to the cut at {cut}: Desert_Dunes was {}..{} and is {}..{}", before.0, before.1, after.0, after.1);
+    assert_eq!(after.0, d.span(city).1, "Desert_Dunes starts on the cut: its In edge is at {} and City_Night_Drive's Out edge at {}", after.0, d.span(city).1);
+}
