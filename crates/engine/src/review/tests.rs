@@ -503,3 +503,40 @@ fn repeated_nests_of_many_offline_items_stay_bounded() {
     assert_eq!(r["offlineCheckComplete"], false, "the budget ran out and says so");
     assert!(r["errors"].as_u64().unwrap() > 0, "what was found is still reported");
 }
+
+/// When the walk's budget runs out inside a nest, what it already found there is still reported.
+#[test]
+fn findings_made_before_the_budget_runs_out_are_kept() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_project::{ClipId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let path = tmp_dir("review-budget-keep").join("forest.mov");
+    make_movie(&path, filmcraft_media::DemoScene::Forest, 64, 36, 2);
+    let (mut s, items, seq) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    let top = {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let settings = p.sequence(seq).unwrap().settings.clone();
+        // the child: the offline clip first, then far more clips than the walk may visit
+        let child = p.new_sequence("child", settings.clone(), 1, 0, None);
+        let clips: Vec<_> = (0..100_100)
+            .map(|k| {
+                let mut c = p.make_track_item(items[0], TrackKind::Video, rate.tick_of(k), TimeRange::new(Tick::ZERO, rate.tick_of(1)), rate).unwrap();
+                c.id = ClipId(p.alloc_id());
+                c
+            })
+            .collect();
+        p.sequence_mut(child).unwrap().video_tracks[0].items = clips;
+        let q = p.new_sequence("parent", settings, 1, 0, None);
+        let len = p.sequence(child).unwrap().duration();
+        let mut n = p.make_track_item(child, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, len), rate).unwrap();
+        n.id = ClipId(p.alloc_id());
+        p.sequence_mut(q).unwrap().video_tracks[0].items = vec![n];
+        q
+    };
+    s.execute("media.makeOffline", json!({"items": [items[0].0]})).unwrap();
+    let r = review(&mut s, json!({"sequence": top.0}));
+    assert_eq!(r["offlineCheckComplete"], false, "{}", r["offlineCheckComplete"]);
+    let errors = r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "offlineMedia" && i["severity"] == "error").count();
+    assert_eq!(errors, 1, "the offline clip found before the limit is reported");
+}

@@ -147,7 +147,7 @@ fn is_offline(s: &Session, item: ItemId) -> bool {
 /// Offline footage, also inside nests. Returns whether every clip was checked (the walk is
 /// bounded, see [`MAX_WALKED_CLIPS`]).
 fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) -> bool {
-    let mut w = MediaWalk { s, cache: Default::default(), budget: MAX_WALKED_CLIPS, stopped: false };
+    let mut w = MediaWalk { s, cache: Default::default(), lengths: Default::default(), budget: MAX_WALKED_CLIPS, stopped: false };
     let found = w.walk(q, (Tick::ZERO, Tick(i64::MAX)), 0, None);
     // each offline media item once, where it first shows
     let mut first: std::collections::BTreeMap<ItemId, &Offline> = Default::default();
@@ -241,6 +241,8 @@ struct MediaWalk<'a> {
     budget: usize,
     /// The budget ran out with clips left unchecked.
     stopped: bool,
+    /// Each nested sequence's length, measured once (it scans every item of the sequence).
+    lengths: std::collections::HashMap<ItemId, Tick>,
 }
 
 impl MediaWalk<'_> {
@@ -281,9 +283,10 @@ impl MediaWalk<'_> {
                     None if it.reverse => (it.source_out() - scale(b - it.start), it.source_out() - scale(a - it.start)),
                     None => (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start)),
                 };
-                let lo = lo.max(Tick::ZERO).min(child.duration());
-                let hi = hi.min(child.duration()).max(lo + Tick(1));
-                if lo >= child.duration() {
+                let len = *self.lengths.entry(it.item).or_insert_with(|| child.duration());
+                let lo = lo.max(Tick::ZERO).min(len);
+                let hi = hi.min(len).max(lo + Tick(1));
+                if lo >= len {
                     continue;
                 }
                 let key = (it.item, lo, hi, depth + 1, Some(on_video));
@@ -301,16 +304,17 @@ impl MediaWalk<'_> {
                     let d = if it.reverse { it.source_out() - ct } else { ct - it.source_in };
                     (it.start + Tick((d.0 as f64 / it.speed).round() as i64)).clamp(a, b)
                 };
-                // expanding a cached result is work too: it counts against the budget
-                if inner.len() > self.budget {
-                    self.budget = 0;
-                    self.stopped = true;
-                    break;
-                }
-                self.budget -= inner.len();
+                // expanding a cached result is work too: it counts against the budget. Findings
+                // already made are kept (at most two per item); only further walking stops.
+                let out_of_budget = inner.len() > self.budget;
+                self.budget = self.budget.saturating_sub(inner.len());
                 for f in inner {
                     let (x, y) = if it.frame_hold.is_some() { (a, b) } else { (to_q(f.lo), to_q(f.hi)) };
                     found.add(Offline { lo: x.min(y), hi: x.max(y), clip: it.id.0, nest: Some(it.name.clone()), ..f });
+                }
+                if out_of_budget || self.budget == 0 {
+                    self.stopped = true;
+                    break;
                 }
                 continue;
             }
