@@ -323,6 +323,27 @@ fn parent_rebuild_after_incomplete_import_does_not_restore_duplicate_audio() {
 }
 
 #[test]
+fn compound_media_import_preserves_adjust_conform() {
+    let xml = r#"<!DOCTYPE fcpxml><fcpxml version="1.10"><resources>
+      <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+      <asset id="a1" name="Picture" start="0s" duration="4s" hasVideo="1" format="r1" src="picture.mov"/>
+      <media id="m1" name="Compound"><sequence format="r1"><spine>
+        <asset-clip ref="a1" name="Fit by default" offset="0s" start="0s" duration="2s"/>
+        <asset-clip ref="a1" name="Native size" offset="2s" start="0s" duration="2s">
+          <adjust-conform type="none"/>
+        </asset-clip>
+      </spine></sequence></media>
+    </resources><library><event><project name="Project"><sequence format="r1"><spine>
+      <ref-clip ref="m1" name="Compound" offset="0s" start="0s" duration="4s"/>
+    </spine></sequence></project></event></library></fcpxml>"#;
+    let (imported, _) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    let compound = imported.project.sequences().find(|item| item.name == "Compound").and_then(|item| imported.project.sequence(item.id)).unwrap();
+    assert_eq!(compound.video_tracks[0].items.len(), 2);
+    assert!(compound.video_tracks[0].items[0].scale_to_frame, "default FCPXML conform fits the frame");
+    assert!(!compound.video_tracks[0].items[1].scale_to_frame, "explicit `none` keeps native pixels");
+}
+
+#[test]
 fn truncated_children_restore_audio_only_and_negative_lane_references() {
     let mut media = String::new();
     for i in 0..64 {

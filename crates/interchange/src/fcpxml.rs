@@ -778,6 +778,13 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 let mut ti = self.b.clip(item, kind, &name, t0, dur, src_in.max(Tick::ZERO));
                 ti.speed = speed;
                 ti.reverse = reverse;
+                if kind == TrackKind::Video {
+                    let (fit, warn_fill) = crate::timeline_model::fcpxml_clip_conform(el);
+                    ti.scale_to_frame = fit;
+                    if warn_fill {
+                        self.report.warn("adjust-conform \"fill\" is not supported; the clip was fitted to the frame instead");
+                    }
+                }
                 if hold {
                     ti.frame_hold = Some(src_in.max(Tick::ZERO));
                 }

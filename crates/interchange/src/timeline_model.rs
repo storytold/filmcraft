@@ -893,7 +893,7 @@ fn is_fcpxml_video_clip(n: roxmltree::Node<'_, '_>) -> bool {
 /// Same rules as the legacy `#[cfg(test)]` parser: no `adjust-conform` means fit; `none` keeps
 /// native pixels; `fill` is fitted and reported; a `<clip>`'s own element overrides its inner
 /// `<video>` / `<asset-clip>`.
-fn fcpxml_clip_conform(el: roxmltree::Node<'_, '_>) -> (bool, bool) {
+pub(crate) fn fcpxml_clip_conform(el: roxmltree::Node<'_, '_>) -> (bool, bool) {
     let mut fit = true;
     let mut warn_fill = false;
     if el.has_tag_name("clip")
