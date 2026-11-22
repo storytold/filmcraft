@@ -283,10 +283,18 @@ fn the_settings_menu_height_actions_reach_a_track_with_its_own_height() {
     d.frames(3);
     let small = d.video_bands()[0].1;
     assert!(small < own - 2.0, "the menu button shrank V1 too: {own} -> {small}");
+    // Minimize has just cleared the override, so a plain Expand assertion would pass even if Expand
+    // never looked at one. Drag V1 to a height of its own again, away from the 64 pt Expand target,
+    // and require Expand to bring it to the height a track that never had one gets (#5091 review).
+    d.drag("timeline.track.V1.resize", 0.5, -30.0);
+    let own_again = d.video_bands()[0].1;
+    assert!(own_again > small + 5.0 && own_again < 60.0, "V1 got its own height again: {small} -> {own_again}");
     d.ok("ui.click", json!({"id": "timeline.toggle.settings"}));
     d.frames(2);
     d.harness.get_by_label("Expand All Tracks").click();
     d.frames(3);
     let big = d.video_bands()[0].1;
+    let next = d.video_bands()[1].1;
     assert!(big > small + 5.0, "the menu button grew V1 too: {small} -> {big}");
+    assert!((big - next).abs() < 0.6, "Expand All Tracks took V1 to the expanded default like the track beside it: V1 {own_again} -> {big}, V2 {next}");
 }
