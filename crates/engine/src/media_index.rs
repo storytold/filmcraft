@@ -153,6 +153,20 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// RMS and peak (dBFS, -120 for silence) of one window of audio, over all its channels.
+fn level(channels: &[Vec<f32>]) -> (f64, f64) {
+    let db = |x: f64| if x > 0.0 { (20.0 * x.log10()).max(-120.0) } else { -120.0 };
+    let (mut sum, mut n, mut peak) = (0f64, 0u64, 0f32);
+    for c in channels {
+        for &x in c {
+            sum += f64::from(x) * f64::from(x);
+            peak = peak.max(x.abs());
+        }
+        n += c.len() as u64;
+    }
+    (db(if n > 0 { (sum / n as f64).sqrt() } else { 0.0 }), db(f64::from(peak)))
+}
+
 /// Group sampled frames into shots at `cuts` (indices of frames that start a new shot).
 pub(crate) fn group_shots(times: &[Tick], measures: &[FrameMeasure], cuts: &[usize], end: Tick, step: f64) -> Vec<Shot> {
     let mut bounds: Vec<usize> = vec![0];
@@ -247,7 +261,7 @@ fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, do
             }
             let n = (total - pos).min(per);
             let b = w.src.audio(pos as i64, n, sr).map_err(|e| format!("{}: can't decode the audio at {:.2} s: {e}", w.name, pos as f64 / f64::from(sr)))?;
-            levels.push(crate::audio_levels::measure(&b.channels));
+            levels.push(level(&b.channels));
             pos += n;
         }
     }
