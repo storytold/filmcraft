@@ -36,6 +36,9 @@ fn an_empty_or_reversed_range_is_refused() {
     s.execute("file.openDemoProject", json!({})).unwrap();
     assert!(s.execute("audio.levels", json!({"startSeconds": 5.0, "endSeconds": 2.0})).is_err());
     assert!(s.execute("audio.levels", json!({"windowSeconds": 0.0})).is_err());
+    // an absurd minimum is no error: no stretch is that long
+    let r = s.execute("audio.levels", json!({"endSeconds": 1.0, "minQuietSeconds": 1e300})).unwrap();
+    assert!(r["quiet"].as_array().unwrap().is_empty(), "{r}");
 }
 
 /// A quiet stretch cut short by the end of the range is reported only if what is left is still

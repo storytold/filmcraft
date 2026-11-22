@@ -148,7 +148,8 @@ fn levels(s: &mut Session, p: &Value) -> Result<Value> {
     // lengths in samples, so a stretch of exactly minQuietSeconds isn't lost to rounding
     let secs = |samples: i64| samples as f64 / f64::from(sr);
     let min_samples = ((min_quiet * f64::from(sr)).round() as i64).max(1);
-    let min_windows = (min_samples + per - 1) / per;
+    // ceiling division that can't overflow, for any minimum (a huge one simply finds nothing)
+    let min_windows = (min_samples - 1) / per + 1;
     // a run that reaches the end of the range is clipped to it, and then must still be long enough
     let quiet: Vec<Value> = quiet_runs(&rms, quiet_db, min_windows as usize)
         .into_iter()
