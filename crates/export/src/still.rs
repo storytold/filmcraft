@@ -80,8 +80,7 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
         // 8-bit TIFF and BMP stay RGB, as Export Frame wrote them before; PNG and 16-bit output keep alpha.
         return crate::encode_still(f, rgba, w, h, format == StillFormat::Png);
     }
-    let capacity = samples.checked_mul(2).ok_or_else(bad)?;
-    let mut bytes = Vec::with_capacity(capacity);
+    let mut u16_samples = Vec::with_capacity(samples);
     for pixel in image.px.as_chunks::<4>().0 {
         let [r, g, b, a] = *pixel;
         let a = if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
@@ -89,21 +88,26 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
             let v = if a > 0.0 && v.is_finite() { filmcraft_color::linear_to_srgb(v / a).clamp(0.0, 1.0) } else { 0.0 };
             (v * 65535.0 + 0.5) as u16
         };
-        for v in [encode_channel(r), encode_channel(g), encode_channel(b), (a * 65535.0 + 0.5) as u16] {
-            bytes.extend_from_slice(&v.to_ne_bytes());
-        }
+        u16_samples.extend_from_slice(&[encode_channel(r), encode_channel(g), encode_channel(b), (a * 65535.0 + 0.5) as u16]);
     }
-    let mut out = std::io::Cursor::new(Vec::new());
     match format {
         StillFormat::Png => {
-            image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), &bytes, w, h, image::ExtendedColorType::Rgba16).map_err(err)?
+            let mut out = Vec::new();
+            craft_png::write_16bit(&mut out, w, h, craft_png::Layout::Rgba, &u16_samples).map_err(|e| ExportError::Encode(e.to_string()))?;
+            Ok(out)
         }
         StillFormat::Tiff => {
-            image::ImageEncoder::write_image(image::codecs::tiff::TiffEncoder::new(&mut out), &bytes, w, h, image::ExtendedColorType::Rgba16).map_err(err)?
+            let capacity = samples.checked_mul(2).ok_or_else(bad)?;
+            let mut bytes = Vec::with_capacity(capacity);
+            for sample in u16_samples {
+                bytes.extend_from_slice(&sample.to_ne_bytes());
+            }
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::ImageEncoder::write_image(image::codecs::tiff::TiffEncoder::new(&mut out), &bytes, w, h, image::ExtendedColorType::Rgba16).map_err(err)?;
+            Ok(out.into_inner())
         }
-        _ => return Err(ExportError::Unsupported("16-bit still format".into())),
+        _ => Err(ExportError::Unsupported("16-bit still format".into())),
     }
-    Ok(out.into_inner())
 }
 
 #[cfg(test)]
