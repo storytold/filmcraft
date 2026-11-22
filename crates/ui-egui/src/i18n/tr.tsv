@@ -3687,7 +3687,7 @@
 	Enter a positive duration within the supported speed range.	Desteklenen hız aralığında pozitif bir süre girin.
 	Enter a valid HH:MM:SS:FF timecode	Geçerli bir HH:MM:SS:FF zaman kodu girin
 	Enter a valid HTTP or HTTPS URL without credentials	Kimlik bilgileri içermeyen geçerli bir HTTP veya HTTPS URL'si girin
-	Enter six hex digits, for example FF80C0.	Altı hex basamağı girin, örneğin FF80C0.
+	Enter six hex digits, for example FF80C0.	Altı haneli hex kodu girin, örneğin FF80C0.
 	Exported {path} as {format}, from its file extension	{path} dosyası, dosya uzantısına göre {format} biçiminde dışa aktarıldı
 	FilmCraft Updates	FilmCraft Güncellemeleri
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} şu anda mevcut en yeni sürümdür.
@@ -3734,7 +3734,7 @@
 	Remove saved color	Kayıtlı rengi kaldır
 	Replace	Değiştir
 	Replace File	Dosyayı Değiştir
-	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Duyarlı Tasarım – Zaman, grafiğin katman anahtar karelerini yeniden eşler; Opaklık ve Hareket gibi klip efektleri medya zamanını korur
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Duyarlı Tasarım – Zaman: grafiğin katman anahtar karelerini yeniden eşler; Opaklık ve Hareket gibi klip efektleri medya zamanını korur
 	Save color	Rengi kaydet
 	Scan Presets Folder	Hazır Ayarlar Klasörünü Tara
 	Search markers	İşaretçilerde ara
@@ -3763,5 +3763,5 @@
 	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Etkinleştirildiğinde, GIF saydamlığı açık/kapalı olur: 128'in altındaki alfa saydamdır; 128 ve üzeri opaktır.
 	{count} selected	{count} seçili
 	{frames} frames ({seconds} s)	{frames} kare ({seconds} sn)
-	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} zaten var, bu nedenle hiçbir şey dışa aktarılmadı. Değiştirmek için kaydetme iletişim kutusunda onu seçin.
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} zaten var, bu nedenle hiçbir şey dışa aktarılmadı. Değiştirmek için kaydetme iletişim kutusundan seçin.
 	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}”, “{folder}” içinde zaten var. Değiştirmek istiyor musunuz?
