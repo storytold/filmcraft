@@ -603,6 +603,11 @@
 	(gap)	(இடைவெளி)
 	Out: {name}	வெளி: {name}
 	In: {name}	உள்: {name}
+	Previous: {name}	முந்தைய: {name}
+	Next: {name}	அடுத்து: {name}
+	Slip: {offset} frame	ஸ்லிப்: {offset} சட்டகம்
+	Slip: {offset} frames	ஸ்லிப்: {offset} சட்டகங்கள்
+	at the media limit	ஊடக வரம்பில்
 	Play Around Edit (Space loops, Shift+K once)	தொகுப்பைச் சுற்றி இயக்கு (Space சுழல், Shift+K ஒருமுறை)
 	Trim Backward Many	பல பிரேம்கள் பின்னோக்கி ஒதுக்கு
 	Trim Backward	பின்னோக்கி ஒதுக்கு
