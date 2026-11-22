@@ -252,6 +252,7 @@ fn black_left_by_overlapping_clips_is_a_gap() {
     let r = review(&mut s, json!({}));
     let gap = r["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "gap").unwrap_or_else(|| panic!("no gap: {r}"));
     assert_eq!(gap["time"].as_i64(), Some(b_end.0), "{r}");
+}
 
 /// Offline footage inside a nest is reported in the parent, where the nest shows it, and only
 /// where it shows (#5166).
@@ -333,4 +334,70 @@ fn repeated_nests_are_walked_once() {
     let r = review(&mut s, json!({"sequence": top.0}));
     assert!(t0.elapsed().as_secs() < 10, "the check is bounded: {:?}", t0.elapsed());
     assert_eq!(r["errors"], 0, "the demo footage is online: {r}");
+}
+
+/// Where nested offline footage first shows: the earliest of several nests, a reversed nest's
+/// second half, and only the frame a held nest shows.
+#[test]
+fn nested_offline_footage_is_placed_where_it_first_shows() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_project::{ClipId, ItemId, TrackItem, TrackKind};
+    use filmcraft_time::TimeRange;
+    let dir = tmp_dir("review-nested-first");
+    let (forest, ocean) = (dir.join("forest.mov"), dir.join("ocean.mov"));
+    make_movie(&forest, filmcraft_media::DemoScene::Forest, 160, 90, 24);
+    make_movie(&ocean, filmcraft_media::DemoScene::OceanSunset, 160, 90, 24);
+    let (mut s, items, seq) = session_with(&[&forest, &ocean]);
+    let rate = s.sequence_rate();
+    let sec = Tick::from_seconds_f64;
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let settings = p.sequence(seq).unwrap().settings.clone();
+    // child: offline forest 0–1 s, then ocean 1–2 s
+    let child = p.new_sequence("child", settings.clone(), 1, 1, None);
+    let mut a = p.make_track_item(items[0], TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, sec(1.0)), rate).unwrap();
+    a.id = ClipId(p.alloc_id());
+    let mut b = p.make_track_item(items[1], TrackKind::Video, a.end(), TimeRange::new(Tick::ZERO, sec(1.0)), rate).unwrap();
+    b.id = ClipId(p.alloc_id());
+    let forest_end = a.end();
+    p.sequence_mut(child).unwrap().video_tracks[0].items = vec![a, b];
+    let child_len = p.sequence(child).unwrap().duration();
+    let nest = |p: &mut filmcraft_project::Project, at: Tick| -> TrackItem {
+        let mut n = p.make_track_item(child, TrackKind::Video, at, TimeRange::new(Tick::ZERO, child_len), rate).unwrap();
+        n.id = ClipId(p.alloc_id());
+        n
+    };
+    // the child at 5 s on V1 and at 0 s on V2: V1 is walked first, V2 shows it first
+    let two = p.new_sequence("two", settings.clone(), 2, 1, None);
+    let (late, early) = (nest(p, sec(5.0)), nest(p, Tick::ZERO));
+    let early_id = early.id.0;
+    let q = p.sequence_mut(two).unwrap();
+    q.video_tracks[0].items = vec![late];
+    q.video_tracks[1].items = vec![early];
+    // the child reversed: the offline forest plays second
+    let back = p.new_sequence("back", settings.clone(), 1, 1, None);
+    let mut r = nest(p, Tick::ZERO);
+    r.reverse = true;
+    let back_forest = child_len - forest_end;
+    p.sequence_mut(back).unwrap().video_tracks[0].items = vec![r];
+    // held on an ocean frame, and on a forest frame
+    let held = |p: &mut filmcraft_project::Project, frame: Tick| -> ItemId {
+        let q = p.new_sequence("held", settings.clone(), 1, 1, None);
+        let mut h = nest(p, Tick::ZERO);
+        h.frame_hold = Some(frame);
+        p.sequence_mut(q).unwrap().video_tracks[0].items = vec![h];
+        q
+    };
+    let (held_ocean, held_forest) = (held(p, sec(1.5)), held(p, sec(0.5)));
+    s.execute("media.makeOffline", json!({"items": [items[0].0]})).unwrap();
+    let offline = |s: &mut Session, q: ItemId| {
+        let r = review(s, json!({"sequence": q.0}));
+        r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "offlineMedia" && i["severity"] == "error").cloned().collect::<Vec<_>>()
+    };
+    let f = offline(&mut s, two);
+    assert_eq!((f.len(), f[0]["time"].as_i64(), f[0]["clip"].as_u64()), (1, Some(0), Some(early_id)), "{f:?}");
+    let f = offline(&mut s, back);
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert!((f[0]["time"].as_i64().unwrap() - back_forest.0).abs() <= rate.frame_duration().0, "reversed, it shows second: {f:?}");
+    assert!(offline(&mut s, held_ocean).is_empty(), "the held frame is ocean, online");
+    assert_eq!(offline(&mut s, held_forest).len(), 1);
 }

@@ -145,10 +145,33 @@ fn is_offline(s: &Session, item: ItemId) -> bool {
 }
 
 fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
-    let mut w = MediaWalk { s, seen: Default::default(), walked: Default::default(), budget: MAX_WALKED_CLIPS, out };
-    w.walk(q, (Tick::ZERO, Tick(i64::MAX)), &|t| t, None, 0);
+    let mut w = MediaWalk { s, cache: Default::default(), budget: MAX_WALKED_CLIPS };
+    let found = w.walk(q, (Tick::ZERO, Tick(i64::MAX)), 0);
+    // each offline media item once, where it first shows
+    let mut first: std::collections::BTreeMap<ItemId, &Offline> = Default::default();
+    for f in &found {
+        first
+            .entry(f.media)
+            .and_modify(|e| {
+                if f.lo < e.lo {
+                    *e = f
+                }
+            })
+            .or_insert(f);
+    }
+    let mut firsts: Vec<&Offline> = first.into_values().collect();
+    firsts.sort_by_key(|f| f.lo);
+    for f in firsts {
+        let detail = match &f.nest {
+            None => format!("{}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder", f.name),
+            Some(nest) => {
+                format!("{} inside the nested sequence {nest}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder", f.name)
+            }
+        };
+        out.push(issue("offlineMedia", "error", f.lo, Some(f.clip), detail, "relink the media (media.findMissing) before exporting"));
+    }
     if w.budget == 0 {
-        w.out.push(issue(
+        out.push(issue(
             "offlineMedia",
             "info",
             Tick::ZERO,
@@ -162,29 +185,40 @@ fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
 /// Clips the offline check visits at most, nests included: nests of nests can multiply.
 const MAX_WALKED_CLIPS: usize = 100_000;
 
+/// Offline footage found by the walk, in the time of the sequence it was returned to.
+#[derive(Clone)]
+struct Offline {
+    media: ItemId,
+    /// Where it shows, in that sequence's time.
+    lo: Tick,
+    hi: Tick,
+    /// The clip there: the footage's own clip, or the nest that shows it.
+    clip: u64,
+    name: String,
+    /// The nest it was found through, by name.
+    nest: Option<String>,
+}
+
 /// The offline-media check's walk through a sequence and its nests.
 struct MediaWalk<'a> {
     s: &'a Session,
-    /// Media items already reported: once each, however often they show.
-    seen: std::collections::BTreeSet<ItemId>,
-    /// (sequence, range) parts already walked: another nest showing the same part holds the same
-    /// media, so it isn't walked again.
-    walked: std::collections::HashSet<(ItemId, Tick, Tick)>,
+    /// What a (sequence, child range, depth) part holds, in the child's time: another nest showing
+    /// the same part reuses it, mapped to its own time, instead of walking it again.
+    cache: std::collections::HashMap<(ItemId, Tick, Tick, u32), Vec<Offline>>,
     /// Clips left to visit.
     budget: usize,
-    out: &'a mut Vec<Issue>,
 }
 
-/// The clips of `q` that show within `window` (in `q`'s time), down into nests: a nest shows the
-/// part of its sequence its source range covers (not past the contents), and its clips are
-/// checked there. `to_top` maps `q`'s time to the reviewed sequence's; `nest` is the top-level
-/// nest clip (id, name) the walk went through.
 impl MediaWalk<'_> {
-    fn walk(&mut self, q: &Sequence, window: (Tick, Tick), to_top: &dyn Fn(Tick) -> Tick, nest: Option<(u64, &str)>, depth: u32) {
+    /// The offline footage of `q` that shows within `window` (in `q`'s time), down into nests: a
+    /// nest shows the part of its sequence its source range covers (not past the contents; one
+    /// frame when held), and its clips are checked there.
+    fn walk(&mut self, q: &Sequence, window: (Tick, Tick), depth: u32) -> Vec<Offline> {
         let s = self.s;
+        let mut found = Vec::new();
         for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
             if self.budget == 0 {
-                return;
+                break;
             }
             self.budget -= 1;
             // the part of the clip inside the window, in `q`'s time
@@ -196,40 +230,44 @@ impl MediaWalk<'_> {
                 if depth + 1 >= filmcraft_render::MAX_NEST_DEPTH || it.speed <= 0.0 {
                     continue;
                 }
-                // the child times that part plays: forward from the In point, reversed back from the Out point
+                // the child times that part plays: one frame when held, else forward from the In
+                // point or backward from the Out point
                 let scale = |d: Tick| Tick((d.0 as f64 * it.speed) as i64);
-                let (lo, hi) = if it.reverse {
-                    (it.source_out() - scale(b - it.start), it.source_out() - scale(a - it.start))
-                } else {
-                    (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start))
+                let (lo, hi) = match it.frame_hold {
+                    Some(h) => (h, h + Tick(1)),
+                    None if it.reverse => (it.source_out() - scale(b - it.start), it.source_out() - scale(a - it.start)),
+                    None => (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start)),
                 };
                 let (lo, hi) = (lo.max(Tick::ZERO), hi.min(child.duration()));
-                if lo >= hi || !self.walked.insert((it.item, lo, hi)) {
+                if lo >= hi {
                     continue;
                 }
-                let (start, src_in, src_out, speed, reverse) = (it.start, it.source_in, it.source_out(), it.speed, it.reverse);
-                let to_q = move |ct: Tick| {
-                    let d = if reverse { src_out - ct } else { ct - src_in };
-                    start + Tick((d.0 as f64 / speed) as i64)
+                let key = (it.item, lo, hi, depth + 1);
+                let inner = match self.cache.get(&key) {
+                    Some(v) => v.clone(),
+                    None => {
+                        let v = self.walk(child, (lo, hi), depth + 1);
+                        self.cache.insert(key, v.clone());
+                        v
+                    }
                 };
-                let top = nest.unwrap_or((it.id.0, it.name.as_str()));
-                self.walk(child, (lo, hi), &|ct| to_top(to_q(ct)), Some(top), depth + 1);
+                // into `q`'s time: a held nest shows its frame throughout; otherwise map both ends,
+                // as a reversed nest shows a child range's end first
+                let to_q = |ct: Tick| {
+                    let d = if it.reverse { it.source_out() - ct } else { ct - it.source_in };
+                    (it.start + Tick((d.0 as f64 / it.speed) as i64)).clamp(a, b)
+                };
+                for f in inner {
+                    let (x, y) = if it.frame_hold.is_some() { (a, b) } else { (to_q(f.lo), to_q(f.hi)) };
+                    found.push(Offline { lo: x.min(y), hi: x.max(y), clip: it.id.0, nest: Some(it.name.clone()), ..f });
+                }
                 continue;
             }
-            if needs_media(&s.project, it.item) && !self.seen.contains(&it.item) && is_offline(s, it.item) && self.seen.insert(it.item) {
-                let (clip, detail) = match nest {
-                    None => (it.id.0, format!("{}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder", it.name)),
-                    Some((id, name)) => (
-                        id,
-                        format!(
-                            "{} inside the nested sequence {name}: the media can't be opened (missing, moved or unreadable); it renders as a placeholder",
-                            it.name
-                        ),
-                    ),
-                };
-                self.out.push(issue("offlineMedia", "error", to_top(a), Some(clip), detail, "relink the media (media.findMissing) before exporting"));
+            if needs_media(&s.project, it.item) && is_offline(s, it.item) {
+                found.push(Offline { media: it.item, lo: a, hi: b, clip: it.id.0, name: it.name.clone(), nest: None });
             }
         }
+        found
     }
 }
 
