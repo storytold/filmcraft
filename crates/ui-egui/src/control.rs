@@ -496,7 +496,11 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
-            match invoke(app, ctx, id, params) {
+            // `engine.execute` never opens a parameter dialog (#1540); `ui.menu.invoke` is the menu
+            app.engine_call = req.method == "engine.execute";
+            let r = invoke(app, ctx, id, params);
+            app.engine_call = false;
+            match r {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -714,7 +718,13 @@ pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, cr
             Err(e) => json!({"ok": false, "error": e}),
         };
     }
-    let path = path.map(str::to_string).unwrap_or_else(|| filmcraft_engine::temp_dir().join("filmcraft-screenshot.png").to_string_lossy().to_string());
+    let path = match path {
+        Some(p) => p.to_string(),
+        None => match filmcraft_engine::private_temp_dir() {
+            Ok(d) => d.join("filmcraft-screenshot.png").to_string_lossy().to_string(),
+            Err(e) => return json!({"ok": false, "error": format!("no private temporary folder: {e}")}),
+        },
+    };
     match encode_png(&rgba, cw as u32, ch as u32) {
         Ok(png) => match std::fs::write(&path, png) {
             Ok(()) => json!({"ok": true, "result": {"path": path, "width": cw, "height": ch}}),
