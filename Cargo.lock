@@ -2532,8 +2532,10 @@ dependencies = [
  "filmcraft-time",
  "log",
  "serde_json",
+ "serde",
  "tempfile",
 ]
+ "thiserror 2.0.21",
 
 [[package]]
 name = "filmcraft-frame"
