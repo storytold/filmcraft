@@ -144,9 +144,11 @@ fn is_offline(s: &Session, item: ItemId) -> bool {
     clip.offline || s.media.offline_status(media).is_some()
 }
 
-fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
-    let mut w = MediaWalk { s, cache: Default::default(), budget: MAX_WALKED_CLIPS };
-    let found = w.walk(q, (Tick::ZERO, Tick(i64::MAX)), 0);
+/// Offline footage, also inside nests. Returns whether every clip was checked (the walk is
+/// bounded, see [`MAX_WALKED_CLIPS`]).
+fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) -> bool {
+    let mut w = MediaWalk { s, cache: Default::default(), budget: MAX_WALKED_CLIPS, stopped: false };
+    let found = w.walk(q, (Tick::ZERO, Tick(i64::MAX)), 0, None);
     // each offline media item once, where it first shows
     let mut first: std::collections::BTreeMap<ItemId, &Offline> = Default::default();
     for f in &found {
@@ -170,7 +172,7 @@ fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
         };
         out.push(issue("offlineMedia", "error", f.lo, Some(f.clip), detail, "relink the media (media.findMissing) before exporting"));
     }
-    if w.budget == 0 {
+    if w.stopped {
         out.push(issue(
             "offlineMedia",
             "info",
@@ -180,6 +182,7 @@ fn media_issues(s: &Session, q: &Sequence, out: &mut Vec<Issue>) {
             "review the nested sequences on their own",
         ));
     }
+    !w.stopped
 }
 
 /// Clips the offline check visits at most, nests included: nests of nests can multiply.
@@ -199,25 +202,58 @@ struct Offline {
     nest: Option<String>,
 }
 
+/// Keep, per media item, only the occurrence that starts first and the one that ends last: a
+/// nest maps times one way or the other (reversed), so the first in any parent is one of the two.
+/// This bounds what a walk returns by the number of offline items, not of their occurrences.
+fn keep_extremes(found: Vec<Offline>) -> Vec<Offline> {
+    let mut by: std::collections::BTreeMap<ItemId, (Offline, Offline)> = Default::default();
+    for f in found {
+        match by.get_mut(&f.media) {
+            Some((first, last)) => {
+                if f.lo < first.lo {
+                    *first = f.clone();
+                }
+                if f.hi > last.hi {
+                    *last = f;
+                }
+            }
+            None => {
+                by.insert(f.media, (f.clone(), f));
+            }
+        }
+    }
+    by.into_values().flat_map(|(a, b)| if a.lo == b.lo && a.hi == b.hi { vec![a] } else { vec![a, b] }).collect()
+}
+
 /// The offline-media check's walk through a sequence and its nests.
 struct MediaWalk<'a> {
     s: &'a Session,
-    /// What a (sequence, child range, depth) part holds, in the child's time: another nest showing
-    /// the same part reuses it, mapped to its own time, instead of walking it again.
-    cache: std::collections::HashMap<(ItemId, Tick, Tick, u32), Vec<Offline>>,
+    /// What a (sequence, child range, depth, track kind) part holds, in the child's time: another
+    /// nest showing the same part reuses it, mapped to its own time, instead of walking it again.
+    cache: std::collections::HashMap<(ItemId, Tick, Tick, u32, Option<bool>), Vec<Offline>>,
     /// Clips left to visit.
     budget: usize,
+    /// The budget ran out with clips left unchecked.
+    stopped: bool,
 }
 
 impl MediaWalk<'_> {
     /// The offline footage of `q` that shows within `window` (in `q`'s time), down into nests: a
     /// nest shows the part of its sequence its source range covers (not past the contents; one
-    /// frame when held), and its clips are checked there.
-    fn walk(&mut self, q: &Sequence, window: (Tick, Tick), depth: u32) -> Vec<Offline> {
+    /// frame when held), and its clips are checked there. `video`: only `q`'s video tracks
+    /// (`Some(true)`: the nest that shows `q` is a picture), only its audio tracks (`Some(false)`),
+    /// or both (the reviewed sequence itself).
+    fn walk(&mut self, q: &Sequence, window: (Tick, Tick), depth: u32, video: Option<bool>) -> Vec<Offline> {
         let s = self.s;
         let mut found = Vec::new();
-        for it in q.video_tracks.iter().chain(&q.audio_tracks).filter(|t| t.enabled).flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+        let tracks = q.video_tracks.iter().map(|t| (t, true)).chain(q.audio_tracks.iter().map(|t| (t, false)));
+        for (it, on_video) in tracks.filter(|(t, v)| t.enabled && video.is_none_or(|want| want == *v)).flat_map(|(t, v)| t.items.iter().map(move |it| (it, v)))
+        {
+            if !it.enabled {
+                continue;
+            }
             if self.budget == 0 {
+                self.stopped = true;
                 break;
             }
             self.budget -= 1;
@@ -231,22 +267,24 @@ impl MediaWalk<'_> {
                     continue;
                 }
                 // the child times that part plays: one frame when held, else forward from the In
-                // point or backward from the Out point
-                let scale = |d: Tick| Tick((d.0 as f64 * it.speed) as i64);
+                // point or backward from the Out point. Rounded as the renderer samples, and at
+                // least a tick wide, so a slowed nest of a single held frame keeps that frame.
+                let scale = |d: Tick| Tick((d.0 as f64 * it.speed).round() as i64);
                 let (lo, hi) = match it.frame_hold {
                     Some(h) => (h, h + Tick(1)),
                     None if it.reverse => (it.source_out() - scale(b - it.start), it.source_out() - scale(a - it.start)),
                     None => (it.source_in + scale(a - it.start), it.source_in + scale(b - it.start)),
                 };
-                let (lo, hi) = (lo.max(Tick::ZERO), hi.min(child.duration()));
-                if lo >= hi {
+                let lo = lo.max(Tick::ZERO).min(child.duration());
+                let hi = hi.min(child.duration()).max(lo + Tick(1));
+                if lo >= child.duration() {
                     continue;
                 }
-                let key = (it.item, lo, hi, depth + 1);
+                let key = (it.item, lo, hi, depth + 1, Some(on_video));
                 let inner = match self.cache.get(&key) {
                     Some(v) => v.clone(),
                     None => {
-                        let v = self.walk(child, (lo, hi), depth + 1);
+                        let v = self.walk(child, (lo, hi), depth + 1, Some(on_video));
                         self.cache.insert(key, v.clone());
                         v
                     }
@@ -255,7 +293,7 @@ impl MediaWalk<'_> {
                 // as a reversed nest shows a child range's end first
                 let to_q = |ct: Tick| {
                     let d = if it.reverse { it.source_out() - ct } else { ct - it.source_in };
-                    (it.start + Tick((d.0 as f64 / it.speed) as i64)).clamp(a, b)
+                    (it.start + Tick((d.0 as f64 / it.speed).round() as i64)).clamp(a, b)
                 };
                 for f in inner {
                     let (x, y) = if it.frame_hold.is_some() { (a, b) } else { (to_q(f.lo), to_q(f.hi)) };
@@ -267,7 +305,7 @@ impl MediaWalk<'_> {
                 found.push(Offline { media: it.item, lo: a, hi: b, clip: it.id.0, name: it.name.clone(), nest: None });
             }
         }
-        found
+        keep_extremes(found)
     }
 }
 
@@ -426,7 +464,7 @@ fn review(s: &mut Session, p: &Value) -> Result<Value> {
     let mut issues = Vec::new();
     let segs = segments(&s.project, q);
     picture_issues(&s.project, q, &segs, flash, long, &mut issues);
-    media_issues(s, q, &mut issues);
+    let nested_complete = media_issues(s, q, &mut issues);
     word_issues(&s.project, q, Tick::from_seconds_f64(margin), &mut issues);
     pop_issues(s, q, pop_db, &mut issues);
     let rank = |sev: &str| match sev {
@@ -446,6 +484,7 @@ fn review(s: &mut Session, p: &Value) -> Result<Value> {
             "clip": i.clip, "detail": i.detail, "fix": i.fix,
         })).collect::<Vec<_>>(),
         "issuesTruncated": issues.len() > MAX_ISSUES,
+        "offlineCheckComplete": nested_complete,
         "notes": "Heuristic checks of the timeline, transcripts and mix. They find likely mistakes; they don't judge taste, and no issues doesn't mean a good edit. Look at the cuts too (cut_inspect, render_frame).",
     });
     if let Some(old) = against {

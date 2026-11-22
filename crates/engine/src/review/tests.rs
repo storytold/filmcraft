@@ -401,3 +401,44 @@ fn nested_offline_footage_is_placed_where_it_first_shows() {
     assert!(offline(&mut s, held_ocean).is_empty(), "the held frame is ocean, online");
     assert_eq!(offline(&mut s, held_forest).len(), 1);
 }
+
+/// A nest plays its child's tracks of its own kind: on a video track the child's picture, on an
+/// audio track its sound. Offline picture inside a nest that only plays sound isn't reported.
+#[test]
+fn a_nest_is_checked_for_the_tracks_it_plays() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_project::{ClipId, ItemId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let path = tmp_dir("review-nest-kind").join("forest.mov");
+    make_movie(&path, filmcraft_media::DemoScene::Forest, 160, 90, 24);
+    let (mut s, items, seq) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let settings = p.sequence(seq).unwrap().settings.clone();
+    // the child shows the (soon offline) movie on V1 only
+    let child = p.new_sequence("child", settings.clone(), 1, 1, None);
+    let mut v = p.make_track_item(items[0], TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick::from_seconds_f64(1.0)), rate).unwrap();
+    v.id = ClipId(p.alloc_id());
+    p.sequence_mut(child).unwrap().video_tracks[0].items = vec![v];
+    let len = p.sequence(child).unwrap().duration();
+    let mut parent = |kind: TrackKind| -> ItemId {
+        let q = p.new_sequence("parent", settings.clone(), 1, 1, None);
+        let mut n = p.make_track_item(child, kind, Tick::ZERO, TimeRange::new(Tick::ZERO, len), rate).unwrap();
+        n.id = ClipId(p.alloc_id());
+        let qs = p.sequence_mut(q).unwrap();
+        match kind {
+            TrackKind::Video => qs.video_tracks[0].items = vec![n],
+            _ => qs.audio_tracks[0].items = vec![n],
+        }
+        q
+    };
+    let (on_video, on_audio) = (parent(TrackKind::Video), parent(TrackKind::Audio));
+    s.execute("media.makeOffline", json!({"items": [items[0].0]})).unwrap();
+    let errors = |s: &mut Session, q: ItemId| {
+        let r = review(s, json!({"sequence": q.0}));
+        assert_eq!(r["offlineCheckComplete"], true, "{r}");
+        r["issues"].as_array().unwrap().iter().filter(|i| i["kind"] == "offlineMedia" && i["severity"] == "error").count()
+    };
+    assert_eq!(errors(&mut s, on_video), 1, "the picture nest shows the offline movie");
+    assert_eq!(errors(&mut s, on_audio), 0, "the sound nest plays only the child's audio tracks");
+}
