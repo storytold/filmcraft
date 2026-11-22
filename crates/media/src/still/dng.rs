@@ -14,6 +14,7 @@ use std::sync::Arc;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 
 use super::DEFAULT_STILL_DURATION;
 use crate::raw::{self, RawInfo, RawSettings};
@@ -99,6 +100,13 @@ pub fn decode_with(name: &str, bytes: &[u8], settings: &RawSettings, level: u8) 
     let mut frame = VideoFrame::rgba_f32(w, h, img.rgba);
     frame.color = LINEAR_709;
     Ok(Decoded { frame, pixel_format, info: img.info })
+}
+
+/// The developed still's default-crop size, read without developing the picture.
+/// DNG ignores EXIF orientation.
+pub fn geometry(bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let info = filmcraft_dng::Dng::parse(bytes).ok()?.info().ok()?;
+    Some((u32::try_from(info.width).ok()?, u32::try_from(info.height).ok()?, Orientation::NoTransforms))
 }
 
 /// The as-shot white balance of a DNG as (temperature in kelvin, tint), when it has the colour
