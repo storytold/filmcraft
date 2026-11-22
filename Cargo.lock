@@ -1361,6 +1361,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-png"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c42c34bfa127b095fb0a8d5ccaba0c168c254062#c42c34bfa127b095fb0a8d5ccaba0c168c254062"
+dependencies = [
+ "png",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-psd"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17#dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17"
@@ -2480,6 +2489,7 @@ dependencies = [
  "craft-exr",
  "craft-jpeg",
  "craft-media 0.1.0 (git+https://github.com/storytold/craft-libs?rev=dc6adc3fbd9cf39e4a8210f94106a5b0c3e26e17)",
+ "craft-png",
  "craft-tga",
  "craft-video",
  "filmcraft-audio-dsp",
