@@ -159,7 +159,7 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 
 /// Window ▸ Workspaces: the user's own workspaces and saved changes to the built-in ones, and the
 /// workspace in use (reopened at launch).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
@@ -171,6 +171,12 @@ pub struct WorkspacePrefs {
 /// FilmCraft used craft-ui workspaces hold a frame tree in `layout` and floating groups in
 /// `floating` instead; [`saved_workspace`] reads them. [`SavedWorkspace::new`] writes
 /// `workspace`, and also `layout` and `floating` while every floating window is one tab
+impl Default for WorkspacePrefs {
+    fn default() -> Self {
+        Self { saved: Vec::new(), current: "Editing".into(), last: None }
+    }
+}
+
 /// group, so that earlier versions still open the workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
