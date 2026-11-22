@@ -121,13 +121,23 @@ mod tests {
     }
     #[test]
     fn sixteen_bit_tiff_bytes_match_the_previous_encoder() {
-        // Self-generated pixels with distinct channels and partial alpha; the tall frame spans
-        // more than one strip.
+        // Self-generated pixels whose 16-bit samples are known without FilmCraft's conversion:
+        // each channel is 0 or equal to alpha (straight 0 or 65535), alpha is 1 or 0.5 (65535 or
+        // 32768), and red, green and blue follow different bits of the pixel index. The tall frame
+        // spans more than one strip.
         for (w, h) in [(3usize, 2usize), (4, 31_253)] {
-            let px = (0..w * h * 4).map(|i| ((i * 7919) % 1000) as f32 / 1000.0).collect();
-            let img = Image { w, h, px };
-            let bytes = encode(&img, StillFormat::Tiff, 16).unwrap();
-            let samples = image::load_from_memory(&bytes).unwrap().to_rgba16().into_raw();
+            let (mut px, mut samples) = (Vec::with_capacity(w * h * 4), Vec::with_capacity(w * h * 4));
+            for i in 0..w * h {
+                let (a, a16) = if i % 3 == 0 { (0.5, 32768) } else { (1.0, 65535) };
+                for bit in 0..3 {
+                    let on = (i >> bit) & 1 == 1;
+                    px.push(if on { a } else { 0.0 });
+                    samples.push(if on { 65535u16 } else { 0 });
+                }
+                px.push(a);
+                samples.push(a16);
+            }
+            let bytes = encode(&Image { w, h, px }, StillFormat::Tiff, 16).unwrap();
             let packed: Vec<u8> = samples.iter().flat_map(|v| v.to_ne_bytes()).collect();
             let mut previous = std::io::Cursor::new(Vec::new());
             image::ImageEncoder::write_image(
