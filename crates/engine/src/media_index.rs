@@ -128,6 +128,8 @@ pub struct Shot {
 pub struct MediaIndex {
     pub item: ItemId,
     pub name: String,
+    /// Where the analysed range starts in the media (a subclip's start in its parent; else 0).
+    pub start: Tick,
     pub duration: Tick,
     pub fps: f64,
     pub frames: usize,
@@ -213,26 +215,32 @@ struct Work {
     /// file with video has none).
     video: bool,
     media: Option<filmcraft_project::MediaRef>,
+    /// The media range to analyse: a subclip's range of its parent, or the whole file.
+    range: Option<filmcraft_time::TimeRange>,
 }
 
 fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, done: &mut u64) -> std::result::Result<MediaIndex, String> {
     use std::sync::atomic::Ordering;
     let info = w.src.info().clone();
-    let truncated = info.duration.seconds() > MAX_SECONDS;
-    let duration = if truncated { Tick::from_seconds_f64(MAX_SECONDS) } else { info.duration };
+    // in the media's own time (a subclip's parent time, which its clips and transcript use)
+    let (start, full_end) = w.range.map_or((Tick::ZERO, info.duration), |r| (r.start, r.end().min(info.duration)));
+    let truncated = (full_end - start).seconds() > MAX_SECONDS;
+    let end = if truncated { start + Tick::from_seconds_f64(MAX_SECONDS) } else { full_end };
+    let duration = end - start;
     let step = 1.0 / fps;
     let mut times = Vec::new();
     let mut measures = Vec::new();
     let mut cuts = Vec::new();
     if let Some(v) = info.video.as_ref().filter(|_| w.video) {
         let scale = (ANALYSIS_WIDTH / f64::from(v.width.max(1))).min(1.0) as f32;
-        let n = (duration.seconds() * fps).floor().max(1.0) as usize;
+        // every started interval gets a sample, the last partial one included
+        let n = (duration.seconds() * fps).ceil().max(1.0) as usize;
         let mut det = SceneDetector::new();
         for k in 0..n {
             if prog.cancel.load(Ordering::Relaxed) {
                 return Err("stopped".into());
             }
-            let t = Tick::from_seconds_f64(k as f64 * step);
+            let t = start + Tick::from_seconds_f64(k as f64 * step);
             let f = w
                 .src
                 .video_frame(filmcraft_media::FrameRequest { time: t, scale })
@@ -256,8 +264,9 @@ fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, do
     if let Some(a) = info.audio_streams.first() {
         let sr = a.sample_rate.max(1);
         let per = ((LEVEL_WINDOW * f64::from(sr)) as usize).max(1);
-        let total = duration.to_units_floor(i64::from(sr)).max(0) as usize;
-        let mut pos = 0usize;
+        let first = start.to_units_floor(i64::from(sr)).max(0) as usize;
+        let total = first + duration.to_units_floor(i64::from(sr)).max(0) as usize;
+        let mut pos = first;
         while pos < total {
             if prog.cancel.load(Ordering::Relaxed) {
                 return Err("stopped".into());
@@ -268,8 +277,21 @@ fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, do
             pos += n;
         }
     }
-    let shots = if times.is_empty() { Vec::new() } else { group_shots(&times, &measures, &cuts, duration, step) };
-    Ok(MediaIndex { item: w.item, name: w.name.clone(), duration, fps, frames: times.len(), shots, levels, truncated, epoch, media: w.media.clone(), job: 0 })
+    let shots = if times.is_empty() { Vec::new() } else { group_shots(&times, &measures, &cuts, end, step) };
+    Ok(MediaIndex {
+        item: w.item,
+        name: w.name.clone(),
+        start,
+        duration,
+        fps,
+        frames: times.len(),
+        shots,
+        levels,
+        truncated,
+        epoch,
+        media: w.media.clone(),
+        job: 0,
+    })
 }
 
 /// The items to analyse: `items`, else the Project selection, else the media of the selected clips.
@@ -306,7 +328,8 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
             Some(src) if src.info().video.is_some() || !src.info().audio_streams.is_empty() => {
                 let video = project_video.unwrap_or(src.info().video.is_some()) && src.info().video.is_some();
                 let media = media_ref(s, item);
-                work.push(Work { item, name, src, video, media });
+                let range = s.project.resolve_media(item).and_then(|(_, _, r)| r);
+                work.push(Work { item, name, src, video, media, range });
             }
             Some(_) => skipped.push(json!({"item": item.0, "reason": "no picture or sound"})),
             None => skipped.push(json!({"item": item.0, "reason": "the media can't be opened (offline, a sequence or a graphic)"})),
@@ -501,13 +524,17 @@ fn index(s: &mut Session, p: &Value) -> Result<Value> {
     let rms: Vec<f64> = ix.levels.iter().map(|l| (l.0 * 10.0).round() / 10.0).collect();
     let quiet: Vec<Value> = crate::audio_levels::quiet_runs(&rms, -45.0, 2)
         .into_iter()
-        .map(|(a, b)| json!({"startSeconds": a as f64 * LEVEL_WINDOW, "endSeconds": (b as f64 * LEVEL_WINDOW).min(ix.duration.seconds())}))
+        .map(|(a, b)| {
+            let s0 = ix.start.seconds();
+            json!({"startSeconds": s0 + a as f64 * LEVEL_WINDOW, "endSeconds": s0 + (b as f64 * LEVEL_WINDOW).min(ix.duration.seconds())})
+        })
         .collect();
     let mut best: Vec<(usize, f64)> = ix.shots.iter().enumerate().map(|(k, sh)| (k, assess(sh, median).1)).collect();
     best.sort_by(|a, b| b.1.total_cmp(&a.1));
     Ok(json!({
         "item": item.0,
         "name": ix.name,
+        "startSeconds": ix.start.seconds(),
         "durationSeconds": ix.duration.seconds(),
         "analysisFps": ix.fps,
         "frames": ix.frames,
@@ -516,9 +543,9 @@ fn index(s: &mut Session, p: &Value) -> Result<Value> {
         "shots": shots,
         "shotsTruncated": ix.shots.len() > limit,
         "bestShots": best.iter().take(5).map(|(k, sc)| json!({"shot": k, "startSeconds": ix.shots[*k].start.seconds(), "score": sc})).collect::<Vec<_>>(),
-        "audio": if ix.levels.is_empty() { Value::Null } else { json!({"windowSeconds": LEVEL_WINDOW, "rmsDb": rms, "quiet": quiet}) },
+        "audio": if ix.levels.is_empty() { Value::Null } else { json!({"startSeconds": ix.start.seconds(), "windowSeconds": LEVEL_WINDOW, "rmsDb": rms, "quiet": quiet}) },
         "hasTranscript": words.is_some(),
-        "notes": "Media time. Shots come from frame differences at the analysis rate (fast motion can split a shot; raise fps to be finer). brightness/blown/crushed/sharpness/motion are measured on a reduced picture; score (0–100) ranks takes of this item against each other, it is not an absolute grade. Shake, faces, composition and aesthetics are not measured.",
+        "notes": "Media time (a subclip's analysis covers its range, in its parent's media time, from startSeconds; audio.rmsDb[i] starts at audio.startSeconds + i × windowSeconds). Shots come from frame differences at the analysis rate (fast motion can split a shot; raise fps to be finer). brightness/blown/crushed/sharpness/motion are measured on a reduced picture; score (0–100) ranks takes of this item against each other, it is not an absolute grade. Shake, faces, composition and aesthetics are not measured.",
     }))
 }
 

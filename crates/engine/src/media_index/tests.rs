@@ -35,7 +35,10 @@ fn footage_is_indexed_into_shots_that_cover_it_and_measures_that_tell_scenes_apa
         let ix = index(&mut s, item);
         let shots = ix["shots"].as_array().unwrap();
         assert!(!shots.is_empty(), "{ix}");
-        assert_eq!(shots[0]["start"], 0);
+        assert!(
+            (shots[0]["startSeconds"].as_f64().unwrap() - ix["startSeconds"].as_f64().unwrap()).abs() < 1e-9,
+            "the first shot starts where the analysis does"
+        );
         for w in shots.windows(2) {
             assert_eq!(w[0]["end"], w[1]["start"], "shots are contiguous");
         }
@@ -161,4 +164,29 @@ fn an_earlier_analysis_finishing_late_does_not_replace_a_later_one() {
     }
     s.poll_persistence();
     assert_eq!(index(&mut s, city)["analysisFps"], 2.0, "the later request's index stays");
+}
+
+/// A subclip is analysed over its own range of the parent file, in the parent's media time.
+#[test]
+fn a_subclip_is_analysed_over_its_range() {
+    let mut s = demo();
+    let city = item_named(&s, "City_Night_Drive.mp4");
+    let (a, b) = (filmcraft_time::Tick::from_seconds_f64(4.0), filmcraft_time::Tick::from_seconds_f64(7.0));
+    let sub = {
+        let p = std::sync::Arc::make_mut(&mut s.project);
+        let kind = filmcraft_project::ItemKind::Subclip {
+            parent: filmcraft_project::ItemId(city),
+            range: filmcraft_time::TimeRange::from_bounds(a, b),
+            restrict_trims: false,
+        };
+        p.add_item("city 4-7", filmcraft_project::Label::Iris, kind, None).0
+    };
+    s.execute("media.analyze", json!({"items": [sub], "fps": 4, "wait": true})).unwrap();
+    let ix = index(&mut s, sub);
+    assert!((ix["startSeconds"].as_f64().unwrap() - 4.0).abs() < 1e-6, "{ix}");
+    assert!((ix["durationSeconds"].as_f64().unwrap() - 3.0).abs() < 1e-6, "{ix}");
+    let shots = ix["shots"].as_array().unwrap();
+    assert!(shots.iter().all(|x| x["startSeconds"].as_f64().unwrap() >= 4.0 - 1e-6), "{ix}");
+    let end = shots.last().unwrap()["start"].as_i64().unwrap() + filmcraft_time::Tick::from_seconds_f64(shots.last().unwrap()["seconds"].as_f64().unwrap()).0;
+    assert!((end - b.0).abs() < 1000, "the last shot ends where the subclip does: {ix}");
 }

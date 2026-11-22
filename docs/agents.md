@@ -114,7 +114,7 @@ hours at once.
 
 **Raw footage.** `media.analyze {items:[id]?, fps=6, wait=false}` indexes media items from the
 Project panel in a background job (`jobs.list` shows it, `jobs.cancel` stops it). Then
-`media.index {item, shotsLimit=200}` returns that item's shots in media time, each with
+`media.index {item, shotsLimit=200}` returns that item's shots in media time (a subclip is analysed over its range, in its parent's media time, from `startSeconds`), each with
 `brightness`, `blown`, `crushed`, `sharpness`, `motion`, `stillSeconds`, `flags` (`black`,
 `dark`, `overexposed`, `crushedShadows`, `soft`, `static` (nothing moves), `frozen` (the picture stops for 1 s or more inside a moving shot)), a `score` (0–100,
 for ranking takes of the same item, not an absolute grade) and the transcript `text` spoken in the
