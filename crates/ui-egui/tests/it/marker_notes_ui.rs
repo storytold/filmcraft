@@ -109,12 +109,18 @@ fn the_notes_of_the_marker_under_the_parked_playhead_are_written_over_the_pictur
     assert!(d.notes_at(120).is_empty(), "gone after the range marker's last frame");
     assert!(d.notes_at(150).is_empty(), "a marker with no name or notes has nothing to show");
 
-    // coincident markers are stacked, not drawn over each other
-    d.marker(48, 0, "Second note", "");
+    // coincident markers are all shown while they fit, stacked, not drawn over each other
+    for name in ["Second note", "Third note", "Fourth note"] {
+        d.marker(48, 0, name, "");
+    }
     let shown = d.notes_at(48);
-    assert_eq!(shown.len(), 2, "both coincident markers: {shown:?}");
-    let (a, b) = (shown[0].2, shown[1].2);
-    assert!(a[1] + a[3] <= b[1] || b[1] + b[3] <= a[1], "the plates do not overlap: {a:?} {b:?}");
+    assert_eq!(shown.len(), 4, "all four coincident markers: {shown:?}");
+    for (i, a) in shown.iter().enumerate() {
+        for b in &shown[i + 1..] {
+            let (a, b) = (a.2, b.2);
+            assert!(a[1] + a[3] <= b[1] || b[1] + b[3] <= a[1], "the plates do not overlap: {a:?} {b:?}");
+        }
+    }
 }
 
 #[test]

@@ -191,8 +191,9 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     }
 }
 
-/// At most this many coincident markers have their notes written over the picture.
-const MARKER_NOTES_MAX: usize = 3;
+/// Coincident markers looked at for Marker Notes: every one whose plate fits is shown; the bound
+/// only limits the work for a damaged project with very many markers on one frame.
+const MARKER_NOTES_SCAN: usize = 64;
 
 /// Whether the frame `frame` is on the marker `m`: its own frame, or any frame of a range marker.
 fn on_marker(m: &filmcraft_project::Marker, frame: i64, rate: filmcraft_time::FrameRate) -> bool {
@@ -225,7 +226,7 @@ fn marker_notes(
             q.markers
                 .iter()
                 .filter(|m| on_marker(m, frame, rate) && !(m.name.trim().is_empty() && m.comment.trim().is_empty()))
-                .take(MARKER_NOTES_MAX)
+                .take(MARKER_NOTES_SCAN)
                 .map(|m| {
                     let c = m.custom_color.map_or_else(|| labels.rgb(m.color), |c| c.0);
                     (m.id.0, m.name.trim().to_owned(), m.comment.trim().to_owned(), Color32::from_rgb(c[0], c[1], c[2]))
@@ -244,6 +245,9 @@ fn marker_notes(
     let painter = ui.painter().clone();
     let mut bottom = area.max.y - (area.height() * 0.06).max(pad);
     for (id, name, comment, colour) in notes.into_iter().rev() {
+        if bottom - area.min.y < size + 2.0 * pad {
+            break;
+        }
         let galley_of = |text: &str, font: egui::FontId, rows: usize| {
             let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, Color32::WHITE, wrap);
             job.wrap.max_rows = rows;
@@ -257,7 +261,8 @@ fn marker_notes(
         let plate_w = (text_w + 2.0 * pad + 4.0).min(width);
         let plate = Rect::from_min_max(pos2(area.center().x - plate_w / 2.0, bottom - text_h - 2.0 * pad), pos2(area.center().x + plate_w / 2.0, bottom));
         if plate.min.y < area.min.y {
-            break;
+            // too tall for the space left: a shorter plate after it may still fit
+            continue;
         }
         painter.rect_filled(plate, 3.0, Color32::from_black_alpha(185));
         painter.rect_filled(Rect::from_min_size(plate.min, vec2(4.0, plate.height())), 0.0, colour);
