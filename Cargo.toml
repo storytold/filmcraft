@@ -65,7 +65,7 @@ craft-exr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 craft-dpx = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # Shared YUV4MPEG2 parser and frame index.
 craft-jsonrpc = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["async-lines"] }
-craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-fcproj-format = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "3af2280ee3434a2c860012df2f440652621c2c81" }
 craft-font-catalog = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", default-features = false }
 craft-control-protocol = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 craft-y4m = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
@@ -74,6 +74,7 @@ craft-raw = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # Shared Radiance HDR reader with bounded direct RGBA output.
 craft-hdr = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 craft-tga = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
+craft-sniff = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # Shared OMF Bento container; its object model stays in FilmCraft.
 craft-aaf = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 craft-cfb = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
