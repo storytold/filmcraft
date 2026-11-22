@@ -52,7 +52,7 @@ impl Segment {
 
 /// Whether the project item behind a clip replaces the picture (media, nests, subclips) rather
 /// than sitting over it (graphics, adjustment layers).
-fn is_picture(p: &Project, item: ItemId) -> bool {
+pub(crate) fn is_picture(p: &Project, item: ItemId) -> bool {
     !matches!(p.item(item).map(|i| &i.kind), Some(ItemKind::Graphic { .. } | ItemKind::AdjustmentLayer { .. }))
 }
 

@@ -14,7 +14,7 @@ use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, always, bad, f64_p, u64_p};
-use crate::pacing::{Segment, is_through_edit, picture_at, segments};
+use crate::pacing::{Segment, is_picture, is_through_edit, picture_at, segments};
 use crate::{EngineError, Result, Session};
 
 const ID: &str = "sequence.review";
@@ -62,17 +62,32 @@ fn needs_media(p: &Project, item: ItemId) -> bool {
 fn picture_issues(p: &Project, q: &Sequence, segs: &[Segment], flash: i64, long: f64, out: &mut Vec<Issue>) {
     let fd = q.settings.frame_rate.frame_duration();
     let name = |c: Option<filmcraft_project::ClipId>| c.and_then(|c| q.find_item(c)).map(|(_, it)| it.name.clone()).unwrap_or_default();
-    let picture_end = segs.iter().rev().find(|g| g.clip.is_some()).map_or(Tick::ZERO, |g| g.end);
+    // black before the end of the last picture clip is a gap, also where an overlap or a nest's
+    // overhang hides a clip that still runs on; black after every clip is just the sequence's tail
+    let picture_end = q
+        .video_tracks
+        .iter()
+        .filter(|tr| tr.enabled)
+        .flat_map(|tr| tr.items.iter())
+        .filter(|c| c.enabled && is_picture(p, c.item))
+        .map(|c| c.end())
+        .max()
+        .unwrap_or(Tick::ZERO);
     for (k, g) in segs.iter().enumerate() {
         match g.clip {
-            None if g.end <= picture_end => out.push(issue(
-                "gap",
-                "error",
-                g.start,
-                None,
-                format!("{} of black between {} and {}", secs(g.len()), secs(g.start), secs(g.end)),
-                "close the gap (ripple delete it) or fill it",
-            )),
+            // black that starts before the last picture clip ends, up to that end (what follows
+            // every clip is the sequence's tail, not a gap)
+            None if g.start < picture_end => {
+                let end = g.end.min(picture_end);
+                out.push(issue(
+                    "gap",
+                    "error",
+                    g.start,
+                    None,
+                    format!("{} of black between {} and {}", secs(end - g.start), secs(g.start), secs(end)),
+                    "close the gap (ripple delete it) or fill it",
+                ));
+            }
             None => {}
             Some(c) => {
                 if g.len() < Tick(fd.0.saturating_mul(flash)) {

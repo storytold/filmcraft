@@ -223,3 +223,33 @@ fn a_tracks_volume_counts_for_pops() {
     let r = review(&mut s, json!({}));
     assert_eq!(pops(&r), 0, "{r}");
 }
+
+/// The black that overlapping clips leave (#5167) is a gap in the review too: it lies before the
+/// end of the clip that is hidden there.
+#[test]
+fn black_left_by_overlapping_clips_is_a_gap() {
+    use filmcraft_project::{ClipId, ItemId, TrackKind};
+    use filmcraft_time::TimeRange;
+    let mut s = demo();
+    let sec = Tick::from_seconds_f64;
+    let item = |name: &str| s.project.items.iter().find(|(_, i)| i.name == name).map(|(id, _)| *id).unwrap();
+    let (city, desert): (ItemId, ItemId) = (item("City_Night_Drive.mp4"), item("Desert_Dunes.mp4"));
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let mut clip = |item: ItemId, at: f64, len: f64| {
+        let mut c = p.make_track_item(item, TrackKind::Video, sec(at), TimeRange::new(Tick::ZERO, sec(len)), rate).unwrap();
+        c.id = ClipId(p.alloc_id());
+        c
+    };
+    let (a, b) = (clip(city, 0.0, 10.0), clip(desert, 3.0, 2.0));
+    let b_end = b.end();
+    let q = p.sequence_mut(seq).unwrap();
+    for t in &mut q.video_tracks {
+        t.items.clear();
+    }
+    q.video_tracks[0].items = vec![a, b];
+    let r = review(&mut s, json!({}));
+    let gap = r["issues"].as_array().unwrap().iter().find(|i| i["kind"] == "gap").unwrap_or_else(|| panic!("no gap: {r}"));
+    assert_eq!(gap["time"].as_i64(), Some(b_end.0), "{r}");
+}
