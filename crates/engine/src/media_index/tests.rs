@@ -143,3 +143,22 @@ fn an_index_is_not_reused_for_other_media_under_the_same_id() {
     // whether or not the id was handed out again, the ocean clip has no index yet
     assert!(s.execute("media.index", json!({"item": second})).is_err(), "ids {first} and {second}");
 }
+
+/// Two analyses of one item: the later request's result stays, even when the earlier, slower one
+/// finishes after it.
+#[test]
+fn an_earlier_analysis_finishing_late_does_not_replace_a_later_one() {
+    use std::sync::atomic::Ordering;
+    let mut s = demo();
+    let city = item_named(&s, "City_Night_Drive.mp4");
+    let slow = s.execute("media.analyze", json!({"items": [city], "fps": 60})).unwrap()["job"].as_u64().unwrap();
+    s.execute("media.analyze", json!({"items": [city], "fps": 2, "wait": true})).unwrap();
+    assert_eq!(index(&mut s, city)["analysisFps"], 2.0);
+    let t0 = std::time::Instant::now();
+    while !s.jobs.iter().find(|j| j.id == slow).is_some_and(|j| j.progress.finished.load(Ordering::Relaxed)) {
+        assert!(t0.elapsed().as_secs() < 120, "the slow analysis didn't finish");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    s.poll_persistence();
+    assert_eq!(index(&mut s, city)["analysisFps"], 2.0, "the later request's index stays");
+}

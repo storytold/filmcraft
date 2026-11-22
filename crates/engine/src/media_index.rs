@@ -140,6 +140,9 @@ pub struct MediaIndex {
     pub epoch: u64,
     /// The media analysed. An undo can give another item the same id, so a lookup checks it.
     pub media: Option<filmcraft_project::MediaRef>,
+    /// The `media.analyze` job that made it: a later request's result isn't replaced by an
+    /// earlier one that happens to finish after it.
+    pub job: u64,
 }
 
 /// A running `media.analyze` job; its results are stored by [`poll`] when it finishes.
@@ -266,7 +269,7 @@ fn analyse(w: &Work, fps: f64, epoch: u64, prog: &filmcraft_export::Progress, do
         }
     }
     let shots = if times.is_empty() { Vec::new() } else { group_shots(&times, &measures, &cuts, duration, step) };
-    Ok(MediaIndex { item: w.item, name: w.name.clone(), duration, fps, frames: times.len(), shots, levels, truncated, epoch, media: w.media.clone() })
+    Ok(MediaIndex { item: w.item, name: w.name.clone(), duration, fps, frames: times.len(), shots, levels, truncated, epoch, media: w.media.clone(), job: 0 })
 }
 
 /// The items to analyse: `items`, else the Project selection, else the media of the selected clips.
@@ -399,7 +402,10 @@ pub fn poll(s: &mut Session) {
             if ix.media != media_ref(s, ix.item) {
                 continue;
             }
-            s.media_index.insert(ix.item, Arc::new(ix));
+            if s.media_index.get(&ix.item).is_some_and(|old| old.job > pj.job) {
+                continue;
+            }
+            s.media_index.insert(ix.item, Arc::new(MediaIndex { job: pj.job, ..ix }));
         }
     }
 }
