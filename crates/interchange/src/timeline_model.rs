@@ -792,6 +792,68 @@ fn import_shared(text: &str, opts: &crate::ImportOptions, report: &mut crate::Re
     Ok(crate::Imported { project, sequences: imported.sequences.into_iter().map(|id| film::ItemId(id.0)).collect() })
 }
 
+/// The shared FCPXML reader represents every `ref-clip` as video, including a re-imported
+/// compound sequence that contains audio only. Remove those video instances after converting its
+/// model, propagating the classification through parents before returning the project.
+fn remove_fcpxml_audio_only_nests(project: &mut film::Project) {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let mut audio_only = HashSet::new();
+    let mut parents: HashMap<film::ItemId, Vec<film::ItemId>> = HashMap::new();
+    for item in project.sequences() {
+        let Some(sequence) = project.sequence(item.id) else { continue };
+        if sequence.video_tracks.iter().all(|track| track.items.is_empty()) && sequence.audio_tracks.iter().any(|track| !track.items.is_empty()) {
+            audio_only.insert(item.id);
+        }
+        for clip in sequence.video_tracks.iter().flat_map(|track| &track.items) {
+            parents.entry(clip.item).or_default().push(item.id);
+        }
+    }
+
+    let mut pending: VecDeque<_> = audio_only.iter().copied().collect();
+    while let Some(child_id) = pending.pop_front() {
+        let Some(child_parents) = parents.get(&child_id) else { continue };
+        for &parent_id in child_parents {
+            let Some(parent) = project.sequence_mut(parent_id) else { continue };
+            let mut removed = Vec::new();
+            for track in &mut parent.video_tracks {
+                track.items.retain(|clip| {
+                    if clip.item == child_id {
+                        removed.push((clip.id, clip.link));
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            if removed.is_empty() {
+                continue;
+            }
+
+            let removed_ids: HashSet<_> = removed.iter().map(|(id, _)| *id).collect();
+            let removed_links: HashSet<_> = removed.iter().filter_map(|(_, link)| *link).collect();
+            for track in parent.all_tracks_mut() {
+                for clip in &mut track.items {
+                    if removed_ids.contains(&clip.id) || clip.link.is_some_and(|link| removed_links.contains(&link)) {
+                        clip.link = None;
+                    }
+                }
+                track.transitions.retain(|transition| {
+                    !transition.from.is_some_and(|id| removed_ids.contains(&id)) && !transition.to.is_some_and(|id| removed_ids.contains(&id))
+                });
+            }
+
+            if !audio_only.contains(&parent_id)
+                && parent.video_tracks.iter().all(|track| track.items.is_empty())
+                && parent.audio_tracks.iter().any(|track| !track.items.is_empty())
+            {
+                audio_only.insert(parent_id);
+                pending.push_back(parent_id);
+            }
+        }
+    }
+}
+
 /// Write `seq` with a shared timeline writer, after noting the marker details it cannot keep.
 fn export_shared(
     project: &film::Project,
@@ -1064,6 +1126,7 @@ fn write_fcpxml_adjust_conform(project: &film::Project, seq: film::ItemId, text:
 
 pub(crate) fn import_fcpxml(text: &str, opts: &crate::ImportOptions, report: &mut crate::Report) -> crate::Result<crate::Imported> {
     let mut imported = import_shared(text, opts, report, craft_timeline::fcpxml::import_with_report_limit)?;
+    remove_fcpxml_audio_only_nests(&mut imported.project);
     report_unusable_fcpxml_lanes(text, report);
     apply_fcpxml_adjust_conform(text, &mut imported, report);
     Ok(imported)
