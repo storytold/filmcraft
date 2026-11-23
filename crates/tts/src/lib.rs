@@ -122,14 +122,22 @@ pub trait Voice: Send + Sync {
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError>;
 }
 
-/// Languages offered (English only for now).
-pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)")];
+/// Languages offered. French has natural voices only (the built-in voices speak English).
+pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)"), ("fr-FR", "French (France)")];
+
+/// The sentence "Hear this voice" plays in a voice of `language` (a BCP 47 tag).
+pub fn sample_sentence(language: &str) -> &'static str {
+    if language.starts_with("fr") { SAMPLE_SENTENCE_FR } else { SAMPLE_SENTENCE }
+}
+
+/// [`SAMPLE_SENTENCE`] in French.
+pub const SAMPLE_SENTENCE_FR: &str = "Bonjour ! Voici ma voix quand je lis votre texte.";
 
 /// Every voice FilmCraft knows: the built-in voices, then the neural voices (installed when their
 /// package is downloaded into `models_dir`).
 pub fn voices_in(models_dir: Option<&std::path::Path>) -> Vec<VoiceInfo> {
-    let installed = models_dir.is_some_and(catalog::installed) && cfg!(feature = "kokoro");
-    formant::VOICES.iter().map(|v| v.info).chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed, ..v.info })).collect()
+    let ready = |id: &str| models_dir.is_some_and(|d| catalog::voice_ready(d, id)) && cfg!(feature = "kokoro");
+    formant::VOICES.iter().map(|v| v.info).chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed: ready(v.info.id), ..v.info })).collect()
 }
 
 /// The built-in voices (always available).

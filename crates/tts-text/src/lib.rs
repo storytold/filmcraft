@@ -23,4 +23,6 @@ mod normalize;
 pub mod phonemize;
 
 pub use normalize::{Lang, NormalizeError, Token, normalize};
+/// Every character the French pronunciation may emit.
+pub use phonemize::fr::SYMBOLS as FR_SYMBOLS;
 pub use phonemize::{Chunk, LexError, Lexicon, MAX_CHUNK_CHARS, Overrides, SYMBOLS, phonemize};

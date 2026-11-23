@@ -42,7 +42,7 @@ pub struct NeuralVoice {
 /// Load (or reuse) the package in `models_dir` and the voice `id`.
 pub fn load(id: &str, models_dir: &Path) -> Result<NeuralVoice, TtsError> {
     let v = catalog::find(id).ok_or_else(|| TtsError::UnknownVoice(id.to_string()))?;
-    if !catalog::installed(models_dir) {
+    if !catalog::voice_ready(models_dir, v.info.id) {
         return Err(TtsError::NotInstalled);
     }
     let dir = catalog::package_dir(models_dir);
@@ -73,7 +73,8 @@ impl Voice for NeuralVoice {
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError> {
         check_text(text)?;
         params.check()?;
-        let chunks = filmcraft_tts_text::phonemize(text, Lang::EnUs, &self.lexicon, &Overrides::default()).map_err(|e| TtsError::Invalid(e.to_string()))?;
+        let lang = if self.info.language.starts_with("fr") { Lang::Fr } else { Lang::EnUs };
+        let chunks = filmcraft_tts_text::phonemize(text, lang, &self.lexicon, &Overrides::default()).map_err(|e| TtsError::Invalid(e.to_string()))?;
         let rate = KOKORO_RATE;
         let max = (MAX_SECONDS * f64::from(rate)) as usize;
         let mut out: Vec<f32> = Vec::new();

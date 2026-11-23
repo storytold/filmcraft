@@ -13,7 +13,7 @@ let tokens = normalize("Call 555-0134 by 3:30 p.m. on Oct. 7th, it's $3.50 (20% 
 //   October seventh | , | it's | three dollars and fifty cents | ( | twenty percent off | )
 ```
 
-English only (`Lang::EnUs`, `Lang::EnGb`), per the amended brief. Handles:
+English (`Lang::EnUs`, `Lang::EnGb`) and French (`Lang::Fr`, see the French section at the end). English handles:
 cardinals to 999 999 999 999, negatives, decimals, ordinals, money (`$`, `€`,
 `£`), percent, years (1100–2099), clock times, numeric and abbreviated dates,
 phone-like digit groups, common abbreviations (Mr., Mrs., Dr., St., Mt., vs.,
@@ -55,7 +55,7 @@ plain text, and all slicing is boundary-safe with `get()`.
 
 ## Limitations
 
-- English only (amended brief). Spanish was cut from this crate's scope.
+- English and French. Spanish was cut from this crate's scope.
 - No "and" in British cardinals; no British-ism beyond date order and £.
 - Pronunciation is not attempted here — this crate stops at spoken words.
 - Time hours 0–12 read as cardinals ("0:15" → "zero fifteen"), not "twelve".
@@ -161,10 +161,55 @@ dialog).
   word-final f; "ia"/"ea" ambiguities resolved to one value each.
 - The sentence terminator always becomes `.` (the normalizer collapses `!`/`?`
   into `SentenceEnd`).
-- English only.
+- English rules only; French has its own rules (below).
 
 ## References
 
 None (rules written from scratch). Clean-room: no G2P/TTS project source was
 read. Allowed sources used: CMUdict's own data and licence, published IPA
 charts, and Wikipedia's ARPAbet and English phonology pages.
+
+
+# French (`Lang::Fr`)
+
+For Kokoro's French voice (`ff_siwis`), which was trained on IPA labels. `normalize/fr.rs` and
+`phonemize/fr.rs`; written from scratch from French spelling and counting conventions and public
+IPA charts (clean-room: no G2P or TTS project source was read; espeak-ng, which Kokoro's own
+tooling uses for French, is GPL and was not used or consulted).
+
+**Normalization.** French counting as separate words (`71` → soixante et onze, `80` → quatre
+vingts, `200` → deux cents, `2026` → deux mille vingt six, millions / milliards); thousands
+grouped by spaces, non-breaking spaces or dots (`1 000`); decimal comma (`21,5` → vingt et un
+virgule cinq; `3,05` → trois virgule zéro cinq); negatives (moins); `%` (pour cent); euros and
+dollars with cents (`3,50 €` → trois euros cinquante); clock times (`14h30`, `9 h`); ordinals
+(`1er`, `1re`, `2e`, `21e`); numbers with a leading zero or over 12 digits read digit by digit;
+abbreviations (`M.`, `Mme`, `Mlle`, `Dr`, `etc.`, `n°`, `km`...); acronyms spelled with French
+letter names when unpronounceable (SNCF), kept as words otherwise (ONU); `& + @ # /`; pause
+markers and sentence ends as in English.
+
+**Pronunciation.** Output: French IPA (`a e ɛ ə i o ɔ u y ø œ`, nasal vowels as a vowel + U+0303,
+`j w ɥ ʁ ɲ ʃ ʒ`, and `ˈ` before the last vowel of each word except function words), all within
+`FR_SYMBOLS`, which is inside Kokoro's vocabulary. Lookup: user overrides (raw `/…/` French IPA,
+or a French respelling), a table of about 150 irregular words, then rules:
+
+- silent endings: mute `-e` / `-es`, plural `-s`, verb `-ent` (nouns and adjectives in `-ent`
+  from a list, adverbs in `-ment` after a vowel), final consonants except c, r, f, l (and a
+  list of words that say their `s`); `-er`, `-ez`, `-ed` → é;
+- nasal vowels (an / en / in / on / un, ain / ein / oin, `-ien` → jɛ̃), not before a vowel or a
+  doubled n / m;
+- `e` by syllable shape (é, è in a closed syllable, mute ə in an open one), `o` open or closed,
+  `eu` / `œu` → ø or œ, `ou`, `oi`, `au` / `eau`, `ai` / `ei`;
+- `ill` → j (with a list of `il` words: ville, mille), `-ail` / `-eil` / `-euil`;
+- soft and hard `c` / `g`, `ch`, `gn`, `gu`, `qu`, `ph`, `th`, intervocalic `s` → z, `-tion`,
+  `x` (ks, ɡz in ex + vowel, z in deuxième);
+- across words: elision (`l'`, `qu'`, `jusqu'`) and common liaisons (`les amis` → lez amˈi,
+  `un ami`, `c'est un`, `très grand enfant`), none before an aspirated h (héros).
+
+**Tests** (`phonemize/fr/tests.rs`): 51 common words against their standard pronunciation,
+French counting and the other number forms, abbreviations and markers, liaisons, overrides,
+and 3 000 random hostile scripts (no panic, every character in `FR_SYMBOLS`).
+
+**Limitations.** Homographs (est / est, fils / fils, as verb / noun), many `-ent` nouns outside
+the list, and loanwords are the rules' weak spots; overrides are the mitigation. No accuracy
+measurement against a pronunciation dictionary yet (no openly licensed French lexicon is
+downloaded). Liaisons are the common obligatory ones only.

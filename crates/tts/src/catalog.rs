@@ -5,7 +5,11 @@
 //!
 //! Licences: Kokoro-82M weights and voices by hexgrad, Apache-2.0 (declared on the model card; the
 //! repository has no separate LICENSE file). CMUdict, Carnegie Mellon University, BSD-style.
-//! Pins verified 2026-10-07 against the Hugging Face API and by `sha256sum`.
+//! The French voice `ff_siwis` was trained on the SIWIS French Speech Synthesis Database
+//! (Yamagishi, Honnet, Garner, Lazaridis; University of Edinburgh, CSTR), CC BY 4.0
+//! (https://doi.org/10.7488/ds/1705), credited in its licence line.
+//! Pins verified 2026-10-07 against the Hugging Face API and by `sha256sum`; `ff_siwis.pt` on
+//! 2026-11-15 against the Hugging Face API (its LFS SHA-256 matches the model card's prefix).
 
 use std::path::{Path, PathBuf};
 
@@ -26,7 +30,7 @@ pub struct ModelFile {
 /// Directory name of the package under the models directory.
 pub const PACKAGE_ID: &str = "kokoro-82m";
 pub const PACKAGE_NAME: &str = "Natural voices (Kokoro-82M)";
-pub const LICENSE: &str = "Apache-2.0 (Kokoro-82M by hexgrad); CMUdict: BSD-style (Carnegie Mellon University)";
+pub const LICENSE: &str = "Apache-2.0 (Kokoro-82M by hexgrad); CMUdict: BSD-style (Carnegie Mellon University); French voice trained on the SIWIS French Speech Synthesis Database (University of Edinburgh), CC BY 4.0";
 pub const SOURCE: &str = "https://huggingface.co/hexgrad/Kokoro-82M";
 
 macro_rules! hf {
@@ -58,6 +62,7 @@ pub static FILES: &[ModelFile] = &[
     hf!("am_michael.pt", "voices/am_michael.pt", "9a443b79a4b22489a5b0ab7c651a0bcd1a30bef675c28333f06971abbd47bd37", 523_435),
     hf!("am_fenrir.pt", "voices/am_fenrir.pt", "98e507eca1db08230ae3b6232d59c10aec9630022d19accac4f5d12fcec3c37a", 523_430),
     hf!("am_puck.pt", "voices/am_puck.pt", "dd1d8973f4ce4b7d8ae407c77a435f485dabc052081b80ea75c4f30b84f36223", 523_420),
+    hf!("ff_siwis.pt", "voices/ff_siwis.pt", "8073bf2d2c4b9543a90f2f0fd2144de4ed157e2d4b79ddeb0d5123066171fbc9", 523_425),
 ];
 
 /// A neural voice: catalogue entry and its voice-pack file.
@@ -68,18 +73,22 @@ pub struct NeuralVoice {
 }
 
 const NEURAL_LICENSE: &str = "Apache-2.0 (Kokoro-82M by hexgrad)";
+const SIWIS_LICENSE: &str = "Apache-2.0 (Kokoro-82M by hexgrad); voice trained on the SIWIS French Speech Synthesis Database by J. Yamagishi, P.-E. Honnet, P. Garner and A. Lazaridis (University of Edinburgh), CC BY 4.0";
 
 macro_rules! voice {
     ($id:literal, $name:literal, $gender:ident, $file:literal, $desc:literal) => {
+        voice!($id, $name, $gender, $file, $desc, "en-US", NEURAL_LICENSE)
+    };
+    ($id:literal, $name:literal, $gender:ident, $file:literal, $desc:literal, $lang:literal, $license:expr) => {
         NeuralVoice {
             info: VoiceInfo {
                 id: $id,
                 name: $name,
-                language: "en-US",
+                language: $lang,
                 gender: Gender::$gender,
                 engine: "neural",
                 description: $desc,
-                license: NEURAL_LICENSE,
+                license: $license,
                 installed: false,
             },
             file: $file,
@@ -87,7 +96,7 @@ macro_rules! voice {
     };
 }
 
-/// US English voices the model card grades C+ or better, best first.
+/// US English voices the model card grades C+ or better, best first, then the French voice.
 pub static VOICES: &[NeuralVoice] = &[
     voice!("kokoro-heart", "Heart", Female, "af_heart.pt", "Natural voice, warm (model card grade A)."),
     voice!("kokoro-bella", "Bella", Female, "af_bella.pt", "Natural voice, bright (grade A−)."),
@@ -98,6 +107,7 @@ pub static VOICES: &[NeuralVoice] = &[
     voice!("kokoro-aoede", "Aoede", Female, "af_aoede.pt", "Natural voice (grade C+)."),
     voice!("kokoro-kore", "Kore", Female, "af_kore.pt", "Natural voice (grade C+)."),
     voice!("kokoro-sarah", "Sarah", Female, "af_sarah.pt", "Natural voice (grade C+)."),
+    voice!("kokoro-siwis", "Siwis", Female, "ff_siwis.pt", "Natural French voice (grade B−).", "fr-FR", SIWIS_LICENSE),
 ];
 
 pub fn find(id: &str) -> Option<&'static NeuralVoice> {
@@ -117,6 +127,14 @@ pub fn package_dir(models_dir: &Path) -> PathBuf {
 pub fn installed(models_dir: &Path) -> bool {
     let d = package_dir(models_dir);
     FILES.iter().all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size))
+}
+
+/// Voice `id` can speak: the model, the dictionary and its own voice pack are present. A voice
+/// added to the catalogue later (the French one) does not make the others wait for its download.
+pub fn voice_ready(models_dir: &Path, id: &str) -> bool {
+    let Some(v) = find(id) else { return false };
+    let d = package_dir(models_dir);
+    FILES.iter().filter(|f| f.name == v.file || !f.name.ends_with(".pt")).all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size))
 }
 
 /// Bytes still to download.
