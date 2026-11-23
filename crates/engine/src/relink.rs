@@ -15,8 +15,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use filmcraft_geom::{Affine, Vec2};
 use filmcraft_media::MediaInfo;
-use filmcraft_project::{ItemId, ItemKind, MediaIdentity, MediaRef, Project};
+use filmcraft_project::{ItemId, ItemKind, MediaIdentity, MediaRef, ParamKind, ParamValue, Project};
 use filmcraft_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -320,6 +321,58 @@ struct Plan {
     cand: Candidate,
 }
 
+/// Keep masks and the point parameters of standard effects on the same spot of the picture when
+/// media item `item` changes size from `from` to `to`. Both are measured in source pixels (the
+/// renderer scales them by the layer width over the source width), so a number left as it was
+/// would point at another spot of the new picture: the middle of a 960×540 proxy, (480, 270), is
+/// the top-left quarter of its 1920×1080 original.
+///
+/// Scaled, in every clip that shows `item` (through subclips and nested sequences too): the
+/// vertices, tangents and path keyframes of each mask; the point parameters of each effect
+/// (`ParamKind::Point`, static value and keyframes, so Transform's Position and Anchor Point, a
+/// blur's centre, a gradient's ends); and each mask's feather and expansion, which are lengths in
+/// source pixels, by the width ratio like every length the renderer reads in source pixels. An
+/// "auto" (NaN) point stays auto. Motion is left alone: its Position is in sequence pixels, its
+/// Scale is relative to the source, and its Anchor Point is a separate matter.
+fn rescale_source_points(proj: &mut Project, item: ItemId, from: (u32, u32), to: (u32, u32)) {
+    if from == to || from.0 == 0 || from.1 == 0 || to.0 == 0 || to.1 == 0 {
+        return;
+    }
+    let (kx, ky) = (f64::from(to.0) / f64::from(from.0), f64::from(to.1) / f64::from(from.1));
+    let shows: Vec<ItemId> = proj.items.keys().copied().filter(|&i| proj.resolve_media(i).is_some_and(|(media, _, _)| media == item)).collect();
+    let shown_in = |q: &filmcraft_project::Sequence| q.video_tracks.iter().flat_map(|t| t.items.iter()).any(|c| shows.contains(&c.item));
+    let seqs: Vec<ItemId> = proj.sequences().filter(|i| i.as_sequence().is_some_and(shown_in)).map(|i| i.id).collect();
+    let scale = Affine::scale(kx, ky);
+    for seq in seqs {
+        let Some(q) = proj.sequence_mut(seq) else { continue };
+        for clip in q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|c| shows.contains(&c.item)) {
+            for fx in clip.effects.iter_mut().filter(|e| e.effect != "motion") {
+                let def = fx.def();
+                for (id, param) in fx.params.iter_mut() {
+                    if def.and_then(|d| d.param(id)).is_some_and(|d| matches!(d.kind, ParamKind::Point)) {
+                        param.map_values(|v| match v {
+                            ParamValue::Vec2(v) => ParamValue::Vec2(Vec2::new(v.x * kx, v.y * ky)),
+                            other => other,
+                        });
+                    }
+                }
+                for mask in &mut fx.masks {
+                    mask.path.map_values(|v| match v {
+                        ParamValue::Path(path) => ParamValue::Path(path.transformed(&scale)),
+                        other => other,
+                    });
+                    for length in [&mut mask.feather, &mut mask.expansion] {
+                        length.map_values(|v| match v {
+                            ParamValue::Float(f) => ParamValue::Float(f * kx),
+                            other => other,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Apply planned relinks as one undo step.
 fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -> Result<Vec<Value>> {
     let rows: Vec<Value> = plans.iter().map(|p| json!({"item": p.item.0, "path": p.cand.path})).collect();
@@ -327,6 +380,7 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
         plans.iter().filter_map(|p| p.cand.source.clone().map(|src| (p.item, p.cand.path.clone(), src))).collect();
     s.edit(label, |proj, _| {
         for p in &plans {
+            let old_size = proj.source_size(p.item);
             let Some(m) = proj.item_mut(p.item).and_then(|i| i.as_media_mut()) else { continue };
             let old_tc = m.info.start_timecode;
             let rate = m.info.frame_rate();
@@ -347,9 +401,13 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             }
             proj.shift_media_time(p.item, shift);
             if p.cand.info.is_some() {
-                // The item's size is now the file's own. Clips that came from an interchange import
-                // while the file was missing still have an "auto" (NaN) anchor waiting for it:
-                // centre it in the real picture. Points that are numbers are not touched.
+                // The item's size is now the file's own. Masks and effect points keep their spot
+                // in the picture (the proxy's centre is the original's centre).
+                if let (Some(from), Some(to)) = (old_size, proj.source_size(p.item)) {
+                    rescale_source_points(proj, p.item, from, to);
+                }
+                // Clips that came from an interchange import while the file was missing still have
+                // an "auto" (NaN) anchor waiting for it: centre it in the real picture.
                 proj.resolve_placed_auto_points(|_| true, |source| source.id == p.item);
             }
         }
