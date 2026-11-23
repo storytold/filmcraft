@@ -215,7 +215,9 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
     assert_eq!(c.cpu_transitions, 0);
     eprintln!("Push 72 cases: worst p99 {}, mean {}", worst.0, worst.1);
-    let fallback = FramePlan::Composite {
+    // A transition step the GPU does not draw itself (a cross dissolve built by hand as one): the
+    // GPU draws the two clips and the CPU mixes them; it counts as one CPU-mixed transition.
+    let cpu_mixed = FramePlan::Composite {
         width: w,
         height: h,
         steps: vec![PlanStep::Transition {
@@ -225,9 +227,9 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
             scale: 1.0,
         }],
     };
-    c.composite(&fallback);
-    let (_, _, got) = c.read_output().expect("fallback readback");
-    let expected = execute_cpu(&fallback).over_black_rgba8();
+    c.composite(&cpu_mixed);
+    let (_, _, got) = c.read_output().expect("CPU-mixed readback");
+    let expected = execute_cpu(&cpu_mixed).over_black_rgba8();
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
     assert_eq!(c.cpu_transitions, 1);
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
@@ -253,6 +255,95 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
     assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
     assert_eq!(c.cpu_transitions, 1);
+}
+
+/// A canvas that cannot be read back sends the whole frame to the CPU: the picture is still the
+/// reference one, the frame is counted as a fallback (not as transitions mixed on the CPU), and
+/// the GPU is not asked again until the backoff ends, so a wedged device cannot make every frame
+/// wait for it.
+#[test]
+fn a_failed_canvas_readback_sends_the_whole_frame_to_the_cpu_for_a_while() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let layer = |side: usize| {
+        let px = (0..w * h).flat_map(|i| if (i % w < w / 2) == (side == 0) { [0.8, 0.2, 0.1, 1.0] } else { [0.1, 0.3, 0.9, 1.0] }).collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let step = |name: &str, progress: f32| PlanStep::Transition {
+        inputs: [vec![layer(0)], vec![layer(1)]],
+        effect: filmcraft_project::find_effect(name).unwrap().instance(),
+        progress,
+        scale: 1.0,
+    };
+    let plan = FramePlan::Composite { width: w, height: h, steps: vec![step("wipe", 0.4), step("page_peel", 0.6)] };
+    let expected = execute_cpu(&plan).over_black_rgba8();
+    let agrees = |c: &mut GpuCompositor, what: &str| {
+        let got = c.read_output().expect("readback").2;
+        assert!(got.iter().zip(&expected).all(|(a, b)| a.abs_diff(*b) <= 1), "{what}: the frame matches the CPU reference");
+    };
+
+    c.composite(&plan);
+    agrees(&mut c, "hybrid");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 0), "two steps mixed on the CPU");
+
+    c.fail_readback = true;
+    c.composite(&plan);
+    agrees(&mut c, "failed read-back");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 1), "one frame sent whole to the CPU");
+
+    // the GPU works again, but is not asked until the backoff ends
+    c.fail_readback = false;
+    c.composite(&plan);
+    agrees(&mut c, "during the backoff");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (2, 2));
+
+    c.hybrid_off_until = Some(std::time::Instant::now());
+    c.composite(&plan);
+    agrees(&mut c, "after the backoff");
+    assert_eq!((c.cpu_transitions, c.cpu_fallback_frames), (4, 2), "the GPU is asked again");
+    assert_eq!(c.gpu_transitions, 0);
+}
+
+/// The canvases and staging buffers of transitions go when a frame has none, and a transition
+/// with no clip on one side draws and reads back only the other.
+#[test]
+fn transition_canvases_are_freed_with_the_transition() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let layer = |side: usize| {
+        let px = (0..w * h).flat_map(|i| if (i % w < w / 2) == (side == 0) { [0.8, 0.2, 0.1, 1.0] } else { [0.1, 0.3, 0.9, 1.0] }).collect();
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, px)), Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let wipe = |inputs: [Vec<PlanLayer>; 2]| FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Transition { inputs, effect: filmcraft_project::find_effect("wipe").unwrap().instance(), progress: 0.5, scale: 1.0 }],
+    };
+    let both = wipe([vec![layer(0)], vec![layer(1)]]);
+    c.composite(&both);
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (2, 2), "two canvases, two staging buffers");
+    // a side with no clip: one canvas drawn and read back, the other a blank picture
+    let one_side = wipe([vec![layer(0)], Vec::new()]);
+    c.composite(&one_side);
+    assert_eq!(c.slot_readback.len(), 1, "only the clip that exists is read back");
+    assert_eq!(c.transition_inputs.iter().flatten().count(), 1, "the canvas of the side that became empty is freed");
+    let expected = execute_cpu(&one_side).over_black_rgba8();
+    let got = c.read_output().expect("readback").2;
+    assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "a fade from nothing matches the CPU reference");
+    // a frame of plain layers, then one made of steps without a transition
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![layer(0)] });
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "a plain frame frees them");
+    c.composite(&both);
+    c.composite(&FramePlan::Composite { width: w, height: h, steps: vec![PlanStep::Layers(vec![layer(1)])] });
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "a frame of steps with no transition frees them");
 }
 
 #[test]
@@ -793,4 +884,112 @@ fn accumulator_readback_retires_rejected_native_map() {
         !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
         "cleanup attempted to unmap an already rejected mapping"
     );
+}
+
+/// The staging buffer of a transition canvas: half-float RGBA with rows padded to 256 bytes, and
+/// too large for the default 256 MiB buffer limit at 8192x4320 (which `composite_steps` sends to
+/// the CPU without starting the read-back backoff).
+#[test]
+fn readback_staging_size_is_padded_and_overflow_safe() {
+    assert_eq!(readback_staging_bytes(1920, 1080), Some(15_360 * 1080));
+    assert_eq!(readback_staging_bytes(100, 10), Some(1024 * 10), "rows are padded to 256 bytes");
+    assert_eq!(readback_staging_bytes(8192, 4320), Some(283_115_520));
+    assert!(readback_staging_bytes(8192, 4320) > Some(256 * 1024 * 1024));
+    assert_eq!(readback_staging_bytes(usize::MAX, 2), None);
+}
+
+/// The clips of a frame's CPU-mixed transitions are held together, so their memory is counted for
+/// the whole frame: two 3840x2160 transitions fit the budget, three do not, and a frame over it goes
+/// whole to the CPU before any canvas is made.
+#[test]
+fn a_batch_of_transitions_over_the_memory_budget_goes_to_the_cpu() {
+    let layer = |w: usize, h: usize| {
+        PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, vec![0.5, 0.2, 0.1, 1.0])), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal)
+    };
+    let step = |inputs: [Vec<PlanLayer>; 2]| PlanStep::Transition {
+        inputs,
+        effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+        progress: 0.5,
+        scale: 1.0,
+    };
+    let (w, h) = (3840usize, 2160usize);
+    let one = vec![step([vec![layer(w, h)], vec![layer(w, h)]])];
+    let pair = || step([vec![layer(w, h)], vec![layer(w, h)]]);
+    let (two, three) = (vec![pair(), pair()], vec![pair(), pair(), pair()]);
+    let one_side = vec![step([vec![layer(w, h)], Vec::new()])];
+    assert!(transition_batch_bytes(w, h, &one).unwrap() <= TRANSITION_BATCH_BUDGET, "one 4K transition fits");
+    assert!(transition_batch_bytes(w, h, &two).unwrap() <= TRANSITION_BATCH_BUDGET, "two 4K transitions just fit");
+    assert!(transition_batch_bytes(w, h, &three).unwrap() > TRANSITION_BATCH_BUDGET, "three 4K transitions do not");
+    assert!(transition_batch_bytes(w, h, &one_side).unwrap() < transition_batch_bytes(w, h, &one).unwrap(), "a side with no clip holds nothing");
+    assert_eq!(transition_batch_bytes(usize::MAX, 2, &one), None);
+    let push = vec![PlanStep::Transition {
+        inputs: [vec![layer(w, h)], vec![layer(w, h)]],
+        effect: filmcraft_project::find_effect("push").unwrap().instance(),
+        progress: 0.5,
+        scale: 1.0,
+    }];
+    assert_eq!(transition_batch_bytes(w, h, &push), Some(0), "Push is drawn by the GPU and reads nothing back");
+
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&FramePlan::Composite { width: w, height: h, steps: three });
+    assert_eq!(c.cpu_fallback_frames, 1, "the frame over the budget goes whole to the CPU");
+    assert_eq!((c.transition_inputs.len(), c.slot_readback.len()), (0, 0), "and no canvas is made for it");
+    assert_eq!(c.hybrid_off_until, None, "which is not a failed read-back");
+    assert_eq!(c.uploads.len(), 0, "and the CPU image of the fallback is not kept in the upload cache");
+}
+
+/// The image of a CPU-mixed transition frame, and the CPU image of a frame that goes whole to the
+/// CPU, are drawn once: with the upload cache full (24 entries) they must not push a reusable
+/// source out of it.
+#[test]
+fn one_use_images_do_not_evict_reusable_uploads() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (64usize, 36usize);
+    let frames: Vec<_> = (0..24).map(|i| Arc::new(VideoFrame::rgba_f32(w as u32, h as u32, vec![i as f32 / 30.0; w * h * 4]))).collect();
+    let layer = |i: usize| PlanLayer::new(frames[i].clone(), Affine::IDENTITY, 1.0, Blend::Normal);
+    // 24 distinct sources fill the cache
+    for i in 0..24 {
+        c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![layer(i)] });
+    }
+    let sources: Vec<_> = c.uploads.keys().copied().collect();
+    assert_eq!(sources.len(), 24);
+    let wipe = |w: usize, h: usize, a: PlanLayer, b: PlanLayer| FramePlan::Composite {
+        width: w,
+        height: h,
+        steps: vec![PlanStep::Transition {
+            inputs: [vec![a], vec![b]],
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+            progress: 0.5,
+            scale: 1.0,
+        }],
+    };
+    // a transition mixed on the CPU from the GPU's clips
+    // (the clips are sources the cache already holds: only the mixed image is new)
+    c.composite(&wipe(w, h, layer(3), layer(17)));
+    assert_eq!(c.cpu_transitions, 1, "the mix ran");
+    assert!(sources.iter().all(|k| c.uploads.contains_key(k)), "a CPU-mixed transition frame evicted a reusable upload");
+    assert_eq!(c.uploads.len(), 24, "and left nothing of its own");
+    // a frame over the memory budget, which goes whole to the CPU
+    let (bw, bh) = (3840usize, 2160usize);
+    let big = |v: f32| PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, vec![v; 4])), Affine::scale(bw as f64, bh as f64), 1.0, Blend::Normal);
+    let steps = (0..3)
+        .map(|_| PlanStep::Transition {
+            inputs: [vec![big(0.9)], vec![big(0.1)]],
+            effect: filmcraft_project::find_effect("wipe").unwrap().instance(),
+            progress: 0.5,
+            scale: 1.0,
+        })
+        .collect();
+    c.composite(&FramePlan::Composite { width: bw, height: bh, steps });
+    assert_eq!(c.cpu_fallback_frames, 1, "the frame went whole to the CPU");
+    assert!(sources.iter().all(|k| c.uploads.contains_key(k)), "a whole-frame CPU fallback evicted a reusable upload");
+    assert_eq!(c.uploads.len(), 24);
 }
