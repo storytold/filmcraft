@@ -32,7 +32,10 @@ fn real_insv_stitches_to_equirect() {
         .expect("open")
     };
     let info = src.info();
-    assert_eq!(info.container, "Insta360 INSV (Insta360 X4)", "container names the model");
+    // The trailer's field 2 names the camera model (X4, X4 Air, …), and the
+    // container string must carry it; pinning one literal model would make a
+    // second corpus a false failure.
+    assert!(info.container.starts_with("Insta360 INSV (Insta360 X") && info.container.ends_with(')'), "container names the model: {}", info.container);
     let v = info.video.clone().expect("video");
     // the two fisheye tracks are square circles; the stitch is 2:1 equirectangular
     assert_eq!(v.width, v.height * 2, "equirectangular is 2:1: {}x{}", v.width, v.height);
