@@ -3778,3 +3778,10 @@
 	Toggle Color Grading Section	切换色彩分级分区
 	Color Grading Section	色彩分级分区
 	Read Video Scopes	读取视频示波器
+
+	Apply Remix	应用重混
+	Cuts follow musical beats. Actual duration may differ by up to one beat.	剪切点与音乐节拍对齐。实际时长最多可能相差一拍。
+	Select one music clip to remix its duration.	请选择一个音乐片段来调整时长。
+	Target duration	目标时长
+	Enter a valid duration up to one hour.	请输入不超过一小时的有效时长。
+	Variations	变化

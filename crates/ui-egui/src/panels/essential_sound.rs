@@ -15,6 +15,7 @@
 use egui::{Align2, Color32, Painter, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use filmcraft_project::TrackItem;
 use filmcraft_project::essential::{self as es, AudioType, EssentialSound, Section, Slot};
+use filmcraft_time::{FrameRate, Tick, TimeDisplay, format_time};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -32,6 +33,8 @@ struct Ctx<'a> {
     auto: &'a mut crate::automation::Registry,
     actions: Actions,
     clips: Vec<u64>,
+    rate: FrameRate,
+    drop_frame: bool,
 }
 
 impl Ctx<'_> {
@@ -53,7 +56,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.session.active_sequence().map(|seq| clip_ids.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.clone())).collect()).unwrap_or_default();
     let presets = filmcraft_engine::essential_sound::presets(&app.session);
     let tab = if app.ui.essential_sound_tab == "Browse" { "Browse" } else { "Edit" };
-    let mut cx = Ctx { t, auto: &mut app.auto, actions: Vec::new(), clips: clip_ids.iter().map(|c| c.0).collect() };
+    let rate = app.session.sequence_rate();
+    let drop_frame = app.session.active_sequence().is_some_and(|q| q.settings.drop_frame);
+    let mut cx = Ctx { rate, drop_frame, t, auto: &mut app.auto, actions: Vec::new(), clips: clip_ids.iter().map(|c| c.0).collect() };
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, t.panel_bg);
     // ---- Browse | Edit
@@ -98,8 +103,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             continue;
         }
-        if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+        if let Err(error) = app.session.execute(&cmd, p) {
+            app.ui.status = error.to_string();
         }
     }
 }
@@ -317,13 +322,7 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
                     }
                 }
                 Section::Ducking => ducking(ui, cx, st, on),
-                Section::Duration => {
-                    ui.label(
-                        egui::RichText::new(tl!("Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead."))
-                            .color(t.text_faint)
-                            .size(11.5),
-                    );
-                }
+                Section::Duration => duration(ui, cx, items),
                 Section::Pan => slider(ui, cx, tl!("Pan"), "pan.value", st.pan.value, (-100.0, 100.0), 1, "", on),
             }
             ui.add_space(8.0);
@@ -331,6 +330,116 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     }
     let r = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover()).0;
     ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
+}
+
+/// A duration timecode uses the active sequence rate, without moving its playhead.
+fn duration(ui: &mut egui::Ui, cx: &mut Ctx, items: &[TrackItem]) {
+    let [item] = items else {
+        ui.label(tl!("Select one music clip to remix its duration."));
+        return;
+    };
+    let remix = filmcraft_render::remix::Remix::of(item);
+    let id = egui::Id::unique(("es-duration-draft", item.id.0));
+    let model = (remix.as_ref().map(|r| r.target), item.duration, remix.as_ref().map(|r| r.segments), remix.as_ref().map(|r| r.variations));
+    let model_id = id.with("model");
+    let controls_id = id.with("controls");
+    let error_id = id.with("invalid");
+    let timecode_id = id.with("timecode");
+    // Keep an uncommitted edit while the clip is unchanged, but discard it after
+    // Timeline edits, Undo/Redo or another client changes the remix or its extent.
+    let changed = ui.data(|d| d.get_temp::<(Option<Tick>, Tick, Option<f64>, Option<f64>)>(model_id)) != Some(model);
+    if changed {
+        ui.data_mut(|d| {
+            d.remove::<Tick>(id);
+            d.remove::<bool>(error_id);
+            d.remove::<(f64, f64)>(controls_id);
+            d.remove::<String>(timecode_id.with("editing"));
+            d.remove::<bool>(timecode_id.with("select-all"));
+            d.remove::<(i64, f64, egui::Pos2)>(timecode_id.with("drag"));
+        });
+        ui.memory_mut(|memory| memory.surrender_focus(timecode_id.with("edit")));
+    }
+    let mut draft: Tick = ui.data(|d| d.get_temp(id)).unwrap_or(model.0.unwrap_or(item.duration));
+    let mut controls: (f64, f64) =
+        ui.data(|d| d.get_temp(controls_id)).unwrap_or((remix.as_ref().map_or(50., |r| r.segments), remix.as_ref().map_or(50., |r| r.variations)));
+    let mut invalid = ui.data(|d| d.get_temp::<bool>(error_id)).unwrap_or(false) || draft < cx.rate.frame_duration() || draft > Tick::from_seconds_f64(3600.);
+    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
+    let mut apply_requested = false;
+    ui.horizontal(|ui| {
+        ui.label(tl!("Target duration"));
+        let rect = ui.allocate_exact_size(vec2(112., 24.), Sense::hover()).0;
+        let text = format_time(cx.rate.snap_nearest(draft), cx.rate, cx.drop_frame, TimeDisplay::Timecode, 48000);
+        if let Some(value) = crate::widgets::timecode_field(
+            ui,
+            id.with("timecode"),
+            rect,
+            &text,
+            draft,
+            Tick::ZERO,
+            cx.rate,
+            cx.drop_frame,
+            TimeDisplay::Timecode,
+            cx.t.timecode,
+        ) {
+            match value {
+                Ok(value) if value >= cx.rate.frame_duration() && value <= Tick::from_seconds_f64(3600.) => {
+                    draft = value;
+                    invalid = false;
+                    apply_requested = enter_pressed;
+                }
+                _ => invalid = true,
+            }
+        }
+        cx.auto.add("essentialSound.duration.timecode", rect, "Target duration");
+        // Preserve the old automation address as an alias; its value is now a timecode.
+        cx.auto.add("essentialSound.duration.seconds", rect, "Target duration");
+    });
+    if invalid {
+        ui.label(tl!("Enter a valid duration up to one hour."));
+    }
+    let advanced = ui.collapsing(tl!("Advanced"), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(tl!("Segments"));
+            let r = ui.add(egui::DragValue::new(&mut controls.0).range(0.0..=100.0));
+            cx.auto.add("essentialSound.duration.segments", r.rect, "Segments");
+        });
+        ui.horizontal(|ui| {
+            ui.label(tl!("Variations"));
+            let r = ui.add(egui::DragValue::new(&mut controls.1).range(0.0..=100.0));
+            cx.auto.add("essentialSound.duration.variations", r.rect, "Variations");
+        });
+    });
+    cx.auto.add("essentialSound.duration.advanced", advanced.header_response.rect, "Advanced");
+    let mut reverted = false;
+    ui.horizontal(|ui| {
+        let apply = ui.add_enabled(!invalid, egui::Button::new(tl!("Apply Remix")));
+        cx.auto.add("essentialSound.duration.apply", apply.rect, "Apply Remix");
+        if !invalid && (apply.clicked() || apply_requested) {
+            cx.actions.push(("clip.remix".into(), json!({"clip":item.id.0,"duration":draft.0,"segments":controls.0,"variations":controls.1})));
+        }
+        if remix.is_some() {
+            let revert = ui.button(tl!("Revert Remix"));
+            cx.auto.add("essentialSound.duration.revert", revert.rect, "Revert Remix");
+            if revert.clicked() {
+                cx.actions.push(("clip.remix.revert".into(), json!({"clip": item.id.0})));
+                reverted = true;
+            }
+        }
+    });
+    ui.label(format!("{}: {}", tl!("Duration"), format_time(cx.rate.snap_nearest(item.duration), cx.rate, cx.drop_frame, TimeDisplay::Timecode, 48000)));
+    ui.label(tl!("Cuts follow musical beats. Actual duration may differ by up to one beat."));
+    ui.data_mut(|d| {
+        d.insert_temp(model_id, model);
+        if reverted {
+            d.remove::<Tick>(id);
+            d.remove::<bool>(error_id);
+            d.remove::<(f64, f64)>(controls_id);
+        } else {
+            d.insert_temp(id, draft);
+            d.insert_temp(error_id, invalid);
+            d.insert_temp(controls_id, controls);
+        }
+    });
 }
 
 fn loudness(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[TrackItem]) {
