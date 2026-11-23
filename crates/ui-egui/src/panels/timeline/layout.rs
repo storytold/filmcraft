@@ -78,16 +78,29 @@ pub(super) fn new_track_at(seq: &Sequence, layout: &Layout, y: f32, vh: f32, ah:
     }
 }
 
-/// The top of each of `n` video rows `vh` high, V1 first: V1 sits at the bottom of `area` and the
-/// tracks stack upward; `v_scroll` (clamped here) shifts them up. Also gives the largest `v_scroll`.
-/// The scroll range includes one empty track's height above the top track: without it, tracks that
-/// fill the area leave no space where a drop adds a new one (#1522).
-pub(super) fn video_row_tops(area: Rect, n: usize, vh: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
-    let total = (n + 1) as f32 * vh;
-    let v_off = (area.height() - total).max(0.0);
+/// The top of each video row, V1 first: V1 sits at the bottom of `area` and the tracks stack
+/// upward; `v_scroll` (clamped here) shifts them up. `heights` gives each track its own height, so
+/// dragging one track's edge moves only that one; `default_h` is the height of the empty track the
+/// scroll range keeps above them for a drop (#1522). Also gives the largest `v_scroll`.
+///
+/// The rows share one bottom edge, so a row's top is the summed height of that row and every row
+/// below it. The loop used to push a row's top before adding that row's own height, which put every
+/// row lower than the stack does. With every track at the default height the two agree, so the older
+/// test could not see it; a resized track slid down over its neighbour instead.
+pub(super) fn video_row_tops_of(area: Rect, heights: &[f32], default_h: f32, v_scroll: &mut f32) -> (Vec<f32>, f32) {
+    let stack: f32 = heights.iter().sum();
+    let total = stack + default_h.max(0.0);
     let max_vs = (total - area.height()).max(0.0);
     *v_scroll = v_scroll.clamp(0.0, max_vs);
-    let tops = (0..n).map(|i| area.min.y + v_off + (n - i) as f32 * vh - (max_vs - *v_scroll)).collect();
+    // V1 ends on the pane's bottom edge, and scrolling up moves the whole stack down to show the
+    // empty track above the top one.
+    let bottom = area.max.y + *v_scroll;
+    let mut tops = Vec::with_capacity(heights.len());
+    let mut acc = 0.0;
+    for h in heights {
+        acc += *h;
+        tops.push(bottom - acc);
+    }
     (tops, max_vs)
 }
 

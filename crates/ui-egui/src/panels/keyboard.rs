@@ -40,13 +40,15 @@ pub struct KeysState {
     pub maximized: Option<PanelKind>,
     /// Track heights before Expand / Minimize All Tracks (pressing again restores them).
     pub saved_heights: Option<[f32; 2]>,
+    /// The per-track heights those same commands collapsed, restored with `saved_heights`.
+    pub saved_track_heights: std::collections::BTreeMap<u64, f32>,
     /// Icon view columns in the last frame (Move Selection Up / Down step).
     pub icon_columns: usize,
 }
 
 impl Default for KeysState {
     fn default() -> Self {
-        Self { maximized: None, saved_heights: None, icon_columns: 1 }
+        Self { maximized: None, saved_heights: None, saved_track_heights: Default::default(), icon_columns: 1 }
     }
 }
 
@@ -351,22 +353,33 @@ fn play_range(app: &mut FilmcraftApp, preroll: bool) -> Result<Value, String> {
 }
 
 fn all_heights(app: &mut FilmcraftApp, expand: bool) -> Value {
-    let tv = &mut app.ui.timeline;
     let target = if expand { 120.0 } else { MIN_TRACK_H };
-    let at_target = tv.video_track_h == target && tv.audio_track_h == target;
-    match (at_target, app.ui.keys.saved_heights) {
-        // pressing again restores the heights from before
-        (true, Some([v, a])) => {
-            tv.video_track_h = v;
-            tv.audio_track_h = a;
-            app.ui.keys.saved_heights = None;
+    // "all of them" has to mean all of them: a track with its own height counts too, or the command
+    // would leave it where it is and only move the tracks that never got their own.
+    let at_target = {
+        let tv = &app.ui.timeline;
+        tv.video_track_h == target && tv.audio_track_h == target && tv.track_heights.is_empty()
+    };
+    if let (true, Some([v, a])) = (at_target, app.ui.keys.saved_heights) {
+        // pressing again restores the heights from before, own heights included
+        let tv = &mut app.ui.timeline;
+        tv.video_track_h = v;
+        tv.audio_track_h = a;
+        tv.track_heights = std::mem::take(&mut app.ui.keys.saved_track_heights);
+        app.ui.keys.saved_heights = None;
+    } else {
+        // the first press of the toggle remembers where we were; the ones after it keep that memory,
+        // so a Minimize followed by two Expands still brings a track's own height back
+        if app.ui.keys.saved_heights.is_none() {
+            app.ui.keys.saved_heights = Some([app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h]);
+            app.ui.keys.saved_track_heights = app.ui.timeline.track_heights.clone();
         }
-        _ => {
-            app.ui.keys.saved_heights = Some([tv.video_track_h, tv.audio_track_h]);
-            tv.video_track_h = target;
-            tv.audio_track_h = target;
-        }
+        let tv = &mut app.ui.timeline;
+        tv.track_heights.clear();
+        tv.video_track_h = target;
+        tv.audio_track_h = target;
     }
+    let tv = &app.ui.timeline;
     json!({"videoTrackHeight": tv.video_track_h, "audioTrackHeight": tv.audio_track_h})
 }
 

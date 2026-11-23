@@ -279,7 +279,18 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
         && let Some(p) = ctx.pointer_hover_pos()
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
+        // Alt + wheel over the track headers changes every track's height, which is where Premiere
+        // puts it. Over the timeline body Alt + wheel keeps zooming about the pointer.
+        let over_headers = p.x < layout.content.min.x;
+        if over_headers && w.alt && w.delta.y != 0.0 {
+            let step = (w.delta.y * 0.2).clamp(-30.0, 30.0);
+            let v = &mut app.ui.timeline;
+            v.video_track_h = (v.video_track_h + step).clamp(super::TRACK_H_MIN, super::TRACK_H_MAX);
+            v.audio_track_h = (v.audio_track_h + step).clamp(super::TRACK_H_MIN, super::TRACK_H_MAX);
+            // "all of them" has to mean all of them: a track with its own height would keep it, so
+            // the overrides go and every track follows the two defaults again
+            v.track_heights.clear();
+        } else if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;

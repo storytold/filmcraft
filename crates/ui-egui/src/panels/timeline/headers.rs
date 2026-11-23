@@ -34,6 +34,43 @@ fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
     resp
 }
 
+/// A track too short for the two-line header keeps a readable label of its own: the pill the
+/// source-patch button draws would be 17 px tall in a collapsed row and illegible.
+fn collapsed_label(p: &egui::Painter, hrect: Rect, visible: Rect, label: &str, t: &Tokens) {
+    let h = (hrect.height() - 6.0).clamp(12.0, 18.0);
+    let pill = Rect::from_center_size(pos2(hrect.min.x + 30.0, hrect.center().y), vec2(30.0, h)).intersect(visible);
+    p.rect_filled(pill, 3.0, t.pressed);
+    p.text(pill.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), t.text);
+}
+
+/// The height handle of one track row: dragging it gives that track its own height, so the row next
+/// to it does not move. The edge is the one that moves, not the one the block is anchored on.
+#[allow(clippy::too_many_arguments)]
+fn height_handle(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: &Row, hrect: Rect, visible: Rect, header_column: Rect, label: &str) {
+    let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
+    let topmost_video = r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len();
+    let (edge, reach) = if r.kind == TrackKind::Video {
+        (Rect::from_min_max(pos2(hrect.min.x, hrect.min.y - 2.0), pos2(hrect.max.x, hrect.min.y + 3.0)), topmost_video)
+    } else {
+        (Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0)), last_audio)
+    };
+    let edge = edge.intersect(if reach { header_column } else { visible });
+    if edge.height() <= 0.0 {
+        return;
+    }
+    app.auto.add(&format!("timeline.track.{label}.resize"), edge, "Drag to change the track height");
+    let eresp = ui.interact(edge, egui::Id::unique(("trackh", r.track.0)), Sense::drag());
+    if eresp.hovered() || eresp.dragged() {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+    }
+    if eresp.dragged() {
+        let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
+        let default = if r.kind == TrackKind::Video { app.ui.timeline.video_track_h } else { app.ui.timeline.audio_track_h };
+        let cur = super::track_height(app, r.track.0, default);
+        super::set_track_height(app, r.track.0, cur + d);
+    }
+}
+
 /// Draw only the visible track headers, including colour label, targeting, lock and header controls clipped to each row.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows: &[Row], rect: Rect, vclip: Rect, aclip: Rect, t: &Tokens) {
@@ -139,62 +176,57 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             // diagonal hatch over locked lanes is drawn by the lane painter; here a subtle tint
             p.rect_filled(Rect::from_min_max(pos2(hrect.max.x - 4.0, hrect.min.y), hrect.max), 0.0, t.pressed);
         }
-        // 3. target
-        let targeted = tg.targeted.contains(&r.track);
-        let trr = btn_rect(61.0);
-        app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        if patch_button(
-            ui,
-            PatchButton {
-                rect: trr,
-                clip: visible,
-                label: &label,
-                active: targeted,
-                show_inactive: true,
-                id: egui::Id::unique(("target", r.track.0)),
-                tokens: t,
-            },
-        )
-        .clicked()
-        {
-            actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
-        }
-        // 4. upper line icons
-        header_line_buttons(app, ui, seq, r, tr, visible, hrect, &label, t, &mut actions, &mut vo_action);
-        // 5. name on the lower line (or inline when short)
+        // 3. target, 4. the icon row and 5. the name need two lines: a short track keeps only the
+        // label (drawn by the source patch above) and the lock, so it can be collapsed without the
+        // name colliding with the separator under it
         if hrect.height() >= 40.0 {
-            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
+            // 3. target
+            let targeted = tg.targeted.contains(&r.track);
+            let trr = btn_rect(61.0);
+            app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
+            if patch_button(
+                ui,
+                PatchButton {
+                    rect: trr,
+                    clip: visible,
+                    label: &label,
+                    active: targeted,
+                    show_inactive: true,
+                    id: egui::Id::unique(("target", r.track.0)),
+                    tokens: t,
+                },
+            )
+            .clicked()
+            {
+                actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
+            }
+            // 4. upper line icons
+            header_line_buttons(app, ui, seq, r, tr, visible, hrect, &label, t, &mut actions, &mut vo_action);
+            // 5. name on the lower line, kept inside the row
+            let y = (hrect.min.y + 34.0).min(hrect.max.y - 9.0);
+            p.text(pos2(hrect.min.x + 94.0, y), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
-        // resize track height by dragging the header's bottom edge, or the outer edge of the top video
-        // track or the last audio track, which also reaches into the empty space past it
+        // a collapsed track keeps only a readable label: the two-line header does not fit, so the
+        // pill the source-patch button draws would be 17 px tall and illegible
+        if hrect.height() < 40.0 {
+            collapsed_label(&p, hrect, visible, &label, t);
+        }
+        // Resize a track by dragging the edge that actually moves. The video block is anchored at
+        // the divider and grows upward, so a video track's moving edge is its TOP one; dragging its
+        // bottom edge dragged the fixed side and pulled the whole stack against its neighbours. The
+        // audio block is anchored at the top and grows down, so for audio the moving edge is the
+        // bottom one. The outermost track of each block reaches into the empty space past it.
         let header_column = Rect::from_min_max(pos2(hrect.min.x, clip_rect.min.y), pos2(hrect.max.x, clip_rect.max.y));
-        let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
-        let bottom = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0));
-        let top = (r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len())
-            .then(|| ("resizeTop", Rect::from_min_max(pos2(hrect.min.x, hrect.min.y - 2.0), pos2(hrect.max.x, hrect.min.y + 3.0)).intersect(header_column)));
-        for (name, edge) in std::iter::once(("resize", bottom.intersect(if last_audio { header_column } else { visible }))).chain(top) {
-            if edge.height() <= 0.0 {
-                continue;
-            }
-            app.auto.add(&format!("timeline.track.{label}.{name}"), edge, "Drag to change the track height");
-            let eresp = ui.interact(edge, egui::Id::unique(("trackh", name, r.track.0)), Sense::drag());
-            if eresp.hovered() || eresp.dragged() {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-            }
-            if eresp.dragged() {
-                let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
-                let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-                *h = (*h + d).clamp(22.0, 220.0);
-            }
-        }
+        height_handle(app, ui, seq, r, hrect, visible, header_column, &label);
         let resp = ui.interact(
             Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
             egui::Id::unique(("hdr", r.track.0)),
             Sense::click(),
         );
         if resp.double_clicked() {
-            let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-            *h = if *h < 50.0 { 64.0 } else { 30.0 };
+            let default = if r.kind == TrackKind::Video { app.ui.timeline.video_track_h } else { app.ui.timeline.audio_track_h };
+            let cur = super::track_height(app, r.track.0, default);
+            super::set_track_height(app, r.track.0, if cur < 50.0 { 64.0 } else { 30.0 });
         }
     }
     // column separator

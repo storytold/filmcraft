@@ -48,7 +48,7 @@ use interact::{interact, move_transition_preview, preview_drag};
 #[cfg(test)]
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
-use layout::video_row_tops;
+use layout::video_row_tops_of;
 pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
@@ -65,6 +65,23 @@ const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
 const DIVIDER_H: f32 = 5.0;
+/// The range the header's height handle lets a track take, in points. The floor is not cosmetic:
+/// below it the lock, target and patch buttons (18 px) no longer fit inside a row, and their
+/// hit areas start spilling into the row next to it.
+const TRACK_H_MIN: f32 = 22.0;
+const TRACK_H_MAX: f32 = 220.0;
+
+/// The height one track shows at: its own when the header's height handle changed it, else the
+/// pane default (`video_track_h` / `audio_track_h`).
+pub(super) fn track_height(app: &FilmcraftApp, track: u64, default: f32) -> f32 {
+    app.ui.timeline.track_heights.get(&track).copied().unwrap_or(default).clamp(TRACK_H_MIN, TRACK_H_MAX)
+}
+
+/// Give one track its own height, so dragging its header edge moves that track alone instead of
+/// every track of its kind.
+pub(super) fn set_track_height(app: &mut FilmcraftApp, track: u64, h: f32) {
+    app.ui.timeline.track_heights.insert(track, h.clamp(TRACK_H_MIN, TRACK_H_MAX));
+}
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).
 const GAP_FILL: Color32 = Color32::from_gray(224);
@@ -328,19 +345,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let audio_area = Rect::from_min_max(pos2(rect.min.x, split_y + DIVIDER_H), pos2(content.max.x, tracks_area.max.y - MASTER_H));
     let vh = app.ui.timeline.video_track_h;
     let ah = app.ui.timeline.audio_track_h;
+    // each track can carry its own height (the header's height handle); the pane heights above are
+    // the default for a track that was never resized
+    let vheights: Vec<f32> = seq.video_tracks.iter().map(|tr| track_height(app, tr.id.0, vh)).collect();
+    let aheights: Vec<f32> = seq.audio_tracks.iter().map(|tr| track_height(app, tr.id.0, ah)).collect();
     let mut rows = Vec::new();
     let nv = seq.video_tracks.len();
-    let (video_tops, max_vs) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
-    for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
-        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
+    let (video_tops, max_vs) = video_row_tops_of(video_area, &vheights, vh, &mut app.ui.timeline.v_scroll);
+    for ((i, tr), (top, h)) in seq.video_tracks.iter().enumerate().zip(video_tops.iter().zip(&vheights)) {
+        let rect = Rect::from_min_max(pos2(content.min.x, *top), pos2(content.max.x, *top + *h));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
     }
-    let na = seq.audio_tracks.len();
-    let max_as = (na as f32 * ah - audio_area.height()).max(0.0);
+    let max_as = (aheights.iter().sum::<f32>() - audio_area.height()).max(0.0);
     app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, max_as);
+    let mut atop = audio_area.min.y - app.ui.timeline.a_scroll;
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
-        let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
-        let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
+        let h = aheights[i];
+        let rect = Rect::from_min_max(pos2(content.min.x, atop), pos2(content.max.x, atop + h));
+        atop += h;
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
     }
     let (v_scroll, a_scroll) = (app.ui.timeline.v_scroll, app.ui.timeline.a_scroll);
@@ -402,17 +424,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- track headers
     draw_headers(app, ui, seq, &rows, rect, vclip, aclip, &t);
-    // divider between video and audio
+    // divider between video and audio: drawn here, but its drag is registered after the timeline
+    // area below, because egui hands an overlapping widget to the one registered last and the area
+    // would otherwise swallow the pointer before the divider ever sees it
     let div = Rect::from_min_max(pos2(rect.min.x, split_y), pos2(content.max.x, split_y + DIVIDER_H));
     painter.rect_filled(div, 0.0, t.app_bg);
-    let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::drag());
-    if div_resp.hovered() || div_resp.dragged() {
-        ctx.set_cursor_icon(CursorIcon::ResizeVertical);
-    }
-    if div_resp.dragged() {
-        let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H).max(1.0);
-        app.ui.timeline.split = f.clamp(0.1, 0.9);
-    }
     // master track
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
@@ -483,6 +499,20 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     super::timeline_automation::show(app, ui, seq, &layout, aclip);
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, seq, caption_area, &layout);
+    }
+    // the video/audio divider, above the timeline area so it wins the pointer where it lies. The
+    // handle is a few pixels taller than the line, so it can be grabbed without chasing a 5 px
+    // strip, which is what made it feel fixed. It starts at the timeline body and not at the
+    // panel's left edge: over the track headers that same strip is the height handle of the lowest
+    // video track, and a divider that reaches there swallows it.
+    let handle = Rect::from_min_max(pos2(content.min.x, div.min.y - 3.0), pos2(div.max.x, div.max.y + 3.0));
+    let div_resp = ui.interact(handle, egui::Id::unique("tl-divider"), Sense::drag());
+    if div_resp.hovered() || div_resp.dragged() {
+        ctx.set_cursor_icon(CursorIcon::ResizeVertical);
+    }
+    if div_resp.dragged() {
+        let f = app.ui.timeline.split + div_resp.drag_delta().y / (tracks_area.height() - DIVIDER_H).max(1.0);
+        app.ui.timeline.split = f.clamp(0.1, 0.9);
     }
     let _ = TICKS_PER_SECOND;
 }
@@ -1286,7 +1316,7 @@ mod new_track_tests {
         // video area 0..150 holds V1..V3 exactly; scrolled up as far as it goes
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
         let mut v_scroll = f32::MAX;
-        let (tops, _) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        let (tops, _) = video_row_tops_of(area, &[50.0; 3], 50.0, &mut v_scroll);
         let rows = seq
             .video_tracks
             .iter()
@@ -1313,7 +1343,52 @@ mod new_track_tests {
         assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
         // scrolled to the bottom, V1..V3 fill the area as before
         let mut v_scroll = 0.0;
-        assert_eq!(video_row_tops(area, 3, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+        assert_eq!(video_row_tops_of(area, &[50.0; 3], 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);
+    }
+
+    /// A row taller than the default must not grow down over its neighbour: the rows stack from one
+    /// bottom edge, so V1 ends on the pane bottom and each row ends where the one below starts.
+    #[test]
+    fn tracks_of_their_own_height_stack_contiguously() {
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
+        let heights = [20.0, 98.0];
+        let mut v_scroll = 0.0;
+        let (tops, _) = video_row_tops_of(area, &heights, 50.0, &mut v_scroll);
+        assert_eq!(tops, vec![130.0, 32.0]);
+        assert_eq!(tops[0] + heights[0], area.max.y, "V1 ends on the pane bottom");
+        assert_eq!(tops[1] + heights[1], tops[0], "V2 ends where V1 starts");
+        for (i, top) in tops.iter().enumerate() {
+            assert!(*top + heights[i] <= if i == 0 { area.max.y + 0.01 } else { tops[i - 1] + 0.01 }, "row {i} overlaps the row below");
+        }
+    }
+
+    /// Whatever the heights are, no two bands overlap and the scroll stays inside its range.
+    #[test]
+    fn no_band_overlaps_another_for_any_heights() {
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
+        let cases: [&[f32]; 6] = [&[50.0, 50.0], &[20.0, 98.0], &[98.0, 20.0], &[22.0, 220.0], &[120.0, 30.0, 60.0], &[22.0; 5]];
+        for heights in cases {
+            for start in [0.0f32, 1_000.0] {
+                let mut v_scroll = start;
+                let (tops, max_vs) = video_row_tops_of(area, heights, 50.0, &mut v_scroll);
+                assert!((0.0..=max_vs).contains(&v_scroll), "scroll {v_scroll} outside 0..{max_vs}");
+                for i in 1..tops.len() {
+                    assert!(
+                        (tops[i] + heights[i] - tops[i - 1]).abs() < 0.01,
+                        "heights {heights:?}: row {i} ends at {} but row {} starts at {}",
+                        tops[i] + heights[i],
+                        i - 1,
+                        tops[i - 1]
+                    );
+                }
+                assert!(
+                    (tops[0] + heights[0] - (area.max.y + v_scroll)).abs() < 0.01,
+                    "heights {heights:?}: V1 ends at {} instead of {}",
+                    tops[0] + heights[0],
+                    area.max.y + v_scroll
+                );
+            }
+        }
     }
 }
 
