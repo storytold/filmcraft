@@ -1441,14 +1441,19 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 }
 
 /// The HSL Secondary key of one pixel's grading signal (0…1 per channel).
+///
+/// Soften ramps the key up inside each limit. A limit at the end of its range (Saturation Min or
+/// Luma Min at 0, Luma Max at 1) has nothing beyond it to soften towards, so it includes that end:
+/// greys at Saturation Min 0, black at Luma Min 0, white at Luma Max 1 (#5204).
 #[inline]
 fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
     let h = rgb_to_hsl(v[0], v[1], v[2]);
     let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
     let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
-    let ms = ((h[1] - smin) / soft).clamp(0.0, 1.0);
-    let ml = ((h[2] - lmin) / soft).clamp(0.0, 1.0).min(((lmax - h[2]) / soft).clamp(0.0, 1.0));
-    mh * ms * ml
+    let ms = if smin <= 0.0 { 1.0 } else { ((h[1] - smin) / soft).clamp(0.0, 1.0) };
+    let above_min = if lmin <= 0.0 { 1.0 } else { ((h[2] - lmin) / soft).clamp(0.0, 1.0) };
+    let below_max = if lmax >= 1.0 { 1.0 } else { ((lmax - h[2]) / soft).clamp(0.0, 1.0) };
+    mh * ms * above_min.min(below_max)
 }
 
 /// Color Grading ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
