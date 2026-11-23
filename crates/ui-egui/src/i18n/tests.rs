@@ -146,7 +146,10 @@ fn status_text_follows_a_language_change() {
     assert_eq!(st.get(msg, Language::En), msg);
     assert_eq!(st.get(msg, Language::Fr), "Détection des changements de scène : disk full");
     assert_eq!(st.get(msg, Language::En), msg);
-    assert_eq!(st.get("", Language::Fr), "");
+    // a new message in the same language is translated afresh
+    assert_eq!(st.get("", Language::En), "");
+    assert_eq!(st.get("nothing selected", Language::Fr), "rien n'est sélectionné");
+    assert_eq!(st.get("nothing to undo", Language::Fr), "rien à annuler");
 }
 
 /// Engine toasts and errors are built in English at run time; the status bar shows them in the

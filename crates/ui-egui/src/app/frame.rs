@@ -176,12 +176,12 @@ impl FilmcraftApp {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
                 // a long label (a file name, a model name) is cut: the bar keeps room for the status
-                let verb = clip_chars(&job_verb(&job.label), JOB_VERB_MAX);
+                let head = job_head(&job_verb(&job.label), JOB_VERB_MAX);
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
-                let text = format!("{verb}… {label}");
+                let text = format!("{head} {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
                 // moves the start of the text
-                let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
+                let room = format!("{head} 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
                 let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
                 panels::JobText { job: job.id, at: now, text, label, width }
             }
@@ -273,14 +273,17 @@ impl FilmcraftApp {
     }
 }
 
-/// The most characters of a job's label the status bar shows.
+/// The most characters of a job's label the status bar shows, its ellipsis included.
 const JOB_VERB_MAX: usize = 40;
 
-/// `s` cut to `max` characters, the cut marked with an ellipsis.
-fn clip_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
+/// A job's label as the status bar starts its text: the label and an ellipsis, at most `max`
+/// characters in all. A label too long is cut, and the one ellipsis marks both the cut and the
+/// progress that follows ("Exporting… 45%", "Downloading a very long mod… 45%").
+fn job_head(s: &str, max: usize) -> String {
+    let keep = max.saturating_sub(1);
+    match s.char_indices().nth(keep) {
         Some((b, _)) => format!("{}…", s.get(..b).unwrap_or(s).trim_end()),
-        None => s.to_string(),
+        None => format!("{s}…"),
     }
 }
 
@@ -298,15 +301,21 @@ mod job_status_tests {
 
     use super::*;
 
-    /// A long job label is cut to leave the status message its room; short ones are whole.
+    /// A long job label is cut to leave the status message its room; short ones are whole. Either
+    /// way one ellipsis ends it, counted in the limit.
     #[test]
     fn long_job_labels_are_cut() {
-        assert_eq!(clip_chars("Transcribing 1 clip", JOB_VERB_MAX), "Transcribing 1 clip");
+        assert_eq!(job_head("Create Proxies (1 clip)", JOB_VERB_MAX), "Create Proxies (1 clip)…");
         let long = "Downloading a model whose name goes on and on and on for ever";
-        let cut = clip_chars(long, JOB_VERB_MAX);
-        assert!(cut.ends_with('…') && cut.chars().count() <= JOB_VERB_MAX + 1, "{cut}");
-        assert_eq!(clip_chars("ééé", 2), "éé…");
-        assert_eq!(clip_chars("", 3), "");
+        let cut = job_head(long, JOB_VERB_MAX);
+        assert!(cut.ends_with('…') && cut.chars().count() <= JOB_VERB_MAX, "{cut}");
+        assert_eq!(cut.matches('…').count(), 1, "{cut}");
+        // exactly at the limit, the label stays whole
+        let at = "x".repeat(JOB_VERB_MAX - 1);
+        assert_eq!(job_head(&at, JOB_VERB_MAX), format!("{at}…"));
+        assert_eq!(job_head("éééé", 3), "éé…");
+        assert_eq!(job_head("", 3), "…");
+        assert_eq!(job_head("abc", 0), "…");
     }
 
     /// Only exports read "Exporting"; a transcription or a download says what it is, translated.
