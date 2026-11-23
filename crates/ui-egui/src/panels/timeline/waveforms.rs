@@ -1,3 +1,4 @@
+use super::remix_waveform;
 use super::{Align2, Arc, Color32, FilmcraftApp, ItemId, Rect, Tick, Tokens, TrackItem, pos2, vec2};
 
 /// The height of a clip's waveform for a clip body `body_height` tall: the lower part of a tall clip,
@@ -8,25 +9,33 @@ pub(super) fn waveform_zone_height(body_height: f32) -> f32 {
 }
 
 pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
-    let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
     let zone_h = waveform_zone_height(body.height());
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
-    if clip.width() <= 0.0 {
+    if !clip.is_positive() {
         return;
     }
+    let (peaks, remix_maximum) = match remix_waveform::request(app, p.ctx(), it) {
+        remix_waveform::Waveform::Ready(rendered) => (rendered.values, Some(rendered.maximum)),
+        remix_waveform::Waveform::Pending => return,
+        remix_waveform::Waveform::Source => {
+            let Some(source) = request_peaks(app, it.item, it.audio_stream) else { return };
+            (source, None)
+        }
+    };
+    let remixed = remix_maximum.is_some();
     let key = Arc::as_ptr(&peaks) as usize;
-    let peak = match app.tl.peak_max.get(&pkey) {
+    let peak = remix_maximum.unwrap_or_else(|| match app.tl.peak_max.get(&pkey) {
         Some(&(k, v)) if k == key => v,
         _ => {
             let v = peaks.iter().fold(0f32, |m, (a, b)| m.max(a.abs()).max(b.abs()));
             app.tl.peak_max.insert(pkey, (key, v));
             v
         }
-    };
+    });
     let gain = waveform_display_gain(peak, it.gain_db);
     let dynamic = app.ui.extras.dynamic_waveforms;
     let mut mesh = egui::Mesh::default();
@@ -36,8 +45,10 @@ pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rec
         let f1 = (x as f32 + 1.0 - body.min.x) / dur_px;
         let t0 = it.start + Tick((it.duration.0 as f64 * f0 as f64) as i64);
         let t1 = it.start + Tick((it.duration.0 as f64 * f1 as f64) as i64);
-        let s0 = (it.source_time_at(t0).seconds() * sr / spp) as usize;
-        let s1 = ((it.source_time_at(t1).seconds() * sr / spp) as usize).max(s0 + 1);
+        // Remix peaks represent output, while ordinary media uses source coordinates.
+        let wave_time = |t| if remixed { t - it.start } else { it.source_time_at(t) };
+        let s0 = (wave_time(t0).seconds() * sr / spp) as usize;
+        let s1 = ((wave_time(t1).seconds() * sr / spp) as usize).max(s0 + 1);
         let mut m = 0f32;
         for (a, b) in peaks.iter().skip(s0).take(s1 - s0) {
             m = m.max(a.abs()).max(b.abs());

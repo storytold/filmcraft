@@ -119,7 +119,7 @@ fn remix_shorter_and_longer_hits_target_at_beats_with_undo() {
 }
 
 #[test]
-fn mixed_audio_is_the_source_pieces() {
+fn mixed_audio_is_the_source_pieces_outside_local_level_matching() {
     let (m, a) = music();
     let (mut s, c) = session(&m, None);
     let r = s.execute("clip.remix", json!({"seconds": 18.0})).unwrap();
@@ -134,8 +134,9 @@ fn mixed_audio_is_the_source_pieces() {
     let mut d = 0usize;
     let mut checked = 0;
     let mut worst = 0f32;
+    let margin = rm.levels.as_ref().map_or(plan.xfade as usize, |m| Tick(m.span).to_units_floor(SR as i64) as usize);
     for p in &plan.pieces {
-        for k in (plan.xfade as usize..p.len as usize - plan.xfade as usize).step_by(31) {
+        for k in (margin..(p.len as usize).saturating_sub(margin)).step_by(31) {
             let want = m[0][p.src as usize + k];
             worst = worst.max((mix.channels[0][d + k] - want).abs());
             checked += 1;
@@ -159,4 +160,110 @@ fn overlaps_are_refused_and_noise_cannot_be_remixed() {
     let (mut s, _) = session(&[tone.clone(), tone], None);
     let err = s.execute("clip.remix.enable", json!({})).unwrap_err().to_string();
     assert!(err.contains("beat") || err.contains("short"), "{err}");
+}
+
+#[test]
+fn remixed_out_trim_keeps_requested_duration_and_audio() {
+    let (m, _) = music();
+    let (mut s, c) = session(&m, None);
+    let original = item(&s, c);
+    s.execute("clip.remix", json!({"clip":c.0,"seconds":65.0})).unwrap();
+    let extended = item(&s, c);
+    assert!(extended.duration > Tick::from_seconds_f64(60.0));
+    let sample_audio = |s: &Session, at: i64| {
+        let provider = s.media.provider(s.project.clone(), s.services.clone());
+        filmcraft_render::audio::mix_sequence(&s.project, s.active_sequence().unwrap(), at, 48000, &provider).channels
+    };
+    let first = sample_audio(&s, 0);
+    let last = sample_audio(&s, 59 * 48000);
+    let n = s.history.undo.len();
+    let target = Tick::from_seconds_f64(60.0);
+    s.execute("timeline.trim", json!({"clip":c.0,"edge":"out","delta":(target-extended.duration).0})).unwrap();
+    let trimmed = item(&s, c);
+    assert_eq!(trimmed.duration, target, "a normal Out trim must not clamp to the original source length");
+    assert_eq!(trimmed.effects, extended.effects, "trim must preserve the arrangement and seam levels");
+    let restored: TrackItem = serde_json::from_str(&serde_json::to_string(&trimmed).unwrap()).unwrap();
+    assert_eq!(restored.remix_output_duration(), Some(extended.duration));
+    assert_eq!(s.history.undo.len(), n + 1);
+    assert_eq!(sample_audio(&s, 0), first);
+    assert_eq!(sample_audio(&s, 59 * 48000), last);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), extended);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), trimmed);
+    s.execute("timeline.trim", json!({"clip":c.0,"edge":"out","delta":Tick::from_seconds_f64(100.0).0})).unwrap();
+    assert_eq!(item(&s, c), extended, "the trimmed tail can be restored, but not extended past the plan");
+    s.execute("clip.remix.revert", json!({"clip":c.0})).unwrap();
+    assert_eq!(item(&s, c), original);
+}
+
+#[test]
+fn remix_levels_measure_only_the_selected_source_channel() {
+    let (mut m, _) = music();
+    for (i, sample) in m[0].iter_mut().enumerate() {
+        let beat = i / (SR as usize / 2);
+        *sample *= if beat % 7 < 3 { 0.1 } else { 1.0 };
+    }
+    for sample in &mut m[1] {
+        *sample *= 0.2;
+    }
+    let (mut s, c) = session(&m, None);
+    s.edit_sequence("Select source channel", |q, _, _| {
+        q.find_item_mut(c).unwrap().1.source_channels = vec![1];
+        Ok(())
+    })
+    .unwrap();
+
+    let response = s.execute("clip.remix", json!({"clip":c.0,"seconds":46.0})).unwrap();
+    let clip = item(&s, c);
+    let remix = filmcraft_render::remix::Remix::of(&clip).unwrap();
+    let plan = remix.plan_at(SR);
+    let source = s.source(clip.item).unwrap();
+    let period = f64::from(SR) * 60.0 / response["bpm"].as_f64().unwrap();
+    assert!(plan.pieces.len() > 1);
+    let calculate = |selected: bool| {
+        let mut levels = dsp::match_levels(&plan, SR, period, &mut |start, count| {
+            let audio = source.audio_stream(clip.audio_stream, start, count, SR).ok()?;
+            Some(if selected { vec![audio.channels[1].clone()] } else { audio.channels })
+        })
+        .unwrap();
+        levels.span = Tick::from_units(levels.span, i64::from(SR)).0;
+        levels
+    };
+    let played = calculate(true);
+    let all = calculate(false);
+    assert_ne!(played, all, "the channels must provide different measurement evidence");
+    let actual = remix.levels.unwrap();
+    assert_eq!(actual.joins, played.joins);
+    assert!((actual.span - played.span).abs() <= Tick::from_units(1, i64::from(SR)).0);
+}
+
+#[test]
+fn long_extension_survives_the_optional_level_matching_limit() {
+    let (m, _) = dsp::test_music(SR, 120.0, 15, 3);
+    let (mut s, c) = session(&m, None);
+    let original = item(&s, c);
+    let undo = s.history.undo.len();
+    let target = Tick::from_seconds_f64(15.0 * 60.0);
+    let report = s.execute("clip.remix", json!({"clip": c.0, "duration": target.0})).unwrap();
+    let extended = item(&s, c);
+    let rm = filmcraft_render::remix::Remix::of(&extended).unwrap();
+    assert!(rm.pieces.len() > 33, "must exercise the matching cap: {} pieces", rm.pieces.len());
+    assert!(rm.levels.is_none(), "over-budget matching falls back to the original crossfades");
+    assert!((extended.duration - target).abs() <= beat());
+    assert_eq!(report["remixed"], true);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    // The persisted arrangement remains playable without joinLevels, including its tail.
+    let restored: TrackItem = serde_json::from_str(&serde_json::to_string(&extended).unwrap()).unwrap();
+    assert_eq!(filmcraft_render::remix::Remix::of(&restored), Some(rm));
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let q = s.active_sequence().unwrap();
+    let tail = extended.duration.to_units_floor(SR as i64) - SR as i64;
+    let audio = filmcraft_render::audio::mix_sequence(&s.project, q, tail, SR as usize, &provider);
+    assert!(audio.channels.iter().flatten().all(|sample| sample.is_finite()));
+    assert!(audio.channels.iter().flatten().any(|sample| sample.abs() > 0.01));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), original);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), extended);
 }
