@@ -248,8 +248,9 @@ impl FilmcraftApp {
 
 /// Export entries that run from the menus through the save panel: command, filter label,
 /// extension.
-pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 8] = [
     ("markers.exportCsv", "Marker report (CSV)", "csv"),
+    ("markers.exportChapters", "Chapter markers (text)", "txt"),
     ("file.exportEdl", "EDL", "edl"),
     ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
     ("file.exportFcpxml", "FCPXML", "fcpxml"),
