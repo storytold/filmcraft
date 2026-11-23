@@ -495,6 +495,11 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
+            // here, not only in the engine: from `ui.menu.invoke`, params that are not an object
+            // look like none, and the command's dialog would open instead of an error
+            if let Err(e) = filmcraft_engine::check_params(id, &params) {
+                return err(e);
+            }
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
             // `engine.execute` never opens a parameter dialog (#1540); `ui.menu.invoke` is the menu
             app.engine_call = req.method == "engine.execute";

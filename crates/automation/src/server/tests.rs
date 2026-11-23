@@ -151,6 +151,10 @@ async fn strict_arguments_and_parse_errors() {
     assert!(v["project"].is_object() && v["sequence"].is_object(), "{v}");
     let r = c.call(9, "render_preview", json!({"max_side": 64})).await;
     assert_eq!(r["result"]["content"][0]["type"], "image", "{r}");
+    // free-form, but an object: a string holding the JSON is refused, not run on the defaults
+    let r = c.call(10, "command_run", json!({"id": "graphics.newText", "params": r#"{"text":"Hello"}"#})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().is_some_and(|t| t.contains("`params`")), "{r}");
 }
 
 /// `filmcraft://document` and `filmcraft://commands` are listed and readable as JSON.

@@ -46,7 +46,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 
 | Method | Params | |
 |---|---|---|
-| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
+| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id; `params` is an object, absent or `null` (anything else is refused) |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
 | `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |
