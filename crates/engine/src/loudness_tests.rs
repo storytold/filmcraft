@@ -295,3 +295,53 @@ fn loudness_clip_and_auto_match_measure_the_same_enabled_proxy() {
     assert!(s.media.use_proxies());
     close(s.execute(QUERY, json!({})).unwrap()["integratedLufs"].as_f64().unwrap(), original_mix);
 }
+
+#[test]
+fn loudness_pending_clip_keeps_a_later_decode_failure_visible() {
+    use filmcraft_frame::{AudioBuffer, VideoFrame};
+    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, pending};
+
+    struct FailingSource {
+        info: MediaInfo,
+        deferred: bool,
+    }
+
+    impl MediaSource for FailingSource {
+        fn info(&self) -> &MediaInfo {
+            &self.info
+        }
+
+        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+            Err(MediaError::NoStream("video"))
+        }
+
+        fn audio(&self, _: i64, _: usize, _: u32) -> filmcraft_media::Result<AudioBuffer> {
+            if self.deferred {
+                return Err(MediaError::Io(pending::would_block().to_string()));
+            }
+            Err(MediaError::Decode("synthetic independent audio failure".into()))
+        }
+    }
+
+    let mut s = session("Stereo", "Standard");
+    let audio = tone(1);
+    let (waiting_item, waiting_clip) = place(&mut s, &audio, 1, "A1");
+    let (broken_item, broken_clip) = place(&mut s, &audio, 1, "A2");
+    let second_broken = s.execute("timeline.place", json!({"item":broken_item.0,"audioTrack":"A1","seconds":2})).unwrap()["clips"][0].as_u64().unwrap();
+    for (id, deferred) in [(waiting_item, true), (broken_item, false)] {
+        let info = s.media.source_for(&s.project, id, &*s.services).unwrap().info().clone();
+        s.media.insert(id, Arc::new(FailingSource { info, deferred }));
+    }
+    for target in ["mix", "track", "clips"] {
+        let _ = pending::take();
+        let report = s.execute(QUERY, json!({"of":target,"track":"A1","clips":[waiting_clip.0,broken_clip.0,second_broken]})).unwrap();
+        assert!(pending::take(), "{target}: the first source reported a deferred read");
+        let errors = report["offlineMedia"].as_array().unwrap();
+        assert_eq!(errors.len(), 1, "{target}: {report}");
+        assert_eq!(errors[0]["item"], broken_item.0);
+        assert_eq!(errors[0]["status"], "unreadable");
+        assert_eq!(errors[0]["error"], "decode error: synthetic independent audio failure");
+    }
+    assert!(s.media.offline_status(waiting_item).is_none());
+    assert!(s.media.offline_status(broken_item).is_none());
+}

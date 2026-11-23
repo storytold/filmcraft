@@ -379,7 +379,16 @@ fn effected(item: &TrackItem, src: SourceAudio, window: Window, w: usize, cache:
 
 fn read_media_audio(item: &TrackItem, source: &dyn MediaSource, window: Window, sources: &dyn SourceProvider) -> Option<AudioBuffer> {
     let Window { start, frames, sr } = window;
-    source.audio_stream(item.audio_stream, start, frames, sr).inspect_err(|error| sources.audio_read_failed(item.item, error)).ok()
+    let was_pending = filmcraft_media::pending::take();
+    let result = source.audio_stream(item.audio_stream, start, frames, sr);
+    let deferred = filmcraft_media::pending::is_set();
+    if let Err(error) = &result {
+        sources.audio_read_failed(item.item, error);
+    }
+    if was_pending || deferred {
+        filmcraft_media::pending::mark();
+    }
+    result.ok()
 }
 
 /// One clip's own signal for timeline samples `[start, start + frames)` (sequence rate): clip gain

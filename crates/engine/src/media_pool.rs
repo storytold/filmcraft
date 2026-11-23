@@ -508,9 +508,14 @@ impl filmcraft_render::SourceProvider for PoolProvider {
             let src = match own.get(&media) {
                 Some(src) => src.clone(),
                 None => {
+                    let was_pending = filmcraft_media::pending::take();
                     let src = self.pool.own_source(&self.project, media, &*self.services);
+                    let deferred = filmcraft_media::pending::take();
+                    if was_pending || deferred {
+                        filmcraft_media::pending::mark();
+                    }
                     // the host is still fetching the file's bytes (the browser): try again next time
-                    if src.is_some() || !filmcraft_media::pending::is_set() {
+                    if src.is_some() || !deferred {
                         own.insert(media, src.clone());
                     }
                     src
@@ -526,7 +531,7 @@ impl filmcraft_render::SourceProvider for PoolProvider {
     fn audio_read_failed(&self, item: ItemId, error: &MediaError) {
         if let Some(used) = &self.used
             && !matches!(error, MediaError::Cancelled)
-            && !filmcraft_media::pending::is_set()
+            && !filmcraft_media::pending::take()
             && let Some((id, _, _)) = self.project.resolve_media(item)
         {
             used.lock().unwrap_or_else(PoisonError::into_inner).audio_errors.entry(id).or_insert_with(|| error.to_string());

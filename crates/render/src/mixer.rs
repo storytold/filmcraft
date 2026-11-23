@@ -972,10 +972,12 @@ fn mix_plan(
     // tracks: independent, in parallel
     let ntr = plan.strips.iter().take_while(|s| s.kind == Kind::Track).count();
     let (track_states, rest) = st.strips.split_at_mut(ntr);
+    let pending = AtomicBool::new(filmcraft_media::pending::take());
     let track_outs: Vec<Option<StripOut>> = track_states
         .par_iter_mut()
         .enumerate()
         .map(|(si, ss)| {
+            let _ = filmcraft_media::pending::take();
             let s = &plan.strips[si];
             if s.silent {
                 ss.delays.iter_mut().for_each(DelayLine::clear);
@@ -992,9 +994,15 @@ fn mix_plan(
             } else {
                 silent(s.width, total)
             };
+            if filmcraft_media::pending::take() {
+                pending.store(true, Ordering::Relaxed);
+            }
             Some(run_strip(plan, si, ss, input, StripRun { x0, skip, sr, ovs }))
         })
         .collect();
+    if pending.load(Ordering::Relaxed) {
+        filmcraft_media::pending::mark();
+    }
     let deliver = |o: StripOut, si: usize, bus: &mut Vec<Option<Bus>>, meters: &mut Vec<(TrackId, Vec<f32>)>| {
         meters.push((plan.strips[si].track.id, o.meter));
         for (ri, sig) in o.routes {
