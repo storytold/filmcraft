@@ -578,28 +578,21 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// The ≡ menu, and the Timeline's sequence tabs before it while the Timeline is shown.
-    /// The sequence tabs take at most two thirds of the strip, so the group's own tabs keep room;
-    /// past that they scroll into their » list.
-    fn group_header_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool, strip_width: f32) -> f32 {
-        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { (self.seq_width + MENU_W).min(strip_width * 2.0 / 3.0).max(MENU_W) } else { MENU_W }
+    /// The ≡ menu alone. The Timeline's sequence tabs are deliberately NOT part of the header:
+    /// the header is pinned to the strip's right end, so they would sit against the ≡ with the
+    /// whole header empty to their left (#5024). They are the group's extra tabs instead, see
+    /// [`Self::group_extra_tabs_width`].
+    fn group_header_width(&self, _panels: &[PanelKind], _active: &PanelKind, _floating: bool, _strip_width: f32) -> f32 {
+        MENU_W
     }
 
-    /// The ≡ panel menu of the group's shown panel; for the Timeline, its sequence tabs first.
+    /// The ≡ panel menu of the group's shown panel.
     fn group_header(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
         // The header is a child of the UI craft-ui uses to draw the group's tabs.
         self.active_tab = ui.stack().parent.as_ref().map(|strip| (strip.unique_id, *active));
         let t = self.tokens;
         let header = ui.max_rect();
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
-        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() {
-            let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));
-            let actions = dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto);
-            if actions.iter().any(|a| matches!(a, SeqAction::Menu(..))) {
-                self.seq_menu_viewport = ui.ctx().viewport_id();
-            }
-            self.seq_actions.extend(actions);
-        }
         let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
         let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), "panel menu"));
@@ -611,6 +604,26 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             self.app.ui.focused = *active;
             self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
+    }
+
+    /// The Timeline's open sequences, as the group's own tabs: craft-ui draws them right after
+    /// the panel's tab and before the drag bar, so they are left-aligned in the header and share
+    /// the row's fitting rules (#5024). Zero for any other panel, which shows the ≡ alone.
+    fn group_extra_tabs_width(&self, _panels: &[PanelKind], active: &PanelKind, _floating: bool) -> f32 {
+        if *active == PanelKind::Timeline && !self.seqs.open.is_empty() { self.seq_width } else { 0.0 }
+    }
+
+    fn group_extra_tabs(&mut self, ui: &mut egui::Ui, _panels: &[PanelKind], active: &PanelKind, _floating: bool) {
+        if *active != PanelKind::Timeline || self.seqs.open.is_empty() {
+            return;
+        }
+        let t = self.tokens;
+        let strip = ui.max_rect();
+        let actions = dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto);
+        if actions.iter().any(|a| matches!(a, SeqAction::Menu(..))) {
+            self.seq_menu_viewport = ui.ctx().viewport_id();
+        }
+        self.seq_actions.extend(actions);
     }
 }
 
