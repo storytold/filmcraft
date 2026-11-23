@@ -302,69 +302,76 @@ pub fn resolve_pins(nodes: &[PinNode], frame: [f64; 4]) -> Vec<[f64; 4]> {
         })
         .collect();
     drop(by_uid);
-    struct Walk<'a> {
-        nodes: &'a [PinNode],
-        frame: [f64; 4],
-        targets: Vec<Option<usize>>,
-        /// Layers on the current chain, and how long it is.
-        visiting: Vec<bool>,
-        depth: usize,
-        /// Times the chain-depth cutoff returned unpinned bounds; a result computed while this
-        /// moved depends on where the walk started, so it is not cached.
-        cuts: usize,
-    }
-    fn solve(i: usize, w: &mut Walk, out: &mut Vec<Option<[f64; 4]>>) -> [f64; 4] {
-        let (nodes, frame) = (w.nodes, w.frame);
-        if let Some(b) = out[i] {
-            return b;
-        }
-        let n = &nodes[i];
-        let own = n.bounds;
-        let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
-            out[i] = Some(own);
-            return own;
-        };
-        // a cycle, or a chain deeper than any real template, is ignored like a missing target
-        if w.visiting[i] || w.depth >= MAX_PIN_CHAIN {
-            w.cuts += usize::from(!w.visiting[i]);
-            return own;
-        }
-        let cuts_before = w.cuts;
-        w.visiting[i] = true;
-        w.depth += 1;
-        let target = match pin.to {
-            PinTarget::Frame => Some(frame),
-            PinTarget::Layer(_) => w.targets[i].map(|j| solve(j, w, out)),
-        };
-        w.depth -= 1;
-        w.visiting[i] = false;
-        let Some(t) = target else {
-            out[i] = Some(own);
-            return own;
-        };
-        let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
-            let size = own[hi] - own[lo];
-            match (lo_on, hi_on) {
-                (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
-                (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
-                (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
-                (false, false) => (own[lo], own[hi]),
+    // Reuse the bounded path buffer, and mark entries with the current start index
+    // instead of setting and clearing a visitation bit at every recursive call.
+    let mut seen_in = vec![usize::MAX; nodes.len()];
+    let mut path = Vec::with_capacity(MAX_PIN_CHAIN);
+    let mut result = Vec::with_capacity(nodes.len());
+    for start in 0..nodes.len() {
+        let mut i = start;
+        let (mut b, cacheable) = loop {
+            if let Some(b) = out[i] {
+                break (b, true);
+            }
+            let n = &nodes[i];
+            let own = n.bounds;
+            let Some(pin) = n.pin.as_ref().filter(|p| p.any()) else {
+                out[i] = Some(own);
+                break (own, true);
+            };
+            // As before, revisiting a layer wins over the depth limit. A cycle
+            // can be cached; a cutoff depends on the starting layer and cannot.
+            if seen_in[i] == start {
+                break (own, true);
+            }
+            if path.len() == MAX_PIN_CHAIN {
+                break (own, false);
+            }
+            match pin.to {
+                PinTarget::Frame => {
+                    path.push((i, pin));
+                    break (frame, true);
+                }
+                PinTarget::Layer(_) => {
+                    let Some(j) = targets[i] else {
+                        out[i] = Some(own);
+                        break (own, true);
+                    };
+                    seen_in[i] = start;
+                    path.push((i, pin));
+                    i = j;
+                }
             }
         };
-        let (x0, x1) = axis(pin.left, pin.right, 0, 2);
-        let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
-        let b = [x0, y0, x1, y1];
-        if w.cuts == cuts_before {
-            out[i] = Some(b);
+        while let Some((i, pin)) = path.pop() {
+            b = pinned_bounds(&nodes[i], pin, b);
+            if cacheable {
+                out[i] = Some(b);
+            }
         }
-        b
+        result.push(b);
     }
-    let mut w = Walk { nodes, frame, targets, visiting: vec![false; nodes.len()], depth: 0, cuts: 0 };
-    (0..nodes.len()).map(|i| solve(i, &mut w, &mut out)).collect()
+    result
 }
 
-/// Longest chain of layers pinned to layers that [`resolve_pins`] follows (each link is a level
-/// of recursion; a template can supply any number of layers).
+fn pinned_bounds(n: &PinNode, pin: &Pin, t: [f64; 4]) -> [f64; 4] {
+    let own = n.bounds;
+    let axis = |lo_on: bool, hi_on: bool, lo: usize, hi: usize| -> (f64, f64) {
+        let size = own[hi] - own[lo];
+        match (lo_on, hi_on) {
+            (true, true) if n.resizable => (t[lo] + pin.offsets[lo], t[hi] + pin.offsets[hi]),
+            (true, _) => (t[lo] + pin.offsets[lo], t[lo] + pin.offsets[lo] + size),
+            (false, true) => (t[hi] + pin.offsets[hi] - size, t[hi] + pin.offsets[hi]),
+            (false, false) => (own[lo], own[hi]),
+        }
+    };
+    let (x0, x1) = axis(pin.left, pin.right, 0, 2);
+    let (y0, y1) = axis(pin.top, pin.bottom, 1, 3);
+    [x0, y0, x1, y1]
+}
+
+/// Longest chain of layers pinned to layers that [`resolve_pins`] follows (a template can supply any
+/// number of layers).
 const MAX_PIN_CHAIN: usize = 256;
 
 /// Roll / crawl direction (Responsive Design – Time ▸ Roll).
