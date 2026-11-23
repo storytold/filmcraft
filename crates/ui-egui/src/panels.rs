@@ -251,7 +251,7 @@ pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
     }
 }
 /// An item dragged from the Project panel (or the Media Browser), but not a Source Monitor drag,
-/// whose In/Out range and video/audio choice only a timeline drop keeps.
+/// whose In/Out range and video/audio choice only a Timeline panel drop keeps.
 pub fn dragged_panel_item(ui: &egui::Ui) -> Option<ItemId> {
     match payload(ui) {
         Some(DragPayload::Item(i)) => Some(i),

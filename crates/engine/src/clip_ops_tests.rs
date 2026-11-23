@@ -1414,3 +1414,33 @@ fn rename_takes_several_clips() {
     s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// #3569: a sequence made from a Source Monitor drag takes its range and streams, in one undo step;
+/// a bad range or a list of items makes no sequence at all.
+#[test]
+fn new_sequence_from_a_source_range_places_only_that_range() {
+    let mut s = demo();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    let sequences = s.project.sequences().count();
+    let (start, duration) = (Tick(TICKS_PER_SECOND), Tick(2 * TICKS_PER_SECOND));
+    for bad in [
+        json!({"fromSource": {"item": item.0, "sourceIn": -1}}),
+        json!({"fromSource": {"item": item.0, "video": false, "audio": false}}),
+        json!({"fromSource": {"item": item.0, "video": "yes"}}),
+        json!({"fromSource": {"item": item.0}, "fromItem": item.0}),
+        json!({"fromSource": {"duration": duration.0}}),
+        json!({"fromSource": 7}),
+    ] {
+        assert!(s.execute("file.newSequence", bad.clone()).is_err(), "{bad}");
+        assert_eq!(s.project.sequences().count(), sequences, "{bad}");
+    }
+    s.execute("file.newSequence", json!({"fromSource": {"item": item.0, "sourceIn": start.0, "duration": duration.0, "audio": false}})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let clips: Vec<&TrackItem> = q.video_tracks.iter().flat_map(|t| t.items.iter()).collect();
+    assert_eq!(clips.len(), 1);
+    assert_eq!((clips[0].start, clips[0].source_in), (Tick::ZERO, start));
+    assert_eq!(clips[0].duration, q.settings.frame_rate.snap_nearest(duration));
+    assert!(q.audio_tracks.iter().all(|t| t.items.is_empty()), "a video-only drag leaves the sound out");
+    assert_eq!(s.undo().as_deref(), Some("New Sequence"));
+    assert_eq!(s.project.sequences().count(), sequences, "one undo step");
+}

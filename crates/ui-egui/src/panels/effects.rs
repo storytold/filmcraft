@@ -21,7 +21,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2(rect.width() - 16.0, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut q = app.ui.effects_search.clone();
-    crate::widgets::search_field(&mut child, &mut q, tl!("Search effects"), sr.width(), &t);
+    let field = crate::widgets::search_field(&mut child, &mut q, tl!("Search effects"), sr.width(), &t);
+    if std::mem::take(&mut app.ui.focus_effects_search) {
+        field.request_focus();
+    }
     app.ui.effects_search = q.clone();
     let body = Rect::from_min_max(pos2(rect.min.x, sr.max.y + 6.0), rect.max);
     // wide panel: the tree on the left, the Color Grading Presets thumbnail grid on the right
