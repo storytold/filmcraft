@@ -44,6 +44,7 @@ pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
+pub mod slip_monitor;
 pub mod text;
 pub mod timecode;
 pub mod timeline;
@@ -137,6 +138,7 @@ pub fn eta_suffix(job: &serde_json::Value) -> String {
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
     match p {
+        PanelKind::Program if slip_monitor::active(app) => slip_monitor::show(app, ui, rect),
         PanelKind::Program if !app.session.state.edit_points.is_empty() => trim_monitor::show(app, ui, rect),
         PanelKind::Program => monitor::show(app, ui, rect, monitor::Which::Program),
         PanelKind::Source => monitor::show(app, ui, rect, monitor::Which::Source),
@@ -223,9 +225,9 @@ pub fn dragged_template(ui: &egui::Ui) -> Option<String> {
 pub fn start_drag_effect(ui: &egui::Ui, id: &str) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Effect(id.to_string())))));
 }
-/// Prefix of a dragged effect payload that names a Lumetri preset rather than an effect id.
+/// Prefix of a dragged effect payload that names a Color Grading preset rather than an effect id.
 pub const LUMETRI_PRESET_PREFIX: &str = "lumetri:";
-/// A Lumetri preset (Effects ▸ Lumetri Presets) dragged onto a clip: an effect payload
+/// A Color Grading preset (Effects ▸ Color Grading Presets) dragged onto a clip: an effect payload
 /// `lumetri:<name>` the Timeline applies with `lumetri.applyPreset`.
 pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
     start_drag_effect(ui, &format!("{LUMETRI_PRESET_PREFIX}{name}"));
@@ -473,6 +475,10 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
     if p == PanelKind::Source {
         ui.separator();
         close |= monitor::source_panel_menu(app, ui);
+    }
+    if p == PanelKind::LumetriColor {
+        ui.separator();
+        close |= lumetri::panel_menu(app, ui);
     }
     if p == PanelKind::History {
         ui.separator();

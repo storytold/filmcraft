@@ -16,9 +16,8 @@
 //! ([`crate::essence::NestNeeds::Render`]), is media like any other, in a clip named after the
 //! sequence. Premiere Pro's OMF export does the same.
 
-pub(crate) mod bento;
-mod read;
-mod write;
+pub(crate) use craft_aaf::omf::bento;
+pub(crate) mod shared_model;
 
 use filmcraft_project::{ItemId, Project};
 use serde::{Deserialize, Serialize};
@@ -52,7 +51,11 @@ pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<
     if project.sequence(sequence).is_some_and(|q| q.video_tracks.iter().any(|t| !t.items.is_empty())) {
         report.info("video tracks are not written to OMF (audio only)");
     }
-    let bytes = write::write(&doc, &mut report)?;
+    let identity =
+        craft_aaf::Identity { company: "FilmCraft", product: "FilmCraft", version: env!("CARGO_PKG_VERSION"), platform: "FilmCraft", product_id: [0; 16] };
+    let mut shared_report = craft_aaf::Report::default();
+    let bytes = craft_aaf::omf::write(&shared_model::to_shared(doc), &identity, &mut shared_report).map_err(shared_model::error)?;
+    shared_model::merge_report(&mut report, shared_report);
     Ok((bytes, report))
 }
 
@@ -60,7 +63,10 @@ pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<
 /// structures). Embedded audio is returned as WAV files.
 pub fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Vec<ExtractedMedia>, Report)> {
     let mut report = Report::default();
-    let doc = read::read(bytes, &mut report)?;
+    let mut shared_report = craft_aaf::Report::default();
+    let doc = craft_aaf::omf::read(bytes, &mut shared_report).map_err(shared_model::error)?;
+    shared_model::merge_report(&mut report, shared_report);
+    let doc = shared_model::from_shared(doc);
     let (imported, extracted) = comp::to_project(doc, opts, &mut report)?;
     let mut imported = imported;
     crate::bound_start_timecodes(&mut imported, &mut report);
