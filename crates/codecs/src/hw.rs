@@ -133,6 +133,9 @@ pub struct NalStreamInfo {
     /// Pictures that may precede a picture in decoding order and follow it in output order
     /// (H.264 `max_num_reorder_frames`, HEVC `sps_max_num_reorder_pics`).
     pub reorder: usize,
+    /// H.264 `pic_order_cnt_type` (2: output order is decoding order, whatever `reorder` says);
+    /// `None` for HEVC.
+    pub h264_poc_type: Option<u32>,
 }
 
 /// Any stream a hardware decoder can take: what [`crate::hw`]'s hybrid decoder needs to know about
@@ -276,6 +279,7 @@ impl NalStreamInfo {
             par: sar_par(vui.sar),
             // as the software decoder's DPB (`max_reorder`)
             reorder: sps.max_num_reorder_frames().min(sps.max_dpb_frames()),
+            h264_poc_type: Some(sps.pic_order_cnt_type),
         })
     }
 
@@ -321,6 +325,7 @@ impl NalStreamInfo {
             color: vui_color(crop.2, crop.3, vui.colour_primaries, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
             par: sar_par(vui.sar),
             reorder: sps.max_num_reorder as usize,
+            h264_poc_type: None,
         })
     }
 
@@ -432,6 +437,7 @@ mod tests {
             color: filmcraft_color::ColorInfo::REC709,
             par: (1, 1),
             reorder: 0,
+            h264_poc_type: None,
         }
     }
 

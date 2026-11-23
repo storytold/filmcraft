@@ -19,6 +19,17 @@ use crate::biplanar::Geometry;
 /// Largest picture the backend takes (as the VideoToolbox one).
 pub const MAX_SIDE: u32 = 8192;
 
+/// Most pictures an H.264 stream may reorder for Microsoft's decoder MFT to take it, unless its
+/// `pic_order_cnt_type` is 2. With more, the MFT was seen to corrupt reference pictures now and
+/// then: moving areas then leave blocky trails until the next IDR picture, differently on each
+/// decode. On a 1080p60 camera stream with no VUI `bitstream_restriction` (so the reorder depth is
+/// the level's whole DPB), the same stream decoded correctly every time with a reorder depth of 4
+/// (level 4.1 / 4.2) and was corrupted in most decodes at 13 (level 5.0) and 16 (level 5.1).
+/// Declaring the depth (`max_num_reorder_frames` 0) or `pic_order_cnt_type` 2 avoided it too.
+/// Depths between were not measured, so they are declined as well; FilmCraft's own decoder
+/// takes these streams.
+const MAX_H264_REORDER: usize = 4;
+
 /// A stream the decoder takes.
 #[derive(Clone, Debug)]
 pub enum Stream {
@@ -71,6 +82,9 @@ pub fn plan_nal(info: &NalStreamInfo) -> Result<Plan, String> {
     let (cx, cy, w, h) = info.crop;
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || cx.saturating_add(w) > info.coded.0 || cy.saturating_add(h) > info.coded.1 {
         return Err(format!("picture size {w}x{h}"));
+    }
+    if info.codec == NalCodec::H264 && info.h264_poc_type != Some(2) && info.reorder > MAX_H264_REORDER {
+        return Err(format!("H.264 that may reorder {} pictures (Microsoft's decoder corrupts pictures with more than {MAX_H264_REORDER})", info.reorder));
     }
     let ten = info.bit_depth_luma == 10;
     let (format, profile) = match (info.codec, info.profile_idc, ten) {
@@ -250,7 +264,39 @@ mod tests {
             color: filmcraft_color::ColorInfo::REC709,
             par: (1, 1),
             reorder: 2,
+            h264_poc_type: (codec == NalCodec::H264).then_some(0),
         }
+    }
+
+    #[test]
+    fn declines_h264_that_may_reorder_more_than_the_mft_decodes_correctly() {
+        // a camera stream with no bitstream_restriction at level 5.1: the whole 16-frame DPB
+        for poc_type in [0, 1] {
+            let mut i = nal(NalCodec::H264, 77, 8, 1);
+            i.reorder = 16;
+            i.h264_poc_type = Some(poc_type);
+            assert!(plan_nal(&i).is_err(), "POC type {poc_type}");
+        }
+        let mut deeper = nal(NalCodec::H264, 100, 8, 1);
+        deeper.reorder = MAX_H264_REORDER + 1;
+        assert!(plan_nal(&deeper).is_err());
+    }
+
+    #[test]
+    fn takes_h264_that_reorders_little_or_never() {
+        // at the limit (level 4.x without bitstream_restriction at 1080p)
+        let mut at_limit = nal(NalCodec::H264, 77, 8, 1);
+        at_limit.reorder = MAX_H264_REORDER;
+        assert!(plan_nal(&at_limit).is_ok());
+        // POC type 2 outputs in decoding order, whatever the level allows
+        let mut poc2 = nal(NalCodec::H264, 77, 8, 1);
+        poc2.reorder = 16;
+        poc2.h264_poc_type = Some(2);
+        assert!(plan_nal(&poc2).is_ok());
+        // HEVC is not affected
+        let mut hevc = nal(NalCodec::Hevc, 1, 8, 1);
+        hevc.reorder = 16;
+        assert!(plan_nal(&hevc).is_ok());
     }
 
     fn frame(codec: FrameCodec, profile: u8, bits: u32, subsampling: (u8, u8)) -> FrameStreamInfo {

@@ -54,6 +54,7 @@ mod tests {
             color: filmcraft_color::ColorInfo::REC709,
             par: (1, 1),
             reorder: 0,
+            h264_poc_type: (codec == NalCodec::H264).then_some(0),
         }
     }
 
