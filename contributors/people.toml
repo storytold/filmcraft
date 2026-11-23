@@ -116,5 +116,10 @@ real_name = "Helen Kwok"
 real_name = "Robert Lee"
 sync_github_name = true
 
+[people.ByOnez]
+real_name = "Enzo Lupki"
+display_name = "Enzo Lupki"
+sync_github_name = false
+
 [people.Terra854]
 display_name = "Terra854"

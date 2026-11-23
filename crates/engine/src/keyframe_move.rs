@@ -131,6 +131,60 @@ pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+/// `effects.deleteKeyframes` removes every keyframe in the `keyframes` list (1 to 4096) in one undo
+/// step, all-or-nothing, replying `{"removed": count}`. The Effect Controls Delete key uses it on the
+/// whole selection; the right-click Clear stays single (#265). Each reference takes the singular
+/// `effects.deleteKeyframe`'s spelling (`effect` as a name or index, `mediaTime`) as well as the
+/// `effect` index / `time` the UI's keyframe selection serialises to, so the two commands agree.
+pub(crate) fn delete_many(s: &mut Session, p: &Value) -> Result<Value> {
+    const DEL: &str = "effects.deleteKeyframes";
+    let raw = p.get("keyframes").and_then(Value::as_array).ok_or_else(|| bad(DEL, "need keyframes"))?;
+    if raw.is_empty() || raw.len() > MAX_KEYS {
+        return Err(bad(DEL, "keyframe count must be between 1 and 4096"));
+    }
+    // (clip, effect as a name or index, param, mask, time); `mediaTime` and `time` both name the time.
+    let refs: Vec<(u64, Value, String, Option<usize>, Tick)> = raw
+        .iter()
+        .map(|k| {
+            let clip = k.get("clip").and_then(Value::as_u64).ok_or_else(|| bad(DEL, "keyframe needs a clip id"))?;
+            let effect = k.get("effect").cloned().ok_or_else(|| bad(DEL, "keyframe needs an effect"))?;
+            let param = k.get("param").and_then(Value::as_str).ok_or_else(|| bad(DEL, "keyframe needs a param"))?.to_string();
+            let mask = match k.get("mask") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| bad(DEL, "mask must be an index"))? as usize),
+            };
+            let time = k.get("mediaTime").or_else(|| k.get("time")).and_then(Value::as_i64).map(Tick).ok_or_else(|| bad(DEL, "keyframe needs a mediaTime"))?;
+            Ok((clip, effect, param, mask, time))
+        })
+        .collect::<Result<_>>()?;
+    let removed = s.edit_sequence("Delete Keyframes", |sequence, _, _| {
+        // A key listed more than once (possible over the control channel) is removed once, not an
+        // error: dropping a keyframe twice is the same as dropping it once.
+        let mut seen = HashSet::new();
+        let mut removed = 0usize;
+        for (clip, effect, param, mask, time) in &refs {
+            let (_, it) = sequence.find_item(ClipId(*clip)).ok_or_else(|| bad(DEL, "clip does not exist"))?;
+            let index = match effect {
+                Value::Number(n) => n.as_u64().map(|i| i as usize),
+                Value::String(name) => it.effects.iter().position(|e| &e.effect == name),
+                _ => None,
+            }
+            .ok_or_else(|| bad(DEL, "effect does not exist"))?;
+            if !seen.insert((*clip, index, *mask, param.clone(), *time)) {
+                continue;
+            }
+            let lane = (*clip, index, *mask, param.clone());
+            let prm = param_mut(sequence, &lane, DEL)?;
+            if !prm.remove_keyframe_at(*time) {
+                return Err(bad(DEL, "keyframe does not exist"));
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    })?;
+    Ok(json!({ "removed": removed }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +302,63 @@ mod tests {
             assert!(s.execute(SET, request).is_err());
             assert!(Arc::ptr_eq(&before, &s.project));
         }
+    }
+
+    /// `effects.deleteKeyframes` removes exactly the listed keys across lanes in one undo step, and
+    /// refuses invalid or oversized requests without touching the project or its history.
+    #[test]
+    fn delete_of_listed_keys_across_lanes_is_one_undo_step() {
+        const DEL: &str = "effects.deleteKeyframes";
+        let (mut s, keys) = fixture();
+        let project = s.project.clone();
+        let undo = s.history.undo.len();
+        // Delete Scale's first key and Rotation's only key; Scale's second key stays.
+        let r = s.execute(DEL, json!({"keyframes":[keys[0],keys[2]]})).unwrap();
+        assert_eq!(r["removed"], json!(2));
+        let scale = values(&s, &keys[0]);
+        assert_eq!(scale.len(), 1, "the unlisted Scale key stays");
+        assert_eq!(scale[0].time.0, keys[1]["time"].as_i64().unwrap());
+        assert!(values(&s, &keys[2]).is_empty(), "Rotation has no keyframes left");
+        assert_eq!(s.history.undo.len(), undo + 1, "the whole selection is one undo step");
+        s.undo();
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), serde_json::to_value(&project).unwrap());
+
+        // Invalid or hostile requests leave the project and its history untouched.
+        let before = s.project.clone();
+        let mut missing = keys[1].clone();
+        missing["time"] = json!(missing["time"].as_i64().unwrap() + 1);
+        for request in [
+            json!({"keyframes":[keys[0],missing]}),
+            json!({"keyframes":[]}),
+            json!({"keyframes":vec![keys[0].clone();MAX_KEYS+1]}),
+            json!({"keyframes":[{"clip":keys[0]["clip"],"effect":u64::MAX,"param":"scale","time":0}]}),
+            json!({"keyframes":"all"}),
+        ] {
+            assert!(s.execute(DEL, request).is_err());
+            assert!(Arc::ptr_eq(&before, &s.project));
+            assert_eq!(s.history.undo.len(), undo);
+        }
+    }
+
+    /// A key listed twice is removed once rather than failing the whole atomic delete on the second
+    /// pass finding it already gone.
+    #[test]
+    fn deleting_a_duplicated_key_removes_it_once() {
+        let (mut s, keys) = fixture();
+        let r = s.execute("effects.deleteKeyframes", json!({"keyframes":[keys[0],keys[0]]})).unwrap();
+        assert_eq!(r["removed"], json!(1), "the duplicate collapses to a single removal");
+        assert!(values(&s, &keys[0]).iter().all(|k| k.time.0 != keys[0]["time"].as_i64().unwrap()), "the key is gone");
+    }
+
+    /// The bulk delete takes the singular `effects.deleteKeyframe`'s spelling too: the effect by name
+    /// and `mediaTime`, not only the UI's index / `time`.
+    #[test]
+    fn delete_accepts_the_singular_spelling() {
+        let (mut s, keys) = fixture();
+        let by_name = json!({"clip": keys[2]["clip"], "effect": "motion", "param": "rotation", "mediaTime": keys[2]["time"]});
+        let r = s.execute("effects.deleteKeyframes", json!({ "keyframes": [by_name] })).unwrap();
+        assert_eq!(r["removed"], json!(1));
+        assert!(values(&s, &keys[2]).is_empty(), "the keyframe named by effect name and mediaTime is gone");
     }
 
     #[test]
