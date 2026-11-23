@@ -39,8 +39,8 @@ impl AudioOut for FakeOut {
     }
 }
 
-/// Play for `steps` × 0.25 s of simulated time with the given output; the playhead in seconds.
-fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
+/// Play for `steps` × 0.25 s; return position, current clock and frames using wall time.
+fn play_with(per_poll: u64, steps: usize) -> (f64, bool, usize) {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.set_playhead(Tick::ZERO);
@@ -49,28 +49,35 @@ fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
     let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
     h.step();
     h.state_mut().play(1.0);
+    let mut wall_clock_steps = 0;
     for _ in 0..steps {
         h.step();
+        if h.state().playback.preroll.is_none() && !h.state().playback.audio_clock {
+            wall_clock_steps += 1;
+        }
     }
     let app = h.state_mut();
-    (app.session.playhead().seconds(), app.playback.audio_clock)
+    (app.session.playhead().seconds(), app.playback.audio_clock, wall_clock_steps)
 }
 
 /// #136: the stream opened, the device never asked for samples, the audio clock stayed at 0 and
-/// the playhead never moved. After a short grace period playback falls back to the wall clock.
+/// the playhead never moved. Playback still advances if every reopened stream stalls (#3785).
 #[test]
 fn a_stalled_audio_device_does_not_freeze_playback() {
-    let (t, audio_clock) = play_with(0, 16);
-    assert!(t > 1.5, "the playhead should move with the wall clock, it is at {t:.2} s");
-    assert!(!audio_clock, "the stalled device no longer drives the clock");
+    let (t, _, wall_clock_steps) = play_with(0, 40);
+    assert!(t > 4.0, "the playhead keeps moving across repeated stalls, it is at {t:.2} s");
+    // At the final frame the device may be in a fresh retry's grace period; it must have
+    // relinquished the clock between attempts rather than freezing playback indefinitely.
+    assert!(wall_clock_steps >= 8, "playback must use wall time while waiting to retry");
 }
 
 /// Control: a device that plays keeps driving the clock (0.1 s of audio per poll).
 #[test]
 fn a_playing_audio_device_drives_the_clock() {
-    let (t, audio_clock) = play_with(4_800, 8);
+    let (t, audio_clock, wall_clock_steps) = play_with(4_800, 8);
     assert!(t > 0.2, "{t:.2} s");
     assert!(audio_clock);
+    assert_eq!(wall_clock_steps, 0, "a working device never falls back to wall time");
 }
 
 /// A fallback note from the audio device (broken ALSA `default`, #23/#106) reaches the status
