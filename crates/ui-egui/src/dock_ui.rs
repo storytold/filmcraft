@@ -491,6 +491,45 @@ struct FilmContent<'a> {
     restore_workspace: bool,
 }
 
+impl FilmContent<'_> {
+    fn monitor_name(&self, panel: PanelKind) -> Option<&str> {
+        let session = &self.app.session;
+        let item = match panel {
+            PanelKind::Source => session.state.source_item,
+            PanelKind::Program => session.state.active_sequence,
+            _ => None,
+        }?;
+        let name = &session.project.item(item)?.name;
+        (!name.is_empty()).then_some(name.as_str())
+    }
+}
+
+fn monitor_tab_text(ui: &egui::Ui, font: &egui::FontId, title: &str, name: &str, keep_extension: bool) -> String {
+    const MAX_WIDTH: f32 = 168.0;
+    let fits = |text: &str| ui.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE).size().x <= MAX_WIDTH);
+    let full = format!("{title}: {name}");
+    if fits(&full) {
+        return full;
+    }
+
+    let (stem, extension) = if keep_extension {
+        name.rsplit_once('.')
+            .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty() && fits(&format!("{title}: ….{ext}")))
+            .map_or((name, ""), |(stem, _)| (stem, &name[stem.len()..]))
+    } else {
+        (name, "")
+    };
+    let mut end = 0;
+    for (i, c) in stem.char_indices().take(48) {
+        let next = i + c.len_utf8();
+        if !fits(&format!("{title}: {}…{extension}", &stem[..next])) {
+            break;
+        }
+        end = next;
+    }
+    format!("{title}: {}…{extension}", &stem[..end])
+}
+
 impl DockContent<PanelKind> for FilmContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, panel: &PanelKind) {
         let t = self.tokens;
@@ -527,7 +566,8 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     }
 
     fn logical_label(&self, panel: &PanelKind) -> String {
-        crate::i18n::t(panel.title()).to_string()
+        let title = crate::i18n::t(panel.title());
+        self.monitor_name(*panel).map_or_else(|| title.to_owned(), |name| format!("{title}: {name}"))
     }
 
     /// Every floating panel gets its own OS window on desktop.
@@ -544,9 +584,15 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         }
     }
 
-    /// Underline the selected tab without changing its accessible name or the labels in menus.
-    fn label(&mut self, ui: &egui::Ui, panel: &PanelKind, logical: &str, _font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
-        let label = if *panel == PanelKind::Timeline && self.seqs.open.is_empty() { self.seqs.label() } else { logical.to_owned() };
+    /// Shorten visible monitor labels while leaving the full name available to assistive technology.
+    fn label(&mut self, ui: &egui::Ui, panel: &PanelKind, logical: &str, font: &egui::FontId, color: egui::Color32) -> egui::WidgetText {
+        let label = if let Some(name) = self.monitor_name(*panel) {
+            monitor_tab_text(ui, font, crate::i18n::t(panel.title()), name, *panel == PanelKind::Source)
+        } else if *panel == PanelKind::Timeline && self.seqs.open.is_empty() {
+            self.seqs.label()
+        } else {
+            logical.to_owned()
+        };
         if self.active_tab == Some((ui.unique_id(), *panel)) { egui::RichText::new(label).color(color).underline().into() } else { label.into() }
     }
 
