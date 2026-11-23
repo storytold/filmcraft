@@ -732,6 +732,16 @@ fn aac_audio_settings_and_names() {
     assert_eq!(preset.settings.format, Format::Aac);
 }
 
+#[test]
+fn dnxhr_size_estimate_agrees_with_the_encoder_on_a_padded_raster() {
+    let settings = ExportSettings { format: Format::DnxHr, dnx_profile: "sq".into(), include_audio: false, ..Default::default() };
+    let (width, height) = (100, 100);
+    let encoder = craft_video::dnx::Encoder::new(craft_video::dnx::Profile::Sq, width, height).unwrap();
+
+    let estimate = settings.estimate_bytes(width, height, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    assert_eq!(estimate, 24 * u64::from(encoder.frame_size()));
+}
+
 /// Decode the first second of an MP3 export with the media pool's decoder: (sample rate, planar
 /// samples).
 fn decode_mp3(path: &str) -> (u32, Vec<Vec<f32>>) {
