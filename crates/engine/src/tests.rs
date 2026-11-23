@@ -1069,9 +1069,69 @@ fn ripple_trim_on_a_clip_edge_never_deletes_the_clip() {
     s.execute("playhead.set", json!({"time": b.0})).unwrap();
     assert!(s.execute("trim.rippleNext", json!({})).is_err(), "W at a clip's start would remove the clip");
     assert_eq!(v1(&s), before);
-    // the other way each closes the gap beside the clip
-    s.execute("trim.ripplePrevious", json!({})).unwrap();
-    assert_eq!(v1(&s)[1].1, a, "Q at the next clip's start closes the whole gap");
+    assert_eq!(s.playhead(), b);
+    // the other way each closes the gap beside the clip, as one undo step
+    let d0 = s.active_sequence().unwrap().duration();
+    for (at, command) in [(b, "trim.ripplePrevious"), (a, "trim.rippleNext")] {
+        s.execute("playhead.set", json!({"time": at.0})).unwrap();
+        s.execute(command, json!({})).unwrap();
+        assert_eq!(v1(&s)[0], before[0], "{command}: the first clip is untouched");
+        assert_eq!(v1(&s)[1].1, a, "{command} closes the whole gap");
+        assert_eq!(v1(&s)[1].2, before[1].2 - (b - a), "{command}: the next clip keeps its length");
+        assert_eq!(v1(&s).len(), before.len(), "{command}");
+        assert_eq!(s.active_sequence().unwrap().duration(), d0 - (b - a), "{command}");
+        assert_eq!(s.playhead(), a, "{command}: the playhead is on the join");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(v1(&s), before, "{command}: one undo step restores it");
+        assert_eq!(s.active_sequence().unwrap().duration(), d0, "{command}");
+    }
+}
+
+/// A caption on a sync-locked caption track would move with the gap, so one inside it refuses both
+/// keys; a locked or unsynced caption track doesn't.
+#[test]
+fn ripple_trim_in_a_gap_refuses_to_cut_a_sync_locked_caption() {
+    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
+    let (mut s, a, b) = demo_with_gap();
+    let ph = a + s.sequence_rate().tick_of(5);
+    let seq = s.state.active_sequence.unwrap();
+    let mut track = CaptionTrack::new(TrackId(9_001), "Captions".into(), CaptionFormat::default());
+    let caption: Caption = serde_json::from_value(json!({"id": 9_002, "start": a.0, "duration": (b - a).0, "text": "Over the gap"})).unwrap();
+    track.captions.push(caption);
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().caption_tracks.push(track);
+    s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    for command in ["trim.ripplePrevious", "trim.rippleNext"] {
+        assert!(s.execute(command, json!({})).is_err(), "{command} would cut the caption");
+        assert_eq!(s.active_sequence().unwrap(), &before, "{command} changed nothing");
+        assert_eq!(s.playhead(), ph, "{command}");
+    }
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().caption_tracks[0].sync_lock = false;
+    s.execute("trim.rippleNext", json!({})).unwrap();
+    assert_eq!(v1(&s)[1].1, ph, "an unsynced caption track stays put and doesn't stand in the way");
+}
+
+/// Where there is nothing to close: W after the last clip, Q at the sequence start, and either in an
+/// empty sequence.
+#[test]
+fn ripple_trim_with_no_gap_to_close_changes_nothing() {
+    let (mut s, _, _) = demo_with_gap();
+    let rate = s.sequence_rate();
+    let seq = s.state.active_sequence.unwrap();
+    let refuses = |s: &mut Session, ph: Tick, command: &str| {
+        s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+        let before = s.active_sequence().unwrap().clone();
+        assert!(s.execute(command, json!({})).is_err(), "{command} at {ph:?}");
+        assert_eq!(s.active_sequence().unwrap(), &before, "{command} at {ph:?} changed nothing");
+        assert_eq!(s.playhead(), ph, "{command} at {ph:?}");
+    };
+    let end = s.active_sequence().unwrap().duration();
+    refuses(&mut s, end + rate.tick_of(10), "trim.rippleNext");
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items.iter_mut().for_each(|i| i.start += rate.tick_of(20));
+    refuses(&mut s, Tick::ZERO, "trim.ripplePrevious");
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().video_tracks[0].items.clear();
+    refuses(&mut s, rate.tick_of(10), "trim.ripplePrevious");
+    refuses(&mut s, rate.tick_of(10), "trim.rippleNext");
 }
 
 /// Empty on the targeted tracks, but a sync-locked untargeted track has music there: closing the
@@ -1089,17 +1149,16 @@ fn ripple_trim_in_a_gap_refuses_to_cut_sync_locked_material() {
     s.execute("timeline.toggleAllAudioTargets", json!({})).unwrap();
     let ph = a + s.sequence_rate().tick_of(5);
     s.execute("playhead.set", json!({"time": ph.0})).unwrap();
-    let audio = |s: &Session| s.active_sequence().unwrap().audio_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>();
-    let before = audio(&s);
+    let before = s.active_sequence().unwrap().clone();
     assert!(
         s.active_sequence().unwrap().audio_tracks.iter().any(|t| t.sync_lock && t.items.iter().any(|i| i.start < b && a < i.end())),
         "the demo has sound across the gap"
     );
-    assert!(s.execute("trim.ripplePrevious", json!({})).is_err());
-    assert!(s.execute("trim.rippleNext", json!({})).is_err());
-    assert_eq!(audio(&s), before);
-    assert_eq!(v1(&s)[1].1, b);
-    assert_eq!(s.playhead(), ph);
+    for command in ["trim.ripplePrevious", "trim.rippleNext"] {
+        assert!(s.execute(command, json!({})).is_err(), "{command}");
+        assert_eq!(s.active_sequence().unwrap(), &before, "{command}: no item on any track moved or was trimmed");
+        assert_eq!(s.playhead(), ph, "{command}");
+    }
 }
 
 /// Alt+Q / Alt+W lift, which leaves a gap: on empty space there is nothing for them to do.

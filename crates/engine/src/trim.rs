@@ -301,8 +301,13 @@ pub fn extend_to_playhead(s: &mut Session) -> Result<Value> {
 /// extract the range (later material moves left, sync locks respected); the others lift it.
 ///
 /// On empty space the ripple variants close the part of the gap on that side of the playhead: Q
-/// from the previous edit (or the sequence start), W up to the next edit. Nothing is cut, so they
-/// refuse if a clip or caption on a track that would move lies inside that range.
+/// from the previous edit, or from the sequence start when the first clip is still to come; W up to
+/// the next edit, and after the last one there is nothing to pull in, so W reports no edit point (as
+/// both do in an empty sequence). Nothing is cut, so they refuse with "no empty space on that side of
+/// the playhead to close", changing nothing, if a clip or caption on a track that would move lies
+/// inside that range. That includes a playhead on a clip's edge, where the nearest edit on the clip's
+/// side is its far end: Q at a clip's end or W at its start would delete it. The lift variants
+/// (⌥Q/⌥W) have nothing to lift on empty space and still need a clip under the playhead.
 pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
     let next = p.get("side").and_then(Value::as_str) == Some("next");
     let ripple = p.get("ripple").and_then(Value::as_bool).unwrap_or(true);
@@ -331,11 +336,17 @@ pub fn to_playhead(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     // nearest edit point on those tracks
-    let edits =
-        seq.video_tracks.iter().chain(seq.audio_tracks.iter()).filter(|t| tracks.contains(&t.id)).flat_map(|t| t.items.iter().flat_map(|i| [i.start, i.end()]));
-    let edge = if next { edits.filter(|e| *e > ph).min() } else { edits.filter(|e| *e < ph).max() };
+    let edits: Vec<Tick> = seq
+        .video_tracks
+        .iter()
+        .chain(seq.audio_tracks.iter())
+        .filter(|t| tracks.contains(&t.id))
+        .flat_map(|t| t.items.iter().flat_map(|i| [i.start, i.end()]))
+        .collect();
+    let edge = if next { edits.iter().filter(|e| **e > ph).min() } else { edits.iter().filter(|e| **e < ph).max() }.copied();
     // a gap before the first clip reaches back to the start of the sequence
-    let edge = if in_gap && !next && edge.is_none() && ph > Tick::ZERO { Some(Tick::ZERO) } else { edge };
+    let before_first = in_gap && !next && edge.is_none() && ph > Tick::ZERO && !edits.is_empty();
+    let edge = if before_first { Some(Tick::ZERO) } else { edge };
     let edge = edge.ok_or_else(|| EngineError::Other("no edit point".into()))?;
     let range = if next { TimeRange::from_bounds(ph, edge) } else { TimeRange::from_bounds(edge, ph) };
     if in_gap {
