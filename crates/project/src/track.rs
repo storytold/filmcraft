@@ -216,6 +216,11 @@ impl TrackItem {
             self.source_in + scaled
         }
     }
+    /// Timeline time of media time `m`, the inverse of [`TrackItem::moving_source_time_at`].
+    pub fn timeline_time(&self, m: Tick) -> Tick {
+        let rel = if self.reverse { self.source_out().0.saturating_sub(1).saturating_sub(m.0) } else { m.0.saturating_sub(self.source_in.0) };
+        Tick(self.start.0.saturating_add((rel as f64 / self.speed.abs().max(1e-6)).round() as i64))
+    }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)

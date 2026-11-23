@@ -105,6 +105,71 @@ impl Driver {
         self.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + by.0, "y": from.1 + by.1}, "steps": 6}));
         self.frames(3);
     }
+    /// Press at `from`, move by `by` over `steps` frames (calling `between` before each move and
+    /// once before the release, with the step number), then release: a drag a test can look into.
+    fn drag_frames(&mut self, from: (f64, f64), by: (f64, f64), steps: usize, mut between: impl FnMut(&mut Self, usize)) {
+        let mut p = egui::pos2(from.0 as f32, from.1 as f32);
+        let delta = egui::vec2(by.0 as f32, by.1 as f32) / steps as f32;
+        self.harness.input_mut().events.push(egui::Event::PointerMoved(p));
+        self.frames(1);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        self.frames(1);
+        for i in 0..steps {
+            between(self, i);
+            p += delta;
+            self.harness.input_mut().events.push(egui::Event::PointerMoved(p));
+            self.frames(1);
+        }
+        between(self, steps);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        self.frames(2);
+    }
+    /// The media times of the Timeline's selected keyframes on `clip`.
+    fn selected_times(&self, clip: u64) -> Vec<i64> {
+        self.harness.state().ui.keyframe_selection.iter().filter(|k| k.clip == clip).map(|k| k.time.0).collect()
+    }
+    /// Two Volume keyframes added with the Pen tool on the line of `clip`, the second at -12 dB:
+    /// the line's automation id and the keys (media time, dB).
+    fn two_volume_keys(&mut self, clip: u64) -> (String, Vec<(i64, f64)>) {
+        let id = format!("timeline.clip.{clip}.volume");
+        let r = self.rect(&format!("timeline.clip.{clip}"));
+        let (_, y) = centre(self.rect(&id));
+        self.ok("ui.set", json!({"tool": "Pen"}));
+        for f in [0.3, 0.6] {
+            self.ok("ui.click", json!({"x": r[0] + r[2] * f, "y": y}));
+            self.frames(3);
+        }
+        self.ok("ui.set", json!({"tool": "Selection"}));
+        let m = self.level(clip).1[1].0;
+        self.exec("effects.setKeyframe", json!({"clip": clip, "effect": "volume", "param": "level", "mediaTime": m, "value": -12.0}));
+        let (_, keys) = self.level(clip);
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        (id, keys)
+    }
+    /// A2 (added when the demo has none) showing its Volume lane with one key in the middle of
+    /// `clip`'s span: the key's sequence time.
+    fn a2_lane_key(&mut self, clip: u64) -> i64 {
+        if self.exec("sequence.inspect", json!({}))["audio"].as_array().map_or(0, Vec::len) < 2 {
+            self.exec("sequence.addTracks", json!({"video": 0, "audio": 1}));
+        }
+        let it = self.item(clip);
+        let t = it.start.0 + it.duration.0 / 2;
+        self.exec("mixer.setKeyframe", json!({"strip": "A2", "lane": "volume", "time": t, "value": -6.0}));
+        self.click("timeline.track.A2.keyframes");
+        self.click("timeline.track.A2.keyframes.volume");
+        self.rect("timeline.track.A2.lane.kf.0");
+        t
+    }
     fn shot(&mut self, name: &str) {
         let Some(dir) = self.shots.clone() else { return };
         self.frames(10);
@@ -209,6 +274,7 @@ fn clicks_on_the_volume_line_still_reach_the_clip() {
     assert!(d.level(pair.audio).1.is_empty());
 }
 
+/// The Pen tool adds Volume keyframes on a clip's line in the Timeline, and they can be deleted.
 #[test]
 fn volume_keyframes_on_the_timeline() {
     let (mut d, pair) = Driver::demo(&[]);
@@ -248,4 +314,231 @@ fn volume_keyframes_on_the_timeline() {
     d.frames(3);
     d.click(&format!("{id}.kf.0.delete"));
     assert_eq!(d.level(pair.audio).1, keys[1..]);
+}
+
+/// Copy and paste of Volume keyframes on the Timeline (#3562): a click selects a keyframe (Shift
+/// adds one), Cmd+C copies them, and Cmd+V puts them at the playhead on the selected clip with
+/// their levels and spacing.
+#[test]
+fn volume_keyframes_copy_and_paste_on_the_timeline() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.0"));
+    d.ok("ui.click", json!({"id": format!("{id}.kf.1"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+
+    // the next sound clip on A1 takes them, the first at the playhead
+    let seq = d.exec("sequence.inspect", json!({}));
+    let other = seq["audio"][0]["items"][1]["clip"].as_u64().expect("a second clip on A1");
+    d.click(&format!("timeline.clip.{other}"));
+    d.exec("playhead.set", json!({"time": d.item(other).start.0 + 1_000_000}));
+    let at = d.harness.state().session.playhead().0;
+    d.ok("ui.key", json!({"key": "Cmd+V"}));
+    let (_, pasted) = d.level(other);
+    assert_eq!(pasted.len(), 2, "pasted on the selected clip: {pasted:?}");
+    assert_eq!(d.level(pair.audio).1, keys, "the copied keys stay where they were");
+    let (src, dst) = (d.item(pair.audio), d.item(other));
+    let on = |it: &TrackItem, k: &(i64, f64)| it.timeline_time(filmcraft_time::Tick(k.0)).0;
+    assert!((on(&dst, &pasted[0]) - at).abs() <= 1, "the first at the playhead: {pasted:?}");
+    let (gap, copied_gap) = (on(&dst, &pasted[1]) - on(&dst, &pasted[0]), on(&src, &keys[1]) - on(&src, &keys[0]));
+    assert!((gap - copied_gap).abs() <= 2, "spacing kept: {gap} vs {copied_gap}");
+    assert_eq!((pasted[0].1, pasted[1].1), (keys[0].1, keys[1].1), "levels kept");
+}
+
+/// Shift-click on a selected Volume keyframe takes it out of the selection and keeps the others.
+#[test]
+fn shift_click_takes_a_volume_keyframe_out_of_the_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.selected_times(pair.audio), vec![keys[0].0]);
+    d.ok("ui.click", json!({"id": format!("{id}.kf.1"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    assert_eq!(d.selected_times(pair.audio), vec![keys[0].0, keys[1].0], "Shift adds");
+    d.ok("ui.click", json!({"id": format!("{id}.kf.0"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    assert_eq!(d.selected_times(pair.audio), vec![keys[1].0], "Shift on a selected key takes it out");
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.selected_times(pair.audio), vec![keys[0].0], "a plain click selects it alone");
+}
+
+/// Dragging one of two selected Volume keyframes keeps both selected, and the selection follows
+/// the dragged key on every frame of the drag, so Copy still finds it.
+#[test]
+fn dragging_a_selected_volume_keyframe_keeps_the_selection_on_it() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.0"));
+    d.ok("ui.click", json!({"id": format!("{id}.kf.1"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    let (k0, k1) = (centre(d.rect(&format!("{id}.kf.0"))), centre(d.rect(&format!("{id}.kf.1"))));
+    // a third of the way back towards the first key
+    d.drag_frames(k1, ((k0.0 - k1.0) / 3.0, 0.0), 6, |d, i| {
+        let now = d.level(pair.audio).1;
+        assert_eq!(d.selected_times(pair.audio), vec![now[0].0, now[1].0], "step {i}: both selected, on the keys");
+    });
+    let (_, moved) = d.level(pair.audio);
+    assert_eq!(moved[0], keys[0]);
+    assert!(moved[1].0 < keys[1].0, "the key moved: {keys:?} → {moved:?}");
+    assert_eq!(d.selected_times(pair.audio), vec![keys[0].0, moved[1].0]);
+}
+
+/// Escape during a Volume keyframe drag puts the key back, and the selection goes back with it.
+#[test]
+fn escape_puts_a_dragged_volume_keyframe_and_its_selection_back() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.1"));
+    let (k0, k1) = (centre(d.rect(&format!("{id}.kf.0"))), centre(d.rect(&format!("{id}.kf.1"))));
+    d.drag_frames(k1, ((k0.0 - k1.0) / 3.0, 0.0), 6, |d, i| {
+        if i == 4 {
+            assert_ne!(d.level(pair.audio).1[1].0, keys[1].0, "moving");
+            d.harness.input_mut().events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            });
+        }
+    });
+    assert_eq!(d.level(pair.audio).1, keys, "back where it was");
+    assert_eq!(d.selected_times(pair.audio), vec![keys[1].0], "and still selected");
+}
+
+/// Shift-clicking a track lane keyframe keeps the Volume keyframes selected on clips (and the
+/// other way round), and Cmd+C copies both kinds.
+#[test]
+fn shift_selects_clip_and_track_keyframes_together() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    let t = d.a2_lane_key(pair.audio);
+    let track = |d: &Driver| d.harness.state().ui.track_keyframe_selection.iter().map(|k| (k.lane.clone(), k.time.0)).collect::<Vec<_>>();
+    d.click(&format!("{id}.kf.0"));
+    d.ok("ui.click", json!({"id": "timeline.track.A2.lane.kf.0", "modifiers": {"shift": true}}));
+    d.frames(3);
+    assert_eq!((d.selected_times(pair.audio), track(&d)), (vec![keys[0].0], vec![("volume".to_string(), t)]), "Shift on a track key keeps the clip key");
+    d.ok("ui.click", json!({"id": format!("{id}.kf.1"), "modifiers": {"shift": true}}));
+    d.frames(3);
+    assert_eq!(
+        (d.selected_times(pair.audio), track(&d)),
+        (vec![keys[0].0, keys[1].0], vec![("volume".to_string(), t)]),
+        "Shift on a clip key keeps the track key"
+    );
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let copied: usize = d.harness.state().session.state.keyframe_clipboard.iter().map(|c| c.keys.len()).sum();
+    assert_eq!(copied, 3, "Copy takes the clip and the track keys");
+    // a plain click on the track key selects it alone
+    d.click("timeline.track.A2.lane.kf.0");
+    assert_eq!((d.selected_times(pair.audio), track(&d)), (vec![], vec![("volume".to_string(), t)]));
+}
+
+/// A selected track keyframe that an Undo removed is no longer selected: one added again at the
+/// same time is not drawn selected.
+#[test]
+fn undo_drops_a_removed_track_keyframe_from_the_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let t = d.a2_lane_key(pair.audio);
+    d.click("timeline.track.A2.lane.kf.0");
+    assert_eq!(d.harness.state().ui.track_keyframe_selection.len(), 1);
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert!(d.harness.state().ui.track_keyframe_selection.is_empty(), "the removed key is not selected");
+    d.exec("mixer.setKeyframe", json!({"strip": "A2", "lane": "volume", "time": t, "value": -6.0}));
+    d.frames(2);
+    assert!(d.harness.state().ui.track_keyframe_selection.is_empty(), "nor one added back at its time");
+}
+
+/// A selected Volume keyframe that an Undo removed is no longer selected.
+#[test]
+fn undo_drops_a_removed_volume_keyframe_from_the_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, keys) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.1"));
+    assert_eq!(d.selected_times(pair.audio), vec![keys[1].0]);
+    // the -12 dB edit, then the Pen click that added the key
+    d.exec("edit.undo", json!({}));
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(d.level(pair.audio).1.len(), 1);
+    assert!(d.selected_times(pair.audio).is_empty(), "the removed key is not selected");
+}
+
+/// A click on a caption drops the keyframe selection, so Cmd+C copies the caption (#3562).
+#[test]
+fn a_caption_click_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.exec("captions.add", json!({"text": "hi", "durationSeconds": 1.0}));
+    let caption = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].captions[0].id.0;
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.harness.state().ui.keyframe_selection.len(), 1);
+    d.click(&format!("timeline.caption.{caption}"));
+    assert!(d.harness.state().ui.keyframe_selection.is_empty(), "the caption click drops the keyframe");
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert_eq!((st.caption_clipboard.len(), st.keyframe_clipboard.len()), (1, 0), "Cmd+C copied the caption");
+}
+
+/// Dragging a caption that was already selected drops the keyframe selection too, so Cmd+C
+/// copies the caption (#3562 review).
+#[test]
+fn dragging_a_selected_caption_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.exec("captions.add", json!({"text": "hi", "durationSeconds": 1.0}));
+    let caption = d.harness.state().session.active_sequence().unwrap().caption_tracks[0].captions[0].id.0;
+    d.click(&format!("{id}.kf.0"));
+    d.exec("captions.select", json!({"captions": [caption]}));
+    d.frames(2);
+    let st = d.harness.state();
+    assert_eq!((st.ui.keyframe_selection.len(), st.session.state.caption_selection.len()), (1, 1), "a keyframe and the caption are selected");
+    let r = d.rect(&format!("timeline.caption.{caption}"));
+    d.drag_frames(centre(r), (r[2] / 4.0, 0.0), 6, |_, _| {});
+    assert!(d.harness.state().ui.keyframe_selection.is_empty(), "the caption drag drops the keyframe");
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert_eq!((st.caption_clipboard.len(), st.keyframe_clipboard.len()), (1, 0), "Cmd+C copied the caption");
+}
+
+/// A click on a clip drops the keyframe selection too, so Cmd+C copies the clip.
+#[test]
+fn a_clip_click_drops_the_keyframe_selection() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let (id, _) = d.two_volume_keys(pair.audio);
+    d.click(&format!("{id}.kf.0"));
+    assert_eq!(d.harness.state().ui.keyframe_selection.len(), 1);
+    d.click(&format!("timeline.clip.{}", pair.video));
+    assert!(d.harness.state().ui.keyframe_selection.is_empty());
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert!(st.keyframe_clipboard.is_empty() && st.clipboard.iter().any(|(_, _, it)| it.id.0 == pair.video), "Cmd+C copied the clip");
+}
+
+/// Drag a selected track keyframe, Undo the move, then Cmd+C: the selection no longer points at
+/// a key, so Copy copies the selected clip instead of failing on the keyframe.
+#[test]
+fn copy_after_undoing_a_track_keyframe_drag_copies_the_clip() {
+    let (mut d, pair) = Driver::demo(&[]);
+    let t = d.a2_lane_key(pair.audio);
+    d.click("timeline.track.A2.lane.kf.0");
+    let clip = d.rect(&format!("timeline.clip.{}", pair.audio));
+    let key = centre(d.rect("timeline.track.A2.lane.kf.0"));
+    d.drag_frames(key, (clip[2] / 10.0, 0.0), 6, |_, _| {});
+    let lane =
+        |d: &Driver| d.harness.state().session.active_sequence().unwrap().audio_tracks[1].lane_keyframes("volume").iter().map(|k| k.time.0).collect::<Vec<_>>();
+    let moved = lane(&d);
+    assert!(moved.len() == 1 && moved[0] > t, "the key moved: {moved:?}");
+    let sel = |d: &Driver| d.harness.state().ui.track_keyframe_selection.iter().map(|k| k.time.0).collect::<Vec<_>>();
+    assert_eq!(sel(&d), moved, "the selection followed it");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(lane(&d), vec![t]);
+    assert!(sel(&d).is_empty(), "the moved-away ref is dropped");
+    d.exec("timeline.select", json!({"clips": [pair.video]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.ok("ui.key", json!({"key": "Cmd+C"}));
+    let st = &d.harness.state().session.state;
+    assert!(st.keyframe_clipboard.is_empty() && st.clipboard.iter().any(|(_, _, it)| it.id.0 == pair.video), "Cmd+C copied the clip");
 }

@@ -4,7 +4,8 @@
 //! parameters) instead of clip keyframes: the header's keyframe button picks it (Premiere's
 //! "Show Keyframes ▸ Track Keyframes"). The lane is drawn across the whole track as a line with
 //! keyframe diamonds; the Pen tool (or ⌘-click) adds keyframes, dragging a diamond moves it in time
-//! and value, right-click deletes. Everything goes through `mixer.setKeyframe` /
+//! and value, right-click deletes, a click selects (Shift adds or removes) for Edit ▸ Copy (#3562).
+//! Everything goes through `mixer.setKeyframe` /
 //! `mixer.moveKeyframe` / `mixer.deleteKeyframe`.
 //!
 //! Automation ids: `timeline.track.A1.keyframes` (the header button) with its menu entries
@@ -20,7 +21,7 @@ use serde_json::json;
 use super::timeline::{Layout, Row};
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
-use crate::state::Tool;
+use crate::state::{Tool, TrackKeyframeRef};
 use crate::theme::Tokens;
 
 const LANE_COL: Color32 = Color32::from_rgb(0xe8, 0xc5, 0x47);
@@ -152,6 +153,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     let drag: Option<KfDrag> = ui.data(|d| d.get_temp(drag_id()));
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let mut acts: Vec<(&str, serde_json::Value)> = Vec::new();
+    // the dropped key's move (its index in `acts`), and its selection ref and new time
+    let mut moved: Option<(usize, TrackKeyframeRef, Tick)> = None;
     for r in &rows {
         let Some(key) = app.ui.timeline.track_lanes.get(&r.track.0).cloned() else { continue };
         let Some(tr) = seq.track(r.track) else { continue };
@@ -208,8 +211,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             let hr = Rect::from_center_size(c, vec2(11.0, 11.0));
             let resp = ui.interact(hr, egui::Id::unique(("lane-kf", r.track.0, i)), Sense::click_and_drag());
-            let hot = resp.hovered() || dragging.is_some();
+            let sel = TrackKeyframeRef { strip: r.track.0, lane: key.clone(), time: k.time };
+            let selected = app.ui.track_keyframe_selection.contains(&sel);
+            if resp.clicked() || (resp.drag_started_by(egui::PointerButton::Primary) && !selected) {
+                let shift = ui.input(|i| i.modifiers.shift);
+                super::timeline_volume::pick(&mut app.ui.track_keyframe_selection, sel.clone(), shift);
+                // Shift adds to the keys selected on clips too
+                if !shift {
+                    app.ui.keyframe_selection.clear();
+                }
+            }
+            let selected = app.ui.track_keyframe_selection.contains(&sel);
+            let hot = resp.hovered() || dragging.is_some() || selected;
             icons::paint(&p, Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, if hot { Color32::WHITE } else { LANE_COL });
+            if selected {
+                super::timeline_volume::selected_outline(&p, c);
+            }
             app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}"), hr, &format!("{name} keyframe {v:.1}"));
             if resp.drag_started_by(egui::PointerButton::Primary)
                 && let Some(pp) = pointer
@@ -221,8 +238,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             {
                 // egui ends a drag on Escape: that stop abandons it (#580)
                 if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    let nt = layout.tick_at(c.x).max(Tick::ZERO);
+                    // between the neighbours, as `mixer.moveKeyframe` keeps it, so the selection matches
+                    let lo = i.checked_sub(1).and_then(|j| kfs.get(j)).map_or(Tick::ZERO, |n| Tick(n.time.0.saturating_add(1)));
+                    let hi = kfs.get(i + 1).map_or(Tick(i64::MAX), |n| Tick(n.time.0.saturating_sub(1)));
+                    let nt = layout.tick_at(c.x).max(Tick::ZERO).clamp(lo, hi.max(lo));
                     let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
+                    // the key stays at `orig` until this move runs, so that is the ref to follow
+                    moved = Some((acts.len(), TrackKeyframeRef { strip: r.track.0, lane: key.clone(), time: d.orig }, nt));
                     acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));
                 }
                 ui.data_mut(|dd| dd.remove::<KfDrag>(drag_id()));
@@ -246,9 +268,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
     if drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
         ui.data_mut(|d| d.remove::<KfDrag>(drag_id()));
     }
-    for (id, p) in acts {
-        if let Err(e) = app.session.execute(id, p) {
-            app.ui.status = e.to_string();
+    for (i, (id, p)) in acts.into_iter().enumerate() {
+        match app.session.execute(id, p) {
+            // the selection follows the moved key once the move went through, so Copy still finds it
+            Ok(_) => {
+                if let Some((_, from, to)) = moved.as_ref().filter(|(j, _, _)| *j == i)
+                    && let Some(s) = app.ui.track_keyframe_selection.iter_mut().find(|s| *s == from)
+                {
+                    s.time = *to;
+                }
+            }
+            Err(e) => app.ui.status = e.to_string(),
         }
     }
 }
