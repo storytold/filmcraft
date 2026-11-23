@@ -117,28 +117,38 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     render_caption_at(c, style, w, h, None)
 }
 
-/// The word being spoken `progress` (0 … 1) of the way through a caption of `lines`: words are
-/// timed in proportion to their length (plus one for the space), as nothing finer is stored.
-/// Returns (line, byte range of the word in that line).
-/// Kana and CJK ideographs: scripts written without spaces between words.
+/// Kana and CJK ideographs (the supplementary planes' too): scripts written without spaces
+/// between words.
 fn unspaced(c: char) -> bool {
-    matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}' | '\u{ff66}'..='\u{ff9f}')
+    matches!(
+        c,
+        '\u{3040}'..='\u{30ff}'
+            | '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{ff66}'..='\u{ff9f}'
+            | '\u{20000}'..='\u{2fa1f}'
+            | '\u{30000}'..='\u{323af}'
+    )
 }
 
-/// The words of `line` as (byte range, character count). Any whitespace separates words (a
-/// tab is laid out as a space). Japanese and Chinese have no spaces between words and nothing
+/// The words of `line` as (byte range, character count), a character being what is drawn as
+/// one (a grapheme cluster: "か" with a combining dakuten is one). Any whitespace separates words
+/// (a tab is laid out as a space). Japanese and Chinese have no spaces between words and nothing
 /// finer is stored, so each kana or ideograph counts as one: the highlight then moves through
 /// such text a character at a time.
 fn word_ranges(line: &str) -> Vec<(std::ops::Range<usize>, usize)> {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut out = Vec::new();
-    let mut start: Option<(usize, usize)> = None; // (byte start, chars so far)
-    for (b, c) in line.char_indices() {
+    let mut start: Option<(usize, usize)> = None; // (byte start, characters so far)
+    for (b, g) in line.grapheme_indices(true) {
+        let c = g.chars().next().unwrap_or(' ');
         if c.is_whitespace() || unspaced(c) {
             if let Some((s, n)) = start.take() {
                 out.push((s..b, n));
             }
             if unspaced(c) {
-                out.push((b..b + c.len_utf8(), 1));
+                out.push((b..b + g.len(), 1));
             }
         } else {
             start = Some(start.map_or((b, 1), |(s, n)| (s, n + 1)));
@@ -150,6 +160,9 @@ fn word_ranges(line: &str) -> Vec<(std::ops::Range<usize>, usize)> {
     out
 }
 
+/// The word being spoken `progress` (0 … 1) of the way through a caption of `lines`: words are
+/// timed in proportion to their length (plus one for the space), as nothing finer is stored.
+/// Returns (line, byte range of the word in that line).
 fn spoken_word(lines: &[String], progress: f32) -> Option<(usize, std::ops::Range<usize>)> {
     let mut words: Vec<(usize, std::ops::Range<usize>, f32)> = Vec::new();
     for (i, l) in lines.iter().enumerate() {
@@ -715,6 +728,27 @@ mod tests {
         assert_eq!(word_ranges("a  b\u{3000}c"), vec![(0..1, 1), (3..4, 1), (7..8, 1)]);
         assert_eq!(word_ranges(""), vec![]);
         assert_eq!(word_ranges(" \t "), vec![]);
+    }
+
+    /// Ideographs outside the Basic Multilingual Plane are timed one at a time, like the others.
+    #[test]
+    fn supplementary_ideographs_are_timed_one_at_a_time() {
+        let line = vec!["\u{20bb7}\u{20bb7}\u{91ce}".to_string()];
+        assert_eq!(spoken_word(&line, 0.4), Some((0, 4..8)));
+        assert_eq!(word_ranges("\u{20bb7}\u{20bb7}"), vec![(0..4, 1), (4..8, 1)]);
+    }
+
+    /// A combining mark stays with its base: "が" and "か" + U+3099 are one character each, so the
+    /// same progress highlights the same "は" in both spellings.
+    #[test]
+    fn a_combining_mark_is_timed_with_its_base() {
+        for text in ["\u{304c}\u{306f}", "\u{304b}\u{3099}\u{306f}"] {
+            let line = vec![text.to_string()];
+            let (_, r) = spoken_word(&line, 0.6).unwrap_or_default();
+            assert_eq!(text.get(r), Some("\u{306f}"), "{text:?}");
+        }
+        // in spaced text too: an accent written as a combining mark counts once
+        assert_eq!(word_ranges("cafe\u{301} au"), vec![(0..6, 4), (7..9, 2)]);
     }
 
     /// A highlight in the text's own colour draws exactly what plain captions draw: the word's
