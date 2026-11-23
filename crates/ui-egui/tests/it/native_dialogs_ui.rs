@@ -347,6 +347,30 @@ fn quit_save_waits_for_a_save_dialog_answered_later() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[test]
+fn quit_warns_if_an_export_starts_while_save_as_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edit.fcproj");
+    let mut d = Driver::new(true);
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved"}}));
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    d.frames(3);
+    d.click("quit.save");
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveProject { .. }));
+
+    let job = filmcraft_engine::Job { id: 1, label: "Quick Export demo.wav".into(), progress: Default::default(), result: Default::default() };
+    d.app().session.jobs.push(job);
+    answer.send(vec![path.to_string_lossy().into_owned()]).unwrap();
+    d.frames(3);
+    assert!(path.exists() && !d.app().session.is_dirty(), "the requested save succeeded");
+    assert!(!d.app().quit_confirmed, "saving did not consent to interrupting the new export");
+    let warnings = d.ok("ui.elements", json!({"prefix": "quit.exportWarning"}));
+    assert_eq!(warnings[0]["id"], "quit.exportWarning");
+    d.click("quit.confirm");
+    assert!(d.app().quit_confirmed);
+}
+
 /// While Close Project ▸ Save's dialog is open the window is asked to close: once a file is picked
 /// the project is saved and the app quits (the newer Quit prompt is the one finished). And an
 /// answer that arrives after another project was opened saves nothing.

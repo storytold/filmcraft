@@ -790,6 +790,7 @@
 	Always Deinterlace	Zawsze usuwaj przeplot
 	Flicker Removal	Usuwanie migotania
 	Save changes to “{project_name}” before closing?	Zapisać zmiany w „{project_name}” przed zamknięciem?
+	Quitting now will interrupt the export.	Zamknięcie programu teraz przerwie eksport.
 	Don't Save	Nie zapisuj
 	All media is online.	Wszystkie multimedia są online.
 	{name} (copy)	{name} (kopia)
