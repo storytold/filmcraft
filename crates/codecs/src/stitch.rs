@@ -356,6 +356,8 @@ impl Stitch {
         if bw < 8 {
             return None;
         }
+        let sc = decision_scale(bw);
+        let (dw, dh) = (bw * sc, h * sc);
         let margin = FLOW_MAX_PX as usize + 2;
         let (rx0, rx1) = (b.x0.saturating_sub(margin), (b.x1 + margin).min(w));
         let f = warp_band(&self.maps[0][0], &l0.p[0], b.x0, b.x1);
@@ -376,15 +378,19 @@ impl Stitch {
         // seam routes around objects consistently. The blend still applies the
         // gains to the raw renders, so the output is unchanged except where the
         // seam is placed.
-        let fg = normalise(&f, g0);
-        let r0g = normalise(&r0, g1);
+        let fg_u = up_u8(&normalise(&f, g0), bw, h, sc);
+        let r0g_u = up_u8(&normalise(&r0, g1), bw, h, sc);
         // 1. the along-seam shift, seeded by the previous frame's (the hint flow),
-        // temporally smoothed, then applied to the rear render
+        // temporally smoothed, then applied to the rear render — at the decision
+        // lattice, so a proxy band's flow votes carry the same angle per pixel as
+        // the full stitch's did when the limits were tuned.
         let prev = state.clone();
-        let mut r = vec![0u8; bw * h];
+        let rw_u = up_u8(&rwide, rx1 - rx0, h, sc);
+        let mut r_u = vec![0u8; dw * dh];
         // The shift tapers to zero at the band edges (Hanning) so the warped rear
         // meets the unwarped render the static feather uses outside the band.
-        let (dx, flow2) = warp_rear(&fg, &r0g, &RearSrc { data: &rwide, stride: rx1 - rx0, off }, bw, h, prev.as_ref(), &mut r);
+        let (dx_u, flow2_u) = warp_rear(&fg_u, &r0g_u, &RearSrc { data: &rw_u, stride: (rx1 - rx0) * sc, off: off * sc }, dw, dh, prev.as_ref(), &mut r_u);
+        let r = box_down_u8(&r_u, dw, dh, bw, h);
         // The spatially-varying colour gain (Studio's calcColorGainMapOnPano): the
         // lenses' brightness ratio is a vignetting gradient across the band, not a
         // constant, so the single global gain leaves a step the hard seam shows as a
@@ -393,38 +399,39 @@ impl Stitch {
         // tapered to unity at the band edges (so it cannot fight the static feather
         // there) and applied on top of the global gain to both the seam decision and
         // the blend.
-        let rg0 = normalise(&r, g1);
-        let (gm0, gm1) = local_gain_map(&fg, &rg0, bw, h);
-        let fg = apply_map(&fg, &gm0);
-        let rg = apply_map(&rg0, &gm1);
+        let rg_u = normalise(&r_u, g1);
+        let (gm0_u, gm1_u) = local_gain_map(&fg_u, &rg_u, dw, dh);
+        let (fg, rg) = (apply_map(&fg_u, &gm0_u), apply_map(&rg_u, &gm1_u));
         // 2. the seam: a 2-D graph cut over the aligned disagreement (routes around
         // a compact parallax blob in both axes), falling back to the 1-D DP when the
         // band is too small or too large for a bounded graph. The cut places the
         // seam fresh from the aligned renders each frame (as the SDK's seam finder
         // does — no temporal seam state); its label grid drives the blend below.
-        let grid = seam_grid(&fg, &rg, &self.maps[0], b, bw, h);
-        let (mut path, labels) = match seam_cut(&grid, b, bw, h) {
+        let mdec = band_coverage_maps(&self.maps[0], b, dw, dh, sc);
+        let bdec = Band { x0: 0, x1: dw, front_rises: b.front_rises };
+        let grid = seam_grid_with_floor(&fg, &rg, &mdec, &bdec, dw, dh, sc > 1);
+        let (mut path, labels) = match seam_cut(&grid, &bdec, dw, dh) {
             Some((labels, path)) => (path, labels),
-            None => (seam_path(&grid, bw, h), Vec::new()),
+            None => (seam_path(&grid, dw, dh), Vec::new()),
         };
-        let base = (bw as f64 * BLEND_RAMP).max(4.0);
-        *state = Some(BandSmooth { dx: dx.clone(), flow: flow2.clone() });
+        let base = (dw as f64 * BLEND_RAMP).max(4.0);
+        *state = Some(BandSmooth { dx: dx_u.clone(), flow: flow2_u.clone() });
         // The crossfade ramp: a fixed width (BLEND_RAMP of the band, narrower than
         // the placement window now that the gain map removes the brightness step the
         // wide ramp used to hide), narrowed below the horizon by Studio's nadir
         // taper. The seam stays where the cut placed it; only the ramp is drawn.
-        let mut ramp = vec![base; h];
-        for y in 0..h {
+        let mut ramp = vec![base; dh];
+        for y in 0..dh {
             // Studio's nadir taper: below the horizon the blend narrows (to
             // BLEND_MIN_DEG at the pole), because the nadir seam is where a
             // tripod/selfie-stick appears and a wide crossfade there ghosts it.
             // lat = pi/2 - (y+.5)/h*pi, so sin(lat) < 0 below the equator.
-            let sl = std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / h as f64 * std::f64::consts::PI;
+            let sl = std::f64::consts::FRAC_PI_2 - (y as f64 + 0.5) / dh as f64 * std::f64::consts::PI;
             let (sl, _) = sl.sin_cos();
             if sl < 0.0 {
                 ramp[y] *= (1.0 - sl.powi(4)).max(BLEND_MIN_DEG / FEATHER_DEG);
             }
-            path[y] = path[y].clamp(ramp[y] / 2.0, bw as f64 - ramp[y] / 2.0);
+            path[y] = path[y].clamp(ramp[y] / 2.0, dw as f64 - ramp[y] / 2.0);
         }
         // TEMP DIAGNOSTIC: FILMCRAFT_STITCH_DUMP=<dir> writes the band renders and
         // the placed seam geometry per frame for offline analysis.
@@ -435,13 +442,13 @@ impl Stitch {
             let _ = std::fs::create_dir_all(p);
             let tag = if b.x0 > self.w / 2 { "b1" } else { "b0" };
             let wpgm = |name: &str, d: &[u8]| {
-                let mut v = format!("P5\n{bw} {h}\n255\n").into_bytes();
+                let mut v = format!("P5\n{dw} {dh}\n255\n").into_bytes();
                 v.extend_from_slice(d);
                 let _ = std::fs::write(p.join(format!("{tag}_{name}_{n:04}.pgm")), v);
             };
             wpgm("f", &fg);
             wpgm("r", &rg);
-            if let Some(f2) = &flow2 {
+            if let Some(f2) = &flow2_u {
                 let (gx, gy) = (f2.gx, f2.gy);
                 let mut fx = vec![0u8; gx * gy];
                 let mut fy = vec![0u8; gx * gy];
@@ -459,17 +466,23 @@ impl Stitch {
                 );
             }
             if !labels.is_empty() {
-                wpgm("labels", &labels_map(&grid, &labels, bw, h));
+                wpgm("labels", &labels_map(&grid, &labels, dw, dh));
             }
             let mut g = Vec::new();
-            for y in (0..h).step_by(8) {
+            for y in (0..dh).step_by(8) {
                 g.push(format!("{y} {} {}\n", path[y], ramp[y]));
             }
             let _ = std::fs::write(p.join(format!("{tag}_geom_{n:04}.txt")), g.concat());
         }
         let (mut a0, mut a1, mut inv) = (vec![0u8; bw * h], vec![0u8; bw * h], vec![0f32; bw * h]);
         let d = if b.front_rises { 1.0 } else { -1.0 };
-        let alpha_field = ownership_field(&grid, &labels, &ramp, &path, d, bw, h);
+        let alpha_u = ownership_field(&grid, &labels, &ramp, &path, d, dw, dh);
+        // Map the decisions back onto output pixels: ownership and gains are
+        // field quantities (box-average), shifts divide by the lattice ratio.
+        let alpha_field = box_down_f64(&alpha_u, dw, dh, bw, h);
+        let gm0 = box_down_f32(&gm0_u, dw, dh, bw, h);
+        let gm1 = box_down_f32(&gm1_u, dw, dh, bw, h);
+        let dx: Vec<f64> = (0..h).map(|y| (0..sc).map(|j| dx_u[y * sc + j]).sum::<f64>() / (sc * sc) as f64).collect();
         let (m0w, m1w) = (&self.maps[0][0].w, &self.maps[0][1].w);
         a0.par_chunks_mut(bw * REMAP_ROWS).zip(a1.par_chunks_mut(bw * REMAP_ROWS)).zip(inv.par_chunks_mut(bw * REMAP_ROWS)).enumerate().for_each(
             |(ci, ((p0, p1), pi))| {
@@ -499,23 +512,24 @@ impl Stitch {
         let mut cf = [Vec::new(), Vec::new()];
         let mut cr = [Vec::new(), Vec::new()];
         let dx_c: Vec<f64> = (0..ch).map(|y| (0..(1 << ssy)).map(|j| dx[(y << ssy) + j]).sum::<f64>() / vs / hs).collect();
-        // The luma ownership field at chroma scale: the box average over each
-        // chroma pixel's luma block. For the linear 1-D ramp this equals the ramp
-        // evaluated at chroma scale (to within half a pixel), and for the 2-D label
-        // field it keeps luma and chroma edges from disagreeing.
-        let ca_alpha = box_downsample(&alpha_field, bw, ssx, ssy, cbw, ch);
+        // The luma ownership field at chroma scale: the box average straight from
+        // the decision field (so luma and chroma edges cannot disagree).
+        let ca_alpha = box_down_f64(&alpha_u, dw, dh, cbw, ch);
         // The luma 2-D flow at chroma scale: same grid, spacing and magnitudes
         // divided by the subsampling, so luma and chroma warp by the same physical
         // shift (None when 1-D, which uses dx_c below).
-        let flow2_c = flow2.as_ref().map(|f| Flow2 {
+        // The 2-D flow at chroma scale: the decision-lattice grid's spacing and
+        // magnitudes divided by the lattice ratio and the subsampling, so luma and
+        // chroma warp by the same physical shift (None when 1-D, which uses dx_c).
+        let flow2_c = flow2_u.as_ref().map(|f| Flow2 {
             dxs: f.dxs.clone(),
             dys: f.dys.clone(),
             gx: f.gx,
             gy: f.gy,
-            bsx: f.bsx / hs,
-            bsy: f.bsy / vs,
-            sx: f.sx / hs,
-            sy: f.sy / vs,
+            bsx: f.bsx / (hs * sc as f64),
+            bsy: f.bsy / (vs * sc as f64),
+            sx: f.sx / (hs * sc as f64),
+            sy: f.sy / (vs * sc as f64),
         });
         let (mut ca0, mut ca1, mut cinv) = (vec![0u8; cbw * ch], vec![0u8; cbw * ch], vec![0f32; cbw * ch]);
         for q in 1..3 {
@@ -843,6 +857,26 @@ const REMAP_ROWS: usize = 32;
 /// the closest subject the lenses share in the overlap, beyond which a match is
 /// texture noise, not geometry.
 const FLOW_MAX_PX: f64 = 6.0;
+/// The 2:1 output width whose 30-degree overlap band ([`FEATHER_DEG`] of longitude
+/// at [`equirect_size`]'s geometry: `w / 12`) matches the reference lattice. The
+/// search blocks, blend windows, graph grids, gain cells and occlusion gate of the
+/// seam decision were all tuned there, where the band is this many pixels.
+const DECISION_BAND: usize = 426;
+
+/// Upscale for the seam-decision lattice: a band already at or near the reference
+/// width decides at its own scale (identity, byte-identical to how the full stitch
+/// has always behaved); a narrower one (a proxy, or a downscaled export) is brought
+/// up to roughly the reference width, so every length constant in the decision
+/// chain means the same ANGLE at every output resolution. Without this, a 92-px
+/// proxy band runs 16-px flow blocks across 6 degrees and votes of a few pixels
+/// carry ~5x the angle they do in the main file — the preview seam wanders while
+/// the exported seam (same source, full resolution) sits elsewhere.
+fn decision_scale(bw: usize) -> usize {
+    if bw * 2 >= DECISION_BAND {
+        return 1;
+    }
+    DECISION_BAND.div_ceil(bw.max(1)).min(32)
+}
 /// How much of the previous frame's seam / shift carries over: without this a
 /// flickering light inside the band drags the seam back and forth (a crawling
 /// edge). 0.75 gives a ~4-frame time constant.
@@ -1373,7 +1407,10 @@ struct SeamGrid {
     stride: usize,
 }
 
-fn seam_grid(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usize) -> SeamGrid {
+/// `floor` subtracts each row block's disagreement noise floor (see below): the
+/// proxy decisions run it, where the floor dominates; the reference-scale path
+/// must reproduce the tuning it was verified at, noise included.
+fn seam_grid_with_floor(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usize, floor_on: bool) -> SeamGrid {
     let stride = (bw / DP_COLS).max(1);
     let cols = bw.div_ceil(stride).max(2);
     let covered: Vec<bool> = (0..cols)
@@ -1425,6 +1462,25 @@ fn seam_grid(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usiz
             }
             if nn > 0.0 { ss / nn } else { 0.0 }
         };
+        // The disagreement noise floor of this row block: the 10th percentile of
+        // the column disagreements where both lenses cover. Two 8-bit encodes of
+        // the same scene differ by sensor/codec noise even where they see the same
+        // thing, and the floor rises as the picture loses resolution. Subtracting
+        // it makes "the lenses disagree" mean CONTENT again at any scale, the way
+        // `OCCLUSION_GATE`'s fixed threshold does at reference; the percentile (not
+        // the median) leaves a doubled subject covering half the band alone, its
+        // two edges still showing above the floor. A uniform shift within the row
+        // is neutral to the cut's route; the zero clamp after it is what erases
+        // agreement-with-noise into agreement.
+        let floor = {
+            let mut v: Vec<f64> = cov.iter().zip(&dm).filter(|(c, _)| **c).map(|(_, d)| *d).collect();
+            if !floor_on || v.is_empty() {
+                0.0
+            } else {
+                v.sort_by(|a, b| a.total_cmp(b));
+                v[(v.len() - 1) / 10]
+            }
+        };
         // The running sum of the gated signed difference: flat where the lenses
         // agree, ramping across an occluding object. `f` is always the front lens
         // and `r` the rear. The front lens owns the high columns in band 0
@@ -1443,7 +1499,7 @@ fn seam_grid(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usiz
         let mut occ = vec![0f64; cols];
         for ci in 0..cols {
             if cov[ci] {
-                let gate = ((dm[ci] - OCCLUSION_GATE) / OCCLUSION_RAMP).clamp(0.0, 1.0);
+                let gate = ((dm[ci] - floor - OCCLUSION_GATE) / OCCLUSION_RAMP).clamp(0.0, 1.0);
                 let signed = if b.front_rises { mean - sgn[ci] } else { sgn[ci] - mean };
                 cum += gate * signed;
             }
@@ -1466,7 +1522,7 @@ fn seam_grid(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usiz
                     n += 1;
                 }
             }
-            let mut c = e as f64 / n.max(1) as f64;
+            let mut c = (e as f64 / n.max(1) as f64 - floor).max(0.0);
             let dis = c;
             let mid = (cols - 1) as f64 / 2.0;
             c += 4.0 * ((ci as f64 - mid) / mid.max(1.0)).powi(2);
@@ -1820,27 +1876,6 @@ fn ownership_field(g: &SeamGrid, labels: &[u8], ramp: &[f64], path: &[f64], d: f
     v
 }
 
-/// Box-downsample a `bw`-wide weight field by `2^ssx` x `2^ssy` to `ow` x `oh`.
-fn box_downsample(a: &[f64], bw: usize, ssx: u32, ssy: u32, ow: usize, oh: usize) -> Vec<f64> {
-    let (sx, sy) = (1usize << ssx, 1usize << ssy);
-    let h = a.len() / bw.max(1);
-    let mut o = vec![0f64; ow * oh];
-    for y in 0..oh {
-        for x in 0..ow {
-            let (mut s, mut n) = (0f64, 0usize);
-            for j in 0..sy {
-                for i in 0..sx {
-                    let (yy, xx) = ((y * sy + j).min(h.saturating_sub(1)), (x * sx + i).min(bw.saturating_sub(1)));
-                    s += a[yy * bw + xx];
-                    n += 1;
-                }
-            }
-            o[y * ow + x] = s / n.max(1) as f64;
-        }
-    }
-    o
-}
-
 /// Expand a node label grid to a per-pixel ownership map (0 rear, 255 front,
 /// 128 boundary) for the stitch dump.
 fn labels_map(g: &SeamGrid, labels: &[u8], bw: usize, h: usize) -> Vec<u8> {
@@ -1913,6 +1948,120 @@ fn label_alpha(g: &SeamGrid, labels: &[u8], ramp: &[f64], bw: usize, h: usize) -
     alpha
 }
 
+/// Box-downsample a `pw`×`ph` field by the integer factors `(pw/ow, ph/oh)` to
+/// `ow`×`oh`. Identity when the factors are 1, so the reference-lattice decision
+/// path costs nothing extra at the resolution the constants were tuned on.
+fn box_down_u8(p: &[u8], pw: usize, ph: usize, ow: usize, oh: usize) -> Vec<u8> {
+    let (fx, fy) = (pw / ow.max(1).max(1), ph / oh.max(1));
+    if fx == 1 && fy == 1 {
+        return p.to_vec();
+    }
+    let mut d = vec![0u8; ow * oh];
+    d.par_chunks_mut(ow).enumerate().for_each(|(oy, row)| {
+        for (ox, v) in row.iter_mut().enumerate() {
+            let (mut a, mut n) = (0u32, 0u32);
+            for j in 0..fy {
+                for i in 0..fx {
+                    a += u32::from(p[(oy * fy + j) * pw + ox * fx + i]);
+                    n += 1;
+                }
+            }
+            *v = (a / n.max(1)) as u8;
+        }
+    });
+    d
+}
+
+fn box_down_f32(p: &[f32], pw: usize, ph: usize, ow: usize, oh: usize) -> Vec<f32> {
+    let (fx, fy) = (pw / ow.max(1), ph / oh.max(1));
+    if fx == 1 && fy == 1 {
+        return p.to_vec();
+    }
+    let mut d = vec![0f32; ow * oh];
+    d.par_chunks_mut(ow).enumerate().for_each(|(oy, row)| {
+        for (ox, v) in row.iter_mut().enumerate() {
+            let mut a = 0f64;
+            for j in 0..fy {
+                for i in 0..fx {
+                    a += f64::from(p[(oy * fy + j) * pw + ox * fx + i]);
+                }
+            }
+            *v = (a / (fx * fy).max(1) as f64) as f32;
+        }
+    });
+    d
+}
+
+fn box_down_f64(p: &[f64], pw: usize, ph: usize, ow: usize, oh: usize) -> Vec<f64> {
+    let (fx, fy) = (pw / ow.max(1), ph / oh.max(1));
+    if fx == 1 && fy == 1 {
+        return p.to_vec();
+    }
+    let mut d = vec![0f64; ow * oh];
+    d.par_chunks_mut(ow).enumerate().for_each(|(oy, row)| {
+        for (ox, v) in row.iter_mut().enumerate() {
+            let mut a = 0f64;
+            for j in 0..fy {
+                for i in 0..fx {
+                    a += p[(oy * fy + j) * pw + ox * fx + i];
+                }
+            }
+            *v = a / (fx * fy).max(1) as f64;
+        }
+    });
+    d
+}
+
+/// Bilinear-upsample `p` (`w`×`h`) by an integer factor to (`w*s`)×(`h*s`),
+/// pixel-centre aligned, edge clamped: the same resampling [`resample_2d`] does
+/// for the rear render, in the other direction. Identity for `s == 1`.
+fn up_u8(p: &[u8], w: usize, h: usize, s: usize) -> Vec<u8> {
+    if s == 1 || w == 0 || h == 0 {
+        return p.to_vec();
+    }
+    let (dw, dh) = (w * s, h * s);
+    let mut d = vec![0u8; dw * dh];
+    d.par_chunks_mut(dw).enumerate().for_each(|(y, row)| {
+        let fyy = (y as f64 + 0.5) / s as f64 - 0.5;
+        let y0 = fyy.clamp(0.0, (h - 1) as f64).floor() as usize;
+        let y1 = y0.min(h - 2);
+        let ty = fyy - y0 as f64;
+        let (r0, r1) = (&p[y0 * w..y0 * w + w], &p[y1 * w..y1 * w + w]);
+        for (x, v) in row.iter_mut().enumerate() {
+            let fxx = (x as f64 + 0.5) / s as f64 - 0.5;
+            let x0 = fxx.clamp(0.0, (w - 1) as f64).floor() as usize;
+            let x1 = x0.min(w - 2);
+            let tx = fxx - x0 as f64;
+            let a = f64::from(r0[x0]) * (1.0 - tx) + f64::from(r0[x1]) * tx;
+            let b = f64::from(r1[x0]) * (1.0 - tx) + f64::from(r1[x1]) * tx;
+            *v = (a * (1.0 - ty) + b * ty).round().clamp(0.0, 255.0) as u8;
+        }
+    });
+    d
+}
+
+/// The seam-grid lens-coverage maps at the decision lattice: plane weights
+/// resampled by nearest (a decision pixel stands for its whole block of output
+/// pixels). [`seam_grid`] reads them exactly like the baked maps (full-width
+/// rows, band starting at x0=0), so the cut's coverage forcing transfers
+/// between resolutions unchanged.
+fn band_coverage_maps(m: &[PlaneMap; 2], b: &Band, dw: usize, dh: usize, s: usize) -> [PlaneMap; 2] {
+    m.each_ref().map(|p| PlaneMap {
+        idx: Vec::new(),
+        wgt: Vec::new(),
+        w: (0..dh)
+            .flat_map(|ys| {
+                let y = ys / s;
+                (0..dw).map(move |xs| u8::from(p.w[y * p.pw + b.x0 + xs / s] > 0) * 255)
+            })
+            .collect(),
+        pw: dw,
+        ph: dh,
+        sw: dw,
+        sh: dh,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1923,7 +2072,7 @@ mod tests {
     /// assert on seam *placement* (occlusion cue, disagreement routing) go
     /// through this so they exercise the production decision path, not just the DP.
     fn seam(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usize) -> Vec<f64> {
-        let grid = seam_grid(f, r, m, b, bw, h);
+        let grid = seam_grid_with_floor(f, r, m, b, bw, h, false);
         seam_cut(&grid, b, bw, h).map(|(_, path)| path).unwrap_or_else(|| seam_path(&grid, bw, h))
     }
 
@@ -2251,7 +2400,7 @@ mod tests {
             PlaneMap { idx: vec![0; bw * h], wgt: vec![0; bw * h], w: vec![255; bw * h], pw: bw, ph: h, sw: bw, sh: h },
         ];
         let b = Band { x0: 0, x1: bw, front_rises: true };
-        let grid = seam_grid(&f, &r, &m, &b, bw, h);
+        let grid = seam_grid_with_floor(&f, &r, &m, &b, bw, h, false);
         // The DP sits in the agreeing gap between the copies (splitting the object).
         let dp = seam_path(&grid, bw, h);
         assert!(dp.iter().all(|&p| (44.0..=52.0).contains(&p)), "the DP splits the object: {dp:?}");
@@ -2306,7 +2455,7 @@ mod tests {
             PlaneMap { idx: vec![0; bw * h], wgt: vec![0; bw * h], w: vec![255; bw * h], pw: bw, ph: h, sw: bw, sh: h },
         ];
         let b = Band { x0: 0, x1: bw, front_rises: true };
-        let grid = seam_grid(&f, &r, &m, &b, bw, h);
+        let grid = seam_grid_with_floor(&f, &r, &m, &b, bw, h, false);
         assert!(seam_cut(&grid, &b, bw, h).is_none(), "a two-column band has no 2-D seam to cut");
         // Tall: nodes * cols * 2 exceeds the graph budget.
         let h2 = 30_000usize;
@@ -2317,7 +2466,7 @@ mod tests {
             PlaneMap { idx: vec![0; 160 * h2], wgt: vec![0; 160 * h2], w: vec![255; 160 * h2], pw: 160, ph: h2, sw: 160, sh: h2 },
         ];
         let b2 = Band { x0: 0, x1: 160, front_rises: true };
-        let grid2 = seam_grid(&f2, &r2, &m2, &b2, 160, h2);
+        let grid2 = seam_grid_with_floor(&f2, &r2, &m2, &b2, 160, h2, false);
         assert!(seam_cut(&grid2, &b2, 160, h2).is_none(), "an oversized band is refused, not allocated");
         // The DP fallback still answers with an in-band column for every row.
         let dp = seam_path(&grid2, 160, h2);
@@ -2379,6 +2528,36 @@ mod tests {
         assert!(Stitch::bake(&[bad, bad], 64, 128, 64, Chroma::C420).is_none());
         // a size past the pixel cap
         assert!(Stitch::bake(&[l, l], 64, 1 << 20, 1 << 20, Chroma::C420).is_none());
+    }
+
+    /// The decision lattice: the full stitch's band decides at its own scale
+    /// (byte-identical to what the constants were tuned against), and a band
+    /// narrower than half that is brought up to ~the reference width so every
+    /// block, window and gate of the seam decision spans the same angle the
+    /// main file's does. A proxy seam that "wandered while the export sat
+    /// still" was the same 30° of scene judged on a 4.6x coarser ruler.
+    #[test]
+    fn proxy_bands_decide_on_the_reference_lattice() {
+        assert_eq!(decision_scale(426), 1, "the reference band is the ruler");
+        assert_eq!(decision_scale(1 << 20), 1, "wide bands never upscale");
+        let s = decision_scale(92);
+        assert!((92 * s).abs_diff(DECISION_BAND) <= 92, "a proxy band lands at the reference width: {}px", 92 * s);
+        assert!(decision_scale(8) * 8 >= DECISION_BAND / 2, "even a tiny band gets a usable lattice");
+    }
+
+    /// An upscaled decision field mapped back to output pixels must reproduce a
+    /// straight seam exactly (the round trip only resamples constants/edges, never
+    /// content): if the box-average ever drops a weight or shifts a boundary, the
+    /// proxy seam stops tracking the main one in a way no footage review explains.
+    #[test]
+    fn up_and_back_preserve_constant_fields() {
+        let (w, h, s) = (23usize, 9usize, 5usize);
+        let flat = vec![77u8; w * h];
+        assert_eq!(box_down_u8(&up_u8(&flat, w, h, s), w * s, h * s, w, h), flat, "a constant u8 field round-trips unchanged");
+        let one = vec![0.5f64; (w * s) * (h * s)];
+        assert!(box_down_f64(&one, w * s, h * s, w, h).iter().all(|&v| v == 0.5), "a constant f64 field round-trips unchanged");
+        let g = vec![1.25f32; w * h];
+        assert_eq!(box_down_f32(&g, w, h, w, h), g, "identity factors copy");
     }
 
     /// The 2-D block flow recovers a *vertical* shift that the 1-D along-seam flow
