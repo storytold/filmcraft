@@ -89,9 +89,14 @@ pub struct ProjectPanelUi {
     pub tabs: Vec<BinTab>,
     /// The tab shown in the Project panel: None = the project, else an index into `tabs`.
     pub active_tab: Option<usize>,
-    /// The bin selected in the panel (rename, open).
+    /// The bin selected alone by a plain click (rename, open, Clear). A Ctrl/Cmd or Shift click, or
+    /// a Shift/Ctrl marquee, adds it to `project_selection`. Side effect: the frame after anything
+    /// else fills `project_selection` (Select All, a plain item click, a plain marquee, or a
+    /// `project.select` from the control channel, CLI or MCP), this is cleared, so Delete and Clear
+    /// act on that selection only and never take the bin along (#4382).
     pub selected_bin: Option<u64>,
-    /// The item a Shift-click selects a range from: the last one clicked without Shift.
+    /// The item or bin a Shift-click selects a range from: the last one clicked without Shift, or
+    /// with Shift when this one is not shown (the click then selected like a plain click).
     pub anchor: Option<u64>,
     pub rename: Option<Rename>,
     pub dialog: Option<ProjectDialog>,
