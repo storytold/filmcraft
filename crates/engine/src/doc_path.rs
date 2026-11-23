@@ -74,10 +74,25 @@ pub fn resolve_trusting(stored: &str, document: Option<&Path>, trusted: &[String
 }
 
 /// The trusted network shares of the setting `text` (Settings ▸ Media ▸ Trusted Network Folders):
-/// `\\server\share` roots separated by `;` or line breaks; entries that are not a share are
+/// `\\server\share` roots separated by `;` or line breaks; entries that are not a share root are
 /// ignored.
 pub fn trusted_shares(text: &str) -> Vec<String> {
-    text.split([';', '\n', '\r']).map(str::trim).filter(|t| craft_docpath::classify(t) == craft_docpath::PathKind::Network).map(str::to_string).collect()
+    text.split([';', '\n', '\r']).map(str::trim).filter(|t| is_share_root(t)).map(str::to_string).collect()
+}
+
+/// Whether `path` is a share root, `\\server\share` or `//server/share` (a trailing separator
+/// allowed), with no folder part. A trusted entry is followed as its whole share
+/// ([`resolve_trusting`]), so `\\server\share\folder` is not one: it would trust more than it names.
+fn is_share_root(path: &str) -> bool {
+    if craft_docpath::classify(path) != craft_docpath::PathKind::Network {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix(r"\\").or_else(|| path.strip_prefix("//")) else {
+        return false;
+    };
+    let rest = rest.strip_suffix(['\\', '/']).unwrap_or(rest);
+    let parts: Vec<&str> = rest.split(['\\', '/']).collect();
+    matches!(parts.as_slice(), [host, share] if [host, share].iter().all(|p| !p.is_empty() && !matches!(**p, "." | "..")) && *host != "?")
 }
 
 /// Whether an unresolved `craft_docpath::resolve` result starts with a drive (`C:`) or a share
@@ -133,6 +148,16 @@ mod tests {
         // Local paths and other refusals are unaffected.
         assert_eq!(resolve_trusting("clip.mp4", Some(&doc), &trusted), resolve("clip.mp4", Some(&doc)));
         assert_eq!(resolve_trusting("jar:take.mp4", Some(&doc), &trusted), Err(NotFollowed::Refused(Refused::Url)));
+    }
+
+    /// An entry with a folder part is not a share root: it is ignored, not widened to its whole
+    /// share, so the other folders of that share stay refused.
+    #[test]
+    fn trusted_entries_with_a_folder_part_are_ignored() {
+        let doc = std::env::temp_dir().join("films").join("cut.fcproj");
+        let trusted = trusted_shares(r"\\nas\media\selected;//nas/media/a/b/;\\nas");
+        assert!(trusted.is_empty(), "{trusted:?}");
+        assert_eq!(resolve_trusting(r"\\nas\media\other\x.mp4", Some(&doc), &trusted), Err(NotFollowed::Refused(Refused::Network)));
     }
 
     /// Without a document a relative path waits for the document's folder; outside Windows a

@@ -143,6 +143,19 @@ fn usage(msg: impl std::fmt::Display) -> ! {
     std::process::exit(2)
 }
 
+/// The shares of the `--trust-share` values, or None when one of them is not exactly one share
+/// root: each value is checked on its own, so a value holding a list (`a;b`) is refused even when
+/// the count of the joined list happens to match.
+fn trusted_share_args(values: &[&str]) -> Option<Vec<String>> {
+    values
+        .iter()
+        .map(|v| match filmcraft_engine::doc_path::trusted_shares(v).as_slice() {
+            [share] if !v.contains([';', '\n', '\r']) => Some(share.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Read a file off the runtime thread: `cli` is async because MCP, bridge calls and control
 /// commands await, so a blocking `std::fs` read would stall every other task on that thread.
 async fn read_file(path: impl Into<std::path::PathBuf>) -> std::io::Result<Vec<u8>> {
@@ -186,12 +199,10 @@ impl Backend {
         // preferences): media on these shares is opened from a document saved anywhere.
         let shares = a.opts("--trust-share");
         if !shares.is_empty() {
-            let text = shares.join(";");
-            let trusted = filmcraft_engine::doc_path::trusted_shares(&text);
-            if trusted.len() != shares.len() {
+            let Some(trusted) = trusted_share_args(&shares) else {
                 usage("--trust-share takes a network share root such as \\\\server\\share or //server/share");
-            }
-            s.prefs.media.trusted_shares = text;
+            };
+            s.prefs.media.trusted_shares = trusted.join(";");
             s.media.set_trusted_shares(trusted);
         }
         // user export presets (and other per-user libraries) from the data directory
@@ -705,6 +716,16 @@ mod format_tests {
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    /// Each `--trust-share` value is one share root; a list in one value is refused, even when
+    /// another value that is not a share brings the count back.
+    #[test]
+    fn each_trust_share_value_is_one_share_root() {
+        assert_eq!(super::trusted_share_args(&[r"\\nas\media", "//other/share"]).map(|t| t.len()), Some(2));
+        for values in [&[r"\\nas\media;\\other\share", r"C:\local"][..], &[r"\\nas\media;"], &[r"C:\local"]] {
+            assert_eq!(super::trusted_share_args(values), None, "{values:?}");
+        }
     }
 
     #[test]
