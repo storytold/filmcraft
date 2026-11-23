@@ -142,9 +142,9 @@ fn default_speaker_names_are_translated() {
 #[test]
 fn status_text_follows_a_language_change() {
     let mut st = StatusText::default();
-    let msg = "Transcription finished: 42 words";
+    let msg = "Scene Edit Detection: disk full";
     assert_eq!(st.get(msg, Language::En), msg);
-    assert_eq!(st.get(msg, Language::Fr), "Transcription terminée : 42 mots");
+    assert_eq!(st.get(msg, Language::Fr), "Détection des changements de scène : disk full");
     assert_eq!(st.get(msg, Language::En), msg);
     assert_eq!(st.get("", Language::Fr), "");
 }
@@ -155,22 +155,24 @@ fn status_text_follows_a_language_change() {
 #[test]
 fn run_time_messages_are_translated_through_templates() {
     let fr = Language::Fr;
-    assert_eq!(fr.tr_message("Transcription finished: 42 words"), "Transcription terminée : 42 mots");
-    assert_eq!(fr.tr_message("Transcription finished: no speech was found"), "Transcription terminée : aucune parole détectée");
-    let sync = "The gap was left open: this edit would break sync: V2 is sync-locked and has a clip in the way (turn off its sync lock, or lock the track, to make this edit)";
-    let shown = fr.tr_message(sync);
-    assert!(shown.starts_with("L'espace vide a été conservé : ce montage casserait la synchronisation : V2 est verrouillée"), "{shown}");
+    assert_eq!(fr.tr_message("Stopped: nothing was changed"), "Arrêté : rien n'a été modifié");
+    // a template's value is translated too, when the catalog knows it
+    assert_eq!(
+        fr.tr_message("command `edit.clear` is not available right now: nothing selected"),
+        "la commande `edit.clear` n'est pas disponible pour l'instant : rien n'est sélectionné"
+    );
+    assert_eq!(fr.tr_message("Scene Edit Detection: nothing selected"), "Détection des changements de scène : rien n'est sélectionné");
     // a value the catalog doesn't know stays as it is inside the translated sentence
-    assert_eq!(fr.tr_message("Transcription: disk on fire"), "Transcription : disk on fire");
+    assert_eq!(fr.tr_message("Scene Edit Detection: disk on fire"), "Détection des changements de scène : disk on fire");
     // a template that opens with a value ("{n} selected") takes a name or a count, not a clause
     let refused = "command `edit.clear` is not available right now: nothing selected";
     assert!(!fr.tr_message(refused).contains("nothing sélection"), "{}", fr.tr_message(refused));
-    for unknown in ["", "Something entirely new", "{e}", "Transcription:"] {
+    for unknown in ["", "Something entirely new", "{e}", "Scene Edit Detection:"] {
         assert_eq!(fr.tr_message(unknown), unknown);
     }
-    assert_eq!(Language::En.tr_message("Transcription finished: 42 words"), "Transcription finished: 42 words");
+    assert_eq!(Language::En.tr_message("Stopped: nothing was changed"), "Stopped: nothing was changed");
     // hostile input: braces, separators and non-ASCII text never break the matching
-    for odd in ["Transcription: {", "Transcription: é}{", "Transcription finished:  words", "Exported frame to 日本語/ü.png"] {
+    for odd in ["Scene Edit Detection: {", "Scene Edit Detection: é}{", "command `` is not available right now: ", "Exported frame to 日本語/ü.png"] {
         let _ = fr.tr_message(odd);
     }
 }

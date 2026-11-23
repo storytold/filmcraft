@@ -3745,14 +3745,8 @@
 	Toggle Color Grading Section	Activer ou désactiver une section d’étalonnage
 	Color Grading Section	Section d’étalonnage
 	Read Video Scopes	Lire les oscilloscopes vidéo
-	Transcribe Sequence: transcribing in the background (see Progress)	Transcrire la séquence : transcription en arrière-plan (voir Progression)
 	Saved	Enregistré
-	The gap was left open: {e}	L'espace vide a été conservé : {e}
 	this edit would break sync: {track} is sync-locked and has a clip in the way (turn off its sync lock, or lock the track, to make this edit)	ce montage casserait la synchronisation : {track} est verrouillée en synchro et un clip gêne (désactivez son verrouillage de synchro ou verrouillez la piste pour faire ce montage)
-	Transcription finished: no speech was found	Transcription terminée : aucune parole détectée
-	Transcription finished: {words} words	Transcription terminée : {words} mots
-	Transcription: {e}	Transcription : {e}
-	Transcription: the project was replaced; nothing was changed	Transcription : le projet a été remplacé, rien n'a été modifié
 	Scene Edit Detection found no cut points	La détection des changements de scène n'a trouvé aucun point de coupe
 	Scene Edit Detection: {e}	Détection des changements de scène : {e}
 	Scene Edit Detection: the project was replaced; nothing was changed	Détection des changements de scène : le projet a été remplacé, rien n'a été modifié
@@ -3760,7 +3754,6 @@
 	Nothing to render: audio previews are up to date	Rien à rendre : les prévisualisations audio sont à jour
 	the project was replaced; mask tracking stopped	le projet a été remplacé, le suivi du masque est arrêté
 	Stopped: nothing was changed	Arrêté : rien n'a été modifié
-	a transcription is already running	une transcription est déjà en cours
 	there are no audio clips to transcribe	il n'y a aucun clip audio à transcrire
 	none of the clips has audio to transcribe	aucun des clips n'a d'audio à transcrire
 	command `{0}` is not available right now: {1}	la commande `{0}` n'est pas disponible pour l'instant : {1}
@@ -3796,11 +3789,7 @@
 	the project has no sequences	le projet n'a aucune séquence
 	the history is empty	l'historique est vide
 	the natural voices are not downloaded yet	les voix naturelles ne sont pas encore téléchargées
-	Transcribing 1 clip	Transcription d'1 clip
-	Transcribing {n} clips	Transcription de {n} clips
 	Downloading {name}	Téléchargement de {name}
-	Loading the speech model…	Chargement du modèle vocal…
-	{words} words transcribed ({secs} s)	{words} mots transcrits ({secs} s)
 	Scene Edit Detection ({n} clip)	Détection des changements de scène ({n} clip)
 	Scene Edit Detection ({n} clips)	Détection des changements de scène ({n} clips)
 	Create Proxies ({n} clip)	Création de proxys ({n} clip)

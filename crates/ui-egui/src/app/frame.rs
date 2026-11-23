@@ -273,9 +273,6 @@ impl FilmcraftApp {
     }
 }
 
-/// What the status bar calls a running job: "Exporting" for the exports (`Export …`, `Quick
-/// Export …`, `Queue: …`), else the job's own label in the interface language. Every other job
-/// (transcription, model download, proxies, scene detection…) used to read "Exporting".
 /// The most characters of a job's label the status bar shows.
 const JOB_VERB_MAX: usize = 40;
 
@@ -287,6 +284,9 @@ fn clip_chars(s: &str, max: usize) -> String {
     }
 }
 
+/// What the status bar calls a running job: "Exporting" for the exports (`Export …`, `Quick
+/// Export …`, `Queue: …`), else the job's own label in the interface language. Every other job
+/// (transcription, model download, proxies, scene detection…) used to read "Exporting".
 fn job_verb(label: &str) -> String {
     if ["Export", "Quick Export", "Queue: "].iter().any(|p| label.starts_with(p)) { tl!("Exporting").to_string() } else { i18n::tr_message(label) }
 }
@@ -314,11 +314,12 @@ mod job_status_tests {
     fn the_job_text_names_what_the_job_does() {
         assert_eq!(job_verb("Export movie.mp4"), "Exporting");
         assert_eq!(job_verb("Queue: Main Edit → a.mp4"), "Exporting");
-        assert_eq!(job_verb("Transcribing 1 clip"), "Transcribing 1 clip");
+        assert_eq!(job_verb("Create Proxies (1 clip)"), "Create Proxies (1 clip)");
         let before = i18n::current();
         i18n::set_current(i18n::Language::Fr);
-        assert_eq!(job_verb("Transcribing 3 clips"), "Transcription de 3 clips");
-        assert_eq!(job_verb("Downloading Whisper base (multilingual)"), "Téléchargement de Whisper base (multilingual)");
+        assert_eq!(job_verb("Create Proxies (3 clips)"), "Création de proxys (3 clips)");
+        assert_eq!(job_verb("Scene Edit Detection (1 clip)"), "Détection des changements de scène (1 clip)");
+        assert_eq!(job_verb("Downloading Natural voices (Kokoro-82M)"), "Téléchargement de Natural voices (Kokoro-82M)");
         i18n::set_current(before);
     }
 
