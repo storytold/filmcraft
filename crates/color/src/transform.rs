@@ -471,6 +471,25 @@ mod tests {
         let c = [0.8, 0.6, 0.5];
         let (a, b) = (t.convert(c), o.apply(w.convert(c)));
         assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-3), "{a:?} vs {b:?}");
+        // on saturated colours Ys is the BT.2020 luma of the light, not each channel: in a wide-gamut
+        // composite the working primaries are the source's, so the OOTF's own output shows
+        let wide = sdr(true, true);
+        for c in [[0.9f32, 0.3, 0.1], [0.1, 0.8, 0.3], [0.2, 0.1, 0.85]] {
+            let e = c.map(|v| wide.table.lookup(v));
+            let l = Gamut::Bt2020.luma();
+            let ys: f32 = (0..3).map(|i| l[i] as f32 * e[i]).sum();
+            let got = wide.convert(c);
+            for i in 0..3 {
+                let want = ys.powf(HLG_SDR_GAMMA as f32 - 1.0) * e[i];
+                assert!((got[i] - want).abs() < 2e-3, "{c:?}: {got:?}, channel {i} should be {want}");
+                assert!((e[i] - ys).abs() > 0.01, "{c:?}: the case tells Ys from E");
+            }
+        }
+        // and a saturated in-gamut colour reaches the monitor the same either way
+        for c in [[0.85, 0.5, 0.4], [0.5, 0.8, 0.5], [0.45, 0.45, 0.8]] {
+            let (a, b) = (t.convert(c), o.apply(w.convert(c)));
+            assert!(a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 2e-3), "{c:?}: {a:?} vs {b:?}");
+        }
         // Auto Tone Map off and HDR working spaces keep the 1000 cd/m² display light
         assert!(grey(&sdr(false, false), 1.0) > 4.9);
         let h = InputTransform::new(ColorSpace::Rec2100Hlg, Range::Full, &hdr(WorkingSpace::Rec2100Pq), None);
