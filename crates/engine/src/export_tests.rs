@@ -1138,3 +1138,262 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+/// #3551: the files a running export writes are not taken as media.
+mod running_export_outputs {
+    use filmcraft_export::{ExportSettings, Format};
+    use serde_json::json;
+
+    use super::{Scratch, Session};
+    use crate::Job;
+    use crate::export_tools::ExportOutputs;
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+
+    /// A job that has no result yet and writes `format` files at `path`.
+    fn running(s: &mut Session, path: &str, format: Format, sidecar: Option<String>) -> u64 {
+        let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+        s.jobs.push(Job { id, label: "Export dest".into(), progress: Default::default(), result: Default::default() });
+        s.export_outputs.insert(id, ExportOutputs::new(&ExportSettings { format, path: path.into(), ..Default::default() }, sidecar));
+        id
+    }
+
+    /// The job ends (failed or cancelled, as far as the guard can tell: it has a result).
+    fn finish(s: &mut Session, id: u64) {
+        let job = s.jobs.iter().find(|j| j.id == id).unwrap();
+        *job.result.lock().unwrap() = Some(Err("cancelled".into()));
+    }
+
+    fn movie(dir: &std::path::Path, name: &str) -> String {
+        let p = dir.join(name);
+        make_movie(&p, filmcraft_media::DemoScene::Dunes, 64, 36, 6);
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn import_refuses_the_destination_of_a_running_export_in_any_spelling_until_it_ends() {
+        let dir = tmp_dir("running-export-import");
+        let (a, dest, other) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"), movie(&dir, "other.mov"));
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        let job = running(&mut s, &dest, Format::default(), None);
+        let items = |s: &Session| s.project.items.len();
+        let before = items(&s);
+        // the path as given, through a `..`, and (where it differs) in another case
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut spellings = vec![dest.clone(), dir.join("sub").join("..").join("dest.mov").to_string_lossy().into_owned()];
+        if cfg!(any(windows, target_os = "macos")) {
+            spellings.push(dir.join("DEST.MOV").to_string_lossy().into_owned());
+        }
+        for path in &spellings {
+            let err = s.execute("file.import", json!({"paths": [path]})).unwrap_err().to_string();
+            assert!(err.contains("being written by"), "{path}: {err}");
+        }
+        assert_eq!(items(&s), before, "nothing was imported");
+        // the other paths of the same call still import
+        let r = s.execute("file.import", json!({"paths": [dest, other]})).unwrap();
+        assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+        assert_eq!(r["errors"].as_array().map(Vec::len), Some(1), "{r}");
+        // once the export has failed or been cancelled, the file is an ordinary file
+        finish(&mut s, job);
+        let r = s.execute("file.import", json!({"paths": [spellings[0]]})).unwrap();
+        assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relinking_to_the_destination_of_a_running_export_is_refused_even_when_forced() {
+        let dir = tmp_dir("running-export-relink");
+        let (a, dest, other) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"), movie(&dir, "other.mov"));
+        let (mut s, items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        let link = |s: &mut Session, cmd: &str, path: &str| s.execute(cmd, json!({"item": items[0].0, "path": path, "force": true}));
+        let job = running(&mut s, &dest, Format::default(), None);
+        for cmd in ["media.relink", "media.replaceFootage"] {
+            let err = link(&mut s, cmd, &dest).unwrap_err().to_string();
+            assert!(err.contains("being written by"), "{cmd}: {err}");
+        }
+        let path_of = |s: &Session| format!("{:?}", s.project.item(items[0]).and_then(|i| i.as_media()).map(|m| m.media.clone()));
+        assert!(path_of(&s).contains("a.mov"), "the item still points at its file");
+        link(&mut s, "media.relink", &other).unwrap();
+        assert!(path_of(&s).contains("other.mov"), "an unrelated file links");
+        finish(&mut s, job);
+        link(&mut s, "media.relink", &dest).unwrap();
+        assert!(path_of(&s).contains("dest.mov"), "linked once the export is done");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stills_the_audio_files_and_the_sidecar_of_an_export_are_covered_too() {
+        let dir = tmp_dir("running-export-outputs");
+        let (stills, atom) = (dir.join("Shot.png"), dir.join("clip.mxf"));
+        let p = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&movie(&dir, "a.mov"))]);
+        let refused = |s: &Session, path: &str| crate::export_tools::running_export_writing(s, path).is_some();
+        let job = running(&mut s, &stills.to_string_lossy(), Format::PngSequence, None);
+        for name in ["Shot.png", "Shot000.png", "Shot1234.png"] {
+            assert!(refused(&s, &p(name)), "{name}");
+        }
+        for name in ["Shotgun.png", "Shot000.jpg", "Other000.png", "a.mov"] {
+            assert!(!refused(&s, &p(name)), "{name} is not one of the stills");
+        }
+        finish(&mut s, job);
+        let job = running(&mut s, &atom.to_string_lossy(), Format::MxfOpAtom, Some(p("clip.srt")));
+        for name in ["clip.mxf", "clip_A1.mxf", "clip_A2.mxf", "clip.srt"] {
+            assert!(refused(&s, &p(name)), "{name}");
+        }
+        assert!(!refused(&s, &p("clip_B1.mxf")));
+        finish(&mut s, job);
+        assert!(!refused(&s, &p("clip_A1.mxf")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_running_exports_are_told_apart_and_a_missing_destination_is_covered_in_any_spelling() {
+        let dir = tmp_dir("running-export-two");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let (first, second) = (dir.join("first.mov").to_string_lossy().into_owned(), dir.join("second.mov").to_string_lossy().into_owned());
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&movie(&dir, "a.mov"))]);
+        let (one, _two) = (running(&mut s, &first, Format::default(), None), running(&mut s, &second, Format::default(), None));
+        let writing = |s: &Session, path: &str| crate::export_tools::running_export_writing(s, path).is_some();
+        // neither file exists yet; a path through `..` is the same file
+        let through = dir.join("sub").join("..").join("second.mov").to_string_lossy().into_owned();
+        assert!(writing(&s, &first) && writing(&s, &second) && writing(&s, &through));
+        finish(&mut s, one);
+        assert!(!writing(&s, &first), "the finished export's file is free");
+        assert!(writing(&s, &second) && writing(&s, &through), "the running one's is not");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn linking_candidates_that_a_running_export_writes_fail_the_check() {
+        let dir = tmp_dir("running-export-candidate");
+        let (a, dest) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"));
+        let (mut s, items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        running(&mut s, &dest, Format::default(), None);
+        let options = crate::relink::MatchOptions::default();
+        let c = crate::relink::check_candidate(&s, items[0], &dest, &options).unwrap();
+        assert!(!c.ok && c.problems.iter().any(|p| p.contains("being written by")), "{:?}", c.problems);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refused_replacing_import_leaves_the_project_as_it_is() {
+        let dir = tmp_dir("running-export-replace");
+        let (a, dest) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"));
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        running(&mut s, &dest, Format::default(), None);
+        let (items, history) = (s.project.items.len(), s.history.undo.len());
+        let err = s.execute("file.import", json!({"paths": [dest], "replace": true})).unwrap_err().to_string();
+        assert!(err.contains("being written by"), "{err}");
+        assert_eq!((s.project.items.len(), s.history.undo.len()), (items, history), "the project and its undo history are kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replacing_import_with_no_path_that_can_import_leaves_the_project_as_it_is() {
+        let dir = tmp_dir("running-export-replace-mixed");
+        let (a, dest) = (movie(&dir, "a.mov"), movie(&dir, "dest.mov"));
+        let missing = dir.join("missing.mov").to_string_lossy().into_owned();
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        running(&mut s, &dest, Format::default(), None);
+        let (items, history) = (s.project.items.len(), s.history.undo.len());
+        let err = s.execute("file.import", json!({"paths": [dest, missing], "replace": true})).unwrap_err().to_string();
+        assert!(err.contains("being written by") && err.contains("no such file"), "{err}");
+        assert_eq!((s.project.items.len(), s.history.undo.len()), (items, history), "the project and its undo history are kept");
+        // a path that can import still replaces the project
+        let r = s.execute("file.import", json!({"paths": [dir.join("dest.mov").to_string_lossy(), a], "replace": true})).unwrap();
+        assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_search_does_not_offer_a_file_a_running_export_is_writing() {
+        let dir = tmp_dir("running-export-search");
+        let (a, elsewhere) = (movie(&dir, "a.mov"), dir.join("other"));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let copy = movie(&elsewhere, "a.mov");
+        let (mut s, items, _seq) = session_with(&[std::path::Path::new(&a)]);
+        let found = |s: &mut Session| {
+            let r = s.execute("media.search", json!({"folder": elsewhere.to_string_lossy(), "item": items[0].0})).unwrap();
+            r["results"][0]["candidates"].as_array().map(Vec::len).unwrap_or(0)
+        };
+        assert_eq!(found(&mut s), 1, "the copy is a candidate");
+        let job = running(&mut s, &copy, Format::default(), None);
+        assert_eq!(found(&mut s), 0, "not while an export is writing it");
+        finish(&mut s, job);
+        assert_eq!(found(&mut s), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Make `link` a symbolic link to `target`; false where the system does not allow it (Windows
+    /// without the privilege to link).
+    fn symlink(target: &std::path::Path, link: &std::path::Path) -> bool {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link).is_ok();
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_file(target, link).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        return false;
+    }
+
+    /// Stills that are links, and links to stills, one hop or several. Needs links, so it does
+    /// nothing (and says so) where they cannot be made.
+    #[test]
+    fn links_to_the_stills_of_a_running_export_and_stills_that_are_links_are_covered() {
+        let dir = tmp_dir("running-export-links");
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        let (frame, plain) = (dir.join("elsewhere").join("frame.png"), dir.join("Shot002.png"));
+        std::fs::write(&frame, b"png").unwrap();
+        std::fs::write(&plain, b"png").unwrap();
+        let (linked_still, alias_of_plain, alias_of_link, unrelated) =
+            (dir.join("Shot001.png"), dir.join("alias.png"), dir.join("chain.png"), dir.join("other.png"));
+        let made = symlink(&frame, &linked_still) && symlink(&plain, &alias_of_plain) && symlink(&linked_still, &alias_of_link) && symlink(&frame, &unrelated);
+        if !made {
+            eprintln!("SKIPPED: this system does not let the test make symbolic links");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let (mut s, _items, _seq) = session_with(&[std::path::Path::new(&movie(&dir, "a.mov"))]);
+        running(&mut s, &dir.join("Shot.png").to_string_lossy(), Format::PngSequence, None);
+        let writing = |s: &Session, path: &std::path::Path| crate::export_tools::running_export_writing(s, &path.to_string_lossy()).is_some();
+        assert!(writing(&s, &linked_still), "a still that is a link is refused as named, wherever it leads");
+        assert!(writing(&s, &alias_of_plain), "a link to a still");
+        assert!(writing(&s, &alias_of_link), "a link to a link to a still");
+        assert!(!writing(&s, &unrelated), "a link to the same target, through no still, is not a still");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_real_export_keeps_its_destination_out_of_the_project_until_it_finishes() {
+        let movie = tmp_dir("running-export-real").join("a.mp4");
+        make_movie(&movie, filmcraft_media::DemoScene::Dunes, 320, 180, 480);
+        let (mut s, _items, seq) = session_with(&[&movie]);
+        let dir = Scratch::new("running-export-real");
+        let out = dir.path("dest.mp4");
+        std::fs::copy(&movie, &out).unwrap(); // an earlier file already at the destination
+        s.execute("file.exportMedia", json!({"sequence": seq.0, "path": out, "format": "h264"})).unwrap();
+        let finished = |s: &mut Session| s.execute("jobs.list", json!({})).unwrap()[0]["finished"].as_bool().unwrap_or(true);
+        assert!(!finished(&mut s), "the export is still running when the import is tried");
+        let imported = s.execute("file.import", json!({"paths": [out]}));
+        assert!(imported.is_err_and(|e| e.to_string().contains("being written by")));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while !finished(&mut s) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(finished(&mut s), "the export finishes");
+        let r = s.execute("file.import", json!({"paths": [out]})).unwrap();
+        assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+    }
+
+    /// `spawn_export` itself registers what an image sequence export writes (the job may already
+    /// be over when this looks, so it reads the registry and not the refusal).
+    #[test]
+    fn a_real_image_sequence_export_registers_its_stills() {
+        let movie = tmp_dir("running-export-stills").join("a.mp4");
+        make_movie(&movie, filmcraft_media::DemoScene::Dunes, 64, 36, 12);
+        let (mut s, _items, seq) = session_with(&[&movie]);
+        let dir = Scratch::new("running-export-stills");
+        s.execute("file.exportMedia", json!({"sequence": seq.0, "path": dir.path("Shot.png"), "format": "png"})).unwrap();
+        let registered = |path: &str| s.export_outputs.values().any(|o| o.writes(path));
+        assert!(registered(&dir.path("Shot000.png")) && registered(&dir.path("Shot.png")));
+        assert!(!registered(&dir.path("Shotgun.png")));
+    }
+}
