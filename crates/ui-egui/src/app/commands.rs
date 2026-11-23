@@ -46,7 +46,7 @@ impl FilmcraftApp {
                     continue;
                 }
                 if let Err(e) = menus::activate_native(self, ctx, &id) {
-                    self.ui.status = e;
+                    self.ui.fail(e);
                 }
             }
             self.command_inbox = Some(rx);

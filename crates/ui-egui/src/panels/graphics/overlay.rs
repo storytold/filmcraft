@@ -61,7 +61,7 @@ fn commit_marked_text(app: &mut FilmcraftApp, ctx: &egui::Context) {
     text.replace_range(a..b, &marked);
     let params = json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true});
     if let Err(e) = app.session.execute("graphics.setText", params) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn deselect_on_monitor(app: &mut FilmcraftApp, ui: &egui::Ui) {
     if app.session.state.selected_mask.is_some()
         && let Err(e) = app.session.execute("masks.select", json!({"none": true}))
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -666,7 +666,7 @@ fn run_actions(app: &mut FilmcraftApp, actions: Vec<(String, Value)>) {
                     app.ui.focused = crate::dock::PanelKind::Program;
                 }
             }
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

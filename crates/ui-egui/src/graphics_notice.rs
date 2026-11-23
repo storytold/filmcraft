@@ -76,7 +76,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.auto.add("graphics.notice", shown.response.rect, &title);
     }
     if reset && let Err(e) = notice.reset() {
-        app.ui.status = e;
+        app.ui.fail(e);
     }
     notice.closed |= close;
     app.graphics_notice = Some(notice);

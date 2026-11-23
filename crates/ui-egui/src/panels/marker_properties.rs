@@ -118,7 +118,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         return;
     }
     let Some((title, rate, drop, mut markers)) = draft.owner.details(app) else {
-        app.ui.status = tl!("Marker owner is unavailable").into();
+        app.ui.fail(tl!("Marker owner is unavailable"));
         return;
     };
     // Commands can edit or remove this marker while its dialog (or native picker) is open.
@@ -126,7 +126,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     markers.sort_by_key(|m| (m.start, m.id.0));
     let index = markers.iter().position(|m| m.id.0 == draft.marker);
     if index.and_then(|i| markers.get(i)) != Some(&draft.original) {
-        app.ui.status = tl!("Marker changed or was removed. Reopen it to continue.").into();
+        app.ui.fail(tl!("Marker changed or was removed. Reopen it to continue."));
         return;
     }
     if draft.color_editor.is_some() {

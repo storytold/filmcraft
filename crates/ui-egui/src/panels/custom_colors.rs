@@ -68,7 +68,7 @@ pub fn menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, params: Value, prefix: &s
                 let mut command = params.clone();
                 command["label"] = json!(hex);
                 if let Err(e) = app.session.execute("edit.label", command) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
                 ui.close();
             }

@@ -29,7 +29,7 @@ impl FilmcraftApp {
                         if let Some(errs) = v.get("errors").and_then(Value::as_array)
                             && !errs.is_empty()
                         {
-                            app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+                            app.ui.fail(errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "));
                         } else if let Some(presets) = v.get("presets").and_then(Value::as_array)
                             && !presets.is_empty()
                         {
@@ -47,7 +47,7 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
                 if let Err(e) = &r {
-                    app.ui.status = e.clone();
+                    app.ui.fail(e.clone());
                 }
                 r
             }),
@@ -60,7 +60,7 @@ impl FilmcraftApp {
                     let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
                     match &r {
                         Ok(_) => crate::menus::saved_status(app, cmd, &path),
-                        Err(e) => app.ui.status = e.clone(),
+                        Err(e) => app.ui.fail(e.clone()),
                     }
                     r
                 })
