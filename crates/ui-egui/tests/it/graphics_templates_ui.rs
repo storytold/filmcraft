@@ -155,6 +155,9 @@ fn export_dialog_and_install_round_trip() {
     assert_eq!(v["dialog"], "exportTemplate");
     d.frames(3);
     assert!(d.ids("exportTemplate.").contains(&"exportTemplate.ok".to_string()));
+    let elements = d.ok("ui.elements", json!({"prefix": "exportTemplate."}));
+    let left = |suffix: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == format!("exportTemplate.{suffix}")).unwrap()["rect"][0].as_f64().unwrap();
+    assert!(left("ok") < left("cancel"), "exportTemplate must put Cancel to the right of the primary action");
     let st = d.ok("ui.inspect", json!({}));
     let draft = st["ui"]["gfx_templates"]["export"].clone();
     assert_eq!(draft["clip"], clip, "{draft}");
@@ -177,6 +180,9 @@ fn export_dialog_and_install_round_trip() {
     assert_eq!(v["dialog"], "replaceFonts");
     d.frames(3);
     assert!(d.ids("replaceFonts.").contains(&"replaceFonts.ok".to_string()));
+    let elements = d.ok("ui.elements", json!({"prefix": "replaceFonts."}));
+    let left = |suffix: &str| elements.as_array().unwrap().iter().find(|e| e["id"] == format!("replaceFonts.{suffix}")).unwrap()["rect"][0].as_f64().unwrap();
+    assert!(left("ok") < left("cancel"), "replaceFonts must put Cancel to the right of the primary action");
     d.ok("ui.set", json!({"gfxTemplates": {"replace": {"from": "Inter", "to": "Noto Serif"}}}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "replaceFonts.ok"}));

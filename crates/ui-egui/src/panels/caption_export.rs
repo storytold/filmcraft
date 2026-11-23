@@ -15,7 +15,6 @@
 //! `mcc`, `stl`, `ttml`, `dfxp`), `captionExport.track`, `captionExport.track.option.<n>` (the
 //! track's 1-based position, as in `C<n>`), `captionExport.ok`, `captionExport.cancel`.
 
-use crate::widgets::CenteredDialog as _;
 use filmcraft_captions::Format;
 use serde_json::{Map, Value, json};
 
@@ -49,58 +48,63 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let shown = tl!("Caption Export Settings");
-    egui::Window::new(shown).id(egui::Id::unique("Caption Export Settings")).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
-        ui.set_min_width(340.0);
-        egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label(tl!("File Format"));
-            let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
-                for f in Format::ALL {
-                    let o = ui.selectable_value(&mut d.format, f, f.name());
-                    elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
-                }
-            });
-            elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
-            ui.end_row();
-            let tracks: Vec<(u64, String)> =
-                app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
-            if tracks.len() > 1 {
-                let params = Value::Object(d.params.clone());
-                let requested = filmcraft_engine::captions::track_param(&app.session, &params);
-                let chosen = requested.map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
-                // a track that does not exist (`C9`, a deleted id) shows the first one, so OK exports that one
-                if requested.is_none() {
-                    d.params.insert("track".into(), json!(tracks[0].0));
-                }
-                let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
-                let mut pick = chosen;
-                ui.label(tl!("Caption Track"));
-                let r = craft_ui::ComboBox::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
-                    for i in 0..tracks.len() {
-                        let o = ui.selectable_value(&mut pick, i, label(i));
-                        elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
+    crate::dialog_style::Window::new(&app.tokens, shown)
+        .id(egui::Id::unique("Caption Export Settings"))
+        .collapsible(false)
+        .resizable(false)
+        .centered(ctx)
+        .show(ctx, |ui| {
+            ui.set_min_width(340.0);
+            egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label(tl!("File Format"));
+                let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
+                    for f in Format::ALL {
+                        let o = ui.selectable_value(&mut d.format, f, f.name());
+                        elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
                     }
                 });
-                elems.push(("captionExport.track".into(), r.response.rect, label(pick)));
-                if pick != chosen {
-                    d.params.insert("track".into(), json!(tracks[pick].0));
-                }
+                elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
                 ui.end_row();
-            }
+                let tracks: Vec<(u64, String)> =
+                    app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
+                if tracks.len() > 1 {
+                    let params = Value::Object(d.params.clone());
+                    let requested = filmcraft_engine::captions::track_param(&app.session, &params);
+                    let chosen = requested.map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
+                    // a track that does not exist (`C9`, a deleted id) shows the first one, so OK exports that one
+                    if requested.is_none() {
+                        d.params.insert("track".into(), json!(tracks[0].0));
+                    }
+                    let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
+                    let mut pick = chosen;
+                    ui.label(tl!("Caption Track"));
+                    let r = craft_ui::ComboBox::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
+                        for i in 0..tracks.len() {
+                            let o = ui.selectable_value(&mut pick, i, label(i));
+                            elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
+                        }
+                    });
+                    elems.push(("captionExport.track".into(), r.response.rect, label(pick)));
+                    if pick != chosen {
+                        d.params.insert("track".into(), json!(tracks[pick].0));
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.add_space(8.0);
+            crate::dialog_style::actions(ui, |ui| {
+                let c = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
+                elems.push(("captionExport.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    close = true;
+                }
+                let o = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
+                elems.push(("captionExport.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button(tl!("Cancel"));
-            elems.push(("captionExport.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                close = true;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("captionExport.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

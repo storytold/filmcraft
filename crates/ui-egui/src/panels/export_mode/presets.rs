@@ -5,7 +5,6 @@ use super::{Align2, Color32, FileDialog, FilmcraftApp, Rect, Reg, Sense, Value, 
 // ---------------------------------------------------------------------------------------------
 // Preset Manager
 // ---------------------------------------------------------------------------------------------
-
 pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut m) = app.ui.export.manager.clone() else { return };
     let t = app.tokens;
@@ -18,7 +17,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.trim().to_string();
-    egui::Window::new(tl!("Preset Manager"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Preset Manager"))
         .id(egui::Id::unique("Preset Manager"))
         .id(egui::Id::unique("preset-manager"))
         .open(&mut open)
@@ -83,7 +82,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     "Preset name",
                 );
                 reg.add("presetManager.saveName", r.rect, "Preset name");
-                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
+                let r = ui.add_enabled(!m.save_name.trim().is_empty(), crate::dialog_style::primary(&app.tokens, tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
                     cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
@@ -107,14 +106,14 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     cmd = Some(("export.presets.delete", json!({"name": m.selected})));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add_enabled(sel.is_some(), egui::Button::new(tl!("OK")));
+                    let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
+                    reg.add("presetManager.cancel", r.rect, "Cancel");
+                    close |= r.clicked();
+                    let r = ui.add_enabled(sel.is_some(), crate::dialog_style::primary(&app.tokens, tl!("OK")));
                     reg.add("presetManager.ok", r.rect, "OK");
                     if r.clicked() {
                         apply = Some(m.selected.clone());
                     }
-                    let r = ui.button(tl!("Cancel"));
-                    reg.add("presetManager.cancel", r.rect, "Cancel");
-                    close |= r.clicked();
                 });
             });
         });
