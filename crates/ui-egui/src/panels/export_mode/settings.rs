@@ -534,7 +534,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
                     let labels: Vec<(String, Option<&str>)> = o.iter().map(|p| (p.label().to_string(), None)).collect();
                     let tip = |i: usize| (o.get(i) == Some(&H264Profile::High10)).then(|| tl!("10-bit color"));
-                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0, tip) {
+                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, fit(ui, 120.0), tip) {
                         s.h264_profile = o[i];
                     }
                 });
