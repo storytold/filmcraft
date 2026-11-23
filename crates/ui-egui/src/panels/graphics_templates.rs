@@ -254,7 +254,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         elems.push((format!("gfxTemplates.item.{}", e.template.id), r, e.template.name.clone()));
                         let resp = resp.on_hover_text(crate::i18n::t(&e.template.description));
                         if resp.drag_started_by(egui::PointerButton::Primary) {
-                            crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
+                            crate::panels::start_drag_template(ui, &e.template.id, &e.template.name, e.template.duration);
                         }
                         if resp.double_clicked() {
                             apply = Some(e.template.id.clone());
@@ -352,33 +352,41 @@ pub fn template_controls(
         let Some(e) = it.effects.iter().find(|e| graphic::is_layer(e) && filmcraft_project::gtemplate::layer_uid(e) == c.layer) else { continue };
         let id = format!("gfxTemplates.control.{}", c.id);
         let pv = e.params.get(&c.param).map(|p| p.value_at(mt));
+        let set =
+            |v: Value, actions: &mut Vec<(String, Value)>| actions.push(("graphics.template.set".into(), json!({"clip": clip.0, "control": c.id, "value": v})));
         // multi-line text: the label on its own row, the field full width below it
-        if c.kind == ControlKind::Text
+        let is_multiline = c.kind == ControlKind::Text
             && c.param != "enabled"
-            && let Some(ParamValue::Text(s0)) = &pv
-            && s0.contains('\n')
-        {
+            && (c.id == "body"
+                || c.id.contains("desc")
+                || c.name.eq_ignore_ascii_case("description")
+                || pv.as_ref().is_some_and(|v| match v {
+                    ParamValue::Text(s) => s.contains('\n'),
+                    _ => false,
+                }));
+        if is_multiline {
+            let s0 = match &pv {
+                Some(ParamValue::Text(s)) => s.as_str(),
+                _ => "",
+            };
             ui.label(egui::RichText::new(format!("    {}", crate::i18n::t(&c.name))).color(t.text_dim).size(12.0));
-            let mut s = s0.clone();
-            let rows = s.lines().count().clamp(2, 8);
-            let r = ui
+            let rows = s0.lines().count().clamp(2, 8);
+            let edit_id = egui::Id::unique(&id);
+            let w = ui.available_width() - 8.0;
+            let (r, changed_to) = ui
                 .horizontal(|ui| {
                     ui.add_space(14.0);
-                    crate::widgets::accessible_name(
-                        ui.add(egui::TextEdit::multiline(&mut s).desired_rows(rows).desired_width(ui.available_width() - 8.0)),
-                        c.name.clone(),
-                    )
+                    let (r, changed_to) = crate::widgets::clear_on_focus_multiline_text_edit(ui, edit_id, s0, w, rows);
+                    (crate::widgets::accessible_name(r, c.name.clone()), changed_to)
                 })
                 .inner;
             autos.push((id, r.rect, c.name.clone()));
-            if s != *s0 {
-                actions.push(("graphics.template.set".into(), json!({"clip": clip.0, "control": c.id, "value": s})));
+            if let Some(new_s) = changed_to {
+                set(json!(new_s), actions);
             }
             continue;
         }
         let mut vui = row_label(ui, &c.name, &t);
-        let set =
-            |v: Value, actions: &mut Vec<(String, Value)>| actions.push(("graphics.template.set".into(), json!({"clip": clip.0, "control": c.id, "value": v})));
         match c.kind {
             _ if c.param == "enabled" => {
                 let mut b = e.enabled;
@@ -389,15 +397,17 @@ pub fn template_controls(
                 }
             }
             ControlKind::Text => {
-                let mut s = match pv {
-                    Some(ParamValue::Text(s)) => s,
-                    _ => String::new(),
+                let s = match &pv {
+                    Some(ParamValue::Text(s)) => s.as_str(),
+                    _ => "",
                 };
-                let before = s.clone();
-                let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut s).desired_width(vui.available_width() - 4.0)), c.name.clone());
+                let edit_id = egui::Id::unique(&id);
+                let w = vui.available_width() - 4.0;
+                let (r, changed_to) = crate::widgets::clear_on_focus_text_edit(&mut vui, edit_id, s, w);
+                let r = crate::widgets::accessible_name(r, c.name.clone());
                 autos.push((id, r.rect, c.name.clone()));
-                if s != before {
-                    set(json!(s), actions);
+                if let Some(new_s) = changed_to {
+                    set(json!(new_s), actions);
                 }
             }
             ControlKind::Color => {
