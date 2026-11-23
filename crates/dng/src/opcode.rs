@@ -46,54 +46,6 @@ pub fn parse(b: &[u8]) -> Result<Vec<Opcode>> {
     craft_raw::opcode_raw::parse(b, MAX_OPCODES).map_err(|_| Error::Malformed("opcode list"))
 }
 
-/// Big-endian parameter reader.
-struct Reader<'a> {
-    b: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(b: &'a [u8]) -> Self {
-        Reader { b, pos: 0 }
-    }
-
-    fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(n).ok_or(Error::Malformed("opcode parameters"))?;
-        let s = self.b.get(self.pos..end).ok_or(Error::Malformed("opcode parameters too short"))?;
-        self.pos = end;
-        Ok(s)
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        let s = self.bytes(4)?;
-        Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-    }
-
-    fn f32(&mut self) -> Result<f32> {
-        let v = f32::from_bits(self.u32()?);
-        if v.is_finite() { Ok(v) } else { Err(Error::Malformed("non-finite opcode parameter")) }
-    }
-
-    fn f64(&mut self) -> Result<f64> {
-        let s = self.bytes(8)?;
-        let v = f64::from_be_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
-        if v.is_finite() { Ok(v) } else { Err(Error::Malformed("non-finite opcode parameter")) }
-    }
-
-    fn remaining(&self) -> usize {
-        self.b.len().saturating_sub(self.pos)
-    }
-
-    /// A count of items of `size` bytes each that must fit in what is left.
-    fn count(&mut self, size: usize) -> Result<usize> {
-        let n = self.u32()? as usize;
-        if n.saturating_mul(size) > self.remaining() {
-            return Err(Error::Malformed("opcode count larger than its parameters"));
-        }
-        Ok(n)
-    }
-}
-
 /// The picture an opcode list works on: `planes` interleaved samples per pixel.
 pub struct Image<'a> {
     pub data: &'a mut Vec<f32>,
@@ -161,50 +113,56 @@ pub fn apply(list: &[Opcode], img: &mut Image, preview: bool) -> Result<()> {
 }
 
 fn run(op: &Opcode, img: &mut Image) -> Result<()> {
-    let mut r = Reader::new(&op.params);
-    match op.id {
-        1 | 2 | 14 => warp(op.id, &mut r, img),
-        3 => vignette(&mut r, img),
-        4 => {
-            let constant = r.u32()?;
-            let phase = r.u32()?;
-            let mut bad = Vec::new();
-            let c = if img.integer() { constant as f32 } else { constant as f32 / 65_535.0 };
-            for (i, px) in img.data.iter().enumerate() {
-                if *px == c {
-                    bad.push(i);
-                }
-            }
-            fix_bad(img, phase, &bad)
+    use craft_raw::opcode_params::{Context, Params as P, ParseError};
+    let context = Context { width: img.width, height: img.height, planes: img.planes, mosaic: img.mosaic, allow_trim: img.allow_trim };
+    let params = craft_raw::opcode_params::parse(op.id, &op.params, context).map_err(|e| match e {
+        ParseError::Malformed(s) => Error::Malformed(s),
+        ParseError::Unsupported(s) => Error::Unsupported(s.into()),
+    })?;
+    match params {
+        P::WarpRectilinear { planes, center } => {
+            warp(planes.into_iter().map(|v| Radial::Rectilinear([v[0], v[1], v[2], v[3]], [v[4], v[5]])).collect(), center, img)
         }
-        5 => {
-            let phase = r.u32()?;
-            let points = r.u32()? as usize;
-            let rects = r.u32()? as usize;
-            if points.saturating_mul(8).saturating_add(rects.saturating_mul(16)) > r.remaining() {
-                return Err(Error::Malformed("FixBadPixelsList counts larger than its parameters"));
-            }
+        P::WarpFisheye { planes, center } => warp(planes.into_iter().map(Radial::Fisheye).collect(), center, img),
+        P::WarpRectilinear2 { planes, center, reciprocal } => warp(
+            planes
+                .into_iter()
+                .map(|v| {
+                    let mut kr = [0.0; 15];
+                    kr.copy_from_slice(&v[..15]);
+                    Radial::Rectilinear2 { kr, kt: [v[15], v[16]], min: v[17], max: v[18], reciprocal }
+                })
+                .collect(),
+            center,
+            img,
+        ),
+        P::FixVignetteRadial { k, center } => vignette(k, center, img),
+        P::FixBadPixelsConstant { constant, bayer_phase } => {
+            let c = if img.integer() { constant as f32 } else { constant as f32 / 65_535.0 };
+            let bad: Vec<usize> = img.data.iter().enumerate().filter_map(|(i, px)| (*px == c).then_some(i)).collect();
+            fix_bad(img, bayer_phase, &bad)
+        }
+        P::FixBadPixelsList { bayer_phase, points, rects } => {
             let (w, h) = (img.width, img.height);
             let mut mask = vec![false; w * h];
-            for _ in 0..points {
-                let (y, x) = (r.u32()? as usize, r.u32()? as usize);
+            for (y, x) in points.iter() {
+                let (y, x) = (y as usize, x as usize);
                 if x < w && y < h {
                     mask[y * w + x] = true;
                 }
             }
-            for _ in 0..rects {
-                let (t, l, b, rt) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize, r.u32()? as usize);
-                for y in t.min(h)..b.min(h) {
-                    for x in l.min(w)..rt.min(w) {
+            for [t, l, b, r] in rects.iter() {
+                for y in (t as usize).min(h)..(b as usize).min(h) {
+                    for x in (l as usize).min(w)..(r as usize).min(w) {
                         mask[y * w + x] = true;
                     }
                 }
             }
             let bad: Vec<usize> = mask.iter().enumerate().filter_map(|(i, &b)| b.then_some(i)).collect();
-            fix_bad(img, phase, &bad)
+            fix_bad(img, bayer_phase, &bad)
         }
-        6 => trim(&mut r, img),
-        _ => area_op(op.id, &mut r, img),
+        P::TrimBounds { top, left, bottom, right } => trim(top, left, bottom, right, img),
+        p => area_op(p, img),
     }
 }
 
@@ -221,26 +179,8 @@ struct Area {
 }
 
 impl Area {
-    fn read(r: &mut Reader, img: &Image) -> Result<Area> {
-        let mut v = [0usize; 8];
-        for x in &mut v {
-            *x = r.u32()? as usize;
-        }
-        let [top, left, bottom, right, plane, planes, row_pitch, col_pitch] = v;
-        if row_pitch == 0 || col_pitch == 0 {
-            return Err(Error::Malformed("opcode area with a zero pitch"));
-        }
-        let plane = plane.min(img.planes);
-        Ok(Area {
-            top: top.min(img.height),
-            left: left.min(img.width),
-            bottom: bottom.min(img.height),
-            right: right.min(img.width),
-            plane,
-            planes: planes.min(img.planes - plane),
-            row_pitch,
-            col_pitch,
-        })
+    fn from_shared(a: craft_raw::opcode_params::Area) -> Area {
+        Area { top: a.top, left: a.left, bottom: a.bottom, right: a.right, plane: a.plane, planes: a.planes, row_pitch: a.row_pitch, col_pitch: a.col_pitch }
     }
 
     /// Rows of the area, in order.
@@ -268,70 +208,56 @@ impl Area {
     }
 }
 
-fn area_op(id: u32, r: &mut Reader, img: &mut Image) -> Result<()> {
-    let a = Area::read(r, img)?;
+fn area_op(params: craft_raw::opcode_params::Params<'_>, img: &mut Image) -> Result<()> {
+    use craft_raw::opcode_params::Params as P;
     let scale = img.max;
-    match id {
-        7 => {
-            let n = r.count(2)?;
-            if n == 0 {
-                return Err(Error::Malformed("MapTable without entries"));
-            }
-            let table: Vec<f32> = (0..n).map(|_| r.bytes(2).map(|b| f32::from(u16::from_be_bytes([b[0], b[1]])))).collect::<Result<_>>()?;
-            let last = table.last().copied().unwrap_or(0.0);
+    match params {
+        P::MapTable { area, table } => {
+            let a = Area::from_shared(area);
+            let last = table.last().copied().unwrap_or(0) as f32;
             a.each(img, |_, _, _, _, _, v| {
                 let code = (*v / scale * 65_535.0).round().clamp(0.0, 65_535.0) as usize;
-                *v = table.get(code).copied().unwrap_or(last) / 65_535.0 * scale;
+                *v = table.get(code).map_or(last, |x| f32::from(*x)) / 65_535.0 * scale;
             });
         }
-        8 => {
-            let degree = r.u32()? as usize;
-            if degree > 8 {
-                return Err(Error::Malformed("MapPolynomial degree above 8"));
-            }
-            let c: Vec<f64> = (0..=degree).map(|_| r.f64()).collect::<Result<_>>()?;
+        P::MapPolynomial { area, coefficients } => {
+            let a = Area::from_shared(area);
             a.each(img, |_, _, _, _, _, v| {
                 let x = f64::from(*v / scale);
-                let y = c.iter().rev().fold(0.0, |acc, k| acc * x + k);
+                let y = coefficients.iter().rev().fold(0.0, |acc, k| acc * x + k);
                 *v = (y * f64::from(scale)) as f32;
             });
         }
-        9 => gain_map(&a, r, img)?,
-        10..=13 => {
-            let n = r.count(4)?;
-            let vals: Vec<f32> = (0..n).map(|_| r.f32()).collect::<Result<_>>()?;
-            let per_row = matches!(id, 10 | 12);
-            let need = if per_row { a.rows().count() } else { a.cols().count() };
-            if vals.len() < need {
-                return Err(Error::Malformed("opcode with fewer values than rows or columns"));
-            }
-            let delta = id <= 11;
-            a.each(img, |ri, ci, _, _, _, v| {
-                let k = vals.get(if per_row { ri } else { ci }).copied().unwrap_or(if delta { 0.0 } else { 1.0 });
-                *v = if delta { *v + k * scale } else { *v * k };
-            });
+        P::GainMap { area, points_v, points_h, spacing, origin, map_planes, gains } => {
+            return gain_map(&Area::from_shared(area), GainMap { points_v, points_h, spacing, origin, map_planes, gains }, img);
         }
-        _ => return Err(Error::Unsupported(format!("DNG opcode {id}"))),
+        P::DeltaPerRow { area, deltas } => adjust(&Area::from_shared(area), &deltas, true, true, img),
+        P::DeltaPerColumn { area, deltas } => adjust(&Area::from_shared(area), &deltas, false, true, img),
+        P::ScalePerRow { area, scales } => adjust(&Area::from_shared(area), &scales, true, false, img),
+        P::ScalePerColumn { area, scales } => adjust(&Area::from_shared(area), &scales, false, false, img),
+        _ => return Err(Error::Malformed("opcode parameters")),
     }
     Ok(())
 }
-
-fn gain_map(a: &Area, r: &mut Reader, img: &mut Image) -> Result<()> {
-    let points_v = r.u32()? as usize;
-    let points_h = r.u32()? as usize;
-    let spacing_v = r.f64()?;
-    let spacing_h = r.f64()?;
-    let origin_v = r.f64()?;
-    let origin_h = r.f64()?;
-    let map_planes = r.u32()? as usize;
-    let n = points_v.saturating_mul(points_h).saturating_mul(map_planes);
-    if points_v == 0 || points_h == 0 || map_planes == 0 || n.saturating_mul(4) > r.remaining() {
-        return Err(Error::Malformed("GainMap size"));
-    }
-    if (points_v > 1 && spacing_v <= 0.0) || (points_h > 1 && spacing_h <= 0.0) {
-        return Err(Error::Malformed("GainMap spacing"));
-    }
-    let gains: Vec<f32> = (0..n).map(|_| r.f32()).collect::<Result<_>>()?;
+fn adjust(a: &Area, vals: &[f32], per_row: bool, delta: bool, img: &mut Image) {
+    let scale = img.max;
+    a.each(img, |ri, ci, _, _, _, v| {
+        let k = vals.get(if per_row { ri } else { ci }).copied().unwrap_or(if delta { 0.0 } else { 1.0 });
+        *v = if delta { *v + k * scale } else { *v * k };
+    });
+}
+struct GainMap {
+    points_v: usize,
+    points_h: usize,
+    spacing: [f64; 2],
+    origin: [f64; 2],
+    map_planes: usize,
+    gains: Vec<f32>,
+}
+fn gain_map(a: &Area, map: GainMap, img: &mut Image) -> Result<()> {
+    let GainMap { points_v, points_h, spacing, origin, map_planes, gains } = map;
+    let [spacing_v, spacing_h] = spacing;
+    let [origin_v, origin_h] = origin;
     let (w, h) = (img.width.max(1) as f64, img.height.max(1) as f64);
     let pos = |rel: f64, origin: f64, spacing: f64, points: usize| {
         if points <= 1 {
@@ -366,9 +292,8 @@ fn centre(img: &Image, cx: f64, cy: f64) -> (f64, f64, f64) {
     (cx, cy, (mx * mx + my * my).sqrt())
 }
 
-fn vignette(r: &mut Reader, img: &mut Image) -> Result<()> {
-    let k: Vec<f64> = (0..5).map(|_| r.f64()).collect::<Result<_>>()?;
-    let (cx, cy) = (r.f64()?, r.f64()?);
+fn vignette(k: [f64; 5], center: [f64; 2], img: &mut Image) -> Result<()> {
+    let [cx, cy] = center;
     let (cx, cy, m) = centre(img, cx, cy);
     if m <= 0.0 {
         return Ok(());
@@ -445,15 +370,7 @@ fn fix_bad(img: &mut Image, phase: u32, bad: &[usize]) -> Result<()> {
     Ok(())
 }
 
-fn trim(r: &mut Reader, img: &mut Image) -> Result<()> {
-    let (t, l, b, rt) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize, r.u32()? as usize);
-    if !img.allow_trim {
-        return Err(Error::Unsupported("TrimBounds before the demosaic".into()));
-    }
-    let (b, rt) = (b.min(img.height), rt.min(img.width));
-    if t >= b || l >= rt {
-        return Err(Error::Malformed("TrimBounds outside the picture"));
-    }
+fn trim(t: usize, l: usize, b: usize, rt: usize, img: &mut Image) -> Result<()> {
     let (np, w) = (img.planes, img.width);
     let nw = rt - l;
     let mut out = Vec::with_capacity(nw * (b - t) * np);
@@ -524,45 +441,8 @@ impl Radial {
     }
 }
 
-fn warp(id: u32, r: &mut Reader, img: &mut Image) -> Result<()> {
-    if img.mosaic {
-        return Err(Error::Unsupported("a warp opcode on a CFA mosaic".into()));
-    }
-    let per_set = match id {
-        1 => 6,
-        2 => 4,
-        _ => 19,
-    };
-    let n = r.count(per_set * 8)?;
-    if n != 1 && n != img.planes {
-        return Err(Error::Malformed("warp opcode coefficient sets"));
-    }
-    let mut sets = Vec::with_capacity(n);
-    for _ in 0..n {
-        let v: Vec<f64> = (0..per_set).map(|_| r.f64()).collect::<Result<_>>()?;
-        sets.push(match id {
-            1 => Radial::Rectilinear([v[0], v[1], v[2], v[3]], [v[4], v[5]]),
-            2 => Radial::Fisheye([v[0], v[1], v[2], v[3]]),
-            _ => {
-                let mut kr = [0f64; 15];
-                kr.copy_from_slice(&v[..15]);
-                let (min, max) = (v[17].clamp(0.0, 1.0), v[18].clamp(0.0, 1.0));
-                if min >= max {
-                    return Err(Error::Malformed("WarpRectilinear2 valid radius range"));
-                }
-                Radial::Rectilinear2 { kr, kt: [v[15], v[16]], min, max, reciprocal: false }
-            }
-        });
-    }
-    let (cx, cy) = (r.f64()?, r.f64()?);
-    if id == 14 {
-        let reciprocal = r.u32()? != 0;
-        for s in &mut sets {
-            if let Radial::Rectilinear2 { reciprocal: rr, .. } = s {
-                *rr = reciprocal;
-            }
-        }
-    }
+fn warp(sets: Vec<Radial>, center: [f64; 2], img: &mut Image) -> Result<()> {
+    let [cx, cy] = center;
     let (cx, cy, m) = centre(img, cx, cy);
     if m <= 0.0 {
         return Ok(());

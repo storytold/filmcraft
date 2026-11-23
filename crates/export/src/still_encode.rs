@@ -37,12 +37,9 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
         Format::TgaSequence => return raster::tga(&rgba, w, h, alpha),
         Format::DpxSequence => return raster::dpx(&rgba, w, h),
         Format::ExrSequence => return raster::exr(&rgba, w, h, alpha, exr),
-        Format::PngSequence if alpha => {
-            image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), &rgba, w, h, image::ExtendedColorType::Rgba8).map_err(enc)?
-        }
         Format::PngSequence => {
-            let rgb = raster::rgb(&rgba, w, h)?;
-            image::ImageEncoder::write_image(image::codecs::png::PngEncoder::new(&mut out), &rgb, w, h, image::ExtendedColorType::Rgb8).map_err(enc)?
+            let (layout, samples) = if alpha { (craft_png::Layout::Rgba, rgba) } else { (craft_png::Layout::Rgb, raster::rgb(&rgba, w, h)?) };
+            craft_png::write_8bit(&mut out, w, h, layout, &samples).map_err(|e| ExportError::Encode(e.to_string()))?
         }
         Format::TiffSequence | Format::BmpSequence => {
             let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame size".into()))?;

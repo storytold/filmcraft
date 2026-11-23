@@ -1,7 +1,6 @@
 # Contributing
 
-Read [AGENTS.md](../AGENTS.md) first. Its rules on assets, clean-room code and licences are
-absolute and override everything here. Then read [architecture.md](architecture.md) and the README
+Read [AGENTS.md](../AGENTS.md) first: the shared rules and the facts about this repository. Then read [architecture.md](architecture.md) and the README
 of the crate you will change.
 
 ## 1. Setup
@@ -112,7 +111,7 @@ character index.
 
 ## 3. Quality gates
 
-Every commit must pass all of these:
+Run the checks that apply to the crates you changed. `cargo xtask ci` runs all of them:
 
 | Gate | Command |
 |---|---|
@@ -131,8 +130,8 @@ Run them with `CRAFT_FONTS_DIR` set too when you change font code ([craft-fonts]
 ### Never crash
 
 Production code must never crash: a crash loses someone's work, so this outranks feature work. The rules
-are in [AGENTS.md](../AGENTS.md) §0. In short: return `Result<T, E>` instead of `unwrap()` / `expect()` /
-`panic!` / `unreachable!` / `todo!` / `unimplemented!`; no `unsafe`; use `get()`, `checked_*` /
+are rule 13 of [AGENTS.md](../AGENTS.md). In short: return `Result<T, E>` instead of `unwrap()` / `expect()` /
+`panic!` / `unreachable!` / `todo!` / `unimplemented!`; no `unsafe` outside `crates/platform`; use `get()`, `checked_*` /
 `saturating_*` and validated bounds on anything that came from a file, a command parameter or the UI;
 bound recursion; tolerate lock poisoning; catch panics in background threads and report them as errors.
 Clean crates deny the panicking lints outside tests (`clippy.toml` allows them in tests). Every crash fix
@@ -145,7 +144,6 @@ comes with a regression test; parsers, decoders and commands get fuzz / hostile-
   `M9.9: Matroska/WebM import`. Milestones (`M0`–`M16`) are listed in
   [ROADMAP.md](../ROADMAP.md). If your change has no task id, use the area: `docs: …`,
   `README: …`, `ROADMAP: …`.
-- Commit only green states (all gates pass).
 - When a milestone lands, update its row in [roadmap.md](roadmap.md) (status, what's done, estimates), the summary in `ROADMAP.md`, and the parity doc and [gaps.md](gaps.md) entry it moves, with their "Last updated" lines and revision history.
 - AI agents end commit messages with the attribution line their environment requires.
 
@@ -192,6 +190,8 @@ export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock figh
 4. The command now appears in menus (from `menu`), shortcuts, `filmcraft-cli commands`,
    `engine.commands` and MCP `command_list` without further work.
 
+**Move identity uniqueness.** A move plan lists each clip identity at most once. The core move operation rejects repeated ids before mutation or id allocation; placing one identity on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids and retain each entry's requested destination. Destination track creation and the edit commit together. In an idle session, a rejected duplicate move retains the project and its undo and redo history. Selection-derived edit plans keep each identity once in first-occurrence order before expanding linked partners; explicit move requests with repeated identities are still rejected.
+
 ### A video effect
 
 1. Define it in `build_effects()` in `crates/project/src/effect.rs` with the `video(id, name,
@@ -231,7 +231,7 @@ stream is cut into blocks (there are tests for this).
 ### A codec or container crate
 
 1. **Spec first.** Work only from the public specification (ITU-T, ISO/IEC, IETF RFCs, SMPTE,
-   published container specs). Never copy GPL/LGPL code, and follow AGENTS.md §2 on reading other
+   published container specs). Never copy GPL/LGPL code, and follow [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md) on reading other
    implementations. Name the spec edition in the crate README.
 2. Create `crates/<name>` as an L0 crate that depends only on `filmcraft-bitstream` (plus
    `thiserror` and optional `rayon` behind a `threads` feature). Add `[lints] workspace = true`, add
@@ -260,13 +260,13 @@ stream is cut into blocks (there are tests for this).
 - UI state that should survive or be scriptable goes in `crates/ui-egui/src/state.rs` (serde), so
   `ui.inspect` and `ui.set` can reach it.
 - Project changes go through `session.execute(…)`, never by mutating the project directly.
-- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch (AGENTS.md §1).
+- Icons are drawn in code in `crates/ui-egui/src/icons.rs`, from scratch ([standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)).
 - Look at the result: run with `--control`, drive it, take `ui.screenshot`
   ([agents.md](agents.md#3-verifying-ui-work)).
 
 ### An asset
 
-The rules are in [AGENTS.md §1](../AGENTS.md#1-assets-no-adobe-artwork-every-asset-licensed-and-attributed).
+The rules are in [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md) and [AGENTS.md](../AGENTS.md).
 In short:
 
 - No Adobe iconography, images, fonts, LUTs, presets or other Adobe assets, in any form, including
