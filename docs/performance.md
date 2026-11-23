@@ -4,6 +4,84 @@
 and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live counters with
 `perf.stats` ([control-protocol.md](control-protocol.md)).
 
+## Per-frame timing log (playback and scrubbing)
+
+`perf.stats` counters are cumulative; to see where each frame's milliseconds go on a real machine,
+start the desktop app with `FILMCRAFT_FRAME_TIMING=1` (or run `perf.frameTiming {"on": true}` over
+the control channel; without `on` it toggles). Lines go to the app log
+(`<data dir>/Logs/filmcraft.log`, on Windows `%APPDATA%\FilmCraft\Logs`) under the target
+`filmcraft::frame_timing`; nothing is measured while it is off.
+
+- `pass`: one per UI refresh while playing, scrubbing or waiting for the Program monitor's exact
+  frame: `gap` (egui paint, present and vsync wait between passes), `logic` / `audio` (audio-clock
+  poll), `ui`, `sched` (frame scheduling), the GPU compositor's CPU side (`cpufx`, `upload` with MB,
+  `record`, `submit`), `eguitex`, `cputex`, `scrub` (scrub audio), `total` and `dt` since the last pass.
+- `job`: one per frame-worker job: queue `wait`, `source` (source frames) with the GOP cache's
+  `lock` wait, `hit` / `miss`, `seeks`, `samples` and `decode` (decode-pool wall time, hardware or
+  software, including the Media Foundation readback), `plan` (planning / CPU rendering) and
+  `prepare` (`filmcraft_gpu::prepare`).
+- `summary`: once a second, p50 / p95 / max of every stage, frames shown / dropped, upload MB/s,
+  GOP-cache counters and hardware vs software pictures.
+
+Code: `crates/ui-egui/src/frame_timing.rs`, `filmcraft_codecs::gop::trace`,
+`filmcraft_gpu::CompositeTiming`. GPU execution time is not measured directly; it surfaces as `gap`.
+Each `pass` line also lists `causes=[file:line …]`, egui's record of what asked for that refresh.
+
+### Refresh rate while playing
+
+While playing, the window refreshes 60 times a second, or twice the rate frames come at when that is
+faster (60 fps footage: 120; fast shuttle: more), plus once per finished frame job, instead of at
+every display refresh. The Audio Meters and Track Mixer meters ask for 60 Hz too; their ballistics
+are in dB per second, so only smoothness depends on it. `FILMCRAFT_PLAYBACK_MAX_HZ=<hz>` changes the
+floor; `0` refreshes the playback clock at every display refresh as before (for comparisons).
+
+Measured 2026-11-17 on a Core Ultra 9 laptop with an RTX 5070 Ti and a 2560 × 1600 240 Hz panel
+driven by the integrated GPU (FilmCraft renders on the RTX, so every refresh is copied across
+GPUs), demo project, 5 s of playback, two alternating runs each:
+
+| | Before (`MAX_HZ=0`) | After |
+|---|---|---|
+| UI refreshes / s | 218–225 | 86–93 |
+| GPU 3D engine | 13.3–13.9 % | 5.2–5.3 % |
+| GPU copy engine | 14.5–15.0 % | 6.5–6.7 % |
+| process CPU (one core = 100 %) | 476–485 % | 380–420 % |
+| dropped frames | 0 | 0 |
+
+### Which GPU decodes (Windows hybrid graphics)
+
+Media Foundation decodes on Windows' default adapter, the integrated GPU on a hybrid laptop, even
+when FilmCraft renders on the discrete one. `FILMCRAFT_DECODE_ADAPTER=renderer` makes the decoders'
+Direct3D 11 device on the renderer's GPU instead. It stays off by default because it measured slower
+while every decoded picture is still read back to system memory (zero-copy is not done): the
+integrated GPU's memory is system memory, the discrete GPU's readback crosses PCIe. Same laptop,
+10 s 4K H.264 High 23.976 fps 53 Mbps clip, 5 s of playback, two alternating runs each:
+
+| | Intel (default) | RTX (`renderer`) |
+|---|---|---|
+| decoder ms per sample | 8.48 / 8.55 | 10.30 / 7.56 |
+| frame-job source fetch p50 (ms) | 9.6 / 8.4 | 13.5 / 20.0 |
+| dropped frames | 0 / 0 | 0 / 11 |
+| video-decode engine load | Intel 28 % | RTX 10–32 % |
+
+Revisit once decoded surfaces go to the renderer without the readback.
+
+### NVDEC on Windows (DJI 4K 59.94 fps HEVC)
+
+Media Foundation's HEVC decoder exists only with the Microsoft Store's HEVC Video Extensions.
+Without them FilmCraft decoded HEVC in software. NVDEC (`nvcuvid.dll`, part of NVIDIA's driver) now
+goes in front of Media Foundation on 64-bit Windows. Same laptop, `DJI_0958.MP4` (3840 × 2160,
+59.94 fps, HEVC Main 8-bit, 123 Mbps), about 8 s of playback per run:
+
+| | Before (software HEVC) | NVDEC |
+|---|---|---|
+| frames shown / dropped | 9–32 / 439–477 (4 runs) | 458–475 / 0–1 (3 runs) |
+| pictures decoded hardware / software | 0 / 256–285 | 471–487 / 0 |
+| decoder ms per picture | 24.4–25.8 | 12.2–12.5 |
+| frame-job source fetch p50 (ms) | 95–101 | 12.8–13.3 |
+
+The pictures are bit-exact with the software decoder (`FILMCRAFT_NVDEC_CLIPS` test, two DJI clips
+and a 4K H.264 clip, including after a reseek).
+
 ## Interactive builds and redraw work
 
 For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and

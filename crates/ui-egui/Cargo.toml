@@ -26,6 +26,8 @@ filmcraft-audio-dsp = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
+# the GOP caches' per-request trace for the frame-timing log (frame_timing.rs)
+filmcraft-codecs = { workspace = true }
 filmcraft-scopes = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }

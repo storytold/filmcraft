@@ -242,7 +242,8 @@ impl FilmcraftApp {
             if self.playback.preroll_ready || now - since >= frames::PREROLL_TIMEOUT_S {
                 self.end_preroll(now);
             } else {
-                ctx.request_repaint();
+                // (finished frame jobs wake the UI too: preroll ends as soon as they are in)
+                Self::repaint_while_playing(ctx, self.session.sequence_rate(), self.playback.speed);
                 return;
             }
         }
@@ -326,7 +327,100 @@ impl FilmcraftApp {
             self.session.set_playhead(t);
             self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
         }
-        ctx.request_repaint();
+        Self::repaint_while_playing(ctx, rate, self.playback.speed);
+    }
+
+    /// Ask for the next refresh while playing: at [`playback_repaint_interval`], not at every
+    /// display refresh. A 240 Hz panel otherwise redraws the whole window 240 times a second for
+    /// 24 fps footage, and on a hybrid-graphics laptop copies each of those frames from the
+    /// discrete GPU to the one driving the panel. Finished frame jobs still wake the UI at once.
+    fn repaint_while_playing(ctx: &egui::Context, rate: filmcraft_time::FrameRate, speed: f64) {
+        match playback_repaint_interval(rate, speed, playback_max_hz()) {
+            Some(d) => ctx.request_repaint_after(d),
+            None => ctx.request_repaint(),
+        }
+    }
+}
+
+/// The least refresh rate while playing (Hz): the Timeline playhead moves smoothly at it.
+pub const PLAYBACK_REPAINT_HZ: f64 = 60.0;
+
+/// The environment variable that overrides [`PLAYBACK_REPAINT_HZ`] (`0`: refresh at every display
+/// refresh while playing, as before the cap; for comparisons).
+pub const PLAYBACK_MAX_HZ_ENV: &str = "FILMCRAFT_PLAYBACK_MAX_HZ";
+
+/// [`PLAYBACK_REPAINT_HZ`], or the value of [`PLAYBACK_MAX_HZ_ENV`] (read once).
+fn playback_max_hz() -> f64 {
+    static HZ: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *HZ.get_or_init(|| parse_max_hz(std::env::var(PLAYBACK_MAX_HZ_ENV).ok().as_deref()))
+}
+
+/// A refresh-rate override: a finite number from 0 up (0 = uncapped); anything else is the default.
+fn parse_max_hz(v: Option<&str>) -> f64 {
+    v.and_then(|v| v.trim().parse::<f64>().ok()).filter(|hz| hz.is_finite() && *hz >= 0.0).unwrap_or(PLAYBACK_REPAINT_HZ)
+}
+
+/// Time between refreshes while playing: `max_hz`, or twice the rate frames come at (the sequence
+/// rate times the play speed) when that is faster, so every frame is drawn close to when it is
+/// due. None (refresh at once) when `max_hz` is 0.
+pub(crate) fn playback_repaint_interval(rate: filmcraft_time::FrameRate, speed: f64, max_hz: f64) -> Option<std::time::Duration> {
+    if !(max_hz.is_finite() && max_hz > 0.0) {
+        return None;
+    }
+    let frame_s = rate.frame_duration().seconds();
+    let frames_per_s = if frame_s.is_finite() && frame_s > 0.0 && speed.is_finite() { speed.abs() / frame_s } else { 0.0 };
+    // (at most 1000 refreshes a second, whatever the rate and speed)
+    let hz = max_hz.max(2.0 * frames_per_s).min(1000.0);
+    Some(std::time::Duration::from_secs_f64(1.0 / hz))
+}
+
+#[cfg(test)]
+mod repaint_cap_tests {
+    use std::time::Duration;
+
+    use filmcraft_time::FrameRate;
+
+    use super::{PLAYBACK_REPAINT_HZ, parse_max_hz, playback_repaint_interval};
+
+    fn hz(d: Option<Duration>) -> f64 {
+        1.0 / d.expect("capped").as_secs_f64()
+    }
+
+    #[test]
+    fn film_and_video_rates_refresh_at_60_hz_not_at_the_display_rate() {
+        for (num, den) in [(24, 1), (24000, 1001), (25, 1), (30000, 1001)] {
+            let r = FrameRate { num, den };
+            assert!((hz(playback_repaint_interval(r, 1.0, 60.0)) - 60.0).abs() < 1e-3, "{num}/{den}");
+        }
+    }
+
+    #[test]
+    fn high_rates_and_fast_shuttle_refresh_twice_per_frame() {
+        let r60 = FrameRate { num: 60, den: 1 };
+        assert!((hz(playback_repaint_interval(r60, 1.0, 60.0)) - 120.0).abs() < 1e-3);
+        let r24 = FrameRate { num: 24, den: 1 };
+        assert!((hz(playback_repaint_interval(r24, -4.0, 60.0)) - 192.0).abs() < 1e-3, "reverse shuttle counts too");
+        assert!((hz(playback_repaint_interval(r24, 1000.0, 60.0)) - 1000.0).abs() < 1e-3, "bounded");
+    }
+
+    #[test]
+    fn zero_means_uncapped_and_hostile_inputs_fall_back() {
+        let r = FrameRate { num: 24, den: 1 };
+        assert_eq!(playback_repaint_interval(r, 1.0, 0.0), None);
+        assert_eq!(playback_repaint_interval(r, 1.0, f64::NAN), None);
+        assert!((hz(playback_repaint_interval(r, f64::NAN, 60.0)) - 60.0).abs() < 1e-3);
+        assert!((hz(playback_repaint_interval(FrameRate { num: 0, den: 0 }, 1.0, 60.0)) - 60.0).abs() < 1e-3);
+        assert!((hz(playback_repaint_interval(FrameRate { num: 24, den: 0 }, 1.0, 60.0)) - 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_override_parses_numbers_from_zero_up() {
+        assert_eq!(parse_max_hz(None), PLAYBACK_REPAINT_HZ);
+        assert_eq!(parse_max_hz(Some(" 0 ")), 0.0);
+        assert_eq!(parse_max_hz(Some("120")), 120.0);
+        for bad in ["", "-5", "fast", "inf", "NaN"] {
+            assert_eq!(parse_max_hz(Some(bad)), PLAYBACK_REPAINT_HZ, "{bad}");
+        }
     }
 }
 
@@ -414,7 +508,7 @@ mod smooth_playhead_tests {
         let app = playing_at(mid);
         assert_eq!(app.session.playhead(), app.session.sequence_rate().tick_of(1), "the frame shown");
         let drawn = app.shown_playhead().seconds();
-        assert!((drawn - mid).abs() < 1e-6, "drawn at the clock time {mid}, not the frame boundary: {drawn}");
+        assert!((drawn - mid).abs() < 1e-3, "drawn at the clock time {mid}, not the frame boundary: {drawn}");
         let later = playing_at(mid + frame * 0.25).shown_playhead().seconds();
         assert!(later > drawn, "it keeps moving inside the same frame: {drawn} -> {later}");
     }

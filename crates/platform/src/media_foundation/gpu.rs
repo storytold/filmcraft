@@ -11,13 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use windows::Win32::Foundation::{HMODULE, RPC_E_CHANGED_MODE};
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING, D3D11_VIDEO_DECODER_DESC, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D, ID3D11VideoDevice,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_NV12, DXGI_FORMAT_P010};
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIDevice, IDXGIFactory1};
 use windows::Win32::Media::MediaFoundation::{IMFDXGIBuffer, IMFDXGIDeviceManager, IMFSample};
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::core::{GUID, Interface};
@@ -75,6 +75,11 @@ pub struct Gpu {
     video: ID3D11VideoDevice,
     manager: IMFDXGIDeviceManager,
     name: String,
+    /// The adapter's PCI vendor and device ids (None when DXGI does not say).
+    ids: Option<(u32, u32)>,
+    /// The preferred adapter this device was made for ([`set_preferred_adapter`]): a device made
+    /// before a preference was set, or for another one, is replaced for new decoders.
+    made_for: Option<(u32, u32)>,
     /// Set when the device was removed or reset: new decoders get a new device.
     lost: AtomicBool,
     /// Serialises our use of the immediate context (the device is also multithread protected,
@@ -91,29 +96,75 @@ unsafe impl Sync for Gpu {}
 
 static SHARED: Mutex<Option<Arc<Gpu>>> = Mutex::new(None);
 
+/// The GPU decoding should run on, by PCI vendor and device id: the one the app renders with.
+static PREFERRED: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+/// The environment variable that moves decoding onto the GPU the app renders with (`renderer`).
+/// Off by default: until decoded surfaces are shared with the renderer (zero-copy), every picture
+/// is read back to system memory, and an integrated GPU, whose memory is system memory, reads back
+/// faster than a discrete one over PCIe. Measured on a Core Ultra 9 + RTX 5070 Ti laptop with 4K
+/// H.264: 8.5 ms per sample on the integrated GPU against 7.6 to 10.3 ms on the RTX, and slower
+/// frame fetches (docs/performance.md).
+pub const DECODE_ADAPTER_ENV: &str = "FILMCRAFT_DECODE_ADAPTER";
+
+/// Whether [`DECODE_ADAPTER_ENV`] asks for the renderer's GPU.
+pub fn follow_renderer_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim().eq_ignore_ascii_case("renderer"))
+}
+
+/// Decode on the GPU with these PCI ids (the renderer's) instead of Windows' default adapter, when
+/// [`DECODE_ADAPTER_ENV`] is `renderer`; otherwise nothing changes. Decoders made before the call
+/// keep their device; new ones use the preferred adapter, or the default one when no adapter
+/// matches or a device cannot be made on it.
+pub fn set_preferred_adapter(vendor: u32, device: u32) {
+    if !follow_renderer_requested(std::env::var(DECODE_ADAPTER_ENV).ok().as_deref()) {
+        return;
+    }
+    log::info!("hardware decoding follows the renderer ({DECODE_ADAPTER_ENV}=renderer): {vendor:04x}:{device:04x}");
+    *PREFERRED.lock().unwrap_or_else(PoisonError::into_inner) = Some((vendor, device));
+}
+
 impl Gpu {
-    /// The process-wide device (created on first use, replaced after a device loss).
+    /// The process-wide device (created on first use, replaced after a device loss or when the
+    /// preferred adapter changed since it was made).
     pub fn shared(api: &MfApi) -> Result<Arc<Gpu>, String> {
         ensure_com()?;
+        let want = *PREFERRED.lock().unwrap_or_else(PoisonError::into_inner);
         let mut slot = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(g) = slot.as_ref().filter(|g| g.usable()) {
+        if let Some(g) = slot.as_ref().filter(|g| g.usable() && g.made_for == want) {
             return Ok(g.clone());
         }
-        let g = Arc::new(Gpu::create(api)?);
-        log::info!("hardware decoding: Direct3D 11 device on {}", g.name);
+        let g = Arc::new(Gpu::create_preferred(api, want)?);
+        match g.ids {
+            Some((v, d)) => log::info!("hardware decoding: Direct3D 11 device on {} ({v:04x}:{d:04x})", g.name),
+            None => log::info!("hardware decoding: Direct3D 11 device on {}", g.name),
+        }
         *slot = Some(g.clone());
         Ok(g)
     }
 
-    fn create(api: &MfApi) -> Result<Gpu, String> {
+    /// A device on the adapter with the `want` ids, else on the default adapter.
+    fn create_preferred(api: &MfApi, want: Option<(u32, u32)>) -> Result<Gpu, String> {
+        if let Some((vendor, device)) = want {
+            match find_adapter(vendor, device).and_then(|a| Gpu::create(api, Some(&a))) {
+                Ok(g) => return Ok(Gpu { made_for: want, ..g }),
+                Err(e) => log::warn!("hardware decoding: no device on the renderer's GPU ({vendor:04x}:{device:04x}: {e}); using the default adapter"),
+            }
+        }
+        Gpu::create(api, None).map(|g| Gpu { made_for: want, ..g })
+    }
+
+    fn create(api: &MfApi, adapter: Option<&IDXGIAdapter>) -> Result<Gpu, String> {
         let levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
         let (mut device, mut context) = (None, None);
-        // SAFETY: the out-pointers refer to live locals; no adapter is passed (the default one),
-        // and the feature level slice outlives the call.
+        // (an explicit adapter takes the "unknown" driver type; the hardware type means the default adapter)
+        let driver = if adapter.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE };
+        // SAFETY: the out-pointers refer to live locals; the adapter, when given, is a live
+        // interface, and the feature level slice outlives the call.
         unsafe {
             D3D11CreateDevice(
-                None::<&IDXGIAdapter>,
-                D3D_DRIVER_TYPE_HARDWARE,
+                adapter,
+                driver,
                 HMODULE::default(),
                 D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 Some(&levels),
@@ -131,8 +182,8 @@ impl Gpu {
         let _ = unsafe { mt.SetMultithreadProtected(true) };
         let video: ID3D11VideoDevice = device.cast().map_err(|e| format!("the device has no video decoding: {e}"))?;
         let manager = api.create_device_manager(&device)?;
-        let name = adapter_name(&device).unwrap_or_else(|| "an unknown adapter".into());
-        Ok(Gpu { device, context, video, manager, name, lost: AtomicBool::new(false), gate: Mutex::new(()) })
+        let (name, ids) = adapter_desc(&device).map_or_else(|| ("an unknown adapter".into(), None), |(n, v, d)| (n, Some((v, d))));
+        Ok(Gpu { device, context, video, manager, name, ids, made_for: None, lost: AtomicBool::new(false), gate: Mutex::new(()) })
     }
 
     fn usable(&self) -> bool {
@@ -187,12 +238,39 @@ impl Gpu {
     }
 }
 
-fn adapter_name(device: &ID3D11Device) -> Option<String> {
+/// The device's adapter: description, PCI vendor id, PCI device id.
+fn adapter_desc(device: &ID3D11Device) -> Option<(String, u32, u32)> {
     let dxgi: IDXGIDevice = device.cast().ok()?;
     // SAFETY: plain COM calls on live interfaces; the description is a plain struct filled by DXGI.
     let desc = unsafe { dxgi.GetAdapter().ok()?.GetDesc().ok()? };
     let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
-    Some(String::from_utf16_lossy(desc.Description.get(..len)?))
+    Some((String::from_utf16_lossy(desc.Description.get(..len)?), desc.VendorId, desc.DeviceId))
+}
+
+/// The one adapter DXGI lists with these PCI ids. Two identical GPUs share them, and wgpu's adapter
+/// info carries no unique identity (such as the DXGI LUID) to tell them apart: then this declines
+/// (the default adapter is used, and the log says why) rather than guess which one renders.
+fn find_adapter(vendor: u32, device: u32) -> Result<IDXGIAdapter, String> {
+    // SAFETY: CreateDXGIFactory1 returns an owned interface; EnumAdapters1 is called with indices
+    // from 0 up until it fails (DXGI_ERROR_NOT_FOUND past the last adapter); GetDesc1 fills a
+    // plain struct. Every interface is released when dropped.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("no DXGI factory: {e}"))?;
+        // (bounded: a system lists a handful of adapters)
+        let mut found = Vec::new();
+        for i in 0..64u32 {
+            let Ok(adapter) = factory.EnumAdapters1(i) else { break };
+            let Ok(desc) = adapter.GetDesc1() else { continue };
+            if desc.VendorId == vendor && desc.DeviceId == device {
+                found.push(adapter);
+            }
+        }
+        match found.as_slice() {
+            [one] => one.cast::<IDXGIAdapter>().map_err(|e| format!("adapter interface: {e}")),
+            [] => Err("no DXGI adapter with those ids".into()),
+            more => Err(format!("{} adapters share those ids, so the renderer's one is not known", more.len())),
+        }
+    }
 }
 
 /// Reads decoded surfaces back into system memory through a staging texture it keeps between
@@ -289,5 +367,19 @@ impl Readback {
             self.staging = Some((tex.ok_or("no readback texture")?, desc));
         }
         self.staging.as_ref().map(|(t, _)| t).ok_or_else(|| "no readback texture".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::follow_renderer_requested;
+
+    #[test]
+    fn only_renderer_moves_decoding() {
+        assert!(follow_renderer_requested(Some("renderer")));
+        assert!(follow_renderer_requested(Some(" Renderer ")));
+        for v in [None, Some(""), Some("default"), Some("1"), Some("rtx")] {
+            assert!(!follow_renderer_requested(v), "{v:?}");
+        }
     }
 }

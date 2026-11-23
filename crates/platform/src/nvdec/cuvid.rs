@@ -1,6 +1,6 @@
 //! Synchronous NVDEC parser callbacks and CUDA readback. All driver handles stay here.
 use std::cell::Cell;
-use std::ffi::c_void;
+use std::ffi::{c_ulong, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
@@ -14,12 +14,18 @@ use super::ffi::{
     cudaVideoCodec_HEVC, cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12, cudaVideoSurfaceFormat_P016,
 };
 use crate::biplanar::{Biplanar, Geometry, to_frame};
-use crate::nvenc::device::Device;
+use crate::nvenc::device::cuda::Device;
 
 const MAX_SURFACES: u32 = 64;
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
 const MAX_READY_BYTES: usize = 512 * 1024 * 1024;
+
+/// NVDEC's library, part of NVIDIA's display driver.
+#[cfg(target_os = "linux")]
+const LIBRARY: &str = "libnvcuvid.so.1";
+#[cfg(target_os = "windows")]
+const LIBRARY: &str = "nvcuvid.dll";
 
 #[derive(Clone, Copy)]
 struct Api {
@@ -38,7 +44,8 @@ impl Api {
         // SAFETY: symbols have the signatures in NVIDIA's public headers. The caller
         // retains the returned library until all handles using these pointers are destroyed.
         unsafe {
-            let library = libloading::Library::new("libnvcuvid.so.1").map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
+            // (Windows: from System32 only, see `load_driver_library`)
+            let library = crate::nvenc::device::cuda::load_driver_library(LIBRARY).map_err(|e| format!("no NVIDIA NVDEC library: {e}"))?;
             let api = Self {
                 caps: *library.get(b"cuvidGetDecoderCaps\0").map_err(|e| e.to_string())?,
                 create_decoder: *library.get(b"cuvidCreateDecoder\0").map_err(|e| e.to_string())?,
@@ -150,13 +157,13 @@ impl State {
         }
         // SAFETY: plain C data (integers and pointers) permits an all-zero initialization.
         let mut info: CUVIDDECODECREATEINFO = unsafe { std::mem::zeroed() };
-        info.ulWidth = u64::from(self.coded.0);
-        info.ulHeight = u64::from(self.coded.1);
-        info.ulNumDecodeSurfaces = u64::from(surfaces);
+        info.ulWidth = c_ulong::from(self.coded.0);
+        info.ulHeight = c_ulong::from(self.coded.1);
+        info.ulNumDecodeSurfaces = c_ulong::from(surfaces);
         info.CodecType = self.codec;
         info.ChromaFormat = cudaVideoChromaFormat_420;
         info.ulCreationFlags = cudaVideoCreate_PreferCUVID;
-        info.bitDepthMinus8 = u64::from(self.geometry.bits.saturating_sub(8));
+        info.bitDepthMinus8 = c_ulong::from(self.geometry.bits.saturating_sub(8));
         info.ulMaxWidth = info.ulWidth;
         info.ulMaxHeight = info.ulHeight;
         let right = i16::try_from(self.coded.0).map_err(|_| "NVDEC width overflows")?;
@@ -431,7 +438,7 @@ impl Session {
         }
         Ok(())
     }
-    fn parse(&mut self, payload: &[u8], pts: i64, flags: u64) -> Result<Vec<(i64, VideoFrame)>, String> {
+    fn parse(&mut self, payload: &[u8], pts: i64, flags: c_ulong) -> Result<Vec<(i64, VideoFrame)>, String> {
         if let Some(error) = &self.state().error {
             return Err(error.clone());
         }
@@ -442,7 +449,7 @@ impl Session {
         let _current = self.device.push_current()?;
         let mut packet = CUVIDSOURCEDATAPACKET {
             flags,
-            payload_size: u64::try_from(payload.len()).map_err(|_| "NVDEC packet length overflows")?,
+            payload_size: c_ulong::try_from(payload.len()).map_err(|_| "NVDEC packet length overflows")?,
             payload: if payload.is_empty() { ptr::null() } else { payload.as_ptr() },
             timestamp: pts,
         };
@@ -560,7 +567,7 @@ pub fn probe() -> Result<String, String> {
     let (_api, _library) = Api::load()?;
     let device = Device::new()?;
     let _current = device.push_current()?;
-    Ok("NVDEC (libnvcuvid, first CUDA device)".into())
+    Ok(format!("NVDEC ({LIBRARY}, first CUDA device)"))
 }
 
 #[cfg(test)]

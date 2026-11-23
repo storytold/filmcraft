@@ -2564,6 +2564,7 @@ dependencies = [
  "pollster 1.0.1",
  "rayon",
  "tempfile",
+ "web-time",
  "wgpu",
 ]
 
