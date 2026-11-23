@@ -58,12 +58,7 @@ impl Pace {
 
     /// The time `remaining` more units take at the pace of the readings, when they show one.
     pub(crate) fn eta(&self, remaining: u64) -> Option<Duration> {
-        let (t0, d0) = *self.readings.front()?;
-        let (t1, d1) = *self.readings.back()?;
-        let span = t1.saturating_duration_since(t0);
-        if span < MIN_SPAN || d1 <= d0 {
-            return None;
-        }
+        let average = self.average_rate()?;
         // on time: the speed between batches, counting down since the last one landed
         let countdown = self
             .batches()
@@ -73,10 +68,23 @@ impl Pace {
             Some(left) if left > 0.0 => left,
             // a batch is overdue, the countdown ran out with work left, or the count moves too
             // seldom to tell: the speed up to now
-            _ => remaining as f64 / ((d1 - d0) as f64 / span.as_secs_f64()),
+            _ => remaining as f64 / average,
         };
         // `try_from_secs_f64` refuses what a `Duration` cannot hold; that is "more than the cap" here
         (left >= 0.0).then(|| Duration::try_from_secs_f64(left).map_or(MAX_ETA, |d| d.min(MAX_ETA)))
+    }
+
+    /// Completed units per second over the trailing window.
+    pub(crate) fn rate(&self) -> Option<f64> {
+        let average = self.average_rate()?;
+        Some(self.batches().filter(|(_, gap, since)| *since <= gap.saturating_mul(LATE)).map_or(average, |(speed, _, _)| speed))
+    }
+
+    fn average_rate(&self) -> Option<f64> {
+        let (t0, d0) = *self.readings.front()?;
+        let (t1, d1) = *self.readings.back()?;
+        let span = t1.saturating_duration_since(t0);
+        (span >= MIN_SPAN && d1 > d0).then(|| (d1 - d0) as f64 / span.as_secs_f64())
     }
 }
 

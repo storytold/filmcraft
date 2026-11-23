@@ -164,7 +164,7 @@ impl FilmcraftApp {
         let eta = job.progress.eta();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
         let bar = egui::Rect::from_min_size(egui::pos2(cancel.min.x - 128.0, sb.center().y - 3.0), egui::vec2(120.0, 6.0));
-        let p = ui.painter();
+        let p = ui.painter().clone();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
         let (now, font) = (self.now(), Tokens::ui(11.0));
@@ -172,17 +172,20 @@ impl FilmcraftApp {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
                 let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
-                let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
+                let speed = job.progress.render_fps().map(|fps| tlf!(" · {fps} fps", fps = format!("{fps:.1}"))).unwrap_or_default();
+                let label = format!("{:.0}%{}{speed}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
                 // moves the start of the text
                 let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
-                let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
+                let width = [&text, &room].map(|s| widgets::tabular_text(&p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
                 panels::JobText { job: job.id, at: now, text, label, width }
             }
         };
         let start = bar.min.x - 8.0 - shown.width;
-        widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
+        let rect = egui::Rect::from_min_max(egui::pos2(start, sb.min.y), egui::pos2(bar.min.x - 8.0, sb.max.y));
+        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt("status-job-label").layout(egui::Layout::left_to_right(egui::Align::Center)));
+        widgets::tabular_label(&mut row, &shown.text, &font, t.text_dim);
         let left = shown.label.clone();
         self.job_text = Some(shown);
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
