@@ -559,6 +559,21 @@ fn property_targets(app: &FilmcraftApp, clip: ClipId, it: &TrackItem, l: usize) 
     ids
 }
 
+/// Time and easing for a keyframed property, shown while no layer is selected.
+fn time_section(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    it: &TrackItem,
+    t: &Tokens,
+    autos: &mut Vec<(String, Rect, String)>,
+    actions: &mut Vec<(String, Value)>,
+) {
+    if section(ui, app, "Responsive Design - Time", t) {
+        crate::panels::graphics_templates::responsive_time(app, ui, clip, it, autos, actions);
+    }
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -595,9 +610,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::panels::graphics_templates::template_controls(app, ui, clip, &it, mt, &mut autos, &mut actions);
         }
         let Some(l) = sel else {
-            if section(ui, app, "Responsive Design - Time", &t) {
-                crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
-            }
+            time_section(app, ui, clip, &it, &t, &mut autos, &mut actions);
             ui.add_space(12.0);
             ui.label(egui::RichText::new(tl!("Select a layer to edit its properties.")).color(t.text_faint));
             return;
