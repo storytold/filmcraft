@@ -210,6 +210,52 @@ fn a_property_drag_is_one_undo_step() {
     assert_eq!(color(&s)[0], 0.0, "and then the first");
 }
 
+/// #4625: `graphics.set` with `clips` sets the same properties on that layer of every listed
+/// graphic clip as one undo step (a drag too), and a target it cannot change changes none.
+#[test]
+fn set_with_clips_changes_every_listed_graphic_in_one_undo_step() {
+    let mut s = demo();
+    let clips: Vec<u64> = (0..3).map(|i| s.execute("graphics.newText", json!({"text": format!("T{i}")})).unwrap()["clip"].as_u64().unwrap()).collect();
+    for (clip, size) in clips.iter().zip([60, 80, 90]) {
+        s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"size": size}})).unwrap();
+    }
+    let size = |s: &Session, clip: u64| -> f64 {
+        let (_, it) = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap();
+        it.effects.iter().find(|e| e.effect == "graphic_text").unwrap().param("size").unwrap().value_at(Tick::ZERO).as_f64().unwrap()
+    };
+    let before = s.project.clone();
+    let n = s.history.undo.len();
+    for (i, v) in [120, 130, 140].into_iter().enumerate() {
+        s.execute(
+            "graphics.set",
+            json!({"clips": [clips[0], clips[1], clips[0]], "layer": 0, "props": {"size": v, "font": "Inter"}, "merge": true, "begin": i == 0}),
+        )
+        .unwrap();
+    }
+    assert_eq!((size(&s, clips[0]), size(&s, clips[1]), size(&s, clips[2])), (140.0, 140.0, 90.0));
+    assert_eq!(s.history.undo.len(), n + 1, "a drag over several clips is one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before, "one undo restores each clip's own size");
+    // a clip that is not a graphic, a missing clip or layer, or `clip` with `clips`: nothing changes
+    let video = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    for p in [
+        json!({"clips": [clips[0], video], "layer": 0, "props": {"size": 50}}),
+        json!({"clips": [clips[0], u64::MAX], "layer": 0, "props": {"size": 50}}),
+        json!({"clips": [clips[0], clips[1]], "layer": 1, "props": {"size": 50}}),
+        json!({"clips": [], "layer": 0, "props": {"size": 50}}),
+        json!({"clip": clips[0], "clips": [clips[1]], "layer": 0, "props": {"size": 50}}),
+    ] {
+        assert!(s.execute("graphics.set", p.clone()).is_err(), "{p}");
+        assert_eq!(s.project, before, "{p}");
+    }
+    // the second clip's layer 1 is a shape: the text property fails there and the first clip keeps its size
+    s.execute("graphics.newShape", json!({"clip": clips[1], "shape": "rectangle"})).unwrap();
+    s.execute("graphics.newText", json!({"clip": clips[0], "text": "Second"})).unwrap();
+    let before = s.project.clone();
+    assert!(s.execute("graphics.set", json!({"clips": [clips[0], clips[1]], "layer": 1, "props": {"font": "Inter"}})).is_err());
+    assert_eq!(s.project, before);
+}
+
 #[test]
 fn align_and_distribute_layers() {
     let mut s = demo();

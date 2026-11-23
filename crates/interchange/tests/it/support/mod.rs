@@ -25,6 +25,7 @@ pub fn media_info(name: &str, video: bool, audio: bool, rate: FrameRate, secs: i
             has_alpha: false,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: audio
             .then(|| filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "aac".into(), bits_per_sample: None })

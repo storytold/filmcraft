@@ -448,7 +448,7 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn spec(id: &'static str, label: &'static str, params: &'static str, enabled: Enabled, run: Run, journal: bool) -> CommandSpec {
-    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal }
+    CommandSpec { id, label, menu: &[], shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
 }
 
 pub fn commands() -> Vec<CommandSpec> {

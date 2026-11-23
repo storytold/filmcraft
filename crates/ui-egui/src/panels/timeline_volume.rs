@@ -327,6 +327,7 @@ mod tests {
 
     fn clip(speed: f64, reverse: bool) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(1),
             item: ItemId(1),
             name: String::new(),
@@ -347,6 +348,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),

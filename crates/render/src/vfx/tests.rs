@@ -12,6 +12,7 @@ fn cx() -> FxCtx<'static> {
     FxCtx {
         t: Tick::ZERO,
         px_scale: 1.0,
+        mask_scale: 1.0,
         seconds: 0.0,
         timecode: "01:00:00:00",
         clip_name: "clip",
@@ -488,6 +489,34 @@ fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     assert!(close(o.get(1, 1)[3], 1.0, 1e-3) && close(o.get(6, 1)[3], 0.0, 1e-4));
 }
 
+/// 4-Color Gradient has a position for each colour (#3682); the old fixed ones are the defaults.
+#[test]
+fn four_color_gradient_points_default_to_the_old_positions_and_move() {
+    let (w, h) = (40usize, 24usize);
+    let base = Image::filled(w, h, [0.0, 0.0, 0.0, 1.0]);
+    let (fw, fh) = (w as f64, h as f64);
+    let old = run("four_color_gradient", &inst("four_color_gradient"), &base, &cx());
+    // a project saved before the points existed has no such params
+    let mut legacy = inst("four_color_gradient");
+    for id in ["p1", "p2", "p3", "p4"] {
+        assert!(legacy.params.remove(id).is_some(), "no {id}");
+    }
+    assert_eq!(max_diff(&old, &run("four_color_gradient", &legacy, &base, &cx())), 0.0, "a project without the points renders as before");
+    // the defaults are the corners of the inner quarter box the gradient always used
+    let mut explicit = inst("four_color_gradient");
+    for (id, (x, y)) in [("p1", (0.25, 0.25)), ("p2", (0.75, 0.25)), ("p3", (0.25, 0.75)), ("p4", (0.75, 0.75))] {
+        set(&mut explicit, id, ParamValue::Vec2(Vec2::new(x * fw, y * fh)));
+    }
+    assert!(max_diff(&old, &run("four_color_gradient", &explicit, &base, &cx())) < 1e-5, "the default points are the old positions");
+    // moving the fourth point pulls its colour across the frame
+    let mut moved = inst("four_color_gradient");
+    set(&mut moved, "p4", ParamValue::Vec2(Vec2::new(0.25 * fw, 0.75 * fh)));
+    let m = run("four_color_gradient", &moved, &base, &cx());
+    assert!(max_diff(&old, &m) > 0.05, "moving Point 4 changes the picture");
+    let (a, b) = (old.get(w / 4, 3 * h / 4), m.get(w / 4, 3 * h / 4));
+    assert!(a[0] - b[0] > 0.3, "the pixel at the moved point loses Color 3's red to Color 4 (blue): {a:?} {b:?}");
+}
+
 #[test]
 fn keyers_known_values() {
     // Ultra Key: pure green screen → transparent, grey foreground → opaque
@@ -728,6 +757,14 @@ fn transform_presets_animate_over_the_clip() {
         fn media_timecode(&self) -> String {
             "00:00:10:00".into()
         }
+        fn sequence_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(40), r, false, display, 48_000))
+        }
+        fn media_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+            let r = filmcraft_time::FrameRate::FPS_24;
+            Some(filmcraft_time::format_time(r.tick_of(240), r, false, display, 48_000))
+        }
         fn file_name(&self) -> String {
             "A001.mov".into()
         }
@@ -772,6 +809,26 @@ fn transform_presets_animate_over_the_clip() {
     assert_eq!(text::burnin_text(&e2, &end), "FILE A001.mov");
     set(&mut e2, "source", ParamValue::Choice(4));
     assert_eq!(text::burnin_text(&e2, &mid), "FILE 24");
+    // Time Format: the film formats replace the timecode of the timecode sources only
+    let mut e3 = e.clone();
+    set(&mut e3, "time_format", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "2+08");
+    set(&mut e3, "time_format", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "1+00");
+    set(&mut e3, "time_format", ParamValue::Choice(3));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    set(&mut e3, "source", ParamValue::Choice(1));
+    assert_eq!(text::burnin_text(&e3, &end), "240");
+    set(&mut e3, "source", ParamValue::Choice(2));
+    assert_eq!(text::burnin_text(&e3, &end), "clip", "clip name is unaffected");
+    // an out-of-range choice (a newer file) clamps instead of panicking
+    set(&mut e3, "source", ParamValue::Choice(0));
+    set(&mut e3, "time_format", ParamValue::Choice(99));
+    assert_eq!(text::burnin_text(&e3, &end), "40");
+    // a project from before Time Format has no such parameter: Timecode
+    let mut old = e.clone();
+    old.params.remove("time_format");
+    assert_eq!(text::burnin_text(&old, &end), "01:00:00:00");
 }
 
 #[test]
@@ -884,6 +941,54 @@ fn bokeh_and_focus_blur() {
     assert!(max_diff(&o, &pic) > 0.01);
     let (a, b) = (o.get(32, 32), pic.get(32, 32));
     assert!((0..4).all(|k| close(a[k], b[k], 1e-4)));
+}
+
+/// Bokeh Blur gathers through a kernel of whole-pixel weights (`bokeh_kernel`). It must give what
+/// the mean of the bilinear taps it replaced gave (that gather, kept here), at the image's edges
+/// too, for every shape, rotation and radius, and radii larger than the image (3e9: offsets past
+/// `i32`, which the kernel keeps within its reach).
+#[test]
+fn bokeh_kernel_matches_the_bilinear_taps() {
+    let img = picture(37, 23);
+    for (sides, rot, rr, rings) in
+        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12), (6, 0.3, 3e9, 12)]
+    {
+        let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+        for ring in 1..=rings as usize {
+            let rad = rr * ring as f32 / rings as f32;
+            let n = (ring * 8).max(6);
+            for i in 0..n {
+                let th = std::f32::consts::TAU * (i as f32 + 0.5 * (ring % 2) as f32) / n as f32;
+                let pr = rad * blur::poly_radius(sides, th, rot);
+                taps.push((th.cos() * pr, th.sin() * pr));
+            }
+        }
+        let kernel = bokeh_kernel(sides, rot, rr, rings);
+        assert!(kernel.len() <= taps.len() * 4);
+        assert!(kernel.iter().all(|c| c.0.abs() <= KERNEL_REACH && c.1.abs() <= KERNEL_REACH), "offsets past the reach");
+        assert!(close(kernel.iter().map(|c| c.2).sum::<f32>(), 1.0, 1e-5));
+        let mut worst = 0f32;
+        for y in 0..img.h {
+            for x in 0..img.w {
+                let mut want = [0f32; 4];
+                for &(dx, dy) in &taps {
+                    let p = img.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+                    for k in 0..4 {
+                        want[k] += p[k] / taps.len() as f32;
+                    }
+                }
+                let mut got = [0f32; 4];
+                for &(dx, dy, wt) in &kernel {
+                    let p = img.get_clamped(x as isize + dx as isize, y as isize + dy as isize);
+                    for k in 0..4 {
+                        got[k] += p[k] * wt;
+                    }
+                }
+                worst = (0..4).map(|k| (want[k] - got[k]).abs()).fold(worst, f32::max);
+            }
+        }
+        assert!(worst < 2e-5, "{sides} sides, {rot} rad, radius {rr}: off by {worst}");
+    }
 }
 
 #[test]
@@ -1363,4 +1468,128 @@ mod stabilizer_corrections_cache {
             assert_eq!(c.corr[60].e, direct[60].e, "smooth {smooth}");
         }
     }
+}
+
+/// Hostile project values must finish in bounded time (each case is a few seconds of CPU at worst).
+mod hostile_work {
+    use super::super::temporal::{StabilizerPath, corrections};
+    use super::*;
+    use filmcraft_geom::Affine;
+    use std::time::{Duration, Instant};
+
+    fn finishes_quickly(id: &str, e: &EffectInstance, c: &FxCtx) {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        let t = Instant::now();
+        let o = run(id, e, &img, c);
+        assert!(t.elapsed() < Duration::from_secs(20), "{id} took {:?}", t.elapsed());
+        assert!(o.px.iter().all(|v| v.is_finite()), "{id}");
+    }
+
+    #[test]
+    fn lightning_with_huge_width_and_branching() {
+        let mut e = inst("lightning");
+        setf(&mut e, "width", 1e9);
+        setf(&mut e, "branching", 1e9);
+        setf(&mut e, "segments", 100.0);
+        setf(&mut e, "detail", 6.0);
+        finishes_quickly("lightning", &e, &cx());
+    }
+
+    #[test]
+    fn write_on_with_a_stationary_brush_and_a_long_history() {
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 4000.0);
+        let c = FxCtx { t: Tick::from_seconds_f64(600.0), seconds: 600.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_with_an_enormous_size_is_skipped_not_allocated() {
+        let mut e = inst("simple_text");
+        set(&mut e, "text", ParamValue::Text("Wide text".into()));
+        setf(&mut e, "size", 1e7);
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        assert_eq!(run("simple_text", &e, &img, &cx()), img);
+    }
+
+    #[test]
+    fn write_on_with_a_long_off_canvas_path_is_bounded() {
+        use filmcraft_project::{Interpolation, Keyframe};
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 2.0);
+        let key = |t: f64, x: f64| Keyframe {
+            time: Tick::from_seconds_f64(t),
+            value: ParamValue::Vec2(Vec2::new(x, -1e7)),
+            interp: Interpolation::Linear,
+            out_influence: 1.0 / 3.0,
+            in_influence: 1.0 / 3.0,
+        };
+        e.params.get_mut("brush").unwrap().keyframes = vec![key(0.0, -1e7), key(20.0, 1e7)];
+        let c = FxCtx { t: Tick::from_seconds_f64(20.0), seconds: 20.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_at_a_huge_position_is_skipped_not_overflowed() {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        for pos in [1e10, -1e10, 3e9] {
+            let mut e = inst("simple_text");
+            set(&mut e, "text", ParamValue::Text("Hi".into()));
+            set(&mut e, "position", ParamValue::Vec2(Vec2::new(pos, pos)));
+            assert_eq!(run("simple_text", &e, &img, &cx()), img, "position {pos}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_with_a_nan_smoothness_stays_finite() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::translate(1.0, 0.5); 5], fps: 24.0 };
+        for a in corrections(&path, f64::NAN, false, false) {
+            assert!([a.a, a.b, a.c, a.d, a.e, a.f].iter().all(|v| v.is_finite()), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn stabilizer_smoothing_radius_is_bounded() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::IDENTITY; 3], fps: 24.0 };
+        let t = Instant::now();
+        let c = corrections(&path, 1e12, false, false);
+        assert_eq!(c.len(), 4);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+}
+
+#[test]
+fn extreme_long_shadow_and_glint_lengths_finish() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // an infinite Long Shadow length used to keep its doubling loop running forever
+    for len in [f64::INFINITY, f64::MAX, 1e30] {
+        for id in ["long_shadow", "glint"] {
+            let mut e = inst(id);
+            setf(&mut e, "length", len);
+            let o = run(id, &e, &img, &cx());
+            assert!(o.px.iter().all(|v| !v.is_nan()), "{id} at {len}");
+        }
+    }
+}
+
+/// A length beyond the picture's extent still sets the weighting: only the work is capped.
+#[test]
+fn lengths_past_the_picture_keep_their_fade_and_weighting() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    let render = |id: &str, len: f64| {
+        let mut e = inst(id);
+        setf(&mut e, "length", len);
+        run(id, &e, &img, &cx())
+    };
+    let total = |o: &Image| o.px.iter().map(|&v| v as f64).sum::<f64>();
+    // 32 is the extent of this 16 x 16 picture
+    let (shadow_320, shadow_far) = (total(&render("long_shadow", 320.0)), total(&render("long_shadow", 1e9)));
+    assert!(shadow_320 > 0.9 * shadow_far, "fade over the requested 320 px ({shadow_320}) must stay near the unfaded shadow ({shadow_far})");
+    assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
+    let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
+    assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
 }

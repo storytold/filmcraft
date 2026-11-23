@@ -292,6 +292,7 @@ fn matroska_without_colour_uses_the_bitstream() {
     let c = src.info().video.as_ref().expect("video").color;
     assert_eq!(ColorSpace::from_info(&c), ColorSpace::Rec2100Pq);
     assert_eq!((c.primaries, c.matrix), (Primaries::Bt2020, Matrix::Bt2020Ncl));
+    assert_eq!(src.info().video.as_ref().expect("video").color_assumed, Some(filmcraft_color::ColorAssumed::default()), "all three from the VUI");
 }
 
 #[test]
@@ -304,6 +305,34 @@ fn resolve_takes_each_field_from_the_first_source_that_knows_it() {
     assert_eq!(resolve(720, 480, &[]), ColorInfo { matrix: Matrix::Bt601, ..ColorInfo::REC709 });
     // code points that don't fit a byte are unspecified, not truncated (0x109 is not 9)
     assert_eq!(ColorCodes::from_wide(0x109, 0x110, 0x109, None), ColorCodes { primaries: 2, transfer: 2, matrix: 2, full_range: None });
+}
+
+/// `probe` prints `video.color_assumed`: which colour values no tag in the file gave. An untagged
+/// file and one tagged BT.709 decode with the same colour, and only this tells them apart.
+#[test]
+fn values_no_tag_gives_are_reported_as_assumed() {
+    use filmcraft_isobmff::ColorInfo::Nclx;
+    let probe = |codec: CodecConfig, colr: Option<filmcraft_isobmff::ColorInfo>| {
+        let src = crate::Mp4Source::open("clip.mp4", mp4(codec, 1280, 720, colr)).expect("open");
+        let v = src.info().video.as_ref().expect("video").color;
+        (v, serde_json::to_value(src.info()).expect("json")["video"]["color_assumed"].clone())
+    };
+    let flags = |matrix: bool, transfer: bool, primaries: bool| serde_json::json!({"matrix": matrix, "transfer": transfer, "primaries": primaries});
+    let unspecified = Signal { codes: Some((2, 2, 2)), full_range: false };
+    let bt709 = Signal { codes: Some((1, 1, 1)), full_range: false };
+    // no VUI, one that says "unspecified", or one with only the range: all three are defaults
+    for vui in [None, Some(unspecified), Some(FULL_ONLY)] {
+        let (color, assumed) = probe(avc(h264_sps(80, 45, vui)), None);
+        assert_eq!((color.matrix, color.transfer, color.primaries), (Matrix::Bt709, Transfer::Bt709, Primaries::Bt709));
+        assert_eq!(assumed, flags(true, true, true));
+    }
+    // BT.709 tagged in the bitstream or in `colr`: the same colour, nothing assumed
+    assert_eq!(probe(avc(h264_sps(80, 45, Some(bt709))), None), (ColorInfo::REC709, flags(false, false, false)));
+    let colr = Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
+    assert_eq!(probe(avc(h264_sps(80, 45, None)), Some(colr)), (ColorInfo::REC709, flags(false, false, false)));
+    // a `colr` box that gives only the transfer: the matrix and primaries are defaults
+    let partial = Nclx { primaries: 2, transfer: 16, matrix: 2, full_range: false };
+    assert_eq!(probe(avc(h264_sps(80, 45, None)), Some(partial)).1, flags(true, false, true));
 }
 
 /// Every truncation and many bit flips of each configuration: never a panic, and the result is

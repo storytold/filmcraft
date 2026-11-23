@@ -38,6 +38,10 @@ use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Resul
 // Shared vocabulary
 // ---------------------------------------------------------------------------------------------
 
+/// Most members of a link group written into each clip's `<link>` list (a group is a clip's own
+/// video and a few audio channels, so real ones are far smaller).
+const MAX_LINK_MEMBERS: usize = 64;
+
 struct ClipRemap {
     speed: f64,
     reverse: bool,
@@ -105,6 +109,9 @@ fn write_rate(w: &mut XmlWriter, rate: FrameRate) {
 // Import
 // ---------------------------------------------------------------------------------------------
 
+/// Most times a truncated nested sequence is imported again at a shallower depth.
+const MAX_REIMPORTS: usize = 4096;
+
 struct PendingLink {
     seq: ItemId,
     kind: TrackKind,
@@ -112,6 +119,10 @@ struct PendingLink {
     clip: ClipId,
     refs: Vec<String>,
 }
+
+/// Deepest `bin`/`children`/`project` nesting a hostile file may walk. XML containers can nest
+/// without limit in the file, and the walk recurses once per level (audit: FilmCraft F3).
+const MAX_XML_DEPTH: usize = 128;
 
 struct Imp<'a, 'i, 'r> {
     b: Builder,
@@ -122,11 +133,21 @@ struct Imp<'a, 'i, 'r> {
     file_items: HashMap<String, ItemId>,
     seq_items: HashMap<String, ItemId>,
     in_progress: HashSet<String>,
+    /// Nested sequences left out because the chain was too deep, counted so a sequence whose
+    /// subtree lost one is known to be incomplete.
+    depth_hits: usize,
+    /// Sequences imported incomplete (a nested sequence below them was left out), by key: the
+    /// nesting depth they were imported at. Reached again at a shallower depth they are imported again.
+    truncated_at: HashMap<String, usize>,
+    /// Re-imports of truncated sequences still allowed.
+    reimports_left: usize,
     links: Vec<PendingLink>,
     xml_clip_ids: HashMap<(ItemId, String), ClipId>,
     /// `(sequence key, file key)` pairs where some audio clip item of that file uses `sourcetrack/trackindex` > 1,
     /// i.e. the file's channels are split onto mono tracks in that sequence (#463).
     split_files: HashSet<(String, String)>,
+    /// Current container nesting, checked against [`MAX_XML_DEPTH`].
+    depth: usize,
 }
 
 /// The `(sequence key, file key)` an audio clip item belongs to, if it references a file.
@@ -169,9 +190,13 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
         file_items: HashMap::new(),
         seq_items: HashMap::new(),
         in_progress: HashSet::new(),
+        depth_hits: 0,
+        truncated_at: HashMap::new(),
+        reimports_left: MAX_REIMPORTS,
         links: Vec::new(),
         xml_clip_ids: HashMap::new(),
         split_files: HashSet::new(),
+        depth: 0,
     };
     for n in root.descendants().filter(|n| n.is_element()) {
         match n.tag_name().name() {
@@ -200,6 +225,11 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
 impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Walk `xmeml`, `project`, `bin` and `children` containers.
     fn walk_container(&mut self, n: Node<'a, 'i>, bin: Option<BinId>, top: bool) {
+        if self.depth >= MAX_XML_DEPTH {
+            self.report.warn(format!("XML containers are nested more than {MAX_XML_DEPTH} deep; deeper bins and clips were skipped"));
+            return;
+        }
+        self.depth += 1;
         for c in elements(n) {
             match c.tag_name().name() {
                 "project" => {
@@ -225,6 +255,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 _ => {}
             }
         }
+        self.depth -= 1;
     }
 
     /// A master clip in a bin: its file(s) become media items.
@@ -322,10 +353,29 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     /// Sequence item for a `<sequence>` element (definition or reference).
     fn sequence(&mut self, n: Node<'a, 'i>, bin: Option<BinId>) -> Option<ItemId> {
         let key = node_key(n);
+        let depth = self.in_progress.len();
+        // A sequence imported with a nested sequence cut off is imported again (into the same
+        // item) when it is reached higher up the chain, where its nested sequence now fits.
+        let mut again = None;
         if let Some(id) = self.seq_items.get(&key) {
-            return Some(*id);
+            let shallower = self.truncated_at.get(&key).is_some_and(|d| depth < *d) && !self.in_progress.contains(&key);
+            if !shallower {
+                return Some(*id);
+            }
+            if self.reimports_left == 0 {
+                self.report.warn("truncated nested sequence kept incomplete after the re-import limit was reached");
+                return Some(*id);
+            }
+            self.reimports_left -= 1;
+            again = Some(*id);
         }
         let def = if child(n, "media").is_some() { n } else { *self.seq_defs.get(&key)? };
+        if depth >= crate::MAX_NESTING_DEPTH {
+            self.depth_hits += 1;
+            self.report.warn("nested sequence is nested too deeply; imported as a gap");
+            return None;
+        }
+        let hits_before = self.depth_hits;
         if !self.in_progress.insert(key.clone()) {
             self.report.warn("recursive nested sequence ignored");
             return None;
@@ -345,12 +395,18 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         {
             settings.sample_rate = sr as u32;
         }
-        let id = self.b.reserve_sequence(&name, settings.clone(), bin);
-        if let Some(l) = path_text(def, &["labels", "label2"]).and_then(label_from)
-            && let Some(it) = self.b.p.item_mut(id)
-        {
-            it.label = l;
-        }
+        let id = match again {
+            Some(id) => id,
+            None => {
+                let id = self.b.reserve_sequence(&name, settings.clone(), bin);
+                if let Some(l) = path_text(def, &["labels", "label2"]).and_then(label_from)
+                    && let Some(it) = self.b.p.item_mut(id)
+                {
+                    it.label = l;
+                }
+                id
+            }
+        };
         self.seq_items.insert(key.clone(), id);
         let mut seq = empty_sequence(settings);
         seq.start_timecode = tc.and_then(|t| child_i64(t, "frame")).unwrap_or(0);
@@ -374,6 +430,11 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         self.b.put_sequence(id, seq);
         self.in_progress.remove(&key);
+        if self.depth_hits > hits_before {
+            self.truncated_at.insert(key, depth);
+        } else {
+            self.truncated_at.remove(&key);
+        }
         Some(id)
     }
 
@@ -501,9 +562,23 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 }
             }
         } else if let Some(s) = child(c, "sequence") {
-            self.sequence(s, None)
+            // A nested sequence left out (nested too deeply, or recursive) stays in the timeline as an offline
+            // clip, so the clip keeps its place and length instead of shortening the sequence.
+            match self.sequence(s, None) {
+                Some(id) => Some(id),
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a nested sequence that was left out; imported offline"));
+                    Some(self.offline_media(kind, seq_rate, frame, name))
+                }
+            }
         } else {
             self.report.warn(format!("clip \"{name}\" has no media reference; imported offline"));
+            Some(self.offline_media(kind, seq_rate, frame, name))
+        }
+    }
+
+    fn offline_media(&mut self, kind: TrackKind, seq_rate: FrameRate, frame: (u32, u32), name: &str) -> ItemId {
+        {
             let spec = MediaSpec {
                 video: (kind == TrackKind::Video).then_some((frame.0, frame.1, seq_rate)),
                 audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
@@ -515,7 +590,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
                 m.offline = true;
             }
-            Some(id)
+            id
         }
     }
 
@@ -796,6 +871,9 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
         let duration = if out_f > in_f { rate.tick_of(out_f) - start } else { Tick::ZERO };
         let color = child_text(m, "color").and_then(label_from).unwrap_or(Label::Green);
         out.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(b.alloc()),
             start,
             duration,
@@ -827,6 +905,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,
@@ -904,6 +983,11 @@ impl Exp<'_, '_> {
                 }
             }
         }
+        // Each clip lists every member of its group, so a group of n clips writes n * n links.
+        if let Some(n) = link_members.values().map(Vec::len).filter(|&n| n > MAX_LINK_MEMBERS).max() {
+            self.report.warn(format!("a link group of {n} clips was exported with its first {MAX_LINK_MEMBERS} members"));
+            link_members.values_mut().for_each(|m| m.truncate(MAX_LINK_MEMBERS));
+        }
         if seq.all_tracks().any(|t| t.items.iter().any(|i| i.group.is_some())) {
             self.report.info("clip groups have no FCP7 XML equivalent and were not exported");
         }
@@ -937,6 +1021,8 @@ impl Exp<'_, '_> {
                         let links: Vec<(String, TrackKind, usize, usize)> = c
                             .link
                             .and_then(|l| link_members.get(&l))
+                            // a clip cut from an over-large group stays unlinked, or its links would restore a larger group on import
+                            .filter(|m| m.contains(&c.id))
                             .map(|m| m.iter().filter_map(|id| clip_xml.get(id).cloned()).collect())
                             .unwrap_or_default();
                         let xid = clip_xml[&c.id].0.clone();
@@ -1386,7 +1472,8 @@ impl Exp<'_, '_> {
             return;
         };
         let media = if kind == TrackKind::Video { "video" } else { "audio" };
-        self.open_effect(def.name, def.id, def.category.get(1).copied().unwrap_or("Filter"), "filter", media, e.enabled);
+        // the name an export has always written, so a UI rename does not change the file
+        self.open_effect(filmcraft_project::interchange_name(def), def.id, def.category.get(1).copied().unwrap_or("Filter"), "filter", media, e.enabled);
         for pd in &def.params {
             let Some(p) = e.params.get(pd.id) else { continue };
             match &p.value {

@@ -168,6 +168,11 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// Where the Timeline draws the playhead while playing, and when (monotonic host s): it moves
+    /// with the wall clock every frame and eases toward the playback clock, so it glides instead
+    /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
+    /// frame shown.
+    smooth_playhead: Option<(Tick, f64)>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
@@ -198,6 +203,13 @@ pub struct FilmcraftApp {
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
+    /// Audio during scrubbing (#211), on its own output so opening it never waits for the device
+    /// (#2633). Falls back to `audio` when the platform layer installs none (headless tests).
+    pub scrub_out: Option<Box<dyn scrub::ScrubOut>>,
+    /// The sequence sample rate `scrub_out` was last configured for (`sync_scrub_output`).
+    pub(crate) scrub_rate: Option<u32>,
+    /// The sequence the open scrub stream's fill was built for (`sync_scrub_output`).
+    pub(crate) scrub_sequence: Option<filmcraft_project::ItemId>,
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
@@ -246,6 +258,10 @@ pub struct FilmcraftApp {
     pub(crate) pending_panel_raise: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
+    /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a
+    /// dialog to ask for parameters runs the engine command instead (an agent cannot see or
+    /// close a dialog; `ui.menu.invoke` keeps the menu behaviour, #1540).
+    pub(crate) engine_call: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
@@ -372,6 +388,10 @@ pub struct FilmcraftApp {
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
+    /// The status bar's running-job text as last shown.
+    job_text: Option<panels::JobText>,
+    /// Running jobs' texts in the export queue and the Progress panel as last shown.
+    steady_texts: panels::SteadyTexts,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
