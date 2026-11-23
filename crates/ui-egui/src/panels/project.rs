@@ -102,6 +102,10 @@ pub struct ProjectPanelUi {
     /// The Project panel's thumbnail size while its slider is dragged; written on release.
     #[serde(skip)]
     pub icon_size_drag: Option<f32>,
+    /// Reveal in Project: the item whose row or card the panel scrolls into view the next time it
+    /// draws its view (once; cleared after that draw).
+    #[serde(skip)]
+    pub reveal: Option<u64>,
 }
 
 /// Which panel instance a view belongs to.
@@ -467,6 +471,10 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         ViewMode::Icon => crate::panels::project_views::icon_view(app, &mut cui, content, v, &filter, actions),
         ViewMode::Freeform => crate::panels::project_views::freeform_view(app, &mut cui, content, v, &filter, actions),
     }
+    // a revealed item the view did not draw (hidden from the panel) is not scrolled to later
+    if v.inst == Inst::Main {
+        app.ui.project_panel.reveal = None;
+    }
     footer(app, ui, Rect::from_min_max(pos2(rect.min.x, rect.max.y - FOOTER_H), rect.max), v, actions);
 }
 
@@ -667,7 +675,8 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
                     crate::panels::clear_drag(ui);
                 }
             }
-            egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
+            let bin = (v.bin != app.session.project.root.id).then_some(v.bin.0);
+            egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, bin, actions));
         } else if resp.clicked() && enabled {
             match id {
                 "find" => actions.push(("edit.find".into(), json!({}))),
@@ -699,12 +708,25 @@ pub const NEW_ITEMS: [(&str, &str); 8] = [
     ("Demo Footage", "file.importDemoFootage"),
 ];
 
-pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, actions: &mut Actions) {
+/// The bin of a New Item menu action (`{"bin": .., "newItem": true}`, nothing else): `Some(None)` is
+/// the root, as in the engine (`bin` null). The dialogs of Sequence and Color Matte open with it
+/// instead of the shown bin; the same params without the marker still run the command directly.
+pub fn bin_only(params: &Value) -> Option<Option<u64>> {
+    let m = params.as_object().filter(|m| m.len() == 2 && m.get("newItem") == Some(&Value::Bool(true)))?;
+    let bin = m.get("bin")?;
+    if bin.is_null() { Some(None) } else { bin.as_u64().map(Some) }
+}
+
+/// New Item menu of the panel instance `pre`, which shows `bin` (`None` = the root): every action
+/// names that bin, so a floating bin panel does not make its items in the main panel's bin.
+pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, bin: Option<u64>, actions: &mut Actions) {
     for (label, c) in NEW_ITEMS {
         let b = ui.button(crate::i18n::t(label));
         app.auto.add(&format!("{pre}.newItem.{c}"), b.rect, label);
         if b.clicked() {
-            actions.push((c.into(), json!({})));
+            // Demo Footage has no bin
+            let params = if c == "file.importDemoFootage" { json!({}) } else { json!({"bin": bin, "newItem": true}) };
+            actions.push((c.into(), params));
             ui.close();
         }
     }
@@ -1054,6 +1076,13 @@ pub fn new_bin(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> 
     app.ui.project_panel.selected_bin = Some(bin);
     app.ui.project_panel.rename = Some(Rename { item: None, bin: Some(bin), text, panel });
     Ok(r)
+}
+
+/// The bin the Project panel is showing, `None` at the project's root: where a New Item or File ▸ New
+/// puts what it makes.
+pub fn shown_bin(app: &FilmcraftApp) -> Option<u64> {
+    let v = view_of(app, shown_inst(app));
+    (v.bin != app.session.project.root.id).then_some(v.bin.0)
 }
 
 /// Commit the inline rename (Enter / focus lost).

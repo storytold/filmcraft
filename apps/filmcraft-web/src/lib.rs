@@ -107,7 +107,6 @@ impl eframe::App for WebApp {
             f(self, ctx);
         }
         self.app.logic_inner(ctx);
-        api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
             ctx.request_repaint();

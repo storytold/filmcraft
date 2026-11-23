@@ -1,5 +1,5 @@
 //! The ArtCraft wordmark (first-party trademark, used with permission; see `docs/brand/` and
-//! AGENTS.md §1.8), decoded once and kept as a texture.
+//! AGENTS.md `## This repository`, attribution), decoded once and kept as a texture.
 
 const LOGO_LIGHT_INK: &[u8] = include_bytes!("../../../docs/brand/artcraft-logo-white.png");
 const LOGO_DARK_INK: &[u8] = include_bytes!("../../../docs/brand/artcraft-logo.png");
