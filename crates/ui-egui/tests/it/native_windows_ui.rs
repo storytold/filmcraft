@@ -321,10 +321,6 @@ fn a_floating_program_monitor_composes_and_rearms_its_ime_fence() {
     for _ in 0..3 {
         d.frames(1);
         let ime = window_ime().expect("the window keeps publishing while composing");
-        eprintln!(
-            "DIAG a_floating_program_monitor_composes_and_rearms_its_ime_fence: first={:?}/{} now={:?}/{}",
-            first.owner, first.context_generation, ime.owner, ime.context_generation
-        );
         assert_eq!((ime.owner, ime.context_generation), (first.owner, first.context_generation), "the same IME context");
         assert!(!ime.should_interrupt_composition);
     }
