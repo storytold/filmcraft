@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$ExpectedPushDestination
@@ -193,7 +193,7 @@ $commitId = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not identify the new commit; nothing was pushed.' }
 $committedTree = (& git rev-parse "$commitId^{tree}").Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the new commit tree; nothing was pushed.' }
-$parentsOutput = & git show -s --format=%P $commitId 2>$null
+$parentsOutput = & git show --no-show-signature -s --format=%P $commitId 2>$null
 if ($LASTEXITCODE -ne 0 -or $null -eq $parentsOutput) {
     throw 'Could not verify the new commit parents. Review the local commit; nothing was pushed.'
 }
@@ -206,6 +206,7 @@ $pushUrlsBeforePush = Get-ValidatedPushUrls
 if ((@($pushUrlsBeforePush) -join "`n") -cne (@($pushUrlsBeforeConfirmation) -join "`n")) {
     throw 'Origin push destinations changed before push. The commit is local; nothing was pushed.'
 }
+$script:PSNativeCommandUseErrorActionPreference = $false
 & git push --no-follow-tags --no-recurse-submodules origin "$($commitId):refs/heads/$branch"
 if ($LASTEXITCODE -ne 0) { throw 'Commit succeeded, but the push returned an error. A configured fallback destination may already have updated the fork branch; check the branch before retrying.' }
 
