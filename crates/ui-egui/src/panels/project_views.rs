@@ -739,7 +739,7 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
         ui.data_mut(|d| d.insert_temp::<Drag>(key, (press - origin, current.clone(), add)));
     }
     let Some((anchor, before, add)) = ui.data(|d| d.get_temp::<Drag>(key)) else { return };
-    let cancel = crate::framework::escape_pressed(ui.ctx());
+    let cancel = crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx());
     if cancel || !(bg.dragged_by(primary) || bg.drag_stopped_by(primary)) {
         ui.data_mut(|d| d.remove::<Drag>(key));
         if cancel && before != current {

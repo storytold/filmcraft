@@ -1343,8 +1343,7 @@ fn marquee_selects_cards_in_icon_view() {
     assert!(selection(&mut d).is_empty());
 }
 
-#[test]
-fn escape_cancels_a_marquee_and_keeps_the_selection() {
+fn marquee_escape_restores_selection(window_consumed_escape: bool) {
     let mut d = project_driver();
     let cards = footage_in(&mut d, "icon");
     let [(i0, a), (i1, b), (i2, c)] = [cards[0], cards[1], cards[2]];
@@ -1360,12 +1359,30 @@ fn escape_cancels_a_marquee_and_keeps_the_selection() {
         send(&mut d, egui::Event::PointerMoved(from.lerp(to, k as f32 / 10.0)));
     }
     assert_eq!(selection(&mut d), sorted(vec![i0, i1]), "the selection follows the rectangle");
-    send(&mut d, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+    if window_consumed_escape {
+        // A framework press capture takes Escape out of the input before the panel sees it.
+        // Only the app's raw marker survives to cancel the marquee.
+        filmcraft_ui_egui::framework::note_escape(&d.harness.ctx, &[escape]);
+        d.frames(1);
+    } else {
+        send(&mut d, escape);
+    }
     let end = egui::pos2(centre(c).0, centre(c).1);
     send(&mut d, egui::Event::PointerMoved(end));
     send(&mut d, egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     d.frames(2);
     assert_eq!(selection(&mut d), vec![i2], "Escape restored the selection the drag began with");
+}
+
+#[test]
+fn escape_cancels_a_marquee_and_keeps_the_selection() {
+    marquee_escape_restores_selection(false);
+}
+
+#[test]
+fn escape_captured_by_the_window_still_cancels_the_project_marquee() {
+    marquee_escape_restores_selection(true);
 }
 
 #[test]

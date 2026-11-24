@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 #[derive(Default)]
 struct WindowIo {
     focused: bool,
+    viewport: Option<(egui::ViewportId, egui::Rect)>,
     events: Vec<egui::Event>,
     ime: Option<egui::output::IMEOutput>,
     reset_requests: Vec<egui::ImeResetId>,
@@ -33,6 +34,7 @@ fn native_host() {
         let id = viewport.ids.this;
         let (focused, events) = WINDOW.with(|w| {
             let mut w = w.borrow_mut();
+            w.viewport = Some((id, place));
             (w.focused, std::mem::take(&mut w.events))
         });
         let info = egui::ViewportInfo { inner_rect: Some(place), outer_rect: Some(place), focused: Some(focused), ..Default::default() };
@@ -135,6 +137,17 @@ impl Driver {
         self.harness.state()
     }
 
+    /// Send a real hosted file drag and drop over the element's native viewport.
+    fn drop_files_at(&mut self, element: &str, paths: Vec<std::path::PathBuf>) {
+        let at = rect(&self.element(element)).center();
+        let (viewport, place) = WINDOW.with(|w| w.borrow().viewport.unwrap());
+        assert_ne!(viewport, egui::ViewportId::ROOT);
+        let desktop = place.min + at.to_vec2();
+        self.system.set_pointer(Some([desktop.x, desktop.y]));
+        craft_ui::runtime::windows::WindowHost::of(&self.harness.ctx).inject_files(viewport, Some(at), paths, true);
+        self.frames(12);
+    }
+
     /// The pointer in the main window, which also puts the OS pointer there: the main window's
     /// content starts at the desktop origin.
     fn pointer(&mut self, pos: egui::Pos2, pressed: Option<bool>) {
@@ -158,6 +171,58 @@ impl Driver {
 fn rect(element: &Value) -> egui::Rect {
     let r: Vec<f32> = element["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
     egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+}
+
+/// Route a native-window file session through the framework, not directly to the dock's
+/// already-flattened fallback. Only drops over a Timeline track with the preference on place a clip.
+#[test]
+fn files_dropped_on_the_native_timeline_reach_the_track_once() {
+    let dir = tempfile::tempdir().unwrap();
+    for (panel, element, enabled, expected) in
+        [("Timeline", "timeline.track.V1.target", true, 1), ("Timeline", "timeline.track.V1.target", false, 0), ("Info", "panel.Info", true, 0)]
+    {
+        let mut d = Driver::new(5);
+        d.harness.state_mut().session.prefs.timeline.drop_import_to_timeline = enabled;
+        d.float(panel, [900.0, 120.0, 680.0, 420.0]);
+        let path = dir.path().join(format!("native_{panel}_{enabled}.png"));
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 140, 220, 255])).save(&path).unwrap();
+        let before = d.app().session.project.items.len();
+        d.drop_files_at(element, vec![path]);
+        let clips: usize = d.app().session.active_sequence().unwrap().video_tracks.iter().map(|track| track.items.len()).sum();
+        assert_eq!(d.app().session.project.items.len(), before + 1, "{panel}: one bin import");
+        assert_eq!(clips, expected, "{panel}, preference {enabled}: {}", d.app().ui.status);
+    }
+}
+
+/// A dropped project is handled through the normal root confirmation path, not
+/// substituted while the native dock body is drawing the old project. Cancel
+/// leaves that project dirty, and later passes must not replay the drop.
+#[test]
+fn a_native_timeline_project_drop_asks_before_replacing_a_dirty_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = dir.path().join("current.fcproj");
+    let other = dir.path().join("other.fcproj");
+    let mut destination = Session::default();
+    destination.execute("file.newProject", json!({"name": "Drop target"})).unwrap();
+    destination.execute("file.saveAs", json!({"path": other})).unwrap();
+
+    let mut d = Driver::new(5);
+    d.harness.state_mut().session.prefs.timeline.drop_import_to_timeline = true;
+    d.ok("engine.execute", json!({"command": "file.saveAs", "params": {"path": current}}));
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved bin"}}));
+    assert!(d.app().session.is_dirty());
+
+    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
+    d.drop_files_at("timeline.track.V1.target", vec![other.clone()]);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["path"], json!(other));
+    assert_eq!(d.app().session.path.as_deref(), current.to_str());
+    assert!(d.app().session.is_dirty());
+
+    d.ok("ui.click", json!({"id": "openProject.cancel"}));
+    d.frames(12);
+    assert!(d.app().ui.clip_dialog.is_none(), "the consumed drop must not open a second prompt");
+    assert_eq!(d.app().session.path.as_deref(), current.to_str());
+    assert!(d.app().session.is_dirty());
 }
 
 /// The header of a panel in its own OS window (the ≡ menu, the Timeline's sequence tabs) is

@@ -694,6 +694,9 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
         // The Timeline is FilmCraft's document view: Tab and the edit chords stay in egui for it.
         if *panel == PanelKind::Timeline {
             crate::framework::host_canvas(ui.ctx(), child.scope_id());
+            if viewport != egui::ViewportId::ROOT {
+                self.app.native_timeline_file_drop(&child, rect);
+            }
         }
         panels::show(self.app, &mut child, *panel, rect);
         // The end-of-pass IME check of the Program monitor's text editor in its own OS window.

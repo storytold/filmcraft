@@ -29,8 +29,8 @@ mod native_window_input_tests {
         h.state().session.active_sequence().map_or(0, |q| q.video_tracks.iter().map(|t| t.items.len()).sum())
     }
 
-    /// Files dropped on a dock panel in its own OS window are imported to the bin: the dock
-    /// reports them without the panel or the pointer, so no Timeline places them.
+    /// The dock's fallback reports a native-window drop without a Timeline target. Those files
+    /// are imported to the bin but are not placed on the Timeline.
     #[test]
     fn files_dropped_on_native_windows_import_to_the_bin() {
         let dir = tempfile::tempdir().unwrap();

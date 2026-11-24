@@ -166,8 +166,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.colored_label(ui.visuals().error_fg_color, &draft.error);
         }
     });
-    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
-    if matches!(action, Some(Action::Cancel)) || modal.should_close() || crate::framework::escape_pressed(&modal.response.ctx) {
+    // The runtime can take Escape from egui as the window's cancel. Take it
+    // here so another pass in this frame cannot also cancel the pen draft.
+    let escape = crate::framework::take_window_cancel(&modal.response.ctx);
+    if escape || matches!(action, Some(Action::Cancel)) || modal.should_close() {
         return;
     }
     match action {

@@ -839,7 +839,9 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
     if ui.input(|i| i.key_pressed(egui::Key::Enter)) && d.points.len() >= 3 {
         commit = true;
     }
-    if crate::framework::escape_pressed(ui.ctx()) {
+    // The marker dialog draws after the Program monitor. Let it own Escape
+    // while open, rather than deleting the draft before the dialog can close.
+    if app.ui.marker_properties.is_none() && crate::framework::escape_pressed(ui.ctx()) {
         app.ui.mask_pen = None;
         return;
     }

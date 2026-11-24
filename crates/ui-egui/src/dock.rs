@@ -718,24 +718,9 @@ impl LayoutExt for Layout {
     }
 
     fn visible_panels(&self) -> Vec<PanelKind> {
-        fn walk(node: &Node<PanelKind>, out: &mut Vec<PanelKind>) {
-            match node {
-                Node::Tabs { panels, active, .. } => out.extend(panels.get(*active).copied()),
-                Node::Split { first, second, .. } => {
-                    walk(first, out);
-                    walk(second, out);
-                }
-                _ => {}
-            }
-        }
-        let mut out = Vec::new();
-        if let Some(root) = &self.root {
-            walk(root, &mut out);
-        }
-        for window in &self.floating {
-            out.extend(window.groups().iter().filter_map(|group| group.active_panel().copied()));
-        }
-        out
+        // Use the dock's front-panel rule for both docked and floating groups, including rails,
+        // minimized groups and accordions, while retaining its layout traversal order.
+        self.panels().into_iter().copied().filter(|&panel| self.is_visible(panel)).collect()
     }
 
     fn restore_timeline(&mut self) {
@@ -1102,6 +1087,25 @@ mod tests {
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
         assert_eq!(saved_docking(&back, "Mine"), mine);
+    }
+
+    #[test]
+    fn keyboard_cycle_includes_open_dock_groups_but_not_collapsed_groups() {
+        let layout: Layout = serde_json::from_value(serde_json::json!({
+            "root": {"Dock": {"side": "End", "columns": [
+                {"groups": [{"panels": ["Effects", "Properties"], "active": 1},
+                    {"panels": ["Timeline"], "active": 0, "minimized": true}]},
+                {"iconic": true, "groups": [{"panels": ["Info"], "active": 0}]}
+            ]}},
+            "floating": [
+                {"rect": [0.0, 0.0, 200.0, 200.0], "panels": ["Program"], "active": 0},
+                {"rect": [250.0, 0.0, 200.0, 200.0], "column": {
+                    "groups": [{"panels": ["AudioMeters"], "active": 0, "minimized": true}]}}
+            ]
+        }))
+        .unwrap();
+        layout.validate().unwrap();
+        assert_eq!(layout.visible_panels(), vec![PanelKind::Properties, PanelKind::Program]);
     }
 
     /// Rollback to the previous production app, not just to the pre-craft-ui reader. Mirror

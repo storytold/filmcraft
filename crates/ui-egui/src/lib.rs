@@ -76,7 +76,7 @@ mod theme_favorites;
 pub mod updates_ui;
 pub mod widgets;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -194,6 +194,13 @@ pub enum ControlNotice {
     /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
     /// #3318 reworks port-collision reporting.)
     Token,
+}
+
+/// A file drop claimed by a native Timeline viewport, ready for the next root input pass.
+struct NativeTimelineDrop {
+    paths: Vec<String>,
+    point: egui::Pos2,
+    viewport: egui::ViewportId,
 }
 
 pub struct FilmcraftApp {
@@ -367,6 +374,9 @@ pub struct FilmcraftApp {
     /// Files dropped on the dock's floating windows last frame; the dock area reports them after
     /// the panels have drawn, so they are imported next frame.
     window_files: Vec<craft_ui::runtime::drag::OsFile>,
+    /// Files the native Timeline accepted in its own viewport. Import only in root input
+    /// handling, before any dock body draws: an import can open a different project.
+    native_timeline_drops: VecDeque<NativeTimelineDrop>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,

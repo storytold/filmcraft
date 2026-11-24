@@ -474,6 +474,38 @@ fn shift_constrains_pen_mask_segments_to_45_degrees() {
     assert!(ox > 10.0 && oy.abs() < 1e-6, "handle constrained horizontal: {pen}");
 }
 
+/// The modal owns the first Escape. Without the modal, another Escape cancels the pen draft.
+#[test]
+fn marker_dialog_escape_does_not_discard_an_unfinished_pen_mask() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    let time = start + dur / 2;
+    d.exec("playhead.set", json!({"time": time}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    let marker = d.exec("markers.add", json!({"time": time, "name": "Mask draft"}))["marker"].as_u64().unwrap();
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
+    d.frames(2);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.3}));
+    d.frames(2);
+    let points = d.harness.state().ui.mask_pen.as_ref().unwrap().points.clone();
+    assert_eq!(points.len(), 1);
+    d.ok("ui.click", json!({"id": format!("timeline.marker.{marker}"), "count": 2}));
+    d.frames(2);
+    assert!(d.harness.state().ui.marker_properties.is_some());
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.marker_properties.is_none(), "the modal must close");
+    assert_eq!(d.harness.state().ui.mask_pen.as_ref().unwrap().points, points, "the same draft must remain");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(2);
+    assert!(d.harness.state().ui.mask_pen.is_none(), "without the modal, Escape should cancel the draft");
+}
+
 /// Delete / Backspace and Cmd+Z take back the last pen point while a mask is drawn: the draft is
 /// outside the undo history, so the keys must not reach Clear (on the clip being masked) or Undo
 /// (of the previous project edit). The last point taken back closes the draft (#1345).

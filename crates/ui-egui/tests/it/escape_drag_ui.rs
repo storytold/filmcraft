@@ -237,6 +237,52 @@ fn escape_puts_a_thumbnail_size_slider_back() {
 }
 
 #[test]
+fn escape_keeps_the_media_browser_thumbnail_size_on_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.ok("engine.execute", json!({"command": "mediaBrowser.navigate", "params": {"path": dir.path()}}));
+    d.ok("engine.execute", json!({"command": "mediaBrowser.settings", "params": {"view": "thumbnails", "thumbnailSize": 100.0}}));
+    let size = |d: &Driver| d.harness.state().session.prefs.media_browser.thumbnail_size;
+    let start = size(&d);
+    let r = d.rect("mediaBrowser.thumbnailSize");
+    let (from, to) = (egui::pos2(r[0] + r[2] * 0.25, r[1] + r[3] / 2.0), egui::pos2(r[0] + r[2] * 0.8, r[1] + r[3] / 2.0));
+    d.drag(from, to, true);
+    assert_eq!(size(&d), start, "releasing after Escape does not commit the preview size");
+    d.drag(from, to, false);
+    assert!(size(&d) > start, "the next ordinary drag changes the preference");
+}
+
+#[test]
+fn escape_keeps_delayed_guide_releases_from_adding_moving_or_removing() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "view.showRulers"}));
+    let guides = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["program"]["guides"].clone();
+    let empty = guides(&mut d);
+    let ruler_x = centre(d.rect("program.ruler.left")).x;
+    let pic = d.rect("program.picture");
+    let ruler = egui::pos2(ruler_x, pic[1] + pic[3] / 2.0);
+    let inside = egui::pos2(pic[0] + pic[2] * 0.4, ruler.y);
+
+    d.drag(ruler, inside, true);
+    assert_eq!(guides(&mut d), empty, "a cancelled ruler drag does not add a guide");
+    d.drag(ruler, inside, false);
+    let original = guides(&mut d);
+    assert_eq!(original.as_array().unwrap().len(), 1, "the next ordinary ruler drag adds a guide");
+
+    let from = centre(d.rect("program.guide.0"));
+    let moved = from + egui::vec2(pic[2] * 0.2, 0.0);
+    d.drag(from, moved, true);
+    assert_eq!(guides(&mut d), original, "a cancelled guide drag restores its starting position");
+    d.drag(from, egui::pos2(ruler.x, from.y), true);
+    assert_eq!(guides(&mut d), original, "a cancelled release onto the ruler does not remove the guide");
+    d.drag(from, moved, false);
+    assert_ne!(guides(&mut d), original, "the next ordinary guide drag moves it");
+}
+
+#[test]
 fn escape_cancels_dragging_an_effect_onto_a_clip() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));
