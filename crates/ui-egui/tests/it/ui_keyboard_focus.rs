@@ -49,12 +49,6 @@ fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     let reached = h.ctx.memory(|m| m.focused());
     assert!(reached.is_some(), "Tab gives some control the keyboard focus");
     key(&mut h, Key::Space, Modifiers::NONE);
-    eprintln!(
-        "DIAG tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus: Tab reached {reached:?}, after Space focus {:?} tool {:?} playing {}",
-        h.ctx.memory(|m| m.focused()),
-        h.state().ui.tool,
-        h.state().playback.playing
-    );
     assert_eq!(h.state().ui.tool, Tool::Selection, "traversal does not activate a tool");
     assert!(!h.state().playback.playing, "Space belongs to the focused control");
     assert_eq!(h.state().session.state.playheads, playheads);

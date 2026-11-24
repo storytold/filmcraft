@@ -314,9 +314,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     let header = rect(&h, "panel.float.0.move");
     // next's title row ends in its Close action; the band's leading part is free to move by.
     let from = pos2(header.left() + 24.0, header.center().y);
-    eprintln!("DIAG real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents: band {header:?} press {from:?} window {resized:?} layer at press {:?}", h.ctx.layer_id_at(from));
     drag(&mut h, from, from - vec2(24.0, 18.0), Modifiers::NONE);
-    eprintln!("DIAG real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents: moved to {:?}", h.state().ui.dock.floating[0].rect);
     assert!(h.state().ui.dock.floating[0].rect.min.x < resized.min.x - 15.0);
     assert!(h.state().ui.dock.floating[0].rect.min.y < resized.min.y - 10.0);
     action_log.push(action_state(&h, "moved"));
@@ -659,12 +657,7 @@ fn bring_info_forward(h: &mut Harness<'_, FilmcraftApp>) {
     let info = rect(h, "panel.Info");
     // Clear of the window's corner resize grip.
     let pos = info.right_bottom() - vec2(40.0, 16.0);
-    let under = h.ctx.clone().layer_id_at(pos);
     assert!(!rect(h, "panel.TextToSpeech").contains(pos), "the press must land on Info alone");
-    eprintln!(
-        "DIAG narration_selection_reveals_covered_floating_tts_once_without_editing_the_project: press {pos:?} on layer {under:?}, Info window {:?}",
-        window_layer(h, PanelKind::Info)
-    );
     click_at(h, pos, PointerButton::Primary);
 }
 
@@ -962,7 +955,7 @@ fn close_panel_on_the_timeline_tab_closes_the_sequence() {
     for id in ["panel.menu.Timeline.revealSequence", "panel.menu.Timeline.closeOthers"] {
         assert!(h.state().auto.find(id).is_some(), "{id} is missing from the Timeline's panel menu");
     }
-    assert!(h.query_all_by_label("Restore Workspace").next().is_some(),"Restore Workspace is missing from the Timeline's panel menu");
+    assert!(h.query_all_by_label("Restore Workspace").next().is_some(), "Restore Workspace is missing from the Timeline's panel menu");
     let pos = rect(&h, "panel.tab.Timeline").center();
     click_at(&mut h, pos, PointerButton::Secondary);
     let close = menu_item(&h, "Close");
