@@ -13,9 +13,11 @@ use craft_behavior::dock::{Action, Layout, Node, Permissions, Workspace};
 use craft_host::target::WindowKind;
 use craft_ui::contract::{Bind, BodyCx, Tracked};
 use craft_ui::docking::{
-    DockCommands, DockConfig, DockEvent, DockPanels, DockScene, DockSizes, DockTo, DragUnit, FloatSpace, PanelSpec, PanelSpecs, actions, move_actions,
+    DividerKind, DockCommands, DockConfig, DockEvent, DockPanels, DockScene, DockSizes, DockSource, DockTo, DragUnit, FloatSpace, PanelSpec, PanelSpecs,
+    SourceKind, actions, move_actions,
 };
 use craft_ui::patterns::dock::DockArea;
+use craft_ui::runtime::windows::ResizeEdge;
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -27,6 +29,43 @@ use crate::{FilmcraftApp, panels};
 /// Where each panel body was drawn last frame, and on which layer.
 fn bodies_id() -> egui::Id {
     egui::Id::unique("filmcraft-dock-bodies")
+}
+
+/// The dock area's gesture sources of the last pass, as automation elements.
+fn sources_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-sources")
+}
+
+/// One gesture source of the dock area: its automation id, where it was drawn (in its own OS
+/// window's coordinates for a native floating window), the id of its node, and whether it is a
+/// divider or a resize grip, which take the arrow keys while focused.
+#[derive(Clone, Debug)]
+struct DockHit {
+    id: String,
+    rect: Rect,
+    widget: egui::Id,
+    viewport: egui::ViewportId,
+    grip: bool,
+}
+
+/// `a`/`b` per split level from the root, as in `dock.gutter.<path>`.
+fn path_id(path: &[bool]) -> String {
+    path.iter().map(|second| if *second { 'b' } else { 'a' }).collect()
+}
+
+/// The dock area's gesture sources of the last pass, for `ui.docking`'s `hitRects`: each with its
+/// automation id and rect.
+pub(crate) fn hit_rects(ctx: &egui::Context) -> Vec<Value> {
+    let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+    hits.iter().map(|hit| json!({"hit": hit.id, "rect": [hit.rect.left(), hit.rect.top(), hit.rect.width(), hit.rect.height()]})).collect()
+}
+
+/// Whether key focus is on a dock divider or a floating window's resize grip, as drawn last pass:
+/// the arrow keys then nudge it and fire no shortcut (#1482).
+pub(crate) fn divider_focused(ctx: &egui::Context) -> bool {
+    let focused = [craft_ui::runtime::access::focused_node(ctx), ctx.memory(|memory| memory.focused())];
+    let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+    hits.iter().any(|hit| hit.grip && focused.contains(&Some(hit.widget)))
 }
 
 /// Width of the ≡ panel menu button in each group's header.
@@ -286,7 +325,7 @@ impl FilmcraftApp {
     /// OS drag positions come from the host cursor hook, so egui pointer capture alone cannot
     /// decide whether a Timeline is covered: the Timeline body drawn last frame must hold `pos`,
     /// with no floating window above it there: neither another panel's body nor the window's
-    /// title bar and tab strip around it.
+    /// title bar and tab strip above that body.
     pub(crate) fn timeline_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2) -> bool {
         if !ctx.content_rect().contains(pos) {
             return false;
@@ -295,13 +334,18 @@ impl FilmcraftApp {
         let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else { return false };
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
-        // A body drawn this frame on a layer above the Timeline's: its floating window covers
-        // `pos` where the window's area does.
+        let hits = ctx.data(|data| data.get_temp::<Vec<DockHit>>(sources_id())).unwrap_or_default();
+        // A body drawn last frame on a layer above the Timeline's, of a panel that still floats: its
+        // window covers `pos` from its grip down to the bottom of its body. A window closed or
+        // docked since covers nothing.
         !bodies.iter().any(|(panel, rect, layer)| {
-            *panel != PanelKind::Timeline
-                && layer != timeline
-                && rank(layer) > rank(timeline)
-                && (rect.contains(pos) || ctx.memory(|memory| memory.areas().is_visible(layer) && memory.area_rect(layer.id).is_some_and(|area| area.contains(pos))))
+            if *panel == PanelKind::Timeline || layer == timeline || rank(layer) <= rank(timeline) {
+                return false;
+            }
+            let Some(index) = self.ui.dock.floating.iter().position(|window| window.contains(panel)) else { return false };
+            let grip = format!("panel.float.{index}.move");
+            let window = hits.iter().filter(|hit| hit.id == grip && hit.viewport == egui::ViewportId::ROOT).fold(*rect, |area, hit| area.union(hit.rect));
+            window.contains(pos)
         })
     }
 
@@ -386,6 +430,7 @@ impl FilmcraftApp {
         self.dock_specs = specs;
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         self.dock_windows = output.windows;
+        self.register_dock_sources(&ctx, &output.sources);
         if output.float_space.is_some() {
             self.dock_float_space = output.float_space;
         }
@@ -461,6 +506,52 @@ impl FilmcraftApp {
             }
         });
         panels::panel_menu_popup(self, ui);
+    }
+
+    /// Automation ids for the dock area's gesture sources: `panel.tab.<Panel>`, `panel.drag.<Panel>`
+    /// (the group's drag bar), `panel.float.<n>.move` and `.resize` (`.resize.<Edge>` for the other
+    /// grips), `dock.gutter.<path>` (`a`/`b` per split level), and next's column dividers as
+    /// `dock.groups.<Panel>` and `dock.columnEdge.<Panel>`. A source in a floating window's own OS
+    /// window is registered in that window. The source's node id is the element's widget id, so
+    /// key focus on a divider or grip maps to its element; [`divider_focused`] reads it.
+    fn register_dock_sources(&mut self, ctx: &egui::Context, sources: &[DockSource<PanelKind>]) {
+        // The floating windows the area just showed in their own OS windows.
+        self.auto.windows = self
+            .dock_windows
+            .iter()
+            .filter_map(|(panel, viewport)| self.ui.dock.floating.iter().position(|window| window.contains(panel)).map(|index| (*viewport, index)))
+            .collect();
+        let window = |panel: &PanelKind| self.ui.dock.floating.iter().position(|window| window.contains(panel));
+        let mut found = Vec::new();
+        for source in sources {
+            let (id, label, grip) = match &source.kind {
+                SourceKind::Tab(panel) => (format!("panel.tab.{}", panel.id()), panel.title(), false),
+                SourceKind::GroupBar(panel) => (format!("panel.drag.{}", panel.id()), "Move panel", false),
+                SourceKind::WindowGrip(panel) => match window(panel) {
+                    Some(index) => (format!("panel.float.{index}.move"), "Move floating panel", false),
+                    None => continue,
+                },
+                SourceKind::WindowResize(panel, edge) => match window(panel) {
+                    Some(index) if *edge == ResizeEdge::BottomRight => (format!("panel.float.{index}.resize"), "Resize floating panel", true),
+                    Some(index) => (format!("panel.float.{index}.resize.{edge:?}"), "Resize floating panel", true),
+                    None => continue,
+                },
+                SourceKind::Divider(DividerKind::Split(path)) => (format!("dock.gutter.{}", path_id(path)), "gutter", true),
+                SourceKind::Divider(DividerKind::Groups(panel)) => (format!("dock.groups.{}", panel.id()), "gutter", true),
+                SourceKind::Divider(DividerKind::ColumnEdge(panel)) => (format!("dock.columnEdge.{}", panel.id()), "gutter", true),
+                _ => continue,
+            };
+            found.push((DockHit { id, rect: source.rect, widget: source.id, viewport: source.viewport, grip }, label));
+        }
+        for (hit, label) in &found {
+            self.auto.add_in(hit.viewport, &hit.id, hit.rect, label);
+            if let Some(element) = self.auto.elements.last_mut() {
+                element.widget_id = Some(format!("{:016x}", hit.widget.value()));
+                element.response_id = Some(hit.widget);
+            }
+        }
+        let hits: Vec<DockHit> = found.into_iter().map(|(hit, _)| hit).collect();
+        ctx.data_mut(|data| data.insert_temp(sources_id(), hits));
     }
 
     /// The Timeline's tabs stand for its open sequences: a close from the dock area (Close Panel,

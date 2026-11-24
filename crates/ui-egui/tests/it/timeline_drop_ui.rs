@@ -266,6 +266,13 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
         assert!(!covered_preview, "a covered Timeline must not preview a placement");
         float_panel(&mut h, "Info", [5.0, 5.0, 320.0, 200.0]);
         let at = point_on_row(&h, "timeline.track.V1.target");
+        eprintln!(
+            "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} at={at:?} info={:?} grip={:?} timeline={:?} floats={:?}",
+            control_rect(&h, "panel.Info"),
+            h.state().auto.find("panel.float.0.move").map(|element| element.rect),
+            control_rect(&h, "panel.Timeline"),
+            h.state().ui.dock.floating.iter().map(|window| window.rect).collect::<Vec<_>>()
+        );
         assert!(hover_at(&mut h, at));
         drop_at(&mut h, at, &still(&format!("drop_uncovered_{scale}.png")));
         assert_eq!(clip_counts(&h), (1, 0));
@@ -281,12 +288,6 @@ fn floating_timeline_accepts_once_and_another_float_can_occlude_it() {
     drop_at(&mut h, at, &still("drop_floating_timeline.png"));
     assert_eq!(clip_counts(&h), (1, 0));
     float_panel(&mut h, "Info", [at.x - 20.0, at.y - 60.0, 320.0, 200.0]);
-    eprintln!(
-        "DIAG floating_timeline_accepts_once_and_another_float_can_occlude_it: at={at:?} info={:?} timeline={:?} layers={:?}",
-        control_rect(&h, "panel.Info"),
-        control_rect(&h, "panel.Timeline"),
-        h.ctx.memory(|memory| memory.layer_ids().filter(|layer| layer.order == egui::Order::Middle).collect::<Vec<_>>())
-    );
     assert!(!hover_at(&mut h, at));
     drop_at(&mut h, at, &still("drop_occluded_floating_timeline.png"));
     assert_eq!(clip_counts(&h), (1, 0));
