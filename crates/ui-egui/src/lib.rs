@@ -58,6 +58,7 @@ pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
 pub mod icons;
+pub mod ime_composer;
 mod ime_reset;
 pub mod links;
 pub mod menus;
@@ -233,7 +234,7 @@ pub struct FilmcraftApp {
     ime_composition_viewport: Option<egui::ViewportId>,
     /// The input method at the Program monitor's text caret: event order, the keys it uses, the
     /// marked text drawn on the video until it commits, and the published IME descriptor.
-    pub(crate) ime_composer: craft_ui::ime::Composer,
+    pub(crate) ime_composer: crate::ime_composer::Composer,
     /// The edit target `ime_composer` was made for; another target gets a new composer, so a
     /// new IME context.
     pub(crate) ime_composer_target: Option<ImeTarget>,

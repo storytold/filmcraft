@@ -55,7 +55,7 @@ impl FilmcraftApp {
             ime_composition: None,
             ime_reset: Default::default(),
             ime_composition_viewport: None,
-            ime_composer: craft_ui::ime::Composer::new(),
+            ime_composer: crate::ime_composer::Composer::new(),
             ime_composer_target: None,
             ime_drawn_editor: None,
             ime_document_epoch,

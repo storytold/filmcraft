@@ -335,17 +335,17 @@ fn apply_key_event(
 }
 
 /// One step for the editor, in the order the platform sent its events: an edit from
-/// [`craft_ui::ime::Composer`], or an empty input-method commit with nothing composing, which
+/// [`crate::ime_composer::Composer`], or an empty input-method commit with nothing composing, which
 /// the composer drops but which replaces the selection here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TextStep {
-    Edit(craft_ui::ime::Edit),
+    Edit(crate::ime_composer::Edit),
     EmptyCommit,
 }
 
 /// Run the admitted events through the composer. Returns the steps and whether the composer
 /// ended a composition the platform input method may still hold.
-fn compose(composer: &mut craft_ui::ime::Composer, events: &[egui::Event], time: f64) -> (Vec<TextStep>, bool) {
+fn compose(composer: &mut crate::ime_composer::Composer, events: &[egui::Event], time: f64) -> (Vec<TextStep>, bool) {
     let mut steps = Vec::new();
     let mut interrupted = false;
     let mut start = 0;
@@ -370,7 +370,7 @@ fn compose(composer: &mut craft_ui::ime::Composer, events: &[egui::Event], time:
 /// Whether a step is the input method's (`from_ime`) and ends its composition (`terminal`). An
 /// insert is the input method's when it is one of the batch's committed texts, which it takes.
 fn step_origin(step: &TextStep, commits: &mut Vec<String>) -> (bool, bool) {
-    use craft_ui::ime::Edit;
+    use crate::ime_composer::Edit;
     match step {
         TextStep::EmptyCommit => (true, true),
         TextStep::Edit(Edit::Insert(text)) => match commits.iter().position(|commit| commit == text) {
@@ -396,7 +396,7 @@ fn apply_text_step(
     step: TextStep,
     from_ime: bool,
 ) -> EventFlow {
-    use craft_ui::ime::Edit;
+    use crate::ime_composer::Edit;
     let viewport = ui.ctx().viewport_id();
     let edit = match step {
         TextStep::EmptyCommit => return apply_ime_commit(app, state, target, ""),
@@ -473,7 +473,7 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     let viewport = ui.ctx().viewport_id();
     if app.ime_composer_target != Some(composition_target) {
         app.ime_composer.discard(ui.ctx());
-        app.ime_composer = craft_ui::ime::Composer::new().with_owner(composition_target.owner);
+        app.ime_composer = crate::ime_composer::Composer::new().with_owner(composition_target.owner);
         app.ime_composer_target = Some(composition_target);
     }
     // A command, a control request or a caret move ended the composition: the composer drops
