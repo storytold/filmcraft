@@ -500,8 +500,11 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             ),
             tabs(&[EssentialSound, TextToSpeech], 0),
         ),
+        // 0.78, not production's 0.79: next's group frame takes about 13 pt more of the right column,
+        // and the Essential Graphics Style row (130 pt of label, six 26 pt buttons) only fits beside
+        // the scroll bar at the old column width
         "Captions and Graphics" => hsplit(
-            Ratio(0.79),
+            Ratio(0.78),
             vsplit(
                 Ratio(0.5),
                 hsplit(Ratio(0.4), tabs(&[Text, Source, EffectControls], 0), tabs(&[Program], 0)),
