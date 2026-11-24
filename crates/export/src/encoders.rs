@@ -550,6 +550,117 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     )
 }
 
+struct HevcEncoder {
+    enc: craft_video::hevc::Encoder,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    y16: Vec<u16>,
+    u16: Vec<u16>,
+    v16: Vec<u16>,
+    signal: ColorSignal,
+    ready: Arc<Mutex<std::collections::HashMap<u64, Yuv420>>>,
+}
+
+impl HevcEncoder {
+    fn deep(&self) -> bool {
+        self.enc.config().profile == craft_video::hevc::Profile::Main10
+    }
+}
+
+impl VideoEncoder for HevcEncoder {
+    fn sample_entry(&self) -> SampleEntry {
+        let cfg = filmcraft_isobmff::HevcConfig::parse(&self.enc.hvcc()).unwrap_or_default();
+        let mut e = SampleEntry::hevc(cfg, self.w as u16, self.h as u16);
+        self.signal.apply_to(&mut e, false);
+        e
+    }
+
+    fn timescale(&self) -> u32 {
+        self.rate.num as u32
+    }
+
+    fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        if self.deep() {
+            let (y, u, v, signal) = (&mut self.y16, &mut self.u16, &mut self.v16, self.signal);
+            timed(Stage::Convert, || h264_input10(f, signal, y, u, v))?;
+        } else {
+            let ready = {
+                let mut ready = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+                let mine = ready.remove(&f.index);
+                ready.retain(|&i, _| i > f.index);
+                mine
+            };
+            let (w, h) = (f.width as usize, f.height as usize);
+            let chroma = w.div_ceil(2) * h.div_ceil(2);
+            match ready.filter(|(y, u, v)| y.len() == w * h && u.len() == chroma && v.len() == chroma) {
+                Some((y, u, v)) => (self.y, self.u, self.v) = (y, u, v),
+                None => {
+                    let (y, u, v, signal) = (&mut self.y, &mut self.u, &mut self.v, self.signal);
+                    timed(Stage::Convert, || h264_input(f, signal, y, u, v));
+                }
+            }
+            self.y16.clear();
+            self.y16.extend(self.y.iter().map(|&x| x as u16));
+            self.u16.clear();
+            self.u16.extend(self.u.iter().map(|&x| x as u16));
+            self.v16.clear();
+            self.v16.extend(self.v.iter().map(|&x| x as u16));
+        }
+        let cw = (f.width as usize).div_ceil(2);
+        let frame = craft_video::hevc::Frame { y: &self.y16, u: &self.u16, v: &self.v16, y_stride: f.width as usize, uv_stride: cw };
+        let packet = self.enc.encode(&frame).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(vec![EncodedPacket { data: packet.data, key: packet.keyframe, duration: self.rate.den as u32, composition_offset: 0 }])
+    }
+
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+
+    fn prepare_ahead(&self) -> Option<PrepareAhead> {
+        if self.deep() {
+            return None;
+        }
+        let (ready, signal) = (self.ready.clone(), self.signal);
+        Some(Arc::new(move |f: &EncoderFrame| {
+            let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+            timed(Stage::Convert, || h264_input(f, signal, &mut y, &mut u, &mut v));
+            ready.lock().unwrap_or_else(PoisonError::into_inner).insert(f.index, (y, u, v));
+        }))
+    }
+}
+
+pub(crate) fn hevc_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    if format != Format::Hevc {
+        return None;
+    }
+    if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
+        return Some(Err(ExportError::Unsupported("H.265 export requires even dimensions".into())));
+    }
+    let mut cfg = craft_video::hevc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
+    cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
+    let kbps = s.bitrate_kbps.max(100);
+    cfg.rate = craft_video::hevc::RateControl::Bitrate { kbps };
+    let is_hdr = s.signal.is_hdr();
+    cfg.profile = if is_hdr { craft_video::hevc::Profile::Main10 } else { craft_video::hevc::Profile::Main };
+    cfg.colour_primaries = s.signal.primaries;
+    cfg.transfer_characteristics = s.signal.transfer;
+    cfg.matrix_coeffs = s.signal.matrix;
+    cfg.full_range = false;
+
+    Some(
+        craft_video::hevc::Encoder::new(cfg)
+            .map(|enc| {
+                let (y, u, v, y16, u16, v16) = Default::default();
+                Box::new(HevcEncoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() }) as Box<dyn VideoEncoder>
+            })
+            .map_err(|e| ExportError::Encode(e.to_string())),
+    )
+}
+
 #[cfg(test)]
 mod mjpeg_adapter_tests {
     use super::*;

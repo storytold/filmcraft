@@ -229,6 +229,9 @@ fn software_fallback(settings: &ExportSettings, venc: &dyn VideoEncoder, decline
         None if format == Format::H264 && settings.hardware_encoding == HardwareEncoding::Auto => {
             Some("hardware encoding is Auto, but no hardware H.264 encoder is available here; the software encoder ran".into())
         }
+        None if format == Format::Hevc && settings.hardware_encoding == HardwareEncoding::Auto => {
+            Some("hardware encoding is Auto, but no hardware H.265 encoder is available here; the software encoder ran".into())
+        }
         None => None,
     }
 }
