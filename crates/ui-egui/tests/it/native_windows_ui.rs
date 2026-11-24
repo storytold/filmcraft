@@ -39,10 +39,20 @@ fn native_host() {
             w.viewport = Some((id, place));
             (w.focused, std::mem::take(&mut w.events), std::mem::take(&mut w.hovered_files), std::mem::take(&mut w.dropped_files))
         });
-        let info = egui::ViewportInfo { inner_rect: Some(place), outer_rect: Some(place), focused: Some(focused), ..Default::default() };
+        let info = egui::ViewportInfo {
+            parent: Some(viewport.ids.parent),
+            inner_rect: Some(place),
+            outer_rect: Some(place),
+            focused: Some(focused),
+            ..Default::default()
+        };
+        // The real integration lists every open window, including the root, on
+        // child input. Otherwise a drag can treat its source viewport as closed.
+        let mut viewports = ctx.input_for(egui::ViewportId::ROOT, |i| i.raw.viewports.clone());
+        viewports.insert(id, info);
         let input = egui::RawInput {
             viewport_id: id,
-            viewports: std::iter::once((id, info)).collect(),
+            viewports,
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             time: ctx.input(|i| Some(i.time)),
             focused,
@@ -102,6 +112,25 @@ impl Driver {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
             let mut raw = std::mem::take(self.harness.input_mut());
+            // Keep a floated child in the root's next input as long as the last
+            // frame drew it, like the native integration. A missing source window
+            // otherwise cancels a file drag before its deferred delivery pass.
+            raw.viewports.retain(|id, _| *id == egui::ViewportId::ROOT);
+            WINDOW.with(|w| {
+                let mut w = w.borrow_mut();
+                if let Some((id, place)) = w.viewport.take() {
+                    raw.viewports.insert(
+                        id,
+                        egui::ViewportInfo {
+                            parent: Some(egui::ViewportId::ROOT),
+                            inner_rect: Some(place),
+                            outer_rect: Some(place),
+                            focused: Some(w.focused),
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             ctx.request_repaint();

@@ -63,6 +63,9 @@ impl<'a> Dropdown<'a> {
             info.current_text_value = Some(name.clone());
             info
         });
+        // A Button initially names itself from its displayed text. A dropdown's
+        // selection is its value, not its field name; let the panel provide the name.
+        ui.ctx().accesskit_node_builder(response.id, |node| node.clear_label());
 
         let bounds = ui.ctx().content_rect();
         let room = (bounds.bottom() - response.rect.bottom()).max(response.rect.top() - bounds.top());
@@ -87,6 +90,24 @@ impl<'a> Dropdown<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropdown_keeps_the_panel_name_separate_from_its_current_value() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let r = Dropdown::from_id_salt("shape").selected_text("Rectangle").show_ui(ui, |_| {});
+            // This is the same name-if-missing convention used by accessible_name.
+            ctx.accesskit_node_builder(r.response.id, |node| {
+                if node.label().is_none_or(|label| label.trim().is_empty()) {
+                    node.set_label("Shape");
+                }
+            });
+        });
+        frame.textures_delta.clear();
+        let tree = frame.platform_output.accesskit_update.unwrap();
+        assert!(tree.nodes.iter().any(|(_, node)| { node.role() == Role::ComboBox && node.label() == Some("Shape") && node.value() == Some("Rectangle") }));
+    }
 
     #[test]
     fn dropdown_grows_again_without_reopening() {
