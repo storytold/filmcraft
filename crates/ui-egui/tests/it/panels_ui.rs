@@ -1027,22 +1027,8 @@ fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
     assert_eq!(d.app().session.state.source_item, Some(a));
     assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source, "Source takes focus");
     assert!(!d.app().source_playback.clock.playing);
-    let ctx = d.harness.ctx.clone();
-    eprintln!(
-        "DIAG opening_a_clip_in_source_focuses_it_so_space_plays_it: before Space node={:?} egui={:?} wants_keys={}",
-        craft_ui::runtime::access::focused_node(&ctx),
-        ctx.memory(|memory| memory.focused()),
-        ctx.egui_wants_keyboard_input()
-    );
     d.ok("ui.key", json!({"key": "Space"}));
     d.frames(2);
-    eprintln!(
-        "DIAG opening_a_clip_in_source_focuses_it_so_space_plays_it: after Space focused={:?} node={:?} egui={:?} playing={}",
-        d.app().ui.focused,
-        craft_ui::runtime::access::focused_node(&ctx),
-        ctx.memory(|memory| memory.focused()),
-        d.app().source_playback.clock.playing
-    );
     assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
 }
 
