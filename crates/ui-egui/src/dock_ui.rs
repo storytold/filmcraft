@@ -36,6 +36,11 @@ fn sources_id() -> egui::Id {
     egui::Id::unique("filmcraft-dock-sources")
 }
 
+/// The app's focused panel at the end of the last dock pass.
+fn app_focus_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-app-focus")
+}
+
 /// The panel of the group that held key focus in the last pass, as the dock area reported it.
 fn key_focus_id() -> egui::Id {
     egui::Id::unique("filmcraft-dock-key-focus")
@@ -390,6 +395,18 @@ impl FilmcraftApp {
             self.dock_specs.edit(|specs| specs.timeline_title = timeline_title);
         }
         self.sync_live();
+        // The app moved its panel focus itself since the last pass (Source after `source.open`, a
+        // panel a shortcut or menu focused) while key focus is in another panel's group: that key
+        // focus ends, as in production, where a click on a panel left no widget focused. A focused
+        // tab holds Space and the other keys it acts on, so they would not reach the panel now focused.
+        let app_focus = ctx.data(|data| data.get_temp::<PanelKind>(app_focus_id()));
+        let key_group = ctx.data(|data| data.get_temp::<Option<PanelKind>>(key_focus_id())).flatten();
+        if app_focus.is_some_and(|last| last != self.ui.focused)
+            && key_group.is_some_and(|group| group != self.ui.focused)
+            && let Some(id) = ctx.memory(|memory| memory.focused())
+        {
+            ctx.memory_mut(|memory| memory.surrender_focus(id));
+        }
         // Known before anything draws, so header elements of a native window (the ≡ menu, the
         // Timeline's sequence tabs), drawn before its bodies, carry that window too.
         self.auto.windows = self
@@ -513,6 +530,7 @@ impl FilmcraftApp {
             if gone {
                 data.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id);
             }
+            data.insert_temp(app_focus_id(), self.ui.focused);
         });
         panels::panel_menu_popup(self, ui);
     }
