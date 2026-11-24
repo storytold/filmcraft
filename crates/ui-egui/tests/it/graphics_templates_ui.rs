@@ -78,6 +78,40 @@ impl Driver {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
+    }
+    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part,
+    /// where the user sees it: next's dock gives a panel a shorter body than the old dock did.
+    /// Stops when the element no longer moves (the panel is at the end of its content).
+    fn reveal(&mut self, id: &str) {
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            let cx = e[0] + e[2] / 2.0;
+            let panels = self.ok("ui.elements", json!({"prefix": "panel."}));
+            let panel = panels
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["id"].as_str().is_some_and(|pid| pid.matches('.').count() == 1))
+                .filter_map(|p| {
+                    let r: Vec<f64> = p["rect"].as_array()?.iter().filter_map(Value::as_f64).collect();
+                    (r.len() == 4).then(|| [r[0], r[1], r[2], r[3]])
+                })
+                .find(|r| cx >= r[0] && cx <= r[0] + r[2] && e[1] >= r[1] && e[1] <= r[1] + r[3] + 40.0);
+            let Some(p) = panel else { return };
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": cx, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
     fn clips_named(&mut self, name: &str) -> Vec<u64> {
         let q = self.exec("sequence.inspect", json!({}));
         let mut out = Vec::new();
@@ -199,6 +233,7 @@ fn type_tool_selection_styles_characters() {
     // a Type-tool selection of "World" (bytes 6..11)
     d.ok("ui.set", json!({"tool": "Type", "gfxEdit": {"clip": clip, "layer": 0, "caret": 11, "anchor": 6}}));
     d.frames(3);
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id": "graphics.prop.faux_bold"}));
     d.frames(2);
     let l = d.exec("graphics.list", json!({"clip": clip}));

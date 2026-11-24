@@ -74,6 +74,34 @@ impl Driver {
         let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
         [r[0], r[1], r[2], r[3]]
     }
+    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part,
+    /// where the user sees it: next's dock gives a panel a shorter body than the old dock did.
+    /// Stops when the element no longer moves (the panel is at the end of its content).
+    fn reveal(&mut self, id: &str) {
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            let cx = e[0] + e[2] / 2.0;
+            let panels = self.ok("ui.elements", json!({"prefix": "panel."}));
+            let panel = panels
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["id"].as_str().is_some_and(|pid| pid.matches('.').count() == 1))
+                .filter_map(|p| {
+                    let r: Vec<f64> = p["rect"].as_array()?.iter().filter_map(Value::as_f64).collect();
+                    (r.len() == 4).then(|| [r[0], r[1], r[2], r[3]])
+                })
+                .find(|r| cx >= r[0] && cx <= r[0] + r[2] && e[1] >= r[1] && e[1] <= r[1] + r[3] + 40.0);
+            let Some(p) = panel else { return };
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": cx, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
     fn shot(&mut self, name: &str) {
         let Some(dir) = self.shots.clone() else { return };
         self.frames(8);
@@ -431,6 +459,7 @@ fn style_buttons_toggle_the_selected_characters() {
     for (id, key, on, off) in
         [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0)), ("small_caps", "caps", json!(2), json!(0))]
     {
+        d.reveal(&format!("graphics.prop.{id}"));
         d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
         d.frames(3);
         assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
@@ -462,10 +491,12 @@ fn style_button_on_a_mixed_selection_styles_all_of_it() {
     }
     d.frames(3);
     let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
     d.frames(3);
     let st = styles(&mut d);
     assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    d.reveal("graphics.prop.all_caps");
     d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
     d.frames(3);
     let st = styles(&mut d);
@@ -483,11 +514,13 @@ fn style_button_on_a_mixed_selection_styles_all_of_it() {
         assert!(runs.windows(2).all(|w| w[0].1 == w[1].0), "{st}");
         runs
     };
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
     d.frames(3);
     let st = styles(&mut d);
     assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "the click bolds all of \"Drive\": {st}");
     // "Dr" is All Caps, "ive" is not: both caps buttons are off, so a click makes it all All Caps
+    d.reveal("graphics.prop.all_caps");
     d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
     d.frames(3);
     let st = styles(&mut d);
@@ -511,48 +544,13 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
         // near the button's left edge: in the test window the panel's scrollbar covers the
         // middle of the last button of the row
         let click = |d: &mut Driver| {
+            d.reveal(&format!("graphics.prop.{id}"));
             let b = d.rect(&format!("graphics.prop.{id}"));
             d.ok("ui.click", json!({"x": b[0] + 4.0, "y": b[1] + b[3] / 2.0}));
             d.frames(3);
         };
         assert!(!on(&mut d), "{id} starts off");
         click(&mut d);
-        if !on(&mut d) {
-            let b = d.rect(&format!("graphics.prop.{id}"));
-            let ctx = d.harness.ctx.clone();
-            let (px, py) = (b[0] + 4.0, b[1] + b[3] / 2.0);
-            let all = d.call("ui.elements", json!({}));
-            let hit: Vec<String> = all["result"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|e| {
-                    let r: Vec<f64> = e["rect"].as_array().into_iter().flatten().filter_map(|x| x.as_f64()).collect();
-                    r.len() == 4 && px >= r[0] && px <= r[0] + r[2] && py >= r[1] && py <= r[1] + r[3]
-                })
-                .map(|e| e["id"].to_string())
-                .collect();
-            eprintln!(
-                "DIAG style_buttons_toggle_the_layer_without_a_selection: {id} rect={b:?} status={:?} focused={:?} gfx_edit={} at_point={hit:?}",
-                d.harness.state().ui.status,
-                ctx.memory(|m| m.focused()),
-                d.harness.state().ui.gfx_edit.is_some()
-            );
-            // What egui hit-tests at the click point: a button clipped out of the panel body
-            // shows a shrunk interact rect, or something else wins the click.
-            let hits = ctx.viewport(|v| {
-                let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
-                (v.hits.click.as_ref().map(w), v.hits.drag.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
-            });
-            eprintln!(
-                "DIAG style_buttons_toggle_the_layer_without_a_selection: pointer={:?} panel={:?} click={:?} drag={:?} close={:?}",
-                ctx.pointer_latest_pos(),
-                d.call("ui.elements", json!({"prefix": "panel."}))["result"],
-                hits.0,
-                hits.1,
-                hits.2
-            );
-        }
         assert!(on(&mut d), "first click turns {id} on");
         click(&mut d);
         assert!(!on(&mut d), "second click turns {id} off");
