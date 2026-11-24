@@ -1,4 +1,4 @@
-use super::{FilmcraftApp, PanelKind, dock_ui, json};
+use super::{FilmcraftApp, json};
 
 impl FilmcraftApp {
     /// Import dropped files, on the main window and on dock panels in their own OS windows.
@@ -18,17 +18,12 @@ impl FilmcraftApp {
             let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
             self.import_dropped(ctx, &dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
         }
-        for files in std::mem::take(&mut self.window_files) {
-            // Only the Timeline places files at the pointer; elsewhere they go to the bin.
-            let at_timeline = to_timeline && files.panel == PanelKind::Timeline;
-            let pointer = if at_timeline { self.drop_pointer(ctx, files.viewport, files.pos) } else { None };
-            if !files.hovered.is_empty() && self.file_drag_hover.is_none() && at_timeline {
-                ctx.request_repaint();
-                self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
-            }
-            if !files.dropped.is_empty() {
-                self.import_dropped(ctx, &files.dropped, pointer.map(|p| (p, files.viewport)));
-            }
+        // Files dropped on a floating window go to the bin: next's dock reports them without the
+        // panel or the pointer they were dropped at.
+        let window_files: Vec<String> =
+            std::mem::take(&mut self.window_files).into_iter().filter_map(|file| file.path).map(|path| path.to_string_lossy().to_string()).collect();
+        if !window_files.is_empty() {
+            self.import_paths(ctx, window_files, None);
         }
     }
 
@@ -37,7 +32,13 @@ impl FilmcraftApp {
     /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
     /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
     fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
-        let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        let paths: Vec<String> = dropped.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
+        self.import_paths(ctx, paths, pointer);
+    }
+
+    /// [`Self::import_dropped`] for the files at `paths`.
+    fn import_paths(&mut self, ctx: &egui::Context, paths: Vec<String>, pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        let paths: Vec<String> = paths.into_iter().filter(|p| std::path::Path::new(p).exists()).collect();
         if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
             // one project is open at a time: the rest of the drop is not imported into either
             let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
@@ -91,16 +92,6 @@ impl FilmcraftApp {
             .and_then(|px| ctx.input_for(viewport, |i| i.viewport().inner_rect.map(|r| screen_px_to_ui(px, i.pixels_per_point, r.min))));
         let fallback = || if viewport == egui::ViewportId::ROOT { ctx.input(|i| i.pointer.hover_pos().or(i.pointer.latest_pos())) } else { None };
         os_pointer.or(last).or_else(fallback)
-    }
-
-    /// Whether keyboard focus is on any dock divider or floating-window resize grip, as drawn last pass.
-    pub(super) fn divider_focused(&self, ctx: &egui::Context) -> bool {
-        use craft_ui::docking::{DockArea, Hit};
-        let Some(focused) = ctx.memory(|m| m.focused()) else { return false };
-        let area = dock_ui::area_id();
-        DockArea::<PanelKind>::hit_rects(ctx, area)
-            .iter()
-            .any(|(hit, _)| matches!(hit, Hit::Divider(_) | Hit::Resize(..)) && DockArea::hit_id(area, hit) == focused)
     }
 
     /// Remember the undo history as a mouse press begins, before any panel acts on it (a color

@@ -1,8 +1,8 @@
-use super::{Dialog, FilmcraftApp, PanelKind, dock, dock_ui, json, menus, panels};
+use super::{Dialog, FilmcraftApp, PanelKind, dock, json, menus, panels};
 
 impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys
-    /// to a focused text field except dock dividers.
+    /// to a focused text field.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // A paste image payload belongs to the paste event in this pass only.
         self.pasted_image = None;
@@ -22,10 +22,7 @@ impl FilmcraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
             return;
         }
-        // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
-        // other key: Space and the other shortcuts keep working (#1482).
-        let divider_focused = self.divider_focused(ctx);
-        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -41,43 +38,12 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
+        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, label_selected));
         self.fire_shortcuts(ctx, fire);
-    }
-
-    /// Key, text and clipboard events that a floating panel in its own OS window left over
-    /// (`DockOutput::forwarded_events`): they run the main window's bindings in the frame they
-    /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
-    /// while that window's text field has focus.
-    pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
-            return;
-        }
-        let mut input = egui::InputState::default();
-        input.modifiers = self.floating_window_modifiers(ctx);
-        input.events = events;
-        if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-            let _ = self.session.execute("trim.cancelDynamic", json!({}));
-        }
-        let fire = self.match_shortcuts(&mut input, false, false, false);
-        self.fire_shortcuts(ctx, fire);
-    }
-
-    /// The modifiers held in the focused native floating window. Copy, Cut and Paste events
-    /// carry none, and egui-winit drops the key press they stand for.
-    fn floating_window_modifiers(&self, ctx: &egui::Context) -> egui::Modifiers {
-        self.ui
-            .dock
-            .floating
-            .iter()
-            .filter(|window| window.native.is_some())
-            .map(|window| craft_ui::docking::DockArea::<PanelKind>::window_viewport(dock_ui::area_id(), window.id))
-            .find_map(|viewport| ctx.input_for(viewport, |i| (i.viewport().focused == Some(true)).then_some(i.modifiers)))
-            .unwrap_or_default()
     }
 
     /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool, label_selected: bool) -> Vec<String> {
+    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, label_selected: bool) -> Vec<String> {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // A chord fires only with exactly its modifiers held (`menus::chord_held`), except that a
         // punctuation or digit key may carry the Shift or Alt a layout needs to type it, so the
@@ -130,10 +96,6 @@ impl FilmcraftApp {
             // Vietnamese Telex combines into diacritics (#243). Chords with a modifier stay:
             // Ctrl+S and friends are not something a text field or an IME consumes.
             if lets_text_field_keep(*m, text_focused) {
-                continue;
-            }
-            // The focused divider consumes the arrows itself, with or without Shift/Alt.
-            if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
                 continue;
             }
             if consume_chord(i, *m, *k, repeats_when_held(id)) {
@@ -339,22 +301,6 @@ mod clipboard_key_tests {
 }
 
 #[cfg(test)]
-mod forwarded_key_tests {
-    use egui::{Event, Key, Modifiers};
-
-    /// A key a floating native window left over runs the main window's bindings.
-    #[test]
-    fn forwarded_keys_fire_shortcuts() {
-        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
-        app.bindings = super::menus::bindings(&app);
-        app.ui.focused = crate::dock::PanelKind::Timeline;
-        let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
-        app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
-        assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
-    }
-}
-
-#[cfg(test)]
 mod text_focus_shortcut_tests {
     use super::lets_text_field_keep;
     use egui::{Key, Modifiers};
@@ -412,7 +358,7 @@ mod key_repeat_tests {
         app.ui.focused = crate::dock::PanelKind::Timeline;
         let mut input = egui::InputState::default();
         input.events = events;
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false)
     }
 
     /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per
@@ -457,7 +403,7 @@ mod exact_modifier_tests {
         let mut input = egui::InputState::default();
         input.modifiers = modifiers;
         input.events = vec![Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }];
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false)
     }
 
     /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N) and its "discard

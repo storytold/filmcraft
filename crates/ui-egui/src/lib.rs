@@ -48,7 +48,6 @@ pub mod crash;
 pub mod credits;
 pub mod dock;
 mod dock_ui;
-pub use dock_ui::area_id as dock_area_id;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
 
@@ -254,8 +253,15 @@ pub struct FilmcraftApp {
     /// `FILMCRAFT_CONTROL_TOKEN`, a port that cannot be bound): shown whenever the status bar is
     /// idle (#3436). It is also in `filmcraft.log`; `None` when the server is running.
     pub(crate) control_notice: Option<ControlNotice>,
-    /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
-    pub(crate) pending_panel_raise: Option<PanelKind>,
+    /// The workspace the dock area shows: `ui.dock` stays the saved source of truth, and this
+    /// follows it (`dock_ui::sync_live`). One `Arc` across frames, so an idle pass reads no spec.
+    pub(crate) dock_live: Arc<dock::Workspace>,
+    /// The panels' specs the dock area reads (titles, window kinds).
+    pub(crate) dock_specs: craft_ui::contract::Tracked<dock_ui::FilmSpecs>,
+    /// The OS windows the floating windows showed in last pass, by a panel of each.
+    pub(crate) dock_windows: Vec<(PanelKind, egui::ViewportId)>,
+    /// Where the dock area floated panels last pass, for docking commands run outside it.
+    pub(crate) dock_float_space: Option<craft_ui::docking::FloatSpace<PanelKind>>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
     /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a
@@ -362,9 +368,9 @@ pub struct FilmcraftApp {
     clip_mismatch: Option<(String, serde_json::Value)>,
     /// Files being dragged over a window from the OS (count, pointer, viewport): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2, egui::ViewportId)>,
-    /// Files dragged over or dropped on dock panels in their own OS windows last frame; the
-    /// dock area reports them after the panels have drawn, so they are imported next frame.
-    window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
+    /// Files dropped on the dock's floating windows last frame; the dock area reports them after
+    /// the panels have drawn, so they are imported next frame.
+    window_files: Vec<craft_ui::runtime::drag::OsFile>,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,

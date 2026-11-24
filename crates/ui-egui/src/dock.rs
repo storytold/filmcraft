@@ -5,9 +5,9 @@
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
+use craft_behavior::dock::SplitSize;
 use craft_behavior::dock::{Action, Floating, Node};
 use craft_behavior::flow::Axis;
-use craft_behavior::dock::SplitSize;
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
@@ -142,14 +142,24 @@ pub type Layout = craft_behavior::dock::Layout<PanelKind>;
 /// What a saved workspace stores: its layout, closed panels and lock.
 pub type Workspace = craft_behavior::dock::Workspace<PanelKind>;
 
+/// The rect saved as `[x, y, width, height]`.
+pub fn rect_of([x, y, width, height]: [f32; 4]) -> Rect {
+    Rect::from_min_size(pos2(x, y), vec2(width, height))
+}
+
+/// `rect` as `[x, y, width, height]`, the form FilmCraft's own files keep.
+pub fn array_of(rect: Rect) -> [f32; 4] {
+    [rect.min.x, rect.min.y, rect.width(), rect.height()]
+}
+
 fn tabs(p: &[PanelKind], active: usize) -> Node<PanelKind> {
-    Node::Tabs { panels: p.to_vec(), active }
+    Node::tabs(p.to_vec(), active)
 }
 fn hsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
-    Node::Split { axis: Axis::X, size, first: Box::new(a), second: Box::new(b) }
+    Node::split(Axis::X, size, a, b)
 }
 fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
-    Node::Split { axis: Axis::Y, size, first: Box::new(a), second: Box::new(b) }
+    Node::split(Axis::Y, size, a, b)
 }
 
 pub const WORKSPACES: [&str; 10] =
@@ -271,13 +281,13 @@ pub fn read_saved(saved: &SavedWorkspace) -> Option<Workspace> {
 
 /// The saved layout of a workspace (see [`saved_workspace`]).
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
-    saved_workspace(prefs, name).layout
+    saved_workspace(prefs, name).layout().clone()
 }
 
 /// The frame tree and floating groups FilmCraft wrote before its workspaces were craft-ui
 /// [`Workspace`]s.
 mod legacy {
-    use super::{Floating, Layout, Node, PanelKind, Axis, SplitSize};
+    use super::{Axis, Floating, Layout, Node, PanelKind, SplitSize, array_of, rect_of};
     use serde::{Deserialize, Serialize};
 
     const MAX_DEPTH: usize = 32;
@@ -316,17 +326,17 @@ mod legacy {
             return None;
         }
         Some(match tree {
-            Tree::Tabs { panels, active } => Node::Tabs { panels, active },
-            Tree::Split { vertical, size, a, b } => Node::Split {
-                axis: if vertical { Axis::Y } else { Axis::X },
-                size: match size {
+            Tree::Tabs { panels, active } => Node::tabs(panels, active),
+            Tree::Split { vertical, size, a, b } => Node::split(
+                if vertical { Axis::Y } else { Axis::X },
+                match size {
                     Size::Ratio(value) => SplitSize::Ratio(value),
                     Size::FixedA(value) => SplitSize::FixedFirst(value),
                     Size::FixedB(value) => SplitSize::FixedSecond(value),
                 },
-                first: Box::new(node(*a, depth + 1)?),
-                second: Box::new(node(*b, depth + 1)?),
-            },
+                node(*a, depth + 1)?,
+                node(*b, depth + 1)?,
+            ),
         })
     }
 
@@ -335,13 +345,14 @@ mod legacy {
             return None;
         }
         Some(match node {
-            Node::Tabs { panels, active } => Tree::Tabs { panels: panels.clone(), active: *active },
-            Node::Split { axis, size, first, second } => Tree::Split {
+            Node::Tabs { panels, active, .. } => Tree::Tabs { panels: panels.clone(), active: *active },
+            Node::Split { axis, size, first, second, .. } => Tree::Split {
                 vertical: *axis == Axis::Y,
                 size: match *size {
                     SplitSize::Ratio(value) => Size::Ratio(value),
                     SplitSize::FixedFirst(value) => Size::FixedA(value),
                     SplitSize::FixedSecond(value) => Size::FixedB(value),
+                    _ => return None,
                 },
                 a: Box::new(tree(first, depth + 1)?),
                 b: Box::new(tree(second, depth + 1)?),
@@ -360,8 +371,8 @@ mod legacy {
         let floating = layout
             .floating
             .iter()
-            .map(|window| match &window.root {
-                Node::Tabs { panels, active } => Some(Group { panels: panels.clone(), active: *active, rect: window.rect }),
+            .map(|window| match window.groups() {
+                [group] => Some(Group { panels: group.panels.clone(), active: group.active, rect: array_of(window.rect) }),
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()?;
@@ -381,7 +392,12 @@ mod legacy {
         {
             migrate_effects(root);
         }
-        Some(Layout { root, floating: floating.into_iter().map(|group| Floating::single(group.panels, group.active, group.rect)).collect() })
+        let mut layout = Layout::new(root, Vec::new());
+        for group in floating {
+            let id = layout.fresh_window_id();
+            layout.floating.push(Floating::single(id, group.panels, group.active, rect_of(group.rect)));
+        }
+        Some(layout)
     }
 
     /// Effects workspaces saved by early versions held the Effect Controls panel twice: selected
@@ -397,7 +413,7 @@ mod legacy {
         }
         fn selected_source(node: &Node<PanelKind>) -> bool {
             match node {
-                Node::Tabs { panels, active } => {
+                Node::Tabs { panels, active, .. } => {
                     panels.contains(&PanelKind::Source)
                         && panels.contains(&PanelKind::AudioClipMixer)
                         && panels.get(*active) == Some(&PanelKind::EffectControls)
@@ -408,7 +424,7 @@ mod legacy {
         }
         fn remove_inactive(node: &mut Node<PanelKind>) {
             match node {
-                Node::Tabs { panels, active } if panels.as_slice() == [PanelKind::EffectControls, PanelKind::EssentialGraphics] && *active == 1 => {
+                Node::Tabs { panels, active, .. } if panels.as_slice() == [PanelKind::EffectControls, PanelKind::EssentialGraphics] && *active == 1 => {
                     panels.remove(0);
                     *active = 0;
                 }
@@ -432,7 +448,7 @@ const METERS_WIDTH: f32 = 116.0;
 
 /// The default layout of a named workspace.
 pub fn workspace(name: &str) -> Layout {
-    Layout { root: Some(workspace_root(name)), floating: vec![] }
+    Layout::new(Some(workspace_root(name)), Vec::new())
 }
 
 fn workspace_root(name: &str) -> Node<PanelKind> {
@@ -552,13 +568,13 @@ impl LayoutExt for Layout {
     }
 
     fn is_docked(&self, panel: PanelKind) -> bool {
-        Layout { root: self.root.clone(), floating: vec![] }.contains(&panel)
+        Layout::new(self.root.clone(), Vec::new()).contains(&panel)
     }
 
     fn visible_panels(&self) -> Vec<PanelKind> {
         fn walk(node: &Node<PanelKind>, out: &mut Vec<PanelKind>) {
             match node {
-                Node::Tabs { panels, active } => out.extend(panels.get(*active).copied()),
+                Node::Tabs { panels, active, .. } => out.extend(panels.get(*active).copied()),
                 Node::Split { first, second, .. } => {
                     walk(first, out);
                     walk(second, out);
@@ -571,7 +587,7 @@ impl LayoutExt for Layout {
             walk(root, &mut out);
         }
         for window in &self.floating {
-            walk(&window.root, &mut out);
+            out.extend(window.groups().iter().filter_map(|group| group.active_panel().copied()));
         }
         out
     }
@@ -596,12 +612,12 @@ impl LayoutExt for Layout {
     }
 
     fn open_near(&mut self, panel: PanelKind, near: PanelKind) {
-        let docked = Layout { root: self.root.clone(), floating: vec![] };
+        let docked = Layout::new(self.root.clone(), Vec::new());
         let anchor = [near, PanelKind::Project, PanelKind::Program]
             .into_iter()
             .find(|candidate| docked.contains(candidate))
             .or_else(|| docked.panels().first().map(|first| **first));
-        let _ = self.apply(Action::Open { panel, anchor });
+        let _ = self.apply(Action::open(panel, anchor));
     }
 }
 
@@ -871,7 +887,8 @@ mod tests {
         }
     }
 
-    /// A saved workspace keeps its fixed split sizes, docked and floating, and its ratios.
+    /// A saved workspace keeps its docked fixed split sizes and ratios; a floating window saved
+    /// split top and bottom loads as one window of those groups, top to bottom.
     #[test]
     fn saved_workspaces_keep_fixed_and_ratio_splits() {
         let workspace = serde_json::json!({"layout": {"root": {"Split": {"axis": "Horizontal", "size": {"FixedSecond": 450.0},
@@ -889,8 +906,8 @@ mod tests {
         assert_eq!(*outer, 450.0);
         let Node::Split { size: SplitSize::Ratio(inner), .. } = &**first else { panic!("{first:?}") };
         assert_eq!(*inner, 0.25);
-        let floating: Vec<_> = loaded.floating.iter().flat_map(|window| fixed_splits(&window.root)).collect();
-        assert_eq!(floating, vec![SplitSize::FixedFirst(100.0)], "{:?}", loaded.floating);
+        let floating: Vec<Vec<_>> = loaded.floating.iter().map(|window| window.groups().iter().map(|group| group.panels.clone()).collect()).collect();
+        assert_eq!(floating, vec![vec![vec![PanelKind::Info], vec![PanelKind::Effects]]], "{:?}", loaded.floating);
     }
 
     /// #284: with Project and Program closed (or every panel closed) a panel still opens.
@@ -898,7 +915,7 @@ mod tests {
     fn open_near_falls_back_to_the_first_group() {
         let mut d = workspace("Editing");
         for p in d.panels().into_iter().copied().collect::<Vec<_>>() {
-            d.apply(Action::Close { panel: p }).unwrap();
+            d.apply(Action::close(p)).unwrap();
         }
         assert_eq!(d.root, None);
         d.open_near(PanelKind::Program, PanelKind::Project);
@@ -906,7 +923,7 @@ mod tests {
         d.restore_timeline();
         assert!(d.is_visible(PanelKind::Timeline));
         // a tree without Project or Program: the panel joins the first group
-        let mut d = Layout { root: Some(hsplit(SplitSize::Ratio(0.5), tabs(&[PanelKind::Effects], 0), tabs(&[PanelKind::Markers], 0))), floating: vec![] };
+        let mut d = Layout::new(Some(hsplit(SplitSize::Ratio(0.5), tabs(&[PanelKind::Effects], 0), tabs(&[PanelKind::Markers], 0))), Vec::new());
         d.open_near(PanelKind::Info, PanelKind::Source);
         assert!(d.is_visible(PanelKind::Info));
         assert_eq!(d.root, Some(hsplit(SplitSize::Ratio(0.5), tabs(&[PanelKind::Effects, PanelKind::Info], 1), tabs(&[PanelKind::Markers], 0))));
@@ -991,25 +1008,20 @@ mod tests {
         }
 
         let mut layout = workspace("Editing");
-        layout.apply(Action::Float { panel: PanelKind::Info, rect: [10.0, 20.0, 300.0, 200.0] }).unwrap();
+        layout.apply(Action::float(PanelKind::Info, rect_of([10.0, 20.0, 300.0, 200.0]))).unwrap();
         let (root, floating) = read(&layout);
         let mut old = Vec::new();
         panels(&root.unwrap(), &mut old);
-        let docked = Layout { root: layout.root.clone(), floating: vec![] };
+        let docked = Layout::new(layout.root.clone(), Vec::new());
         assert_eq!(old, docked.panels().into_iter().copied().collect::<Vec<_>>());
         assert_eq!(floating, vec![OldFloating { panels: vec![PanelKind::Info], active: 0, rect: [10.0, 20.0, 300.0, 200.0] }]);
 
-        // A floating window split in two has no earlier form: those versions use the default.
+        // A floating window of two groups has no earlier form: those versions use the default.
         let mut split = layout.clone();
-        split.apply(Action::Float { panel: PanelKind::Effects, rect: [400.0, 20.0, 300.0, 200.0] }).unwrap();
+        split.apply(Action::float(PanelKind::Effects, rect_of([400.0, 20.0, 300.0, 200.0]))).unwrap();
         let window = split.floating.iter().position(|w| w.contains(&PanelKind::Effects)).unwrap();
         let effects = split.floating.remove(window);
-        split.floating[0].root = Node::Split {
-            axis: Axis::Y,
-            size: SplitSize::Ratio(0.5),
-            first: Box::new(split.floating[0].root.clone()),
-            second: Box::new(effects.root),
-        };
+        split.floating[0].column.groups.extend(effects.column.groups);
         assert_eq!(read(&split), (None, vec![]));
     }
 }
