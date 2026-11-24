@@ -1036,12 +1036,12 @@ fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
     );
     d.ok("ui.key", json!({"key": "Space"}));
     d.frames(2);
+    let focused = d.app().ui.focused;
+    let playing = d.app().source_playback.clock.playing;
     eprintln!(
-        "DIAG opening_a_clip_in_source_focuses_it_so_space_plays_it: after Space focused={:?} node={:?} egui={:?} playing={}",
-        d.app().ui.focused,
+        "DIAG opening_a_clip_in_source_focuses_it_so_space_plays_it: after Space focused={focused:?} node={:?} egui={:?} playing={playing}",
         craft_ui::runtime::access::focused_node(&ctx),
         ctx.memory(|memory| memory.focused()),
-        d.app().source_playback.clock.playing
     );
     assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
 }
