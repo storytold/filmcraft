@@ -608,7 +608,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     if resp.drag_started() {
         ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
     }
-    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let escaped = resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx());
     if resp.drag_stopped()
         && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
         && escaped

@@ -138,7 +138,7 @@ impl Ed<'_> {
     /// The end of a drag of `pids`: commit their drafts, or drop them when Escape ended the drag
     /// (egui ends a drag on Escape, #580).
     fn release(&mut self, ui: &egui::Ui, pids: &[&str]) {
-        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = crate::framework::escape_pressed(ui.ctx());
         for pid in pids {
             if escape {
                 self.drafts.remove(*pid);

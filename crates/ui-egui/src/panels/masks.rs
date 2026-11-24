@@ -407,7 +407,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             actions.push(("masks.addVertex".into(), with(json!({"after": i, "at": [c.x, c.y]}))));
         }
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) && ui.ctx().memory(|m| m.focused().is_none()) {
+    if crate::framework::escape_pressed(ui.ctx()) && ui.ctx().memory(|m| m.focused().is_none()) {
         actions.push(("masks.select".into(), json!({"none": true})));
     }
     for (c, p) in actions {
@@ -839,7 +839,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
     if ui.input(|i| i.key_pressed(egui::Key::Enter)) && d.points.len() >= 3 {
         commit = true;
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ui.ctx()) {
         app.ui.mask_pen = None;
         return;
     }

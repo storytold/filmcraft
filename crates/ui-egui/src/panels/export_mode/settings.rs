@@ -123,7 +123,7 @@ pub(super) fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, opti
     }
     if r.drag_stopped()
         && let Some(b) = ui.data_mut(|d| d.remove_temp::<f64>(home))
-        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && crate::framework::escape_pressed(ui.ctx())
     {
         *v = b;
         return true;

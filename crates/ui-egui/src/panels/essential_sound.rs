@@ -253,7 +253,7 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
                 cx.run("essentialSound.savePreset", json!({"name": d.trim()}));
                 done = true;
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::framework::escape_pressed(ui.ctx()) {
                 done = true;
             }
         });
@@ -563,14 +563,13 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
 fn combo(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, names: &[&str], current: &str, active: bool) {
     let mut picked = None;
     ui.add_enabled_ui(active, |ui| {
-        let cb =
-            egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(crate::i18n::t(current)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-                for n in names {
-                    if ui.selectable_label(*n == current, crate::i18n::t(n)).clicked() {
-                        picked = Some(n.to_string());
-                    }
+        let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(crate::i18n::t(current)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+            for n in names {
+                if ui.selectable_label(*n == current, crate::i18n::t(n)).clicked() {
+                    picked = Some(n.to_string());
                 }
-            });
+            }
+        });
         cx.auto.add(&format!("essentialSound.{key}"), cb.response.rect, key);
     });
     if let Some(n) = picked {

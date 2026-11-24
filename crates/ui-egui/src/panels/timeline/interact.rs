@@ -642,7 +642,7 @@ fn track_select_drag_captions(app: &FilmcraftApp, copying: bool, inserting: bool
 /// Escape cancels an ongoing drag or press (#580): the release commits nothing.
 fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
     // Escape cancels an ongoing drag or press (#580): the release commits nothing
-    if (app.tl.drag.is_some() || app.tl.pressed.is_some()) && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if (app.tl.drag.is_some() || app.tl.pressed.is_some()) && crate::framework::escape_pressed(ctx) {
         if let Some(d) = app.tl.drag.take() {
             match d {
                 Drag::Scrub { initial } => {
@@ -910,7 +910,7 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     app.session.state.caption_selection = before_captions;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
                     match resp.interact_pointer_pos() {
-                        Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
+                        Some(end) if !crate::framework::escape_pressed(ctx) => {
                             let r = start.rect_to(layout, end);
                             let ids: Vec<u64> = marquee_clips(seq, layout, r).iter().map(|c| c.0).collect();
                             let caps: Vec<u64> = crate::panels::timeline_captions::marquee_captions(seq, layout, r).iter().map(|c| c.0).collect();

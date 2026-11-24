@@ -299,7 +299,7 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
     let Some(pl) = payload(ui) else { return };
     let ctx = ui.ctx();
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ctx) {
         cancel_drag(ui);
         return;
     }

@@ -585,7 +585,7 @@ pub fn rulers(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, top: Rect, le
         if resp.drag_stopped() {
             ui.data_mut(|d| d.remove::<NewGuide>(drag_id));
             // egui ends a drag on Escape: that stop adds no guide (#580)
-            if area.contains(pos) && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if area.contains(pos) && !crate::framework::escape_pressed(ui.ctx()) {
                 let position = if ng.vertical { ((pos.x - pic.min.x) / kx).round() } else { ((pos.y - pic.min.y) / ky).round() } as f64;
                 let v = view_mut(app, w);
                 v.guides.push(Guide { vertical: ng.vertical, position });
@@ -631,7 +631,7 @@ pub fn guides(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rect, p
         }
         if resp.drag_stopped_by(left) {
             let before = ui.data_mut(|d| d.remove_temp::<f64>(before_id));
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::framework::escape_pressed(ui.ctx()) {
                 if let (Some(p0), Some(guide)) = (before, view_mut(app, w).guides.get_mut(i)) {
                     guide.position = p0;
                 }

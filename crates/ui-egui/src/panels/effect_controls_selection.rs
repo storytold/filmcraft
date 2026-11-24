@@ -111,7 +111,7 @@ impl Interaction {
         if state.clip != clip {
             state = State { clip, ..Default::default() };
         }
-        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let cancelled = crate::framework::escape_pressed(ui.ctx());
         if cancelled {
             state.gesture = None;
         }

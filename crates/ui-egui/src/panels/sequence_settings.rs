@@ -279,9 +279,7 @@ fn row<R>(ui: &mut egui::Ui, label_w: f32, label: &str, enabled: bool, add: impl
 /// A greyed-out list showing `value`, with the "not supported yet" hint (or `hint`).
 fn fixed_combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, value: &str, width: f32, hint: &str) {
     let r = ui
-        .add_enabled_ui(false, |ui| {
-            egui::ComboBox::from_id_salt(("seq-settings-fixed", id)).selected_text(t(value)).width(width).show_ui(ui, |_| {}).response
-        })
+        .add_enabled_ui(false, |ui| egui::ComboBox::from_id_salt(("seq-settings-fixed", id)).selected_text(t(value)).width(width).show_ui(ui, |_| {}).response)
         .inner
         .on_disabled_hover_text(t(hint));
     elems.push((format!("sequenceSettings.{id}"), r.rect, value.to_string()));

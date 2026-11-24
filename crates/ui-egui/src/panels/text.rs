@@ -731,7 +731,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
         // a drag ended by Escape keeps the size it had (#580)
-        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let escaped = resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx());
         if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "size": size})));
         }

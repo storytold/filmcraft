@@ -686,7 +686,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
     let pending_id = egui::Id::unique("eyedropper-pending");
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(&ctx) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
         return;

@@ -1587,7 +1587,7 @@ fn draw_graph_keyframes(
                     let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                     ui.data_mut(|d| d.insert_temp(hid, nx));
                 }
-                if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if hr.drag_stopped() && crate::framework::escape_pressed(ui.ctx()) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
                 } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
@@ -1606,7 +1606,7 @@ fn draw_graph_keyframes(
                 p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
-            if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx()) {
                 ui.data_mut(|d| d.remove::<f32>(id));
             } else if resp.drag_stopped_by(egui::PointerButton::Primary) {
                 ui.data_mut(|d| d.remove::<f32>(id));
