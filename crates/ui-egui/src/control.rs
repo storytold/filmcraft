@@ -512,8 +512,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items_with_focus(app, ctx)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.docking" => {
-            // next's dock area keeps no list of its gesture sources: `hitRects` is empty.
-            ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": []}))
+            let hits = crate::dock_ui::hit_rects(ctx);
+            ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
         "perf.stats" => ok(crate::perf::stats(app)),
         "ui.elements" => {

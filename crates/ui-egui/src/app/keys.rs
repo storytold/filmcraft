@@ -38,12 +38,15 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, label_selected));
+        // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
+        // other key: Space and the other shortcuts keep working (#1482).
+        let divider_focused = crate::dock_ui::divider_focused(ctx);
+        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
         self.fire_shortcuts(ctx, fire);
     }
 
     /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, label_selected: bool) -> Vec<String> {
+    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool, label_selected: bool) -> Vec<String> {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // A chord fires only with exactly its modifiers held (`menus::chord_held`), except that a
         // punctuation or digit key may carry the Shift or Alt a layout needs to type it, so the
@@ -96,6 +99,10 @@ impl FilmcraftApp {
             // Vietnamese Telex combines into diacritics (#243). Chords with a modifier stay:
             // Ctrl+S and friends are not something a text field or an IME consumes.
             if lets_text_field_keep(*m, text_focused) {
+                continue;
+            }
+            // The focused divider consumes the arrows itself, with or without Shift/Alt.
+            if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
                 continue;
             }
             if consume_chord(i, *m, *k, repeats_when_held(id)) {
@@ -358,7 +365,7 @@ mod key_repeat_tests {
         app.ui.focused = crate::dock::PanelKind::Timeline;
         let mut input = egui::InputState::default();
         input.events = events;
-        app.match_shortcuts(&mut input, false, false)
+        app.match_shortcuts(&mut input, false, false, false)
     }
 
     /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per
@@ -403,7 +410,7 @@ mod exact_modifier_tests {
         let mut input = egui::InputState::default();
         input.modifiers = modifiers;
         input.events = vec![Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }];
-        app.match_shortcuts(&mut input, false, false)
+        app.match_shortcuts(&mut input, false, false, false)
     }
 
     /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N) and its "discard
