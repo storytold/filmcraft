@@ -150,7 +150,7 @@ if has deb || has rpm; then
     mv "$NFPM_STAGE/usr/bin/filmcraft" "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     mv "$NFPM_STAGE/usr/bin/filmcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
     mv "$NFPM_STAGE/usr/share/doc/filmcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
-    sed -e "s|^Exec=filmcraft\([[:space:]]\|$\)|Exec=$NFPM_BIN\1|" \
+    sed -e "s#^Exec=filmcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
         -e "s|^TryExec=filmcraft$|TryExec=$NFPM_BIN|" \
         -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
         -e "s|^Name=FilmCraft$|Name=FilmCraft Nightly|" \

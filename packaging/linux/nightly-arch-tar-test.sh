@@ -28,7 +28,7 @@ bin="$work/installed/bin"
 mv "$bin/filmcraft" "$bin/filmcraft-nightly"
 mv "$bin/filmcraft-cli" "$bin/filmcraft-nightly-cli"
 
-test ! -e "$stage/bin/.filmcraft-nightly"
+[[ ! -e "$stage/bin/.filmcraft-nightly" ]]
 cmp "$stage/bin/filmcraft" "$bin/.filmcraft-nightly/filmcraft"
 cmp "$stage/bin/filmcraft-cli" "$bin/filmcraft-nightly-cli"
 expect() {
