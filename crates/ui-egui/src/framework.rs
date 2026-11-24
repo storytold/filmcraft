@@ -76,6 +76,33 @@ pub fn before_input(ctx: &Context, app: &FilmcraftApp) {
     });
 }
 
+/// How many events of one pass's raw input came after its first pointer press: the runtime gives a pass at most one
+/// press, as its last pointer event, and holds those events for the front of the next frame's input.
+#[derive(Clone, Copy)]
+struct PressSuffix {
+    frame: u64,
+    len: usize,
+}
+
+fn press_suffix_id() -> Id {
+    Id::new("filmcraft-press-suffix")
+}
+
+/// Last in `raw_input_hook`: records how many of the pass's events follow its first pointer press, so
+/// [`held_press_suffix`] can tell them, at the front of the next frame, from events that arrived in that frame.
+pub fn note_press_suffix(ctx: &Context, events: &[egui::Event]) {
+    let len = events.iter().position(|event| matches!(event, egui::Event::PointerButton { pressed: true, .. })).map_or(0, |at| events.len() - at - 1);
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| data.insert_temp(press_suffix_id(), PressSuffix { frame, len }));
+}
+
+/// How many events at the front of this pass's input are the held suffix of the previous pass's press: they came
+/// in the press's batch, after it. Zero when the previous pass had no press, or nothing after it.
+pub fn held_press_suffix(ctx: &Context) -> usize {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data(|data| data.get_temp::<PressSuffix>(press_suffix_id())).filter(|suffix| frame == suffix.frame.wrapping_add(1)).map_or(0, |suffix| suffix.len)
+}
+
 /// First in `ui`, each pass: hands the runtime the root's native window (eframe's `Frame`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn before_ui(ctx: &Context, frame: &eframe::Frame) {
