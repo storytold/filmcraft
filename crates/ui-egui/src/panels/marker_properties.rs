@@ -166,7 +166,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.colored_label(ui.visuals().error_fg_color, &draft.error);
         }
     });
-    if matches!(action, Some(Action::Cancel)) || modal.should_close() {
+    // The runtime takes Escape from egui as the window's cancel, so the modal does not see it.
+    if matches!(action, Some(Action::Cancel)) || modal.should_close() || crate::framework::escape_pressed(&modal.response.ctx) {
         return;
     }
     match action {
@@ -562,7 +563,7 @@ fn color_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, draft: &mut Draft) 
             cancel = response.clicked();
         });
     });
-    if cancel || modal.should_close() {
+    if cancel || modal.should_close() || crate::framework::escape_pressed(&modal.response.ctx) {
         draft.color_editor = None;
         draft.error.clear();
     } else if add && let Some(color) = editor.value() {
