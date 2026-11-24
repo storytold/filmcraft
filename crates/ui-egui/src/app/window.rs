@@ -43,7 +43,7 @@ impl FilmcraftApp {
     /// leaves the saved layout in place).
     pub(crate) fn restore_remembered_layout(&mut self, workspace: &str) {
         if let Some(saved) = self.workspaces.last.as_ref().filter(|l| l.name == workspace).and_then(dock::read_saved) {
-            self.ui.dock = saved.layout;
+            self.ui.dock = saved.layout().clone();
         }
     }
 

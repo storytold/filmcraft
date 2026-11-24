@@ -3355,8 +3355,13 @@ name = "filmcraft-ui-egui"
 version = "0.20.1"
 dependencies = [
  "cpu-time",
+ "craft-behavior",
+ "craft-host",
+ "craft-keymap",
+ "craft-theme",
  "craft-ui",
  "craft-update",
+ "craft-window",
  "eframe",
  "egui",
  "egui_extras",

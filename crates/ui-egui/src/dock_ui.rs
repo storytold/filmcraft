@@ -380,7 +380,9 @@ impl FilmcraftApp {
         }
         for event in output.events {
             match event {
-                DockEvent::ToggleMaximize { panel, .. } => panels::keyboard::toggle_maximize(self, panel),
+                DockEvent::ToggleMaximize { panel, .. } => {
+                    panels::keyboard::toggle_maximize(self, panel);
+                }
                 // FilmCraft asks for no destination: a panel or group moves by its tab or bar.
                 DockEvent::PanelCommand { .. } => self.ui.status = tl!("Drag the tab to move the panel").into(),
                 _ => {}
