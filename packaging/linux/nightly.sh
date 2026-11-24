@@ -17,8 +17,11 @@ OUTPUT="$DIST/filmcraft-$VERSION-linux-x86_64-nightly.tar.gz"
 nightly_build_gui
 STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
-cp "$NIGHTLY_GUI" "$STAGE/filmcraft"
-chmod 755 "$STAGE/filmcraft"
+# The GUI is `filmcraft-bin`; `filmcraft` is the launcher that starts it with the Launcher's private
+# profile, so an unpacked tarball is isolated exactly like the deb, rpm, AppImage and Flatpak.
+cp "$NIGHTLY_GUI" "$STAGE/filmcraft-bin"
+chmod 755 "$STAGE/filmcraft-bin"
+install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/filmcraft"
 cp "$ROOT/assets/app-icon/filmcraft-nightly.png" "$STAGE/filmcraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The private mktemp cwd is the helper authority root, not a CLI path parent.

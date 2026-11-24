@@ -9,8 +9,11 @@ use std::sync::OnceLock;
 pub const APP_ID: &str = "ai.storyteller.filmcraft";
 
 /// The nightly channel's window/Wayland app id. The package, bundle and Launcher identity is
-/// `ai.storyteller.filmcraft.nightly` instead: two different strings, both are needed.
+/// [`NIGHTLY_PACKAGE_ID`] instead: two different strings, both are needed.
 pub const NIGHTLY_V1_APP_ID: &str = "ai.storyteller.filmcraft.nightly-v1";
+
+/// The Nightly package, bundle and Launcher id (also `FLATPAK_ID` inside its own sandbox).
+pub const NIGHTLY_PACKAGE_ID: &str = "ai.storyteller.filmcraft.nightly";
 
 /// Immutable startup identity. The desktop selects it before any UI/runtime service is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +93,9 @@ mod tests {
     fn the_package_identity_and_the_window_identity_are_two_different_strings() {
         // The bundle/package id the Launcher and macOS plist use, and the window/AUMID one.
         assert_eq!("ai.storyteller.filmcraft.nightly-v1", NIGHTLY_V1_APP_ID);
-        assert_ne!("ai.storyteller.filmcraft.nightly", NIGHTLY_V1_APP_ID);
+        assert_eq!("ai.storyteller.filmcraft.nightly", NIGHTLY_PACKAGE_ID);
+        assert_ne!(NIGHTLY_PACKAGE_ID, NIGHTLY_V1_APP_ID);
+        assert_ne!(NIGHTLY_PACKAGE_ID, APP_ID);
     }
 
     #[test]

@@ -218,10 +218,16 @@ fn validate_for(
     if env("FILMCRAFT_DATA_DIR").is_some_and(|v| !v.is_empty()) {
         return Err("nightly-v1 cannot be combined with FILMCRAFT_DATA_DIR".into());
     }
-    if platform != Platform::Windows && env("FLATPAK_ID").is_some_and(|v| !v.is_empty()) {
-        // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
-        // runtime socket namespace could point another profile at the stable app's socket.
-        return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
+    if platform != Platform::Windows {
+        // A native Nightly package must not inherit a Flatpak runtime: its socket namespace could
+        // point this profile at another app's instance. The Nightly Flatpak itself is not that
+        // case -- its sandbox data is `~/.var/app/ai.storyteller.filmcraft.nightly`, separate from
+        // stable -- so exactly the app's own Nightly id is accepted and every other value refused.
+        if let Some(id) = env("FLATPAK_ID").filter(|value| !value.is_empty()) {
+            if id.as_os_str() != std::ffi::OsStr::new(filmcraft_ui_egui::os_window::NIGHTLY_PACKAGE_ID) {
+                return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
+            }
+        }
     }
     let chosen = canonical_future(root)?;
     if is_portable_layout(root, platform) || is_portable_layout(&chosen, platform) {
@@ -528,6 +534,12 @@ mod tests {
         fixture.env.remove("FILMCRAFT_DATA_DIR");
         fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.filmcraft".into());
         assert!(fixture.refuse(Platform::Linux, &candidate).contains("Flatpak"));
+        fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.filmcraft.nightly-v1".into());
+        assert!(fixture.refuse(Platform::Linux, &candidate).contains("Flatpak"));
+        // The Nightly Flatpak itself is a native Nightly: its sandbox is already separate.
+        fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.filmcraft.nightly".into());
+        let in_the_nightly_sandbox = fixture.home().join("nightly-flatpak/profile");
+        assert!(fixture.check(Platform::Linux, &in_the_nightly_sandbox).is_ok(), "the Nightly Flatpak must start");
         fixture.env.remove("FLATPAK_ID");
         fixture.env.remove("HOME");
         assert!(fixture.refuse(Platform::Linux, &candidate).contains("HOME"));

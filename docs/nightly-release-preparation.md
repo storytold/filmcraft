@@ -198,6 +198,28 @@ one explicitly authorized bounded maintenance push. See the shared-identity inci
 [the release guide](releasing.md#release-ref-nightly-preparation). No daily witness renewal or
 per-run human approval is introduced by candidate-v3; provider gaps remain blockers.
 
+## Linux Nightly launchers (on top of the Linux packaging PR)
+
+A Nightly build refuses to start without its private profile, and refuses the stable
+`FILMCRAFT_DATA_DIR` override, so every Linux format starts the GUI through the Launcher's literal
+protocol `--launch-profile nightly-v1 --profile-root <dir> -- <files>`. The profile is
+`${XDG_DATA_HOME:-$HOME/.local/share}/filmcraft-nightly/profile` (outside stable's folders and
+outside the installed copy, which the app's own fence would reject). A first-argument `--version`
+or `-V`, and an already-named protocol, pass through untouched, so version queries still answer.
+
+| Format | Shape |
+|---|---|
+| deb/rpm | GUI in `/usr/lib/filmcraft-nightly/filmcraft`, launcher at `/usr/bin/filmcraft-nightly`, CLI at `/usr/bin/filmcraft-nightly-cli` |
+| AppImage | `AppRun` is a script (never a symlink): desktop integration plus the profile launch; `package.sh` switches its `DESK_ID` and `CHANNEL` for Nightly |
+| Arch handoff | `bin/filmcraft-nightly` launcher, GUI in `bin/.filmcraft-nightly/` |
+| Flatpak | GUI in `/app/libexec/filmcraft`, launcher in `/app/bin/filmcraft`; the Nightly bundle id is the only `FLATPAK_ID` the fence accepts |
+| plain tar | `filmcraft` launcher beside `filmcraft-bin`, and `install.sh` installs both |
+
+Nightly packages claim no MIME associations (desktop and metainfo), ship the channel icon, and keep
+the `filmcraft/neural-voices` feature the official package builds with.
+`packaging/linux/nightly-launch-test.sh`, `apprun-test.sh` and `nightly-arch-tar-test.sh` check the
+launchers with argv recorders (packaging lint runs them).
+
 ## Local regression checks
 
 `python3 packaging/nightly-release-tests.py` executes the **actual inline dispatcher** with

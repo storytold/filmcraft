@@ -66,3 +66,8 @@ jobs:
           persist-credentials: false
       - name: Enforce nightly serialization and synthetic packaging contracts
         run: python3 packaging/nightly-tests.py
+      - name: Check the Linux Nightly launchers (no build, argv recorders only)
+        run: |
+          bash packaging/linux/nightly-launch-test.sh
+          bash packaging/linux/apprun-test.sh
+          bash packaging/linux/nightly-arch-tar-test.sh

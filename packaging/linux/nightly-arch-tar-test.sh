@@ -40,9 +40,14 @@ expect() {
     exit 1
   fi
 }
-expect "$(printf '<%s>\n' 'clip with spaces.fcproj' '--other-name.fcproj')" \
+# A launch starts the GUI with the Launcher's private profile, as the deb, rpm, AppImage, Flatpak
+# and tarball launchers do; a version query and an existing protocol pass through untouched.
+profile="${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'clip with spaces.fcproj' '--other-name.fcproj')" \
   'clip with spaces.fcproj' '--other-name.fcproj'
 expect '<--version>' --version
 expect '<-V>' -V
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root /launcher/profile --version)" \
+  --launch-profile nightly-v1 --profile-root /launcher/profile --version
 
-echo "PASS: Arch Nightly handoff preserves launch arguments"
+echo "PASS: Arch Nightly handoff starts the GUI with the Launcher profile and preserves arguments"

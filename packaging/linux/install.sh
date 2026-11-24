@@ -29,11 +29,18 @@ app_id=ai.storyteller.filmcraft
 for binary in filmcraft filmcraft-cli; do
   [[ -f "$source_dir/bin/$binary" ]] || fail "missing bin/$binary; extract the complete tarball first"
 done
+# A Nightly tarball ships its GUI as bin/filmcraft-bin beside the launcher that starts it with the
+# Launcher's private profile; installing one without the other would leave a dead menu entry.
+binaries=(filmcraft filmcraft-cli)
+if [[ -f "$source_dir/bin/filmcraft-bin" ]]; then
+  binaries+=(filmcraft-bin)
+fi
 [[ -f "$source_dir/share/applications/$app_id.desktop" ]] || fail 'missing desktop entry; extract the complete tarball first'
 
 mkdir -p -- "$prefix/bin" "$prefix/share"
-install -m755 -- "$source_dir/bin/filmcraft" "$prefix/bin/filmcraft"
-install -m755 -- "$source_dir/bin/filmcraft-cli" "$prefix/bin/filmcraft-cli"
+for binary in "${binaries[@]}"; do
+  install -m755 -- "$source_dir/bin/$binary" "$prefix/bin/$binary"
+done
 cp -R -- "$source_dir/share/." "$prefix/share/"
 
 # Use an absolute path so launching from the application menu does not depend on PATH.

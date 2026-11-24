@@ -59,25 +59,57 @@ mkdir -p "$WORK/stage"
 tar -xzf "$TARBALL" -C "$WORK/stage" --strip-components=1
 [[ -x "$WORK/stage/bin/filmcraft" ]] || { echo "error: $TARBALL has no bin/filmcraft" >&2; exit 1; }
 if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
+  # The GUI runs with the Launcher's private profile, as on every other Nightly format: inside the
+  # sandbox $XDG_DATA_HOME is this app's own per-app folder, so the profile never meets stable's.
+  # A Nightly tarball from package.sh already separates the launcher from the GUI; an older one
+  # does not. Either way this bundle installs its own launcher and the GUI in /app/libexec.
+  if [[ -e "$WORK/stage/bin/filmcraft-bin" ]]; then
+    rm -f "$WORK/stage/bin/filmcraft"
+  else
+    mv "$WORK/stage/bin/filmcraft" "$WORK/stage/bin/filmcraft-bin"
+  fi
+  cat >"$WORK/stage/bin/filmcraft" <<'WRAPPER'
+#!/bin/sh
+# FilmCraft Nightly: the GUI runs with the Launcher's private profile, which holds every per-user
+# file (preferences, recovery autosaves, media cache, presets, logs, downloaded models).
+set -eu
+bin=/app/libexec/filmcraft
+profile="${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+WRAPPER
+  chmod 755 "$WORK/stage/bin/filmcraft"
+  NIGHTLY_ICON="$ROOT/assets/app-icon/filmcraft-nightly.png"
+  if [[ ! -f "$NIGHTLY_ICON" ]]; then
+    echo "error: the Nightly icon $NIGHTLY_ICON is missing" >&2
+    exit 2
+  fi
   sed -e "s|^Icon=$APP_ID$|Icon=$FLATPAK_ID|" \
       -e "s|^Name=FilmCraft$|Name=FilmCraft Nightly|" \
       -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.filmcraft.nightly-v1|' \
       -e '/^MimeType=/d' \
       "$WORK/stage/share/applications/$APP_ID.desktop" >"$WORK/stage/share/applications/$FLATPAK_ID.desktop"
   rm -f "$WORK/stage/share/applications/$APP_ID.desktop"
+  # The Nightly claims no associations, so its metainfo advertises none and it registers no MIME.
   sed -e "s|<id>$APP_ID</id>|<id>$FLATPAK_ID</id>|g" \
       -e "s|<name>FilmCraft</name>|<name>FilmCraft Nightly</name>|g" \
       -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$FLATPAK_ID.desktop</launchable>|g" \
       -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$FLATPAK_ID</icon>|g" \
+      -e '/<mediatype>/d' \
       "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml" >"$WORK/stage/share/metainfo/$FLATPAK_ID.metainfo.xml"
   rm -f "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml"
-  sed -e "s|<icon name=\"$APP_ID\"/>|<icon name=\"$FLATPAK_ID\"/>|g" \
-      "$WORK/stage/share/mime/packages/$APP_ID.xml" >"$WORK/stage/share/mime/packages/$FLATPAK_ID.xml"
-  rm -f "$WORK/stage/share/mime/packages/$APP_ID.xml"
-  find "$WORK/stage/share/icons/hicolor" -type f -name "$APP_ID.*" | while IFS= read -r icon; do
-    mv "$icon" "$(dirname "$icon")/$FLATPAK_ID.${icon##*.}"
-  done
+  rm -rf "$WORK/stage/share/mime"
+  rm -rf "$WORK/stage/share/icons/hicolor"
+  install -Dm644 "$NIGHTLY_ICON" "$WORK/stage/share/icons/hicolor/256x256/apps/$FLATPAK_ID.png"
+  # No MIME install, and no host-Flatpak updater talk-name: a Nightly never asks the stable updater
+  # (the app disables it), and the /app/libexec line is the GUI the launcher starts.
   sed -e "s|ai\.storyteller\.filmcraft|$FLATPAK_ID|g" \
+      -e '/share\/mime\/packages\//d' \
+      -e '/--talk-name=org\.freedesktop\.Flatpak/d' \
+      -e 's|- install -Dm755 bin/filmcraft /app/bin/filmcraft|- install -Dm755 bin/filmcraft-bin /app/libexec/filmcraft\n      - install -Dm755 bin/filmcraft /app/bin/filmcraft|' \
       "$HERE/flatpak/$APP_ID.bundle.yml" >"$WORK/$FLATPAK_ID.yml"
 else
   cp "$HERE/flatpak/$APP_ID.bundle.yml" "$WORK/$FLATPAK_ID.yml"
@@ -103,7 +135,11 @@ if [[ "$TEST" = 1 ]]; then
   flatpak install --user -y --noninteractive --reinstall "$OUT"
   flatpak info --user "$FLATPAK_ID"
   flatpak run --command=filmcraft-cli "$FLATPAK_ID" --version
-  flatpak run --command=sh "$FLATPAK_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/*/apps'
+  if [[ "$FLATPAK_ID" == "$APP_ID" ]]; then
+    flatpak run --command=sh "$FLATPAK_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/mime/packages /app/share/icons/hicolor/*/apps'
+  else
+    flatpak run --command=sh "$FLATPAK_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/icons/hicolor/*/apps && test ! -e /app/share/mime/packages && test -x /app/bin/filmcraft && test -x /app/libexec/filmcraft'
+  fi
 fi
 echo "==> done"
 ls -lh "$OUT"

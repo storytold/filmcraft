@@ -478,5 +478,75 @@ class NightlyTrustAnchors(unittest.TestCase):
         self.assertRegex(pins.pop(), r"^[0-9a-f]{40}$", "pin a full immutable commit, never a branch or placeholder")
 
 
+class LinuxNightlyLaunchers(unittest.TestCase):
+    """Source contracts for the Linux Nightly launchers (argv behaviour: the bash suites)."""
+
+    PROFILE = "${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
+
+    def launchers(self):
+        package = (ROOT / "packaging/linux/package.sh").read_text()
+        heredocs = re.findall(r"<<'WRAPPER'\n(.*?)\nWRAPPER\n", package, re.DOTALL)
+        self.assertGreaterEqual(len(heredocs), 1, "the deb/rpm Nightly wrapper is missing")
+        files = {}
+        for name, path in (("tarball", "packaging/linux/nightly-launch.sh"),
+                           ("arch", "packaging/linux/nightly-arch-launch.sh"),
+                           ("apprun", "packaging/linux/AppRun"),
+                           ("flatpak", "packaging/linux/flatpak-bundle.sh")):
+            files[name] = (ROOT / path).read_text()
+        flatpak = re.findall(r"<<'WRAPPER'\n(.*?)\nWRAPPER\n", files["flatpak"], re.DOTALL)
+        self.assertEqual(len(flatpak), 1, "the Flatpak Nightly wrapper is missing")
+        files["flatpak"] = flatpak[0]
+        files["deb/rpm"] = "\n".join(heredocs)
+        return files
+
+    def test_every_linux_launcher_starts_the_gui_with_the_launcher_profile(self):
+        for name, source in self.launchers().items():
+            with self.subTest(launcher=name):
+                self.assertIn("--launch-profile nightly-v1", source)
+                self.assertIn(self.PROFILE, source, "one profile root, outside stable and the install")
+                self.assertIn('case "${1-}" in', source)
+                self.assertIn("--profile-root | --version | -V", source)
+
+    def test_no_linux_wrapper_routes_the_profile_through_the_environment(self):
+        # The flavor refuses FILMCRAFT_DATA_DIR with a nightly profile: a wrapper that exported it
+        # would make its own package exit 2.
+        offenders = [path.name for path in sorted((ROOT / "packaging/linux").iterdir())
+                     if path.suffix in {".sh", ".yml", ".yaml"} and "FILMCRAFT_DATA_DIR" in path.read_text(errors="ignore")]
+        self.assertEqual(offenders, [], "the Launcher owns the Nightly root, not the environment")
+
+    def test_the_package_keeps_the_gui_off_path_and_the_mediatypes_off_the_entry(self):
+        package = (ROOT / "packaging/linux/package.sh").read_text()
+        self.assertIn("/usr/lib/filmcraft-nightly/filmcraft", package)
+        self.assertEqual(package.count("'/<mediatype>/d'"), 2, "the deb/rpm and AppImage metainfo")
+        self.assertIn("--features filmcraft/neural-voices", package)
+        self.assertIn("--features filmcraft/neural-voices", (ROOT / "packaging/nightly-common.sh").read_text(),
+                      "the Nightly tar must keep the voices the official package builds with")
+        self.assertIn('Icon=$NIGHTLY_DESK_ID', package)
+
+    def test_the_appimage_apprun_is_a_script_and_is_switched_for_nightly(self):
+        package = (ROOT / "packaging/linux/package.sh").read_text()
+        self.assertIn('install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"', package)
+        self.assertNotIn('ln -s usr/bin/filmcraft "$APPDIR/AppRun"', package)
+        self.assertIn('$0 == "CHANNEL=stable" { print "CHANNEL=nightly-v1"; next }', package)
+        apprun = ROOT / "packaging/linux/AppRun"
+        self.assertTrue(apprun.is_file() and not apprun.is_symlink())
+        self.assertTrue(apprun.stat().st_mode & 0o111, "AppRun must be executable")
+
+    def test_the_plain_nightly_tar_ships_the_launcher_beside_the_gui(self):
+        archive = (ROOT / "packaging/nightly-archive.py").read_text()
+        self.assertIn('{"filmcraft", "filmcraft-bin", "filmcraft-nightly.png"}', archive)
+        self.assertIn('"filmcraft", "filmcraft-bin", "filmcraft-nightly.png", "README.md"', archive)
+        self.assertIn('"$STAGE/filmcraft-bin"', (ROOT / "packaging/linux/nightly.sh").read_text())
+        check = (ROOT / "packaging/linux/nightly-check.sh").read_text()
+        self.assertIn("for name in filmcraft filmcraft-bin filmcraft-nightly.png", check)
+
+    def test_the_nightly_flatpak_install_keeps_the_launcher_and_drops_the_mime_tree(self):
+        source = (ROOT / "packaging/linux/flatpak-bundle.sh").read_text()
+        self.assertIn("/app/libexec/filmcraft", source)
+        self.assertIn("/share\\/mime\\/packages\\//d", source)
+        self.assertIn("--talk-name=org\\.freedesktop\\.Flatpak/d", source)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

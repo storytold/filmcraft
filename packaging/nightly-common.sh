@@ -35,7 +35,10 @@ nightly_init() {
 nightly_compile_gui() {
   # The same prepared identity the artifacts are named after: build.rs refuses a nightly whose
   # version, commit and date disagree.
-  (cd "$ROOT" && FILMCRAFT_VERSION="$VERSION" FILMCRAFT_BUILD_CHANNEL=nightly-v1 cargo build --release --locked -p filmcraft --target "$NIGHTLY_RUST_TARGET")
+  # The same features the official package builds with (packaging/linux/package.sh): without
+  # natural voices the Nightly would quietly have fewer voices than stable.
+  (cd "$ROOT" && FILMCRAFT_VERSION="$VERSION" FILMCRAFT_BUILD_CHANNEL=nightly-v1 cargo build --release --locked \
+    -p filmcraft --features filmcraft/neural-voices --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/filmcraft"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$FILMCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'

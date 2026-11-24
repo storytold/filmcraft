@@ -3,11 +3,12 @@
 #
 #   packaging/linux/nightly-check.sh --input /abs/filmcraft-<version>-linux-x86_64-nightly.tar.gz
 #
-# The archive holds exactly the GUI-only Nightly: `filmcraft` (mode 755), the channel icon and the
-# notices, all flat regular files. The binary then answers both version queries — plain and the
-# Launcher's form `--launch-profile nightly-v1 --profile-root <fresh dir> --version` — with
-# exactly `FilmCraft <version> (nightly-v1)` on standard output, nothing on standard error, exit 0,
-# and without touching the profile root (the query runs before any profile or window work).
+# The archive holds exactly the GUI-only Nightly: `filmcraft` (the launcher, mode 755),
+# `filmcraft-bin` (the GUI it starts with the Launcher's private profile, mode 755), the channel
+# icon and the notices, all flat regular files. The launcher then answers both version queries —
+# plain and the Launcher's form `--launch-profile nightly-v1 --profile-root <fresh dir> --version`
+# — with exactly `FilmCraft <version> (nightly-v1)` on standard output, nothing on standard error,
+# exit 0, and without touching the profile root (the query runs before any profile or window work).
 # No signing material may be in the environment: this runs the payload.
 set -euo pipefail
 INPUT=''
@@ -45,17 +46,21 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
 PY
 tar -xzf "$INPUT" -C "$WORK/payload"
 entries="$(ls -A "$WORK/payload")"
-for name in filmcraft filmcraft-nightly.png LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do
+for name in filmcraft filmcraft-bin filmcraft-nightly.png LICENSE-MIT LICENSE-APACHE NOTICE ATTRIBUTION.md; do
   [[ -f "$WORK/payload/$name" && ! -L "$WORK/payload/$name" ]] || die "the archive has no regular $name"
 done
 for name in $entries; do
   case "$name" in
-    filmcraft | filmcraft-nightly.png | README.md | LICENSE | LICENSE-MIT | LICENSE-APACHE | COPYRIGHT | NOTICE | ATTRIBUTION.md) ;;
+    filmcraft | filmcraft-bin | filmcraft-nightly.png | README.md | LICENSE | LICENSE-MIT | LICENSE-APACHE | COPYRIGHT | NOTICE | ATTRIBUTION.md) ;;
     OFL-*.txt) ;;
     *) die "unexpected nightly member: $name" ;;
   esac
 done
-[[ -x "$WORK/payload/filmcraft" && "$(stat -c '%a' "$WORK/payload/filmcraft")" == 755 ]] || die 'the GUI must be executable with mode 755'
+for name in filmcraft filmcraft-bin; do
+  [[ -x "$WORK/payload/$name" && "$(stat -c '%a' "$WORK/payload/$name")" == 755 ]] || die "$name must be executable with mode 755"
+done
+# The shipped launcher is the one that injects the Launcher's private profile, not the bare GUI.
+grep -q -- '--launch-profile nightly-v1' "$WORK/payload/filmcraft" || die 'the launcher does not start the GUI with the Launcher profile'
 [[ -z "$(find "$WORK/payload" ! -type f ! -type d -print -quit)" ]] || die 'the archive contains links or special files'
 
 query() {

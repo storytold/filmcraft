@@ -51,11 +51,21 @@ export FILMCRAFT_MAINTAINER="${FILMCRAFT_MAINTAINER:-FilmCraft maintainers <film
 IS_NIGHTLY=0
 if [[ "${FILMCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
   IS_NIGHTLY=1
-  if [[ "$VERSION" != *-nightly* ]]; then
-    VERSION="${VERSION}-nightly"
+  # The binary compiles the exact prepared identity (build.rs refuses anything else), so a
+  # Nightly package never invents a version: two different nights must never share one.
+  if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+\.[0-9]+\.g[0-9a-f]{12}$ ]]; then
+    echo "error: a Nightly package requires the prepared version identity" >&2
+    echo "       (X.Y.Z-nightly.YYYYMMDD.RUN.ATTEMPT.gSHA12; set FILMCRAFT_VERSION and FILMCRAFT_BUILD_CHANNEL=nightly-v1)" >&2
+    exit 2
   fi
   export FILMCRAFT_BUILD_CHANNEL=nightly-v1
-  export FILMCRAFT_OVERRIDE_VERSION="$VERSION"
+  export FILMCRAFT_VERSION="$VERSION"
+fi
+# The Nightly channel's own icon; stable keeps the hicolor tree.
+NIGHTLY_ICON="$ROOT/assets/app-icon/filmcraft-nightly.png"
+if [[ "$IS_NIGHTLY" = 1 && ! -f "$NIGHTLY_ICON" ]]; then
+  echo "error: the Nightly icon $NIGHTLY_ICON is missing" >&2
+  exit 2
 fi
 BASENAME="filmcraft-$VERSION-linux-$ARCH"
 
@@ -114,6 +124,12 @@ has() { local fmt="$1"; case " $FORMATS " in *" $fmt "*) return 0 ;; *) return 1
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    # A Nightly binary only starts with its private profile, so an unpacked tarball gets the same
+    # launcher the other Nightly formats install: `filmcraft` starts `filmcraft-bin`.
+    mv "$WORK/tar/$BASENAME/bin/filmcraft" "$WORK/tar/$BASENAME/bin/filmcraft-bin"
+    install -Dm755 "$HERE/nightly-launch.sh" "$WORK/tar/$BASENAME/bin/filmcraft"
+  fi
   install -m755 "$HERE/install.sh" "$WORK/tar/$BASENAME/install.sh"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
@@ -147,7 +163,24 @@ if has deb || has rpm; then
     NFPM_STAGE="$WORK/nfpm-root"
     rm -rf "$NFPM_STAGE"
     cp -R "$STAGE" "$NFPM_STAGE"
-    mv "$NFPM_STAGE/usr/bin/filmcraft" "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    # The GUI lives off PATH, outside the desktop entry and the icon lookup: /usr/bin/filmcraft-nightly
+    # is the launcher that starts it with the Launcher's private profile, as on every other format.
+    install -Dm755 "$NFPM_STAGE/usr/bin/filmcraft" "$NFPM_STAGE/usr/lib/filmcraft-nightly/filmcraft"
+    cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
+#!/bin/sh
+# FilmCraft Nightly: the GUI runs with the Launcher's private profile, which holds every per-user
+# file (preferences, recovery autosaves, media cache, presets, logs, downloaded models).
+set -eu
+bin=/usr/lib/filmcraft-nightly/filmcraft
+profile="${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
+# The Launcher's protocol, and a bare version query, pass through untouched.
+case "${1-}" in
+  --launch-profile | --profile-root | --version | -V) exec "$bin" "$@" ;;
+esac
+exec "$bin" --launch-profile nightly-v1 --profile-root "$profile" -- "$@"
+WRAPPER
+    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    rm -f "$NFPM_STAGE/usr/bin/filmcraft"
     mv "$NFPM_STAGE/usr/bin/filmcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
     mv "$NFPM_STAGE/usr/share/doc/filmcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
     sed -e "s#^Exec=filmcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
@@ -162,16 +195,20 @@ if has deb || has rpm; then
         -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$NIGHTLY_DESK_ID.desktop</launchable>|g" \
         -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
         -e "s|<binary>filmcraft</binary>|<binary>$NFPM_BIN</binary>|g" \
+        -e '/<mediatype>/d' \
         "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
     rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
     rm -rf "$NFPM_STAGE/usr/share/mime"
-    find "$NFPM_STAGE/usr/share/icons/hicolor" -type f -name "$APP_ID.*" | while IFS= read -r icon; do
-      mv "$icon" "$(dirname "$icon")/$NIGHTLY_DESK_ID.${icon##*.}"
-    done
+    # The Nightly claims no associations, so it registers none and ships its own icon.
+    rm -rf "$NFPM_STAGE/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" "$NFPM_STAGE/usr/share/icons/hicolor/256x256/apps/$NIGHTLY_DESK_ID.png"
   fi
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
+  DROP_LIB_TREE=
   # shellcheck disable=SC2016
-  sed "s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  [[ -d "$NFPM_STAGE/usr/lib" ]] || DROP_LIB_TREE='\|^  - src: \${STAGE}/usr/lib/|,+2d;'
+  # shellcheck disable=SC2016
+  sed "$DROP_LIB_TREE" -e "s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -195,19 +232,43 @@ if has appimage; then
   esac
   APPDIR="$WORK/FilmCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  ln -s usr/bin/filmcraft "$APPDIR/AppRun"
+  # AppRun is a script, not a symlink: it installs the .desktop entry and icons into
+  # $XDG_DATA_HOME before launching, so Wayland compositors can resolve the window's app_id to
+  # our icon instead of the generic Wayland logo (opt-out env in the script header). Logic is
+  # covered by packaging/linux/apprun-test.sh.
+  install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"
   if [[ "$IS_NIGHTLY" = 1 ]]; then
     APPIMAGE_ID="$APP_ID.nightly-v1"
+    # The desktop id and the channel line: a Nightly AppImage must start the app with the
+    # Launcher's private profile, not with stable's folders (AppRun's tail does the exec).
+    awk -v old_id="$APP_ID" -v new_id="$APPIMAGE_ID" '
+      $0 == "DESK_ID=" old_id { print "DESK_ID=" new_id; next }
+      $0 == "CHANNEL=stable" { print "CHANNEL=nightly-v1"; next }
+      { print }
+    ' "$APPDIR/AppRun" >"$APPDIR/AppRun.tmp"
+    grep -qx 'CHANNEL=nightly-v1' "$APPDIR/AppRun.tmp" || {
+      echo "error: AppRun has no CHANNEL=stable line to switch for Nightly" >&2
+      exit 1
+    }
+    mv "$APPDIR/AppRun.tmp" "$APPDIR/AppRun"
+    chmod 755 "$APPDIR/AppRun"
     sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
         -e "s|^Name=FilmCraft$|Name=FilmCraft Nightly|" \
         -e '/^MimeType=/d' \
         "$APPDIR/usr/share/applications/$APP_ID.desktop" >"$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop"
     rm -f "$APPDIR/usr/share/applications/$APP_ID.desktop"
     cp "$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop" "$APPDIR/$APPIMAGE_ID.desktop"
-    find "$APPDIR/usr/share/icons/hicolor" -type f -name "$APP_ID.*" | while IFS= read -r icon; do
-      mv "$icon" "$(dirname "$icon")/$APPIMAGE_ID.${icon##*.}"
-    done
-    cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPIMAGE_ID.png" "$APPDIR/$APPIMAGE_ID.png"
+    # The Nightly claims no associations, so its metainfo must not advertise any either.
+    sed -e "s|<id>$APP_ID</id>|<id>$APPIMAGE_ID</id>|g" \
+        -e "s|<name>FilmCraft</name>|<name>FilmCraft Nightly</name>|g" \
+        -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$APPIMAGE_ID.desktop</launchable>|g" \
+        -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$APPIMAGE_ID</icon>|g" \
+        -e '/<mediatype>/d' \
+        "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml" >"$APPDIR/usr/share/metainfo/$APPIMAGE_ID.metainfo.xml"
+    rm -f "$APPDIR/usr/share/metainfo/$APP_ID.metainfo.xml"
+    rm -rf "$APPDIR/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPIMAGE_ID.png"
+    cp "$NIGHTLY_ICON" "$APPDIR/$APPIMAGE_ID.png"
     ln -s "$APPIMAGE_ID.png" "$APPDIR/.DirIcon"
   else
     cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
