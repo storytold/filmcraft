@@ -51,8 +51,8 @@ mod dock_ui;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
 
-pub mod framework;
 pub mod frames;
+pub mod framework;
 pub mod graphics_notice;
 pub mod header;
 pub mod i18n;
@@ -77,8 +77,8 @@ pub mod updates_ui;
 pub mod widgets;
 
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 
 use egui::ime_context::ImeTarget;
 use egui::{TextureHandle, TextureOptions};

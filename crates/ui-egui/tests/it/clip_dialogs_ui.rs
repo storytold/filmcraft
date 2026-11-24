@@ -307,9 +307,10 @@ fn subclip_in_the_source_monitor_and_project_menu() {
         // next's dock gives the Project panel a shorter body than the old dock did: the row sits
         // at the bottom of the list, under its horizontal scroll bar, so scroll it into view
         let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
-        let p: Vec<f64> = panel.as_array().and_then(|a| a.iter().find(|e| e["id"] == "panel.Project")).map_or_else(Vec::new, |e| {
-            e["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect()
-        });
+        let p: Vec<f64> = panel
+            .as_array()
+            .and_then(|a| a.iter().find(|e| e["id"] == "panel.Project"))
+            .map_or_else(Vec::new, |e| e["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect());
         assert_eq!(p.len(), 4, "the Project panel: {panel}");
         let mut last = None;
         for _ in 0..20 {
