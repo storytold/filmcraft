@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn command_params_are_nullable_objects() {
+    let tools = FilmcraftMcp::tool_router().list_all();
+    let schema = |name: &str| Value::Object((*tools.iter().find(|t| t.name == name).unwrap().input_schema).clone());
+    let run = schema("command_run");
+    let batch = schema("command_batch");
+    let step_ref = batch["properties"]["steps"]["items"]["$ref"].as_str().unwrap();
+    let step = batch.pointer(step_ref.strip_prefix('#').unwrap()).unwrap();
+    for command in [&run, step] {
+        assert_eq!(command["properties"]["params"]["type"], json!(["object", "null"]), "{command}");
+        assert!(!command["required"].as_array().unwrap().iter().any(|name| name == "params"));
+    }
+    for (tool, field) in [("ui_control", "params"), ("ui_click", "modifiers"), ("ui_drag", "modifiers")] {
+        assert_eq!(schema(tool)["properties"][field]["type"], json!(["object", "null"]));
+    }
+    for field in ["from", "to"] {
+        assert_eq!(schema("ui_drag")["properties"][field]["type"], "object");
+    }
+}
+
+#[test]
 fn render_scale_zero_means_no_limit() {
     assert_eq!(render_scale(0, 1920, 1080), 1.0);
     assert_eq!(render_scale(960, 1920, 1080), 0.5);

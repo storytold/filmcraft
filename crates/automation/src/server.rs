@@ -57,6 +57,7 @@ pub struct RunParams {
     pub id: String,
     /// Parameters object (see `params` in `command_list`).
     #[serde(default)]
+    #[schemars(extend("type" = ["object", "null"]))]
     pub params: Option<Value>,
 }
 
@@ -66,6 +67,7 @@ pub struct BatchStep {
     pub id: String,
     /// Parameters object.
     #[serde(default)]
+    #[schemars(extend("type" = ["object", "null"]))]
     pub params: Option<Value>,
 }
 
@@ -116,19 +118,23 @@ pub struct ClickParams {
     pub count: Option<u32>,
     /// {"shift":bool,"alt":bool,"command":bool,"ctrl":bool}
     #[serde(default)]
+    #[schemars(extend("type" = ["object", "null"]))]
     pub modifiers: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DragParams {
     /// Start: {"id":..} or {"x":..,"y":..} (optionally "fx"/"fy" fractions inside the element).
+    #[schemars(extend("type" = "object"))]
     pub from: Value,
     /// End point, same forms.
+    #[schemars(extend("type" = "object"))]
     pub to: Value,
     /// Movement steps (0–1024; defaults to 12; 0 or 1 uses 2). Larger values are rejected.
     #[serde(default)]
     pub steps: Option<u32>,
     #[serde(default)]
+    #[schemars(extend("type" = ["object", "null"]))]
     pub modifiers: Option<Value>,
 }
 
@@ -179,6 +185,7 @@ pub struct ControlParams {
     /// Any control-channel method (e.g. `ui.set`, `ui.scroll`, `ui.timeline.hit`, `ui.playback`).
     pub method: String,
     #[serde(default)]
+    #[schemars(extend("type" = ["object", "null"]))]
     pub params: Option<Value>,
 }
 
