@@ -608,12 +608,25 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     if resp.drag_started() {
         ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
     }
-    let escaped = resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx());
-    if resp.drag_stopped()
-        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
-        && escaped
-    {
+    // The runtime takes an Escape over a press in a dock group as that press's cancel, so egui keeps the drag going
+    // to the release: the slider remembers the Escape and holds the start size until then.
+    let escape_id = orig_id.with("escaped");
+    if resp.drag_started() {
+        ui.data_mut(|d| d.remove::<bool>(escape_id));
+    }
+    let in_drag = resp.dragged() || resp.drag_stopped();
+    if in_drag && (crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx())) {
+        ui.data_mut(|d| d.insert_temp(escape_id, true));
+    }
+    let escaped = in_drag && ui.data(|d| d.get_temp::<bool>(escape_id)).unwrap_or(false);
+    if escaped && let Some(before) = ui.data(|d| d.get_temp::<f32>(orig_id)) {
         sz = before;
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| {
+            d.remove::<f32>(orig_id);
+            d.remove::<bool>(escape_id);
+        });
     }
     if sz != v.icon_size {
         match v.inst {

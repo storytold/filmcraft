@@ -324,12 +324,6 @@ fn subclip_in_the_source_monitor_and_project_menu() {
         }
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
-        if !d.has("project.itemMenu.editSubclip") {
-            let item = d.ok("ui.elements", json!({"prefix": row.clone()}));
-            let ctx = d.harness.ctx.clone();
-            let click = ctx.viewport(|v| v.hits.click.as_ref().map(|w| format!("{:?} interact={:?}", w.id, w.interact_rect)));
-            eprintln!("DIAG subclip_in_the_source_monitor_and_project_menu: panel={panel} row={item} pointer={:?} click={click:?}", ctx.pointer_latest_pos());
-        }
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");
         assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.editSubclip"));
