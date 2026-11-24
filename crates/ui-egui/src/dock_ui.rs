@@ -285,7 +285,8 @@ impl FilmcraftApp {
 
     /// OS drag positions come from the host cursor hook, so egui pointer capture alone cannot
     /// decide whether a Timeline is covered: the Timeline body drawn last frame must hold `pos`,
-    /// with no other panel's body drawn above it there.
+    /// with no floating window above it there: neither another panel's body nor the window's
+    /// title bar and tab strip around it.
     pub(crate) fn timeline_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2) -> bool {
         if !ctx.content_rect().contains(pos) {
             return false;
@@ -294,12 +295,31 @@ impl FilmcraftApp {
         let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else { return false };
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
-        !bodies.iter().any(|(panel, rect, layer)| *panel != PanelKind::Timeline && layer != timeline && rank(layer) > rank(timeline) && rect.contains(pos))
+        // A body drawn this frame on a layer above the Timeline's: its floating window covers
+        // `pos` where the window's area does.
+        !bodies.iter().any(|(panel, rect, layer)| {
+            *panel != PanelKind::Timeline
+                && layer != timeline
+                && rank(layer) > rank(timeline)
+                && (rect.contains(pos) || ctx.memory(|memory| memory.areas().is_visible(layer) && memory.area_rect(layer.id).is_some_and(|area| area.contains(pos))))
+        })
+    }
+
+    /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other
+    /// egui `Modal` shown last frame, the Save Project prompt of Quit, Close Project or Open
+    /// Project, or a native file dialog. egui's `Modal` blocks input only in the main window, so
+    /// the panels in native windows are disabled meanwhile.
+    fn modal_open(&self, ctx: &egui::Context) -> bool {
+        matches!(self.dialog, Some(crate::Dialog::Preferences | crate::Dialog::Recovery | crate::Dialog::RevertConfirm))
+            || self.ui.clip_dialog.as_ref().is_some_and(|dialog| matches!(dialog.command.as_str(), "app.quit" | "file.closeProject" | "file.open"))
+            || self.native_dialog_open()
+            || ctx.memory(|memory| memory.top_modal_layer().is_some())
     }
 
     pub(crate) fn dock_area(&mut self, ui: &mut egui::Ui, body: Rect) {
         let t = self.tokens;
         let ctx = ui.ctx().clone();
+        let blocked = self.modal_open(&ctx);
         let seqs = SeqTabs {
             open: self
                 .session
@@ -355,6 +375,7 @@ impl FilmcraftApp {
             bodies: Vec::new(),
             menu_windows: Vec::new(),
             pressed: None,
+            blocked,
         };
         let mut area = DockArea::new("Panels", Bind::given(workspace), &specs, &mut panels, config);
         if let Some(panel) = maximized {
@@ -478,6 +499,18 @@ struct FilmPanels<'a> {
     menu_windows: Vec<egui::ViewportId>,
     /// The panel whose body a pointer press landed in this pass.
     pressed: Option<PanelKind>,
+    /// A modal dialog is open: the panels in native windows take no input.
+    blocked: bool,
+}
+
+impl FilmPanels<'_> {
+    /// While a modal is open, `ui` in a native window is disabled: egui's `Modal` blocks only the
+    /// main window.
+    fn block_native(&self, ui: &mut egui::Ui) {
+        if self.blocked && ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+            ui.disable();
+        }
+    }
 }
 
 impl DockPanels<PanelKind> for FilmPanels<'_> {
@@ -485,6 +518,14 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
         crate::framework::app_style(ui);
         let t = self.tokens;
         let rect = ui.max_rect();
+        // The dock area also measures a group in an invisible sizing pass of the same frame. The
+        // body fills its frame either way; only the shown pass draws the panel, registers its
+        // automation elements and acts on input.
+        if ui.is_sizing_pass() {
+            ui.allocate_rect(rect, Sense::hover());
+            return;
+        }
+        self.block_native(ui);
         self.bodies.push((*panel, rect, ui.layer_id()));
         // A panel in its own OS window draws in that window's coordinates: its automation
         // elements carry the window so they are not matched against main-window points.
@@ -528,6 +569,11 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
         let sequences = active == PanelKind::Timeline && !self.seqs.open.is_empty();
         let width = if sequences { (self.seq_width + MENU_W).min(ui.available_width() * 2.0 / 3.0).max(MENU_W) } else { MENU_W };
         let (header, _) = ui.allocate_exact_size(vec2(width, t.tab_h), Sense::hover());
+        // A sizing pass only measures the header: its widgets and their elements are the shown pass's.
+        if ui.is_sizing_pass() {
+            return;
+        }
+        self.block_native(ui);
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
         if sequences {
             let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));
