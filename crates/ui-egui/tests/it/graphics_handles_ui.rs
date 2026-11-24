@@ -938,7 +938,15 @@ fn pointer_press_before_a_commit_does_not_edit_the_old_layer() {
         },
         ime_commit("x"),
     ]);
-    d.frames(2);
+    for pass in 0..2 {
+        d.frames(1);
+        eprintln!(
+            "DIAG pointer_press_before_a_commit_does_not_edit_the_old_layer: after pass {pass} gfx_edit={:?} focused={:?} ime={:?}",
+            d.harness.state().ui.gfx_edit,
+            d.harness.ctx.memory(|m| m.focused()),
+            d.ime()
+        );
+    }
     assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_string(), "beta".to_string()]);
 }
 
@@ -1481,6 +1489,13 @@ fn ime_reset_pointer_and_escape_suffix_controls_cannot_edit_the_abandoned_target
             ime_commit("が"),
         ]);
         d.frames(1);
+        eprintln!(
+            "DIAG ime_reset_pointer_and_escape_suffix_controls_cannot_edit_the_abandoned_target: escape={escape} texts={:?} undo={:?} gfx_edit={:?} focused={:?}",
+            layer_texts(&mut d, clip),
+            d.harness.state().session.history.undo.iter().skip(undo).map(|(label, _, command)| (label.clone(), command.clone())).collect::<Vec<_>>(),
+            d.harness.state().ui.gfx_edit,
+            d.harness.ctx.memory(|m| m.focused())
+        );
         assert_eq!(layer_texts(&mut d, clip), vec!["alpha".to_owned()]);
         assert_eq!(d.harness.state().session.history.undo.len(), undo);
         if escape {

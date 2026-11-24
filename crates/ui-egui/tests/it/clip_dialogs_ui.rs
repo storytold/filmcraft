@@ -306,6 +306,13 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     if d.has(&row) {
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
+        if !d.has("project.itemMenu.editSubclip") {
+            let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
+            let item = d.ok("ui.elements", json!({"prefix": row.clone()}));
+            let menu = d.ok("ui.elements", json!({"prefix": "project.itemMenu"}));
+            let focused = d.harness.ctx.memory(|m| m.focused());
+            eprintln!("DIAG subclip_in_the_source_monitor_and_project_menu: panel={panel} row={item} menu={menu} focused={focused:?} status={:?}", d.app().ui.status);
+        }
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");
         assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.clone()).as_deref(), Some("clip.editSubclip"));
