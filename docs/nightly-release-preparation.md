@@ -1,30 +1,35 @@
 # Windows, Linux and macOS release-ref nightly: source preparation
 
-This is the FilmCraft port of the ArtCraft Nightly kit (PhotoCraft #16335, #16559, #16459). Everything
-here is registered but dormant: both callers carry a literal `false &&` guard, no schedule exists,
-`.github/nightly-signing-policy.json` is not committed, and nothing is signed or published.
+This is the FilmCraft port of the ArtCraft Nightly kit (PhotoCraft #16335, #16559, #16459), landed on
+top of the Linux packaging work (`storytold/filmcraft#5225`). The producer and signer are enabled for
+supervised manual dispatch only: there is no schedule, `.github/nightly-signing-policy.json` is
+installed with the five release managers as its only manual actors, and no run has signed or
+published anything yet.
 
 `packaging/nightly-tests.py` and `docs/nightly-signing-policy.example.json` are the source contract;
 `packaging/nightly-release-tests.py` enforces it (one shared pin, one producer, one signer, exact
 platform list, trust anchors, no cache/secrets in the callers' closure).
 
 
-**Not activated or qualified.** No production signing policy is installed. The producer and
-signer workflows are dormant `.yml` registrations, not an activated signing pipeline.
-All three jobs remain literally disabled. There is no
-schedule or platform secret grant. The unsigned reusable caller's maximum OIDC/attestation
+**Manually enabled, not qualified.** A run needs a release manager's dispatch: both callers keep
+their exact context guards, the policy grants no automatic signer, and there is no schedule or
+platform secret grant. Nothing has produced a qualified nightly, so the pipeline is still
+unproven end to end. The unsigned reusable caller's maximum OIDC/attestation
 permissions are for its isolated attester; its compiler narrows to contents and Actions read
 only, with no OIDC, attestation write, release environment or platform signing secrets.
-Shared tooling is pinned to `a4f6fd51e854773de8b24b4f92e1ad7e770c08d7`, the craft-common-actions
-main commit that merged [#342](https://github.com/storytold/craft-common-actions/pull/342): policy v3,
-the `platforms` input and the Linux and macOS legs, all switched off. Both callers name it in `uses`
-and `tooling-revision`; the earlier pin, `077d4657` (#330), is Windows-only. A pin is reviewed
-source availability, not provider, queue, native signing or crypto qualification.
+Shared tooling is pinned to `605d58766e8f536564da8fc81d3676ac86816dea`, the craft-common-actions
+main commit that merged [#339](https://github.com/storytold/craft-common-actions/pull/339) (bounded
+lineage compares and an issue reread at the end of candidate admission) on top of
+[#342](https://github.com/storytold/craft-common-actions/pull/342) (policy v3, the `platforms` input
+and the Linux and macOS legs). Both callers name it in `uses` and `tooling-revision`, and the
+installed policy names it as both tooling revisions; the earlier pin, `077d4657` (#330), is
+Windows-only. A pin is reviewed source availability, not provider, queue, native signing or crypto
+qualification.
 Existing stable workflows are unchanged.
 
-**Platform rows (dormant).** The producer caller lists
-`platforms: '["windows-x86_64","linux-x86_64","macos-aarch64"]'` on its single, still literally-off
-job: one producer run builds every listed platform for one all-or-nothing release (one failed or
+**Platform rows.** The producer caller lists
+`platforms: '["windows-x86_64","linux-x86_64","macos-aarch64"]'` on its single job: one producer run
+builds every listed platform for one all-or-nothing release (one failed or
 skipped platform stops that night's release, Windows included), and the release-ref signer admits
 platforms only from the protected policy, so there is no separate Linux or macOS caller job and
 the signer caller has no platform input. The shared Linux leg runs the app's
@@ -39,10 +44,11 @@ This is not a hosted no-key test, a native signing result or a working nightly f
 
 ## Ownership and interface
 
-- `.github/workflows/nightly.yml`: dormant default-main registration for the future unsigned producer,
-  named `FilmCraft unsigned nightly`; no signing secrets may be passed or inherited.
-- `.github/workflows/nightly-dispatch.yml`: dormant completion transport only. On activation it accepts
-  only a successful same-repository/main first scheduled producer attempt, then sends only
+- `.github/workflows/nightly.yml`: manual-dispatch producer on default main, named
+  `FilmCraft unsigned nightly`, restricted to the five release managers; no signing secrets may be
+  passed or inherited.
+- `.github/workflows/nightly-dispatch.yml`: completion transport. It accepts
+  only a successful same-repository/main first producer attempt, then sends only
   `producer_run_id` and `producer_run_attempt` to the fixed `nightly-sign.yml` on `release`.
   No checkout, artifact parsing, application code or release environment is used here.
   Its filters are not authorization: a writer can edit main transport.
@@ -50,8 +56,8 @@ This is not a hosted no-key test, a native signing result or a working nightly f
   `release-signing-key.asc` published with the newest stable FilmCraft release (one ed25519 primary key,
   `2B76741B414AAD6CD33E631213A005C0B9D7C3ED`, with one signing subkey). The shared Linux verifier
   reads it from the protected release checkout, never from a release asset. Public material only.
-- `.github/workflows/nightly-sign.yml`: dormant top-level registration, intended to be identical on
-  main/release after reviewed promotion. It rejects wrong repository/event/actual branch,
+- `.github/workflows/nightly-sign.yml`: manual-dispatch signer on `release`, intended to be identical
+  on main/release after reviewed promotion. It rejects wrong repository/event/actual branch,
   including same-name tags. Its constant whole-run concurrency is distinct from stable,
   cancellation is off and `queue: max` must be hosted-qualified. No credentials can be reached
   by this preparation.
@@ -144,10 +150,11 @@ were audited by this source change; no secret values were read.
 
 ## Bounded integration and acceptance
 
-1. The callers now reference the same reviewed public preview commit in `uses` and
-   `tooling-revision`. Keep callers/dispatcher literally off through independent qualification
-   and while assembling real policy. Future shared pin updates require review of the exact
-   public immutable source and interface. Do not claim dormant source as a working pipeline.
+1. The callers reference the same reviewed public preview commit in `uses` and
+   `tooling-revision`. Activation is manual dispatch by a release manager only: never add a
+   schedule, an automatic signer or another actor without its own review. Future shared pin
+   updates require review of the exact public immutable source and interface. Do not claim
+   untested source as a working pipeline.
    Do not temporarily call old same-run signing or use mutable `@main`/`@release` tooling.
    Keep compiler permissions contents and Actions read only, with no OIDC, attestation write,
    release environment or platform secrets. Only the isolated unsigned attester receives
@@ -230,11 +237,13 @@ It checks that the policy example's platforms equal the producer list, that each
 fixed artifact kind and stable identity, that `.github/nightly-linux-signing-key.asc` holds exactly
 one public primary key whose fingerprint is the policy's, and that both callers share one pin in
 `uses` and `tooling-revision`.
-The same suite covers all three callers for the no-cache/no-platform-secret boundary,
-requires every nightly job to stay explicitly off (a top-level OR cannot override false),
-and refuses any registered nightly schedule. It also rejects changed root serialization: the fixed FilmCraft nightly group, `queue: max`,
-and `cancel-in-progress: false` must remain literal. Mutation regressions reject invalid queue
-values, cancellation and request-dependent groups. Packaging lint runs this suite in its
+It also checks the installed policy against the callers (paths and tooling revisions, the
+release managers as the only manual actors in both places, platforms, candidate workflows and the
+Sonar identity). The same suite covers all three callers for the no-cache/no-platform-secret
+boundary, holds each enabled job to its exact context guard, and refuses any registered nightly
+schedule. It also rejects changed root serialization: the fixed FilmCraft nightly group and
+`cancel-in-progress: false` must remain literal, and a `queue` entry, when present, must be `max`.
+Mutation regressions reject invalid queue values, cancellation and request-dependent groups. Packaging lint runs this suite in its
 independent contents-read-only `nightly-source-contract` job, including config-only changes;
 it does not rely on the shared Bash packaging hook to run the guard.
 
@@ -243,6 +252,6 @@ unsupported-queue message for `.github/workflows/nightly-sign.yml`. This operato
 compatibility exception is not a blanket syntax waiver: other files/messages still fail,
 and the mandatory source guard supplies the missing queue-value/serialization checks.
 No tool fork or shared lint change is needed. This same-PR nonprivileged CI hook is the
-narrow correction requested for the dormant source; stable/release execution is unchanged.
+narrow correction requested for the nightly source; stable/release execution is unchanged.
 Run through the normal task allocator; report actionlint/PowerShell/native/hosted checks
 separately and never treat a missing runtime as a pass.

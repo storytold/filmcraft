@@ -202,11 +202,12 @@ warning, never a failed build.
 ## Release-ref nightly preparation
 
 The Windows, Linux and macOS source preparation is documented in
-[`nightly-release-preparation.md`](nightly-release-preparation.md). It is not an activated
-signing or publication pipeline: `nightly.yml`, `nightly-sign.yml` and `nightly-dispatch.yml`
-carry a literal `false &&` guard, there is no schedule and no
-`.github/nightly-signing-policy.json`. Stable `release.yml`, its schedule, tags, concurrency,
-environment values and rules are unchanged.
+[`nightly-release-preparation.md`](nightly-release-preparation.md). It is not a qualified
+signing or publication pipeline yet: `nightly.yml` and `nightly-sign.yml` are manual-dispatch only,
+restricted to the five release managers by the installed `.github/nightly-signing-policy.json`,
+with no schedule and no automatic signer; `nightly-dispatch.yml` only transports a completed
+producer run. Stable `release.yml`, its schedule, tags, concurrency, environment values and rules
+are unchanged.
 
 `nightly-build.yml` is the secret-free hosted check (Windows and Linux always, macOS only behind
 the `full-ci` label). The real Nightly is built by the shared producer and signed on `release` by
