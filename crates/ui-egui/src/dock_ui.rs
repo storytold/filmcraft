@@ -285,7 +285,8 @@ impl FilmcraftApp {
 
     /// OS drag positions come from the host cursor hook, so egui pointer capture alone cannot
     /// decide whether a Timeline is covered: the Timeline body drawn last frame must hold `pos`,
-    /// with no other panel's body drawn above it there.
+    /// with no floating window above it there: neither another panel's body nor the window's
+    /// title bar and tab strip around it.
     pub(crate) fn timeline_drop_target(&self, ctx: &egui::Context, pos: egui::Pos2) -> bool {
         if !ctx.content_rect().contains(pos) {
             return false;
@@ -294,7 +295,14 @@ impl FilmcraftApp {
         let Some((_, _, timeline)) = bodies.iter().find(|(panel, rect, _)| *panel == PanelKind::Timeline && rect.contains(pos)) else { return false };
         let layers = ctx.memory(|memory| memory.layer_ids().collect::<Vec<_>>());
         let rank = |layer: &egui::LayerId| layers.iter().position(|other| other == layer);
-        !bodies.iter().any(|(panel, rect, layer)| *panel != PanelKind::Timeline && layer != timeline && rank(layer) > rank(timeline) && rect.contains(pos))
+        // A body drawn this frame on a layer above the Timeline's: its floating window covers
+        // `pos` where the window's area does.
+        !bodies.iter().any(|(panel, rect, layer)| {
+            *panel != PanelKind::Timeline
+                && layer != timeline
+                && rank(layer) > rank(timeline)
+                && (rect.contains(pos) || ctx.memory(|memory| memory.areas().is_visible(layer) && memory.area_rect(layer.id).is_some_and(|area| area.contains(pos))))
+        })
     }
 
     /// Whether a modal dialog is open: Settings, Recovery or Revert (egui `Modal`s), any other

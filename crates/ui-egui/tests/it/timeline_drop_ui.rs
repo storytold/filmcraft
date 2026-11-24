@@ -281,6 +281,12 @@ fn floating_timeline_accepts_once_and_another_float_can_occlude_it() {
     drop_at(&mut h, at, &still("drop_floating_timeline.png"));
     assert_eq!(clip_counts(&h), (1, 0));
     float_panel(&mut h, "Info", [at.x - 20.0, at.y - 60.0, 320.0, 200.0]);
+    eprintln!(
+        "DIAG floating_timeline_accepts_once_and_another_float_can_occlude_it: at={at:?} info={:?} timeline={:?} layers={:?}",
+        control_rect(&h, "panel.Info"),
+        control_rect(&h, "panel.Timeline"),
+        h.ctx.memory(|memory| memory.layer_ids().filter(|layer| layer.order == egui::Order::Middle).collect::<Vec<_>>())
+    );
     assert!(!hover_at(&mut h, at));
     drop_at(&mut h, at, &still("drop_occluded_floating_timeline.png"));
     assert_eq!(clip_counts(&h), (1, 0));
@@ -290,8 +296,9 @@ fn floating_timeline_accepts_once_and_another_float_can_occlude_it() {
 fn offscreen_float_uses_rendered_clamp_and_maximized_timeline_ignores_hidden_floats() {
     let mut h = harness();
     let at = point_on_row(&h, "timeline.track.V1.target");
-    // The very wide offscreen float is clamped back to x=0, over this row.
-    float_panel(&mut h, "Info", [-5000.0, at.y - 60.0, 1500.0, 200.0]);
+    // The very wide offscreen float is clamped back to x=0, its body over this row: the window's
+    // title bar and tab strip take about 65 pt above the body.
+    float_panel(&mut h, "Info", [-5000.0, at.y - 100.0, 1500.0, 200.0]);
     let visible = control_rect(&h, "panel.Info");
     assert!(visible.contains(at), "rendered={visible:?}, drop={at:?}, floats={:?}", h.state().ui.dock.floating);
     assert!(!hover_at(&mut h, at));
