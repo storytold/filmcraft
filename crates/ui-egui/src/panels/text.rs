@@ -296,7 +296,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // the list follows the playhead: each caption it reaches is brought to the middle
                 // once, but never while a field is being edited
                 let follow = egui::Id::unique("caption-follow");
-                if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && ui.memory(|m| m.focused().is_none()) {
+                if ui.data(|d| d.get_temp::<u64>(follow)) != Some(c.id.0) && !crate::framework::field_focused(ui.ctx(), None) {
                     ui.scroll_to_rect(row, Some(egui::Align::Center));
                     ui.data_mut(|d| d.insert_temp(follow, c.id.0));
                 }

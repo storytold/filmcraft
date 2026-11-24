@@ -385,7 +385,19 @@ fn text_committed_by_an_input_method_is_typed_on_the_monitor() {
     d.frames(3);
     let pic = d.rect("program.picture");
     d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    let ctx = d.harness.ctx.clone();
+    eprintln!(
+        "DIAG text_committed_by_an_input_method_is_typed_on_the_monitor: after click gfx_edit={} focused={:?} runtime_stop={:?}",
+        d.harness.state().ui.gfx_edit.is_some(),
+        ctx.memory(|m| m.focused()),
+        craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| rec.stop.id)
+    );
     d.ok("ui.type", json!({"text": "A"}));
+    eprintln!(
+        "DIAG text_committed_by_an_input_method_is_typed_on_the_monitor: after typing text={} focused={:?}",
+        d.exec("graphics.list", json!({}))["layers"][0]["text"],
+        ctx.memory(|m| m.focused())
+    );
     // the events Microsoft Pinyin sends for "ni hao" picked as 你好
     let preedit = |text: &str| egui::Event::Ime(egui::ImeEvent::Preedit { text: text.into(), active_range_chars: None });
     d.harness.input_mut().events.extend([preedit("ni hao"), preedit(""), egui::Event::Ime(egui::ImeEvent::Commit("你好".into()))]);

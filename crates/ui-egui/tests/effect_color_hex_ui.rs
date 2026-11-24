@@ -122,6 +122,15 @@ fn the_hex_field_takes_typing_a_character_at_a_time() {
     let before = d.rgb(clip, "ultra_key", "key_color");
     let alpha = d.color(clip, "ultra_key", "key_color")[3];
     d.click("effectControls.ultra_key.key_color.hex");
+    let ctx = d.harness.ctx.clone();
+    eprintln!(
+        "DIAG the_hex_field_takes_typing_a_character_at_a_time: after click focused={:?} runtime_stop={:?} field={:?} panel={:?} status={:?}",
+        ctx.memory(|m| m.focused()),
+        craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| rec.stop.id),
+        d.find("effectControls.ultra_key.key_color.hex"),
+        d.find("panel.EffectControls"),
+        d.harness.state().ui.status
+    );
     d.ok("ui.key", json!({"key": "Cmd+A"}));
 
     // Not a colour yet: the field keeps what was typed and the parameter stays put.

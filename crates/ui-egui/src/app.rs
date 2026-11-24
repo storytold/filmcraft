@@ -1,9 +1,6 @@
 use super::audio::{AUDIO_RETRY_S, AUDIO_STALL_S};
 use super::gpu::{gpu_compositor_unsupported, plan_side};
 use super::hooks::HostHooks;
-use super::raw_input::drop_native_input;
-#[cfg(target_os = "macos")]
-use super::raw_input::synthesize_mac_ctrl_click;
 use super::*;
 
 mod commands;
@@ -85,8 +82,6 @@ impl FilmcraftApp {
             ui_clock_offset: None,
             #[cfg(test)]
             test_now: None,
-            mac_ctrl_click_armed: false,
-            native_ctrl_click_armed: Arc::default(),
             value_press: None,
             escape_cancel: false,
             loudness: None,
@@ -436,20 +431,15 @@ impl FilmcraftApp {
 }
 
 impl eframe::App for FilmcraftApp {
-    /// Snapshot this callback's fresh surface geometry, optionally synthesize macOS ctrl-click
-    /// and agent input, and offer at most one queued synthetic step. A step already preserved by
+    /// Snapshot this callback's fresh surface geometry, optionally drop the window system's
+    /// input (`--control-input-only`), synthesize agent input, and offer at most one queued synthetic step. A step already preserved by
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         crate::framework::before_input(ctx, self);
         self.native_window_focused = Some(raw_input.focused);
         capture::note_raw_geometry(self, ctx, raw_input);
-        #[cfg(target_os = "macos")]
-        if !self.control_input_only {
-            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
-        }
-        if self.control_input_only {
-            drop_native_input(raw_input);
-        }
+        // (the runtime makes a macOS Control+Click a secondary click in every viewport)
+        rewrite_native_window_input(self.control_input_only, raw_input);
         if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             // Native modifiers cannot replace those requested by a control gesture. A queued
             // reset runs in the frame after release, so clicked() still sees Shift/Alt.
@@ -530,7 +520,7 @@ impl eframe::App for FilmcraftApp {
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
-        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        let another_field = crate::framework::field_focused(&ctx, Some(egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
         if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
             self.suspended_ime_controls(&ctx);
         }

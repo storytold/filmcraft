@@ -450,7 +450,7 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     fr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "Text layer"));
     // while another field has the keyboard (a value typed in Properties) the keys are its own;
     // the text takes the keyboard back once nothing has it (#683)
-    if ui.memory(|m| m.focused().is_some_and(|f| f != eid)) {
+    if crate::framework::field_focused(ui.ctx(), Some(eid)) {
         ime_off(app, ui);
         return;
     }

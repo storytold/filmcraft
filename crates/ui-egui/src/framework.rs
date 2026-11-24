@@ -90,14 +90,16 @@ pub fn host_canvas(ctx: &Context, id: Id) {
 }
 
 /// Whether Escape was pressed in this pass: in egui's input while one of the app's widgets has focus, else as the
-/// window's cancel that no framework component took. Reads without taking.
+/// window's cancel that no framework component took. Reads without taking, so every reader of the pass sees it:
+/// `Intents::take` inside the offer would also take the Escape lent from the focused stop, even when the offer
+/// returns `false`, and the next reader would miss it.
 pub fn escape_pressed(ctx: &Context) -> bool {
     if ctx.input(|input| input.key_pressed(Key::Escape)) {
         return true;
     }
     let mut cancel = false;
     with_window_intents(ctx, false, |intents| {
-        cancel = intents.take(Intent::Cancel);
+        cancel = intents.untaken(&Intent::Cancel);
         false
     });
     cancel
@@ -121,6 +123,17 @@ pub fn keyboard_taken(ctx: &Context) -> bool {
     match craft_ui::runtime::focus::focused_rec(ctx) {
         Some(rec) => craft_ui::runtime::focus::takes_letters(&rec.stop.keys),
         None => true,
+    }
+}
+
+/// Whether a field other than `except` has the keyboard: [`keyboard_taken`], where the app's checks that "a field is
+/// being edited" read egui's focus. The runtime keeps egui's focus on its own stops (a dock tab, the canvas a click
+/// reached) where the app had none before, and those are no field.
+pub fn field_focused(ctx: &Context, except: Option<Id>) -> bool {
+    match ctx.memory(|memory| memory.focused()) {
+        None => false,
+        Some(id) if Some(id) == except => false,
+        Some(_) => keyboard_taken(ctx),
     }
 }
 

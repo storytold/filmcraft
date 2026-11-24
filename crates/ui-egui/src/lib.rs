@@ -78,7 +78,7 @@ pub mod widgets;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use egui::ime_context::ImeTarget;
 use egui::{TextureHandle, TextureOptions};
@@ -308,15 +308,6 @@ pub struct FilmcraftApp {
     ui_clock_offset: Option<f64>,
     #[cfg(test)]
     test_now: Option<f64>,
-    /// macOS: a Control+Click already translated to a secondary (context) click, so its release is
-    /// translated too even if Control is let go mid-click. AppKit delivers Control+Click to the
-    /// view as a *primary* press with the Control modifier (`rightMouseDown:` only fires for a
-    /// right button or two-finger click), so the app does the platform's translation itself.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    mac_ctrl_click_armed: bool,
-    /// [`Self::mac_ctrl_click_armed`] for each dock panel's own OS window, shared with the dock
-    /// area's input hook.
-    pub(crate) native_ctrl_click_armed: Arc<Mutex<HashMap<egui::ViewportId, bool>>>,
     /// The mouse press in progress (its start time) and the undo history when it began, for Escape
     /// to take back what the press changed (#580).
     value_press: Option<(f64, filmcraft_engine::UndoMark)>,

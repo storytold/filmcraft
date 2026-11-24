@@ -517,6 +517,28 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
         };
         assert!(!on(&mut d), "{id} starts off");
         click(&mut d);
+        if !on(&mut d) {
+            let b = d.rect(&format!("graphics.prop.{id}"));
+            let ctx = d.harness.ctx.clone();
+            let (px, py) = (b[0] + 4.0, b[1] + b[3] / 2.0);
+            let all = d.call("ui.elements", json!({}));
+            let hit: Vec<String> = all["result"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| {
+                    let r: Vec<f64> = e["rect"].as_array().into_iter().flatten().filter_map(|x| x.as_f64()).collect();
+                    r.len() == 4 && px >= r[0] && px <= r[0] + r[2] && py >= r[1] && py <= r[1] + r[3]
+                })
+                .map(|e| e["id"].to_string())
+                .collect();
+            eprintln!(
+                "DIAG style_buttons_toggle_the_layer_without_a_selection: {id} rect={b:?} status={:?} focused={:?} gfx_edit={} at_point={hit:?}",
+                d.harness.state().ui.status,
+                ctx.memory(|m| m.focused()),
+                d.harness.state().ui.gfx_edit.is_some()
+            );
+        }
         assert!(on(&mut d), "first click turns {id} on");
         click(&mut d);
         assert!(!on(&mut d), "second click turns {id} off");

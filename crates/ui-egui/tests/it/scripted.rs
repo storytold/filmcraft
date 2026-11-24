@@ -383,8 +383,17 @@ fn trim_monitor_buttons_and_dynamic_jkl_trimming() {
     d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
     d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
     assert_eq!(first_cut(&mut d).1, cut + fd);
+    {
+        let ctx = d.harness.ctx.clone();
+        eprintln!(
+            "DIAG trim_monitor_buttons_and_dynamic_jkl_trimming: before Space focused={:?} runtime_stop={:?}",
+            ctx.memory(|m| m.focused()),
+            craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| (rec.stop.id, rec.stop.keys.activate))
+        );
+    }
     d.ok("ui.key", json!({"key": "Space"}));
     d.frames(2);
+    eprintln!("DIAG trim_monitor_buttons_and_dynamic_jkl_trimming: after Space trim.monitor={}", d.exec("trim.monitor", json!({})));
     assert!(d.exec("trim.monitor", json!({}))["playAround"].is_object());
     d.ok("ui.key", json!({"key": "Space"}));
     d.frames(1);
