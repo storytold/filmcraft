@@ -117,8 +117,6 @@ impl Driver {
         let chrome = width - body(self);
         assert!(self.harness.state_mut().ui.dock.root.as_mut().is_some_and(|root| set(root, width + chrome)));
         self.frames(3);
-        let shown = body(self);
-        eprintln!("DIAG a_narrow_meter_panel_drops_the_readout_and_then_the_scale: asked {width}, chrome {chrome}, body {shown}");
     }
     /// The level the left bar shows, in dB.
     fn left_db(&mut self) -> f32 {
