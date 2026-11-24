@@ -262,6 +262,9 @@ pub struct FilmcraftApp {
     pub(crate) dock_windows: Vec<(PanelKind, egui::ViewportId)>,
     /// Where the dock area floated panels last pass, for docking commands run outside it.
     pub(crate) dock_float_space: Option<craft_ui::docking::FloatSpace<PanelKind>>,
+    /// The panel the app brought forward since the last dock pass (the last applied Activate): the
+    /// next pass asks the dock area to focus it once, which raises its floating window.
+    pub(crate) dock_focus: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
     pub(crate) control_input_only: bool,
     /// Set while a control-channel `engine.execute` runs: a command whose menu form opens a

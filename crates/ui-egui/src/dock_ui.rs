@@ -291,9 +291,12 @@ impl FilmcraftApp {
         if dock.is_visible(PanelKind::Program) || tab_group(dock, PanelKind::Program).is_none_or(|group| group.contains(&PanelKind::Timeline)) {
             return;
         }
+        // Program's tab comes to the front without taking the focus from the Timeline.
+        let focus = self.dock_focus;
         if let Err(error) = self.apply_dock(Action::activate(PanelKind::Program)) {
             log::warn!("could not bring the Program monitor to the front: {error}");
         }
+        self.dock_focus = focus;
     }
 
     fn apply_dock_all(&mut self, actions: Vec<Action<PanelKind>>) -> Result<(), String> {
@@ -315,6 +318,16 @@ impl FilmcraftApp {
         }
         self.ui.dock = layout;
         self.ui.closed_floating = closed_floating;
+        // As in production, an applied Activate brings its panel forward: for a panel in a
+        // floating window the next dock pass focuses it once, which raises that window. A docked
+        // panel's tab is already in front, and key focus stays where it was.
+        if let Some(panel) = actions.iter().rev().find_map(|action| match action {
+            Action::Activate { panel } => Some(*panel),
+            _ => None,
+        }) && self.ui.dock.floating.iter().any(|window| window.contains(&panel))
+        {
+            self.dock_focus = Some(panel);
+        }
         // The live workspace takes the same actions, so its floating windows keep their ids.
         let _ = Arc::make_mut(&mut self.dock_live).apply_all(actions, false, |_| Permissions::ALL);
         self.sync_live();
@@ -430,6 +443,8 @@ impl FilmcraftApp {
             .wheel_selects_tabs(true);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("filmcraft-dock-area"));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
+        // One request per bring-forward: a later pass does not take the stacking back.
+        let focus = self.dock_focus.take();
         let mut panels = FilmPanels {
             app: self,
             seqs,
@@ -446,6 +461,9 @@ impl FilmcraftApp {
         let mut area = DockArea::new("Panels", Bind::given(workspace), &specs, &mut panels, config);
         if let Some(panel) = maximized {
             area = area.maximized(panel);
+        }
+        if let Some(panel) = focus {
+            area = area.focus(panel);
         }
         let output = area.show(&mut child);
         let FilmPanels { seq_actions, mut menu, seq_menu_viewport, bodies, pressed, .. } = panels;
@@ -480,11 +498,19 @@ impl FilmcraftApp {
                 _ => {}
             }
         }
-        for action in output.actions.into_iter().chain(output.requested) {
+        // The area's actions include the picks its focus request and the user's tab clicks made,
+        // already in front: they ask for no new focus, or the request would repeat every pass.
+        // A body's requests are the app's own and do.
+        let focus = self.dock_focus;
+        let taken = output.actions.len();
+        for (index, action) in output.actions.into_iter().chain(output.requested).enumerate() {
             for action in self.close_keeping_timeline(action) {
                 if let Err(error) = self.dock_command(&ctx, action) {
                     self.ui.status = error;
                 }
+            }
+            if index + 1 == taken {
+                self.dock_focus = focus;
             }
         }
         for action in seq_actions {
