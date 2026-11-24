@@ -182,12 +182,10 @@ pub struct WorkspacePrefs {
     pub last: Option<SavedWorkspace>,
 }
 
-/// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable
-/// entry (a panel a newer version added) doesn't lose the others. Files written before
-/// FilmCraft used craft-ui workspaces hold a frame tree in `layout` and floating groups in
-/// `floating` instead; [`saved_workspace`] reads them. [`SavedWorkspace::new`] writes
-/// `workspace`, and also `layout` and `floating` while every floating window is one tab
-/// group, so that earlier versions still open the workspace.
+/// A named workspace. Each representation stays as JSON so one unreadable entry does not
+/// lose the rest of the preferences. `workspace` is readable by the previous release, with
+/// the complete new layout in a nested `filmcraftV4` field the previous preferences writer
+/// carries through untouched entries. Older releases still read `layout` and `floating`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SavedWorkspace {
@@ -202,23 +200,25 @@ pub struct SavedWorkspace {
 
 impl SavedWorkspace {
     pub fn new(name: &str, layout: &Layout) -> Result<Self, String> {
-        let workspace = Workspace::new(layout.clone());
-        workspace.validate().map_err(|e| e.to_string())?;
-        let workspace = serde_json::to_value(&workspace).map_err(|e| e.to_string())?;
+        let current = Workspace::new(layout.clone());
+        current.validate().map_err(|e| e.to_string())?;
+        let full = serde_json::to_value(&current).map_err(|e| e.to_string())?;
+        let workspace = workspace_compat::write(layout, full);
         let (layout, floating) = legacy::write(layout).unwrap_or_default();
         Ok(SavedWorkspace { name: name.to_string(), workspace, layout, floating })
     }
 }
 
 impl WorkspacePrefs {
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
     pub fn load(path: &std::path::Path) -> Self {
         use std::io::Read as _;
         // Preferences are untrusted; bound reading before JSON can allocate from it.
-        const MAX_BYTES: u64 = 4 * 1024 * 1024;
         let Some(bytes) = std::fs::File::open(path).ok().and_then(|file| {
             let mut bytes = Vec::new();
-            file.take(MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
-            (bytes.len() as u64 <= MAX_BYTES).then_some(bytes)
+            file.take(Self::MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
+            (bytes.len() as u64 <= Self::MAX_BYTES).then_some(bytes)
         }) else {
             return Self::default();
         };
@@ -228,8 +228,14 @@ impl WorkspacePrefs {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
         }
+        let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        // Compatibility copies make the file bigger. Do not replace a readable file
+        // with one we would reject at the next launch.
+        if bytes.len() as u64 > Self::MAX_BYTES {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "workspace preferences exceed the size limit"));
+        }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        std::fs::write(&tmp, bytes)?;
         std::fs::rename(tmp, path)
     }
 }
@@ -272,8 +278,10 @@ pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
 pub fn read_saved(saved: &SavedWorkspace) -> Option<Workspace> {
     let workspace = if saved.workspace.is_null() {
         Workspace::new(legacy::layout(&saved.layout, &saved.floating)?)
+    } else if let Some(full) = saved.workspace.get("filmcraftV4") {
+        serde_json::from_value::<Workspace>(full.clone()).ok()?
     } else {
-        serde_json::from_value::<Workspace>(saved.workspace.clone()).ok()?
+        workspace_compat::read(saved.workspace.clone())?
     };
     workspace.validate().ok()?;
     Some(workspace)
@@ -282,6 +290,141 @@ pub fn read_saved(saved: &SavedWorkspace) -> Option<Workspace> {
 /// The saved layout of a workspace (see [`saved_workspace`]).
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
     saved_workspace(prefs, name).layout().clone()
+}
+
+/// Wire differences with the craft-ui v2 workspace used by the previous desktop app.
+mod workspace_compat {
+    use super::{Layout, Workspace, array_of};
+    use serde::Deserialize;
+    use serde_json::{Value, json};
+
+    /// Make the old root readable: old splits use the original axis names, and the old dock expects
+    /// a concrete width. The old and new tab/stack fields agree.
+    fn old_root(node: &mut Value) {
+        if let Some(split) = node.get_mut("Split") {
+            if let Some(axis) = split.get_mut("axis") {
+                match axis.as_str() {
+                    Some("X") => *axis = json!("Horizontal"),
+                    Some("Y") => *axis = json!("Vertical"),
+                    _ => {}
+                }
+            }
+            old_root(&mut split["first"]);
+            old_root(&mut split["second"]);
+        } else if let Some(columns) = node.get_mut("Dock").and_then(|dock| dock.get_mut("columns")).and_then(Value::as_array_mut) {
+            for column in columns {
+                if column["width"].is_null() {
+                    // craft-ui 33be3562 DEFAULT_COLUMN_WIDTH, used for a new dock.
+                    column["width"] = json!(240.0);
+                }
+            }
+        }
+    }
+
+    pub(super) fn write(layout: &Layout, current: Value) -> Value {
+        let mut root = current["layout"]["root"].clone();
+        old_root(&mut root);
+        let floating: Vec<_> = layout
+            .floating
+            .iter()
+            .map(|window| {
+                // The previous reader already accepts groups and reconstructs its own vertical
+                // tree. It has no floating column rail, per-group minimized state or edge hint.
+                let mut old = json!({"id": window.id, "groups": window.groups(), "rect": array_of(window.rect),
+                "minimized": window.column.iconic});
+                if let Some(p) = window.native.as_ref() {
+                    if let Some([x, y]) = p.position() {
+                        let [w, h] = p.normal.size;
+                        old["native"] = json!([x, y, w, h]);
+                    }
+                    // The new monitor key has its dimensions and name but no desktop origin.
+                    // Give the previous reader the size fallback, not a fabricated monitor rect.
+                    if let Some(monitor) = p.monitor.as_ref() {
+                        old["monitor_size"] = json!(monitor.size_px.map(|v| v as f32 / p.scale));
+                    }
+                }
+                old
+            })
+            .collect();
+        json!({"version": 2, "layout": {"root": root, "floating": floating}, "hidden": [], "filmcraftV4": current})
+    }
+
+    #[derive(Deserialize)]
+    struct OldMonitor {
+        name: Option<String>,
+        rect: [f32; 4],
+        scale: f32,
+    }
+
+    /// Carry over the logical content size, and use the old location as a desktop placement
+    /// hint where a saved monitor tells us its scale. Old files do not store a native frame
+    /// offset or a scale when only `monitor_size` was available.
+    fn old_native(window: &Value) -> Option<Value> {
+        let [x, y, w, h]: [f32; 4] = serde_json::from_value(window.get("native")?.clone()).ok()?;
+        if ![x, y, w, h].iter().all(|v| v.is_finite()) || !(w > 0.0 && h > 0.0) {
+            return None;
+        }
+        let monitor: Option<OldMonitor> = serde_json::from_value(window["monitor"].clone()).ok();
+        let monitor = monitor.filter(|m| m.scale.is_finite() && m.scale > 0.0 && m.scale <= 16.0);
+        let position = monitor.as_ref().and_then(|m| {
+            // Bound before conversion, including hostile values near the signed pixel limit.
+            let [px, py] = [x, y].map(|v| f64::from(v) * f64::from(m.scale));
+            let fits = |v: f64| (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v);
+            (fits(px) && fits(py)).then(|| [px.round() as i32, py.round() as i32])
+        });
+        let key = monitor.as_ref().and_then(|m| {
+            let [_, _, width, height] = m.rect;
+            let size = [width, height].map(|v| f64::from(v) * f64::from(m.scale));
+            let name = m.name.as_ref()?;
+            size.iter().all(|v| (1.0..=f64::from(u32::MAX)).contains(v)).then(|| json!({"name": name, "size_px": size.map(|v| v.round() as u32)}))
+        });
+        Some(json!({"normal": {"pos": position.map_or([0.0, 0.0], |_| [x, y]), "size": [w, h]},
+            "position_px": position, "scale": monitor.as_ref().map_or(1.0, |m| m.scale), "monitor": key}))
+    }
+
+    // A fixed vertical split between two tab groups has a directly representable
+    // preferred height on its fixed child. Ratios (and nested split subtrees) have
+    // no equivalent to the old divider proportions in next's one-column model.
+    fn fixed_groups(root: &Value, minimized: bool) -> Option<Value> {
+        let split = root.get("Split")?;
+        if !matches!(split["axis"].as_str(), Some("Vertical" | "vertical")) {
+            return None;
+        }
+        let first = split["size"].get("FixedFirst");
+        let second = split["size"].get("FixedSecond");
+        if first.is_none() && second.is_none() {
+            return None;
+        }
+        let group = |child: &str, height: Option<&Value>| {
+            let tab = split[child].get("Tabs")?;
+            Some(json!({"panels": tab["panels"], "active": tab["active"], "height": height, "minimized": minimized}))
+        };
+        Some(json!([group("first", first)?, group("second", second)?]))
+    }
+
+    pub(super) fn read(mut old: Value) -> Option<Workspace> {
+        if let Some(windows) = old.get_mut("layout").and_then(|layout| layout.get_mut("floating")).and_then(Value::as_array_mut) {
+            for window in windows {
+                if window["groups"].is_null()
+                    && window["panels"].is_null()
+                    && let Some(groups) = fixed_groups(&window["root"], window["minimized"].as_bool().unwrap_or_default())
+                    && let Some(window) = window.as_object_mut()
+                {
+                    window.remove("root");
+                    window.insert("groups".into(), groups);
+                }
+                if let Some(native) = old_native(window) {
+                    // A side-by-side tree opens as several windows. Let the runtime place
+                    // those from their individual layout rects rather than overlapping them
+                    // all at an identical native position.
+                    if !matches!(window["root"]["Split"]["axis"].as_str(), Some("Horizontal" | "horizontal" | "X")) {
+                        window["native"] = native;
+                    }
+                }
+            }
+        }
+        serde_json::from_value(old).ok()
+    }
 }
 
 /// The frame tree and floating groups FilmCraft wrote before its workspaces were craft-ui
@@ -959,6 +1102,141 @@ mod tests {
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
         assert_eq!(saved_docking(&back, "Mine"), mine);
+    }
+
+    /// Rollback to the previous production app, not just to the pre-craft-ui reader. Mirror
+    /// its v2 version check and persisted types from craft-libs 33be3562 for the exercised
+    /// split, dock, floating group, and native placement fields.
+    #[test]
+    fn workspace_save_opens_in_the_previous_production_app_and_back() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        enum OldAxis {
+            Horizontal,
+            Vertical,
+        }
+        #[derive(Serialize, Deserialize)]
+        enum OldRoot {
+            Split { axis: OldAxis, size: SplitSize, first: Box<OldRoot>, second: Box<OldRoot> },
+            Tabs { panels: Vec<PanelKind>, active: usize },
+            Dock { side: String, columns: Vec<OldColumn> },
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldColumn {
+            width: f32,
+            groups: Vec<OldGroup>,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldGroup {
+            panels: Vec<PanelKind>,
+            active: usize,
+            minimized: bool,
+            height: Option<f32>,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldFloating {
+            id: u64,
+            rect: [f32; 4],
+            native: Option<[f32; 4]>,
+            monitor_size: Option<[f32; 2]>,
+            groups: Vec<OldGroup>,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldLayout {
+            root: OldRoot,
+            floating: Vec<OldFloating>,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldWorkspace {
+            version: u32,
+            layout: OldLayout,
+        }
+        #[derive(Serialize, Deserialize)]
+        struct OldEntry {
+            name: String,
+            workspace: OldWorkspace,
+        }
+
+        let exact_v2 = serde_json::json!({
+            "name": "Mine",
+            "workspace": {"version": 2,
+                "layout": {"root": {"Split": {
+                    "axis": "Horizontal", "size": {"Ratio": 0.7},
+                    "first": {"Tabs": {"panels": ["Timeline"], "active": 0}},
+                    "second": {"Dock": {"side": "End", "columns": [{"width": 240.0,
+                        "groups": [{"panels": ["Source"], "active": 0, "minimized": false, "height": null}]}]}}
+                }}, "floating": [{"id": 42, "rect": [10.0, 20.0, 300.0, 400.0],
+                    "root": {"Split": {"axis": "Vertical", "size": {"FixedFirst": 150.0},
+                        "first": {"Tabs": {"panels": ["Info", "Effects"], "active": 1}},
+                        "second": {"Tabs": {"panels": ["Markers"], "active": 0}}}},
+                    "native": [-1100.0, 200.0, 300.0, 400.0],
+                    "monitor": {"name": "Left", "rect": [-1280.0, 0.0, 1280.0, 800.0], "scale": 2.0}
+                }]},
+                "hidden": [], "saved": null, "locked": false}
+        });
+        let from_old = read_saved(&serde_json::from_value(exact_v2).unwrap()).unwrap();
+        let layout = from_old.layout();
+        assert_eq!(layout.floating[0].groups()[0].height, Some(150.0));
+        assert_eq!(layout.floating[0].groups()[1].height, None);
+        let native = layout.floating[0].native.as_ref().unwrap();
+        assert_eq!(native.position_px, Some([-2200, 400]));
+        assert_eq!(native.normal.size, [300.0, 400.0]);
+        let monitor = native.monitor.as_ref().unwrap();
+        assert_eq!(monitor.name, "Left");
+        assert_eq!(monitor.size_px, [2560, 1600]);
+
+        let mut layout = layout.clone();
+        let Some(Node::Split { second, .. }) = layout.root.as_mut() else { panic!("expected the docked split") };
+        let Node::Dock { columns, .. } = &mut **second else { panic!("expected the dock column") };
+        columns[0].width = None;
+        layout.floating[0].column.iconic = true;
+        layout.floating[0].column.iconic_width = Some(58.0);
+        let entry = SavedWorkspace::new("Mine", &layout).unwrap();
+        let as_json = serde_json::to_value(&entry).unwrap();
+        let mut old: OldEntry = serde_json::from_value(as_json.clone()).unwrap();
+        assert_eq!(old.workspace.version, 2);
+        let OldRoot::Split { axis, second, .. } = &old.workspace.layout.root else { panic!("expected the docked split") };
+        assert_eq!(*axis, OldAxis::Horizontal);
+        let OldRoot::Dock { columns, .. } = &**second else { panic!("expected the dock column") };
+        assert_eq!(columns[0].width, 240.0);
+        let window = &old.workspace.layout.floating[0];
+        assert_eq!(window.groups[0].panels, [PanelKind::Info, PanelKind::Effects]);
+        assert_eq!(window.groups[0].active, 1);
+        assert_eq!(window.groups[0].height, Some(150.0));
+        assert_eq!(window.groups[1].panels, [PanelKind::Markers]);
+        assert_eq!(window.native, Some([-1100.0, 200.0, 300.0, 400.0]));
+        assert_eq!(window.monitor_size, Some([1280.0, 800.0]));
+        assert_eq!(read_saved(&serde_json::from_value(as_json).unwrap()).unwrap().layout(), &layout);
+
+        // Old SavedWorkspace holds the entire workspace as a raw Value. Resaving an
+        // untouched entry therefore keeps our newer fields even though the v2 dock ignores them.
+        #[derive(Serialize, Deserialize)]
+        struct OldEnvelope {
+            name: String,
+            workspace: serde_json::Value,
+        }
+        let passive: OldEnvelope = serde_json::from_value(serde_json::to_value(&entry).unwrap()).unwrap();
+        let reread = serde_json::from_value(serde_json::to_value(passive).unwrap()).unwrap();
+        assert_eq!(read_saved(&reread).unwrap().layout(), &layout);
+
+        // Explicitly saving a changed layout in the old app regenerates the v2 workspace.
+        // The next app must see the old edit, not resurrect its earlier V4 active tab.
+        old.workspace.layout.floating[0].groups[0].active = 0;
+        let old_save = serde_json::to_value(old).unwrap();
+        assert!(old_save["workspace"].get("filmcraftV4").is_none());
+        let back = read_saved(&serde_json::from_value(old_save).unwrap()).unwrap();
+        assert_eq!(back.layout().floating[0].groups()[0].active, 0);
+    }
+
+    #[test]
+    fn damaged_or_future_workspace_is_not_loaded_as_the_downgrade_projection() {
+        let layout = workspace("Editing");
+        let mut entry = SavedWorkspace::new("Mine", &layout).unwrap();
+        entry.workspace["filmcraftV4"]["version"] = serde_json::json!(99);
+        assert!(read_saved(&entry).is_none());
+        entry.workspace.as_object_mut().unwrap().remove("filmcraftV4");
+        assert_eq!(read_saved(&entry).unwrap().layout(), &layout);
+        entry.workspace = serde_json::json!(42);
+        assert!(read_saved(&entry).is_none());
     }
 
     /// A saved workspace still opens in versions that read only the earlier `layout` and
