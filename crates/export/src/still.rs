@@ -96,16 +96,7 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
             craft_png::write_16bit(&mut out, w, h, craft_png::Layout::Rgba, &u16_samples).map_err(|e| ExportError::Encode(e.to_string()))?;
             Ok(out)
         }
-        StillFormat::Tiff => {
-            let capacity = samples.checked_mul(2).ok_or_else(bad)?;
-            let mut bytes = Vec::with_capacity(capacity);
-            for sample in u16_samples {
-                bytes.extend_from_slice(&sample.to_ne_bytes());
-            }
-            let mut out = std::io::Cursor::new(Vec::new());
-            image::ImageEncoder::write_image(image::codecs::tiff::TiffEncoder::new(&mut out), &bytes, w, h, image::ExtendedColorType::Rgba16).map_err(err)?;
-            Ok(out.into_inner())
-        }
+        StillFormat::Tiff => craft_tiff::plain::encode_rgba16(w, h, &u16_samples).map_err(|e| ExportError::Encode(e.to_string())),
         _ => Err(ExportError::Unsupported("16-bit still format".into())),
     }
 }
@@ -127,6 +118,16 @@ mod tests {
             assert_eq!(&a[..3], &b[..3]);
             assert_eq!(b[3], 32768);
         }
+    }
+    #[test]
+    fn sixteen_bit_tiff_matches_the_legacy_writer_bytes() {
+        let img = Image { w: 2, h: 1, px: vec![1.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.0, 0.5] };
+        let samples = [u16::MAX, 0, u16::MAX, u16::MAX, 0, u16::MAX, 0, 32768];
+        let bytes: Vec<_> = samples.into_iter().flat_map(u16::to_ne_bytes).collect();
+        let mut legacy = std::io::Cursor::new(Vec::new());
+        image::ImageEncoder::write_image(image::codecs::tiff::TiffEncoder::new(&mut legacy), &bytes, 2, 1, image::ExtendedColorType::Rgba16).unwrap();
+
+        assert_eq!(encode(&img, StillFormat::Tiff, 16).unwrap(), legacy.into_inner());
     }
     #[test]
     fn jpeg_and_bmp_are_eight_bit_and_invalid_buffers_are_errors() {
