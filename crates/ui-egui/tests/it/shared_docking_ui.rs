@@ -312,8 +312,11 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     action_log.push(action_state(&h, "resized"));
     let resized = h.state().ui.dock.floating[0].rect;
     let header = rect(&h, "panel.float.0.move");
-    let from = pos2(header.right() - 24.0, header.center().y);
+    // next's title row ends in its Close action; the band's leading part is free to move by.
+    let from = pos2(header.left() + 24.0, header.center().y);
+    eprintln!("DIAG real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents: band {header:?} press {from:?} window {resized:?} layer at press {:?}", h.ctx.layer_id_at(from));
     drag(&mut h, from, from - vec2(24.0, 18.0), Modifiers::NONE);
+    eprintln!("DIAG real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents: moved to {:?}", h.state().ui.dock.floating[0].rect);
     assert!(h.state().ui.dock.floating[0].rect.min.x < resized.min.x - 15.0);
     assert!(h.state().ui.dock.floating[0].rect.min.y < resized.min.y - 10.0);
     action_log.push(action_state(&h, "moved"));
