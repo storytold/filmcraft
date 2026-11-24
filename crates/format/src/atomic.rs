@@ -283,7 +283,7 @@ mod tests {
         assert!(atomic_write_no_follow(&link, b"replacement").is_err());
         assert_eq!(fs::read(&external).unwrap(), b"stable bytes");
         assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        assert!(atomic_write_no_follow(&d.join("sub"), b"x").is_err());
+        // A missing destination is written (a new file), never an error; a directory is refused.
         fs::create_dir(d.join("sub")).unwrap();
         assert!(atomic_write_no_follow(&d.join("sub"), b"x").is_err());
         fs::remove_dir_all(&d).unwrap();

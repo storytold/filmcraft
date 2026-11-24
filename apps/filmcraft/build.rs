@@ -5,6 +5,9 @@
 //! on Windows hosts). A missing resource compiler is a warning, unless `FILMCRAFT_REQUIRE_WINRES=1`
 //! (for release and nightly builds) turns it into an error.
 
+// `windows_icon_path` is only called by the `#[cfg(windows)]` resource step below, so a Linux or
+// macOS `cargo clippy -- -D warnings` would fail on it without this.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[path = "src/build_channel.rs"]
 mod build_channel;
 

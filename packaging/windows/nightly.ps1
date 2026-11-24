@@ -78,17 +78,16 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Source = Get-NightlySourceState $Root
 Assert-NightlySource $Version $env:FILMCRAFT_BUILD_SHA $env:FILMCRAFT_BUILD_DATE $Source.Head $Source.Status
 $oldChannel = $env:FILMCRAFT_BUILD_CHANNEL
-$oldVersionOverride = $env:FILMCRAFT_OVERRIDE_VERSION
 try {
   $env:FILMCRAFT_BUILD_CHANNEL = 'nightly-v1'
-  $env:FILMCRAFT_OVERRIDE_VERSION = $Version
   $env:FILMCRAFT_REQUIRE_WINRES = '1'
   $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
-  cargo build --release --locked -p filmcraft --target $Target
+  # The same features the stable package and the Linux/macOS Nightly builds use (build.rs reads
+  # FILMCRAFT_VERSION itself; FILMCRAFT_OVERRIDE_VERSION was never read here).
+  cargo build --release --locked -p filmcraft --features filmcraft/neural-voices --target $Target
   if ($LASTEXITCODE -ne 0) { throw "nightly cargo build failed: $LASTEXITCODE" }
 } finally {
   $env:FILMCRAFT_BUILD_CHANNEL = $oldChannel
-  $env:FILMCRAFT_OVERRIDE_VERSION = $oldVersionOverride
 }
 $Source = Get-NightlySourceState $Root
 try { Assert-NightlySource $Version $env:FILMCRAFT_BUILD_SHA $env:FILMCRAFT_BUILD_DATE $Source.Head $Source.Status }

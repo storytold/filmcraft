@@ -112,5 +112,11 @@ expected="$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$TMP/nig
 [[ "$out" = "$expected" ]] || fail "Nightly AppRun did not use the Launcher profile: $out"
 out="$(env -u APPIMAGE "$NIGHTLY_APPDIR/AppRun" --version)" || fail "Nightly version query exited non-zero"
 [[ "$out" = "<--version>" ]] || fail "Nightly AppRun rewrote a version query: $out"
+out="$(env -u APPIMAGE "$NIGHTLY_APPDIR/AppRun" --help)" || fail "Nightly usage query exited non-zero"
+[[ "$out" = "<--help>" ]] || fail "Nightly AppRun rewrote a usage query: $out"
+# A caller-written `--` is dropped: it must never arrive as a file name.
+out="$(env -u APPIMAGE XDG_DATA_HOME="$TMP/nightly-data" "$NIGHTLY_APPDIR/AppRun" -- b.fcproj --version)" || fail "Nightly AppRun exited non-zero"
+expected="$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$TMP/nightly-data/filmcraft-nightly/profile" -- b.fcproj --version)"
+[[ "$out" = "$expected" ]] || fail "Nightly AppRun kept a caller-written separator: $out"
 
 echo "AppRun desktop integration ok"

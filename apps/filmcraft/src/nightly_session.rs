@@ -33,6 +33,12 @@ fn regular_or_missing(path: &Path) -> io::Result<bool> {
 /// still runs for a start that created no window.
 pub type Shared = Arc<Mutex<Option<Session>>>;
 
+/// Release the private profile without completing it: a graphics-restart successor then owns the
+/// lease and reports the interruption, instead of becoming a busy secondary with no record.
+pub fn release(shared: &Shared) {
+    drop(shared.lock().unwrap_or_else(PoisonError::into_inner).take());
+}
+
 /// The controlled return ([`Session::finish`]) by whichever path comes first; later calls do nothing.
 pub fn finish_once(shared: &Shared, unclean_notice_shown: bool) {
     let watch = shared.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -204,6 +210,23 @@ mod tests {
         finish_once(&shared, false);
         assert_eq!(std::fs::read(fixture.0.join(RECORD)).unwrap(), record, "the second finish must not touch a successor's record");
         successor.complete().unwrap();
+    }
+
+    #[test]
+    fn releasing_the_lease_hands_the_profile_to_a_successor_that_reports_the_interruption() {
+        let fixture = Fixture::new();
+        let shared: Shared = Arc::new(Mutex::new(Session::begin(Some(&fixture.0), "graphics-panic", None).unwrap()));
+        release(&shared);
+        // The successor (this program restarted in the next graphics mode) owns the profile at once:
+        // no "could not record session health" warning, and the interruption is still reported.
+        let (successor, warning) = Session::begin_with_health(Some(&fixture.0), "successor", None).unwrap();
+        assert!(!warning, "the released profile is not a busy secondary");
+        let successor = successor.unwrap();
+        assert!(successor.previous_unclean());
+        successor.finish(true).unwrap();
+        // The released owner's return path is a no-op, not a second completion.
+        finish_once(&shared, true);
+        assert!(!fixture.0.join(RECORD).exists());
     }
 
     #[test]

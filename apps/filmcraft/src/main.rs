@@ -185,7 +185,16 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
         build_flavor::BuildFlavor::Stable => version_text().to_owned(),
         build_flavor::BuildFlavor::NightlyV1 => build_flavor::version(build_flavor::COMPILED, version_text()),
     });
-    Some(argv)
+    Some(runnable_argv(internal, argv, &early))
+}
+
+/// What `main` parses once the profile is selected. A Launcher start gets the profile's own tail
+/// (`--` and the file names): the raw argv still holds `--launch-profile`/`--profile-root`, which
+/// `args::parse` refuses as unknown options, so every Nightly GUI start would exit 2. The graphics
+/// test child keeps its `--test-graphics-start <mode>` re-entry line, and ignores the tokens after
+/// it ([`graphics::probe::child_main`]).
+fn runnable_argv(internal: bool, argv: Vec<std::ffi::OsString>, launch: &launch_profile::Launch) -> Vec<std::ffi::OsString> {
+    if internal { argv } else { launch.args.clone() }
 }
 
 fn main() -> eframe::Result {
@@ -343,6 +352,10 @@ fn main() -> eframe::Result {
                 // `run_native` returns at once, #2558): FilmCraft starts again in that mode, once.
                 if next_saved && std::env::var_os(RELAUNCHED).is_none() {
                     graphics.finish();
+                    // The start that follows (this program in the next mode) must own the profile:
+                    // a parent that keeps the lease makes it a busy secondary with no health
+                    // record. Releasing is not a controlled finish, so the record stays for it.
+                    nightly_session::release(&nightly_session);
                     match relaunch(graphics.mode()) {
                         Ok(code) => std::process::exit(code),
                         Err(e) => log::error!("can't start FilmCraft again in graphics mode {}: {e}", graphics.mode().name()),
@@ -873,6 +886,32 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A Launcher start hands `main` the profile's own tail: the raw argv (still holding
+    /// `--launch-profile`/`--profile-root`) made `args::parse` exit 2 on every Nightly window.
+    #[test]
+    fn a_nightly_launch_parses_the_prepared_tail_and_not_the_launcher_protocol() {
+        let os = |v: &[&str]| v.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        let root = if cfg!(windows) { r"C:\NightlyData\profiles\filmcraft" } else { "/nightly-data/profiles/filmcraft" };
+        let argv = os(&["--launch-profile", "nightly-v1", "--profile-root", root, "--", "cut.fcproj", "clip with spaces.mp4"]);
+        let launch = crate::launch_profile::parse(argv.clone()).unwrap();
+        let tail = super::runnable_argv(false, argv.clone(), &launch);
+        assert_eq!(tail, launch.args);
+        match crate::args::parse(None, tail) {
+            Ok(crate::args::Cli::Run(l)) => assert_eq!(l.files, ["cut.fcproj", "clip with spaces.mp4"]),
+            other => panic!("a nightly launch should start the app, got {other:?}"),
+        }
+        // A `--version` the Launcher appends after `--` stays a file name, as for stable.
+        let query = os(&["--launch-profile", "nightly-v1", "--profile-root", root, "--", "--version"]);
+        let launch = crate::launch_profile::parse(query.clone()).unwrap();
+        assert!(matches!(crate::args::parse(None, super::runnable_argv(false, query, &launch)), Ok(crate::args::Cli::Run(l)) if l.files == ["--version"]));
+        // The graphics test child keeps its re-entry head (`--test-graphics-start <mode>` first);
+        // the raw Launcher line stays what `args::parse` refuses.
+        let child = os(&["--test-graphics-start", "default", "--launch-profile", "nightly-v1", "--profile-root", root, "--"]);
+        let launch = crate::launch_profile::parse(child[2..].to_vec()).unwrap();
+        assert_eq!(super::runnable_argv(true, child.clone(), &launch), child);
+        assert!(crate::args::parse(None, argv).is_err(), "the raw Launcher line is not a FilmCraft command line");
+    }
+
     /// The new start after a graphics panic keeps the arguments and picks the next mode, replacing a
     /// `--graphics` that was given (#2558).
     #[test]

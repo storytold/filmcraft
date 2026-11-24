@@ -177,13 +177,18 @@ fn entries_stay_inside(root: &Path) -> Result<(), String> {
 /// Recognise the portable data namespace in both the supplied and resolved path. A marker only
 /// counts beside a FilmCraft executable (above the chosen folder itself), so an unrelated
 /// `portable.txt` higher up does not refuse the profile.
+///
+/// A `data` component counts only when its parent holds the portable marker: the Nightly Flatpak's
+/// own `~/.var/app/…/data/filmcraft-nightly/profile`, and any home with a `data` folder, are
+/// ordinary per-user paths, not a portable install's data directory.
 fn is_portable_layout(path: &Path, platform: Platform) -> bool {
     path.ancestors().enumerate().any(|(depth, ancestor)| {
         ancestor.join(PORTABLE_MARKER).is_file() && (depth == 0 || ["filmcraft.exe", "filmcraft", "FilmCraft"].iter().any(|exe| ancestor.join(exe).is_file()))
-    }) || path.components().any(|component| match component {
-        Component::Normal(name) if platform.ignores_case() => name.to_string_lossy().eq_ignore_ascii_case(PORTABLE_DATA_DIR),
-        Component::Normal(name) => name == PORTABLE_DATA_DIR,
-        _ => false,
+    }) || path.ancestors().any(|ancestor| {
+        let named_data = ancestor.file_name().is_some_and(|name| {
+            if platform.ignores_case() { name.to_string_lossy().eq_ignore_ascii_case(PORTABLE_DATA_DIR) } else { name == PORTABLE_DATA_DIR }
+        });
+        named_data && ancestor.parent().is_some_and(|install| install.join(PORTABLE_MARKER).is_file())
     })
 }
 
@@ -223,10 +228,10 @@ fn validate_for(
         // point this profile at another app's instance. The Nightly Flatpak itself is not that
         // case -- its sandbox data is `~/.var/app/ai.storyteller.filmcraft.nightly`, separate from
         // stable -- so exactly the app's own Nightly id is accepted and every other value refused.
-        if let Some(id) = env("FLATPAK_ID").filter(|value| !value.is_empty()) {
-            if id.as_os_str() != std::ffi::OsStr::new(filmcraft_ui_egui::os_window::NIGHTLY_PACKAGE_ID) {
-                return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
-            }
+        if let Some(id) = env("FLATPAK_ID").filter(|value| !value.is_empty())
+            && id.as_os_str() != std::ffi::OsStr::new(filmcraft_ui_egui::os_window::NIGHTLY_PACKAGE_ID)
+        {
+            return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
         }
     }
     let chosen = canonical_future(root)?;
@@ -354,6 +359,21 @@ mod tests {
         assert!(fixture.check(Platform::Windows, &unrelated.join("Launcher/nightly/filmcraft")).is_ok());
         // A merely similar data folder name is not the portable namespace.
         assert!(fixture.check(Platform::Linux, &fixture.root.join("data-backup/nightly")).is_ok());
+    }
+
+    #[test]
+    fn a_data_folder_beside_no_portable_marker_is_not_a_portable_install() {
+        let mut fixture = Fixture::new();
+        // The Nightly Flatpak's own sandbox data root is `…/ai.storyteller.filmcraft.nightly/data`,
+        // and a home may hold a plain `data` folder: neither is a portable install (#5225 review).
+        let plain = fixture.root.join("data/filmcraft-nightly/profile");
+        assert_eq!(fixture.check(Platform::Linux, &plain).unwrap(), plain);
+        let sandbox = fixture.home().join(".var/app/ai.storyteller.filmcraft.nightly/data/filmcraft-nightly/profile");
+        fixture.env.insert("FLATPAK_ID".into(), filmcraft_ui_egui::os_window::NIGHTLY_PACKAGE_ID.into());
+        assert_eq!(fixture.check(Platform::Linux, &sandbox).unwrap(), sandbox);
+        // Only the Nightly Flatpak's own id may inherit a sandbox; every other one is refused.
+        fixture.env.insert("FLATPAK_ID".into(), "ai.storyteller.filmcraft".into());
+        assert!(fixture.refuse(Platform::Linux, &sandbox).contains("Flatpak"));
     }
 
     #[test]

@@ -69,6 +69,9 @@ nightly_copy_notices() {
     [[ -f "$ROOT/$required" && ! -L "$ROOT/$required" ]] || nightly_die "missing regular app notice: $required"
   done
   copy_docs "$destination"
+  # `copy_docs` (env.sh) copies the licence and README only; nightly-archive.py and
+  # nightly-check.sh require ATTRIBUTION.md in the tar and the macOS bundle.
+  cp "$ROOT/ATTRIBUTION.md" "$destination/"
 }
 
 nightly_publish_archive() {

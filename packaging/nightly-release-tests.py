@@ -670,7 +670,10 @@ class LinuxNightlyLaunchers(unittest.TestCase):
                 self.assertIn("--launch-profile nightly-v1", source)
                 self.assertIn(self.PROFILE, source, "one profile root, outside stable and the install")
                 self.assertIn('case "${1-}" in', source)
-                self.assertIn("--profile-root | --version | -V", source)
+                self.assertIn("--profile-root | --version | -V | --help | -h", source)
+                # A caller-written `--` is stripped: the launcher's own separator must never
+                # arrive at the app as a file name.
+                self.assertIn('if [ "${1-}" = -- ]; then shift; fi', source)
 
     def test_no_linux_wrapper_routes_the_profile_through_the_environment(self):
         # The flavor refuses FILMCRAFT_DATA_DIR with a nightly profile: a wrapper that exported it
@@ -686,13 +689,27 @@ class LinuxNightlyLaunchers(unittest.TestCase):
         self.assertIn("--features filmcraft/neural-voices", package)
         self.assertIn("--features filmcraft/neural-voices", (ROOT / "packaging/nightly-common.sh").read_text(),
                       "the Nightly tar must keep the voices the official package builds with")
+        self.assertIn("--features filmcraft/neural-voices", (ROOT / "packaging/windows/nightly.ps1").read_text(),
+                      "the Windows Nightly must keep the voices the official package builds with")
         self.assertIn('Icon=$NIGHTLY_DESK_ID', package)
+        # The drop commands are a prefix of the first sed expression: `sed "$DROP_LIB_TREE" -e ...`
+        # reads an empty or command-shaped argument as an input file and dies.
+        self.assertNotIn('sed "$DROP_LIB_TREE"', package)
+        self.assertIn('sed "${DROP_LIB_TREE}s|', package)
+        self.assertIn('cp "$ROOT/ATTRIBUTION.md" "$destination/"', (ROOT / "packaging/nightly-common.sh").read_text(),
+                      "the tar and the macOS bundle require ATTRIBUTION.md")
 
-    def test_the_appimage_apprun_is_a_script_and_is_switched_for_nightly(self):
+    def test_the_appimage_apprun_is_a_script_only_for_nightly(self):
         package = (ROOT / "packaging/linux/package.sh").read_text()
-        self.assertIn('install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"', package)
-        self.assertNotIn('ln -s usr/bin/filmcraft "$APPDIR/AppRun"', package)
-        self.assertIn('$0 == "CHANNEL=stable" { print "CHANNEL=nightly-v1"; next }', package)
+        # Stable keeps Dylan's `ln -s usr/bin/filmcraft AppRun`: installing the script there would
+        # write desktop entries and icons on every stable start, which is new stable behaviour.
+        section = package[package.index('  APPDIR="$WORK/FilmCraft.AppDir"'):]
+        nightly, stable = section.split("\n  else\n", 1)
+        self.assertIn('install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"', nightly, "the Nightly installs the AppRun script")
+        self.assertNotIn("ln -s usr/bin/filmcraft", nightly, "a Nightly AppRun must not be a symlink")
+        self.assertNotIn('install -Dm755 "$HERE/AppRun"', stable, "stable installs no desktop entry or icon on start")
+        self.assertIn('ln -s usr/bin/filmcraft "$APPDIR/AppRun"', stable)
+        self.assertIn('$0 == "CHANNEL=stable" { print "CHANNEL=nightly-v1"; next }', nightly)
         apprun = ROOT / "packaging/linux/AppRun"
         self.assertTrue(apprun.is_file() and not apprun.is_symlink())
         self.assertTrue(apprun.stat().st_mode & 0o111, "AppRun must be executable")

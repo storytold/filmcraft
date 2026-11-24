@@ -322,7 +322,7 @@ mod tests {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
+mod nightly_tests {
     /// A Nightly build is updated by ArtCraft Launcher: the stable updater must not run, and a
     /// manual check says so instead of offering a release from another channel.
     #[test]

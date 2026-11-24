@@ -45,8 +45,11 @@ expect() {
 profile="${XDG_DATA_HOME:-${HOME:-}/.local/share}/filmcraft-nightly/profile"
 expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'clip with spaces.fcproj' '--other-name.fcproj')" \
   'clip with spaces.fcproj' '--other-name.fcproj'
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'clip with spaces.fcproj')" \
+  -- 'clip with spaces.fcproj'
 expect '<--version>' --version
 expect '<-V>' -V
+expect '<--help>' --help
 expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root /launcher/profile --version)" \
   --launch-profile nightly-v1 --profile-root /launcher/profile --version
 

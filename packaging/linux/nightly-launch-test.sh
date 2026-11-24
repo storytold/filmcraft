@@ -50,8 +50,18 @@ expect_forwarded() {
 
 expect_launch
 expect_launch 'project with spaces.fcproj' '--other-name.fcproj'
+# A caller-written `--` is dropped: the launcher's own separator must arrive once, never twice,
+# and what follows the caller's separator stays a file name (here `--version`).
+expected="$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" -- 'project with spaces.fcproj' --version)"
+actual=$("$work/tree/filmcraft" -- 'project with spaces.fcproj' --version)
+[[ "$actual" == "$expected" ]] || {
+  printf 'caller separator:\nexpected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+  exit 1
+}
 expect_forwarded --version
 expect_forwarded -V
+expect_forwarded --help
+expect_forwarded -h
 expect_forwarded --launch-profile nightly-v1 --profile-root /launcher/profile --version
 expect_forwarded --launch-profile nightly-v1 --profile-root /launcher/profile -- a.fcproj
 
