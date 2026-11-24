@@ -929,17 +929,22 @@ fn tab_menu(h: &mut Harness<'_, FilmcraftApp>, tab: &str, item: &str) {
     click_at(h, item, PointerButton::Primary);
 }
 
-/// A Timeline tab's context menu carries FilmCraft's Timeline items, and its Close item (Close
-/// Panel before the port) closes the active sequence: the Timeline stays.
+/// FilmCraft's Timeline items (Reveal Sequence in Project, Close Other Timeline Panels, Restore
+/// Workspace) are in the Timeline's ≡ panel menu: next's tab context menu holds only its own rows.
+/// The tab menu's Close item (Close Panel before the port) closes the active sequence: the
+/// Timeline stays.
 #[test]
 fn close_panel_on_the_timeline_tab_closes_the_sequence() {
     let mut h = demo_harness();
     let active = h.state().session.state.active_sequence.unwrap();
+    let menu = rect(&h, "panel.menu.Timeline").center();
+    click_at(&mut h, menu, PointerButton::Primary);
+    for id in ["panel.menu.Timeline.revealSequence", "panel.menu.Timeline.closeOthers"] {
+        assert!(h.state().auto.find(id).is_some(), "{id} is missing from the Timeline's panel menu");
+    }
+    assert!(h.query_all_by_label("Restore Workspace").next().is_some(),"Restore Workspace is missing from the Timeline's panel menu");
     let pos = rect(&h, "panel.tab.Timeline").center();
     click_at(&mut h, pos, PointerButton::Secondary);
-    for id in ["panel.menu.Timeline.revealSequence", "panel.tabMenu.Timeline.closeOthers", "panel.tabMenu.Timeline.restoreWorkspace"] {
-        assert!(h.state().auto.find(id).is_some(), "{id} is missing from the tab menu");
-    }
     let close = menu_item(&h, "Close");
     click_at(&mut h, close, PointerButton::Primary);
     assert!(!h.state().session.state.open_sequences.contains(&active), "the sequence stays open");
