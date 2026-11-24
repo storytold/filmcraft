@@ -497,8 +497,20 @@ fn marker_dialog_escape_does_not_discard_an_unfinished_pen_mask() {
     assert_eq!(points.len(), 1);
     d.ok("ui.set", json!({"focused": "Timeline"}));
     d.frames(3);
-    d.ok("ui.click", json!({"id": format!("timeline.marker.{marker}"), "count": 2}));
-    d.frames(2);
+    let r = d.rect(&format!("timeline.marker.{marker}"));
+    let pos = egui::pos2((r[0] + r[2] / 2.0) as f32, (r[1] + r[3] / 2.0) as f32);
+    // Match sequence_ui's physical click pacing: the control channel waits
+    // for each action and cannot guarantee a double click within egui's guard.
+    d.frames(60);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
+    d.frames(1);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            d.harness.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            d.frames(1);
+        }
+    }
+    d.frames(3);
     assert!(d.harness.state().ui.marker_properties.is_some());
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(2);

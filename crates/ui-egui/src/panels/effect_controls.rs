@@ -54,6 +54,23 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
     }
 }
 
+// A captured dock press may swallow Escape without ending egui's drag.
+fn graph_drag_cancelled(ui: &egui::Ui, response: &egui::Response) -> bool {
+    let id = response.id.with("graph-drag-cancelled");
+    if response.drag_started() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    let in_drag = response.dragged() || response.drag_stopped();
+    if in_drag && (crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx())) {
+        ui.data_mut(|d| d.insert_temp(id, true));
+    }
+    let cancelled = in_drag && ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    cancelled
+}
+
 /// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
 fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
     let Some(e) = it.effects.get(k.effect) else { return false };
@@ -1584,11 +1601,12 @@ fn draw_graph_keyframes(
                 p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
                 p.circle_filled(hp, 3.5, t.keyframe_handle);
                 let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
-                if hr.dragged_by(egui::PointerButton::Primary) {
+                let cancelled = graph_drag_cancelled(ui, &hr);
+                if hr.dragged_by(egui::PointerButton::Primary) && !cancelled {
                     let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                     ui.data_mut(|d| d.insert_temp(hid, nx));
                 }
-                if hr.drag_stopped() && crate::framework::escape_pressed(ui.ctx()) {
+                if cancelled {
                     ui.data_mut(|d| d.remove::<f32>(hid));
                 } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
@@ -1601,13 +1619,14 @@ fn draw_graph_keyframes(
                 }
             }
             p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.plot_handle });
-            if resp.dragged_by(egui::PointerButton::Primary) {
+            let cancelled = graph_drag_cancelled(ui, &resp);
+            if resp.dragged_by(egui::PointerButton::Primary) && !cancelled {
                 let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
                 ui.data_mut(|d| d.insert_temp(id, ny));
                 p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
-            if resp.drag_stopped() && crate::framework::escape_pressed(ui.ctx()) {
+            if cancelled {
                 ui.data_mut(|d| d.remove::<f32>(id));
             } else if resp.drag_stopped_by(egui::PointerButton::Primary) {
                 ui.data_mut(|d| d.remove::<f32>(id));

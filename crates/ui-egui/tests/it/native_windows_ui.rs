@@ -31,9 +31,13 @@ thread_local! {
 fn native_host() {
     WINDOW.with(|w| *w.borrow_mut() = WindowIo::default());
     egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
-        let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
-        let place = egui::Rect::from_min_size(viewport.builder.position.unwrap_or_default(), size);
         let id = viewport.ids.this;
+        // A viewport builder is a delta after creation: omitted geometry keeps
+        // the OS window's last reported position and size.
+        let previous = ctx.input_for(egui::ViewportId::ROOT, |i| i.raw.viewports.get(&id).and_then(|info| info.inner_rect));
+        let size = viewport.builder.inner_size.or_else(|| previous.map(|rect| rect.size())).unwrap_or(egui::vec2(400.0, 300.0));
+        let min = viewport.builder.position.or_else(|| previous.map(|rect| rect.min)).unwrap_or_default();
+        let place = egui::Rect::from_min_size(min, size);
         let (focused, events, hovered_files, dropped_files) = WINDOW.with(|w| {
             let mut w = w.borrow_mut();
             w.viewport = Some((id, place));

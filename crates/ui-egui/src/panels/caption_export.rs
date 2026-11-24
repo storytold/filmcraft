@@ -59,7 +59,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
                 }
             });
-            elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
+            let r = crate::widgets::accessible_name(r.response, tl!("File Format"));
+            elems.push(("captionExport.format".into(), r.rect, d.format.name().into()));
             ui.end_row();
             let tracks: Vec<(u64, String)> =
                 app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
@@ -80,7 +81,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
                     }
                 });
-                elems.push(("captionExport.track".into(), r.response.rect, label(pick)));
+                let r = crate::widgets::accessible_name(r.response, tl!("Caption Track"));
+                elems.push(("captionExport.track".into(), r.rect, label(pick)));
                 if pick != chosen {
                     d.params.insert("track".into(), json!(tracks[pick].0));
                 }
