@@ -259,9 +259,10 @@ fn hdr_probes() -> &'static RwLock<Vec<FormatProbe>> {
 }
 
 /// Say how to find out whether the registered encoder of `format` can write HDR (PQ / HLG) on this
-/// machine: `probe` runs when [`hdr_available`] asks (it should cache its answer). Only H.265 needs
-/// one: its encoders are hardware-only and not all of them take 10-bit pictures, so an HDR sequence
-/// exports as tone-mapped SDR unless a probe says otherwise. Registering the same probe twice is harmless.
+/// machine: `probe` runs when [`hdr_available`] asks (it should cache its answer). For H.265, the
+/// built-in software encoder writes Main 10 HDR; hardware encoders may register a probe if they
+/// support 10-bit HDR (NVENC writes Main 10; VideoToolbox is 8-bit only). Registering the same probe
+/// twice is harmless.
 pub fn register_hdr_probe(format: Format, probe: fn() -> bool) {
     let mut g = hdr_probes().write().unwrap_or_else(PoisonError::into_inner);
     if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
