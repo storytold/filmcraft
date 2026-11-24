@@ -66,6 +66,7 @@ impl FilmcraftApp {
             dock_specs: craft_ui::contract::Tracked::new(dock_ui::FilmSpecs::default()),
             dock_windows: Vec::new(),
             dock_float_space: None,
+            dock_focus: None,
             control_input_only: false,
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
