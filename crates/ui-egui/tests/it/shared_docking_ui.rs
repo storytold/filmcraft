@@ -615,8 +615,10 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     assert_eq!(h.state().ui.dock.floating.iter().flat_map(|group| group.panels()).filter(|panel| **panel == PanelKind::TextToSpeech).count(), 1);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     // A reveal is one-shot: drawing the selected narration must not steal stacking
-    // from another pane that the user subsequently brings forward.
-    ctx.move_to_top(window_layer(&h, PanelKind::Info));
+    // from another pane that the user subsequently brings forward. next's overlays own the
+    // window stacking and hand egui their order every pass, so the user brings Info forward
+    // the way a user does: a press on a part of Info that Text to Speech does not cover.
+    bring_info_forward(&mut h);
     for _ in 0..4 {
         step(&mut h);
     }
@@ -631,7 +633,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
     // Replacing the workspace cancels a queued reveal before the next render,
     // even when the destination happens to contain the same floating panel IDs.
-    ctx.move_to_top(window_layer(&h, PanelKind::Info));
+    bring_info_forward(&mut h);
     for _ in 0..3 {
         step(&mut h);
     }
@@ -649,6 +651,21 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
     assert_eq!(ctx.layer_id_at(covered), Some(window_layer(&h, PanelKind::Info)));
     assert_eq!(h.state().ui.tts, draft);
     assert!(std::sync::Arc::ptr_eq(&project, &h.state().session.project));
+}
+
+/// A primary press on the floating Info window, at a corner of its body that the Text to Speech
+/// window does not cover: the user bringing Info to the front.
+fn bring_info_forward(h: &mut Harness<'_, FilmcraftApp>) {
+    let info = rect(h, "panel.Info");
+    // Clear of the window's corner resize grip.
+    let pos = info.right_bottom() - vec2(40.0, 16.0);
+    let under = h.ctx.clone().layer_id_at(pos);
+    assert!(!rect(h, "panel.TextToSpeech").contains(pos), "the press must land on Info alone");
+    eprintln!(
+        "DIAG narration_selection_reveals_covered_floating_tts_once_without_editing_the_project: press {pos:?} on layer {under:?}, Info window {:?}",
+        window_layer(h, PanelKind::Info)
+    );
+    click_at(h, pos, PointerButton::Primary);
 }
 
 /// #1985: a panel closed while floating came back docked when opened again from the Window menu;
