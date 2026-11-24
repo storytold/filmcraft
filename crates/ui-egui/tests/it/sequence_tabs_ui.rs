@@ -21,7 +21,10 @@ impl Driver {
         s.execute("file.openDemoProject", json!({})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -170,7 +173,7 @@ fn timeline_has_a_tab_per_open_sequence() {
     assert!(d.has_timeline(), "closing the last sequence keeps the Timeline panel");
     assert!(d.has("panel.tab.Timeline"));
     // reopening from the project brings it back, even if the panel itself was closed
-    d.app().ui.dock.apply(craft_behavior::dock::Action::Close { panel: filmcraft_ui_egui::dock::PanelKind::Timeline }).unwrap();
+    d.app().ui.dock.apply(craft_behavior::dock::Action::close(filmcraft_ui_egui::dock::PanelKind::Timeline)).unwrap();
     d.frames(2);
     assert!(!d.has_timeline());
     d.exec("sequence.open", json!({"item": main}));

@@ -65,7 +65,10 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
-            pending_panel_raise: None,
+            dock_live: Arc::new(dock::Workspace::new(dock::Layout::default())),
+            dock_specs: craft_ui::contract::Tracked::new(dock_ui::FilmSpecs::default()),
+            dock_windows: Vec::new(),
+            dock_float_space: None,
             control_input_only: false,
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
@@ -292,7 +295,7 @@ impl FilmcraftApp {
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
-                    let _ = self.apply_dock(craft_behavior::dock::Action::Activate { panel: PanelKind::Timeline });
+                    let _ = self.apply_dock(craft_behavior::dock::Action::activate(PanelKind::Timeline));
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it

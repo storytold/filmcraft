@@ -21,7 +21,10 @@ impl Driver {
         s.execute("file.openDemoProject", json!({})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
@@ -97,7 +100,7 @@ fn reveal_in_project_shows_the_clips_item_in_the_project_panel() {
         };
         let bin = d.app().session.project.root.parent_of(item).expect("the demo keeps its footage in a bin").0;
         // the Project panel is closed, its bins are collapsed and a search hides everything
-        d.app().ui.dock.apply(craft_behavior::dock::Action::Close { panel: PanelKind::Project }).unwrap();
+        d.app().ui.dock.apply(craft_behavior::dock::Action::close(PanelKind::Project)).unwrap();
         d.app().ui.expanded_bins.clear();
         d.app().ui.project_search = "no such thing".into();
         d.frames(2);

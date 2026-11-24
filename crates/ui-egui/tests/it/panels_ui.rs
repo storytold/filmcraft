@@ -31,7 +31,10 @@ impl Driver {
         if snapshots.is_some() {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |_cc| app);
+        let harness = b.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d
@@ -335,7 +338,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     fn shown(d: &mut Driver) -> PanelKind {
         fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Tabs { panels, active, .. } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
                 Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
                 _ => None,
             }

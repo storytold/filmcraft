@@ -99,7 +99,6 @@ mod transitions_ui;
 mod trim_monitor_frames_ui;
 mod tts_ui;
 mod ui_control_input;
-mod ui_dock_resize;
 mod ui_keyboard_focus;
 mod unlink_ui;
 mod view_ui;
