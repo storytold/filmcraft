@@ -359,11 +359,6 @@ fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
     // The dock insets a panel's body from its group's frame by the panel padding, so the point is
     // halfway between the window's edge and the body, inside the frame.
     let to = pos2(leftmost.left() / 2.0, leftmost.center().y);
-    eprintln!(
-        "DIAG dropping_on_the_window_edge_docks_beside_the_whole_workspace: to={to:?} body={leftmost:?} tab={:?} gutter={:?}",
-        rect(&h, "panel.tab.Project"),
-        h.state().auto.find("dock.gutter.").map(|element| element.rect)
-    );
     drag(&mut h, from, to, Modifiers::NONE);
     assert_eq!(
         h.state().ui.dock,
