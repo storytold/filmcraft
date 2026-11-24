@@ -373,7 +373,7 @@ fn high422_export_decodes_to_the_converted_planes() {
             .output()
             .unwrap();
         assert!(out.status.success() && out.stderr.is_empty(), "{signal:?}: {}", String::from_utf8_lossy(&out.stderr));
-        let dec: Vec<i32> = out.stdout.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as i32).collect();
+        let dec: Vec<i32> = out.stdout.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b) as i32).collect();
         let fs = w * h + w * h;
         assert_eq!(dec.len(), n * fs, "{signal:?}: {n} frames of 64x48 4:2:2");
         for f in 0..n {

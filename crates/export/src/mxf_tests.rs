@@ -351,7 +351,7 @@ fn op1a_h264_high422() {
             let rgba = leader.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(f as i64) + Tick(1))).unwrap().to_rgba8();
             let (mut y, mut u, mut v) = (vec![0u16; ys], vec![0u16; cs], vec![0u16; cs]);
             rgba_to_yuv422_10(&rgba, w, h, &mut y, &mut u, &mut v);
-            let got: Vec<i32> = dec[f * fs..(f + 1) * fs].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) as i32).collect();
+            let got: Vec<i32> = dec[f * fs..(f + 1) * fs].as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b) as i32).collect();
             for (plane, g, want) in [("Y", &got[..ys], &y), ("Cb", &got[ys..ys + cs], &u), ("Cr", &got[ys + cs..], &v)] {
                 let mad = g.iter().zip(want.iter()).map(|(&g, &w)| (g - w as i32).abs() as f64).sum::<f64>() / g.len() as f64;
                 assert!(mad < 1.0, "intra {intra} frame {f} {plane}: mean difference {mad:.2} codes from the source");
