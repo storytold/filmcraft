@@ -312,6 +312,20 @@ fn subclip_in_the_source_monitor_and_project_menu() {
             let menu = d.ok("ui.elements", json!({"prefix": "project.itemMenu"}));
             let focused = d.harness.ctx.memory(|m| m.focused());
             eprintln!("DIAG subclip_in_the_source_monitor_and_project_menu: panel={panel} row={item} menu={menu} focused={focused:?} status={:?}", d.app().ui.status);
+            // What egui hit-tests at the right-click point, and which layers are open: a row
+            // clipped out of the panel body, or a framework layer that took the secondary press.
+            let ctx = d.harness.ctx.clone();
+            let hits = ctx.viewport(|v| {
+                let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
+                (v.hits.click.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
+            });
+            let layers = ctx.memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order != egui::Order::Background).collect::<Vec<_>>());
+            eprintln!(
+                "DIAG subclip_in_the_source_monitor_and_project_menu: pointer={:?} click={:?} close={:?} layers={layers:?}",
+                ctx.pointer_latest_pos(),
+                hits.0,
+                hits.1
+            );
         }
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");

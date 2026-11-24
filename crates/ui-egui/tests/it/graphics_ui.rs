@@ -538,6 +538,20 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
                 ctx.memory(|m| m.focused()),
                 d.harness.state().ui.gfx_edit.is_some()
             );
+            // What egui hit-tests at the click point: a button clipped out of the panel body
+            // shows a shrunk interact rect, or something else wins the click.
+            let hits = ctx.viewport(|v| {
+                let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
+                (v.hits.click.as_ref().map(w), v.hits.drag.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
+            });
+            eprintln!(
+                "DIAG style_buttons_toggle_the_layer_without_a_selection: pointer={:?} panel={:?} click={:?} drag={:?} close={:?}",
+                ctx.pointer_latest_pos(),
+                d.call("ui.elements", json!({"prefix": "panel."}))["result"],
+                hits.0,
+                hits.1,
+                hits.2
+            );
         }
         assert!(on(&mut d), "first click turns {id} on");
         click(&mut d);
