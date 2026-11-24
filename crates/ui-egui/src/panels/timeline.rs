@@ -164,6 +164,8 @@ pub struct TlState {
     /// The pointer is on one of the zoom bar's end circles this frame: the cursor points like a
     /// link there. Overrides the tracks' grab cursors (which run later in the frame).
     pub zoombar_point_cursor: bool,
+    /// An edge zoom is being dragged: keep its resize cursor after the pointer leaves the bar.
+    pub zoombar_resize_cursor: bool,
     /// The confirmation dialog asking to keep the zoom scroll bar hidden is open.
     pub zoombar_hide_dialog_open: bool,
     /// The same "how to bring it back" dialog, for the side track sliders.
@@ -316,6 +318,7 @@ pub enum Drag {
         start_v: f32,
         audio: bool,
         start_a: f32,
+        button: egui::PointerButton,
     },
     /// Box selection, shown live: `before` is the selection when the drag began, which Shift or
     /// Ctrl (`add`) keep; the release commits one `timeline.select`.
@@ -448,7 +451,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let vh = app.ui.timeline.video_track_h;
     let ah = app.ui.timeline.audio_track_h;
     let mut rows = Vec::new();
-    let (video_tops, _) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
+    let (video_tops, current_max_vs) = video_row_tops(video_area, nv, vh, &mut app.ui.timeline.v_scroll);
     for ((i, tr), top) in seq.video_tracks.iter().enumerate().zip(video_tops) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + vh));
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
@@ -457,6 +460,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // track), the same reveal the video side keeps above its topmost row
     let current_max_as = track_scroll_max(na as f32 + 1.0 / 3.0, ah, audio_area.height());
     app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, current_max_as);
+    clamp_track_animation_scroll_targets(app, current_max_vs, current_max_as);
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
@@ -584,6 +588,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- scroll bars (the zoom bar is not even called while hidden: nothing of it may run)
     app.tl.zoombar_point_cursor = false;
+    app.tl.zoombar_resize_cursor = false;
     app.tl.track_slider_dragging = false;
     if !bar_hidden {
         let bar = if bar_top {
@@ -896,6 +901,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, seq, caption_area, &layout);
     }
+    if app.tl.zoombar_point_cursor {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    } else if app.tl.zoombar_resize_cursor {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
     let _ = TICKS_PER_SECOND;
 }
 
@@ -929,6 +939,13 @@ fn animate_track_sliders(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.tl.track_anim = None;
     } else {
         ctx.request_repaint();
+    }
+}
+
+fn clamp_track_animation_scroll_targets(app: &mut FilmcraftApp, max_video_scroll: f32, max_audio_scroll: f32) {
+    if let Some(target) = &mut app.tl.track_anim {
+        target[1] = target[1].clamp(0.0, max_video_scroll);
+        target[3] = target[3].clamp(0.0, max_audio_scroll);
     }
 }
 
@@ -1864,5 +1881,27 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+}
+
+#[cfg(test)]
+mod track_animation_limit_tests {
+    use super::{FilmcraftApp, animate_track_sliders, clamp_track_animation_scroll_targets};
+
+    #[test]
+    fn a_shrunk_scroll_range_rebases_the_animation_target_and_stops_repainting() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.state.timeline_ui.track_slider_smooth = true;
+        app.ui.timeline.a_scroll = 4.0;
+        app.tl.track_anim = Some([app.ui.timeline.video_track_h, 0.0, app.ui.timeline.audio_track_h, 10.0]);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            clamp_track_animation_scroll_targets(&mut app, 0.0, 4.0);
+            animate_track_sliders(&mut app, ui.ctx());
+        });
+        output.textures_delta.clear();
+
+        assert_eq!(app.ui.timeline.a_scroll, 4.0);
+        assert_eq!(app.tl.track_anim, None, "the unreachable target must be clamped so the animation can finish");
     }
 }

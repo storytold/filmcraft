@@ -87,8 +87,8 @@ pub(super) fn preview_drag(
 }
 
 /// The transition a clip drag will leave behind, by the same rule `edit::move_items` applies:
-/// the transition travels when every clip it sits on moves — to one track, by the same (clamped)
-/// offset — and is dropped when only some of its clips move (a partner that stays behind ends the
+/// the transition travels when every clip it sits on moves â€” to one track, by the same (clamped)
+/// offset â€” and is dropped when only some of its clips move (a partner that stays behind ends the
 /// move, as in Premiere), shifted by that offset. The preview draws carried ones where they land,
 /// so a dragged clip's transition follows it instead of lagging behind until the drop, and a cut
 /// transition does not ride along on a clip whose partner stays. Returns the transition's
@@ -260,7 +260,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
     //   Shift + wheel    the same, a lot faster
     //   Ctrl + wheel     the tracks under the pointer, up and down
     //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
+    // Settings â–¸ Timeline â–¸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
     // wheel. A sideways gesture (trackpad swipe, tilt wheel) normally scrolls the Timeline in
     // time; a pinch zooms.
     if ui.rect_contains_pointer(rect)
@@ -341,7 +341,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
         } else if w.delta != egui::Vec2::ZERO {
             // A sideways gesture (trackpad swipe, tilt wheel) normally scrolls the Timeline in
             // time. The wheel itself does the same -- up = backwards in time -- and with Shift a
-            // lot faster; Ctrl + wheel moves the tracks up and down. Settings ▸ Timeline ▸
+            // lot faster; Ctrl + wheel moves the tracks up and down. Settings â–¸ Timeline â–¸
             // Timeline Mouse Scrolling "Horizontal" swaps those two.
             if selected_track_scroll {
                 if p.y < layout.split_y {
@@ -392,7 +392,7 @@ fn drag_frame_needs_update(dragged: bool, stopped: bool) -> bool {
     dragged || stopped
 }
 
-/// Cursor feedback: what a press here would grab (#259) — the cursor for it, the trim
+/// Cursor feedback: what a press here would grab (#259) â€” the cursor for it, the trim
 /// bracket on an edge, and the razor's preview line.
 fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
     let ctx = ui.ctx().clone();
@@ -439,7 +439,13 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 _ => CursorIcon::Default,
             }
         };
-        ctx.set_cursor_icon(if app.tl.zoombar_point_cursor { CursorIcon::PointingHand } else { cur });
+        ctx.set_cursor_icon(if app.tl.zoombar_point_cursor {
+            CursorIcon::PointingHand
+        } else if app.tl.zoombar_resize_cursor {
+            CursorIcon::ResizeHorizontal
+        } else {
+            cur
+        });
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
@@ -520,7 +526,14 @@ fn start_drag(
         _ if resp.drag_started_by(egui::PointerButton::Middle) => {
             let last = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
             let tv = &app.ui.timeline;
-            Some(Drag::Pan { last, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: last.y >= layout.split_y, start_a: tv.a_scroll })
+            Some(Drag::Pan {
+                last,
+                start_scroll: tv.target_scroll,
+                start_v: tv.v_scroll,
+                audio: last.y >= layout.split_y,
+                start_a: tv.a_scroll,
+                button: egui::PointerButton::Middle,
+            })
         }
         (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
@@ -528,7 +541,14 @@ fn start_drag(
         }
         (Tool::Hand, _) => {
             let tv = &app.ui.timeline;
-            Some(Drag::Pan { last: p, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: p.y >= layout.split_y, start_a: tv.a_scroll })
+            Some(Drag::Pan {
+                last: p,
+                start_scroll: tv.target_scroll,
+                start_v: tv.v_scroll,
+                audio: p.y >= layout.split_y,
+                start_a: tv.a_scroll,
+                button: egui::PointerButton::Primary,
+            })
         }
         (Tool::Zoom, _) => {
             if resp.clicked() {
@@ -753,28 +773,48 @@ fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
 // The match intentionally keeps every drag state's update beside the others; splitting it would
 // scatter the state-machine invariants (release, lock and auto-scroll handling).
 #[allow(clippy::cognitive_complexity)]
+fn drag_button_down(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    let button = match &app.tl.drag {
+        Some(Drag::Pan { button, .. }) => *button,
+        _ => egui::PointerButton::Primary,
+    };
+    ctx.input(|input| input.pointer.button_down(button))
+}
+
 fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, seq: &Sequence, layout: &Layout) {
     let ctx = ui.ctx().clone();
     let rate = seq.settings.frame_rate;
     let mods = ctx.input(|i| i.modifiers);
+    let response_stopped = resp.drag_stopped();
+    let stopped = response_stopped || (app.tl.drag.is_some() && !drag_button_down(app, &ctx));
+    // A release captured outside the Timeline response can report its last interact position as
+    // the press origin. Keep the last accepted drag update in that case; a release handled by the
+    // Timeline response still applies its final pointer position.
+    let pointer_pos = if response_stopped {
+        ctx.input(|i| i.pointer.latest_pos()).or_else(|| resp.interact_pointer_pos())
+    } else if stopped {
+        None
+    } else {
+        ctx.input(|i| i.pointer.latest_pos()).or_else(|| resp.interact_pointer_pos())
+    };
     // ---- drag
     if !app.tl.cancelled
-        && drag_frame_needs_update(resp.dragged(), resp.drag_stopped())
-        && let Some(p) = resp.interact_pointer_pos()
+        && drag_frame_needs_update(resp.dragged(), stopped)
+        && let Some(p) = pointer_pos
         && let Some(d) = app.tl.drag.clone()
     {
         let t_here = layout.tick_at(p.x);
         let new = match d {
             Drag::Scrub { initial } => {
                 let mut tt = rate.snap_nearest(t_here.max(Tick::ZERO));
-                // Shift snaps; Settings ▸ Timeline ▸ "Snap playhead in Timeline when Snap is enabled"
+                // Shift snaps; Settings â–¸ Timeline â–¸ "Snap playhead in Timeline when Snap is enabled"
                 if mods.shift || app.session.prefs.timeline.snap_playhead {
                     tt = snap_playhead(app, seq, layout, tt);
                 }
                 app.session.set_playhead(tt);
                 Some(Drag::Scrub { initial })
             }
-            Drag::Pan { last, start_scroll, start_v, audio, start_a } => {
+            Drag::Pan { last, start_scroll, start_v, audio, start_a, button } => {
                 let dx = p.x - last.x;
                 let v = &mut app.ui.timeline;
                 v.target_scroll = (v.target_scroll - dx as f64 / v.pps).max(0.0);
@@ -786,7 +826,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 } else {
                     v.v_scroll += p.y - last.y;
                 }
-                Some(Drag::Pan { last: p, start_scroll, start_v, audio, start_a })
+                Some(Drag::Pan { last: p, start_scroll, start_v, audio, start_a, button })
             }
             Drag::Move { clips, grab_tick, start_track, .. } => {
                 let raw = rate.snap_nearest(t_here - grab_tick);
@@ -830,10 +870,13 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let delta = filmcraft_engine::commands::roll_delta(&app.session, left, right, target - l.end()).unwrap_or(target - l.end());
                 Drag::Roll { left, right, delta, from }
             }),
-            Drag::Slip { clip, .. } => {
-                let start = resp.interact_pointer_pos().map(|_| ()).and(ctx.input(|i| i.pointer.press_origin()));
-                let origin = start.map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
-                Some(Drag::Slip { clip, delta: -(rate.snap_nearest(t_here - origin)) })
+            Drag::Slip { clip, delta: was } => {
+                let press = ctx.input(|i| i.pointer.press_origin());
+                let origin = press.map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
+                // Keep the last accepted slip when egui reports the outside release at the press origin.
+                let at_origin = t_here == origin;
+                let delta = if stopped && at_origin && was != Tick::ZERO { was } else { -(rate.snap_nearest(t_here - origin)) };
+                Some(Drag::Slip { clip, delta })
             }
             Drag::Slide { clip, .. } => {
                 let origin = ctx.input(|i| i.pointer.press_origin()).map(|o| layout.tick_at(o.x)).unwrap_or(t_here);
@@ -1006,7 +1049,8 @@ fn move_drag_destination(
 fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response, seq: &Sequence, layout: &Layout) {
     let mods = ctx.input(|i| i.modifiers);
     // ---- release: commit exactly one command
-    if resp.drag_stopped() {
+    let stopped = resp.drag_stopped() || (app.tl.drag.is_some() && !drag_button_down(app, ctx));
+    if stopped {
         // a drag Escape cancelled (#580) commits nothing
         let cancelled = std::mem::take(&mut app.tl.cancelled);
         if !cancelled && let Some(d) = app.tl.drag.take() {
@@ -1195,7 +1239,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             crate::panels::clear_drag(ui);
         }
     }
-    // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
+    // graphics templates from Essential Graphics â–¸ Browse: placed on the video track under the pointer
     if let Some(template) = crate::panels::dragged_template(ui)
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)
@@ -1554,7 +1598,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         if cmd == "edit.label" {
                             ui.add_enabled_ui(!picked.is_empty(), |ui| {
                                 let menu = ui.menu_button(crate::i18n::t(label), |ui| {
-                                    // the user's label names and colours, as in Edit ▸ Label (#786)
+                                    // the user's label names and colours, as in Edit â–¸ Label (#786)
                                     let labels = app.session.prefs.labels.clone();
                                     for l in filmcraft_project::Label::ALL {
                                         if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
@@ -1582,7 +1626,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                             continue;
                         }
                         let label = match cmd {
-                            "clip.enable" if all_enabled => tl!("✓ Enable"),
+                            "clip.enable" if all_enabled => tl!("âœ“ Enable"),
                             "clip.link" if linked => tl!("Unlink"),
                             _ => crate::i18n::t(label),
                         };
