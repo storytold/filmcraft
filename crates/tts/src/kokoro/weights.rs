@@ -162,27 +162,36 @@ pub(crate) const STYLE: usize = 256;
 
 /// Read a voice pack: a zip whose `<name>/data/0` holds `[510, 1, 256]` little-endian float32.
 pub(crate) fn read_voice(path: &Path) -> Result<Vec<f32>, TtsError> {
+    use craft_zip::{SeekableArchive, SeekableLimits};
+
+    const BYTE_ORDER_MAX: u64 = 16;
+    let want = PACK_LEN * STYLE * 4;
     let f = std::fs::File::open(path).map_err(|e| err(format!("{}: {e}", path.display())))?;
-    let mut z = zip::ZipArchive::new(f).map_err(|e| err(format!("{}: {e}", path.display())))?;
-    let name = (0..z.len())
-        .filter_map(|i| z.by_index(i).ok().map(|e| e.name().to_string()))
-        .find(|n| n.ends_with("/data/0"))
-        .ok_or_else(|| err(format!("{}: not a voice pack", path.display())))?;
-    let order = (0..z.len()).filter_map(|i| z.by_index(i).ok().map(|e| e.name().to_string())).find(|n| n.ends_with("/byteorder"));
+    // The catalogued voice packs contain about ten ZIP records. Allow ample room
+    // for packaging metadata without letting it drive unbounded indexing.
+    let limits = SeekableLimits { max_entries: 128, max_metadata_bytes: 1024 * 1024, max_total_bytes: want as u64 + BYTE_ORDER_MAX };
+    let mut z = SeekableArchive::open(f, limits).map_err(|e| err(format!("{}: {e}", path.display())))?;
+    // The old standalone ZIP configuration only enabled stored members.
+    let mut first_stored = |suffix: &str| {
+        (0..z.len()).find_map(|i| {
+            let name = z.entry_name(i).ok().flatten()?;
+            (name.ends_with(suffix) && z.is_stored(&name) == Some(true)).then_some(name)
+        })
+    };
+    let name = first_stored("/data/0").ok_or_else(|| err(format!("{}: not a voice pack", path.display())))?;
+    let order = first_stored("/byteorder");
     if let Some(o) = order {
-        let mut s = String::new();
-        z.by_name(&o).map_err(err)?.take(16).read_to_string(&mut s).map_err(err)?;
+        let bytes = z.read(&o, BYTE_ORDER_MAX).map_err(err)?.ok_or_else(|| err("missing voice byte order"))?;
+        let s = std::str::from_utf8(&bytes).map_err(err)?;
         if s.trim() != "little" {
             return Err(err(format!("{}: unsupported byte order `{s}`", path.display())));
         }
     }
-    let want = PACK_LEN * STYLE * 4;
-    let mut e = z.by_name(&name).map_err(err)?;
-    if e.size() != want as u64 {
-        return Err(err(format!("{}: voice data is {} bytes, expected {want}", path.display(), e.size())));
+    let size = z.declared_size(&name).ok_or_else(|| err("missing voice data"))?;
+    if size != want as u64 {
+        return Err(err(format!("{}: voice data is {size} bytes, expected {want}", path.display())));
     }
-    let mut buf = Vec::with_capacity(want);
-    e.by_ref().take(want as u64).read_to_end(&mut buf).map_err(err)?;
+    let buf = z.read(&name, want as u64).map_err(err)?.ok_or_else(|| err("missing voice data"))?;
     if buf.len() != want {
         return Err(err(format!("{}: truncated voice data", path.display())));
     }
@@ -203,7 +212,6 @@ pub(crate) fn style_for(pack: &[f32], n: usize, dev: &Device) -> Result<Tensor, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn tmp(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("filmcraft-kokoro-{}-{name}", std::process::id()));
@@ -215,15 +223,14 @@ mod tests {
     /// A voice-pack-shaped zip with `data` as `x/data/0`.
     fn pack(dir: &Path, data: &[u8], order: &str) -> std::path::PathBuf {
         let p = dir.join("v.pt");
-        let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
-        let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        z.start_file("x/data.pkl", o).unwrap();
-        z.write_all(b"not used").unwrap();
-        z.start_file("x/byteorder", o).unwrap();
-        z.write_all(order.as_bytes()).unwrap();
-        z.start_file("x/data/0", o).unwrap();
-        z.write_all(data).unwrap();
-        z.finish().unwrap();
+        let mut z = craft_zip::Writer::new();
+        let stored = craft_zip::Compression::Stored;
+        z.add("x/data.pkl", b"not used", stored).unwrap();
+        if !order.is_empty() {
+            z.add("x/byteorder", order.as_bytes(), stored).unwrap();
+        }
+        z.add("x/data/0", data, stored).unwrap();
+        std::fs::write(&p, z.finish().unwrap()).unwrap();
         p
     }
 
@@ -239,6 +246,7 @@ mod tests {
         data[4 * STYLE * 4..4 * STYLE * 4 + 4].copy_from_slice(&7.0f32.to_le_bytes());
         let v = read_voice(&pack(&d, &data, "little")).unwrap();
         assert_eq!(v.len(), PACK_LEN * STYLE);
+        assert_eq!(read_voice(&pack(&d, &data, "")).unwrap(), v);
         let s = style_for(&v, 5, &Device::Cpu).unwrap();
         assert_eq!(s.dims(), &[1, STYLE]);
         assert_eq!(s.to_vec2::<f32>().unwrap()[0][0], 7.0);
