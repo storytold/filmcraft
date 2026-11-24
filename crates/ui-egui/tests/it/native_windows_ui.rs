@@ -58,6 +58,9 @@ fn native_host() {
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    /// The OS stand-in's desktop pointer, which a panel's own OS window reads during a drag
+    /// that started in the main window.
+    system: std::sync::Arc<craft_window::system::FakeSystem>,
 }
 
 impl Driver {
@@ -71,11 +74,14 @@ impl Driver {
         s.execute("source.open", json!({"item": source})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
+        let system = std::sync::Arc::new(craft_window::system::FakeSystem::new());
+        let installed = system.clone();
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless_with(&cc.egui_ctx, installed);
             filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
             app
         });
-        let mut d = Driver { harness, tx };
+        let mut d = Driver { harness, tx, system };
         d.harness.ctx.set_embed_viewports(false);
         // A main window that reports its desktop place, as under X11: craft-ui otherwise keeps
         // floating windows in-window.
@@ -129,7 +135,10 @@ impl Driver {
         self.harness.state()
     }
 
+    /// The pointer in the main window, which also puts the OS pointer there: the main window's
+    /// content starts at the desktop origin.
     fn pointer(&mut self, pos: egui::Pos2, pressed: Option<bool>) {
+        self.system.set_pointer(Some([pos.x, pos.y]));
         self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
         if pressed == Some(true) {
             self.frames(1);
@@ -279,6 +288,13 @@ fn a_source_drag_drops_on_a_timeline_in_its_own_window() {
     d.pointer(to, None);
     d.pointer(to, Some(false));
     d.frames(3);
+    if clips(&d) != 1 {
+        let desktop = craft_ui::runtime::windows::WindowHost::of(&d.harness.ctx).desktop_pointer();
+        eprintln!(
+            "DIAG a_source_drag_drops_on_a_timeline_in_its_own_window: from={from:?} to={to:?} local={local:?} panel={panel:?} row={row} desktop pointer={desktop:?} status={:?}",
+            d.app().ui.status
+        );
+    }
     assert_eq!(clips(&d), 1, "status: {}", d.app().ui.status);
 }
 

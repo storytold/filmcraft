@@ -55,7 +55,12 @@ pub fn install(ctx: &Context, app_id: &str) -> Result<(), craft_ui::InstallError
 /// Installs the runtime with no window services: the web shell, and every test harness that runs the app's UI.
 /// A context that has the runtime already keeps it.
 pub fn install_headless(ctx: &Context) {
-    let system: Arc<dyn WindowSystem> = Arc::new(NoWindows);
+    install_headless_with(ctx, Arc::new(NoWindows));
+}
+
+/// [`install_headless`] with the window system `system`: a harness that scripts the OS (the desktop pointer of a drag
+/// that crosses into a panel's own OS window) installs a `craft_window::system::FakeSystem`.
+pub fn install_headless_with(ctx: &Context, system: Arc<dyn WindowSystem>) {
     match embed::install(ctx, InstallSpec::new(ShellInfo::default(), system), &UiFonts::new(&I18nScripts)) {
         Ok(_) | Err(craft_ui::InstallError::AlreadyInstalled) => {}
         Err(error) => log::warn!("the UI runtime could not be installed: {error}"),
