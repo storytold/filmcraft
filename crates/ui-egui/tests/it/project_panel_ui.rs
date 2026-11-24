@@ -552,11 +552,9 @@ fn metadata_display_dialog_and_view_presets() {
     if !d.has("project.list.header.Label") {
         let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
         let headers = d.ok("ui.elements", json!({"prefix": "project.list"}));
-        eprintln!(
-            "DIAG metadata_display_dialog_and_view_presets: panel={panel} list={headers} view={:?} dialog_open={}",
-            d.app().session.prefs.project_panel.view.mode,
-            d.app().ui.project_panel.dialog.is_some()
-        );
+        let view = d.app().session.prefs.project_panel.view.mode;
+        let dialog_open = d.app().ui.project_panel.dialog.is_some();
+        eprintln!("DIAG metadata_display_dialog_and_view_presets: panel={panel} list={headers} view={view:?} dialog_open={dialog_open}");
     }
     assert!(d.has("project.list.header.Label") && d.has("project.list.header.Video Usage"));
 
