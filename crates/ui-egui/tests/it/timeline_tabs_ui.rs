@@ -194,25 +194,8 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     // a right-click on another tab while the menu is open moves the menu to that tab
     d.ok("ui.click", json!({"id": format!("timeline.tab.{b}"), "button": "right"}));
     d.frames(3);
-    let first = (d.active(), d.has("panel.menu.Timeline.close"));
     d.ok("ui.click", json!({"id": format!("timeline.tab.{main}"), "button": "right"}));
     d.frames(3);
-    if !(d.has("panel.menu.Timeline.close") && d.active() == main) {
-        let menu = d.harness.ctx.data(|data| data.get_temp::<(filmcraft_ui_egui::dock::PanelKind,egui::Pos2, egui::ViewportId)>(egui::Id::unique("panel-menu")));
-        let tab = d.rect(&format!("timeline.tab.{main}"));
-        let b_tab = d.rect(&format!("timeline.tab.{b}"));
-        let ctx = d.harness.ctx.clone();
-        let pointer = ctx.pointer_latest_pos();
-        let menu_rect = ctx.memory(|m| m.area_rect(egui::Id::unique("panel-menu").with("area")));
-        let layer = pointer.and_then(|p| ctx.layer_id_at(p));
-        let hits = ctx.viewport(|v| v.hits.click.as_ref().map(|w| format!("{:?} rect={:?}", w.id, w.rect)));
-        eprintln!(
-            "DIAG a_right_click_on_a_tab_shows_it_and_opens_its_menu: main={main} b={b} after first (active, menu)={first:?} now active={} menu={} data={menu:?} main tab={tab:?} b tab={b_tab:?} pointer={pointer:?} menu rect={menu_rect:?} layer at pointer={layer:?} click hit={hits:?} status={:?}",
-            d.active(),
-            d.has("panel.menu.Timeline.close"),
-            d.app().ui.status
-        );
-    }
     assert!(d.has("panel.menu.Timeline.close") && d.active() == main);
     d.click("panel.Program");
     // Close Panel from the menu closes the tab it was opened on

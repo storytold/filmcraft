@@ -9,19 +9,25 @@
 
 use std::sync::{Arc, LazyLock};
 
-use craft_host::target::{Backend, ShellInfo};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_host::target::Backend;
+use craft_host::target::ShellInfo;
 use craft_host::{AppInfo, Host};
 use craft_keymap::Overrides;
 use craft_theme::Mode;
 use craft_ui::InstallSpec;
 use craft_ui::fonts::{I18nScripts, UiFonts};
 use craft_ui::runtime::commands::{CommandInput, CommandSet as _, NavCommand};
-use craft_ui::runtime::env::{RootEnv, Scale, SystemReader};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_ui::runtime::env::SystemReader;
+use craft_ui::runtime::env::{RootEnv, Scale};
 use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
 use craft_ui::runtime::frame::{FrameInput, WindowInput};
 use craft_ui::runtime::keys::{Intent, with_window_intents};
 use craft_ui::shell::embed::{self, CloseDecision};
-use craft_window::system::{NoWindows, SystemWindows, WindowSystem};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_window::system::SystemWindows;
+use craft_window::system::{NoWindows, WindowSystem};
 use egui::{Context, Id, Key, Modifiers, Ui};
 
 use crate::FilmcraftApp;
@@ -95,7 +101,7 @@ struct PressSuffix {
 struct PressSuffixes([Option<PressSuffix>; 2]);
 
 fn press_suffix_id() -> Id {
-    Id::new("filmcraft-press-suffix")
+    Id::unique("filmcraft-press-suffix")
 }
 
 /// Last in `raw_input_hook`: records how many of the frame's events follow its first pointer press, so
@@ -124,7 +130,7 @@ struct CtrlWheels {
 }
 
 fn ctrl_wheels_id() -> Id {
-    Id::new("filmcraft-ctrl-wheels")
+    Id::unique("filmcraft-ctrl-wheels")
 }
 
 /// Last in `raw_input_hook`: records the frame's Ctrl+wheel events (synthetic ones included) before the runtime's
@@ -160,7 +166,7 @@ pub fn folded_ctrl_wheels(ctx: &Context, events: &[egui::Event]) -> Vec<egui::Ev
 }
 
 fn raw_escape_id() -> Id {
-    Id::new("filmcraft-raw-escape")
+    Id::unique("filmcraft-raw-escape")
 }
 
 /// Last in `raw_input_hook`: records whether the frame's raw input carries an Escape press, before the runtime's key
