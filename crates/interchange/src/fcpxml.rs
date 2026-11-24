@@ -588,15 +588,19 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     retry.push(DeferredAudioRef { parent: parent_id, child: child_id, video: video_id, link, lane: audio_lane, audio });
                     continue;
                 }
+                let Some(current_parent) = self.b.p.sequence(parent_id) else { continue };
+                if current_parent.audio_tracks.iter().any(|track| track.items.iter().any(|item| item.link == Some(link))) {
+                    continue;
+                }
+                if video_id.is_some_and(|video_id| !current_parent.video_tracks.iter().any(|track| track.items.iter().any(|item| item.id == video_id))) {
+                    continue;
+                }
                 let Some(mut parent) = self.b.p.sequence(parent_id).cloned() else { continue };
                 if let Some(video_id) = video_id {
                     let Some(video) = parent.video_tracks.iter_mut().find_map(|track| track.items.iter_mut().find(|item| item.id == video_id)) else {
                         continue;
                     };
                     video.link = Some(link);
-                }
-                if parent.audio_tracks.iter().any(|track| track.items.iter().any(|item| item.link == Some(link))) {
-                    continue;
                 }
                 audio.link = Some(link);
                 if self.b.place(&mut parent, TrackKind::Audio, audio_lane, audio).is_some() {
