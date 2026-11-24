@@ -11,9 +11,9 @@ workspace = true
 
 [dependencies]
 craft-audio = { workspace = true }
-craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "7a01b71818ec1eb1bf9309f87ed0a9f251431099" }
 craft-exr = { workspace = true }
-craft-png = { git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-png = { git = "https://github.com/storytold/craft-libs", rev = "7a01b71818ec1eb1bf9309f87ed0a9f251431099" }
 craft-tga = { workspace = true }
 craft-tiff = { workspace = true, features = ["plain-rgba16"] }
 craft-dpx = { workspace = true }
