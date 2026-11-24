@@ -90,6 +90,22 @@ impl Driver {
     fn rect(&mut self, id: &str) -> [f64; 4] {
         self.find(id).unwrap_or_else(|| panic!("no element {id}"))
     }
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it: next's dock gives a panel a shorter body
+    /// than the old dock did. Stops when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
     fn click(&mut self, id: &str) {
         self.rect(id);
         self.ok("ui.click", json!({"id": id}));
@@ -490,7 +506,7 @@ fn center(rect: [f64; 4]) -> egui::Pos2 {
 fn select_keys(d: &mut Driver, keys: &[filmcraft_ui_egui::state::KeyframeRef]) {
     for (i, key) in keys.iter().enumerate() {
         let id = key_id(d, key);
-        d.rect(&id);
+        d.reveal(&id);
         d.ok("ui.click", json!({"id":id,"modifiers":{"shift":i>0}}));
         d.frames(3);
     }

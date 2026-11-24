@@ -406,6 +406,30 @@ fn trim_monitor_buttons_and_dynamic_jkl_trimming() {
 }
 
 impl Driver {
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        let v = self.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
+    }
+
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it: next's dock gives a panel a shorter body
+    /// than the old dock did. Stops when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
+
     /// Let background frame workers deliver, then render the window to `<tmp>/<name>.png`.
     fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
         for _ in 0..30 {
@@ -615,6 +639,7 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
         seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "color_key").unwrap()["params"]["color"]["value"].clone()
     };
     let before = color(&mut d);
+    d.reveal("effectControls.color_key.color.eyedropper");
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
