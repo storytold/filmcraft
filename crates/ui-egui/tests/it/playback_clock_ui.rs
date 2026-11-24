@@ -46,7 +46,10 @@ fn play_with(per_poll: u64, steps: usize) -> (f64, bool) {
     s.set_playhead(Tick::ZERO);
     let mut app = FilmcraftApp::new(s);
     app.audio = Some(Box::new(FakeOut { played: Arc::new(AtomicU64::new(0)), per_poll, started: false, note: None }));
-    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     h.state_mut().play(1.0);
     for _ in 0..steps {
@@ -83,7 +86,10 @@ fn a_fallback_note_from_the_audio_device_reaches_the_status_bar() {
     let note = "Audio hardware: the default output device cannot be opened; using 'sofhdadsp'".to_string();
     let mut app = FilmcraftApp::new(s);
     app.audio = Some(Box::new(FakeOut { played: Arc::new(AtomicU64::new(0)), per_poll: 4_800, started: false, note: Some(note.clone()) }));
-    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| app);
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.step();
     assert_eq!(h.state_mut().ui.status, note, "the note surfaces on the first frame (apply_prefs)");
     h.state_mut().play(1.0);

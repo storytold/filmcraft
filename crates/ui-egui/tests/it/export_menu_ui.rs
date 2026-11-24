@@ -33,7 +33,10 @@ impl Driver {
         if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
             builder = builder.wgpu();
         }
-        let harness = builder.build_eframe(move |_cc| app);
+        let harness = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d

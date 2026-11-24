@@ -27,7 +27,10 @@ impl Driver {
         let app = FilmcraftApp::new(session).with_control(rx);
         // Align UI clock steps with the drag test's 16 ms worker yields. The default
         // 250 ms steps can advance playback faster than the workers can show its frames.
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d

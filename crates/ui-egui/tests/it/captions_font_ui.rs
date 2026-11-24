@@ -22,7 +22,10 @@ impl Driver {
         let app = FilmcraftApp::new(session).with_control(rx);
         // the font list names every installed family, and some names are in scripts the interface
         // fonts do not cover (macOS lists "इनाईमाथी" for InaiMathi): draw those as boxes
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).allow_missing_glyphs().build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).allow_missing_glyphs().build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
