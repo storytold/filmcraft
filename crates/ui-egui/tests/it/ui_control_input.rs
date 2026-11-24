@@ -79,9 +79,25 @@ fn native_j_cannot_start_reverse_playback_during_control_only_editing() {
     d.frames(1, true); // queue the requested command; the native key arrives in its input frame
     native_key(&mut d.h, Key::J);
     d.frames(4, true);
-    assert_eq!(reply.try_recv().unwrap()["ok"], true);
+    let replied = reply.try_recv();
+    eprintln!(
+        "DIAG native_j_cannot_start_reverse_playback_during_control_only_editing: reply={replied:?} playing={} focused={:?} node={:?} egui={:?} status={:?}",
+        d.h.state().playback.playing,
+        d.h.state().ui.focused,
+        craft_ui::runtime::access::focused_node(&d.h.ctx),
+        d.h.ctx.memory(|memory| memory.focused()),
+        d.h.state().ui.status
+    );
+    assert_eq!(replied.unwrap()["ok"], true);
     assert!(!d.h.state().playback.playing, "native J must not contaminate the automated edit");
     let after = d.ok("engine.execute", json!({"command":"sequence.inspect","params":{}}), true);
+    eprintln!(
+        "DIAG native_j_cannot_start_reverse_playback_during_control_only_editing: playhead {} -> {}, V1 items {} -> {}",
+        before["playhead"],
+        after["playhead"],
+        before["video"][0]["items"].as_array().map_or(0, Vec::len),
+        after["video"][0]["items"].as_array().map_or(0, Vec::len)
+    );
     assert_eq!(after["playhead"], before["playhead"]);
     assert_eq!(after["video"][0]["items"].as_array().unwrap().len(), before["video"][0]["items"].as_array().unwrap().len() + 1);
 }
@@ -161,6 +177,12 @@ fn focus_reports_real_widget_ownership_and_rejects_bad_targets_without_changing_
     let focus = d.ok("ui.focus", json!({"id":"tools.Selection"}), false);
     assert_eq!(focus["focusRequested"], "tools.Selection");
     let state = d.ok("ui.inspect", json!({}), false);
+    eprintln!(
+        "DIAG focus_reports_real_widget_ownership_and_rejects_bad_targets_without_changing_it: focus={focus} keyboardFocus={} input={} app_native={:?}",
+        state["keyboardFocus"],
+        state["input"],
+        filmcraft_ui_egui::control::inspect(d.h.state(), &d.h.ctx.clone())["input"]
+    );
     assert_eq!(state["keyboardFocus"]["widgetId"], focus["widgetId"]);
     assert_eq!(state["keyboardFocus"]["elementIds"], json!(["tools.Selection"]));
     assert_eq!(state["keyboardFocus"]["active"], true);
@@ -203,6 +225,22 @@ fn modified_control_click_adds_to_timeline_selection() {
         d.ok("engine.execute", json!({"command":"timeline.select","params":{"clips":[first.0]}}), false);
         let position = d.ok("ui.timeline.locate", json!({"clip":second.0}), false);
         d.ok("ui.click", json!({"x":position["x"],"y":position["y"],"shift":true}), false);
+        let at = egui::pos2(position["x"].as_f64().unwrap_or(0.0) as f32, position["y"].as_f64().unwrap_or(0.0) as f32);
+        let under: Vec<String> = d
+            .h
+            .state()
+            .auto
+            .elements
+            .iter()
+            .filter(|element| egui::Rect::from_min_size(egui::pos2(element.rect[0], element.rect[1]), egui::vec2(element.rect[2], element.rect[3])).contains(at))
+            .map(|element| element.id.clone())
+            .collect();
+        eprintln!(
+            "DIAG modified_control_click_adds_to_timeline_selection: isolated={isolated} at={at:?} under={under:?} selection={:?} first={first:?} second={second:?} focused={:?} layer_at={:?}",
+            d.h.state().session.state.selection,
+            d.h.state().ui.focused,
+            d.h.ctx.layer_id_at(at)
+        );
         assert!(d.h.state().session.state.selection.contains(&first), "Shift-click must retain the first selected clip (isolated={isolated})");
         assert!(d.h.state().session.state.selection.contains(&second));
         assert!(Arc::ptr_eq(&d.h.state().session.project, &project));
@@ -224,6 +262,14 @@ fn modified_control_drag_keeps_shift_until_release_and_clears_it_afterward() {
     let mut held_frames = 0;
     for _ in 0..60 {
         d.frames(1, false);
+        eprintln!(
+            "DIAG modified_control_drag_keeps_shift_until_release_and_clears_it_afterward: down={} released={} shift={} pos={:?} gutter={:?}",
+            d.h.ctx.input(|input| input.pointer.any_down()),
+            d.h.ctx.input(|input| input.pointer.any_released()),
+            d.h.ctx.input(|input| input.modifiers.shift),
+            d.h.ctx.input(|input| input.pointer.latest_pos()),
+            d.h.state().auto.find("dock.gutter.").map(|element| element.rect)
+        );
         if d.h.ctx.input(|input| input.pointer.any_down() || input.pointer.any_released()) {
             held_frames += 1;
             assert!(d.h.ctx.input(|input| input.modifiers.shift), "the synthetic gesture owns Shift throughout press, movement and release");

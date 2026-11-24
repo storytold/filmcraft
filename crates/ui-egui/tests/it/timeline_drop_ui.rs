@@ -268,31 +268,7 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
         assert!(!covered_preview, "a covered Timeline must not preview a placement");
         float_panel(&mut h, "Info", [5.0, 5.0, 320.0, 200.0]);
         let at = point_on_row(&h, "timeline.track.V1.target");
-        eprintln!(
-            "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} at={at:?} info={:?} grip={:?} timeline={:?} floats={:?}",
-            control_rect(&h, "panel.Info"),
-            h.state().auto.find("panel.float.0.move").map(|element| element.rect),
-            control_rect(&h, "panel.Timeline"),
-            h.state().ui.dock.floating.iter().map(|window| window.rect).collect::<Vec<_>>()
-        );
         let uncovered_preview = hover_at(&mut h, at);
-        if !uncovered_preview {
-            let holds = |r: [f32; 4]| at.x >= r[0] && at.x <= r[0] + r[2] && at.y >= r[1] && at.y <= r[1] + r[3];
-            let elements: Vec<String> = h.state().auto.elements.iter().filter(|element| holds(element.rect)).map(|element| element.id.clone()).collect();
-            let areas: Vec<String> = h.ctx.memory(|memory| {
-                memory
-                    .layer_ids()
-                    .filter_map(|layer| memory.area_rect(layer.id).filter(|area| area.contains(at)).map(|area| format!("{layer:?} {area:?}")))
-                    .collect()
-            });
-            eprintln!(
-                "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} no preview; v1={:?} ruler={:?} layer_at={:?} elements={elements:?} areas={areas:?} status={:?}",
-                h.state().auto.find("timeline.track.V1.target").map(|element| element.rect),
-                h.state().auto.find("timeline.ruler").map(|element| element.rect),
-                h.ctx.layer_id_at(at),
-                h.state().ui.status
-            );
-        }
         assert!(uncovered_preview);
         drop_at(&mut h, at, &still(&format!("drop_uncovered_{scale}.png")));
         assert_eq!(clip_counts(&h), (1, 0));
