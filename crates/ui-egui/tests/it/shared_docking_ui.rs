@@ -392,7 +392,7 @@ fn a_release_over_no_target_cancels_the_drag() {
     // from its group's frame by the panel padding, so a point just right of the body is still in
     // the group.
     let gap = rect(&h, "dock.gutter.").center();
-    eprintln!("DIAG a_release_over_no_target_cancels_the_drag: info={info:?} gap={gap:?} source={:?}", rect(&h, "panel.Source"));
+    eprintln!("DIAG a_release_over_no_target_cancels_the_drag: info={info:?} gap={gap:?}");
     for to in [pos2(600.0, 10.0), pos2(gap.x, info.center().y)] {
         let from = rect(&h, "panel.tab.Info").center();
         drag(&mut h, from, to, Modifiers::NONE);
