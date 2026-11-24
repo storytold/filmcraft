@@ -33,14 +33,14 @@ impl Driver {
 
     fn frames(&mut self, count: usize, native_focused: bool) {
         for _ in 0..count {
-            let ctx = self.h.ctx.clone();
-            let mut raw = std::mem::take(self.h.input_mut());
+            // The backend's focus state; the harness runs the app's raw_input_hook on this input
+            // once per step, as eframe does. A second call here would drop, in control-only mode,
+            // the synthetic step the first call offered, and record the focus the first forced.
+            let raw = self.h.input_mut();
             raw.focused = native_focused;
             if let Some(viewport) = raw.viewports.get_mut(&egui::ViewportId::ROOT) {
                 viewport.focused = Some(native_focused);
             }
-            eframe::App::raw_input_hook(self.h.state_mut(), &ctx, &mut raw);
-            *self.h.input_mut() = raw;
             self.h.step();
             assert!(self.h.state().ui_error.is_none());
         }
