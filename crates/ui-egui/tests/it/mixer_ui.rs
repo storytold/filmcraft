@@ -480,12 +480,25 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
     for workspace in ["Editing", "Audio"] {
         let mut d = Driver::demo_with_step_dt(Some(0.1));
         d.ok("ui.set", json!({"workspace": workspace}));
+        let wall = std::time::Instant::now();
+        let start = d.harness.state().session.playhead().seconds();
         d.ok("ui.playback", json!({"action": "play"}));
         d.frames(10);
         let prefix = if workspace == "Audio" { "mixer.Mix.meter" } else { "audioMeters.channel." };
         let playing = d.ok("ui.elements", json!({"prefix": prefix}));
         let labels = |elements: &Value| elements.as_array().unwrap().iter().map(|e| e["label"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         let active = labels(&playing);
+        if !active.iter().any(|label| !label.contains("-90.0")) {
+            // The playhead follows the wall clock when it runs ahead of the frames' time: a loaded
+            // machine can step it past the loudness feed's one-second window each frame.
+            eprintln!(
+                "DIAG paused_meters_repaint_without_input_and_settle_after_release: {workspace} playing={} playhead {:?} -> {:?} wall={:?}",
+                d.harness.state().playback.playing,
+                start,
+                d.harness.state().session.playhead().seconds(),
+                wall.elapsed()
+            );
+        }
         assert!(!active.is_empty(), "{workspace}: the meters must be visible");
         assert!(active.iter().any(|label| !label.contains("-90.0")), "{workspace}: the demo must feed the meters: {active:?}");
         d.ok("ui.playback", json!({"action": "stop"}));
