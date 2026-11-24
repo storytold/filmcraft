@@ -289,6 +289,25 @@ mod tests {
         assert!(find("neutral mono").is_some() && find("nope").is_none());
     }
 
+    /// `wheel(deg, ..)` promises the offset towards hue `deg`, and the presets are authored and
+    /// named against it ("Cold Mono" is cyan-blue, 210°). The renderer must land on that hue, so
+    /// this pins the pair: a sign change on either side re-hues every built-in look (#4058).
+    #[test]
+    fn wheel_offsets_point_at_their_documented_hue() {
+        let rgb = |deg: f64| match wheel(deg, 1.0) {
+            ParamValue::Vec2(v) => crate::effects::wheel_rgb(v),
+            _ => panic!("a wheel offset is a Vec2"),
+        };
+        let red = rgb(0.0);
+        assert!(red[0] > 0.99 && red[1] < -0.49 && red[2] < -0.49, "0° is red: {red:?}");
+        let green = rgb(120.0);
+        assert!(green[1] > 0.99 && green[0] < -0.49 && green[2] < -0.49, "120° is green: {green:?}");
+        let blue = rgb(240.0);
+        assert!(blue[2] > 0.99 && blue[0] < -0.49 && blue[1] < -0.49, "240° is blue: {blue:?}");
+        let sepia = rgb(30.0);
+        assert!(sepia[0] > 0.8 && sepia[1].abs() < 0.1 && sepia[2] < -0.8, "30° is warm orange-red: {sepia:?}");
+    }
+
     #[test]
     fn preview_picture_has_ramp_chips_and_sky() {
         let img = preview_image(320, 180);
