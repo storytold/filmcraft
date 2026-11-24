@@ -402,7 +402,7 @@ impl Stitch {
         let rg_u = normalise(&r_u, g1);
         let (gm0_u, gm1_u) = local_gain_map(&fg_u, &rg_u, dw, dh);
         let (fg, rg) = (apply_map(&fg_u, &gm0_u), apply_map(&rg_u, &gm1_u));
-        // 2. the seam: a 2-D graph cut over the aligned disagreement (routes around
+        // 2. the seam: a 2-D cut over the aligned disagreement (shortest-path dual, routes around
         // a compact parallax blob in both axes), falling back to the 1-D DP when the
         // band is too small or too large for a bounded graph. The cut places the
         // seam fresh from the aligned renders each frame (as the SDK's seam finder
@@ -410,7 +410,7 @@ impl Stitch {
         let mdec = band_coverage_maps(&self.maps[0], b, dw, dh, sc);
         let bdec = Band { x0: 0, x1: dw, front_rises: b.front_rises };
         let grid = seam_grid_with_floor(&fg, &rg, &mdec, &bdec, dw, dh, sc > 1);
-        let (mut path, labels) = match seam_cut(&grid, &bdec, dw, dh) {
+        let (mut path, labels) = match seam_cut(&grid, &bdec, dw, dh, sc == 1) {
             Some((labels, path)) => (path, labels),
             None => (seam_path(&grid, dw, dh), Vec::new()),
         };
@@ -915,15 +915,9 @@ const OCCLUSION_K: f64 = 12.0;
 const OCCLUSION_GATE: f64 = 15.0;
 /// How far above the gate the occlusion cue reaches full strength.
 const OCCLUSION_RAMP: f64 = 20.0;
-/// Capacity of a neighbour edge in the 2-D seam graph cut, as a multiple of the
-/// largest node disagreement. High enough that the cut prefers to pass *through*
-/// node capacities (routing around a disagreement blob) rather than *along* a
-/// neighbour edge (which would let the boundary fray into a jagged 1-px stair),
-/// but finite so a genuinely cheaper long route can still win. See [`seam_cut`].
-const GC_NEIGH: f64 = 64.0;
-/// Fixed-point scale for graph-cut capacities: the float node costs are rounded to
-/// integers times this, so the max-flow runs on exact `i64` arithmetic (no float
-/// comparison drift, no `f64` in the residual graph).
+/// Fixed-point scale for seam-cut costs: the float cell costs are rounded to
+/// integers times this, so the cut's shortest path (and the reference max-flow of
+/// the tests) runs on exact `i64` arithmetic with no comparison drift.
 const GC_SCALE: f64 = 64.0;
 /// The largest graph the seam cut will build before falling back to the 1-D DP: a
 /// hostile (huge) band is refused rather than allocated (see AGENTS §0.4).
@@ -1399,9 +1393,11 @@ struct SeamGrid {
     /// `nodes * cols` raw mean disagreement (no priors), the part [`seam_cut`]
     /// spreads over a blend window so a doubled object's gap is not free.
     dis: Vec<f64>,
-    /// Per node (`nodes * cols`) which lenses see it: bit 0 = the front lens, bit 1 =
-    /// the rear. A node only one lens covers is forced to it by [`seam_cut`].
+    /// Per node (`nodes * cols`) which lenses see it: bit 0 = the front
+    /// lens, bit 1 = the rear. A node only one lens covers is forced to it
+    /// by [`seam_cut`].
     cover: Vec<u8>,
+    /// Per node (`nodes * cols`) which lenses see it: bit 0 = the front lens, bit 1 =
     cols: usize,
     nodes: usize,
     stride: usize,
@@ -1420,7 +1416,7 @@ fn seam_grid_with_floor(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usi
     let nodes = (h / DP_ROW_STRIDE).max(1);
     let mut grid = vec![0f64; nodes * cols];
     let mut dis = vec![0f64; nodes * cols];
-    // Which lens sees each node, for the graph cut's coverage forcing.
+    // Which lens sees each node, for the cut's coverage forcing.
     let mut cover = vec![0u8; nodes * cols];
     grid.par_chunks_mut(cols).zip(dis.par_chunks_mut(cols)).zip(cover.par_chunks_mut(cols)).enumerate().for_each(|(ni, ((grow, drow), crow))| {
         let y0 = ni * DP_ROW_STRIDE;
@@ -1584,12 +1580,18 @@ fn seam_path(g: &SeamGrid, bw: usize, h: usize) -> Vec<f64> {
     path
 }
 
-/// A small Dinic max-flow / min-cut on `i64` capacities, used only by [`seam_cut`].
+/// A small Dinic max-flow / min-cut on `i64` capacities.
+///
+/// Seam cuts themselves are solved by [`seam_cut`] as a dual shortest path, so
+/// this engine only serves the `flow_tests` module: it is the independent
+/// reference (brute force, and the seam-shaped ladder equivalence test) that
+/// keeps the dual formulation honest.
 /// Nodes are `0..n`; the source is `0` and the sink is `1`. Edges are stored as a
 /// flat adjacency of `(to, rev, cap)` so the residual graph needs no `unsafe` and no
 /// pointer aliasing. Every capacity is a non-negative integer, so the max-flow is
 /// exact and the min-cut it induces is a genuine partition (AGENTS §0.4: no float
 /// arithmetic in the residual graph).
+#[cfg(test)]
 struct MaxFlow {
     n: usize,
     /// `adj[v]` is the list of edge indices leaving `v`.
@@ -1599,6 +1601,7 @@ struct MaxFlow {
     cap: Vec<i64>,
 }
 
+#[cfg(test)]
 impl MaxFlow {
     fn new(n: usize) -> Self {
         Self { n, adj: vec![Vec::new(); n], to: Vec::new(), cap: Vec::new() }
@@ -1617,8 +1620,216 @@ impl MaxFlow {
         }
     }
 
-    /// BFS level graph from the source; returns false when the sink is unreachable.
-    fn bfs(&self, s: usize, t: usize, level: &mut [i32]) -> bool {
+    /// Max flow / min cut by highest-label push–relabel with gap detection and
+    /// periodic (dual-BFS) global relabels: Goldberg–Tarjan with the
+    /// Cherkassky–Goldberg engineering. Kept as a second reference solver
+    /// beside [`dinic_flow`](Self::dinic_flow): random graphs are checked
+    /// against enumeration, and against each other, on the seam-shaped ladder.
+    /// Until this revision it was the production seam solver, but on a seam
+    /// graph it pays Θ(pushes), and pushes scale with the snake length of the
+    /// residual paths (the terminals are pinned to opposite band edges): on the
+    /// ~79k-cell proxy lattice that measured seconds per frame, where the dual
+    /// shortest path in [`seam_cut`] gets the same cut in milliseconds.
+    fn max_flow(&mut self, s: usize, t: usize) -> i64 {
+        let n = self.n;
+        let mut h = vec![0u32; n];
+        let mut ex = vec![0i64; n];
+        let mut cur = vec![0usize; n];
+        // Buckets of nodes with excess by height; stale entries (height moved
+        // under them) are re-homed at pop.
+        let mut bl: Vec<Vec<usize>> = vec![Vec::new(); 2 * n + 3];
+        let mut act = vec![false; n];
+        let mut maxh = 0usize;
+        let mut cnt = vec![0u32; 2 * n + 3]; // nodes per height (for gaps)
+
+        // Preflow: saturate the source's arcs.
+        h[s] = n as u32;
+        for k in 0..self.adj[s].len() {
+            let e = self.adj[s][k];
+            let c = self.cap[e];
+            if c > 0 {
+                let w = self.to[e];
+                self.cap[e] = 0;
+                self.cap[e ^ 1] += c;
+                ex[w] += c;
+                ex[s] -= c;
+            }
+        }
+
+        // Global relabel (Cherkassky–Goldberg): heights = exact residual distance
+        // to the sink where one exists (reverse BFS; the reverse of positive edge
+        // `v -> w` is its twin `e ^ 1`), and for the rest the distance BACK to the
+        // source, offset by n — so quarantined excess is one admissible push per
+        // hop from home, not a relabel grind (without this the gap-lifted swarm
+        // sat at a flat n+1 and crexed for minutes on big bands).
+        let gr = |mf: &mut Self, h: &mut [u32], cnt: &mut [u32]| {
+            cnt.iter_mut().for_each(|c| *c = 0);
+            h.fill(u32::MAX);
+            h[t] = 0;
+            cnt[0] += 1;
+            let mut q = std::collections::VecDeque::from([t]);
+            while let Some(w) = q.pop_front() {
+                for k in 0..mf.adj[w].len() {
+                    let e = mf.adj[w][k];
+                    let v = mf.to[e];
+                    if mf.cap[e ^ 1] > 0 && h[v] == u32::MAX {
+                        h[v] = h[w] + 1;
+                        q.push_back(v);
+                    }
+                }
+            }
+            // Anything the sink cannot see returns to the source: second reverse
+            // BFS from it, depths offset by n, capped at the label bound.
+            let mut q = std::collections::VecDeque::from([(s, 0u32)]);
+            h[s] = n as u32;
+            while let Some((w, d)) = q.pop_front() {
+                for k in 0..mf.adj[w].len() {
+                    let e = mf.adj[w][k];
+                    let v = mf.to[e];
+                    if mf.cap[e ^ 1] > 0 && h[v] == u32::MAX {
+                        h[v] = (n as u32 + 1 + d).min(2 * n as u32 + 1);
+                        q.push_back((v, d + 1));
+                    }
+                }
+            }
+            let dead = 2 * n as u32 + 1; // no excess lives here; discharge never sees them
+            for hv in h.iter_mut() {
+                if *hv == u32::MAX {
+                    *hv = dead;
+                }
+                cnt[*hv as usize] += 1;
+            }
+        };
+        gr(self, &mut h, &mut cnt);
+
+        let enqueue = |v: usize, h: &[u32], act: &mut [bool], bl: &mut [Vec<usize>], maxh: &mut usize| {
+            if !act[v] {
+                act[v] = true;
+                let hv = h[v] as usize;
+                bl[hv].push(v);
+                *maxh = (*maxh).max(hv);
+            }
+        };
+        for v in 0..n {
+            if v != s && v != t && ex[v] > 0 {
+                enqueue(v, &h, &mut act, &mut bl, &mut maxh);
+            }
+        }
+
+        // Periodic global relabel once this many edge inspections accrue.
+        let (mut work, refresh) = (0usize, (self.to.len() / 2).max(256));
+
+        while maxh > 0 {
+            while bl[maxh].is_empty() {
+                maxh -= 1;
+                if maxh == 0 {
+                    break;
+                }
+            }
+            if maxh == 0 {
+                break;
+            }
+            let u = bl[maxh].pop().expect("bucket non-empty");
+            if !act[u] || h[u] as usize != maxh || ex[u] <= 0 {
+                if h[u] as usize != maxh && ex[u] > 0 && u != s && u != t {
+                    act[u] = false;
+                    enqueue(u, &h, &mut act, &mut bl, &mut maxh);
+                } else {
+                    act[u] = false;
+                }
+                continue;
+            }
+            act[u] = false;
+            // Discharge u completely: push along admissible arcs, relabel (with
+            // gap) when its arc list runs out.
+            while ex[u] > 0 {
+                if cur[u] >= self.adj[u].len() {
+                    let old = h[u];
+                    let mut mh = u32::MAX;
+                    for &e in &self.adj[u] {
+                        if self.cap[e] > 0 {
+                            mh = mh.min(h[self.to[e]]);
+                        }
+                    }
+                    cnt[old as usize] -= 1;
+                    let nh = if cnt[old as usize] == 0 && (old as usize) < n + 1 {
+                        // Gap: this level is empty, so every level strictly
+                        // between it and the source end is cut off from the
+                        // sink. Lift all of them (their excess runs back at
+                        // the source, which sits at height n).
+                        let dead = n as u32 + 1;
+                        for v in 0..n {
+                            let k = h[v];
+                            if v != s && v != t && k > old && (k as usize) < n + 1 {
+                                cnt[k as usize] -= 1;
+                                cnt[dead as usize] += 1;
+                                h[v] = dead;
+                                cur[v] = 0;
+                            }
+                        }
+                        dead
+                    } else {
+                        mh.saturating_add(1).min(2 * n as u32 + 1)
+                    };
+                    h[u] = nh;
+                    cnt[nh as usize] += 1;
+                    cur[u] = 0;
+                    work += self.adj[u].len().max(1);
+                } else {
+                    let e = self.adj[u][cur[u]];
+                    let v = self.to[e];
+                    if self.cap[e] > 0 && h[u] == h[v] + 1 {
+                        let d = ex[u].min(self.cap[e]);
+                        self.cap[e] -= d;
+                        self.cap[e ^ 1] += d;
+                        ex[u] -= d;
+                        ex[v] += d;
+                        if v != s && v != t {
+                            enqueue(v, &h, &mut act, &mut bl, &mut maxh);
+                        }
+                    } else {
+                        cur[u] += 1;
+                        work += 1;
+                    }
+                }
+            }
+            if work > refresh {
+                gr(self, &mut h, &mut cnt);
+                cur.iter_mut().for_each(|c| *c = 0);
+                for b in bl.iter_mut() {
+                    b.clear();
+                }
+                act.iter_mut().for_each(|a| *a = false);
+                maxh = 0;
+                for v in 0..n {
+                    if v != s && v != t && ex[v] > 0 {
+                        enqueue(v, &h, &mut act, &mut bl, &mut maxh);
+                    }
+                }
+                work = 0;
+            }
+        }
+        ex[t]
+    }
+
+    /// The reference solver the push–relabel flow above is tested against.
+    fn dinic_flow(&mut self, s: usize, t: usize) -> i64 {
+        let (mut level, mut it) = (vec![-1i32; self.n], vec![0usize; self.n]);
+        let mut total = 0i64;
+        while self.dinic_bfs(s, t, &mut level) {
+            it.iter_mut().for_each(|i| *i = 0);
+            loop {
+                let pushed = self.dinic_dfs(s, t, i64::MAX, &level, &mut it);
+                if pushed == 0 {
+                    break;
+                }
+                total = total.saturating_add(pushed);
+            }
+        }
+        total
+    }
+
+    fn dinic_bfs(&self, s: usize, t: usize, level: &mut [i32]) -> bool {
         level.iter_mut().for_each(|l| *l = -1);
         level[s] = 0;
         let mut q = std::collections::VecDeque::from([s]);
@@ -1636,8 +1847,7 @@ impl MaxFlow {
         level[t] >= 0
     }
 
-    /// Blocking-flow DFS from `v`, pushing at most `f`; `it[v]` is the edge cursor.
-    fn dfs(&mut self, v: usize, t: usize, f: i64, level: &[i32], it: &mut Vec<usize>) -> i64 {
+    fn dinic_dfs(&mut self, v: usize, t: usize, f: i64, level: &[i32], it: &mut Vec<usize>) -> i64 {
         if v == t || f == 0 {
             return f;
         }
@@ -1645,7 +1855,7 @@ impl MaxFlow {
             let e = self.adj[v][it[v]];
             let w = self.to[e];
             if self.cap[e] > 0 && level[w] == level[v] + 1 {
-                let pushed = self.dfs(w, t, f.min(self.cap[e]), level, it);
+                let pushed = self.dinic_dfs(w, t, f.min(self.cap[e]), level, it);
                 if pushed > 0 {
                     self.cap[e] -= pushed;
                     self.cap[e ^ 1] += pushed;
@@ -1655,24 +1865,6 @@ impl MaxFlow {
             it[v] += 1;
         }
         0
-    }
-
-    /// The max-flow value from `s` to `t`. Bounded: each phase saturates at least
-    /// one edge, and the edge count is fixed, so the loop terminates.
-    fn max_flow(&mut self, s: usize, t: usize) -> i64 {
-        let (mut level, mut it) = (vec![-1i32; self.n], vec![0usize; self.n]);
-        let mut total = 0i64;
-        while self.bfs(s, t, &mut level) {
-            it.iter_mut().for_each(|i| *i = 0);
-            loop {
-                let pushed = self.dfs(s, t, i64::MAX, &level, &mut it);
-                if pushed == 0 {
-                    break;
-                }
-                total = total.saturating_add(pushed);
-            }
-        }
-        total
     }
 
     /// The set reachable from `s` in the residual graph after `max_flow`: the
@@ -1713,7 +1905,392 @@ impl MaxFlow {
 /// Returns the label grid (`nodes * cols`, 1 = the front lens owns the node) and the
 /// per-row seam column (band-local) read off it, or `None` when the band is too
 /// small or too large for a bounded graph (the caller then keeps the 1-D DP result).
-fn seam_cut(g: &SeamGrid, b: &Band, bw: usize, h: usize) -> Option<(Vec<u8>, Vec<f64>)> {
+///
+/// `exact` solves the cut's plateau structure faithfully - the interval dual
+/// below, matching the reference graph's min-cut side cell for cell; it costs
+/// O(nodes * cols^2). The upscaled decision lattice passes `false`: there the
+/// chain dual (one boundary cell per row, the interval family's diagonal) is
+/// ~10x cheaper, and its difference from the exact side lives inside
+/// exactly-equal costs that the proxy's wider blend.
+fn seam_cut(g: &SeamGrid, b: &Band, bw: usize, h: usize, exact: bool) -> Option<(Vec<u8>, Vec<f64>)> {
+    let (cols, nodes, stride) = (g.cols, g.nodes, g.stride);
+    if nodes == 0 || cols < 3 {
+        return None;
+    }
+    let cells = nodes.checked_mul(cols)?;
+    if cells.checked_mul(2)?.checked_add(2)? > GC_MAX_NODES {
+        return None;
+    }
+    // The boundary cost. A seam through a node crossfades everything within half a
+    // blend window of it, so the *disagreement* a boundary at `p` must pay is the
+    // worst in `p`'s window, not just `p`'s own: without this the cut routes through
+    // the low-disagreement GAP between a doubled object's two parallax copies (both
+    // copies then show, one per lens) exactly as the 1-D DP does; with it the gap is
+    // expensive (each copy is inside the other's window) and the boundary snaps to
+    // the edge of the disagreement, giving the object wholly to one lens. The
+    // position-specific priors (centre, occlusion cue, coverage) are NOT
+    // windowed - they say which side and where, so they stay on the node the
+    // boundary actually sits on.
+    let base = (bw as f64 * SEAM_RAMP).max(4.0);
+    let win = ((base / 2.0 / stride as f64) as usize).max(1);
+    let mut cap = vec![0f64; cells];
+    for ni in 0..nodes {
+        let (drow, grow) = (&g.dis[ni * cols..(ni + 1) * cols], &g.grid[ni * cols..(ni + 1) * cols]);
+        // Sliding window maximum of the disagreement over +-win columns, read at
+        // the column *centred* in the window. The deque holds candidates for the
+        // window [ci - 2 * shift, ci]; its centre is `ci - shift`, and the loop
+        // runs `shift` phantom columns past the right edge to give the last real
+        // columns the same truncated window the first columns get on their side:
+        // the same disagreement costs the same whether it lies left or right of
+        // the candidate seam. (A narrow band narrows the shift so every column
+        // is still evaluated once with its widest possible window.)
+        let shift = win.min(cols - 1);
+        let mut dq: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+        for ci in 0..cols + shift {
+            while dq.front().is_some_and(|&front| front + 2 * shift < ci) {
+                dq.pop_front();
+            }
+            if ci < cols {
+                while dq.back().is_some_and(|&back| drow[back] <= drow[ci]) {
+                    dq.pop_back();
+                }
+                dq.push_back(ci);
+            }
+            if ci < shift {
+                continue;
+            }
+            let c = ci - shift;
+            let winmax = drow[dq.front().copied().unwrap_or(c)];
+            // The priors (grid - dis) may be negative — the occlusion cue rewards
+            // routing along the edge of an occluding object — so let them pull, but
+            // never below the node's *own* disagreement: the pixels a boundary sits
+            // on are crossfaded at half weight whatever the priors say, so a
+            // high-disagreement node can never be bribed cheaper than an agreeing
+            // one (an unbounded floor parks the seam inside the subject it should
+            // clear). Clamping the priors alone instead (as this did) silently
+            // deletes the cue's pull and pins the seam wherever the priors left it.
+            cap[ni * cols + c] = (winmax + grow[c] - drow[c]).max(drow[c]);
+        }
+    }
+    // The min-cut as an interval shortest path — the exact dual of this
+    // node-capacity grid. `big` exceeds any chain of cell costs, so the
+    // optimum crosses no adjacency edge; a cut is, per node row, a prefix of
+    // columns whose `p_out` lie on the source side (last one `a`, possibly
+    // "none at all" = -1) and a longer prefix whose `p_in` do (last `b >= a
+    // + 1`: a cell's own `in` reachable through out(a) forces in(a + 1) by
+    // the row's horizontal edge): the row crosses the cells in (a, b], at the
+    // sum of their caps. Avoiding the vertical edges reads `a' <= b && b' >=
+    // a` over the previous row's pair. Single-cell chains are the b = a + 1
+    // family — but on equal-cost plateaus the true min cut may cross two
+    // cells in a row, and a chain-only dual then labels cells the graph calls
+    // boundary as fully owned: the blend midpoint shifts, and where plateaus
+    // abut real edges the seam moved a whole grid column (the full-res
+    // artifacts this fixes). DP over the pairs instead, `sa = a + 1` as the
+    // row's first owned-out column: each transition is a 2-D cumulative
+    // minimum (prefix in sa', suffix in b') over the neighbouring row's
+    // table, so a pass is O(nodes * cols^2) plain integer ops —
+    // milliseconds — where the max-flow's augmenting snakes cost seconds per
+    // frame on this graph (~180-230 Dinic phases over the lattice's 79k
+    // cells; [`MaxFlow`] stays the cfg(test) reference).
+    // Canonicalise the mirror: one code path for both longitudes, pretending
+    // the REAR lens owns the LOW columns (`ci -> cols-1-ci` is its own
+    // inverse, so `can` also maps canonical columns back to band columns).
+    let can = |ci: usize| if b.front_rises { ci } else { cols - 1 - ci };
+    // Coverage forcing bounds each row: a node only the front lens sees
+    // cannot have its `out` on the source side (`out in S` iff c <= a), so
+    // sa <= (least front-only c); a node only the rear sees needs its `in` in
+    // S (`in in S` iff c <= b), so b >= (largest rear-only c). The band's
+    // pins are that statement at the last column (out(cols-1) on source pays
+    // a terminal edge: sa <= cols - 1 leaves every column ownable... a <=
+    // cols - 2 = sa <= cols - 1, already the state space's bound; the rear
+    // pin at column 0 is subsumed by b >= 0).
+    let (mut sa_max, mut b_min) = (vec![cols.saturating_sub(1); nodes], vec![0usize; nodes]);
+    for (ni, (sm, bl)) in sa_max.iter_mut().zip(b_min.iter_mut()).enumerate() {
+        for ci in 0..cols {
+            let cov = g.cover[ni * cols + ci];
+            let c = can(ci);
+            let (front_only, rear_only) = (cov & 1 != 0 && cov & 2 == 0, cov & 2 != 0 && cov & 1 == 0);
+            if front_only {
+                *sm = (*sm).min(c);
+            } else if rear_only {
+                *bl = (*bl).max(c);
+            }
+        }
+    }
+    let capi: Vec<i64> = (0..cells).map(|p| (cap[p] * GC_SCALE).round().max(0.0).min(i64::MAX as f64) as i64).collect();
+    let labels = if exact { seam_cut_intervals(g, b, &capi, &sa_max, &b_min)? } else { seam_cut_chain(g, b, &capi, &sa_max, &b_min)? };
+    // Read a per-row seam column off the label grid: the boundary between the
+    // rear and front regions in the node row covering each pixel row. The front
+    // owns the high columns at lon -90 (the seam is the leftmost non-rear node)
+    // and the low ones at lon +90 (the rightmost).
+    let mut path = vec![bw as f64 / 2.0; h];
+    for (ni, yrow) in path.chunks_mut(DP_ROW_STRIDE.max(1)).enumerate().take(nodes) {
+        let row = &labels[ni * cols..(ni + 1) * cols];
+        let seam =
+            if b.front_rises { row.iter().position(|&l| l != 0).unwrap_or(cols / 2) } else { row.iter().rposition(|&l| l != 0).map_or(cols / 2, |i| i + 1) };
+        yrow.fill((seam * stride + stride / 2) as f64);
+    }
+
+    Some((labels, path))
+}
+
+/// The upscaled-lattice chain dual (one boundary cell per row: the interval
+/// family's diagonal), O(cells) in two linear sweeps. See [`seam_cut`]'s
+/// `exact` parameter for when it stands in for the interval solver.
+fn seam_cut_chain(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min: &[usize]) -> Option<Vec<u8>> {
+    let (cols, nodes) = (g.cols, g.nodes);
+    let cells = nodes * cols;
+
+    const INF: i64 = i64::MAX / 4;
+    let can = |ci: usize| if b.front_rises { ci } else { cols - 1 - ci };
+    let w = |ni: usize, cl: usize| -> i64 { capi[ni * cols + can(cl)] };
+    // Chain dual: one boundary cell per node row (state = the column x of
+    // the crossed cell; the interval family's diagonal sa = b = x),
+    // transitions |x - x'| <= 1 where coverage bounds allow. F x B sweeps
+    // over `cols` per row - O(cells), no square tables - and a cell lies
+    // on an optimal chain when F(x) + B(x) (x counted once) reaches the
+    // optimum; the least such x per row is that family's smallest
+    // source side. This is the boundary a graph whose optimum never needs
+    // a multi-cell row labels identically; where plateaus do want one,
+    // the answer agrees in cost and differs inside the agreeing
+    // background by less than a grid column - invisible on the proxy.
+    let (mut frows, mut prev): (Vec<Vec<i64>>, Vec<i64>) = (Vec::with_capacity(nodes), Vec::new());
+    for ni in 0..nodes {
+        let mut cur = vec![INF; cols];
+        for x in 0..cols {
+            if x > sa_max[ni] || x < b_min[ni] {
+                continue;
+            }
+            let past = if ni == 0 {
+                0
+            } else {
+                let mut m = prev[x];
+                if x > 0 {
+                    m = m.min(prev[x - 1]);
+                }
+                if x + 1 < cols {
+                    m = m.min(prev[x + 1]);
+                }
+                m
+            };
+            if past < INF {
+                cur[x] = past.saturating_add(w(ni, x)).min(INF);
+            }
+        }
+        prev = cur.clone();
+        frows.push(cur);
+    }
+    let copt = frows[nodes - 1].iter().copied().fold(INF, i64::min);
+    if copt >= INF {
+        return None;
+    }
+    let mut minxs = vec![usize::MAX; nodes];
+    let mut bcol = vec![0i64; cols];
+    for ni in (0..=nodes - 1).rev() {
+        for x in 0..cols {
+            let fv = frows[ni][x];
+            if fv < INF && bcol[x] < INF && fv.saturating_add(bcol[x]) == copt {
+                minxs[ni] = minxs[ni].min(x);
+            }
+        }
+        if minxs[ni] == usize::MAX {
+            return None;
+        }
+        if ni > 0 {
+            let mut nb = vec![INF; cols];
+            for x in 0..cols {
+                if bcol[x] >= INF {
+                    continue;
+                }
+                let v = w(ni, x).saturating_add(bcol[x]).min(INF);
+                for xp in x.saturating_sub(1)..=(x + 1).min(cols - 1) {
+                    if v < nb[xp] {
+                        nb[xp] = v;
+                    }
+                }
+            }
+            bcol = nb;
+        }
+    }
+    let mut labels = vec![1u8; cells];
+    for ni in 0..nodes {
+        let x = minxs[ni];
+        for ci in 0..cols {
+            let c = can(ci);
+            labels[ni * cols + ci] = if c < x {
+                0
+            } else if c == x {
+                2
+            } else {
+                1
+            };
+        }
+    }
+    Some(labels)
+}
+
+/// The exact interval dual of the seam graph (see [`seam_cut`]): per-row
+/// boundary pairs (sa, b), O(nodes * cols^2) via 2-D cumulative minima.
+fn seam_cut_intervals(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min: &[usize]) -> Option<Vec<u8>> {
+    let (cols, nodes) = (g.cols, g.nodes);
+    let cells = nodes * cols;
+
+    const INF: i64 = i64::MAX / 4;
+    let can = |ci: usize| if b.front_rises { ci } else { cols - 1 - ci };
+    let w = |ni: usize, cl: usize| -> i64 { capi[ni * cols + can(cl)] };
+    // Interval cost over canonical columns [sa, b]: prefix sums of w.
+    let pref: Vec<Vec<i64>> = (0..nodes)
+        .map(|ni| {
+            let mut p = vec![0i64; cols + 1];
+            for cl in 0..cols {
+                p[cl + 1] = p[cl].saturating_add(w(ni, cl));
+            }
+            p
+        })
+        .collect();
+    let pair_cost = |ni: usize, sa: usize, bnd: usize| -> i64 { pref[ni][bnd + 1].saturating_sub(pref[ni][sa]) };
+    let square = cols * cols;
+    let state_ok = |ni: usize, sa: usize, bnd: usize| sa <= sa_max[ni] && bnd >= b_min[ni].max(sa);
+    // Backward: btab[ni][state] = cheapest cost of rows below ni, given row
+    // ni's state — (forward + btab == opt) marks the states on optimal cuts.
+    let mut btab: Vec<Vec<i64>> = Vec::with_capacity(nodes);
+    {
+        let mut tab = vec![0i64; square];
+        for ni in (0..nodes).rev() {
+            if ni + 1 < nodes {
+                cummin(&mut tab, cols);
+                let mut bt = vec![INF; square];
+                for sa in 0..cols {
+                    for bnd in sa..cols {
+                        if state_ok(ni, sa, bnd) {
+                            bt[sa * cols + bnd] = tab[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)];
+                        }
+                    }
+                }
+                btab.push(bt);
+                let cur = &btab[btab.len() - 1];
+                let mut h = vec![INF; square];
+                for sa in 0..cols {
+                    for bnd in sa..cols {
+                        if state_ok(ni, sa, bnd) {
+                            h[sa * cols + bnd] = cur[sa * cols + bnd].saturating_add(pair_cost(ni, sa, bnd)).min(INF);
+                        }
+                    }
+                }
+                tab = h;
+            } else {
+                btab.push(vec![0i64; square]);
+                let mut h = vec![INF; square];
+                for sa in 0..cols {
+                    for bnd in sa..cols {
+                        if state_ok(ni, sa, bnd) {
+                            h[sa * cols + bnd] = pair_cost(ni, sa, bnd);
+                        }
+                    }
+                }
+                tab = h;
+            }
+        }
+        btab.reverse();
+    }
+    // Forward twice: the optimum, then (on the second sweep) each row's
+    // optimal states. The cut's smallest source side owns a column's `out`
+    // under every optimal cut iff sa <= it in every one — so out in S iff
+    // c < min sa over opt states and, dually, in in S iff c <= min b —
+    // labelling the rows exactly as the reference max-flow's residual
+    // reachable set does, cell for cell.
+    let mut labels = vec![1u8; cells];
+    let mut prev = vec![INF; square];
+    let mut cur = vec![INF; square];
+    let mut opt = INF;
+    for pass in 0..2u8 {
+        prev = vec![INF; square];
+        for ni in 0..nodes {
+            if ni > 0 {
+                cummin(&mut prev, cols);
+            }
+            cur = vec![INF; square];
+            for sa in 0..cols {
+                for bnd in sa..cols {
+                    if !state_ok(ni, sa, bnd) {
+                        continue;
+                    }
+                    let past = if ni == 0 { 0 } else { prev[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)] };
+                    cur[sa * cols + bnd] = past.saturating_add(pair_cost(ni, sa, bnd)).min(INF);
+                }
+            }
+            if pass == 1 {
+                let (mut msa, mut mb) = (usize::MAX, usize::MAX);
+                for sa in 0..cols {
+                    for bnd in sa..cols {
+                        let v = cur[sa * cols + bnd];
+                        if v < INF && v.saturating_add(btab[ni][sa * cols + bnd]) == opt {
+                            msa = msa.min(sa);
+                            mb = mb.min(bnd);
+                        }
+                    }
+                }
+                if msa == usize::MAX {
+                    return None; // opt finite implies a state; belt & braces
+                }
+                for ci in 0..cols {
+                    let c = can(ci);
+                    labels[ni * cols + ci] = if c < msa {
+                        0
+                    } else if c <= mb {
+                        2
+                    } else {
+                        1
+                    };
+                }
+            }
+            if ni + 1 == nodes {
+                opt = cur.iter().copied().fold(INF, i64::min);
+            }
+            std::mem::swap(&mut prev, &mut cur);
+        }
+    }
+    if opt >= INF {
+        return None; // no finite cut at all: keep the 1-D DP
+    }
+    // A state with sa > b is vacuous (`in` prefix shorter than `out`'s); the
+    // crossing cell range is [max(sa, ?)..=b] and its cost pair_cost above;
+    // rows fully on one side are sa == b + 1... excluded: with out prefix
+    // {c < sa} nonempty past the in prefix the labelling would be (T,S);
+    // b >= sa >= b + 1 - 1 keeps `in` a superset of `out` automatically.
+    Some(labels)
+}
+
+/// 2-D cumulative minimum in place: prefix over the first table index, suffix
+/// over the second (min is commutative, so sweep order does not matter).
+fn cummin(t: &mut [i64], cols: usize) {
+    for a in 1..cols {
+        let (ra, rp) = (a * cols, (a - 1) * cols);
+        for cl in 0..cols {
+            let m = t[rp + cl];
+            let x = &mut t[ra + cl];
+            if m < *x {
+                *x = m;
+            }
+        }
+    }
+    for a in 0..cols {
+        let ro = a * cols;
+        for cl in (0..cols - 1).rev() {
+            let m = t[ro + cl + 1];
+            let x = &mut t[ro + cl];
+            if m < *x {
+                *x = m;
+            }
+        }
+    }
+}
+
+/// The same cut solved the previous way, as an independent reference for the
+/// dual: build the node-capacity graph and read the min-cut from the residual
+/// reachable (smallest source) side.
+#[cfg(test)]
+fn seam_cut_by_graph(g: &SeamGrid, b: &Band, bw: usize, h: usize) -> Option<(Vec<u8>, Vec<f64>)> {
     let (cols, nodes, stride) = (g.cols, g.nodes, g.stride);
     if nodes == 0 || cols < 3 {
         return None;
@@ -1730,6 +2307,7 @@ fn seam_cut(g: &SeamGrid, b: &Band, bw: usize, h: usize) -> Option<(Vec<u8>, Vec
     // these edges. Bounded well below i64::MAX so a whole boundary's worth of them
     // cannot overflow the flow.
     let dmax = g.grid.iter().cloned().fold(0f64, f64::max).max(1.0);
+    const GC_NEIGH: f64 = 64.0;
     let big = (dmax * GC_NEIGH * GC_SCALE).round().clamp(1.0, 1e15) as i64;
     // The boundary cost. A seam through a node crossfades everything within half a
     // blend window of it, so the *disagreement* a boundary at `p` must pay is the
@@ -1824,7 +2402,7 @@ fn seam_cut(g: &SeamGrid, b: &Band, bw: usize, h: usize) -> Option<(Vec<u8>, Vec
         mf.add_edge(pin(ni * cols + front_col) + 1, t, big);
         mf.add_edge(s, pin(ni * cols + rear_col), big);
     }
-    mf.max_flow(s, t);
+    mf.dinic_flow(s, t);
     let side = mf.min_cut_side(s);
     // A node is rear-owned (both halves on the source side), front-owned (both on
     // the sink side), or the boundary the cut passed through (in on the source side,
@@ -2067,13 +2645,13 @@ mod tests {
     use super::*;
     use filmcraft_time::Tick;
 
-    /// The seam column per row exactly as [`band_plan`] places it: the 2-D graph cut
+    /// The seam column per row exactly as [`band_plan`] places it: the 2-D seam cut
     /// when the band is big enough for a bounded graph, else the 1-D DP. Tests that
     /// assert on seam *placement* (occlusion cue, disagreement routing) go
     /// through this so they exercise the production decision path, not just the DP.
     fn seam(f: &[u8], r: &[u8], m: &[PlaneMap; 2], b: &Band, bw: usize, h: usize) -> Vec<f64> {
         let grid = seam_grid_with_floor(f, r, m, b, bw, h, false);
-        seam_cut(&grid, b, bw, h).map(|(_, path)| path).unwrap_or_else(|| seam_path(&grid, bw, h))
+        seam_cut(&grid, b, bw, h, true).map(|(_, path)| path).unwrap_or_else(|| seam_path(&grid, bw, h))
     }
 
     fn lens(xi: f64, fx: f64, half: f64, yaw: f64) -> filmcraft_insta360::Lens {
@@ -2406,7 +2984,7 @@ mod tests {
         assert!(dp.iter().all(|&p| (44.0..=52.0).contains(&p)), "the DP splits the object: {dp:?}");
         // The cut puts the boundary outside the whole cluster: no row's seam sits
         // between the copies, so one lens owns both.
-        let (labels, path) = seam_cut(&grid, &b, bw, h).expect("a cuttable band");
+        let (labels, path) = seam_cut(&grid, &b, bw, h, true).expect("a cuttable band");
         assert!(path.iter().all(|&p| p < 28.0), "the cut encloses the object: {path:?}");
         // Every cluster column is front-owned (the high side), not split.
         assert!((28..68).all(|ci| (0..grid.nodes).all(|ni| labels[ni * grid.cols + ci] == 1)), "both copies belong to one lens");
@@ -2456,7 +3034,7 @@ mod tests {
         ];
         let b = Band { x0: 0, x1: bw, front_rises: true };
         let grid = seam_grid_with_floor(&f, &r, &m, &b, bw, h, false);
-        assert!(seam_cut(&grid, &b, bw, h).is_none(), "a two-column band has no 2-D seam to cut");
+        assert!(seam_cut(&grid, &b, bw, h, true).is_none(), "a two-column band has no 2-D seam to cut");
         // Tall: nodes * cols * 2 exceeds the graph budget.
         let h2 = 30_000usize;
         let f2 = vec![40u8; bw.max(160) * h2];
@@ -2467,7 +3045,7 @@ mod tests {
         ];
         let b2 = Band { x0: 0, x1: 160, front_rises: true };
         let grid2 = seam_grid_with_floor(&f2, &r2, &m2, &b2, 160, h2, false);
-        assert!(seam_cut(&grid2, &b2, 160, h2).is_none(), "an oversized band is refused, not allocated");
+        assert!(seam_cut(&grid2, &b2, 160, h2, true).is_none(), "an oversized band is refused, not allocated");
         // The DP fallback still answers with an in-band column for every row.
         let dp = seam_path(&grid2, 160, h2);
         assert!(dp.iter().all(|&p| (0.0..=160.0).contains(&p)), "the fallback stays in the band");
@@ -2718,9 +3296,275 @@ mod tests {
             let grid: Vec<f64> = dis.iter().enumerate().map(|(c, d)| d + (c as f64 - 15.5).powi(2) * 1e-3).collect();
             let g = SeamGrid { grid, dis, cover: vec![3; cols], cols, nodes: 1, stride: 1 };
             let b = Band { x0: 0, x1: cols, front_rises: true };
-            let (_, path) = seam_cut(&g, &b, cols, 1).expect("a 32-column band cuts");
+            let (_, path) = seam_cut(&g, &b, cols, 1, true).expect("a 32-column band cuts");
             path[0] as usize
         };
         assert_eq!(place(15) + place(16), cols - 1, "a mirrored disagreement blob must mirror the seam's placement");
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::MaxFlow;
+
+    /// Push-relabel max flow against brute-force min cut on small random
+    /// directed graphs: the seam solver depends on it, and a discharged node,
+    /// a gap quarantine or a global relabel that loses one unit of flow is
+    /// invisible in footage and fatal in the cut.
+    #[test]
+    fn push_relabel_matches_min_cut_by_enumeration() {
+        let mut st = 0x12345678u32;
+        let mut rng = move || {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            st
+        };
+        for round in 0..240 {
+            let n = 4 + (rng() as usize % 3);
+            let (s, t) = (0usize, n - 1);
+            let mut mf = MaxFlow::new(n);
+            let mut edges = Vec::new();
+            let m = 2 + (rng() as usize % (n * 2));
+            for _ in 0..m {
+                let (u, v) = ((rng() as usize) % n, (rng() as usize) % n);
+                let c = 1 + (rng() as i64 % 7);
+                if u != v {
+                    mf.add_edge(u, v, c);
+                    edges.push((u, v, c));
+                }
+            }
+            let got = mf.max_flow(s, t);
+            let want = (0..(1usize << (n - 2)))
+                .map(|mask| {
+                    (0..edges.len())
+                        .filter(|&i| {
+                            let (u, v, _) = edges[i];
+                            let su = u == s || (u != t && mask & (1 << (u - 1)) != 0);
+                            let sv = v == s || (v != t && mask & (1 << (v - 1)) != 0);
+                            su && !sv
+                        })
+                        .map(|i| edges[i].2)
+                        .sum::<i64>()
+                })
+                .min()
+                .unwrap();
+            assert_eq!(got, want, "round {round}");
+            // The cut the labels would come from must be a real s–t cut of that
+            // value: enumerate the crossing edges of a fresh copy.
+            let side = mf.min_cut_side(s);
+            assert!(side[s] && !side[t]);
+            let sum = edges.iter().filter(|(u, v, _)| side[*u] && !side[*v]).map(|&(_, _, c)| c).sum::<i64>();
+            assert_eq!(sum, want, "round {round}: the reachable side is a genuine min-cut");
+            let mut mf2 = MaxFlow::new(n);
+            for &(u, v, c) in &edges {
+                mf2.add_edge(u, v, c);
+            }
+            assert_eq!(got, mf2.dinic_flow(s, t), "round {round}: the reference solver agrees");
+        }
+    }
+
+    /// The dual chain must reproduce the reference max-flow's LABELS, not
+    /// merely its value: the residual source side is the smallest side among
+    /// all min cuts, and a plain leftmost-parent shortest path lands
+    /// elsewhere on equal-cost runs (which showed as full-res artifacts).
+    /// Ties, forced detours and single-coverage pins, in both band mirrors.
+    #[test]
+    fn the_dual_reproduces_the_reference_cut_labels() {
+        use super::{Band, GC_SCALE, MaxFlow, SeamGrid};
+        struct Case {
+            front_rises: bool,
+            /// Rear-only coverage pins: (row, canonical column).
+            pins: Vec<(usize, usize)>,
+        }
+        for case in [
+            Case { front_rises: true, pins: vec![] },
+            Case { front_rises: false, pins: vec![] },
+            Case { front_rises: true, pins: vec![(4, 5), (6, 5)] },
+            Case { front_rises: false, pins: vec![(5, 4)] },
+        ] {
+            let (nodes, cols) = (10usize, 16usize);
+            let cost = |ni: usize, c: usize| -> f64 {
+                let wide = (4..=12).contains(&c);
+                let narrow = (6..=8).contains(&c);
+                if ni < 5 {
+                    if wide { 5.0 } else { 40.0 }
+                } else if narrow {
+                    5.0
+                } else {
+                    40.0
+                }
+            };
+            // Canonical = front_rises; the other mirror flips columns.
+            let can = |c: usize| if case.front_rises { c } else { cols - 1 - c };
+            let mut grid = vec![0f64; nodes * cols];
+            let dis = vec![2f64; nodes * cols];
+            let mut cover = vec![3u8; nodes * cols];
+            for (ni, c) in &case.pins {
+                cover[ni * cols + can(*c)] &= !1; // rear lens only
+            }
+            for ni in 0..nodes {
+                for ci in 0..cols {
+                    grid[ni * cols + ci] = if ci == 0 || ci + 1 == cols {
+                        40.0 // single-coverage band edges cost something too
+                    } else {
+                        cost(ni, ci)
+                    };
+                }
+            }
+            let g = SeamGrid { grid, dis, cover, cols, nodes, stride: 1 };
+            let b = Band { x0: 0, x1: cols, front_rises: case.front_rises };
+            let (labels, path) = super::seam_cut(&g, &b, cols, nodes * 8, true).expect("a cut");
+            // Independent reference: the old graph, solved by the retained
+            // engine, read out the old way.
+            let cap: Vec<i64> = (0..nodes * cols).map(|p| (g.grid[p] * GC_SCALE).round() as i64).collect();
+            let big = cap.iter().sum::<i64>() + 1;
+            let cell = |p: usize| 2 + 2 * p;
+            let (front_c, rear_c) = if case.front_rises { (cols - 1, 0) } else { (0, cols - 1) };
+            let mut mf = MaxFlow::new(2 + 2 * nodes * cols);
+            for ni in 0..nodes {
+                for ci in 0..cols {
+                    let p = ni * cols + ci;
+                    mf.add_edge(cell(p), cell(p) + 1, cap[p]);
+                    if ci + 1 < cols {
+                        mf.add_edge(cell(p) + 1, cell(p + 1), big);
+                        mf.add_edge(cell(p + 1) + 1, cell(p), big);
+                    }
+                    if ni + 1 < nodes {
+                        mf.add_edge(cell(p) + 1, cell(p + cols), big);
+                        mf.add_edge(cell(p + cols) + 1, cell(p), big);
+                    }
+                    if g.cover[p] == 2 {
+                        mf.add_edge(0, cell(p), big); // rear only: to source
+                    } else if g.cover[p] == 1 {
+                        mf.add_edge(cell(p) + 1, 1, big); // front only: to sink
+                    }
+                }
+                mf.add_edge(cell(ni * cols + front_c) + 1, 1, big);
+                mf.add_edge(0, cell(ni * cols + rear_c), big);
+            }
+            let want = mf.max_flow(0, 1);
+            let side = mf.min_cut_side(0);
+            let mut wl = vec![0u8; nodes * cols];
+            for p in 0..nodes * cols {
+                wl[p] = match (side[cell(p)], side[cell(p) + 1]) {
+                    (true, true) => 0,
+                    (false, false) => 1,
+                    (true, false) => 2,
+                    (false, true) => 1,
+                };
+            }
+            assert_eq!(labels, wl, "labels must equal the reference ({:?})", case.front_rises);
+            // The dual's own value must match the reference flow.
+            let dual_cost: i64 = (0..nodes)
+                .map(|ni| {
+                    let row = ni * cols;
+                    let bnd = labels[row..row + cols].iter().position(|&l| l == 2).unwrap();
+                    cap[row + bnd]
+                })
+                .sum();
+            assert_eq!(dual_cost, want, "and the same cost, mirror {:?}", case.front_rises);
+            // Path readout agrees with the labels.
+            for ni in 0..nodes {
+                let seam = if case.front_rises {
+                    labels[ni * cols..(ni + 1) * cols].iter().position(|&l| l != 0).unwrap()
+                } else {
+                    labels[ni * cols..(ni + 1) * cols].iter().rposition(|&l| l != 0).map_or(cols - 1, |i| i + 1)
+                };
+                let got = labels.iter().enumerate().find(|(p, l)| **l == 2 && *p / cols == ni);
+                assert!(got.is_some(), "boundary in every row {ni}");
+                assert_eq!(path[ni * 8], seam as f64);
+            }
+        }
+    }
+
+    /// Differential fuzz: on random cost surfaces and coverage patterns
+    /// (including single-lens zones at the band edges, exactly what two
+    /// overlapping circle footprints produce), the dual chain must give the
+    /// same labels and seam columns as the graph cut it dualises — value
+    /// equality between flow engines alone would not catch a wrong tie rule,
+    /// which is what drew the artifacts. Zones run [rear-only][both][front-
+    /// only] in canonical order, mirrored per band; a crossed pair of pins
+    /// (front-only left of rear-only in a row) admits no finite-boundary cut
+    /// and is out of scope — the real geometry cannot present one.
+    #[test]
+    fn dual_and_graph_cuts_agree_on_random_grids() {
+        use super::{Band, SeamGrid, seam_cut, seam_cut_by_graph};
+        let mut st = 0x9e3779b9u32;
+        let mut rng = move || {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            st
+        };
+        for round in 0..400 {
+            let nodes = 2 + (rng() as usize % 5);
+            let cols = 5 + (rng() as usize % 4);
+            let mut grid = vec![0f64; nodes * cols];
+            let mut dis = vec![0f64; nodes * cols];
+            for p in 0..nodes * cols {
+                dis[p] = (rng() % 4) as f64;
+                grid[p] = dis[p] + (rng() % 2) as f64;
+            }
+            for front_rises in [true, false] {
+                let mut cover = vec![3u8; nodes * cols];
+                for ni in 0..nodes {
+                    let (a, z) = (rng() as usize % 3, rng() as usize % 3);
+                    for c in 0..a.min(cols) {
+                        cover[ni * cols + if front_rises { c } else { cols - 1 - c }] = 2;
+                    }
+                    for c in (cols - z.min(cols))..cols {
+                        cover[ni * cols + if front_rises { c } else { cols - 1 - c }] &= !2;
+                    }
+                }
+                let g = SeamGrid { grid: grid.clone(), dis: dis.clone(), cover: cover.clone(), cols, nodes, stride: 1 };
+                let b = Band { x0: 0, x1: cols, front_rises };
+                let dual = seam_cut(&g, &b, cols, nodes * 8, true);
+                let graph = seam_cut_by_graph(&g, &b, cols, nodes * 8);
+                assert_eq!(dual.is_some(), graph.is_some(), "round {round} mirror {front_rises}");
+                if let (Some((dl, dp)), Some((gl, gp))) = (dual, graph) {
+                    assert_eq!(dl, gl, "round {round} mirror {front_rises}: labels");
+                    assert_eq!(dp, gp, "round {round} mirror {front_rises}: path");
+                }
+            }
+        }
+    }
+
+    /// The shape a seam graph has — a ladder whose every s→t path snakes the
+    /// whole length — solved by both engines: same flow, and where the cut
+    /// crosses must agree too (tie-free costs: distinct prime column weights).
+    #[test]
+    fn expanding_trees_match_dinic_on_a_seam_ladder() {
+        let (rows, cols) = (240usize, 120usize);
+        let cell = |r: usize, c: usize| 2 + 2 * (r * cols + c);
+        let mut mf = MaxFlow::new(2 + 2 * rows * cols);
+        let mut md = MaxFlow::new(2 + 2 * rows * cols);
+        let big = 10i64.pow(9);
+        for r in 0..rows {
+            for c in 0..cols {
+                let w = 1000 + (r * cols + c) as i64 % (cols as i64 - 1) + 1;
+                for m in [&mut mf, &mut md] {
+                    m.add_edge(cell(r, c), cell(r, c) + 1, w * 8);
+                    if c + 1 < cols {
+                        m.add_edge(cell(r, c) + 1, cell(r, c + 1), big);
+                        m.add_edge(cell(r, c + 1) + 1, cell(r, c), big);
+                    }
+                    if r + 1 < rows {
+                        m.add_edge(cell(r, c) + 1, cell(r + 1, c), big);
+                        m.add_edge(cell(r + 1, c) + 1, cell(r, c), big);
+                    }
+                    if c == 0 {
+                        m.add_edge(0, cell(r, c), big);
+                    }
+                    if c + 1 == cols {
+                        m.add_edge(cell(r, c) + 1, 1, big);
+                    }
+                }
+            }
+        }
+        let a = mf.max_flow(0, 1);
+        let b = md.dinic_flow(0, 1);
+        assert_eq!(a, b, "flow values agree");
+        assert_eq!(mf.min_cut_side(0), md.min_cut_side(0), "the snake lands in the same place");
     }
 }
