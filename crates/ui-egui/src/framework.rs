@@ -126,6 +126,17 @@ pub fn keyboard_taken(ctx: &Context) -> bool {
     }
 }
 
+/// Whether a field other than `except` has the keyboard: [`keyboard_taken`], where the app's checks that "a field is
+/// being edited" read egui's focus. The runtime keeps egui's focus on its own stops (a dock tab, the canvas a click
+/// reached) where the app had none before, and those are no field.
+pub fn field_focused(ctx: &Context, except: Option<Id>) -> bool {
+    match ctx.memory(|memory| memory.focused()) {
+        None => false,
+        Some(id) if Some(id) == except => false,
+        Some(_) => keyboard_taken(ctx),
+    }
+}
+
 /// Gives `ui` the app's own egui style, for panel bodies and the group view: the pin lays them out in the dock's style.
 pub fn app_style(ui: &mut Ui) {
     ui.set_style(ui.ctx().global_style());

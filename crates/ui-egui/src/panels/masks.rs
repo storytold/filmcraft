@@ -407,7 +407,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             actions.push(("masks.addVertex".into(), with(json!({"after": i, "at": [c.x, c.y]}))));
         }
     }
-    if crate::framework::escape_pressed(ui.ctx()) && ui.ctx().memory(|m| m.focused().is_none()) {
+    if crate::framework::escape_pressed(ui.ctx()) && !crate::framework::field_focused(ui.ctx(), None) {
         actions.push(("masks.select".into(), json!({"none": true})));
     }
     for (c, p) in actions {

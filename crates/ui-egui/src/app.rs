@@ -517,7 +517,7 @@ impl eframe::App for FilmcraftApp {
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
-        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        let another_field = crate::framework::field_focused(&ctx, Some(egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
         if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
             self.suspended_ime_controls(&ctx);
         }
