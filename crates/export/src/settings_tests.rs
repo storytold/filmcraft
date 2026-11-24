@@ -1480,6 +1480,29 @@ fn h265_has_a_builtin_software_encoder() {
     assert_eq!(out.frames, 24);
     assert_eq!(out.encoder.as_deref(), Some("software"));
 
+    // software encoder rejects unsupported bitrate modes (CBR) and maximum bitrate targets
+    let cbr_err = export(
+        &p,
+        seq,
+        &ExportSettings { path: sc_hevc.path("cbr.mp4"), bitrate_mode: BitrateMode::Cbr, include_audio: false, ..h.clone() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(cbr_err.contains("CBR"), "{cbr_err}");
+
+    let max_err = export(
+        &p,
+        seq,
+        &ExportSettings { path: sc_hevc.path("max.mp4"), max_bitrate_kbps: Some(25_000), include_audio: false, ..h.clone() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(max_err.contains("maximum bitrate"), "{max_err}");
+
     // AV1 remains the format that needs a registered probe
     assert!(!Format::Av1.has_builtin_encoder());
     static HERE: AtomicBool = AtomicBool::new(false);

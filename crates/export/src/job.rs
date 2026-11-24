@@ -292,7 +292,9 @@ impl Exporter {
         // bake the derived bitrate / keyframe values in for the encoder factories
         let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
         settings.bitrate_kbps = r.target_kbps;
-        settings.max_bitrate_kbps = Some(r.max_kbps);
+        if settings.max_bitrate_kbps.is_some() || settings.video_format() == Format::H264 {
+            settings.max_bitrate_kbps = Some(r.max_kbps);
+        }
         settings.keyframe_distance = Some(r.keyint);
         settings.adaptive_bitrate = None;
         let two_pass = settings.video_format() == Format::H264 && settings.bitrate_mode == BitrateMode::Vbr2Pass;

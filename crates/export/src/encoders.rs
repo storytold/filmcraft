@@ -640,6 +640,23 @@ pub(crate) fn hevc_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
         return Some(Err(ExportError::Unsupported("H.265 export requires even dimensions".into())));
     }
+    if s.max_bitrate_kbps.is_some() {
+        return Some(Err(ExportError::Unsupported(
+            "the software H.265 encoder does not support a maximum bitrate target: choose VBR, 1 pass without a maximum".into(),
+        )));
+    }
+    match s.bitrate_mode {
+        BitrateMode::Vbr1Pass => {}
+        BitrateMode::Cbr => {
+            return Some(Err(ExportError::Unsupported("the software H.265 encoder does not support CBR: choose VBR, 1 pass".into())));
+        }
+        BitrateMode::Vbr2Pass => {
+            return Some(Err(ExportError::Unsupported("the software H.265 encoder does not support two-pass VBR: choose VBR, 1 pass".into())));
+        }
+        BitrateMode::Crf => {
+            return Some(Err(ExportError::Unsupported("the software H.265 encoder does not support CRF: choose VBR, 1 pass".into())));
+        }
+    }
     let mut cfg = craft_video::hevc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     let kbps = s.bitrate_kbps.max(100);
