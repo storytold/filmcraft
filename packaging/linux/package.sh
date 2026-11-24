@@ -51,6 +51,9 @@ export FILMCRAFT_MAINTAINER="${FILMCRAFT_MAINTAINER:-FilmCraft maintainers <film
 IS_NIGHTLY=0
 if [[ "${FILMCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
   IS_NIGHTLY=1
+  if [[ "$VERSION" != *-nightly* ]]; then
+    VERSION="${VERSION}-nightly"
+  fi
   export FILMCRAFT_BUILD_CHANNEL=nightly-v1
   export FILMCRAFT_OVERRIDE_VERSION="$VERSION"
 fi

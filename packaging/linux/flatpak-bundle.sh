@@ -71,7 +71,9 @@ if [[ "$FLATPAK_ID" != "$APP_ID" ]]; then
       -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$FLATPAK_ID</icon>|g" \
       "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml" >"$WORK/stage/share/metainfo/$FLATPAK_ID.metainfo.xml"
   rm -f "$WORK/stage/share/metainfo/$APP_ID.metainfo.xml"
-  mv "$WORK/stage/share/mime/packages/$APP_ID.xml" "$WORK/stage/share/mime/packages/$FLATPAK_ID.xml"
+  sed -e "s|<icon name=\"$APP_ID\"/>|<icon name=\"$FLATPAK_ID\"/>|g" \
+      "$WORK/stage/share/mime/packages/$APP_ID.xml" >"$WORK/stage/share/mime/packages/$FLATPAK_ID.xml"
+  rm -f "$WORK/stage/share/mime/packages/$APP_ID.xml"
   find "$WORK/stage/share/icons/hicolor" -type f -name "$APP_ID.*" | while IFS= read -r icon; do
     mv "$icon" "$(dirname "$icon")/$FLATPAK_ID.${icon##*.}"
   done

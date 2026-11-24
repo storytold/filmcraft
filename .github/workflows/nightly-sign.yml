@@ -19,7 +19,6 @@ permissions: {}
 concurrency:
   group: filmcraft-nightly-release
   cancel-in-progress: false
-  queue: max
 
 jobs:
   release:
