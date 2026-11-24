@@ -551,25 +551,6 @@ fn style_buttons_toggle_the_layer_without_a_selection() {
         };
         assert!(!on(&mut d), "{id} starts off");
         click(&mut d);
-        if !on(&mut d) {
-            let b = d.rect(&format!("graphics.prop.{id}"));
-            let row: Vec<_> =
-                ["faux_bold", "faux_italic", "underline", "strikethrough"].iter().map(|other| (other.to_string(), d.rect(&format!("graphics.prop.{other}")))).collect();
-            let panel = d.rect("panel.EssentialGraphics");
-            let ctx = d.harness.ctx.clone();
-            let hits = ctx.viewport(|v| {
-                let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?}", w.id, w.rect, w.interact_rect, w.sense);
-                (v.hits.click.as_ref().map(w), v.hits.drag.as_ref().map(w))
-            });
-            eprintln!(
-                "DIAG style_buttons_toggle_the_layer_without_a_selection: {id} rect={b:?} row={row:?} panel={panel:?} pointer={:?} param={:?} status={:?} click={:?} drag={:?}",
-                ctx.pointer_latest_pos(),
-                text_param(&mut d, clip, id),
-                d.harness.state().ui.status,
-                hits.0,
-                hits.1
-            );
-        }
         assert!(on(&mut d), "first click turns {id} on");
         click(&mut d);
         assert!(!on(&mut d), "second click turns {id} off");

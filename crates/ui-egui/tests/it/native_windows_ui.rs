@@ -288,13 +288,6 @@ fn a_source_drag_drops_on_a_timeline_in_its_own_window() {
     d.pointer(to, None);
     d.pointer(to, Some(false));
     d.frames(3);
-    if clips(&d) != 1 {
-        let desktop = craft_ui::runtime::windows::WindowHost::of(&d.harness.ctx).desktop_pointer();
-        eprintln!(
-            "DIAG a_source_drag_drops_on_a_timeline_in_its_own_window: from={from:?} to={to:?} local={local:?} panel={panel:?} row={row} desktop pointer={desktop:?} status={:?}",
-            d.app().ui.status
-        );
-    }
     assert_eq!(clips(&d), 1, "status: {}", d.app().ui.status);
 }
 

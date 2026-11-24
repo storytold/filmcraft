@@ -11,25 +11,10 @@ pub(crate) fn drop_native_input(raw_input: &mut egui::RawInput) {
 #[cfg(test)]
 mod native_window_input_tests {
     use serde_json::json;
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
 
     use crate::FilmcraftApp;
     use egui_kittest::Harness;
     use filmcraft_engine::Session;
-
-    #[derive(Debug)]
-    struct OsFile(PathBuf);
-
-    impl egui::DroppedFile for OsFile {
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        fn bytes(&self) -> Result<Vec<u8>, String> {
-            std::fs::read(&self.0).map_err(|e| e.to_string())
-        }
-    }
 
     fn step(h: &mut Harness<'static, FilmcraftApp>) {
         let ctx = h.ctx.clone();
