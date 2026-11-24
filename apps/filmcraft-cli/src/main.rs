@@ -315,9 +315,20 @@ async fn main() {
     }
 }
 
+/// The desktop app's private Launcher protocol. The CLI is never started with it, so refuse it
+/// before parsing (both token and `=` forms) instead of reporting an unknown option.
+fn desktop_launch_profile_argument(arg: &str) -> bool {
+    ["--launch-profile", "--profile-root"].iter().any(|flag| arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+}
+
 async fn cli() {
+    let raw: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if let Some(found) = raw.iter().find(|arg| desktop_launch_profile_argument(arg)) {
+        eprintln!("filmcraft-cli: {found} belongs to the FilmCraft desktop app's Launcher profile; the CLI has no launch profile");
+        std::process::exit(2);
+    }
     // `std::env::args` panics on an argument that is not Unicode (a Linux file name in Latin-1)
-    let a = Args::parse(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
+    let a = Args::parse(raw);
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
     if a.flag("--help") {
@@ -817,5 +828,20 @@ mod format_tests {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(super::format_for("a.mov"), Some("prores"));
         assert_eq!(super::format_for("noext"), None);
+    }
+}
+
+#[cfg(test)]
+mod launch_profile_tests {
+    use super::desktop_launch_profile_argument;
+
+    #[test]
+    fn the_desktop_launcher_protocol_is_refused_in_both_forms() {
+        for arg in ["--launch-profile", "--launch-profile=nightly-v1", "--profile-root", "--profile-root=/tmp/nightly"] {
+            assert!(desktop_launch_profile_argument(arg), "{arg}");
+        }
+        for arg in ["--version", "-V", "--data-dir", "--profile", "--launch", "profile-root"] {
+            assert!(!desktop_launch_profile_argument(arg), "{arg}");
+        }
     }
 }

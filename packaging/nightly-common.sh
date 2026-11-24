@@ -33,7 +33,9 @@ nightly_init() {
 
 # Compile only: macOS runs the version query after signing (packaging/macos/nightly-verify.sh).
 nightly_compile_gui() {
-  (cd "$ROOT" && cargo build --release --locked -p filmcraft --target "$NIGHTLY_RUST_TARGET")
+  # The same prepared identity the artifacts are named after: build.rs refuses a nightly whose
+  # version, commit and date disagree.
+  (cd "$ROOT" && FILMCRAFT_VERSION="$VERSION" FILMCRAFT_BUILD_CHANNEL=nightly-v1 cargo build --release --locked -p filmcraft --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/filmcraft"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$FILMCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'
@@ -43,7 +45,7 @@ nightly_build_gui() {
   nightly_compile_gui
   local actual
   actual="$("$NIGHTLY_GUI" --version)" || nightly_die 'side-effect-free nightly version verification failed'
-  [[ "$actual" == filmcraft\ * ]] || nightly_die 'the built binary did not report a filmcraft version'
+  [[ "$actual" == "FilmCraft $VERSION (nightly-v1)" ]] || nightly_die 'the built version/flavor is not the prepared identity'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$FILMCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the version query'
 }
 
@@ -64,7 +66,6 @@ nightly_copy_notices() {
     [[ -f "$ROOT/$required" && ! -L "$ROOT/$required" ]] || nightly_die "missing regular app notice: $required"
   done
   copy_docs "$destination"
-  cp "$ROOT/ATTRIBUTION.md" "$destination/"
 }
 
 nightly_publish_archive() {

@@ -72,3 +72,6 @@ craft-update = { workspace = true }
 # graphics/probe.rs: the display drivers' names and versions, so a driver update tests the
 # graphics start again (MIT).
 winreg = "0.55"
+# process_identity.rs: the explicit AppUserModelID a nightly install needs for its own taskbar
+# identity, separate from stable (MIT).
+winsafe = { version = "0.0.29", features = ["user", "shell"] }
