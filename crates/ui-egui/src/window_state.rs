@@ -115,7 +115,7 @@ impl WindowState {
         if self.x.is_none() || self.y.is_none() {
             return None;
         }
-        let Some(displays) = displays else { return None };
+        let displays = displays?;
         self.position_for_logical_displays(displays)
     }
 
