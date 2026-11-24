@@ -30,6 +30,24 @@ fn start(s: &mut Session, data: &std::path::Path) {
     s.start_autosave(cfg).unwrap();
 }
 
+#[test]
+fn a_clean_view_change_does_not_write_a_recovery_snapshot() {
+    let d = temp_dir("clean-view-no-journal");
+    let mut s = Session::default();
+    start(&mut s, &d);
+    let session_dir = s.persistence.as_ref().unwrap().session_dir.clone();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+
+    s.view_changed();
+    s.sync_persistence();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+
+    assert!(s.has_unsaved_changes(), "a clean project's view still needs the save/close prompt");
+    assert!(!session_dir.join("snapshot.fcproj").exists(), "clean view-only changes must not serialize the whole project into recovery");
+    s.shutdown();
+    let _ = std::fs::remove_dir_all(d);
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision

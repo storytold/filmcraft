@@ -261,6 +261,13 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
     // Validate every fallible field before changing any state. A bad thumbnail name must not
     // leave the other requested view fields applied without their persistence notification.
+    for field in ["videoTrackHeight", "audioTrackHeight"] {
+        if let Some(value) = tl.get(field).and_then(Value::as_f64)
+            && (!value.is_finite() || !(8.0..=600.0).contains(&value))
+        {
+            return Err(format!("timeline.{field} must be a finite number between 8 and 600"));
+        }
+    }
     let thumbnails = match tl.get("thumbnails").and_then(Value::as_str) {
         Some(m) if m.eq_ignore_ascii_case("off") => Some(None),
         Some(m) => Some(Some(ThumbnailMode::from_name(m).ok_or_else(|| format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"))?)),
@@ -927,6 +934,15 @@ mod input_bounds_tests {
             before,
             "invalid mode must reject the entire Timeline update"
         );
+    }
+
+    #[test]
+    fn invalid_track_height_is_field_specific_and_does_not_partially_apply_timeline_settings() {
+        let mut app = app();
+        let before = (app.ui.timeline.target_pps, app.ui.timeline.audio_track_h);
+        let result = set_timeline(&mut app, &json!({"timeline": {"pps": 123.0, "audioTrackHeight": 601.0}}));
+        assert_eq!(result.unwrap_err(), "timeline.audioTrackHeight must be a finite number between 8 and 600");
+        assert_eq!((app.ui.timeline.target_pps, app.ui.timeline.audio_track_h), before);
     }
 
     #[test]

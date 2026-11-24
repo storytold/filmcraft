@@ -554,6 +554,42 @@ mod key_repeat_tests {
 }
 
 #[cfg(test)]
+mod slider_clipboard_reservation_tests {
+    use crate::{FilmcraftApp, dock::PanelKind};
+    use egui::{Event, Key, Modifiers, RawInput, Rect, pos2};
+
+    #[test]
+    fn a_custom_copy_binding_does_not_leave_space_to_trigger_playback_with_selected_text() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + C".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        app.bindings = super::menus::bindings(&app);
+        let ctx = egui::Context::default();
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0)));
+        });
+        let input = RawInput {
+            events: vec![
+                Event::ModifiersChanged(Modifiers::CTRL | Modifiers::COMMAND),
+                Event::PointerMoved(pos2(50.0, 50.0)),
+                Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: true, repeat: false, modifiers: Modifiers::NONE },
+                Event::Copy,
+            ],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::panels::timeline::route_slider_shortcut(&app, ui.ctx());
+            let fired = ui.ctx().input_mut(|input| app.match_shortcuts(input, false, false, true));
+            assert!(!fired.iter().any(|id| id == "playback.toggle"), "the reserved Ctrl+C must not fall back to the earlier Space event");
+        });
+        output.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
 mod exact_modifier_tests {
     use crate::dock::PanelKind;
     use egui::{Event, Key, Modifiers};

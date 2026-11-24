@@ -526,8 +526,8 @@ pub struct Session {
     pub saved_revision: u64,
     /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
     /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
-    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
-    /// the autosave journal.
+    /// clean project must stay clean. A view change reaches the recovery journal only while
+    /// project content is dirty; clean view changes wait for an explicit save.
     pub view_epoch: u64,
     /// The view counter as of the last successful save: what the project file on disk holds.
     /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
@@ -782,6 +782,12 @@ impl Session {
             return;
         }
         let dirty = self.is_dirty();
+        // A clean project's view is pending for Save/Close prompts, but journaling it would
+        // serialize the entire project on every zoom, scroll or tab change. The next content
+        // edit includes the latest view in its recovery snapshot.
+        if !dirty && self.view_epoch != self.saved_view_epoch {
+            return;
+        }
         let cur = autosave::Sent {
             revision: self.revision,
             saved_revision: self.saved_revision,
@@ -792,9 +798,8 @@ impl Session {
         if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
             return;
         }
-        // the view reaches the journal whenever it is newer than what the project file holds
-        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
-        // once a save catches up -- no matter what order the two arrive in
+        // While content is dirty, view changes reach the same recovery snapshot; a save or a
+        // clean project clears that snapshot.
         let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
         let Some(p) = self.persistence.as_mut() else { return };
         if let Some(view) = view {
@@ -880,7 +885,8 @@ impl Session {
 
     /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
     /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
-    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    /// duplicate-marker caches. Dirty content snapshots include the latest view; clean view
+    /// changes remain pending for the Save/Close prompt and wait for an explicit save.
     pub fn view_changed(&mut self) {
         self.view_epoch = self.view_epoch.wrapping_add(1);
     }
@@ -894,7 +900,8 @@ impl Session {
         self.is_dirty() || self.view_epoch != self.saved_view_epoch
     }
 
-    /// Mark a project-file view setting as changed and journal its current project view.
+    /// Mark a project-file view setting as changed and synchronize its recovery state when the
+    /// project content is dirty.
     pub fn project_view_changed(&mut self) {
         self.view_changed();
         self.sync_persistence();

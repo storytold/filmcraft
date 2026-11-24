@@ -2007,8 +2007,13 @@ fn build() -> Vec<CommandSpec> {
             let keep = s.state.active_sequence;
             let r = open_project(s, &path)?;
             if let Some(k) = keep.filter(|k| s.project.sequence(*k).is_some()) {
+                let restored_active = s.state.active_sequence;
+                let restored_open = s.state.open_sequences.clone();
                 s.state.active_sequence = Some(k);
                 s.state.open_sequences = vec![k];
+                if s.state.active_sequence != restored_active || s.state.open_sequences != restored_open {
+                    s.project_view_changed();
+                }
             }
             Ok(r)
         }),
@@ -2729,8 +2734,8 @@ fn build() -> Vec<CommandSpec> {
             if from != to {
                 let tab = s.state.open_sequences.remove(from);
                 s.state.open_sequences.insert(to, tab);
-                // the tab order is part of the saved view: it must reach the autosave journal even
-                // on a clean project (view-only change: no cache invalidation, project stays clean)
+                // The tab order is part of the saved view. It reaches the recovery journal while
+                // content is dirty; a clean project keeps the view pending for its save prompt.
                 s.view_changed();
             }
             Ok(json!({"index": to}))

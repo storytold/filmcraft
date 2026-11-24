@@ -47,6 +47,26 @@ fn saved_file_is_versioned_and_save_copy_keeps_state() {
 }
 
 #[test]
+fn revert_marks_preserved_sequence_selection_as_a_view_change() {
+    let d = temp_dir("revert-view");
+    let path = d.join("p.fcproj").to_string_lossy().to_string();
+    let mut s = demo();
+    let sequence_ids: Vec<_> = s.project.sequences().map(|sequence| sequence.id).collect();
+    assert!(sequence_ids.len() > 1, "the demo project needs an alternate sequence");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+
+    let preserved = sequence_ids[1];
+    s.state.active_sequence = Some(preserved);
+    s.state.open_sequences = vec![preserved];
+    s.execute("file.revert", json!({})).unwrap();
+
+    assert_eq!(s.state.active_sequence, Some(preserved));
+    assert!(!s.is_dirty(), "preserving the selected sequence changes only the project view");
+    assert!(s.has_unsaved_changes(), "the preserved sequence selection must advance the saved view epoch");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn legacy_project_opens_and_first_save_keeps_a_backup() {
     let d = temp_dir("legacy");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../format/tests/fixtures/v1-edit.fcproj");
