@@ -203,8 +203,10 @@ winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457
 selection = ["filmcraft", "filmcraft-audio-dsp", "filmcraft-automation", "filmcraft-bitstream", "filmcraft-captions", "filmcraft-cfb", "filmcraft-cli", "filmcraft-codecs", "filmcraft-color", "filmcraft-dng", "filmcraft-edit", "filmcraft-engine", "filmcraft-export", "filmcraft-format", "filmcraft-frame", "filmcraft-geom", "filmcraft-golden", "filmcraft-gpu", "filmcraft-interchange", "filmcraft-isobmff", "filmcraft-matroska", "filmcraft-media", "filmcraft-platform", "filmcraft-project", "filmcraft-render", "filmcraft-scopes", "filmcraft-speech", "filmcraft-testkit", "filmcraft-text", "filmcraft-time", "filmcraft-tts", "filmcraft-tts-text", "filmcraft-ui-egui", "filmcraft-web"]
 tracked = ["egui", "eframe", "craft-ui", "craft-update", "craft-window", "craft-keymap", "craft-i18n", "craft-media", "craft-audio", "craft-video", "craft-timeline"]
 # Build scripts track these (the app's Windows resources, the fonts directory): a value in one command and
-# not the next rebuilds everything above them. Fonts come from one craft-fonts checkout for every build.
+# not the next rebuilds everything above them.
 unset_env = ["FILMCRAFT_REQUIRE_WINRES", "CRAFT_FONTS_REQUIRED"]
+# cargo test runs each test on a 2 MiB thread; CI runs every test in its own process under nextest,
+# whose main thread has 8 MiB. The UI integration tests need the same.
 set_env = { RUST_MIN_STACK = "8388608" }
 
 # BEGIN port-kit framework patch
