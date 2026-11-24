@@ -194,8 +194,19 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     // a right-click on another tab while the menu is open moves the menu to that tab
     d.ok("ui.click", json!({"id": format!("timeline.tab.{b}"), "button": "right"}));
     d.frames(3);
+    let first = (d.active(), d.has("panel.menu.Timeline.close"));
     d.ok("ui.click", json!({"id": format!("timeline.tab.{main}"), "button": "right"}));
     d.frames(3);
+    if !(d.has("panel.menu.Timeline.close") && d.active() == main) {
+        let menu = d.harness.ctx.data(|data| data.get_temp::<(filmcraft_ui_egui::dock::PanelKind,egui::Pos2, egui::ViewportId)>(egui::Id::unique("panel-menu")));
+        let tab = d.rect(&format!("timeline.tab.{main}"));
+        eprintln!(
+            "DIAG a_right_click_on_a_tab_shows_it_and_opens_its_menu: main={main} b={b} after first (active, menu)={first:?} now active={} menu={} data={menu:?} main tab={tab:?} status={:?}",
+            d.active(),
+            d.has("panel.menu.Timeline.close"),
+            d.app().ui.status
+        );
+    }
     assert!(d.has("panel.menu.Timeline.close") && d.active() == main);
     d.click("panel.Program");
     // Close Panel from the menu closes the tab it was opened on
