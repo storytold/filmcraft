@@ -70,14 +70,12 @@ fn active_tab_underline_follows_selection_even_when_another_tab_is_hovered() {
     for _ in 0..4 {
         step(&mut h);
     }
+    // The dock's tab strip marks the selected tab itself (not by colour alone) and reports it as
+    // the tab's selected state; FilmCraft no longer draws the tab labels.
     let underlined = |h: &Harness<'_, FilmcraftApp>, panel: PanelKind| {
-        let tab = rect(h, &format!("panel.tab.{}", panel.id()));
-        h.output().shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if tab.contains(text.pos) && text.galley.text() == panel.title() => {
-                Some(text.galley.job.sections.iter().any(|section| section.format.underline.width > 0.0))
-            }
-            _ => None,
-        })
+        h.query_all_by_label(panel.title())
+            .find(|node| node.accesskit_node().role() == egui::accesskit::Role::Tab)
+            .map(|node| node.accesskit_node().is_selected() == Some(true))
     };
     assert_eq!(underlined(&h, PanelKind::Info), Some(true));
     assert_eq!(underlined(&h, PanelKind::History), Some(false));
@@ -358,7 +356,15 @@ fn dropping_on_the_window_edge_docks_beside_the_whole_workspace() {
     let from = rect(&h, "panel.tab.Info").center();
     let leftmost = rect(&h, "panel.Info");
     // The outer edge of the leftmost group: without the window-edge zone this splits only that group.
-    drag(&mut h, from, pos2(leftmost.left() + 2.0, leftmost.center().y), Modifiers::NONE);
+    // The dock insets a panel's body from its group's frame by the panel padding, so the point is
+    // halfway between the window's edge and the body, inside the frame.
+    let to = pos2(leftmost.left() / 2.0, leftmost.center().y);
+    eprintln!(
+        "DIAG dropping_on_the_window_edge_docks_beside_the_whole_workspace: to={to:?} body={leftmost:?} tab={:?} gutter={:?}",
+        rect(&h, "panel.tab.Project"),
+        h.state().auto.find("dock.gutter.").map(|element| element.rect)
+    );
+    drag(&mut h, from, to, Modifiers::NONE);
     assert_eq!(
         h.state().ui.dock,
         root(split(
@@ -382,7 +388,12 @@ fn a_release_over_no_target_cancels_the_drag() {
     }
     let before = h.state().ui.dock.clone();
     let info = rect(&h, "panel.Info");
-    for to in [pos2(600.0, 10.0), pos2(info.right() + 2.0, info.center().y)] {
+    // The gap between the two groups is the divider between them: the dock insets a panel's body
+    // from its group's frame by the panel padding, so a point just right of the body is still in
+    // the group.
+    let gap = rect(&h, "dock.gutter.").center();
+    eprintln!("DIAG a_release_over_no_target_cancels_the_drag: info={info:?} gap={gap:?} source={:?}", rect(&h, "panel.Source"));
+    for to in [pos2(600.0, 10.0), pos2(gap.x, info.center().y)] {
         let from = rect(&h, "panel.tab.Info").center();
         drag(&mut h, from, to, Modifiers::NONE);
         assert_eq!(h.state().ui.dock, before, "release at {to:?}");
@@ -907,16 +918,25 @@ fn click_at(h: &mut Harness<'_, FilmcraftApp>, pos: egui::Pos2, button: PointerB
     }
 }
 
+/// The centre of the open menu's item labeled `item`.
+fn menu_item(h: &Harness<'_, FilmcraftApp>, item: &str) -> egui::Pos2 {
+    h.query_all_by_label(item)
+        .find(|node| node.accesskit_node().role() == egui::accesskit::Role::MenuItem)
+        .unwrap_or_else(|| panic!("no menu item {item:?}"))
+        .rect()
+        .center()
+}
+
 /// Right-click the tab `tab` and choose the context-menu item labeled `item`.
 fn tab_menu(h: &mut Harness<'_, FilmcraftApp>, tab: &str, item: &str) {
     let pos = rect(h, tab).center();
     click_at(h, pos, PointerButton::Secondary);
-    let item = h.get_by_label(item).rect().center();
+    let item = menu_item(h, item);
     click_at(h, item, PointerButton::Primary);
 }
 
-/// A Timeline tab's context menu carries FilmCraft's Timeline items, and its Close Panel closes
-/// the active sequence: the Timeline stays.
+/// A Timeline tab's context menu carries FilmCraft's Timeline items, and its Close item (Close
+/// Panel before the port) closes the active sequence: the Timeline stays.
 #[test]
 fn close_panel_on_the_timeline_tab_closes_the_sequence() {
     let mut h = demo_harness();
@@ -926,14 +946,14 @@ fn close_panel_on_the_timeline_tab_closes_the_sequence() {
     for id in ["panel.menu.Timeline.revealSequence", "panel.tabMenu.Timeline.closeOthers", "panel.tabMenu.Timeline.restoreWorkspace"] {
         assert!(h.state().auto.find(id).is_some(), "{id} is missing from the tab menu");
     }
-    let close = h.get_by_label("Close Panel").rect().center();
+    let close = menu_item(&h, "Close");
     click_at(&mut h, close, PointerButton::Primary);
     assert!(!h.state().session.state.open_sequences.contains(&active), "the sequence stays open");
     assert!(h.state().ui.dock.is_visible(PanelKind::Timeline), "the Timeline closed");
 }
 
-/// Close Panel Group on a group holding the Timeline closes the active sequence and the group's
-/// other panels; the Timeline stays.
+/// Close Tab Group (Close Panel Group before the port) on a group holding the Timeline closes the
+/// active sequence and the group's other panels; the Timeline stays.
 #[test]
 fn close_panel_group_keeps_the_timeline_and_closes_the_sequence() {
     let mut h = demo_harness();
@@ -944,7 +964,7 @@ fn close_panel_group_keeps_the_timeline_and_closes_the_sequence() {
     }
     assert!(same_group(&h.state().ui.dock, PanelKind::Info, PanelKind::Timeline));
     let active = h.state().session.state.active_sequence.unwrap();
-    tab_menu(&mut h, "panel.tab.Info", "Close Panel Group");
+    tab_menu(&mut h, "panel.tab.Info", "Close Tab Group");
     let state = h.state();
     assert!(!state.session.state.open_sequences.contains(&active), "the sequence stays open");
     assert!(state.ui.dock.is_visible(PanelKind::Timeline), "the Timeline closed");

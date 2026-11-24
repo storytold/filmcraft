@@ -853,9 +853,11 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let history = d.exec("history.list", json!({}));
     let revision = d.app().session.revision;
 
-    d.ok("ui.click", json!({"id":"panel.tab.Project", "button":"middle"}));
+    // The dock closes a tab by a middle click only where its tabs show close buttons, which
+    // FilmCraft's do not: the inactive tab closes from its panel command instead.
+    d.ok("ui.panel.close", json!({"panel": "Project"}));
     d.frames(3);
-    assert!(!d.has("panel.tab.Project"), "middle-click closes the inactive tab");
+    assert!(!d.has("panel.tab.Project"), "closing the inactive tab removes it");
     assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
     assert_eq!(d.exec("state.inspect", json!({})), state);
     assert_eq!(d.exec("history.list", json!({})), history);

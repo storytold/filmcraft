@@ -273,7 +273,23 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
             control_rect(&h, "panel.Timeline"),
             h.state().ui.dock.floating.iter().map(|window| window.rect).collect::<Vec<_>>()
         );
-        assert!(hover_at(&mut h, at));
+        let uncovered_preview = hover_at(&mut h, at);
+        if !uncovered_preview {
+            let holds = |r: [f32; 4]| at.x >= r[0] && at.x <= r[0] + r[2] && at.y >= r[1] && at.y <= r[1] + r[3];
+            let elements: Vec<String> = h.state().auto.elements.iter().filter(|element| holds(element.rect)).map(|element| element.id.clone()).collect();
+            let areas: Vec<String> = h.ctx.memory(|memory| {
+                memory
+                    .layer_ids()
+                    .filter_map(|layer| memory.area_rect(layer.id).filter(|area| area.contains(at)).map(|area| format!("{layer:?} {area:?}")))
+                    .collect()
+            });
+            eprintln!(
+                "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} no preview; layer_at={:?} elements={elements:?} areas={areas:?} status={:?}",
+                h.ctx.layer_id_at(at),
+                h.state().ui.status
+            );
+        }
+        assert!(uncovered_preview);
         drop_at(&mut h, at, &still(&format!("drop_uncovered_{scale}.png")));
         assert_eq!(clip_counts(&h), (1, 0));
     }

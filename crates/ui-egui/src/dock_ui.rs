@@ -36,6 +36,11 @@ fn sources_id() -> egui::Id {
     egui::Id::unique("filmcraft-dock-sources")
 }
 
+/// The panel of the group that held key focus in the last pass, as the dock area reported it.
+fn key_focus_id() -> egui::Id {
+    egui::Id::unique("filmcraft-dock-key-focus")
+}
+
 /// One gesture source of the dock area: its automation id, where it was drawn (in its own OS
 /// window's coordinates for a native floating window), the id of its node, and whether it is a
 /// divider or a resize grip, which take the arrow keys while focused.
@@ -434,7 +439,13 @@ impl FilmcraftApp {
         if output.float_space.is_some() {
             self.dock_float_space = output.float_space;
         }
-        if let Some(panel) = pressed.or(output.picked).or(output.focused) {
+        // next reports the group holding key focus every pass; only a move of that focus to another
+        // group focuses its panel, so a panel the app focused itself (Source after `source.open`,
+        // a reopened panel) keeps the focus while key focus stays where it was.
+        let last_focused = ctx.data(|data| data.get_temp::<Option<PanelKind>>(key_focus_id())).flatten();
+        ctx.data_mut(|data| data.insert_temp(key_focus_id(), output.focused));
+        let focus_moved = output.focused.filter(|panel| last_focused != Some(*panel));
+        if let Some(panel) = pressed.or(output.picked).or(focus_moved) {
             self.ui.focused = panel;
             if panel == PanelKind::Timeline {
                 self.raise_program_for_timeline();
