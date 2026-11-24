@@ -190,9 +190,8 @@ mod tests {
 
         let data: Arc<[u8]> = [&first[..], &second[..], &first[..first.len() - 4]].concat().into();
         let memory = crate::open_bytes("prefix.apv", data.clone()).unwrap();
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/codecs");
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = filmcraft_testkit::fixtures::temp_path(&folder.join("prefix.apv"));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefix.apv");
         std::fs::write(&path, &data).unwrap();
         let file = Arc::new(FileReader::open(&path).unwrap());
         let disk = open_reader("prefix.apv", file, &crate::reader_openers(), &crate::openers()).unwrap();
