@@ -42,11 +42,13 @@ fn control_rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, height))
 }
 
-/// A point 60 px into the Timeline's clip area on the named track row.
+/// A point 60 px into the Timeline's clip area on the named track row, in the part of the row the
+/// ruler does not cover: in a short Timeline body the first rows can scroll partly under it.
 fn point_on_row(h: &Harness<'static, FilmcraftApp>, row_control: &str) -> egui::Pos2 {
     let row = control_rect(h, row_control);
     let panel = control_rect(h, "panel.Timeline");
-    egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, row.center().y)
+    let top = h.state().auto.find("timeline.ruler").map_or(row.min.y, |ruler| row.min.y.max(ruler.rect[1] + ruler.rect[3]));
+    egui::pos2(panel.min.x + h.state().ui.timeline.header_w + 60.0, (top + row.max.y) / 2.0)
 }
 
 /// A file the OS dropped on the window, as the native integration hands it to egui.
