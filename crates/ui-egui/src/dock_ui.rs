@@ -445,6 +445,12 @@ impl FilmcraftApp {
         child.set_clip_rect(body.intersect(ui.clip_rect()));
         // One request per bring-forward: a later pass does not take the stacking back.
         let focus = self.dock_focus.take();
+        if let Some(panel) = focus {
+            eprintln!(
+                "DIAG narration_selection_reveals_covered_floating_tts_once_without_editing_the_project: dock focus request {panel:?} at frame {}",
+                ctx.cumulative_frame_nr()
+            );
+        }
         let mut panels = FilmPanels {
             app: self,
             seqs,
