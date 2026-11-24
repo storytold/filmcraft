@@ -1,24 +1,28 @@
 //! Measure the INSV stitch's throughput: `cargo run --release -p filmcraft-codecs
-//! --example stitch_bench -- in.insv [frames]`.
+//! --example stitch_bench -- in.insv [frames] [threads]`.
 //!
 //! Opens the file (joining a spanned recording's parts, like `insv_stitch`), warms
 //! the bake with one frame, then decodes + stitches `frames` consecutive frames
-//! (default 24) and prints ms/frame and fps. The seam alignment must keep the
-//! result at or above the source's frame rate for real-time playback.
+//! (default 24) with `threads` concurrent requesters pulling them in order
+//! (default 1), as playback's frame workers do, and prints ms/frame, per-request
+//! latency percentiles and the GOP-cache counters for the run. The seam alignment
+//! must keep the result at or above the source's frame rate for real-time playback.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use filmcraft_media::{MediaError, SharedSource};
+use filmcraft_media::{FrameRequest, MediaError, SharedSource};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: stitch_bench in.insv [frames]");
+        eprintln!("usage: stitch_bench in.insv [frames] [threads]");
         std::process::exit(2);
     }
     let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(24).clamp(1, 1000);
+    let threads: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1).clamp(1, 64);
     let src = match open(Path::new(&args[1])) {
         Ok(s) => s,
         Err(e) => {
@@ -32,21 +36,57 @@ fn main() {
         std::process::exit(1);
     };
     let t0 = filmcraft_time::Tick(info.duration.0 * 3 / 10);
-    if src.video_frame(filmcraft_media::FrameRequest::full(t0)).is_err() {
+    if src.video_frame(FrameRequest::full(t0)).is_err() {
         eprintln!("warm frame failed");
         std::process::exit(1);
     }
     let dt = filmcraft_time::FrameRate { num: v.frame_rate.num.max(1), den: v.frame_rate.den.max(1) }.frame_duration();
+    let g0 = filmcraft_codecs::gop_stats();
     let start = Instant::now();
-    for i in 0..n {
-        let t = filmcraft_time::Tick(t0.0.saturating_add((i as i64 + 1).saturating_mul(dt.0)));
-        if src.video_frame(filmcraft_media::FrameRequest::full(t)).is_err() {
-            eprintln!("frame {i} failed");
-            std::process::exit(1);
+    let next = AtomicUsize::new(0);
+    let lat: Mutex<Vec<f64>> = Mutex::new(Vec::with_capacity(n));
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            let src = src.clone();
+            let (next, lat) = (&next, &lat);
+            scope.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let t = filmcraft_time::Tick(t0.0.saturating_add((i as i64 + 1).saturating_mul(dt.0)));
+                    let w = Instant::now();
+                    if src.video_frame(FrameRequest::full(t)).is_err() {
+                        eprintln!("frame {i} failed");
+                        std::process::exit(1);
+                    }
+                    lat.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(w.elapsed().as_secs_f64() * 1e3);
+                }
+            });
         }
-    }
+    });
     let el = start.elapsed().as_secs_f64().max(1e-6);
-    println!("{:.1} ms/frame ({n} frames, {:.1} fps) at {}x{}", el / n as f64 * 1000.0, n as f64 / el, v.width, v.height);
+    let g = filmcraft_codecs::gop_stats() - g0;
+    let mut ms = lat.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    ms.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // len == n >= 1: every requester that took an index recorded a latency or
+    // exited the process.
+    let pct = |q: usize| ms[((ms.len() - 1) * q) / 100];
+    println!(
+        "{:.1} ms/frame wall ({n} frames, {threads} threads, {:.1} fps) at {}x{} | lat p50 {:.1} p95 {:.1} ms | gop req {} seek {} samples {} dec {:.0} ms hit {:.2}",
+        el / n as f64 * 1000.0,
+        n as f64 / el,
+        v.width,
+        v.height,
+        pct(50),
+        pct(95),
+        g.hits + g.misses,
+        g.seeks,
+        g.decoded,
+        g.decode_ns as f64 / 1e6,
+        g.hit_rate()
+    );
 }
 
 /// Open one `.insv` by path, joining the sibling parts when it belongs to a spanned

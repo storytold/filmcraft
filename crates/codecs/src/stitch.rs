@@ -140,11 +140,15 @@ struct BandSmooth {
     flow: Option<Flow2>,
 }
 
-/// One source's seam/flow history (see [`Stitch::apply`]): the previous frame's
-/// temporally-smoothed per-band alignment. A bake can be shared by several
-/// sources (every part of one spanned recording, two clips of one camera), but
-/// their frames interleave - each source keeps its own history so one clip's
-/// flow hint never blends into another's seam.
+/// One source's seam/flow history (see [`Stitch::apply`]): the last finished
+/// frame's temporally-smoothed per-band alignment. A bake can be shared by
+/// several sources (every part of one spanned recording, two clips of one
+/// camera), but their frames interleave - each source keeps its own history so
+/// one clip's flow hint never blends into another's seam. Playback keeps a
+/// window of a source's frames in flight, so the slots are swapped under the
+/// lock and carried through the alignment outside it: a frame still in flight
+/// is simply a not-yet-current hint, and the smoothing self-corrects within a
+/// few frames, as it does after a seek.
 #[derive(Default)]
 pub struct SeamState {
     smooth: Mutex<[Option<BandSmooth>; 2]>,
@@ -154,6 +158,18 @@ impl SeamState {
     /// An empty history: the first frame aligns from the picture alone.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A copy of the last finished alignment of both bands (`apply` carries it
+    /// through the work and hands the result to [`Self::set`]).
+    fn grab(&self) -> [Option<BandSmooth>; 2] {
+        self.smooth.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Record what one `apply` finished with, from whenever its frames were
+    /// taken: newer windows simply overrule older ones.
+    fn set(&self, state: [Option<BandSmooth>; 2]) {
+        *self.smooth.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = state;
     }
 }
 
@@ -254,16 +270,17 @@ impl Stitch {
         }
         let (g0, g1) = if n > 0 { lens_gains(s0 / n as f64, s1 / n as f64) } else { (1.0, 1.0) };
         // Per-frame seam alignment (F40): flow + DP seam per band, temporally
-        // smoothed. One source's frames are decoded in order, so each source
-        // owns its history (`seam`) and a seek self-corrects within a few
-        // frames; sharing a bake between sources must not mix their histories.
-        // The two bands are independent, so they align concurrently.
+        // smoothed. Each source owns its history (`seam`), so a seek self-corrects
+        // within a few frames and sharing a bake between sources cannot mix their
+        // histories; the lock covers only the slot swaps, so the frames a source
+        // has in flight at once (playback's prefetch window) align concurrently
+        // instead of queueing behind each other's work. The two bands are
+        // independent, so they align concurrently too.
         let plans = {
-            let mut st = seam.smooth.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let [mut s0, mut s1] = std::mem::take(&mut *st);
+            let [mut s0, mut s1] = seam.grab();
             let (a, b) =
                 rayon::join(|| self.band_plan(&self.bands[0], &l0, &l1, g0, g1, &mut s0), || self.band_plan(&self.bands[1], &l0, &l1, g0, g1, &mut s1));
-            *st = [s0, s1];
+            seam.set([s0, s1]);
             [a, b]
         };
         // luma: remap + feather + gain, then the aligned bands overwrite their columns
