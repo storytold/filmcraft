@@ -485,7 +485,8 @@ fn marker_dialog_escape_does_not_discard_an_unfinished_pen_mask() {
     let time = start + dur / 2;
     d.exec("playhead.set", json!({"time": time}));
     d.exec("timeline.select", json!({"clips": [id]}));
-    let marker = d.exec("markers.add", json!({"time": time, "name": "Mask draft"}))["marker"].as_u64().unwrap();
+    let marker_time = filmcraft_time::Tick::from_seconds_f64(2.0).0;
+    let marker = d.exec("markers.add", json!({"time": marker_time, "name": "Mask draft"}))["marker"].as_u64().unwrap();
     d.frames(3);
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
     d.frames(2);
@@ -494,6 +495,8 @@ fn marker_dialog_escape_does_not_discard_an_unfinished_pen_mask() {
     d.frames(2);
     let points = d.harness.state().ui.mask_pen.as_ref().unwrap().points.clone();
     assert_eq!(points.len(), 1);
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(3);
     d.ok("ui.click", json!({"id": format!("timeline.marker.{marker}"), "count": 2}));
     d.frames(2);
     assert!(d.harness.state().ui.marker_properties.is_some());

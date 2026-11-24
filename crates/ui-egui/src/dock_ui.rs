@@ -486,7 +486,12 @@ impl FilmcraftApp {
                 self.raise_program_for_timeline();
             }
         }
-        self.window_files = output.window_files;
+        // The fallback delivers a drop once. Keep it until root input drains it, even if
+        // another layout pass publishes an empty output before the next root frame.
+        self.window_files.extend(output.window_files);
+        if !self.window_files.is_empty() {
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
         if let Some(error) = output.error {
             self.ui.status = error.error.to_string();
         }

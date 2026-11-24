@@ -119,8 +119,10 @@ pub(crate) fn effect_rows(
         let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(mr).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut mode = m.mode;
         crate::panels::effect_controls::fit_to_row(&mut mui);
-        let combo =
-            egui::ComboBox::from_id_salt(("mask-mode", clip.0, idx, k)).selected_text(crate::i18n::t(mode.label())).width(88.0).show_ui(&mut mui, |ui| {
+        let combo = crate::legacy_dropdown::Dropdown::from_id_salt(("mask-mode", clip.0, idx, k))
+            .selected_text(crate::i18n::t(mode.label()))
+            .width(88.0)
+            .show_ui(&mut mui, |ui| {
                 for md in MaskMode::ALL {
                     if ui.selectable_value(&mut mode, md, crate::i18n::t(md.label())).changed() {
                         actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": idx, "mask": k, "mode": md.label()})));

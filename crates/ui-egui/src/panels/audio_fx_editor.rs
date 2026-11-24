@@ -581,7 +581,7 @@ fn generic(ui: &mut egui::Ui, ed: &mut Ed) {
                 let shown = opts.get(cur).map_or("", |o| crate::i18n::t(o));
                 let mut pick = None;
                 ui.horizontal(|ui| {
-                    let r = egui::ComboBox::from_id_salt(("fx-choice", ed.target.clone(), pd.id)).selected_text(shown).show_ui(ui, |ui| {
+                    let r = crate::legacy_dropdown::Dropdown::from_id_salt(("fx-choice", ed.target.clone(), pd.id)).selected_text(shown).show_ui(ui, |ui| {
                         for (i, o) in opts.iter().enumerate() {
                             let b = ui.selectable_label(i == cur, crate::i18n::t(o));
                             ed.auto(format!("fxEditor.{}.choice.{}.{i}", ed.fx, pd.id), b.rect, o);

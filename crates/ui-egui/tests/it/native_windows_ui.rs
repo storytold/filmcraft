@@ -17,6 +17,8 @@ struct WindowIo {
     focused: bool,
     viewport: Option<(egui::ViewportId, egui::Rect)>,
     events: Vec<egui::Event>,
+    hovered_files: Vec<egui::HoveredFile>,
+    dropped_files: Vec<egui::DroppedFileHandle>,
     ime: Option<egui::output::IMEOutput>,
     reset_requests: Vec<egui::ImeResetId>,
 }
@@ -32,10 +34,10 @@ fn native_host() {
         let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
         let place = egui::Rect::from_min_size(viewport.builder.position.unwrap_or_default(), size);
         let id = viewport.ids.this;
-        let (focused, events) = WINDOW.with(|w| {
+        let (focused, events, hovered_files, dropped_files) = WINDOW.with(|w| {
             let mut w = w.borrow_mut();
             w.viewport = Some((id, place));
-            (w.focused, std::mem::take(&mut w.events))
+            (w.focused, std::mem::take(&mut w.events), std::mem::take(&mut w.hovered_files), std::mem::take(&mut w.dropped_files))
         });
         let info = egui::ViewportInfo { inner_rect: Some(place), outer_rect: Some(place), focused: Some(focused), ..Default::default() };
         let input = egui::RawInput {
@@ -45,6 +47,8 @@ fn native_host() {
             time: ctx.input(|i| Some(i.time)),
             focused,
             events,
+            hovered_files,
+            dropped_files,
             ..Default::default()
         };
         let mut out = ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui));
@@ -139,12 +143,22 @@ impl Driver {
 
     /// Send a real hosted file drag and drop over the element's native viewport.
     fn drop_files_at(&mut self, element: &str, paths: Vec<std::path::PathBuf>) {
-        let at = rect(&self.element(element)).center();
+        let mut at = rect(&self.element(element)).center();
+        if element.starts_with("timeline.track.") {
+            let panel = rect(&self.element("panel.Timeline"));
+            at.x = panel.min.x + self.app().ui.timeline.header_w + 60.0;
+        }
         let (viewport, place) = WINDOW.with(|w| w.borrow().viewport.unwrap());
         assert_ne!(viewport, egui::ViewportId::ROOT);
         let desktop = place.min + at.to_vec2();
         self.system.set_pointer(Some([desktop.x, desktop.y]));
-        craft_ui::runtime::windows::WindowHost::of(&self.harness.ctx).inject_files(viewport, Some(at), paths, true);
+        WINDOW.with(|w| {
+            let mut w = w.borrow_mut();
+            w.focused = true;
+            w.hovered_files = paths.iter().map(|path| egui::HoveredFile { path: Some(path.clone()), mime: String::new() }).collect();
+        });
+        self.frames(1);
+        WINDOW.with(|w| w.borrow_mut().dropped_files = paths.into_iter().map(|path| std::sync::Arc::new(OsDrop(path)) as _).collect());
         self.frames(12);
     }
 
@@ -165,6 +179,19 @@ impl Driver {
             });
         }
         self.frames(1);
+    }
+}
+
+#[derive(Debug)]
+struct OsDrop(std::path::PathBuf);
+
+impl egui::DroppedFile for OsDrop {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|error| error.to_string())
     }
 }
 

@@ -70,7 +70,7 @@ impl FilmcraftApp {
             let pointer = WindowHost::of(ctx).pointer_in(viewport).or_else(|| ui.input(|i| i.pointer.latest_pos()));
             self.file_drag_hover = pointer.filter(|pos| rect.contains(*pos)).map(|pos| (hovering, pos, viewport));
         }
-        if let Some((paths, pos)) = zone_target(ui, ui.id().with("native-timeline-files"), DropZone::new(ui.layer_id(), rect), &TimelineFiles(rect)) {
+        if let Some((paths, pos)) = zone_target(ui, ui.scope_id().with("native-timeline-files"), DropZone::new(ui.layer_id(), rect), &TimelineFiles(rect)) {
             self.file_drag_hover = None;
             self.native_timeline_drops.push_back(crate::NativeTimelineDrop { paths, point: pos, viewport });
             ctx.request_repaint_of(egui::ViewportId::ROOT);

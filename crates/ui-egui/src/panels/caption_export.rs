@@ -53,7 +53,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.set_min_width(340.0);
         egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("File Format"));
-            let r = egui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
                 for f in Format::ALL {
                     let o = ui.selectable_value(&mut d.format, f, f.name());
                     elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
@@ -74,7 +74,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
                 let mut pick = chosen;
                 ui.label(tl!("Caption Track"));
-                let r = egui::ComboBox::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
+                let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
                     for i in 0..tracks.len() {
                         let o = ui.selectable_value(&mut pick, i, label(i));
                         elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
