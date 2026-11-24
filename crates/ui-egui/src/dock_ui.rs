@@ -676,6 +676,12 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
             return;
         }
         self.block_native(ui);
+        // A press on the header's own widgets (a sequence tab, the ≡ button) is no press on the
+        // group's surface in next, so the group does not take the focus: the app focuses the
+        // group's shown panel itself, as a press anywhere in the group did in production.
+        if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(header) {
+            self.pressed = Some(active);
+        }
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
         if sequences {
             let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));

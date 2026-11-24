@@ -284,7 +284,9 @@ fn floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts(
                     .collect()
             });
             eprintln!(
-                "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} no preview; layer_at={:?} elements={elements:?} areas={areas:?} status={:?}",
+                "DIAG floating_panel_blocks_os_drop_and_hover_but_uncovered_timeline_still_accepts: scale={scale} no preview; v1={:?} ruler={:?} layer_at={:?} elements={elements:?} areas={areas:?} status={:?}",
+                h.state().auto.find("timeline.track.V1.target").map(|element| element.rect),
+                h.state().auto.find("timeline.ruler").map(|element| element.rect),
                 h.ctx.layer_id_at(at),
                 h.state().ui.status
             );
