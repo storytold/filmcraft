@@ -154,17 +154,6 @@ codegen-units = 1
 
 # Keep the complete egui family and native event bridge on reviewed fork commits.
 [patch.crates-io]
-# BEGIN port-kit framework overrides
-krilla = { path = "../craft-libs/vendor/krilla" }
-hayro = { path = "../craft-libs/vendor/hayro" }
-hayro-interpret = { path = "../craft-libs/vendor/hayro-interpret" }
-hayro-syntax = { path = "../craft-libs/vendor/hayro-syntax" }
-hayro-jbig2 = { path = "../craft-libs/vendor/hayro-jbig2" }
-hayro-cmap = { path = "../craft-libs/vendor/hayro-cmap" }
-hayro-postscript = { path = "../craft-libs/vendor/hayro-postscript" }
-linesweeper = { path = "../craft-libs/vendor/linesweeper" }
-vello_common = { path = "../craft-libs/vendor/vello_common" }
-vello_cpu = { path = "../craft-libs/vendor/vello_cpu" }
 ecolor = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 emath = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 epaint = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
@@ -180,22 +169,6 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
-# END port-kit framework overrides
-# port-kit overridden: ecolor = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: emath = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: epaint = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: epaint_default_fonts = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui-winit = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_glow = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_extras = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_kittest = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_system_font_provider = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: eframe = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
-# port-kit overridden: winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
 
 # cl's app mode (craft-libs docs/development.md, "App workspaces"): every command selects these packages,
 # so egui, eframe and the craft crates resolve to one feature set and build once per target dir.
@@ -209,62 +182,3 @@ unset_env = ["FILMCRAFT_REQUIRE_WINRES", "CRAFT_FONTS_REQUIRED"]
 # whose main thread has 8 MiB. The UI integration tests need the same.
 set_env = { RUST_MIN_STACK = "8388608" }
 
-# BEGIN port-kit framework patch
-[patch."https://github.com/storytold/craft-libs"]
-craft-aaf = { path = "../craft-libs/crates/aaf" }
-craft-appkit = { path = "../craft-libs/crates/appkit" }
-craft-atomic = { path = "../craft-libs/crates/atomic" }
-craft-audio = { path = "../craft-libs/crates/audio" }
-craft-behavior = { path = "../craft-libs/crates/behavior" }
-craft-captions = { path = "../craft-libs/crates/captions" }
-craft-cfb = { path = "../craft-libs/crates/cfb" }
-craft-cloud-ui = { path = "../craft-libs/crates/cloud-ui" }
-craft-codepage = { path = "../craft-libs/crates/codepage" }
-craft-color = { path = "../craft-libs/crates/color" }
-craft-control-protocol = { path = "../craft-libs/crates/control-protocol" }
-craft-docpath = { path = "../craft-libs/crates/docpath" }
-craft-dpx = { path = "../craft-libs/crates/dpx" }
-craft-exr = { path = "../craft-libs/crates/exr" }
-craft-font-catalog = { path = "../craft-libs/crates/font-catalog" }
-craft-fonts-build = { path = "../craft-libs/crates/fonts-build" }
-craft-frame = { path = "../craft-libs/crates/frame" }
-craft-hdr = { path = "../craft-libs/crates/hdr" }
-craft-host = { path = "../craft-libs/crates/host" }
-craft-i18n = { path = "../craft-libs/crates/i18n" }
-craft-jpeg = { path = "../craft-libs/crates/jpeg" }
-craft-jsonrpc = { path = "../craft-libs/crates/jsonrpc" }
-craft-keymap = { path = "../craft-libs/crates/keymap" }
-craft-media = { path = "../craft-libs/crates/media" }
-craft-media-source = { path = "../craft-libs/crates/media-source" }
-craft-pdf = { path = "../craft-libs/crates/pdf" }
-craft-platform = { path = "../craft-libs/crates/platform" }
-craft-png = { path = "../craft-libs/crates/png" }
-craft-psd = { path = "../craft-libs/crates/psd" }
-craft-quit = { path = "../craft-libs/crates/quit" }
-craft-raw = { path = "../craft-libs/crates/raw" }
-craft-settings = { path = "../craft-libs/crates/settings" }
-craft-sniff = { path = "../craft-libs/crates/sniff" }
-craft-svg = { path = "../craft-libs/crates/svg" }
-craft-tga = { path = "../craft-libs/crates/tga" }
-craft-theme = { path = "../craft-libs/crates/theme" }
-craft-tiff = { path = "../craft-libs/crates/tiff" }
-craft-time = { path = "../craft-libs/crates/time" }
-craft-timeline = { path = "../craft-libs/crates/timeline" }
-craft-tracked = { path = "../craft-libs/crates/tracked" }
-craft-ui = { path = "../craft-libs/crates/ui" }
-craft-ui-canvas = { path = "../craft-libs/crates/ui-canvas" }
-craft-ui-contract = { path = "../craft-libs/crates/ui-contract" }
-craft-ui-macros = { path = "../craft-libs/crates/ui-macros" }
-craft-ui-panels = { path = "../craft-libs/crates/ui-panels" }
-craft-ui-patterns = { path = "../craft-libs/crates/ui-patterns" }
-craft-ui-shell = { path = "../craft-libs/crates/ui-shell" }
-craft-ui-widgets = { path = "../craft-libs/crates/ui-widgets" }
-craft-update = { path = "../craft-libs/crates/update" }
-craft-video = { path = "../craft-libs/crates/video" }
-craft-web-api = { path = "../craft-libs/crates/web-api" }
-craft-web-host = { path = "../craft-libs/crates/web-host" }
-craft-win32 = { path = "../craft-libs/crates/win32" }
-craft-window = { path = "../craft-libs/crates/window" }
-craft-xml = { path = "../craft-libs/crates/xml" }
-craft-y4m = { path = "../craft-libs/crates/y4m" }
-# END port-kit framework patch
