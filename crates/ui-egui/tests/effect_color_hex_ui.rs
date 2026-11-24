@@ -131,6 +131,20 @@ fn the_hex_field_takes_typing_a_character_at_a_time() {
         d.find("panel.EffectControls"),
         d.harness.state().ui.status
     );
+    // What egui hit-tests at the pointer (still on the field): a field clipped out of its panel
+    // body shows a zero-sized interact rect, or is missing while something else wins the click.
+    let hits = ctx.viewport(|v| {
+        let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
+        (v.hits.click.as_ref().map(w), v.hits.drag.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
+    });
+    eprintln!(
+        "DIAG the_hex_field_takes_typing_a_character_at_a_time: pointer={:?} layer_at={:?} click={:?} drag={:?} close={:?}",
+        ctx.pointer_latest_pos(),
+        ctx.pointer_latest_pos().and_then(|p| ctx.layer_id_at(p)),
+        hits.0,
+        hits.1,
+        hits.2
+    );
     d.ok("ui.key", json!({"key": "Cmd+A"}));
 
     // Not a colour yet: the field keeps what was typed and the parameter stays put.
