@@ -76,31 +76,91 @@ pub fn before_input(ctx: &Context, app: &FilmcraftApp) {
     });
 }
 
-/// How many events of one pass's raw input came after its first pointer press: the runtime gives a pass at most one
+/// How many events of one frame's raw input came after its first pointer press: the runtime gives a pass at most one
 /// press, as its last pointer event, and holds those events for the front of the next frame's input.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct PressSuffix {
     frame: u64,
     len: usize,
 }
 
+/// The records of the last two frames that ran the input hook, oldest first: the frame after a press reads the
+/// press frame's record after its own hook has written the newer one.
+#[derive(Clone, Copy, Default)]
+struct PressSuffixes([Option<PressSuffix>; 2]);
+
 fn press_suffix_id() -> Id {
     Id::new("filmcraft-press-suffix")
 }
 
-/// Last in `raw_input_hook`: records how many of the pass's events follow its first pointer press, so
+/// Last in `raw_input_hook`: records how many of the frame's events follow its first pointer press, so
 /// [`held_press_suffix`] can tell them, at the front of the next frame, from events that arrived in that frame.
+/// A second hook call in the same frame (eframe's hidden logic ticks) keeps the longer count.
 pub fn note_press_suffix(ctx: &Context, events: &[egui::Event]) {
     let len = events.iter().position(|event| matches!(event, egui::Event::PointerButton { pressed: true, .. })).map_or(0, |at| events.len() - at - 1);
     let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|data| data.insert_temp(press_suffix_id(), PressSuffix { frame, len }));
+    ctx.data_mut(|data| {
+        let records = data.get_temp_mut_or_default::<PressSuffixes>(press_suffix_id());
+        match &mut records.0[1] {
+            Some(current) if current.frame == frame => current.len = current.len.max(len),
+            _ => records.0 = [records.0[1], Some(PressSuffix { frame, len })],
+        }
+    });
 }
 
-/// How many events at the front of this pass's input are the held suffix of the previous pass's press: they came
-/// in the press's batch, after it. Zero when the previous pass had no press, or nothing after it.
+/// The Ctrl+wheel events of one frame's raw input, as they arrived: the runtime's input hook folds a smooth one into
+/// `Event::Zoom` off macOS (craft-libs `ui-contract/src/runtime/egui/input.rs`, `fold_legacy_pinch`), at
+/// `exp(scroll_zoom_speed × points)`, and the app reads Ctrl+wheel as its own (Timeline sideways, monitor zoom at
+/// its own rate). Fallback until the pin carries the framework fix; it goes at that repin.
+#[derive(Clone, Default)]
+struct CtrlWheels {
+    frame: u64,
+    wheels: Vec<egui::Event>,
+}
+
+fn ctrl_wheels_id() -> Id {
+    Id::new("filmcraft-ctrl-wheels")
+}
+
+/// Last in `raw_input_hook`: records the frame's Ctrl+wheel events (synthetic ones included) before the runtime's
+/// input hook can fold them into a zoom, for [`folded_ctrl_wheels`].
+pub fn note_ctrl_wheels(ctx: &Context, events: &[egui::Event]) {
+    let frame = ctx.cumulative_frame_nr();
+    let wheels: Vec<egui::Event> = events
+        .iter()
+        .filter(|event| matches!(event, egui::Event::MouseWheel { modifiers, .. } if modifiers.ctrl && !modifiers.alt && !modifiers.shift))
+        .cloned()
+        .collect();
+    ctx.data_mut(|data| {
+        // a second hook call in the same frame (eframe's hidden logic ticks) sees the same input again
+        let record = data.get_temp_mut_or_default::<CtrlWheels>(ctrl_wheels_id());
+        if record.frame != frame || wheels.len() > record.wheels.len() {
+            *record = CtrlWheels { frame, wheels };
+        }
+    });
+}
+
+/// The Ctrl+wheel events of this frame that the runtime turned into `Event::Zoom`: those the input hook saw that
+/// are no longer among the pass's `events`. Empty when `events` carry no zoom, so a device's own pinch stays a
+/// pinch (the runtime folds nothing when a zoom arrived as one).
+pub fn folded_ctrl_wheels(ctx: &Context, events: &[egui::Event]) -> Vec<egui::Event> {
+    if !events.iter().any(|event| matches!(event, egui::Event::Zoom(_))) {
+        return Vec::new();
+    }
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data(|data| data.get_temp::<CtrlWheels>(ctrl_wheels_id()))
+        .filter(|record| record.frame == frame)
+        .map(|record| record.wheels.into_iter().filter(|wheel| !events.contains(wheel)).collect())
+        .unwrap_or_default()
+}
+
+/// How many events at the front of this pass's input are the held suffix of the previous frame's press: they came
+/// in the press's batch, after it. Zero when the previous frame had no press, or nothing after it.
 pub fn held_press_suffix(ctx: &Context) -> usize {
     let frame = ctx.cumulative_frame_nr();
-    ctx.data(|data| data.get_temp::<PressSuffix>(press_suffix_id())).filter(|suffix| frame == suffix.frame.wrapping_add(1)).map_or(0, |suffix| suffix.len)
+    ctx.data(|data| data.get_temp::<PressSuffixes>(press_suffix_id()))
+        .and_then(|records| records.0.into_iter().flatten().find(|suffix| frame == suffix.frame.wrapping_add(1)))
+        .map_or(0, |suffix| suffix.len)
 }
 
 /// First in `ui`, each pass: hands the runtime the root's native window (eframe's `Frame`).
