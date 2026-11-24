@@ -302,7 +302,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     let from = rect(&h, "panel.tab.Info").center();
     drag(&mut h, from, pos2(700.0, 400.0), Modifiers::COMMAND);
     assert_eq!(h.state().ui.dock.floating.len(), 1);
-    assert_eq!(h.query_all_by_label("Resize panel window").next().unwrap().accesskit_node().role(), egui::accesskit::Role::Button);
+    assert_eq!(h.query_all_by_label("Resize panel window").next().unwrap().accesskit_node().role(), egui::accesskit::Role::Splitter);
     action_log.push(action_state(&h, "floated"));
     let original = h.state().ui.dock.floating[0].rect;
     let grip = rect(&h, "panel.float.0.resize").center();
