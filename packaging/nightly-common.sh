@@ -33,6 +33,8 @@ nightly_init() {
 
 # Compile only: macOS runs the version query after signing (packaging/macos/nightly-verify.sh).
 nightly_compile_gui() {
+  # Signing material never reaches compilation (the Windows -CheckBuildEnvironment rule).
+  nightly_refuse_signing_env
   # The same prepared identity the artifacts are named after: build.rs refuses a nightly whose
   # version, commit and date disagree.
   # The same features the official package builds with (packaging/linux/package.sh): without
