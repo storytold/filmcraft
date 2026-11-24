@@ -335,7 +335,7 @@ fn wheel_over_a_tab_strip_switches_tabs() {
     fn shown(d: &mut Driver) -> PanelKind {
         fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Tabs { panels, active, .. } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
                 Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
                 _ => None,
             }
