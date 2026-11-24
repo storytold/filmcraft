@@ -322,7 +322,7 @@ impl FilmcraftApp {
         // floating window the next dock pass focuses it once, which raises that window. A docked
         // panel's tab is already in front, and key focus stays where it was.
         if let Some(panel) = actions.iter().rev().find_map(|action| match action {
-            Action::Activate { panel } => Some(*panel),
+            Action::Activate { panel, .. } => Some(*panel),
             _ => None,
         }) && self.ui.dock.floating.iter().any(|window| window.contains(&panel))
         {
