@@ -100,10 +100,11 @@ impl Driver {
         app.scrub_out = Some(Box::new(ScrubDevice { counts: scrub.clone(), fill: Arc::new(Mutex::new(None)) }));
         app.audio = Some(Box::new(Playback { counts: playback.clone() }));
         // A real frame's worth of time: the default step would run the 0.25 s linger out at once.
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1600.0, 980.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(10_000)
+            .build_eframe(crate::support::headless_creator(app));
         let mut d = Self { harness, tx, scrub, playback };
         d.frames(4);
         d

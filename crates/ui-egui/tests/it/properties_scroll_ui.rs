@@ -50,10 +50,7 @@ fn properties_panel_scrolls_to_its_lower_sections() {
     session.execute("file.openDemoProject", json!({})).expect("demo project");
     let (tx, rx) = channel();
     let app = FilmcraftApp::new(session).with_control(rx);
-    let harness = Harness::builder().with_size(egui::vec2(1600.0, 560.0)).with_max_steps(10_000).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 560.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
     let mut d = Driver { harness, tx };
     d.frames(4);
     let seq = d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}));

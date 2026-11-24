@@ -34,10 +34,7 @@ fn context() -> egui::Context {
 
 /// The app in a harness of `size`, with the framework runtime installed.
 fn harness(size: egui::Vec2, app: FilmcraftApp) -> Harness<'static, FilmcraftApp> {
-    Harness::builder().with_size(size).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    })
+    Harness::builder().with_size(size).build_eframe(crate::support::headless_creator(app))
 }
 
 /// Whether a panel is in the docked frame tree (not a floating window).
@@ -261,10 +258,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     if snapshots.is_some() {
         builder = builder.wgpu();
     }
-    let mut h = builder.build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = builder.build_eframe(crate::support::headless_creator(app));
     for _ in 0..4 {
         step(&mut h);
     }

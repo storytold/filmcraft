@@ -23,13 +23,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session);
         let app = if isolated { app.with_control_input_only(rx) } else { app.with_control(rx) };
-        let mut driver = Self {
-            h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
-                filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-                app
-            }),
-            tx,
-        };
+        let mut driver = Self { h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(crate::support::headless_creator(app)), tx };
         driver.frames(4, true);
         driver
     }

@@ -26,10 +26,7 @@ impl Driver {
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx };
         d.frames(4);
         let seq = d.exec("sequence.inspect", json!({}));
@@ -204,3 +201,5 @@ fn every_keying_effect_with_a_color_parameter_has_the_field() {
         assert!(d.find(&id).is_some(), "no hex field for {effect}.{param}");
     }
 }
+
+mod support;

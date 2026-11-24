@@ -25,10 +25,7 @@ fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     let project = session.project.clone();
     let playheads = session.state.playheads.clone();
     let app = FilmcraftApp::new(session);
-    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_eframe(crate::support::headless_creator(app));
     h.run_steps(4);
     h.state_mut().ui.dock = craft_behavior::dock::Layout::new(Some(craft_behavior::dock::Node::tabs(vec![PanelKind::Tools], 0)), Vec::new());
     h.run_steps(3);

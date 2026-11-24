@@ -28,10 +28,11 @@ impl Driver {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1600.0, 980.0))
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(10_000)
+            .build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, copied: Vec::new() };
         d.frames(4);
         d

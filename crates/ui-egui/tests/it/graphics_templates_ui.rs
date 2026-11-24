@@ -31,10 +31,7 @@ impl Driver {
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
-        let harness = b.build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = b.build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, shots };
         d.frames(4);
         d
@@ -88,29 +85,7 @@ impl Driver {
     /// where the user sees it: next's dock gives a panel a shorter body than the old dock did.
     /// Stops when the element no longer moves (the panel is at the end of its content).
     fn reveal(&mut self, id: &str) {
-        let mut last = None;
-        for _ in 0..30 {
-            let e = self.rect(id);
-            let cx = e[0] + e[2] / 2.0;
-            let panels = self.ok("ui.elements", json!({"prefix": "panel."}));
-            let panel = panels
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|p| p["id"].as_str().is_some_and(|pid| pid.matches('.').count() == 1))
-                .filter_map(|p| {
-                    let r: Vec<f64> = p["rect"].as_array()?.iter().filter_map(Value::as_f64).collect();
-                    (r.len() == 4).then(|| [r[0], r[1], r[2], r[3]])
-                })
-                .find(|r| cx >= r[0] && cx <= r[0] + r[2] && e[1] >= r[1] && e[1] <= r[1] + r[3] + 40.0);
-            let Some(p) = panel else { return };
-            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
-                return;
-            }
-            last = Some(e[1]);
-            self.ok("ui.scroll", json!({"x": cx, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
-            self.frames(3);
-        }
+        crate::reveal::panel_containing(self, id, Self::rect, Self::ok, Self::frames);
     }
     fn clips_named(&mut self, name: &str) -> Vec<u64> {
         let q = self.exec("sequence.inspect", json!({}));

@@ -38,10 +38,7 @@ fn build(s: Session) -> Harness<'static, FilmcraftApp> {
     if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
         builder = builder.wgpu();
     }
-    let mut h = builder.build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = builder.build_eframe(crate::support::headless_creator(app));
     for _ in 0..4 {
         step(&mut h);
     }

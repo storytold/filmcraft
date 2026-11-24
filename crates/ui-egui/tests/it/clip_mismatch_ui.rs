@@ -38,10 +38,7 @@ impl Driver {
         if snapshots.is_some() {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = b.build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d

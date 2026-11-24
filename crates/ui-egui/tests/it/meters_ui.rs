@@ -58,10 +58,7 @@ impl Driver {
         let starts = Arc::new(AtomicUsize::new(0));
         let mut app = FilmcraftApp::new(session).with_control(rx);
         app.audio = Some(Box::new(Out { fill: fill.clone(), starts: starts.clone() }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, fill, starts };
         d.frames(4);
         d

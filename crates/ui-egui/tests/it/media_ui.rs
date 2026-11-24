@@ -111,10 +111,7 @@ impl Driver {
         if snapshots.is_some() {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = b.build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, snapshots };
         d.frames(4);
         d
@@ -377,10 +374,7 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
         if snapshots.is_some() {
             builder = builder.wgpu();
         }
-        let mut h = builder.build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let mut h = builder.build_eframe(crate::support::headless_creator(app));
         for _ in 0..8 {
             h.step();
         }

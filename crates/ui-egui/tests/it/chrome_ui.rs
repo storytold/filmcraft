@@ -17,10 +17,7 @@ fn harness(show_header: bool, show_status_bar: bool) -> Harness<'static, Filmcra
     let mut app = FilmcraftApp::new(s);
     app.ui.show_header = show_header;
     app.ui.show_status_bar = show_status_bar;
-    let mut harness = Harness::builder().with_size(egui::vec2(W, H)).with_max_steps(10_000).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut harness = Harness::builder().with_size(egui::vec2(W, H)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
     for _ in 0..4 {
         harness.step();
     }

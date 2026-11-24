@@ -29,10 +29,7 @@ impl Driver {
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
-        let harness = b.build_eframe(move |cc| {
-            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-            app
-        });
+        let harness = b.build_eframe(crate::support::headless_creator(app));
         let mut d = Driver { harness, tx, shots };
         d.frames(4);
         d
@@ -83,24 +80,7 @@ impl Driver {
     /// inside the panel's upper part, where the user sees it: next's dock gives a panel a shorter
     /// body than the old dock did. Stops when the element no longer moves (the list's end).
     fn reveal(&mut self, id: &str) {
-        let p = self.rect("panel.EffectControls");
-        let mut last = None;
-        for _ in 0..30 {
-            let e = self.rect(id);
-            let dy = if e[1] < p[1] + 40.0 {
-                40.0
-            } else if e[1] + e[3] > p[1] + p[3] * 0.6 {
-                -40.0
-            } else {
-                return;
-            };
-            if last == Some(e[1]) {
-                return;
-            }
-            last = Some(e[1]);
-            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": dy}));
-            self.frames(3);
-        }
+        crate::reveal::effect_controls(self, id, Self::rect, Self::ok, Self::frames, true);
     }
     fn center(&mut self, id: &str) -> (f64, f64) {
         let r = self.rect(id);

@@ -116,10 +116,7 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
     let fill = Arc::new(Mutex::new(None));
     let mut app = app(11);
     app.audio = Some(Box::new(Out { frames, fill: fill.clone(), stalled: false }));
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(crate::support::headless_creator(app));
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..8 {
@@ -147,10 +144,7 @@ fn audio_source_outputs_sound_and_uses_the_device_clock() {
 fn stalled_source_audio_falls_back_to_wall_clock() {
     let mut app = app(11);
     app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: Arc::new(Mutex::new(None)), stalled: true }));
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(crate::support::headless_creator(app));
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..16 {
@@ -277,10 +271,7 @@ fn sequence_in_source(prepare: impl FnOnce(&mut Session)) -> (FilmcraftApp, Arc<
 #[test]
 fn a_sequence_with_sound_plays_in_the_source_monitor_through_the_device() {
     let (app, fill) = sequence_in_source(|_| {});
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(crate::support::headless_creator(app));
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..4 {
@@ -299,10 +290,7 @@ fn a_sequence_without_sound_plays_in_the_source_monitor_without_starting_the_out
         let picture = s.project.items.values().find(|i| i.as_media().is_some_and(|m| m.info.video.is_some())).expect("a picture item").id.0;
         s.execute("timeline.place", json!({"item": picture, "track": "V1", "time": 0, "insert": false, "audio": false})).unwrap();
     });
-    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
-        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
-        app
-    });
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(crate::support::headless_creator(app));
     h.step();
     h.state_mut().play_source().unwrap();
     for _ in 0..4 {
