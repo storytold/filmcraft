@@ -330,7 +330,7 @@ fn history_icon_targets_follow_rows_scrolled_part_out() {
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use craft_ui::docking::Node;
+    use craft_behavior::dock::Node;
     use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
         fn find(n: &Node<PanelKind>) -> Option<PanelKind> {

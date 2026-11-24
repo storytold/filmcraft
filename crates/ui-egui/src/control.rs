@@ -531,7 +531,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             if req.method == "ui.panel.show" {
                 app.show_panel(panel);
             } else {
-                if let Err(error) = app.apply_dock(craft_ui::docking::Action::Close { panel }) {
+                if let Err(error) = app.apply_dock(craft_behavior::dock::Action::Close { panel }) {
                     return err(&error);
                 }
             }

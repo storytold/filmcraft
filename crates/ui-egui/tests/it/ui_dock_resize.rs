@@ -59,12 +59,12 @@ fn focused_dock_resize_owns_arrows_and_keeps_pointer_dragging() {
     frames(&mut h, 4);
     snapshots(&mut h, directory.as_deref(), "workspace");
     h.state_mut().ui.focused = PanelKind::Timeline;
-    h.state_mut().ui.dock = craft_ui::docking::Layout {
-        root: Some(craft_ui::docking::Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
-            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    h.state_mut().ui.dock = craft_behavior::dock::Layout {
+        root: Some(craft_behavior::dock::Node::Split {
+            axis: craft_behavior::flow::Axis::X,
+            size: craft_behavior::dock::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
         }),
         floating: vec![],
     };
@@ -120,12 +120,12 @@ fn space_plays_after_a_pane_is_resized_with_the_pointer() {
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
     frames(&mut h, 4);
     h.state_mut().ui.focused = PanelKind::Timeline;
-    h.state_mut().ui.dock = craft_ui::docking::Layout {
-        root: Some(craft_ui::docking::Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
-            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    h.state_mut().ui.dock = craft_behavior::dock::Layout {
+        root: Some(craft_behavior::dock::Node::Split {
+            axis: craft_behavior::flow::Axis::X,
+            size: craft_behavior::dock::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
         }),
         floating: vec![],
     };
@@ -217,12 +217,12 @@ fn the_divider_beside_tools_moves_both_ways() {
     let app = FilmcraftApp::new(Session::default());
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app);
     frames(&mut h, 4);
-    h.state_mut().ui.dock = craft_ui::docking::Layout {
-        root: Some(craft_ui::docking::Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::Ratio(0.06),
-            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Tools], active: 0 }),
-            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    h.state_mut().ui.dock = craft_behavior::dock::Layout {
+        root: Some(craft_behavior::dock::Node::Split {
+            axis: craft_behavior::flow::Axis::X,
+            size: craft_behavior::dock::SplitSize::Ratio(0.06),
+            first: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Tools], active: 0 }),
+            second: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
         }),
         floating: vec![],
     };

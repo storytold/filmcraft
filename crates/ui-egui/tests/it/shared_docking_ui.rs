@@ -1,7 +1,9 @@
 //! Shared docking preserves FilmCraft document state and legacy workspace files.
 
-use craft_ui::docking::{Action, DockArea, Hit, Node, Placement, ResizeEdge, Zone};
-use craft_ui::layout::{SplitAxis, SplitSize};
+use craft_behavior::dock::{Action, DockPlacement, Node};
+use craft_ui::docking::{DockArea, Hit, ResizeEdge, Zone};
+use craft_behavior::flow::Axis;
+use craft_behavior::dock::SplitSize;
 use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -18,7 +20,7 @@ fn tabs(panels: &[PanelKind], active: usize) -> Node<PanelKind> {
 }
 
 fn split(vertical: bool, size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
-    Node::Split { axis: if vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal }, size, first: Box::new(a), second: Box::new(b) }
+    Node::Split { axis: if vertical { Axis::Y } else { Axis::X }, size, first: Box::new(a), second: Box::new(b) }
 }
 
 fn root(node: Node<PanelKind>) -> Layout {
@@ -81,15 +83,15 @@ fn shared_transactions_keep_selection_and_reject_invalid_moves_atomically() {
     assert!(layout.is_visible(PanelKind::Info));
     let before = layout.clone();
     for action in [
-        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Tools, placement: Placement::Split(Zone::Left) },
+        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Tools, placement: DockPlacement::Split(Zone::Left) },
         Action::Float { panel: PanelKind::Info, rect: [0.0, 0.0, f32::NAN, 100.0] },
-        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Program, placement: Placement::Tab { before: Some(PanelKind::Tools) } },
+        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Program, placement: DockPlacement::Tab { before: Some(PanelKind::Tools) } },
     ] {
         assert!(layout.apply(action).is_err());
         assert_eq!(layout, before);
     }
     layout.apply(Action::Float { panel: PanelKind::Info, rect: [50.0, 50.0, 400.0, 300.0] }).unwrap();
-    layout.apply(Action::Move { panel: PanelKind::Info, anchor: PanelKind::Program, placement: Placement::Split(Zone::Bottom) }).unwrap();
+    layout.apply(Action::Move { panel: PanelKind::Info, anchor: PanelKind::Program, placement: DockPlacement::Split(Zone::Bottom) }).unwrap();
     assert!(layout.floating.is_empty());
     assert!(layout.is_visible(PanelKind::Info));
 }
@@ -162,7 +164,7 @@ fn legacy(node: &Node<PanelKind>) -> serde_json::Value {
     match node {
         Node::Tabs { panels, active } => json!({"Tabs": {"panels": panels, "active": active}}),
         Node::Split { axis, size, first, second } => json!({"Split": {
-            "vertical": *axis == SplitAxis::Vertical,
+            "vertical": *axis == Axis::Y,
             "size": match size {
                 SplitSize::Ratio(v) => json!({"Ratio": v}),
                 SplitSize::FixedFirst(v) => json!({"FixedA": v}),
@@ -403,7 +405,7 @@ fn dock_panel_without_anchor_docks_along_a_workspace_edge() {
     app.ui.dock = layout();
     let ctx = egui::Context::default();
     menus::invoke(&mut app, &ctx, "window.dockPanel", json!({"panel": "Program", "zone": "bottom"})).unwrap();
-    let Some(Node::Split { axis: SplitAxis::Vertical, size: SplitSize::Ratio(ratio), first, second }) = &app.ui.dock.root else {
+    let Some(Node::Split { axis: Axis::Y, size: SplitSize::Ratio(ratio), first, second }) = &app.ui.dock.root else {
         panic!("root not split: {:?}", app.ui.dock)
     };
     assert_eq!(*ratio, 0.75);
@@ -469,8 +471,8 @@ fn catalog_docking_action_supports_resize_reorder_and_floating_geometry() {
     app.ui.dock = root(split(false, SplitSize::FixedFirst(300.0), tabs(&[PanelKind::Project, PanelKind::Info], 1), tabs(&[PanelKind::Program], 0)));
     let ctx = egui::Context::default();
     for action in [
-        Action::ResizeSplit { path: vec![], size: craft_ui::layout::SplitSize::FixedFirst(360.0) },
-        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Project, placement: Placement::Tab { before: Some(PanelKind::Project) } },
+        Action::ResizeSplit { path: vec![], size: craft_behavior::dock::SplitSize::FixedFirst(360.0) },
+        Action::Move { panel: PanelKind::Info, anchor: PanelKind::Project, placement: DockPlacement::Tab { before: Some(PanelKind::Project) } },
         Action::Float { panel: PanelKind::Info, rect: [20.0, 40.0, 300.0, 200.0] },
         Action::MoveFloating { panel: PanelKind::Info, rect: [45.0, 65.0, 330.0, 240.0] },
     ] {
@@ -542,7 +544,7 @@ fn floating_tts_and_timeline_reveal_keeps_one_owner_and_draft_without_project_ed
         &ctx,
         "window.dockAction",
         json!({"action": Action::Move {
-            panel: PanelKind::Timeline, anchor: PanelKind::TextToSpeech, placement: Placement::Tab { before: None }
+            panel: PanelKind::Timeline, anchor: PanelKind::TextToSpeech, placement: DockPlacement::Tab { before: None }
         }}),
     )
     .unwrap();
@@ -751,7 +753,7 @@ fn clicking_the_active_sequence_tab_focuses_the_timeline() {
 /// Dock `panel` as a tab of `anchor`'s group, in front.
 fn tab_into(h: &mut Harness<'_, FilmcraftApp>, panel: PanelKind, anchor: PanelKind) {
     let ctx = h.ctx.clone();
-    let action = Action::Move { panel, anchor, placement: Placement::Tab { before: None } };
+    let action = Action::Move { panel, anchor, placement: DockPlacement::Tab { before: None } };
     menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
     menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({ "panel": panel.id() })).unwrap();
     for _ in 0..3 {
@@ -807,7 +809,7 @@ fn clicking_the_timeline_leaves_a_closed_or_floating_program_monitor_alone() {
 
     menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Program"})).unwrap();
     menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
-    let action = Action::Move { panel: PanelKind::Program, anchor: PanelKind::Info, placement: Placement::Tab { before: None } };
+    let action = Action::Move { panel: PanelKind::Program, anchor: PanelKind::Info, placement: DockPlacement::Tab { before: None } };
     menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
     menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Info"})).unwrap();
     for _ in 0..3 {
@@ -826,7 +828,7 @@ fn the_last_docked_group_cannot_float_away() {
     app.ui.dock = root(tabs(&[PanelKind::Project, PanelKind::Info], 0));
     let ctx = egui::Context::default();
     let before = app.ui.dock.clone();
-    let float = craft_ui::docking::Target::Float { rect: Some([20.0, 20.0, 300.0, 200.0]) };
+    let float = craft_behavior::dock::Target::Float { rect: Some([20.0, 20.0, 300.0, 200.0]) };
     for action in [Action::MoveGroup { panel: PanelKind::Project, to: float.clone() }, Action::MoveColumn { panel: PanelKind::Project, to: float.clone() }] {
         let _ = menus::invoke(&mut app, &ctx, "window.dockAction", json!({ "action": action }));
         assert_eq!(app.ui.dock, before);

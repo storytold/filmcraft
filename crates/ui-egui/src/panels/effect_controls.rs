@@ -837,7 +837,7 @@ fn param_value_widget(
             fit_to_row(vui);
             // (narrower when the effect list is narrow, so it stays left of the divider)
             let w = vui.available_width().min(130.0);
-            let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
+            let combo = egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
                         set = Some(json!(i));
@@ -906,7 +906,7 @@ fn param_value_widget(
             let w = 150.0_f32.min(vui.available_width()).max(40.0);
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
+                egui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
                     for (f, _) in &fams {
                         let r = ui.selectable_label(f == current, f);
                         app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
@@ -927,7 +927,7 @@ fn param_value_widget(
                         styles.push(extra);
                     }
                 }
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                egui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
                     for st in styles {
                         let r = ui.selectable_label(st == current, st);
                         app.auto.add(&format!("{prefix}.{st}"), r.rect, st);

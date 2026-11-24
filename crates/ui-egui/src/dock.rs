@@ -5,8 +5,9 @@
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
-use craft_ui::docking::{Action, Floating, Node};
-use craft_ui::layout::{SplitAxis, SplitSize};
+use craft_behavior::dock::{Action, Floating, Node};
+use craft_behavior::flow::Axis;
+use craft_behavior::dock::SplitSize;
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
@@ -137,18 +138,18 @@ impl PanelKind {
 }
 
 /// A FilmCraft panel arrangement: craft-ui's frame tree and floating windows.
-pub type Layout = craft_ui::docking::Layout<PanelKind>;
+pub type Layout = craft_behavior::dock::Layout<PanelKind>;
 /// What a saved workspace stores: its layout, closed panels and lock.
-pub type Workspace = craft_ui::docking::Workspace<PanelKind>;
+pub type Workspace = craft_behavior::dock::Workspace<PanelKind>;
 
 fn tabs(p: &[PanelKind], active: usize) -> Node<PanelKind> {
     Node::Tabs { panels: p.to_vec(), active }
 }
 fn hsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
-    Node::Split { axis: SplitAxis::Horizontal, size, first: Box::new(a), second: Box::new(b) }
+    Node::Split { axis: Axis::X, size, first: Box::new(a), second: Box::new(b) }
 }
 fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<PanelKind> {
-    Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
+    Node::Split { axis: Axis::Y, size, first: Box::new(a), second: Box::new(b) }
 }
 
 pub const WORKSPACES: [&str; 10] =
@@ -276,7 +277,7 @@ pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
 /// The frame tree and floating groups FilmCraft wrote before its workspaces were craft-ui
 /// [`Workspace`]s.
 mod legacy {
-    use super::{Floating, Layout, Node, PanelKind, SplitAxis, SplitSize};
+    use super::{Floating, Layout, Node, PanelKind, Axis, SplitSize};
     use serde::{Deserialize, Serialize};
 
     const MAX_DEPTH: usize = 32;
@@ -317,7 +318,7 @@ mod legacy {
         Some(match tree {
             Tree::Tabs { panels, active } => Node::Tabs { panels, active },
             Tree::Split { vertical, size, a, b } => Node::Split {
-                axis: if vertical { SplitAxis::Vertical } else { SplitAxis::Horizontal },
+                axis: if vertical { Axis::Y } else { Axis::X },
                 size: match size {
                     Size::Ratio(value) => SplitSize::Ratio(value),
                     Size::FixedA(value) => SplitSize::FixedFirst(value),
@@ -336,7 +337,7 @@ mod legacy {
         Some(match node {
             Node::Tabs { panels, active } => Tree::Tabs { panels: panels.clone(), active: *active },
             Node::Split { axis, size, first, second } => Tree::Split {
-                vertical: *axis == SplitAxis::Vertical,
+                vertical: *axis == Axis::Y,
                 size: match *size {
                     SplitSize::Ratio(value) => Size::Ratio(value),
                     SplitSize::FixedFirst(value) => Size::FixedA(value),
@@ -547,7 +548,7 @@ pub trait LayoutExt {
 
 impl LayoutExt for Layout {
     fn is_visible(&self, panel: PanelKind) -> bool {
-        self.panel_state(&panel) == craft_ui::docking::PanelState::Front
+        self.panel_state(&panel) == craft_behavior::dock::PanelState::Front
     }
 
     fn is_docked(&self, panel: PanelKind) -> bool {
@@ -832,7 +833,7 @@ mod tests {
     #[test]
     fn vertical_workspace_gives_program_the_full_height() {
         // #1822: Program alone on the right of the root split, spanning the window's height
-        let Some(Node::Split { axis: SplitAxis::Horizontal, second, .. }) = workspace("Vertical").root else { panic!("a side-by-side root split") };
+        let Some(Node::Split { axis: Axis::X, second, .. }) = workspace("Vertical").root else { panic!("a side-by-side root split") };
         assert!(matches!(*second, Node::Tabs { ref panels, .. } if panels == &[PanelKind::Program]), "{second:?}");
     }
 
@@ -1004,7 +1005,7 @@ mod tests {
         let window = split.floating.iter().position(|w| w.contains(&PanelKind::Effects)).unwrap();
         let effects = split.floating.remove(window);
         split.floating[0].root = Node::Split {
-            axis: SplitAxis::Vertical,
+            axis: Axis::Y,
             size: SplitSize::Ratio(0.5),
             first: Box::new(split.floating[0].root.clone()),
             second: Box::new(effects.root),

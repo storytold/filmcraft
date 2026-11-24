@@ -296,7 +296,7 @@ impl FilmcraftApp {
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                    let _ = self.apply_dock(craft_behavior::dock::Action::Activate { panel: PanelKind::Timeline });
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it

@@ -45,7 +45,7 @@ fn combo_tips(
     let mut chosen = None;
     // no row limit of our own: the list grows to the popup limit, so Frame Rate's last rates
     // (119.88, 120) show without scrolling (the default 200 px cut them off)
-    let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
         for (i, (label, why)) in options.iter().enumerate() {
             let enabled = why.is_none();
             let resp = ui.add_enabled(enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
@@ -278,7 +278,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             });
             // Preset: favourites, then every preset by category, then More presets…
             row(ui, &t, tl!("Preset"), |ui| {
-                let r = craft_ui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(
+                let r = egui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(
                     ui,
                     |ui| {
                         if !favs.is_empty() {

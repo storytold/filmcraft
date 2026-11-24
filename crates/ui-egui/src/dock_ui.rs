@@ -6,9 +6,8 @@
 
 use std::collections::HashMap;
 
-use craft_ui::docking::{
-    Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, Node, ResizeEdge, WindowKind, Workspace,
-};
+use craft_behavior::dock::{Action, Layout, Node, Workspace};
+use craft_ui::docking::{Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, ResizeEdge, WindowKind};
 use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
 use serde_json::{Value, json};
 
@@ -635,8 +634,9 @@ fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKi
 
 #[cfg(test)]
 mod tests {
-    use craft_ui::docking::{Column, Group, Node, Side, StackEntry};
-    use craft_ui::layout::{SplitAxis, SplitSize};
+    use craft_behavior::dock::{Column, DockEdge, Group, Node, StackEntry};
+    use craft_behavior::flow::Axis;
+    use craft_behavior::dock::SplitSize;
 
     use super::tab_group;
     use crate::dock::{Layout, PanelKind};
@@ -644,9 +644,9 @@ mod tests {
     /// The Timeline beside a dock column holding `group`.
     fn beside_dock(group: Group<PanelKind>, iconic: bool) -> Layout {
         let column = Column { groups: vec![group], width: 300.0, iconic, iconic_width: None };
-        let dock = Node::Dock { side: Side::End, columns: vec![column] };
+        let dock = Node::Dock { side: DockEdge::End, columns: vec![column] };
         let timeline = Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 };
-        let root = Node::Split { axis: SplitAxis::Horizontal, size: SplitSize::Ratio(0.5), first: Box::new(timeline), second: Box::new(dock) };
+        let root = Node::Split { axis: Axis::X, size: SplitSize::Ratio(0.5), first: Box::new(timeline), second: Box::new(dock) };
         Layout { root: Some(root), floating: vec![] }
     }
 

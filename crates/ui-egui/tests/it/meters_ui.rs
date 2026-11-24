@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use craft_ui::docking::Node;
-use craft_ui::layout::SplitSize;
+use craft_behavior::dock::Node;
+use craft_behavior::dock::SplitSize;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::control::ControlRequest;

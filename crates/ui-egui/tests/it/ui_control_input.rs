@@ -95,12 +95,12 @@ fn ordinary_control_input_also_resizes_a_background_divider() {
 
 fn background_divider(isolated: bool) {
     let mut d = Driver::new(isolated);
-    d.h.state_mut().ui.dock = craft_ui::docking::Layout {
-        root: Some(craft_ui::docking::Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
-            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+    d.h.state_mut().ui.dock = craft_behavior::dock::Layout {
+        root: Some(craft_behavior::dock::Node::Split {
+            axis: craft_behavior::flow::Axis::X,
+            size: craft_behavior::dock::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            second: Box::new(craft_behavior::dock::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
         }),
         floating: vec![],
     };

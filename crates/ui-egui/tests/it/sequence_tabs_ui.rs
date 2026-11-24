@@ -170,7 +170,7 @@ fn timeline_has_a_tab_per_open_sequence() {
     assert!(d.has_timeline(), "closing the last sequence keeps the Timeline panel");
     assert!(d.has("panel.tab.Timeline"));
     // reopening from the project brings it back, even if the panel itself was closed
-    d.app().ui.dock.apply(craft_ui::docking::Action::Close { panel: filmcraft_ui_egui::dock::PanelKind::Timeline }).unwrap();
+    d.app().ui.dock.apply(craft_behavior::dock::Action::Close { panel: filmcraft_ui_egui::dock::PanelKind::Timeline }).unwrap();
     d.frames(2);
     assert!(!d.has_timeline());
     d.exec("sequence.open", json!({"item": main}));
