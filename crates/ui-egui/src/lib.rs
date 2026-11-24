@@ -74,6 +74,7 @@ pub mod theme;
 mod theme_favorites;
 pub mod updates_ui;
 pub mod widgets;
+pub mod window_state;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -264,6 +265,8 @@ pub struct FilmcraftApp {
     pub(crate) engine_call: bool,
     /// Backend focus before synthetic input changes egui's effective focus for this frame.
     pub(crate) native_window_focused: Option<bool>,
+    /// Desktop main-window geometry, saved independently of transient egui widget memory.
+    window_state: window_state::Tracker,
     /// Modifiers owned by an in-flight control gesture, carried between its input frames.
     synthetic_modifiers: egui::Modifiers,
     /// Requests waiting for the UI to show an element: (request, give-up time).
