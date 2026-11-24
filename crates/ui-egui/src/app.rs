@@ -486,6 +486,7 @@ impl eframe::App for FilmcraftApp {
                 self.synthetic_step_offered = true;
             }
         }
+        crate::framework::note_press_suffix(ctx, &raw_input.events);
     }
 
     /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then

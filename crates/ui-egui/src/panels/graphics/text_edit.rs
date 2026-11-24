@@ -494,19 +494,22 @@ pub(super) fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView
     // belong to the new target.
     //
     // The runtime gives a pass at most one press, as its last pointer event, and holds what came
-    // after it for the next frame: the events that lead the frame after a press are that press's
-    // suffix, which the editor drops as it did when they shared the press's batch.
+    // after it for the next frame: the held events that lead the frame after a press the editor
+    // saw are that press's suffix, which the editor drops as it did when they shared the press's
+    // batch. Events that arrived in that frame after the press's pass are the user's and stay.
     let press_frame_id = egui::Id::unique(TEXT_EDIT_ID).with("press_frame");
     let frame = ui.ctx().cumulative_frame_nr();
-    let mut after_press = ui.data(|d| d.get_temp::<u64>(press_frame_id)).is_some_and(|at| frame == at.wrapping_add(1));
+    let saw_press = ui.data(|d| d.get_temp::<u64>(press_frame_id)).is_some_and(|at| frame == at.wrapping_add(1));
+    let mut suffix = if saw_press { crate::framework::held_press_suffix(ui.ctx()) } else { 0 };
     let mut admitted = Vec::new();
     let mut pressed = false;
     for ev in events {
-        if after_press {
+        if suffix > 0 {
             if !matches!(ev, egui::Event::PointerButton { pressed: true, .. }) {
+                suffix -= 1;
                 continue;
             }
-            after_press = false;
+            suffix = 0;
         }
         if begin_text_event(app, ui, &state, composition_target, &ev).is_none() {
             continue;

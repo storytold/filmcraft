@@ -549,14 +549,18 @@ fn metadata_display_dialog_and_view_presets() {
     assert_eq!(cols[1], "Label", "{cols:?}");
     assert!(cols.contains(&"Video Usage".to_string()) && !cols.contains(&"Tape Name".to_string()));
     d.frames(2);
-    if !d.has("project.list.header.Label") {
-        let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
-        let headers = d.ok("ui.elements", json!({"prefix": "project.list"}));
-        let view = d.app().session.prefs.project_panel.view.mode;
-        let dialog_open = d.app().ui.project_panel.dialog.is_some();
-        eprintln!("DIAG metadata_display_dialog_and_view_presets: panel={panel} list={headers} view={view:?} dialog_open={dialog_open}");
+    // Label shows beside Name; Video Usage, added last, is far to the right: next's dock gives the
+    // Project panel a narrower body than the old dock did, so the list scrolls sideways to it.
+    assert!(d.has("project.list.header.Label"));
+    let panel = d.rect("panel.Project");
+    for _ in 0..40 {
+        if d.has("project.list.header.Video Usage") {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": panel[0] + panel[2] / 2.0, "y": panel[1] + panel[3] / 2.0, "dx": -80.0}));
+        d.frames(2);
     }
-    assert!(d.has("project.list.header.Label") && d.has("project.list.header.Video Usage"));
+    assert!(d.has("project.list.header.Video Usage"));
 
     // Save As New View Preset (named), change the view, restore it from Manage
     d.click("panel.menu.Project");

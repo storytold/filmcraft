@@ -304,28 +304,31 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     }
     let row = format!("project.item.{sub}");
     if d.has(&row) {
+        // next's dock gives the Project panel a shorter body than the old dock did: the row sits
+        // at the bottom of the list, under its horizontal scroll bar, so scroll it into view
+        let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
+        let p: Vec<f64> = panel.as_array().and_then(|a| a.iter().find(|e| e["id"] == "panel.Project")).map_or_else(Vec::new, |e| {
+            e["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect()
+        });
+        assert_eq!(p.len(), 4, "the Project panel: {panel}");
+        let mut last = None;
+        for _ in 0..20 {
+            let item = d.ok("ui.elements", json!({"prefix": row.clone()}));
+            let y = item.as_array().and_then(|a| a.iter().find(|e| e["id"] == row.as_str())).and_then(|e| e["rect"][1].as_f64());
+            if y.is_none_or(|y| y <= p[1] + p[3] * 0.6) || last == y {
+                break;
+            }
+            last = y;
+            d.ok("ui.scroll", json!({"x": p[0] + p[2] / 2.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            d.frames(2);
+        }
         d.ok("ui.click", json!({"id": row, "button": "right"}));
         d.frames(3);
         if !d.has("project.itemMenu.editSubclip") {
-            let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
             let item = d.ok("ui.elements", json!({"prefix": row.clone()}));
-            let menu = d.ok("ui.elements", json!({"prefix": "project.itemMenu"}));
-            let focused = d.harness.ctx.memory(|m| m.focused());
-            eprintln!("DIAG subclip_in_the_source_monitor_and_project_menu: panel={panel} row={item} menu={menu} focused={focused:?} status={:?}", d.app().ui.status);
-            // What egui hit-tests at the right-click point, and which layers are open: a row
-            // clipped out of the panel body, or a framework layer that took the secondary press.
             let ctx = d.harness.ctx.clone();
-            let hits = ctx.viewport(|v| {
-                let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
-                (v.hits.click.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
-            });
-            let layers = ctx.memory(|m| m.areas().visible_layer_ids().into_iter().filter(|l| l.order != egui::Order::Background).collect::<Vec<_>>());
-            eprintln!(
-                "DIAG subclip_in_the_source_monitor_and_project_menu: pointer={:?} click={:?} close={:?} layers={layers:?}",
-                ctx.pointer_latest_pos(),
-                hits.0,
-                hits.1
-            );
+            let click = ctx.viewport(|v| v.hits.click.as_ref().map(|w| format!("{:?} interact={:?}", w.id, w.interact_rect)));
+            eprintln!("DIAG subclip_in_the_source_monitor_and_project_menu: panel={panel} row={item} pointer={:?} click={click:?}", ctx.pointer_latest_pos());
         }
         assert!(d.has("project.itemMenu.editSubclip") && d.has("project.itemMenu.convertToMaster"));
         d.click("project.itemMenu.editSubclip");

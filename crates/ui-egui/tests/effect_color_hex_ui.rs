@@ -79,6 +79,22 @@ impl Driver {
         self.ok("ui.click", json!({"id": id}));
         self.frames(3);
     }
+    /// Scrolls `panel` with the wheel until element `id` sits in the upper part of the panel, where
+    /// the user sees it: next's dock gives a panel a shorter body than the old dock did. Stops
+    /// when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str, panel: &str) {
+        let p = self.find(panel).unwrap_or_else(|| panic!("no panel {panel}"));
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.find(id).unwrap_or_else(|| panic!("no element {id}"));
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + p[2] / 4.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
+    }
     /// A colour parameter of `clip`, as it is stored: linear components and alpha.
     fn color(&self, clip: u64, effect: &str, param: &str) -> [f32; 4] {
         let s = &self.harness.state().session;
@@ -121,30 +137,8 @@ fn the_hex_field_takes_typing_a_character_at_a_time() {
 
     let before = d.rgb(clip, "ultra_key", "key_color");
     let alpha = d.color(clip, "ultra_key", "key_color")[3];
+    d.reveal("effectControls.ultra_key.key_color.hex", "panel.EffectControls");
     d.click("effectControls.ultra_key.key_color.hex");
-    let ctx = d.harness.ctx.clone();
-    eprintln!(
-        "DIAG the_hex_field_takes_typing_a_character_at_a_time: after click focused={:?} runtime_stop={:?} field={:?} panel={:?} status={:?}",
-        ctx.memory(|m| m.focused()),
-        craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| rec.stop.id),
-        d.find("effectControls.ultra_key.key_color.hex"),
-        d.find("panel.EffectControls"),
-        d.harness.state().ui.status
-    );
-    // What egui hit-tests at the pointer (still on the field): a field clipped out of its panel
-    // body shows a zero-sized interact rect, or is missing while something else wins the click.
-    let hits = ctx.viewport(|v| {
-        let w = |w: &egui::WidgetRect| format!("{:?} rect={:?} interact={:?} sense={:?} layer={:?}", w.id, w.rect, w.interact_rect, w.sense, w.layer_id);
-        (v.hits.click.as_ref().map(w), v.hits.drag.as_ref().map(w), v.hits.close.iter().map(w).collect::<Vec<_>>())
-    });
-    eprintln!(
-        "DIAG the_hex_field_takes_typing_a_character_at_a_time: pointer={:?} layer_at={:?} click={:?} drag={:?} close={:?}",
-        ctx.pointer_latest_pos(),
-        ctx.pointer_latest_pos().and_then(|p| ctx.layer_id_at(p)),
-        hits.0,
-        hits.1,
-        hits.2
-    );
     d.ok("ui.key", json!({"key": "Cmd+A"}));
 
     // Not a colour yet: the field keeps what was typed and the parameter stays put.
@@ -189,6 +183,7 @@ fn the_picker_opens_on_the_parameter_read_as_srgb() {
     let (mut d, clip) = Driver::demo();
     d.exec("effects.apply", json!({"clips": [clip], "effect": "ultra_key"}));
     d.frames(3);
+    d.reveal("effectControls.ultra_key.key_color.swatch", "panel.EffectControls");
     d.click("effectControls.ultra_key.key_color.swatch");
     let shown = d.popup_text();
     for n in ["204", "51"] {

@@ -79,6 +79,29 @@ impl Driver {
         let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
         [r[0], r[1], r[2], r[3]]
     }
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits
+    /// inside the panel's upper part, where the user sees it: next's dock gives a panel a shorter
+    /// body than the old dock did. Stops when the element no longer moves (the list's end).
+    fn reveal(&mut self, id: &str) {
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            let dy = if e[1] < p[1] + 40.0 {
+                40.0
+            } else if e[1] + e[3] > p[1] + p[3] * 0.6 {
+                -40.0
+            } else {
+                return;
+            };
+            if last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": dy}));
+            self.frames(3);
+        }
+    }
     fn center(&mut self, id: &str) -> (f64, f64) {
         let r = self.rect(id);
         (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
@@ -183,14 +206,17 @@ fn create_and_edit_masks_on_the_monitor() {
     // Inverted checkbox (fold Opacity so the row is on screen)
     d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
+    d.reveal("effectControls.gaussian_blur.mask0.inverted");
     d.ok("ui.click", json!({"id": "effectControls.gaussian_blur.mask0.inverted"}));
     d.frames(2);
     assert_eq!(d.masks()[0]["inverted"], true);
     d.shot("mask-inverted");
+    d.reveal("effectControls.effect.opacity.twirl");
     d.ok("ui.click", json!({"id": "effectControls.effect.opacity.twirl"}));
     d.frames(2);
 
     // pen mask on Opacity: four clicks, then click the first point to close
+    d.reveal("effectControls.opacity.mask.pen");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask.pen"}));
     d.frames(2);
     let pic = d.rect("program.picture");
@@ -212,6 +238,7 @@ fn create_and_edit_masks_on_the_monitor() {
     // mask tracking buttons on the Mask Path row: forward one frame runs a job
     d.rect("effectControls.opacity.mask0.track.fwd");
     d.rect("effectControls.opacity.mask0.trackMethod");
+    d.reveal("effectControls.opacity.mask0.track.fwdFrame");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask0.track.fwdFrame"}));
     d.wait_until("the tracking job to finish", |d| {
         let jobs = d.exec("jobs.list", json!({}));

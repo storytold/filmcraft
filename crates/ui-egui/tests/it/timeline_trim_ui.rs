@@ -753,7 +753,12 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     let row = layout.rows.iter().find(|r| r.track == tracks[0].id).unwrap();
     let outer = layout.rows.iter().find(|r| r.track == tracks.last().unwrap().id).unwrap();
     let from = egui::pos2(layout.x_of(original.start + filmcraft_time::Tick(original.duration.0 / 2)), row.rect.min.y + 8.0);
-    let to = egui::pos2(from.x, if audio { outer.rect.max.y + 8.0 } else { outer.rect.min.y - 8.0 });
+    // Below the last audio track, the drop lands in the empty band above the Mix row (34 points
+    // high at the bottom of the tracks): next's dock gives the Timeline a shorter body than the old
+    // dock did, so the band is a few points, not the 8 below the track the old layout left.
+    let mix_top = layout.content.max.y - 34.0;
+    let to = egui::pos2(from.x, if audio { (outer.rect.max.y + 8.0).min((outer.rect.max.y + mix_top) / 2.0) } else { outer.rect.min.y - 8.0 });
+    assert!(!audio || outer.rect.max.y < mix_top, "room below the last audio track: {:?} vs {mix_top}", outer.rect);
     assert!(layout.content.contains(to));
     assert!(layout.row_at(to.y).is_none());
     let before = d.app().session.project.clone();
