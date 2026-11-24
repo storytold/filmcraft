@@ -731,7 +731,9 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 // copy this line for every future colour setting.
                 changed |= color_setting(
                     ui,
+                    &mut app.auto,
                     t,
+                    "timeline.zoomBar.settings.positionIndicatorColor",
                     egui::Id::unique("timeline-zoombar-minimap-color"),
                     tl!("Position Indicator Color:"),
                     &mut settings.position_indicator_color,
@@ -739,7 +741,9 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 );
                 changed |= color_setting(
                     ui,
+                    &mut app.auto,
                     t,
+                    "timeline.zoomBar.settings.videoIndicatorColor",
                     egui::Id::unique("timeline-zoombar-minimap-video-color"),
                     tl!("Video Indicator Color:"),
                     &mut settings.video_indicator_color,
@@ -747,7 +751,9 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 );
                 changed |= color_setting(
                     ui,
+                    &mut app.auto,
                     t,
+                    "timeline.zoomBar.settings.audioIndicatorColor",
                     egui::Id::unique("timeline-zoombar-minimap-audio-color"),
                     tl!("Audio Indicator Color:"),
                     &mut settings.audio_indicator_color,
@@ -755,7 +761,9 @@ fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
                 );
                 changed |= color_setting(
                     ui,
+                    &mut app.auto,
                     t,
+                    "timeline.zoomBar.settings.offlineIndicatorColor",
                     egui::Id::unique("timeline-zoombar-minimap-offline-color"),
                     tl!("Offline Indicator Color:"),
                     &mut settings.offline_indicator_color,
@@ -864,6 +872,14 @@ fn key_binding_name(key: egui::Key) -> String {
 /// Modifier presses and all releases are skipped -- the chord completes when the key it modifies
 /// arrives, never when a modifier or its release does.
 fn chord_and_button(events: &[egui::Event], fallback_modifiers: egui::Modifiers) -> Option<String> {
+    if fallback_modifiers.command {
+        if events.iter().any(|event| matches!(event, egui::Event::Copy)) {
+            return Some("Ctrl + C".into());
+        }
+        if events.iter().any(|event| matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))) {
+            return Some("Ctrl + V".into());
+        }
+    }
     for e in events {
         match e {
             egui::Event::Key { key, modifiers, pressed: true, .. } if !is_modifier_key(*key) => {
@@ -953,7 +969,7 @@ fn slider_command(track: bool, slot: usize) -> Option<(&'static str, &'static st
         (false, 2) => Some(("timeline.sliderAlternate", "Shift+Drag")),
         (false, 4) | (true, 4) => Some(("timeline.adjustTrackHeight", "")),
         (false, 5) => Some(("timeline.fastScroll", "")),
-        (false, 6) | (true, 6) => Some(("timeline.scrollTrackRows", "Cmd+Scroll")),
+        (false, 6) | (true, 6) => Some(("timeline.scrollTrackRows", "Ctrl+Scroll")),
         (false, 7) => Some(("timeline.zoomScroll", "Alt+Scroll")),
         (false, 8) => Some(("view.zoomIn", "=")),
         (false, 10) => Some(("view.zoomOut", "-")),
@@ -1003,7 +1019,7 @@ fn refresh_slider_binding(app: &mut FilmcraftApp, track: bool, slot: usize) {
         .map(|binding| {
             filmcraft_engine::shortcuts::Chord::parse(&binding)
                 .map(|chord| chord.display(filmcraft_engine::shortcuts::Platform::current()).replace('+', " + "))
-                .unwrap_or(binding)
+                .unwrap_or_else(|_| binding.split('+').map(str::trim).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" + "))
         })
         .unwrap_or_else(|| "Unbound".into());
     if track {
@@ -1281,6 +1297,40 @@ mod slider_clipboard_shortcut_tests {
     }
 
     #[test]
+    fn resetting_scroll_track_rows_restores_ctrl_scroll_and_spaced_gesture_labels() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.shortcuts.set_gesture("timeline.scrollTrackRows", "Alt + Scroll").expect("set a custom row-scroll gesture");
+        super::reset_slider_binding(&mut app, false, 6);
+        assert_eq!(app.session.shortcuts.primary("timeline.scrollTrackRows").as_deref(), Some("Ctrl+Scroll"));
+        assert_eq!(super::control_binding(&mut app, 6), "Ctrl + Scroll");
+
+        app.session.shortcuts.set_gesture("timeline.zoomScroll", "Ctrl + Shift + Scroll").expect("set a custom zoom gesture");
+        super::reset_slider_binding(&mut app, false, 7);
+        assert_eq!(super::control_binding(&mut app, 7), "Alt + Scroll");
+
+        super::set_slider_binding(&mut app, false, 2, "Alt + Drag");
+        super::reset_slider_binding(&mut app, false, 2);
+        assert_eq!(super::control_binding(&mut app, 2), "Shift + Drag");
+    }
+
+    #[test]
+    fn adding_a_hex_prefix_keeps_the_caret_after_the_typed_digit() {
+        use egui::text::{CCursor, CCursorRange};
+
+        let ctx = egui::Context::default();
+        let edit_id = egui::Id::unique("timeline-color-hex-test");
+        let mut state = egui::text_edit::TextEditState::default();
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(1))));
+        state.store(&ctx, edit_id);
+        let mut buf = "a".to_owned();
+
+        assert_eq!(super::normalize_hex_edit(&ctx, edit_id, &mut buf), "a");
+        assert_eq!(buf, "#a");
+        let cursor = egui::text_edit::TextEditState::load(&ctx, edit_id).and_then(|state| state.cursor.char_range()).unwrap().primary.index;
+        assert_eq!(usize::from(cursor), 2, "the inserted prefix must shift the caret past the typed hex digit");
+    }
+
+    #[test]
     fn controls_capture_persists_pointer_gestures_and_multi_modifier_chords() {
         let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
         super::set_slider_binding(&mut app, false, 0, "Double Click");
@@ -1355,10 +1405,71 @@ mod slider_clipboard_shortcut_tests {
         super::set_slider_binding(&mut app, false, 1, "Double Click");
         assert!(super::binding_conflicts(&app, false, 1, "Double Click"), "Explode must warn on Center's default Double Click");
 
+        super::set_slider_binding(&mut app, true, 0, "Double Click");
+        assert!(super::binding_conflicts(&app, true, 0, "Double Click"), "the changed track binding must warn on Center's Double Click");
+        assert!(super::binding_conflicts(&app, false, 0, "Double Click"), "Center must also warn on the changed track binding");
+
         super::reset_slider_binding(&mut app, false, 1);
         super::set_slider_binding(&mut app, false, 5, "Triple Click");
         assert_eq!(app.session.shortcuts.primary("timeline.fastScroll").as_deref(), Some("Triple Click"));
         assert!(super::binding_conflicts(&app, false, 5, "Triple Click"), "Fast Scroll must warn on Explode's default Triple Click");
+    }
+
+    #[test]
+    fn hovering_zoom_bar_edge_circle_uses_pointing_hand_cursor() {
+        use egui::{Event, RawInput, Rect, pos2};
+
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).expect("open demo project");
+        let mut app = crate::FilmcraftApp::new(session);
+        app.session.state.timeline_ui.slider_minimap = false;
+        let sequence = app.session.state.active_sequence.and_then(|id| app.session.project.sequence(id)).expect("demo sequence").clone();
+        let bar = Rect::from_min_max(pos2(10.0, 100.0), pos2(990.0, 116.0));
+        let thumb = super::zoom_thumb(
+            bar,
+            bar.width(),
+            sequence.duration().seconds(),
+            app.ui.timeline.scroll,
+            app.ui.timeline.pps,
+            app.session.state.timeline_ui.max_zoom_secs(),
+        );
+        let edge_circle = pos2(thumb.0 + bar.height() / 2.0, bar.center().y);
+        let ctx = egui::Context::default();
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_max(pos2(0.0, 0.0), pos2(1_000.0, 600.0))),
+            events: vec![Event::PointerMoved(edge_circle)],
+            ..Default::default()
+        };
+        let tokens = app.tokens;
+        let mut output = ctx.run_ui(input, |ui| {
+            super::zoom_scrollbar(&mut app, ui, bar, bar.width(), &sequence, 1.0 / 24.0, &tokens);
+        });
+        assert!(app.tl.zoombar_point_cursor, "pointer at {edge_circle:?} should hit the zoom thumb's left circle (left={}, width={})", thumb.0, thumb.1);
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn escape_closes_zoom_settings_popup_when_controls_are_not_capturing() {
+        use egui::{Event, Key, Modifiers, RawInput, Rect, pos2};
+
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = crate::FilmcraftApp::new(session);
+        let sequence = app.session.state.active_sequence.and_then(|id| app.session.project.sequence(id)).unwrap().clone();
+        let bar = Rect::from_min_max(pos2(10.0, 100.0), pos2(990.0, 116.0));
+        let ctx = egui::Context::default();
+        ctx.data_mut(|data| data.insert_temp(super::zoombar_popup_open_key(), true));
+        let tokens = app.tokens;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_max(pos2(0.0, 0.0), pos2(1_000.0, 600.0))),
+            events: vec![Event::Key { key: Key::Escape, physical_key: Some(Key::Escape), pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| super::zoom_scrollbar(&mut app, ui, bar, bar.width(), &sequence, 1.0 / 24.0, &tokens));
+        output.textures_delta.clear();
+        assert!(!ctx.data(|data| data.get_temp::<bool>(super::zoombar_popup_open_key())).unwrap_or(false));
     }
 
     #[test]
@@ -2105,11 +2216,6 @@ fn conflicting_commands(app: &FilmcraftApp, track: bool, slot: usize, shown: &st
             if own_command == binding.command {
                 return None;
             }
-            if (shown.ends_with("Click") || shown.ends_with("Drag"))
-                && ((!track && binding.command.starts_with("timeline.trackSlider")) || (track && binding.command.starts_with("timeline.slider")))
-            {
-                return None;
-            }
             let matches = if let Some(chord) = &chord {
                 filmcraft_engine::shortcuts::Chord::parse(&binding.keys).ok().is_some_and(|other| other.effective(platform) == chord.effective(platform))
             } else {
@@ -2578,6 +2684,21 @@ fn hex_color(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
+fn normalize_hex_edit(ctx: &egui::Context, edit_id: egui::Id, buf: &mut String) -> String {
+    let added_prefix = !buf.starts_with('#');
+    let digits: String = buf.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect();
+    *buf = format!("#{digits}");
+    if added_prefix && let Some(mut state) = egui::text_edit::TextEditState::load(ctx, edit_id) {
+        if let Some(range) = state.cursor.char_range() {
+            use egui::text::{CCursor, CCursorRange};
+            let shift = |cursor: CCursor| CCursor::new(usize::from(cursor.index).saturating_add(1).min(digits.chars().count() + 1));
+            state.cursor.set_char_range(Some(CCursorRange::two(shift(range.primary), shift(range.secondary))));
+            state.store(ctx, edit_id);
+        }
+    }
+    digits
+}
+
 /// HSV (hue 0-360, saturation and value 0-1) to a colour, for the picker's wheel.
 fn hsv(h: f32, s: f32, v: f32) -> Color32 {
     let h = (((h % 360.0) + 360.0) % 360.0) / 60.0;
@@ -2636,7 +2757,16 @@ fn closest_six(digits: &str) -> String {
 /// code in white. Clicking the swatch (a pointing hand) opens the colour picker -- a hue /
 /// saturation wheel, a brightness slider and a hex field, everything live. ONE call draws the row
 /// and runs its picker; copy that one line to add another colour setting anywhere.
-fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color: &mut String, default: &str) -> bool {
+fn color_setting(
+    ui: &mut egui::Ui,
+    auto: &mut crate::automation::Registry,
+    t: &Tokens,
+    automation_id: &str,
+    id: egui::Id,
+    label: &str,
+    color: &mut String,
+    default: &str,
+) -> bool {
     let mut changed = false;
     let row_w = ui.available_width().max(170.0);
     let (row, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::hover());
@@ -2649,6 +2779,7 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
     let x0 = row.center().x - group_w / 2.0;
     let swatch = Rect::from_min_size(pos2(x0 + galley.size().x + gap, row.center().y - 11.0), egui::vec2(box_w, 22.0));
     let resp = ui.interact(swatch, id, Sense::click());
+    auto.add_response(&format!("{automation_id}.swatch"), &resp, &format!("{label} swatch"));
     if resp.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
@@ -2660,6 +2791,7 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
     // the reset button at the row's right end, the same as Effect Controls' parameter reset
     let rr = Rect::from_center_size(pos2(row.max.x - 14.0, row.center().y), vec2(16.0, 16.0));
     let rresp = ui.interact(rr, id.with("reset"), Sense::click()).on_hover_text(tl!("Reset"));
+    auto.add_response(&format!("{automation_id}.reset"), &rresp, &format!("{label} Reset"));
     icons::paint(ui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
     if rresp.clicked() {
         *color = default.to_string();
@@ -2683,6 +2815,7 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
                     // the wheel: hue around the ring, saturation towards the edge. One seamless
                     // mesh, so it is just colours -- no seams between the parts.
                     let (slot, resp) = ui.allocate_exact_size(egui::vec2(132.0, 132.0), Sense::click_and_drag());
+                    auto.add_response(&format!("{automation_id}.wheel"), &resp, &format!("{label} color wheel"));
                     let c = slot.center();
                     let outer = 62.0;
                     let mut mesh = egui::Mesh::default();
@@ -2731,10 +2864,10 @@ fn color_setting(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, label: &str, color
                     let (hrow, _) = ui.allocate_exact_size(egui::vec2(132.0, 26.0), Sense::hover());
                     let field = Rect::from_min_size(pos2(hrow.center().x - 46.0, hrow.center().y - 11.0), egui::vec2(92.0, 22.0));
                     let edit = ui.put(field, egui::TextEdit::singleline(&mut buf).align(egui::Align2::CENTER_CENTER).char_limit(7));
+                    auto.add_response(&format!("{automation_id}.hex"), &edit, &format!("{label} hex value"));
                     hex_focus = edit.has_focus();
                     if edit.changed() {
-                        let digits: String = buf.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect();
-                        buf = format!("#{digits}");
+                        let digits = normalize_hex_edit(ui.ctx(), edit.id, &mut buf);
                         ui.data_mut(|d| d.insert_temp(id.with("hex"), buf.clone()));
                         if !digits.is_empty() {
                             *color = closest_six(&digits);
@@ -3255,7 +3388,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // touched or an edge is dragged the ring only comes further IN -- its outer edge never moves --
     // and it stops at the thickness whose dark middle looked right. Touching either circle lights
     // up the other one too.
-    let hp = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
+    let hp = ui.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
     const CIRCLE: f32 = 7.0;
     let cy = thumb.center().y;
     let hi = thumb.height();
@@ -3269,6 +3402,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             ((p.x - circle_l).abs() <= CIRCLE && (p.y - cy).abs() <= CIRCLE) || ((p.x - circle_r).abs() <= CIRCLE && (p.y - cy).abs() <= CIRCLE)
         });
     let edge_grab = matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. }));
+    app.tl.zoombar_resize_cursor = edge_grab;
     /// The ring's outer edge: a 4.5 disc with a 1.5 ring around it. It never grows outwards.
     const RING_OUT: f32 = 6.0;
     // Hovering an edge (circle or edge zone) brings both rings in 1.5x; clicking or dragging an
@@ -3299,13 +3433,11 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         p.circle_filled(pos2(x, cy), RING_OUT, t.icon_active);
         p.circle_filled(pos2(x, cy), RING_OUT - ring_w, t.panel_bg);
     }
-    // hovering an end circle reads as a resize handle
-    // only (never the slider's middle), and it stays through the press and the WHOLE edge drag --
-    // the slider can run away from the cursor while it zooms. Shift drags hide the cursor (it is
-    // pinned), so it stays hidden there.
-    app.tl.zoombar_point_cursor = app.tl.zoombar_cursor_lock.is_none() && (on_circle || edge_grab);
+    // The edge circles are click targets, so use the pointing hand while hovering them and during
+    // their drag. Shift drags hide the cursor (it is pinned), so it stays hidden there.
+    app.tl.zoombar_point_cursor = app.tl.zoombar_cursor_lock.is_none() && on_circle && !edge_grab;
     if app.tl.zoombar_point_cursor {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     // The "you are here" marker on the fixed minimap: the true visible window in the plain linear
     // map, drawn as one blue line (2 pt) with a 1 pt gap to the slider -- above it normally, below
@@ -3406,6 +3538,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // when the window is short.
     let popup_pos = pos2(requested_pos.x, requested_pos.y.clamp(screen.top(), screen.bottom()));
     let is_open = ctx.data(|data| data.get_temp::<bool>(zoombar_popup_open_key())).unwrap_or(false);
+    if is_open && !controls_capturing(ui) && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        ctx.data_mut(|data| data.insert_temp(zoombar_popup_open_key(), false));
+    }
     // Keep one Area and layer alive even while the menu is closed. It needs enough layout room
     // for the complete settings list; 660 points covers the natural menu plus its frame. The
     // inner ScrollArea caps itself to the viewport only when the window is too short.
@@ -3980,6 +4115,7 @@ pub fn set_zoombar_hidden(app: &mut FilmcraftApp, ctx: &egui::Context, hidden: b
         app.tl.zoombar_cursor_lock = None;
         app.tl.zoombar_unlock_catchup = false;
         app.tl.zoombar_point_cursor = false;
+        app.tl.zoombar_resize_cursor = false;
         release_zoombar_cursor(ctx, app.tl.zoombar_cursor_viewport.take());
     } else {
         // a stale "how to bring it back" window means nothing once the bar is back
