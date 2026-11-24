@@ -220,9 +220,13 @@ pub(crate) struct WheelInput {
 /// zoom and Shift + wheel into a sideways scroll before anyone asks, and the Timeline has its own
 /// meaning for both. The modifiers are those of the events (a script's wheel carries its own).
 pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
+    // Off macOS the runtime folds a smooth Ctrl+wheel into a zoom event; those zooms are read as the
+    // Ctrl+wheel they were (framework fallback, `framework::folded_ctrl_wheels`).
+    let zoomed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Zoom(_))).then(|| i.events.clone()));
+    let folded = zoomed.map(|events| crate::framework::folded_ctrl_wheels(ctx, &events)).unwrap_or_default();
     ctx.input(|i| {
         let mut w = WheelInput { delta: egui::Vec2::ZERO, pinch: 1.0, command: false, alt: false, shift: false };
-        for e in &i.events {
+        for e in i.events.iter().chain(&folded) {
             match e {
                 egui::Event::MouseWheel { unit, delta, modifiers, .. } => {
                     let points = match unit {
@@ -237,6 +241,7 @@ pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
                     w.alt |= modifiers.alt;
                     w.shift |= modifiers.shift;
                 }
+                egui::Event::Zoom(_) if !folded.is_empty() => {}
                 egui::Event::Zoom(z) if z.is_finite() && *z > 0.0 => w.pinch *= *z,
                 _ => {}
             }
