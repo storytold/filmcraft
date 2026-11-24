@@ -87,7 +87,8 @@ craft-audio = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # The video codecs (including H.264 encode, APV encode, ProRes, DNxHD / DNxHR and decoders), on the same commit as craft-media.
 craft-video = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", features = ["h264-decode", "h264-encode", "hevc-decode", "vp9-decode", "av1-decode", "vp8-decode", "mpeg2", "apv", "prores", "dnx", "threads"] }
 # Exact time, EDL / ALE and the interchange report; serde for the project file's time fields.
-craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49", features = ["serde"] }
+craft-timeline = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
+craft-time = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
 craft-captions = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b436ae992591173ce53fdb1314421ba2d8897e49" }
 
 # ui
@@ -162,3 +163,13 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "f5025284445ea19c35f746d96fc0b75468b3f560" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
+# cl's app mode (craft-libs docs/development.md, "App workspaces"): every command selects these packages,
+# so egui, eframe and the craft crates resolve to one feature set and build once per target dir.
+[workspace.metadata.cl]
+selection = ["filmcraft", "filmcraft-audio-dsp", "filmcraft-automation", "filmcraft-bitstream", "filmcraft-captions", "filmcraft-cfb", "filmcraft-cli", "filmcraft-codecs", "filmcraft-color", "filmcraft-dng", "filmcraft-edit", "filmcraft-engine", "filmcraft-export", "filmcraft-format", "filmcraft-frame", "filmcraft-geom", "filmcraft-golden", "filmcraft-gpu", "filmcraft-interchange", "filmcraft-isobmff", "filmcraft-matroska", "filmcraft-media", "filmcraft-platform", "filmcraft-project", "filmcraft-render", "filmcraft-scopes", "filmcraft-speech", "filmcraft-testkit", "filmcraft-text", "filmcraft-time", "filmcraft-tts", "filmcraft-tts-text", "filmcraft-ui-egui", "filmcraft-web"]
+tracked = ["egui", "eframe", "craft-ui", "craft-update", "craft-window", "craft-keymap", "craft-i18n", "craft-media", "craft-audio", "craft-video", "craft-timeline"]
+# Build scripts track these (the app's Windows resources, the fonts directory): a value in one command and
+# not the next rebuilds everything above them. Fonts come from one craft-fonts checkout for every build.
+unset_env = ["FILMCRAFT_REQUIRE_WINRES", "CRAFT_FONTS_REQUIRED"]
+set_env = { RUST_MIN_STACK = "8388608" }
