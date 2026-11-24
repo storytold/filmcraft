@@ -242,12 +242,8 @@ impl FilmcraftApp {
         now
     }
 
-    /// Close-request handling and control-driven synthetic input, in the original order.
+    /// Control-driven synthetic input. The close request is decided in `framework::close_path`.
     fn logic_control(&mut self, ctx: &egui::Context) {
-        // Quitting with unsaved changes asks to save them first.
-        if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
         let had_synthetic = !self.synthetic.is_empty() || self.synthetic_pending_step.is_some();
         self.drain_control(ctx);
         if (!self.synthetic.is_empty() || self.synthetic_pending_step.is_some()) && !had_synthetic {
@@ -441,6 +437,7 @@ impl eframe::App for FilmcraftApp {
     /// and agent input, and offer at most one queued synthetic step. A step already preserved by
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::framework::before_input(ctx, self);
         self.native_window_focused = Some(raw_input.focused);
         capture::note_raw_geometry(self, ctx, raw_input);
         #[cfg(target_os = "macos")]
@@ -496,10 +493,12 @@ impl eframe::App for FilmcraftApp {
     }
 
     /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
-    /// suspend reset state because a logic-only callback is never a UI pass.
+    /// suspend reset state because a logic-only callback is never a UI pass. The root window's
+    /// close path runs last.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.logic_inner(ctx);
         self.finish_ime_reset_logic(ctx);
+        crate::framework::close_path(ctx, self);
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
@@ -523,6 +522,8 @@ impl eframe::App for FilmcraftApp {
     /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::framework::before_ui(&ctx, frame);
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
@@ -532,6 +533,7 @@ impl eframe::App for FilmcraftApp {
         }
         self.ui_inner(ui, frame);
         self.finish_ime_reset_ui(&ctx);
+        crate::framework::zoom_keys(&ctx);
     }
 }
 
@@ -559,6 +561,7 @@ mod lifecycle_synthetic_tests {
     #[test]
     fn one_synthetic_step_survives_hidden_logic_callbacks() {
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut app = FilmcraftApp::new(Session::default());
         app.synthetic = vec![
             Event::PointerMoved(pos2(10.0, 10.0)),
@@ -595,6 +598,7 @@ mod lifecycle_synthetic_tests {
     #[test]
     fn hidden_callbacks_do_not_duplicate_a_step_preserved_in_raw_input() {
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut app = FilmcraftApp::new(Session::default());
         app.synthetic =
             vec![Event::Text("once".into()), Event::Key { key: egui::Key::F35, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }];
