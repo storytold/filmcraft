@@ -11,7 +11,7 @@ use std::sync::Arc;
 use craft_behavior::DockSide;
 use craft_behavior::dock::{Action, Layout, Node, Permissions, Workspace};
 use craft_host::target::WindowKind;
-use craft_ui::contract::{Bind, BodyCx, Props as _, Show as _, Tracked};
+use craft_ui::contract::{Bind, BodyCx, Tracked};
 use craft_ui::docking::{
     DockCommands, DockConfig, DockEvent, DockPanels, DockScene, DockSizes, DockTo, DragUnit, FloatSpace, PanelSpec, PanelSpecs, actions, move_actions,
 };
@@ -26,7 +26,7 @@ use crate::{FilmcraftApp, panels};
 
 /// Where each panel body was drawn last frame, and on which layer.
 fn bodies_id() -> egui::Id {
-    egui::Id::new("filmcraft-dock-bodies")
+    egui::Id::unique("filmcraft-dock-bodies")
 }
 
 /// Width of the ≡ panel menu button in each group's header.
@@ -502,7 +502,7 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         // The Timeline is FilmCraft's document view: Tab and the edit chords stay in egui for it.
         if *panel == PanelKind::Timeline {
-            crate::framework::host_canvas(ui.ctx(), child.id());
+            crate::framework::host_canvas(ui.ctx(), child.scope_id());
         }
         panels::show(self.app, &mut child, *panel, rect);
         // The end-of-pass IME check of the Program monitor's text editor in its own OS window.

@@ -862,7 +862,9 @@ fn program_floats_at_a_useful_height() {
         step(&mut h);
     }
     let window = h.state().ui.dock.floating.iter().find(|window| window.contains(&PanelKind::Program)).unwrap();
-    assert!(window.rect.height() >= 300.0, "Program floated at {:?}", window.rect);
+    // Content that fills its frame floats at the dock's default float height, the most a command gives.
+    let sizes = craft_ui::docking::DockSizes::of(&ctx);
+    assert!(window.rect.height() >= sizes.float_size.y && window.rect.height() > sizes.least, "Program floated at {:?}", window.rect);
 }
 
 /// Only docked frames maximize: Maximize Frame on a floating panel leaves nothing maximized.
