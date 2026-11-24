@@ -235,11 +235,6 @@ pub fn start_drag_lumetri_preset(ui: &egui::Ui, name: &str) {
 #[derive(Clone, Debug)]
 struct DragPayloadBox(DragPayload);
 
-/// Whether one of FilmCraft's own drags (an item, bin, source range, effect or template) is under way.
-pub(crate) fn dragging(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().is_some()
-}
-
 fn payload(ui: &egui::Ui) -> Option<DragPayload> {
     ui.ctx().data(|d| d.get_temp::<Option<DragPayloadBox>>(payload_id())).flatten().map(|b| b.0)
 }

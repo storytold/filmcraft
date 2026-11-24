@@ -206,27 +206,21 @@ mod tests {
     use super::*;
 
     /// Offers `release` and returns once its prompt is open. The updater reads the installed
-    /// files for an offer on a thread of its own, which asks the context the updater keeps for a
-    /// repaint after it answers; the next tick opens the prompt. The observer sees every repaint
-    /// request, so each immediate one is followed by a tick until the prompt opens. A copy the
-    /// launcher manages ignores the offer and fails the test.
+    /// files for an offer on a thread of its own and does not wake the UI when it answers: each
+    /// tick polls for the answer, so the test ticks until the prompt opens, and fails rather than
+    /// waits forever if the answer never comes. A copy the launcher manages ignores the offer and
+    /// fails the test.
     #[cfg(not(target_arch = "wasm32"))]
     fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
         let ctx = egui::Context::default();
-        let (answered, wait) = std::sync::mpsc::channel();
-        ctx.set_repaint_observer(move |info| {
-            if info.delay.is_zero() {
-                let _ = answered.send(());
-            }
-        });
-        // Keeps `ctx` for the offer's thread.
-        updater.tick(&ctx);
         updater.offer(release);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !updater.prompt_open() {
             // `offer`, and the tick that takes the thread's answer, read the launcher's choice: a
             // managed copy opens no prompt, and no further answer would come.
             assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
-            wait.recv().unwrap();
+            assert!(std::time::Instant::now() < deadline, "the offer's inspection never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
             updater.tick(&ctx);
         }
     }

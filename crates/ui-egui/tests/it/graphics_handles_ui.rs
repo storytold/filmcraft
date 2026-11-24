@@ -37,6 +37,7 @@ impl Driver {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
         let harness = b.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
             filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
             app
         });

@@ -20,7 +20,10 @@ fn harness(item: u64) -> Harness<'static, FilmcraftApp> {
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
     s.execute("source.open", json!({"item":item})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(s)
+    });
     for _ in 0..4 {
         step(&mut h);
     }
