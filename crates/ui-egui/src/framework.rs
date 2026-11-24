@@ -76,31 +76,45 @@ pub fn before_input(ctx: &Context, app: &FilmcraftApp) {
     });
 }
 
-/// How many events of one pass's raw input came after its first pointer press: the runtime gives a pass at most one
+/// How many events of one frame's raw input came after its first pointer press: the runtime gives a pass at most one
 /// press, as its last pointer event, and holds those events for the front of the next frame's input.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct PressSuffix {
     frame: u64,
     len: usize,
 }
 
+/// The records of the last two frames that ran the input hook, oldest first: the frame after a press reads the
+/// press frame's record after its own hook has written the newer one.
+#[derive(Clone, Copy, Default)]
+struct PressSuffixes([Option<PressSuffix>; 2]);
+
 fn press_suffix_id() -> Id {
     Id::new("filmcraft-press-suffix")
 }
 
-/// Last in `raw_input_hook`: records how many of the pass's events follow its first pointer press, so
+/// Last in `raw_input_hook`: records how many of the frame's events follow its first pointer press, so
 /// [`held_press_suffix`] can tell them, at the front of the next frame, from events that arrived in that frame.
+/// A second hook call in the same frame (eframe's hidden logic ticks) keeps the longer count.
 pub fn note_press_suffix(ctx: &Context, events: &[egui::Event]) {
     let len = events.iter().position(|event| matches!(event, egui::Event::PointerButton { pressed: true, .. })).map_or(0, |at| events.len() - at - 1);
     let frame = ctx.cumulative_frame_nr();
-    ctx.data_mut(|data| data.insert_temp(press_suffix_id(), PressSuffix { frame, len }));
+    ctx.data_mut(|data| {
+        let records = data.get_temp_mut_or_default::<PressSuffixes>(press_suffix_id());
+        match &mut records.0[1] {
+            Some(current) if current.frame == frame => current.len = current.len.max(len),
+            _ => records.0 = [records.0[1], Some(PressSuffix { frame, len })],
+        }
+    });
 }
 
-/// How many events at the front of this pass's input are the held suffix of the previous pass's press: they came
-/// in the press's batch, after it. Zero when the previous pass had no press, or nothing after it.
+/// How many events at the front of this pass's input are the held suffix of the previous frame's press: they came
+/// in the press's batch, after it. Zero when the previous frame had no press, or nothing after it.
 pub fn held_press_suffix(ctx: &Context) -> usize {
     let frame = ctx.cumulative_frame_nr();
-    ctx.data(|data| data.get_temp::<PressSuffix>(press_suffix_id())).filter(|suffix| frame == suffix.frame.wrapping_add(1)).map_or(0, |suffix| suffix.len)
+    ctx.data(|data| data.get_temp::<PressSuffixes>(press_suffix_id()))
+        .and_then(|records| records.0.into_iter().flatten().find(|suffix| frame == suffix.frame.wrapping_add(1)))
+        .map_or(0, |suffix| suffix.len)
 }
 
 /// First in `ui`, each pass: hands the runtime the root's native window (eframe's `Frame`).
