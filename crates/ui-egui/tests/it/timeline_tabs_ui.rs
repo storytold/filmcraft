@@ -174,20 +174,6 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     d.frames(3);
     assert_eq!(d.active(), b);
     assert!(d.has("panel.menu.Timeline.close") && d.has("panel.menu.Timeline.closeOthers") && d.has("panel.menu.Timeline.revealSequence"));
-    {
-        let ctx = d.harness.ctx.clone();
-        let style = ctx.global_style();
-        eprintln!(
-            "DIAG a_right_click_on_a_tab_shows_it_and_opens_its_menu: first menu area={:?} scroll={:?} close={:?} reveal={:?} wrap={:?} item_spacing={:?} content={:?}",
-            ctx.memory(|m| m.area_rect(egui::Id::unique("panel-menu").with("area"))),
-            d.rect("panel.menu.scroll"),
-            d.rect("panel.menu.Timeline.close"),
-            d.rect("panel.menu.Timeline.revealSequence"),
-            style.wrap_mode,
-            style.spacing.item_spacing,
-            ctx.content_rect()
-        );
-    }
     d.snapshot("timeline-tab-menu");
     d.click("panel.menu.Timeline.closeOthers");
     assert_eq!((d.open(), d.active()), (vec![b], b));

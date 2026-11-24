@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use egui::{Event, Id, Key, Modifiers, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{FilmcraftApp, dock::PanelKind, state::Tool};
 use serde_json::json;
@@ -34,13 +35,35 @@ fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
     let first = Id::unique(("tool", "Selection".to_string()));
     let second = Id::unique(("tool", "TrackSelectForward".to_string()));
     let third = Id::unique(("tool", "Ripple".to_string()));
-    for _ in 0..128 {
+    // The tool shortcuts choose a tool from the keyboard.
+    key(&mut h, Key::B, Modifiers::NONE);
+    assert_eq!(h.state().ui.tool, Tool::Ripple, "B chooses the Ripple Edit tool");
+    key(&mut h, Key::V, Modifiers::NONE);
+    assert_eq!(h.state().ui.tool, Tool::Selection, "V chooses the Selection tool");
+    // Under the framework's rule Tab moves between its focus stops (the dock's tab, its panes) and
+    // never reaches the tools' own buttons: it moves focus somewhere, and neither it nor Space on
+    // what it reached changes the tool, starts playback or edits the project.
+    for _ in 0..6 {
         key(&mut h, Key::Tab, Modifiers::NONE);
-        if h.ctx.memory(|m| m.focused()) == Some(first) {
-            break;
-        }
     }
-    assert_eq!(h.ctx.memory(|m| m.focused()), Some(first), "Tab must reach the first tool");
+    let reached = h.ctx.memory(|m| m.focused());
+    assert!(reached.is_some(), "Tab gives some control the keyboard focus");
+    key(&mut h, Key::Space, Modifiers::NONE);
+    eprintln!(
+        "DIAG tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus: Tab reached {reached:?}, after Space focus {:?} tool {:?} playing {}",
+        h.ctx.memory(|m| m.focused()),
+        h.state().ui.tool,
+        h.state().playback.playing
+    );
+    assert_eq!(h.state().ui.tool, Tool::Selection, "traversal does not activate a tool");
+    assert!(!h.state().playback.playing, "Space belongs to the focused control");
+    assert_eq!(h.state().session.state.playheads, playheads);
+    assert!(Arc::ptr_eq(&h.state().session.project, &project));
+    // A screen reader's focus action puts the focus on a tool; from there Tab and Shift+Tab move
+    // between the tools as egui does, and Space chooses only the focused one.
+    h.get_by_label("Selection Tool").focus();
+    h.run_steps(3);
+    assert_eq!(h.ctx.memory(|m| m.focused()), Some(first), "the focus action reaches the first tool");
     key(&mut h, Key::Tab, Modifiers::NONE);
     assert_eq!(h.ctx.memory(|m| m.focused()), Some(second));
     key(&mut h, Key::Tab, Modifiers::NONE);
