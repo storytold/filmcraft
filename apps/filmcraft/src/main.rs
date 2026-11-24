@@ -169,6 +169,8 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
         });
     let identity =
         if early.profile.is_nightly() { filmcraft_ui_egui::os_window::LaunchIdentity::NightlyV1 } else { filmcraft_ui_egui::os_window::LaunchIdentity::Stable };
+    // Read the launch's own arguments before `install` takes the profile: `runnable_argv` borrows it.
+    let runnable = runnable_argv(internal, argv, &early);
     if let Err(error) = launch_profile::install(early.profile).and_then(|()| filmcraft_ui_egui::os_window::select_identity(identity)) {
         report_launch_profile_error(&error);
         std::process::exit(2);
@@ -185,7 +187,7 @@ fn prepare_launch() -> Option<Vec<std::ffi::OsString>> {
         build_flavor::BuildFlavor::Stable => version_text().to_owned(),
         build_flavor::BuildFlavor::NightlyV1 => build_flavor::version(build_flavor::COMPILED, version_text()),
     });
-    Some(runnable_argv(internal, argv, &early))
+    Some(runnable)
 }
 
 /// What `main` parses once the profile is selected. A Launcher start gets the profile's own tail
