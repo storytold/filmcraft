@@ -98,7 +98,8 @@ impl Driver {
     fn label(&mut self, id: &str) -> String {
         self.element(id).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
-    /// Give the Audio Meters panel `width` points (it sits in a split beside the Timeline).
+    /// Give the Audio Meters panel's body `width` points (it sits in a split beside the Timeline):
+    /// the split's size is the body plus the dock's group chrome, measured at the first size.
     fn meters_width(&mut self, width: f32) {
         fn set(n: &mut Node<PanelKind>, width: f32) -> bool {
             match n {
@@ -112,6 +113,12 @@ impl Driver {
         }
         assert!(self.harness.state_mut().ui.dock.root.as_mut().is_some_and(|root| set(root, width)));
         self.frames(3);
+        let body = |d: &mut Self| d.element("panel.AudioMeters").and_then(|e| e["rect"][2].as_f64()).expect("the meters' body") as f32;
+        let chrome = width - body(self);
+        assert!(self.harness.state_mut().ui.dock.root.as_mut().is_some_and(|root| set(root, width + chrome)));
+        self.frames(3);
+        let shown = body(self);
+        eprintln!("DIAG a_narrow_meter_panel_drops_the_readout_and_then_the_scale: asked {width}, chrome {chrome}, body {shown}");
     }
     /// The level the left bar shows, in dB.
     fn left_db(&mut self) -> f32 {
