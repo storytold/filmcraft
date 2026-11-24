@@ -109,6 +109,21 @@ pub fn take_window_cancel(ctx: &Context) -> bool {
     ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) || with_window_intents(ctx, false, |intents| intents.take(Intent::Cancel))
 }
 
+/// Whether a widget has the keyboard, so the app's shortcuts leave the keys to it: one of the app's own egui widgets
+/// has egui's focus, or a framework stop that types (a text field, a shortcut recorder) has the runtime's. The runtime
+/// also keeps egui's focus on its other stops (a dock tab, a dialog button) and on the canvas registered with
+/// [`host_canvas`] once a press reached them; the app's shortcuts still run then, as they did before the runtime,
+/// when a click on a panel left no egui widget focused.
+pub fn keyboard_taken(ctx: &Context) -> bool {
+    if !ctx.memory(|memory| memory.focused().is_some()) {
+        return false;
+    }
+    match craft_ui::runtime::focus::focused_rec(ctx) {
+        Some(rec) => craft_ui::runtime::focus::takes_letters(&rec.stop.keys),
+        None => true,
+    }
+}
+
 /// Gives `ui` the app's own egui style, for panel bodies and the group view: the pin lays them out in the dock's style.
 pub fn app_style(ui: &mut Ui) {
     ui.set_style(ui.ctx().global_style());

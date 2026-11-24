@@ -106,7 +106,7 @@ impl FilmcraftApp {
 
     /// Latch Escape during pass 0, where the key event is fresh.
     pub(super) fn latch_escape_cancel(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.pointer.any_down() && i.key_pressed(egui::Key::Escape)) {
+        if ctx.input(|i| i.pointer.any_down()) && crate::framework::escape_pressed(ctx) {
             self.escape_cancel = true;
         }
     }

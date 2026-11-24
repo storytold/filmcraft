@@ -377,7 +377,10 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
         if snapshots.is_some() {
             builder = builder.wgpu();
         }
-        let mut h = builder.build_eframe(move |_| app);
+        let mut h = builder.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         for _ in 0..8 {
             h.step();
         }

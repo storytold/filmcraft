@@ -22,7 +22,10 @@ fn harness() -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(s));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(s)
+    });
     for _ in 0..4 {
         step(&mut h);
     }
@@ -145,7 +148,10 @@ fn tone_dropped_on_a_video_row_goes_to_the_audio_track_without_error() {
 
 /// Empty project: no sequence yet. Dropping on the empty Timeline must import *and* make a sequence.
 fn empty_harness() -> Harness<'static, FilmcraftApp> {
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |_cc| FilmcraftApp::new(Session::default()));
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(Session::default())
+    });
     for _ in 0..4 {
         step(&mut h);
     }

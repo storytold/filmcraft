@@ -13,7 +13,7 @@ impl FilmcraftApp {
             self.bindings_rev = self.session.shortcuts.revision;
         }
         // Esc exits cinema mode unconditionally, even when a dialog or text field has focus.
-        if self.ui.fullscreen_program && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if self.ui.fullscreen_program && crate::framework::take_window_cancel(ctx) {
             self.ui.fullscreen_program = false;
             let restore = self.ui.cinema_was_fullscreen;
             if let Some(prev) = self.ui.cinema_prev_focus.take() {
@@ -22,7 +22,9 @@ impl FilmcraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
             return;
         }
-        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+        // The runtime keeps egui's focus on the framework stop or the hosted canvas a press reached,
+        // so egui's own `egui_wants_keyboard_input` would end every shortcut after a click on a panel.
+        if crate::framework::keyboard_taken(ctx) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -34,7 +36,7 @@ impl FilmcraftApp {
         // read before `input_mut`: the plugin lock must not be taken inside the input lock
         let label_selected = ctx.with_plugin(|s: &mut egui::text_selection::LabelSelectionState| s.has_selection()).unwrap_or(false);
         // Esc cancels a dynamic trim in progress
-        if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if self.session.trim_play.dynamic.is_some() && crate::framework::take_window_cancel(ctx) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
