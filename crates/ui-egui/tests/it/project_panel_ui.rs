@@ -549,6 +549,15 @@ fn metadata_display_dialog_and_view_presets() {
     assert_eq!(cols[1], "Label", "{cols:?}");
     assert!(cols.contains(&"Video Usage".to_string()) && !cols.contains(&"Tape Name".to_string()));
     d.frames(2);
+    if !d.has("project.list.header.Label") {
+        let panel = d.ok("ui.elements", json!({"prefix": "panel.Project"}));
+        let headers = d.ok("ui.elements", json!({"prefix": "project.list"}));
+        eprintln!(
+            "DIAG metadata_display_dialog_and_view_presets: panel={panel} list={headers} view={:?} dialog_open={}",
+            d.app().session.prefs.project_panel.view.mode,
+            d.app().ui.project_panel.dialog.is_some()
+        );
+    }
     assert!(d.has("project.list.header.Label") && d.has("project.list.header.Video Usage"));
 
     // Save As New View Preset (named), change the view, restore it from Manage

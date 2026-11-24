@@ -774,6 +774,18 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     // A frame updates the gesture, then the next frame paints its destination.
     d.frames(2);
     let preview = d.ok("ui.elements", json!({"prefix":format!("timeline.newTrackPreview.{}",clip.0)}));
+    if preview.as_array().is_none_or(|a| a.len() != 1) {
+        let panel = d.ok("ui.elements", json!({"prefix": "panel.Timeline"}));
+        let near = d.ok("ui.elements", json!({"prefix": "timeline.newTrack"}));
+        let content = d.app().tl.layout.as_ref().map(|l| l.content);
+        let (pointer, dragging) = d.harness.ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        let dragged = d.harness.ctx.dragged_id();
+        let test = std::thread::current().name().unwrap_or_default().rsplit("::").next().unwrap_or_default().to_owned();
+        eprintln!(
+            "DIAG {test}: audio={audio} linked={linked} from={from:?} to={to:?} content={content:?} panel={panel} near={near} pointer={pointer:?} down={dragging} dragged={dragged:?} focused={:?}",
+            d.harness.ctx.memory(|m| m.focused())
+        );
+    }
     assert_eq!(preview.as_array().unwrap().len(), 1, "new destination is shown during the drag");
     assert_eq!(*d.app().session.project, *before);
     assert_eq!(d.app().session.history.undo.len(), undo);

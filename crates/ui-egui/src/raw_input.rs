@@ -1,23 +1,15 @@
-/// `--control-input-only`: drop the window system's input. Screenshot results arrive through
-/// `ScreenshotCallback`, not raw input; all viewport lifecycle and geometry data stay.
+/// `--control-input-only`: drop the main window's input from the window system. Screenshot
+/// results arrive through `ScreenshotCallback`, not raw input; all viewport lifecycle and
+/// geometry data stay. The runtime drops the input of the OS windows it hosts
+/// (`WindowInput::Dropped`, set in [`crate::framework::before_input`]).
 pub(crate) fn drop_native_input(raw_input: &mut egui::RawInput) {
     raw_input.events.clear();
     raw_input.hovered_files.clear();
     raw_input.dropped_files.clear();
 }
 
-/// The window system's input rewrite ([`eframe::App::raw_input_hook`]): `--control-input-only`
-/// drops it. Control gestures go to the main window only, so nothing is added. The runtime makes
-/// a macOS Control+Click a secondary click in every viewport, so the app no longer does.
-pub(crate) fn rewrite_native_window_input(control_input_only: bool, raw_input: &mut egui::RawInput) {
-    if control_input_only {
-        drop_native_input(raw_input);
-    }
-}
-
 #[cfg(test)]
 mod native_window_input_tests {
-    use super::*;
     use serde_json::json;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -76,20 +68,5 @@ mod native_window_input_tests {
         step(&mut h);
         step(&mut h);
         assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 1, 0), "status: {}", h.state().ui.status);
-    }
-
-    /// `--control-input-only` drops a native window's own input as the main window's hook does.
-    #[test]
-    fn control_input_only_drops_native_window_input() {
-        let mut raw = egui::RawInput { viewport_id: egui::ViewportId::from_hash_of("palette"), ..Default::default() };
-        raw.events = vec![egui::Event::Text("typing".into()), egui::Event::PointerMoved(egui::pos2(4.0, 4.0))];
-        raw.hovered_files.push(Default::default());
-        raw.dropped_files.push(Arc::new(OsFile(PathBuf::from("/unrelated-input.txt"))));
-        let mut kept = raw.clone();
-        rewrite_native_window_input(false, &mut kept);
-        assert_eq!(kept.events.len(), 2);
-        assert_eq!(kept.dropped_files.len(), 1);
-        rewrite_native_window_input(true, &mut raw);
-        assert!(raw.events.is_empty() && raw.hovered_files.is_empty() && raw.dropped_files.is_empty());
     }
 }
