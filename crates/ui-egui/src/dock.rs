@@ -782,7 +782,13 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             actions.push(SeqAction::Close(*id));
         }
         if resp.secondary_clicked() {
-            actions.push(SeqAction::Menu(*id, resp.interact_pointer_pos().unwrap_or(tab_rect.left_bottom())));
+            // The menu opens on the first whole pixel below the pointer. egui paints an area on
+            // whole pixels but tests clicks against the position it was given, so a menu opened at
+            // the pointer itself took the clicks on the tab row above its painted edge: a second
+            // right-click on a neighbouring tab, at the same height, reached the menu.
+            let at = resp.interact_pointer_pos().unwrap_or(tab_rect.left_bottom());
+            let ppp = ui.ctx().pixels_per_point().max(1e-3);
+            actions.push(SeqAction::Menu(*id, pos2((at.x * ppp).round() / ppp, ((at.y * ppp).floor() + 1.0) / ppp)));
         }
         x += w + 8.0;
     }
