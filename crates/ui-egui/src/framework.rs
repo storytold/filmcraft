@@ -154,6 +154,27 @@ pub fn folded_ctrl_wheels(ctx: &Context, events: &[egui::Event]) -> Vec<egui::Ev
         .unwrap_or_default()
 }
 
+fn raw_escape_id() -> Id {
+    Id::new("filmcraft-raw-escape")
+}
+
+/// Last in `raw_input_hook`: records whether the frame's raw input carries an Escape press, before the runtime's key
+/// stage routes it, for [`escape_arrived`]. An Escape over a press the runtime counts as captured (one that went down
+/// in a dock group) cancels that press and reaches neither egui's input nor the window's intents, but the app's own
+/// value drag under the same press still takes its edits back on it, as before the runtime (#580).
+pub fn note_escape(ctx: &Context, events: &[egui::Event]) {
+    if events.iter().any(|event| matches!(event, egui::Event::Key { key: Key::Escape, pressed: true, repeat: false, .. })) {
+        let frame = ctx.cumulative_frame_nr();
+        ctx.data_mut(|data| data.insert_temp(raw_escape_id(), frame));
+    }
+}
+
+/// Whether this frame's raw input carried an Escape press ([`note_escape`]), whoever the runtime routed it to.
+pub fn escape_arrived(ctx: &Context) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data(|data| data.get_temp::<u64>(raw_escape_id())) == Some(frame)
+}
+
 /// How many events at the front of this pass's input are the held suffix of the previous frame's press: they came
 /// in the press's batch, after it. Zero when the previous frame had no press, or nothing after it.
 pub fn held_press_suffix(ctx: &Context) -> usize {

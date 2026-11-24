@@ -485,6 +485,7 @@ impl eframe::App for FilmcraftApp {
         }
         crate::framework::note_press_suffix(ctx, &raw_input.events);
         crate::framework::note_ctrl_wheels(ctx, &raw_input.events);
+        crate::framework::note_escape(ctx, &raw_input.events);
     }
 
     /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
