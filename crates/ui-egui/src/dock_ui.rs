@@ -632,7 +632,7 @@ impl FilmPanels<'_> {
 }
 
 impl DockPanels<PanelKind> for FilmPanels<'_> {
-    fn body(&mut self, panel: &PanelKind, ui: &mut egui::Ui, _cx: &mut BodyCx<'_>) {
+    fn body(&mut self, panel: &PanelKind, ui: &mut egui::Ui, cx: &mut BodyCx<'_>) {
         crate::framework::app_style(ui);
         let t = self.tokens;
         let rect = ui.max_rect();
@@ -643,6 +643,10 @@ impl DockPanels<PanelKind> for FilmPanels<'_> {
             ui.allocate_rect(rect, Sense::hover());
             return;
         }
+        // Every panel sits on FilmCraft's own panel background in each theme (`Tokens::panel_bg`,
+        // the dock background production gave its bodies), under the panel's content; the dock's
+        // frame, tabs and header around it stay the dock's.
+        ui.painter().rect_filled(rect.union(cx.rect), 0.0, t.panel_bg);
         self.block_native(ui);
         self.bodies.push((*panel, rect, ui.layer_id()));
         // A panel in its own OS window draws in that window's coordinates: its automation
