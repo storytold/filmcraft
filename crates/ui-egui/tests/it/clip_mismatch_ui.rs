@@ -198,13 +198,6 @@ fn escape_puts_nothing_in() {
     let movie = d.movie();
     d.drag_to_timeline(movie);
     assert_eq!(d.dialog(), json!("ClipMismatch"));
-    let ctx = d.harness.ctx.clone();
-    eprintln!(
-        "DIAG escape_puts_nothing_in: before Escape focused={:?} runtime_stop={:?} down={}",
-        ctx.memory(|m| m.focused()),
-        craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| (rec.stop.id, rec.stop.keys.activate)),
-        ctx.input(|i| i.pointer.any_down())
-    );
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(3);
     assert_eq!(d.dialog(), Value::Null);

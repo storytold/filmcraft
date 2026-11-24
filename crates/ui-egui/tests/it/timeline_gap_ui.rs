@@ -121,16 +121,8 @@ fn clicking_a_gap_selects_it_and_delete_closes_it() {
     let g = d.gap();
     assert_eq!((g["start"].as_i64(), g["end"].as_i64()), (Some(f48), Some(f96)), "the gap is selected: {g}");
     assert!(d.rect("timeline.gap").is_some(), "and drawn");
-    {
-        let ctx = d.harness.ctx.clone();
-        let egui_focus = ctx.memory(|m| m.focused());
-        let stop = craft_ui::runtime::focus::focused_rec(&ctx).map(|rec| format!("{:?} owner {:?} edits {:?}", rec.stop.id, rec.stop.keys.owner, rec.stop.keys.edits));
-        let panel = d.harness.state().ui.focused;
-        eprintln!("DIAG clicking_a_gap_selects_it_and_delete_closes_it: before Delete egui focus {egui_focus:?}, stop {stop:?}, panel {panel:?}, keyboard_taken {}", filmcraft_ui_egui::framework::keyboard_taken(&ctx));
-    }
     d.ok("ui.key", json!({"key": "Delete"}));
     d.frames(3);
-    eprintln!("DIAG clicking_a_gap_selects_it_and_delete_closes_it: after Delete gap {}", d.gap());
     assert_eq!(d.start(b), f48, "Delete closes the gap");
     assert_eq!(d.start(a), 0, "the clip before stays");
     assert_eq!(d.gap(), Value::Null);

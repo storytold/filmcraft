@@ -153,11 +153,6 @@ fn a_ui_panic_shows_an_error_window_and_the_app_keeps_running() {
 fn tiny_windows_and_squeezed_panels_do_not_panic() {
     let _serial = serial();
     filmcraft_ui_egui::crash::install(None);
-    let logged = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        eprintln!("DIAG tiny_windows_and_squeezed_panels_do_not_panic: {info}\n{}", std::backtrace::Backtrace::force_capture());
-        logged(info);
-    }));
     for (w, h) in [(120.0, 80.0), (300.0, 200.0), (60.0, 40.0), (900.0, 560.0)] {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
