@@ -237,7 +237,10 @@ fn escape_mid_drag_reverts_a_setting_and_keeps_the_dialog() {
         for k in 1..=10 {
             send(egui::Event::PointerMoved(from + egui::vec2(6.0 * k as f32, 0.0)));
             if escape && k == 5 {
+                // a press and its release: the runtime reads a press of a key still down as a repeat, and a
+                // repeated Escape cancels nothing, so a press never let go would leave the dialog's Escape below
                 send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
             }
         }
         send(button(from + egui::vec2(60.0, 0.0), false));
