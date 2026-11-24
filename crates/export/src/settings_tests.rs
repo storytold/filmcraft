@@ -1461,7 +1461,8 @@ fn h265_has_a_builtin_software_encoder() {
     assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
     let summary = h.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert_eq!(summary.format, "H.265 (HEVC) (MP4)");
-    assert!(summary.video.contains("HEVC Main") && summary.video.contains("Target 20.00 Mbps"), "{}", summary.video);
+    assert!(summary.video.contains("HEVC Main / Main 10 for HDR") && summary.video.contains("Target 20.00 Mbps"), "{}", summary.video);
+    assert!(!summary.video.contains("hardware encoder"), "hardware encoding is off by default");
 
     // a hardware encoder has one pass
     let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h.clone() }.validate().unwrap_err();
@@ -1521,6 +1522,65 @@ fn h265_has_a_builtin_software_encoder() {
     assert!(available(Format::Av1));
     HERE.store(false, Ordering::SeqCst);
     assert!(!available(Format::Av1));
+}
+
+#[test]
+fn hevc_summary_reflects_selected_encoder_and_hardware_probes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static HW_PROBE: AtomicBool = AtomicBool::new(false);
+    static HDR_PROBE: AtomicBool = AtomicBool::new(false);
+
+    fn hw_probe_fn() -> bool {
+        HW_PROBE.load(Ordering::SeqCst)
+    }
+    fn hdr_probe_fn() -> bool {
+        HDR_PROBE.load(Ordering::SeqCst)
+    }
+
+    register_format_probe(Format::Hevc, hw_probe_fn);
+    register_hdr_probe(Format::Hevc, hdr_probe_fn);
+
+    let h_off = ExportSettings { format: Format::Hevc, hardware_encoding: HardwareEncoding::Off, ..Default::default() };
+    let h_auto = ExportSettings { format: Format::Hevc, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+
+    // 1. No hardware encoder available: both Off and Auto report the software Main 10 profile without hardware label
+    HW_PROBE.store(false, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
+    let s_off = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_off.video.contains("HEVC Main / Main 10 for HDR"), "{}", s_off.video);
+    assert!(!s_off.video.contains("hardware encoder"), "{}", s_off.video);
+
+    let s_auto = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_auto.video.contains("HEVC Main / Main 10 for HDR"), "{}", s_auto.video);
+    assert!(!s_auto.video.contains("hardware encoder"), "{}", s_auto.video);
+
+    // 2. Hardware encoder available (8-bit SDR only, e.g. VideoToolbox):
+    //    - Auto reports HEVC Main with the hardware label
+    //    - Off still reports software Main 10 for HDR without hardware label
+    HW_PROBE.store(true, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
+    let s_auto_hw8 = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_auto_hw8.video.contains("HEVC Main (hardware encoder)"), "{}", s_auto_hw8.video);
+
+    let s_off_hw8 = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_off_hw8.video.contains("HEVC Main / Main 10 for HDR"), "{}", s_off_hw8.video);
+    assert!(!s_off_hw8.video.contains("hardware encoder"), "{}", s_off_hw8.video);
+
+    // 3. Hardware encoder available with HDR probe (e.g. NVENC Main 10):
+    //    - Auto reports HEVC Main / Main 10 for HDR with the hardware label
+    //    - Off still reports software Main 10 for HDR without hardware label
+    HDR_PROBE.store(true, Ordering::SeqCst);
+    let s_auto_hw10 = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_auto_hw10.video.contains("HEVC Main / Main 10 for HDR (hardware encoder)"), "{}", s_auto_hw10.video);
+
+    let s_off_hw10 = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    assert!(s_off_hw10.video.contains("HEVC Main / Main 10 for HDR"), "{}", s_off_hw10.video);
+    assert!(!s_off_hw10.video.contains("hardware encoder"), "{}", s_off_hw10.video);
+
+    // Reset probes so other tests are not affected
+    HW_PROBE.store(false, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
 }
 
 #[test]

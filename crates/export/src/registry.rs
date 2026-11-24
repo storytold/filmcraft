@@ -277,11 +277,18 @@ pub fn hdr_available(format: Format) -> bool {
     probes.into_iter().any(|p| p())
 }
 
+/// Whether a registered probe says a hardware encoder of `format` is available on this machine.
+pub fn hardware_available(format: Format) -> bool {
+    let probes: Vec<fn() -> bool> =
+        format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
 /// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
 /// says its encoder works here.
 pub fn available(format: Format) -> bool {
     if !Format::ALL.contains(&format) {
         return false;
     }
-    format.has_builtin_encoder() || format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().any(|(f, probe)| *f == format && probe())
+    format.has_builtin_encoder() || hardware_available(format)
 }

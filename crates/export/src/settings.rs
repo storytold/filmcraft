@@ -721,9 +721,15 @@ impl ExportSettings {
                     v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
                 }
                 Format::Hevc => {
-                    // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
-                    let profile = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
-                    v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
+                    let hw =
+                        self.hardware_encoding == HardwareEncoding::Auto && (crate::hardware_available(Format::Hevc) || crate::hdr_available(Format::Hevc));
+                    let (profile, hw_label) = if hw {
+                        let p = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
+                        (p, " (hardware encoder)")
+                    } else {
+                        ("HEVC Main / Main 10 for HDR", "")
+                    };
+                    v += &format!(", {profile}{hw_label}, {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
