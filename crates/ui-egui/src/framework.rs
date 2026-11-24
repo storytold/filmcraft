@@ -18,7 +18,7 @@ use craft_ui::fonts::{I18nScripts, UiFonts};
 use craft_ui::runtime::commands::{CommandInput, CommandSet as _, NavCommand};
 use craft_ui::runtime::env::{RootEnv, Scale, SystemReader};
 use craft_ui::runtime::focus::{EditSet, KeepKeys, KeyUse};
-use craft_ui::runtime::frame::FrameInput;
+use craft_ui::runtime::frame::{FrameInput, WindowInput};
 use craft_ui::runtime::keys::{Intent, with_window_intents};
 use craft_ui::shell::embed::{self, CloseDecision};
 use craft_window::system::{NoWindows, SystemWindows, WindowSystem};
@@ -64,11 +64,16 @@ pub fn install_headless(ctx: &Context) {
 
 /// From `raw_input_hook`, before each frame: the app's theme mode and interface scale, its host and the bindings it
 /// keeps for itself. The interface scale is egui's zoom factor as the app last set it (Settings ▸ Appearance ▸ UI
-/// Scale, View ▸ Reset Interface Zoom, [`zoom_keys`]); the runtime writes it back unchanged.
+/// Scale, View ▸ Reset Interface Zoom, [`zoom_keys`]); the runtime writes it back unchanged. With
+/// `--control-input-only` the runtime drops the window system's input of the OS windows it hosts (a floated panel);
+/// the app's `raw_input_hook` drops the main window's.
 pub fn before_input(ctx: &Context, app: &FilmcraftApp) {
     let mode = if app.ui.dark { Mode::Dark } else { Mode::Light };
     let root = RootEnv::new().mode(mode).scale(Scale::new(ctx.zoom_factor()));
-    embed::before_input(ctx, |_output| FrameInput::new(root).commands(CommandInput::new().overrides(Arc::clone(&OVERRIDES))).host(Arc::clone(&HOST)));
+    let window_input = if app.control_input_only { WindowInput::Dropped } else { WindowInput::Live };
+    embed::before_input(ctx, |_output| {
+        FrameInput::new(root).commands(CommandInput::new().overrides(Arc::clone(&OVERRIDES))).host(Arc::clone(&HOST)).window_input(window_input)
+    });
 }
 
 /// First in `ui`, each pass: hands the runtime the root's native window (eframe's `Frame`).

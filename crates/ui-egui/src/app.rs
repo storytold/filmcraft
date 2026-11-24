@@ -435,8 +435,11 @@ impl eframe::App for FilmcraftApp {
         crate::framework::before_input(ctx, self);
         self.native_window_focused = Some(raw_input.focused);
         capture::note_raw_geometry(self, ctx, raw_input);
-        // (the runtime makes a macOS Control+Click a secondary click in every viewport)
-        rewrite_native_window_input(self.control_input_only, raw_input);
+        // (the runtime makes a macOS Control+Click a secondary click in every viewport, and drops a
+        // hosted window's input under `--control-input-only`; the main window's is the app's to drop)
+        if self.control_input_only {
+            drop_native_input(raw_input);
+        }
         if self.control_input_only || !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             // Native modifiers cannot replace those requested by a control gesture. A queued
             // reset runs in the frame after release, so clicked() still sees Shift/Alt.
