@@ -494,6 +494,33 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     resp
 }
 
+/// The search box at the top of a font drop-down (#5180). Returns the words typed, lower-cased.
+/// A fresh opening of the list starts empty with the box focused, so typing narrows it at once.
+pub fn font_search(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug) -> String {
+    let id = ui.make_persistent_id(("font-search", salt));
+    let frame = ui.ctx().cumulative_frame_nr();
+    let (mut text, last, mut focused) = ui.data(|d| d.get_temp::<(String, u64, bool)>(id)).unwrap_or_default();
+    // the list is drawn every frame while open; a gap means it was closed and opened again
+    if frame > last + 1 {
+        text.clear();
+        focused = false;
+    }
+    let resp = accessible_name(ui.add(egui::TextEdit::singleline(&mut text).hint_text(tl!("Search fonts")).desired_width(f32::INFINITY)), "Search fonts");
+    // take focus until it has it (the first drawn frame of a popup may be a sizing pass)
+    if !focused {
+        resp.request_focus();
+        focused = resp.has_focus();
+    }
+    ui.data_mut(|d| d.insert_temp(id, (text.clone(), frame, focused)));
+    text.trim().to_lowercase()
+}
+
+/// Whether a font family shows for the words typed in [`font_search`]: every word is in its name.
+pub fn font_matches(family: &str, query: &str) -> bool {
+    let name = family.to_lowercase();
+    query.split_whitespace().all(|w| name.contains(w))
+}
+
 /// Premiere-style dropdown text ("Fit ▾").
 pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::Id) -> Response {
     // Premiere: 24 pt, #0e0e0e fill, 1 pt #303030 border, radius 4, chevron at the right.

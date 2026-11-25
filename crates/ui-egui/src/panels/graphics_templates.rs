@@ -438,7 +438,8 @@ pub fn template_controls(
                     .width(170.0)
                     .height(360.0)
                     .show_ui(&mut vui, |ui| {
-                        for (f, _) in filmcraft_text::picker_families() {
+                        let query = crate::widgets::font_search(ui, ("gfx-tpl-font", clip.0, c.id.as_str()));
+                        for (f, _) in filmcraft_text::picker_families().into_iter().filter(|(f, _)| crate::widgets::font_matches(f, &query)) {
                             if ui.selectable_label(f == fam, &f).clicked() {
                                 set(json!(f), actions);
                             }

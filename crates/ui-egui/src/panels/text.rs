@@ -699,8 +699,9 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
                 if !filmcraft_text::fonts::system_scanned() {
                     filmcraft_text::fonts::scan_system();
                 }
+                let query = crate::widgets::font_search(ui, ("caption-font", tr.id.0));
                 // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-                for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
+                for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.') && crate::widgets::font_matches(f, &query)) {
                     let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
                     // An edge row may be only partly visible; automation must click its visible portion.
                     let visible = resp.rect.intersect(ui.clip_rect());
