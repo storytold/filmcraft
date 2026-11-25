@@ -1406,8 +1406,11 @@ fn a_time_left_reads_like_a_clock() {
     assert!(!format_eta(Duration::MAX).is_empty(), "the largest duration cannot overflow");
 }
 
+static AV1_PROBE_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
+    let _lock = AV1_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for name in ["av1", "AV1", "av01"] {
         assert_eq!(Format::from_name(name), Some(Format::Av1), "{name}");
     }
@@ -1441,6 +1444,7 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
 
 #[test]
 fn h265_has_a_builtin_software_encoder() {
+    let _lock = AV1_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use std::sync::atomic::{AtomicBool, Ordering};
     // names, ids, files and serialized settings
     for name in ["hevc", "H.265", "h265", "HVC1", "x265"] {
