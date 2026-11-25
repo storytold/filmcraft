@@ -2147,106 +2147,138 @@ fn seam_cut_chain(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min:
 }
 
 /// The exact interval dual of the seam graph (see [`seam_cut`]): per-row
-/// boundary pairs (sa, b), O(nodes * cols^2) via 2-D cumulative minima.
+/// boundary pairs (sa, b), O(nodes * cols^2) integer ops through 2-D
+/// cumulative minima ([`cummin`], whose row-min stage vectorizes). Table
+/// widths are chosen per solve by [`seam_cut_intervals`]: `u32` whenever the
+/// costs provably stay clear of the sentinel, halving the bytes and letting
+/// the min and add stages vectorize 4-wide, with `u64` as the fall-back
+/// width. The backward sweep fills its tables in place, bottom-up (the
+/// store-then-reverse the first version needed copied 200 MB per frame),
+/// and the second forward sweep scans for optimal states inside the fill
+/// it already runs rather than re-walking each table.
 fn seam_cut_intervals(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min: &[usize]) -> Option<Vec<u8>> {
     let (cols, nodes) = (g.cols, g.nodes);
-    let cells = nodes * cols;
+    // A cell cost is the windowed disagreement plus the position priors, each
+    // a mean of 8-bit differences, and the DP adds at most one cell per node
+    // row along a path, so costs stay far below 2^28 whenever the cap does;
+    // anything weirder (a pathological bake) runs the u64 table instead.
+    let (cols_n, nodes_n) = (cols as u64, nodes as u64);
+    let max_cap = capi.iter().copied().max().unwrap_or(0) as u64;
+    let narrow = max_cap.saturating_mul(cols_n) < u32::MAX as u64 && max_cap.saturating_mul(nodes_n) < 2 * ((1u64 << 31) - 1);
+    if narrow { seam_cut_intervals_t::<u32>(g, b, capi, sa_max, b_min) } else { seam_cut_intervals_t::<u64>(g, b, capi, sa_max, b_min) }
+}
 
-    const INF: i64 = i64::MAX / 4;
+/// Table value types for the interval DP: saturating costs with the
+/// unreachable sentinel, as unsigned so min and add vectorize.
+trait DpVal: Copy + Ord + std::ops::Sub<Output = Self> {
+    const INF: Self;
+    fn z() -> Self;
+    fn cap64(i: i64) -> Self;
+    fn add_sat(self, rhs: Self) -> Self;
+}
+impl DpVal for u32 {
+    const INF: Self = (1 << 31) - 1;
+    fn z() -> Self {
+        0
+    }
+    fn cap64(i: i64) -> Self {
+        u32::try_from(i).unwrap_or(u32::MAX)
+    }
+    fn add_sat(self, rhs: Self) -> Self {
+        self.saturating_add(rhs)
+    }
+}
+impl DpVal for u64 {
+    const INF: Self = (1 << 62) - 1;
+    fn z() -> Self {
+        0
+    }
+    fn cap64(i: i64) -> Self {
+        i.max(0) as u64
+    }
+    fn add_sat(self, rhs: Self) -> Self {
+        self.saturating_add(rhs)
+    }
+}
+
+/// The exact interval dual of the seam graph (see [`seam_cut`]): per-row
+/// boundary pairs (sa, b), O(nodes * cols^2) integer ops, run in transposed
+/// coordinates so the whole solve is a handful of contiguous-row min/scan
+/// passes. A node row's table is stored as `t[b][sa]` — state (sa, b) at
+/// cell b * cols + sa — which turns the transition's crossed bounds ("every
+/// `sa'` up to b+1, every `b'` from sa-1 up", [`seam_cut_intervals_ref`]
+/// reads those cell by cell) into one within-row prefix pass and one
+/// row-wise suffix pass: exactly the 2-D cumulative minimum, stated in the
+/// frame where a bound lives on the axis it bounds. A single blocked
+/// transpose returns the table to natural order, shifted by one cell on
+/// each axis, and the transition's value at (sa, b) is then the contiguous
+/// read `x[min(b + 1, cols - 1)][sa.saturating_sub(1)]` — cost added and
+/// the row's coverage bounds applied in the same sweep. The forward sweeps
+/// replay the step from a zero seed (above the top row nothing constrains
+/// anything); the second one recognises each row's optimal states as it
+/// fills them, summing with the stored backward tables to the optimum.
+fn seam_cut_intervals_t<T: DpVal>(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min: &[usize]) -> Option<Vec<u8>> {
+    let (cols, nodes) = (g.cols, g.nodes);
+    let cells = nodes * cols;
+    let square = cols * cols;
+
     let can = |ci: usize| if b.front_rises { ci } else { cols - 1 - ci };
-    let w = |ni: usize, cl: usize| -> i64 { capi[ni * cols + can(cl)] };
+    let w = |ni: usize, cl: usize| -> T { T::cap64(capi[ni * cols + can(cl)]) };
     // Interval cost over canonical columns [sa, b]: prefix sums of w.
-    let pref: Vec<Vec<i64>> = (0..nodes)
+    let pref: Vec<Vec<T>> = (0..nodes)
         .map(|ni| {
-            let mut p = vec![0i64; cols + 1];
+            let mut p = vec![T::z(); cols + 1];
             for cl in 0..cols {
-                p[cl + 1] = p[cl].saturating_add(w(ni, cl));
+                p[cl + 1] = p[cl].add_sat(w(ni, cl));
             }
             p
         })
         .collect();
-    let pair_cost = |ni: usize, sa: usize, bnd: usize| -> i64 { pref[ni][bnd + 1].saturating_sub(pref[ni][sa]) };
-    let square = cols * cols;
-    let state_ok = |ni: usize, sa: usize, bnd: usize| sa <= sa_max[ni] && bnd >= b_min[ni].max(sa);
-    // Backward: btab[ni][state] = cheapest cost of rows below ni, given row
-    // ni's state — (forward + btab == opt) marks the states on optimal cuts.
-    let mut btab: Vec<Vec<i64>> = Vec::with_capacity(nodes);
-    {
-        let mut tab = vec![0i64; square];
-        for ni in (0..nodes).rev() {
-            if ni + 1 < nodes {
-                cummin(&mut tab, cols);
-                let mut bt = vec![INF; square];
-                for sa in 0..cols {
-                    for bnd in sa..cols {
-                        if state_ok(ni, sa, bnd) {
-                            bt[sa * cols + bnd] = tab[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)];
-                        }
-                    }
-                }
-                btab.push(bt);
-                let cur = &btab[btab.len() - 1];
-                let mut h = vec![INF; square];
-                for sa in 0..cols {
-                    for bnd in sa..cols {
-                        if state_ok(ni, sa, bnd) {
-                            h[sa * cols + bnd] = cur[sa * cols + bnd].saturating_add(pair_cost(ni, sa, bnd)).min(INF);
-                        }
-                    }
-                }
-                tab = h;
-            } else {
-                btab.push(vec![0i64; square]);
-                let mut h = vec![INF; square];
-                for sa in 0..cols {
-                    for bnd in sa..cols {
-                        if state_ok(ni, sa, bnd) {
-                            h[sa * cols + bnd] = pair_cost(ni, sa, bnd);
-                        }
-                    }
-                }
-                tab = h;
-            }
-        }
-        btab.reverse();
+    // Backward sweep, bottom-up: the step tables (cummin'd, transposed — the
+    // transition values of the row below) are exactly what the second forward
+    // sweep sums against to recognise optimal states, so they are stored in
+    // place instead of being rebuilt. The bottom row's table starts as zeros:
+    // below the last node row any pair can still be crossed at no cost.
+    let mut btab = vec![T::z(); square * nodes];
+    let mut raw = vec![T::z(); square];
+    let mut aux = vec![T::z(); square];
+    for ni in (0..nodes).rev() {
+        let (head, _) = btab.split_at_mut((ni + 1) * square);
+        let gtab = &mut head[ni * square..];
+        dp_step(&mut raw, &mut aux, gtab, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF });
     }
-    // Forward twice: the optimum, then (on the second sweep) each row's
-    // optimal states. The cut's smallest source side owns a column's `out`
-    // under every optimal cut iff sa <= it in every one — so out in S iff
-    // c < min sa over opt states and, dually, in in S iff c <= min b —
-    // labelling the rows exactly as the reference max-flow's residual
-    // reachable set does, cell for cell.
+    // Forward twice: the optimum (last row's least cell, which the reference
+    // reads off its final table), then, on the second sweep, each row's
+    // optimal states — flagged during the same fill. The cut's smallest
+    // source side owns a column's `out` under every optimal cut iff sa <=
+    // it in every one — so out in S iff c < min sa over opt states and,
+    // dually, in in S iff c <= min b — labelling the rows exactly as the
+    // reference max-flow's residual reachable set does, cell for cell.
     let mut labels = vec![1u8; cells];
-    let mut prev = vec![INF; square];
-    let mut cur = vec![INF; square];
-    let mut opt = INF;
+    let mut opt = T::INF;
+    let mut dts = vec![T::z(); square];
+    raw.fill(T::z()); // above the top row, like below the bottom: nothing crossed yet
     for pass in 0..2u8 {
-        prev = vec![INF; square];
+        if pass == 1 {
+            raw.fill(T::z());
+        }
         for ni in 0..nodes {
-            if ni > 0 {
-                cummin(&mut prev, cols);
-            }
-            cur = vec![INF; square];
-            for sa in 0..cols {
-                for bnd in sa..cols {
-                    if !state_ok(ni, sa, bnd) {
-                        continue;
-                    }
-                    let past = if ni == 0 { 0 } else { prev[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)] };
-                    cur[sa * cols + bnd] = past.saturating_add(pair_cost(ni, sa, bnd)).min(INF);
-                }
+            let last = ni + 1 == nodes;
+            let (rmin, msa, mb) = if pass == 1 {
+                dp_step(
+                    &mut raw,
+                    &mut aux,
+                    &mut dts,
+                    cols,
+                    &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: Some(&btab[ni * square..(ni + 1) * square]), opt },
+                )
+            } else {
+                dp_step(&mut raw, &mut aux, &mut dts, cols, &DpRow { ni, sa_max, b_min, pcost: &pref[ni], bwd_g: None, opt: T::INF })
+            };
+            if pass == 0 && last {
+                opt = rmin;
             }
             if pass == 1 {
-                let (mut msa, mut mb) = (usize::MAX, usize::MAX);
-                for sa in 0..cols {
-                    for bnd in sa..cols {
-                        let v = cur[sa * cols + bnd];
-                        if v < INF && v.saturating_add(btab[ni][sa * cols + bnd]) == opt {
-                            msa = msa.min(sa);
-                            mb = mb.min(bnd);
-                        }
-                    }
-                }
                 if msa == usize::MAX {
                     return None; // opt finite implies a state; belt & braces
                 }
@@ -2261,26 +2293,279 @@ fn seam_cut_intervals(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_
                     };
                 }
             }
-            if ni + 1 == nodes {
-                opt = cur.iter().copied().fold(INF, i64::min);
-            }
-            std::mem::swap(&mut prev, &mut cur);
         }
     }
-    if opt >= INF {
+    if opt >= T::INF {
         return None; // no finite cut at all: keep the 1-D DP
     }
-    // A state with sa > b is vacuous (`in` prefix shorter than `out`'s); the
-    // crossing cell range is [max(sa, ?)..=b] and its cost pair_cost above;
-    // rows fully on one side are sa == b + 1... excluded: with out prefix
-    // {c < sa} nonempty past the in prefix the labelling would be (T,S);
-    // b >= sa >= b + 1 - 1 keeps `in` a superset of `out` automatically.
+    Some(labels)
+}
+
+/// One node row of the interval DP in transposed coordinates (see
+/// [`seam_cut_intervals_t`]): `raw` is the previous row of the sweep's
+/// costs, cell `[b][sa]`; the sweep's cummin'd, transposed table of `raw`
+/// is written to `gtab`, and `raw` in place becomes this row's costs.
+/// `bwd_g`, when given, is the backward row's table: states whose values
+/// sum with it to `opt` are this row's optimal states, and the least sa
+/// and least b among them come back as (msa, mb) — the labelling bounds.
+/// The sweep's least cell cost comes back too (the last forward row's is
+/// the optimum).
+/// One node row of the transposed-coordinate interval DP: an index (for the
+/// row's coverage bounds), the row's interval-cost prefix sums, and, for the
+/// labelling sweep, the row's stored backward transition table and the
+/// optimum the states are tested against.
+struct DpRow<'a, T> {
+    ni: usize,
+    sa_max: &'a [usize],
+    b_min: &'a [usize],
+    pcost: &'a [T],
+    bwd_g: Option<&'a [T]>,
+    opt: T,
+}
+
+fn dp_step<T: DpVal>(raw: &mut [T], aux: &mut [T], gtab: &mut [T], cols: usize, row: &DpRow<'_, T>) -> (T, usize, usize) {
+    // The cumulative minimum's two stages, as vectorizable out-of-place
+    // scans ([`seam_cut_intervals_ref`] does the same math scalar and in
+    // place; in-place shift-scans cannot SIMD, out-of-place rounds are
+    // full-row vector minima). A table row is a b value here, so the
+    // within-row prefix covers `sa' <= bound` and the row-wise suffix
+    // merge `b' >= bound`.
+    // The cumulative minimum's column scan, sixteen row chains interleaved
+    // (one chain alone is load-forward dependency bound at ~one element per
+    // two cycles; sixteen mutually independent chains pipeline to under one
+    // per cycle, which a same-array Hillis-Steele round does not). The row
+    // suffix stage below is pairwise-vectorised already.
+    aux.copy_from_slice(raw);
+    {
+        let n = cols.min(16);
+        for rg in (0..cols).step_by(n) {
+            let re = (rg + n).min(cols);
+            let blk = &mut aux[rg * cols..re * cols];
+            for c in 1..cols {
+                for r in 0..re - rg {
+                    let m = blk[r * cols + c - 1];
+                    let x = &mut blk[r * cols + c];
+                    if m < *x {
+                        *x = m;
+                    }
+                }
+            }
+        }
+    }
+    for q in (0..cols - 1).rev() {
+        let (_, tail) = aux.split_at_mut(q * cols);
+        let (rowq, below) = tail.split_at_mut(cols);
+        let rownext = &below[..cols];
+        for c in 0..cols {
+            rowq[c] = rowq[c].min(rownext[c]);
+        }
+    }
+    transpose_sq(aux, gtab, cols);
+    let samax = row.sa_max[row.ni].min(cols - 1);
+    let (mut msa, mut mb, mut low) = (usize::MAX, usize::MAX, T::INF);
+    // The fill, per b row: the transition row shifted by one (its column 0
+    // duplicated for the saturating sa - 1 bound), plus the row's interval
+    // cost and coverage bounds. With a backward table the optimal-state test
+    // rides along in the same straight-line sweep (min/select, no branches),
+    // so the common sweep stays vectorized; without one the loop is the bare
+    // cost add. Rows wholly below the row bound and cells past sa <= min(b,
+    // sa_max) are the vacuous dead states, INF.
+    if let Some(gtbl) = row.bwd_g {
+        for b in 0..cols {
+            let srow = (b + 1).min(cols - 1) * cols;
+            let (src, bg) = (&gtab[srow..srow + cols], &gtbl[srow..srow + cols]);
+            let add = row.pcost[b + 1];
+            let dst = &mut raw[b * cols..b * cols + cols];
+            let lim = if b < row.b_min[row.ni] { 0 } else { b.min(samax) + 1 };
+            let v0 = if lim == 0 { T::INF } else { src[0].add_sat(add - row.pcost[0]).min(T::INF) };
+            dst[0] = v0;
+            let hit = v0 < T::INF && v0.add_sat(bg[0]) == row.opt;
+            msa = msa.min(if hit { 0 } else { usize::MAX });
+            mb = mb.min(if hit { b } else { usize::MAX });
+            low = low.min(v0);
+            for sa in 1..lim {
+                let v = src[sa - 1].add_sat(add - row.pcost[sa]).min(T::INF);
+                dst[sa] = v;
+                low = low.min(v);
+                let hit = v < T::INF && v.add_sat(bg[sa - 1]) == row.opt;
+                msa = msa.min(if hit { sa } else { usize::MAX });
+                mb = mb.min(if hit { b } else { usize::MAX });
+            }
+            dst[lim..].fill(T::INF);
+        }
+    } else {
+        for b in 0..cols {
+            let srow = (b + 1).min(cols - 1) * cols;
+            let src = &gtab[srow..srow + cols];
+            let add = row.pcost[b + 1];
+            let dst = &mut raw[b * cols..b * cols + cols];
+            let lim = if b < row.b_min[row.ni] { 0 } else { b.min(samax) + 1 };
+            let v0 = if lim == 0 { T::INF } else { src[0].add_sat(add - row.pcost[0]).min(T::INF) };
+            dst[0] = v0;
+            low = low.min(v0);
+            for sa in 1..lim {
+                let v = src[sa - 1].add_sat(add - row.pcost[sa]).min(T::INF);
+                dst[sa] = v;
+                low = low.min(v);
+            }
+            dst[lim..].fill(T::INF);
+        }
+    }
+    (low, msa, mb)
+}
+
+/// A square table's transpose, in 32-cell blocks: a block's rows are
+/// consecutive cells (one L1-resident scratch block), its writes span two
+/// cache lines per destination row, and each destination line is touched
+/// exactly once per transpose.
+fn transpose_sq<T: DpVal>(src: &[T], dst: &mut [T], cols: usize) {
+    const BL: usize = 32;
+    let mut blk = [[T::z(); BL]; BL];
+    for br in (0..cols).step_by(BL) {
+        for bc in (0..cols).step_by(BL) {
+            let re = (br + BL).min(cols);
+            let ce = (bc + BL).min(cols);
+            for r in br..re {
+                blk[r - br][..ce - bc].copy_from_slice(&src[r * cols + bc..r * cols + ce]);
+            }
+            for k in 0..ce - bc {
+                let d = &mut dst[(bc + k) * cols + br..(bc + k) * cols + re];
+                for j in 0..re - br {
+                    d[j] = blk[j][k];
+                }
+            }
+        }
+    }
+}
+
+/// Row-major reference form of the interval DP (superseded by
+/// [`seam_cut_intervals_t`]'s transposed-coordinate step, kept as the
+/// independent implementation the differential fuzz compares against).
+#[cfg(test)]
+fn seam_cut_intervals_ref<T: DpVal>(g: &SeamGrid, b: &Band, capi: &[i64], sa_max: &[usize], b_min: &[usize]) -> Option<Vec<u8>> {
+    let (cols, nodes) = (g.cols, g.nodes);
+    let cells = nodes * cols;
+
+    let can = |ci: usize| if b.front_rises { ci } else { cols - 1 - ci };
+    let w = |ni: usize, cl: usize| -> T { T::cap64(capi[ni * cols + can(cl)]) };
+    // Interval cost over canonical columns [sa, b]: prefix sums of w.
+    let pref: Vec<Vec<T>> = (0..nodes)
+        .map(|ni| {
+            let mut p = vec![T::z(); cols + 1];
+            for cl in 0..cols {
+                p[cl + 1] = p[cl].add_sat(w(ni, cl));
+            }
+            p
+        })
+        .collect();
+    let square = cols * cols;
+    let state_ok = |ni: usize, sa: usize, bnd: usize| sa <= sa_max[ni] && bnd >= b_min[ni].max(sa);
+    // Backward: btab[ni][state] = cheapest cost of the rows below ni given
+    // row ni's state (the 2-D cumulative minimum of that row's costs) —
+    // (forward + btab == opt) marks the states on optimal cuts. Filled IN
+    // PLACE, bottom-up — the bottom row is all zeros and stays, since past
+    // the last node row any pair can still be crossed at no cost.
+    let mut btab = vec![T::z(); square * nodes];
+    {
+        // `tab` carries row ni+1's costs to row ni; cummin-ing it makes the
+        // transition's transposed read exact in one lookup (the cumulative
+        // minimum absorbs it), and the bottom row starts as its zero table.
+        let mut tab = vec![T::z(); square];
+        for ni in (0..nodes).rev() {
+            let row = &mut btab[ni * square..(ni + 1) * square];
+            if ni + 1 < nodes {
+                cummin(&mut tab, cols);
+                row.fill(T::INF);
+                for sa in 0..cols {
+                    for bnd in sa..cols {
+                        if state_ok(ni, sa, bnd) {
+                            row[sa * cols + bnd] = tab[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)];
+                        }
+                    }
+                }
+            }
+            tab.fill(T::INF);
+            let pcost = &pref[ni];
+            for sa in 0..cols {
+                for bnd in sa..cols {
+                    if state_ok(ni, sa, bnd) {
+                        tab[sa * cols + bnd] = row[sa * cols + bnd].add_sat(pcost[bnd + 1] - pcost[sa]).min(T::INF);
+                    }
+                }
+            }
+        }
+    }
+    // Forward twice: the optimum, then (on the second sweep) each row's
+    // optimal states, spotted during the same fill. The cut's smallest
+    // source side owns a column's `out` under every optimal cut iff sa <=
+    // it in every one — so out in S iff c < min sa over opt states and,
+    // dually, in in S iff c <= min b — labelling the rows exactly as the
+    // reference max-flow's residual reachable set does, cell for cell.
+    let mut labels = vec![1u8; cells];
+    // `seed` is the rows above, cummin'd and read as the transition is;
+    // before row 0 it is the empty prefix, whose every read costs 0.
+    let mut seed = vec![T::z(); square];
+    let mut f = vec![T::INF; square];
+    let mut opt = T::INF;
+    for pass in 0..2u8 {
+        seed.fill(T::z());
+        for ni in 0..nodes {
+            if ni > 0 {
+                cummin(&mut seed, cols);
+            }
+            f.fill(T::INF);
+            let pcost = &pref[ni];
+            let bt = &btab[ni * square..(ni + 1) * square];
+            let (mut msa, mut mb) = (usize::MAX, usize::MAX);
+            let flag = pass == 1;
+            for sa in 0..cols {
+                for bnd in sa..cols {
+                    if !state_ok(ni, sa, bnd) {
+                        continue;
+                    }
+                    let p = sa * cols + bnd;
+                    let past = seed[(bnd + 1).min(cols - 1) * cols + sa.saturating_sub(1)];
+                    let v = past.add_sat(pcost[bnd + 1] - pcost[sa]).min(T::INF);
+                    f[p] = v;
+                    if flag && v < T::INF && v.add_sat(bt[p]) == opt {
+                        msa = msa.min(sa);
+                        mb = mb.min(bnd);
+                    }
+                }
+            }
+            if flag {
+                if msa == usize::MAX {
+                    return None; // opt finite implies a state; belt & braces
+                }
+                for ci in 0..cols {
+                    let c = can(ci);
+                    labels[ni * cols + ci] = if c < msa {
+                        0
+                    } else if c <= mb {
+                        2
+                    } else {
+                        1
+                    };
+                }
+            }
+            std::mem::swap(&mut seed, &mut f);
+            if ni + 1 == nodes {
+                opt = seed.iter().fold(T::INF, |a, x| a.min(*x));
+            }
+        }
+    }
+    if opt >= T::INF {
+        return None; // no finite cut at all: keep the 1-D DP
+    }
     Some(labels)
 }
 
 /// 2-D cumulative minimum in place: prefix over the first table index, suffix
-/// over the second (min is commutative, so sweep order does not matter).
-fn cummin(t: &mut [i64], cols: usize) {
+/// over the second (min is commutative, so sweep order does not matter). The
+/// prefix stage is pairwise row minima, which vectorize; the suffix stage is
+/// a scan. Used by the row-major reference form of the solve.
+#[cfg(test)]
+fn cummin<T: Copy + Ord>(t: &mut [T], cols: usize) {
     for a in 1..cols {
         let (ra, rp) = (a * cols, (a - 1) * cols);
         for cl in 0..cols {
@@ -3543,6 +3828,69 @@ mod flow_tests {
                     assert_eq!(dl, gl, "round {round} mirror {front_rises}: labels");
                     assert_eq!(dp, gp, "round {round} mirror {front_rises}: path");
                 }
+            }
+        }
+    }
+
+    /// Differential fuzz: fed the same prepared costs and bounds, the
+    /// transposed-table step kernel must produce exactly the label grid the
+    /// row-major reference does, round for round and mirror for mirror, at
+    /// both table widths — the two solvers differ only in the layout their
+    /// scans run in, so any disagreement is a coordinate bug.
+    #[test]
+    fn the_transposed_dp_matches_the_row_major_dp() {
+        use super::{Band, SeamGrid, seam_cut_intervals_ref, seam_cut_intervals_t};
+        let mut st = 0xdead_beeff32a_u64;
+        let mut rng = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            st
+        };
+        for round in 0..300 {
+            let nodes = 1 + (rng() as usize % 9);
+            let cols = 3 + (rng() as usize % 10);
+            let mut grid = vec![0f64; nodes * cols];
+            for p in 0..nodes * cols {
+                grid[p] = (rng() % 97) as f64;
+            }
+            let dis = grid.clone();
+            let mut cover = vec![3u8; nodes * cols];
+            for ni in 0..nodes {
+                if rng() % 3 == 0 {
+                    let c = (rng() as usize) % cols;
+                    cover[ni * cols + c] = if rng() % 2 == 0 { 1 } else { 2 };
+                }
+            }
+            for front_rises in [true, false] {
+                let (mut sa_max, mut b_min) = (vec![cols.saturating_sub(1); nodes], vec![0usize; nodes]);
+                for (ni, (sm, bl)) in sa_max.iter_mut().zip(b_min.iter_mut()).enumerate() {
+                    for ci in 0..cols {
+                        let cov = cover[ni * cols + ci];
+                        let c = if front_rises { ci } else { cols - 1 - ci };
+                        if cov & 1 != 0 && cov & 2 == 0 {
+                            *sm = (*sm).min(c);
+                        } else if cov & 2 != 0 && cov & 1 == 0 {
+                            *bl = (*bl).max(c);
+                        }
+                    }
+                }
+                let capi: Vec<i64> = grid.iter().map(|&x| x.round().max(0.0) as i64 * 64).collect();
+                if round == 1 {
+                    eprintln!("CASE rise {front_rises} cols {cols} nodes {nodes} grid {grid:?} cover {cover:?} sa {sa_max:?} bm {b_min:?} cap {capi:?}");
+                }
+                let g = SeamGrid { grid: grid.clone(), dis: dis.clone(), cover: cover.clone(), cols, nodes, stride: 1 };
+                let b = Band { x0: 0, x1: cols, front_rises };
+                for big in [false, true] {
+                    // big forces the u32 tables past their dispatch threshold when true
+                    let capv: Vec<i64> = if big { capi.iter().map(|&x| x + (1i64 << 40)).collect() } else { capi.clone() };
+                    let t = seam_cut_intervals_t::<u64>(&g, &b, &capv, &sa_max, &b_min);
+                    let r = seam_cut_intervals_ref::<u64>(&g, &b, &capv, &sa_max, &b_min);
+                    assert_eq!(t, r, "round {round} mirror {front_rises} wide {big}: labels");
+                }
+                let t32 = seam_cut_intervals_t::<u32>(&g, &b, &capi, &sa_max, &b_min);
+                let r64 = seam_cut_intervals_ref::<u64>(&g, &b, &capi, &sa_max, &b_min);
+                assert_eq!(t32, r64, "round {round}: the u32 tables agree too");
             }
         }
     }
