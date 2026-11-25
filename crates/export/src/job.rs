@@ -572,11 +572,7 @@ impl Exporter {
             progress.finished.store(true, Ordering::Relaxed);
             // The status says which encoder wrote the file: a hardware encoder that declined leaves the
             // software encoder to write it, and the reason belongs in the line the user reads.
-            let encoder = format!(
-                "{} {}",
-                self.venc.hardware().unwrap_or("software"),
-                self.settings.video_format().label()
-            );
+            let encoder = format!("{} {}", self.venc.hardware().unwrap_or("software"), self.settings.video_format().label());
             progress.set_status(match self.warnings.first() {
                 Some(why) => format!("Done in {secs:.1}s ({encoder} - {why})"),
                 None => format!("Done in {secs:.1}s ({encoder})"),

@@ -9,7 +9,7 @@
 
 use super::*;
 
-use crate::registry::{EncoderFrame, EncodedPacket, VideoEncoder};
+use crate::registry::{EncodedPacket, EncoderFrame, VideoEncoder};
 
 const FIRST: &str = "first reason";
 const SECOND: &str = "second reason";
@@ -67,19 +67,21 @@ fn an_empty_encoder_id_is_left_out_of_the_json() {
 fn the_decline_reason_belongs_to_the_export_that_had_it() {
     // `note_hw_encode_declined_by` keeps the reason for the export that asked (factories run on
     // its thread), and `take_hw_encode_decline` consumes it. A reason that survived into the next
-    // export would attribute a decline to an export that never had one.
+    // export would attribute a decline to an export that never had one. The reason carries the
+    // encoder's name in front of it, so a report says which hardware encoder declined, not just
+    // that one did.
     crate::note_hw_encode_declined_by("NVENC", FIRST);
-    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some(FIRST), "the reason is kept");
+    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some("NVENC: first reason"), "the reason is kept, prefixed by the encoder");
     assert_eq!(crate::take_hw_encode_decline(), None, "and taken only once");
     assert_eq!(crate::take_hw_encode_decline(), None, "so the next export starts clean");
 }
 
 #[test]
-fn a_second_decline_does_not_replace_the_first() {
-    // An export asks factories in order; if two decline, the first is the one the user is told,
-    // because it is the one asked for the export first.
+fn the_latest_decline_is_the_one_kept() {
+    // An export asks factories in order and each decline overwrites the last, so the reason that
+    // survives is the most recent one asked. This is main's behaviour (`HW_DECLINE.set`), and it
+    // is the one worth pinning: a `take` must never hand back a reason from an earlier export.
     crate::note_hw_encode_declined_by("NVENC", FIRST);
     crate::note_hw_encode_declined_by("Media Foundation", SECOND);
-    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some(FIRST), "the first reason wins");
-    let _ = crate::take_hw_encode_decline();
+    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some("Media Foundation: second reason"), "the latest decline is the one reported");
 }

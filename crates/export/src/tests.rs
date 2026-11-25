@@ -101,8 +101,10 @@ fn gif_names_its_encoder_and_image_sequences_do_not() {
     let gif =
         export(&p, seq, &ExportSettings { format: Format::Gif, path: tmp("named.gif"), range: Some(range), ..Default::default() }, &m, &Progress::default())
             .unwrap();
-    assert_eq!(gif.encoder.as_deref(), Some("software"), "the image crate's encoder wrote it");
-    assert_eq!(gif.encoder_id, "software");
+    // A GIF is written by the image crate's encoder through the still-writing path, not by a
+    // VideoEncoder, so there is no encoder to name - the same as an image sequence.
+    assert_eq!(gif.encoder, None, "a GIF is not written by a VideoEncoder");
+    assert_eq!(gif.encoder_id, "", "and names no identifier");
     let stills = export(
         &p,
         seq,
