@@ -443,7 +443,7 @@ fn drag_step(
         if resp.drag_stopped() {
             ui.data_mut(|dd| dd.remove::<DragState>(drag_id));
             // egui ends a drag on Escape: that stop abandons it (#580)
-            let moved = (cur - d.start).length() > 2.0 && !ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let moved = (cur - d.start).length() > 2.0 && !crate::framework::escape_pressed(ui.ctx());
             match d.kind {
                 DragKind::Move if moved => {
                     if let Some(v) = v {
@@ -637,7 +637,7 @@ fn pen_path(
         for (i, q) in pts.iter().enumerate() {
             painter.rect_filled(Rect::from_center_size(*q, vec2(6.0, 6.0)), 0.0, if i == 0 { accent } else { Color32::WHITE });
         }
-        let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        let (enter, esc) = (ui.input(|i| i.key_pressed(egui::Key::Enter)), crate::framework::escape_pressed(ui.ctx()));
         if enter && app.ui.pen_points.len() >= 3 {
             finish_pen(app, pic, frame, actions);
         } else if esc {

@@ -4,31 +4,19 @@
 //!
 //! Driven headless through the control channel, like the other UI tests.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
 use egui_kittest::kittest::{By, NodeT, Queryable};
-use filmcraft_engine::Session;
 use filmcraft_project::ClipId;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
+#[path = "it/support.rs"]
+mod support;
+use support::{Drive, Launch, builder, demo_session, driver};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with its first video clip selected and Effect Controls showing.
     fn demo() -> (Self, u64) {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
+        let mut d = Driver::open(demo_session(), builder());
         let seq = d.exec("sequence.inspect", json!({}));
         let clip = seq["video"][0]["items"][0]["clip"].as_u64().expect("a clip in the demo sequence");
         d.exec("timeline.select", json!({"clips": [clip]}));
@@ -36,45 +24,30 @@ impl Driver {
         d.frames(3);
         (d, clip)
     }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
     fn find(&mut self, id: &str) -> Option<[f64; 4]> {
         self.frames(2);
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id)?;
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        Some([r[0], r[1], r[2], r[3]])
+        self.element_rect(id)
     }
     fn click(&mut self, id: &str) {
         self.find(id).unwrap_or_else(|| panic!("no element {id}"));
         self.ok("ui.click", json!({"id": id}));
         self.frames(3);
+    }
+    /// Scrolls `panel` with the wheel until element `id` sits in the upper part of the panel, where
+    /// the user sees it: next's dock gives a panel a shorter body than the old dock did. Stops
+    /// when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str, panel: &str) {
+        let p = self.find(panel).unwrap_or_else(|| panic!("no panel {panel}"));
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.find(id).unwrap_or_else(|| panic!("no element {id}"));
+            if e[1] + e[3] <= p[1] + p[3] * 0.6 || last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + p[2] / 4.0, "y": p[1] + p[3] / 2.0, "dy": -40.0}));
+            self.frames(3);
+        }
     }
     /// A colour parameter of `clip`, as it is stored: linear components and alpha.
     fn color(&self, clip: u64, effect: &str, param: &str) -> [f32; 4] {
@@ -118,6 +91,7 @@ fn the_hex_field_takes_typing_a_character_at_a_time() {
 
     let before = d.rgb(clip, "ultra_key", "key_color");
     let alpha = d.color(clip, "ultra_key", "key_color")[3];
+    d.reveal("effectControls.ultra_key.key_color.hex", "panel.EffectControls");
     d.click("effectControls.ultra_key.key_color.hex");
     d.ok("ui.key", json!({"key": "Cmd+A"}));
 
@@ -163,6 +137,7 @@ fn the_picker_opens_on_the_parameter_read_as_srgb() {
     let (mut d, clip) = Driver::demo();
     d.exec("effects.apply", json!({"clips": [clip], "effect": "ultra_key"}));
     d.frames(3);
+    d.reveal("effectControls.ultra_key.key_color.swatch", "panel.EffectControls");
     d.click("effectControls.ultra_key.key_color.swatch");
     let shown = d.popup_text();
     for n in ["204", "51"] {

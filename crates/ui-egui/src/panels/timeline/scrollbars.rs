@@ -70,7 +70,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         app.tl.drag = Some(Drag::ZoomBar { grab: pos.x, start: app.ui.timeline.target_scroll, start_pps: app.ui.timeline.target_pps, mode });
     }
     if matches!(app.tl.drag, Some(Drag::ZoomBar { .. }))
-        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && crate::framework::escape_pressed(ui.ctx())
         && let Some(Drag::ZoomBar { start, start_pps, .. }) = app.tl.drag.take()
     {
         let v = &mut app.ui.timeline;

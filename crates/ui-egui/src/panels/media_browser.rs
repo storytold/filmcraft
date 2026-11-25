@@ -247,16 +247,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.auto.add("mediaBrowser.thumbnailSize", sr, "Thumbnail size");
         // a drag ended by Escape goes back to the size it started from (#580)
         let orig_id = egui::Id::unique("media-browser-thumbnail-size-before-drag");
-        if resp.drag_started() {
-            ui.data_mut(|d| d.insert_temp(orig_id, prefs.thumbnail_size));
-        }
-        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if resp.drag_stopped()
-            && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
-            && escaped
-        {
-            sz = before;
-        }
+        let escaped = crate::framework::escape_cancels_drag(ui.ctx(), &resp, orig_id, prefs.thumbnail_size, &mut sz);
         // in UI state while dragging: had the drag changed the preferences already, the command
         // would see nothing new and not write preferences.json
         if sz != shown {

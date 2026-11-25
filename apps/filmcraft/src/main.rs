@@ -487,6 +487,7 @@ fn app_creator(
 ) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
+        filmcraft_ui_egui::framework::install(&cc.egui_ctx, APP_ID).map_err(|error| format!("the UI runtime could not be installed: {error}"))?;
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
         created.store(true, Ordering::Relaxed);
         // Start the control server before anything touches recovery state: `file.recover`
