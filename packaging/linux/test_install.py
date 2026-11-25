@@ -158,7 +158,8 @@ class InstallTests(unittest.TestCase):
 
     def test_invalid_arguments_fail_before_writing(self):
         for args in (("--prefix",), ("--prefix", "relative"), ("--prefix", "/"), ("--unknown",),
-                     ("--prefix", "///"), ("--prefix", "/tmp/../"), ("--prefix", str(self.bundle)),
+                     ("--prefix", "///"), ("--prefix", tempfile.gettempdir() + "/../"),
+                     ("--prefix", str(self.bundle)),
                      ("--prefix", str(self.bundle / "nested")),
                      ("--prefix", str(self.root / "bad=path")),
                      ("--prefix", str(self.root / "bad%path")),
