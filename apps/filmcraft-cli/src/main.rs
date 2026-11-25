@@ -356,9 +356,16 @@ async fn cli_probe(a: &Args) {
     }
 }
 
+fn bench_frame_count(a: &Args) -> Result<i64, &'static str> {
+    if !a.flag("--frames") {
+        return Ok(120);
+    }
+    a.opt("--frames").and_then(|value| value.parse().ok()).filter(|&count| count > 0).ok_or("--frames requires a positive integer")
+}
+
 async fn cli_bench_decode(a: &Args) {
     let path = a.pos(1).unwrap_or_else(|| usage("bench-decode <media>"));
-    let n: i64 = a.opt("--frames").and_then(|v| v.parse().ok()).unwrap_or(120);
+    let n = bench_frame_count(a).unwrap_or_else(|e| usage(e));
     let src = filmcraft_codecs::open_bytes(path, read_file(path).await.unwrap_or_else(|e| fail(e)).into()).unwrap_or_else(|e| fail(e));
     let rate = src.info().frame_rate();
     let t0 = std::time::Instant::now();
@@ -817,5 +824,20 @@ mod format_tests {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(super::format_for("a.mov"), Some("prores"));
         assert_eq!(super::format_for("noext"), None);
+    }
+}
+
+#[cfg(test)]
+mod bench_tests {
+    use super::{Args, bench_frame_count};
+
+    #[test]
+    fn bench_decode_requires_positive_frame_counts() {
+        assert_eq!(bench_frame_count(&Args::parse([])), Ok(120));
+        assert_eq!(bench_frame_count(&Args::parse(["--frames=1".to_owned()])), Ok(1));
+        for input in ["--frames", "--frames=", "--frames typo", "--frames 0", "--frames -1", "--frames 9223372036854775808"] {
+            let args = Args::parse(input.split_whitespace().map(str::to_owned));
+            assert!(bench_frame_count(&args).is_err(), "accepted {input}");
+        }
     }
 }
