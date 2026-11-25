@@ -616,6 +616,27 @@ fn an_in_point_after_the_out_point_reports_an_error_without_a_job_or_deletion() 
     let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }
 
+#[test]
+fn an_out_point_before_zero_reports_an_error_without_a_job_or_deletion() {
+    let (mut s, tint) = session("out-before-zero");
+    render_tint(&mut s, tint);
+    let jobs = s.jobs.len();
+    let seq = s.state.active_sequence.unwrap();
+    let mut project = (*s.project).clone();
+    let q = project.sequence_mut(seq).unwrap();
+    q.mark_in = None;
+    q.mark_out = Some(Tick(-1));
+    s.project = Arc::new(project);
+    let accepted: Vec<&str> = ["sequence.renderEffectsInToOut", "sequence.renderInToOut", "sequence.deleteRenderFilesInToOut"]
+        .into_iter()
+        .filter(|command| s.execute(command, json!({"wait": true})).is_ok())
+        .collect();
+    assert!(accepted.is_empty(), "{accepted:?}");
+    assert_eq!(s.previews.count(), 1);
+    assert_eq!(s.jobs.len(), jobs);
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
 fn job_error(s: &Session, v: &Value) -> String {
     let id = v["job"].as_u64().expect("a job was started");
     let j = s.jobs.iter().find(|j| j.id == id).unwrap().to_json();

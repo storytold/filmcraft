@@ -639,7 +639,8 @@ fn in_out(s: &Session) -> Result<(ItemId, TimeRange)> {
         None => q.duration(),
     };
     let reversed = q.mark_in.zip(q.mark_out).is_some_and(|(i, o)| i > o);
-    if a < Tick::ZERO || b < Tick::ZERO || b.0.checked_sub(a.0).is_none() || reversed {
+    let out_before_zero = q.mark_out.is_some_and(|o| o < Tick::ZERO);
+    if a < Tick::ZERO || b < Tick::ZERO || out_before_zero || b.0.checked_sub(a.0).is_none() || reversed {
         return Err(EngineError::Other("set valid In and Out points before rendering previews".into()));
     }
     Ok((id, TimeRange::from_bounds(a, b.max(a))))
