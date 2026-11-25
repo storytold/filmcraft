@@ -1206,6 +1206,53 @@ mod tests {
         let (before, after) = (s(&dark_red), s(&img.px));
         assert!((after - before).abs() < 1e-3, "shadow saturation {before} became {after}");
     }
+
+    /// Keyframes curve `id` as `effects.toggleAnimation` then `effects.setParam` do (`first` at
+    /// 0 s, `second` at 4 s) and renders each keyframe's frame: it must equal the same curve left
+    /// static, differ from no curve, and stay off the GPU shader, which has no curves.
+    fn assert_keyframed_curve_renders_like_static(id: &str, first: &[[f32; 2]], second: &[[f32; 2]]) {
+        let later = Tick(4 * filmcraft_time::TICKS_PER_SECOND);
+        let lumetri = find_effect("lumetri").unwrap();
+        let orange = dec([0.6, 0.45, 0.3]);
+        let render = |e: &EffectInstance, t: Tick| {
+            let mut img = Image::filled(2, 2, [orange[0], orange[1], orange[2], 1.0]);
+            apply(&mut img, e, &FxCtx { t, ..cx() });
+            img.px
+        };
+        let plain = render(&lumetri.instance(), Tick::ZERO);
+        let mut animated = lumetri.instance();
+        let p = animated.params.get_mut(id).unwrap();
+        p.toggle_animation(Tick::ZERO);
+        p.set_at(Tick::ZERO, ParamValue::Curve(first.to_vec()));
+        p.set_at(later, ParamValue::Curve(second.to_vec()));
+        let mut frames = Vec::new();
+        for (t, curve) in [(Tick::ZERO, first), (later, second)] {
+            let mut unanimated = lumetri.instance();
+            unanimated.params.get_mut(id).unwrap().value = ParamValue::Curve(curve.to_vec());
+            let want = render(&unanimated, t);
+            assert_ne!(want, plain, "{id}: the static curve changes the picture");
+            let got = render(&animated, t);
+            assert_eq!(got, want, "{id} at {t:?}: the keyframed curve renders as the static one");
+            let op = crate::gpufx::FxOp::eval(&animated, &FxCtx { t, ..cx() }, 2, 2);
+            assert!(!op.is_some_and(|op| op.gpu_ok()), "{id} at {t:?}: planned for the GPU shader, which has no curves");
+            frames.push(got);
+        }
+        assert_ne!(frames[0], frames[1], "{id}: the picture follows the keyframes");
+    }
+
+    /// #4417: a keyframed RGB curve (Red, as reported) renders the keyframe that applies at the
+    /// frame time; it used to render the unanimated identity curve, as if there were no curve.
+    #[test]
+    fn lumetri_keyframed_rgb_curve_renders_at_the_frame_time() {
+        assert_keyframed_curve_renders_like_static("curve_red", &[[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]], &[[0.0, 0.0], [0.5, 0.2], [1.0, 1.0]]);
+    }
+
+    /// #4417: the hue and "vs Sat" curves are read the same way and have no points by default: a
+    /// keyframed Hue vs Sat curve renders at the frame time too.
+    #[test]
+    fn lumetri_keyframed_hue_curve_renders_at_the_frame_time() {
+        assert_keyframed_curve_renders_like_static("hue_vs_sat", &[[0.5, 0.9]], &[[0.5, 0.2]]);
+    }
 }
 
 /// Monotone cubic (Fritsch–Carlson) interpolation through sorted control points, as a LUT of `n`
@@ -1286,8 +1333,13 @@ pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     (!points.is_empty()).then(|| curve_lut(points, n))
 }
 
-pub(crate) fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
-    e.param(id).and_then(|p| p.value.as_curve().map(|c| c.to_vec()))
+/// Curve `id` at the frame time: a keyframed curve holds each keyframe until the next (curve
+/// points do not interpolate).
+pub(crate) fn curve_param(e: &EffectInstance, id: &str, cx: &FxCtx) -> Option<Vec<[f32; 2]>> {
+    e.param(id).and_then(|p| match p.value_at(cx.t) {
+        ParamValue::Curve(c) => Some(c),
+        _ => None,
+    })
 }
 
 pub(crate) fn is_identity_curve(c: &[[f32; 2]]) -> bool {
@@ -1338,10 +1390,10 @@ pub fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
 fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     const N: usize = 1024;
     let (creative_on, curves_on, wheels_on) = (on(e, "creative_on"), on(e, "curves_on"), on(e, "wheels_on"));
-    let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
+    let lut = |id: &str| curve_param(e, id, cx).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
-    let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
-    let vs_sat = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
+    let hue = |id: &str| curve_param(e, id, cx).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
+    let vs_sat = |id: &str| curve_param(e, id, cx).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
     let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), vs_sat("luma_vs_sat"), vs_sat("sat_vs_sat"));
     // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
     let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
