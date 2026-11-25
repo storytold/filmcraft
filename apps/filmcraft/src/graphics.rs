@@ -28,13 +28,21 @@
 //! untried one from the top: a saved fallback that no longer works, such as software rendering
 //! where no software adapter is installed, goes back to the default instead of ending every
 //! later start (#2581). When every mode has failed, [`failure_message`] lists each one with its
-//! error, how to choose a mode by hand, and where the log is.
+//! error, how to choose a mode by hand, and where the log is. A panic out of wgpu before the app
+//! exists (a surface the chosen GPU claimed and then could not configure, #2553) saves the next
+//! mode and starts FilmCraft again in it, once: the event loop does not run again in a process it
+//! unwound out of.
 //!
 //! # Getting back
 //! A fallback mode shows a notice with a reset button in the window (`graphics.notice.reset`,
 //! [`GraphicsStart::reset_to_default`]); `--graphics default` does the same from the command
-//! line, and `--graphics dx12|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
+//! line, and `--graphics dx12|low-power|software` picks a mode by hand. An explicit `WGPU_BACKEND` leaves
 //! the saved state alone: the user is in charge.
+//!
+//! # A start that hangs
+//! A driver can also hang instead of crashing (#1061). On Windows, [`probe::choose`] first tests
+//! the mode in a child process with a time limit, before this process loads any driver, and
+//! moves on from a mode that hangs there; see [`probe`].
 //!
 //! All files are written beside and renamed into place, so a reader never sees half a file; two
 //! instances updating [`STATE_FILE`] at the same moment can lose one update (a failure counted
@@ -74,6 +82,9 @@ pub enum Mode {
     Default,
     /// DirectX 12 only (Windows), for Vulkan drivers that crash at start-up.
     Dx12,
+    /// The low-power (integrated) GPU (Linux): on a laptop with two GPUs the high-performance one
+    /// can claim the window's surface and still fail to draw to it (NVIDIA 470 on Wayland, #2553).
+    LowPower,
     /// A software adapter (WARP on Windows, lavapipe / llvmpipe elsewhere); the preview then
     /// composites on the CPU (`FilmcraftApp::set_wgpu`).
     Software,
@@ -85,6 +96,7 @@ impl Mode {
         match self {
             Mode::Default => "default",
             Mode::Dx12 => "dx12",
+            Mode::LowPower => "low-power",
             Mode::Software => "software",
         }
     }
@@ -94,12 +106,13 @@ impl Mode {
         match self {
             Mode::Default => "default graphics",
             Mode::Dx12 => "DirectX 12 only",
+            Mode::LowPower => "integrated GPU",
             Mode::Software => "software rendering",
         }
     }
 
     pub fn parse(name: &str) -> Option<Mode> {
-        [Mode::Default, Mode::Dx12, Mode::Software].into_iter().find(|m| m.name() == name)
+        [Mode::Default, Mode::Dx12, Mode::LowPower, Mode::Software].into_iter().find(|m| m.name() == name)
     }
 }
 
@@ -109,7 +122,7 @@ pub const LADDER: &[Mode] = if cfg!(target_os = "windows") {
 } else if cfg!(target_os = "macos") {
     &[Mode::Default]
 } else {
-    &[Mode::Default, Mode::Software]
+    &[Mode::Default, Mode::LowPower, Mode::Software]
 };
 
 /// The mode after `mode` in `ladder`, if any.
@@ -397,6 +410,17 @@ impl GraphicsStart {
         &self.failed
     }
 
+    /// Keep `error` for `mode` among this process's failures, as a mode that failed its test
+    /// start ([`probe`]) does.
+    pub fn add_failure(&mut self, mode: Mode, error: &str) {
+        self.failed.push((mode, error.to_string()));
+    }
+
+    /// The data folder this start keeps its files in; `None` without one or with `WGPU_BACKEND`.
+    pub fn folder(&self) -> Option<&Path> {
+        self.state.as_deref().and_then(Path::parent)
+    }
+
     /// Running in a fallback mode, i.e. not the platform default.
     pub fn degraded(&self) -> bool {
         self.mode != Mode::Default
@@ -412,6 +436,12 @@ impl GraphicsStart {
             return false;
         };
         log::warn!("graphics mode {} failed to start; trying {}", self.mode.name(), next.name());
+        self.switch_to(next);
+        true
+    }
+
+    /// Start in `next` instead, and save it at once with a new attempt file.
+    pub fn switch_to(&mut self, next: Mode) {
         self.mode = next;
         if let Some(state) = self.state.clone() {
             self.save(&state, Saved { mode: next, failures: 0 });
@@ -426,7 +456,6 @@ impl GraphicsStart {
                 }
             }
         }
-        true
     }
 
     /// The window is up: keep this mode, and the failed starts in a row are over.
@@ -445,6 +474,19 @@ impl GraphicsStart {
     /// This start is over, whether it painted or not (the window closed, or every mode failed
     /// with an error that was reported): its attempt no longer means a crash.
     pub fn finish(&self) {
+        if let Some(path) = &self.attempt {
+            remove_quietly(path);
+        }
+        // Nor was it a hang.
+        if let Some(dir) = self.folder() {
+            probe::close_record(dir, self.mode);
+        }
+    }
+
+    /// This start ends before any window, because no graphics mode passed its test start: its
+    /// attempt is over, but the record of an earlier start that hung stays open, so the next
+    /// launch still moves on from that mode instead of starting it untested.
+    pub fn abandon(&self) {
         if let Some(path) = &self.attempt {
             remove_quietly(path);
         }
@@ -517,6 +559,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         Mode::Default => {}
         // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
+        // What `WGPU_POWER_PREF=low` does: the integrated GPU, which drives the display.
+        Mode::LowPower => create.power_preference = wgpu::PowerPreference::LowPower,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);
             create.native_adapter_selector = Some(Arc::new(pick_software));
@@ -544,6 +588,8 @@ fn pick_software(adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>
 pub fn is_graphics_failure(err: &eframe::Error) -> bool {
     matches!(err, eframe::Error::Wgpu(_))
 }
+
+pub mod probe;
 
 #[cfg(test)]
 mod tests;

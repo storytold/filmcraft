@@ -5,9 +5,9 @@
 //! hostile inputs are errors. Skips (with SKIPPED) only on a machine without a 10-bit HEVC encoder.
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
+use craft_video::hevc::decode::params::Sps;
 use filmcraft_bitstream::unescape_rbsp;
 use filmcraft_export::{ColorSignal, rgbf_to_yuv420_10};
-use filmcraft_hevc::params::Sps;
 use filmcraft_isobmff::SampleEntry;
 use filmcraft_platform::nvenc::export::nvenc_signal;
 use filmcraft_platform::nvenc::{Codec, Config, Nvenc, Packet, Profile, Signal, hevc_available, hevc_hdr_available, nal_type};

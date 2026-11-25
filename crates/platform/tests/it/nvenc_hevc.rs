@@ -4,8 +4,8 @@
 //! without an NVIDIA GPU / driver with HEVC encoding.
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
+use craft_video::hevc::decode::params::Sps;
 use filmcraft_bitstream::unescape_rbsp;
-use filmcraft_hevc::params::Sps;
 use filmcraft_isobmff::{HevcConfig, SampleEntry};
 use filmcraft_platform::nvenc::{Codec, Config, Nvenc, Packet, Profile, annex_b_to_length_prefixed_for, hevc_available, nal_type};
 

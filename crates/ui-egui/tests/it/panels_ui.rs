@@ -7,82 +7,21 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, demo_session, driver, painted_texts, with_snapshots};
 use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn with(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         Self::with(session)
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
 
     /// The id and rect of each automation element whose id starts with `prefix`.
@@ -98,73 +37,13 @@ impl Driver {
             .collect()
     }
 
-    fn has(&mut self, id: &str) -> bool {
-        self.ids(id).iter().any(|i| i == id)
-    }
-
     fn label(&mut self, id: &str) -> String {
         let v = self.ok("ui.elements", json!({"prefix": id}));
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered (frames render on worker threads), for at most two
-    /// minutes of wall-clock time.
-    fn wait_for(&mut self, id: &str) {
-        let t0 = std::time::Instant::now();
-        while t0.elapsed().as_secs() < 120 {
-            if self.has(id) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            self.frames(1);
-        }
-        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn ui_panels(&mut self) -> Value {
         self.ok("ui.inspect", json!({}))["ui"]["panels"].clone()
-    }
-
-    /// Offscreen render of the window (or the bounding box of the elements under `prefix`).
-    fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        let crop = prefix.map(|p| {
-            let v = self.ok("ui.elements", json!({"prefix": p}));
-            let mut bb = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for e in v.as_array().unwrap() {
-                let r = &e["rect"];
-                let (x, y, w, h) = (r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32);
-                bb = [bb[0].min(x), bb[1].min(y), bb[2].max(x + w), bb[3].max(y + h)];
-            }
-            bb
-        });
-        self.frames(2);
-        let img = match self.harness.render() {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("snapshot {name} skipped: {e}");
-                return;
-            }
-        };
-        let ppp = img.width() as f32 / 1600.0;
-        let img = match crop {
-            Some(bb) => {
-                let x0 = ((bb[0] - 24.0) * ppp).max(0.0) as u32;
-                let y0 = ((bb[1] - 30.0) * ppp).max(0.0) as u32;
-                let x1 = (((bb[2] + 16.0) * ppp) as u32).min(img.width());
-                let y1 = (((bb[3] + 46.0) * ppp) as u32).min(img.height());
-                image::imageops::crop_imm(&img, x0, y0, x1 - x0, y1 - y0).to_image()
-            }
-            None => img,
-        };
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        img.save(&path).unwrap();
-        eprintln!("snapshot: {}", path.display());
     }
 }
 
@@ -330,12 +209,12 @@ fn history_icon_targets_follow_rows_scrolled_part_out() {
 /// content the wheel leaves the tabs alone.
 #[test]
 fn wheel_over_a_tab_strip_switches_tabs() {
-    use craft_ui::docking::Node;
+    use craft_behavior::dock::Node;
     use filmcraft_ui_egui::dock::PanelKind;
     fn shown(d: &mut Driver) -> PanelKind {
         fn find(n: &Node<PanelKind>) -> Option<PanelKind> {
             match n {
-                Node::Tabs { panels, active } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
+                Node::Tabs { panels, active, .. } if panels.contains(&PanelKind::Project) => panels.get(*active).copied(),
                 Node::Split { first, second, .. } => find(first).or_else(|| find(second)),
                 _ => None,
             }
@@ -850,9 +729,11 @@ fn middle_closing_an_inactive_project_tab_keeps_the_inspector_target() {
     let history = d.exec("history.list", json!({}));
     let revision = d.app().session.revision;
 
-    d.ok("ui.click", json!({"id":"panel.tab.Project", "button":"middle"}));
+    // The dock closes a tab by a middle click only where its tabs show close buttons, which
+    // FilmCraft's do not: the inactive tab closes from its panel command instead.
+    d.ok("ui.panel.close", json!({"panel": "Project"}));
     d.frames(3);
-    assert!(!d.has("panel.tab.Project"), "middle-click closes the inactive tab");
+    assert!(!d.has("panel.tab.Project"), "closing the inactive tab removes it");
     assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
     assert_eq!(d.exec("state.inspect", json!({})), state);
     assert_eq!(d.exec("history.list", json!({})), history);
@@ -906,8 +787,7 @@ fn effects_are_indented_under_their_folders() {
 #[test]
 fn opening_presets_folder_scans_the_library() {
     let data = tempfile::tempdir().unwrap();
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let mut session = demo_session();
     session.presets.set_dir(data.path());
     let library = session.presets.library_dir().unwrap();
     let mut d = Driver::with(session);
@@ -942,20 +822,10 @@ fn effects_search_matches_turkish_casing() {
 
 /// The font of the first run of every text shape drawn this frame, with the text, position and colour.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Pos2, egui::FontId, egui::Color32)> {
-    fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Pos2, egui::FontId, egui::Color32)>) {
-        match s {
-            egui::Shape::Text(t) => {
-                if let Some(sec) = t.galley.job.sections.first() {
-                    out.push((t.galley.text().to_string(), t.pos, sec.format.font_id.clone(), sec.format.color));
-                }
-            }
-            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    d.harness.output().shapes.iter().for_each(|c| walk(&c.shape, &mut out));
-    out
+    painted_texts(&d.harness)
+        .iter()
+        .filter_map(|t| t.galley.job.sections.first().map(|sec| (t.galley.text().to_string(), t.pos, sec.format.font_id.clone(), sec.format.color)))
+        .collect()
 }
 
 // Regression test for #130: the big blue timecodes over the timeline and under the monitors were

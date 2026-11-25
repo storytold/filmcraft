@@ -1,7 +1,7 @@
 # Attribution
 
 Every non-code asset in FilmCraft, with its author, source and licence. Each file listed here also has
-a `<file>.attribution` sidecar with full details. The rules are in [AGENTS.md](AGENTS.md) §1: no Adobe
+a `<file>.attribution` sidecar with full details. The rules are in [clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md): no Adobe
 iconography, images or other Adobe assets; open licences only; every asset attributed.
 `cargo xtask assets` checks that this index and the sidecars cover every asset in the repository.
 
@@ -9,6 +9,9 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 | Asset | Author | Source | Licence |
 |---|---|---|---|
+| `crates/codecs/tests/fixtures/mjpeg-avi1-baseline.jpg` | libjpeg-turbo contributors | `testorig.jpg` from [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages) | IJG License (`README.ijg` in the source distribution) |
+| `crates/codecs/tests/fixtures/mjpeg-cmyk.jpg` | craft-libs contributors | Original CMYK test fixture from [craft-libs prepress tests](https://github.com/storytold/craft-libs/tree/24a472717/crates/prepress/tests/fixtures) | MIT OR Apache-2.0 (craft-libs) |
+| `crates/codecs/tests/fixtures/mjpeg-progressive-huffman.jpg` | libjpeg-turbo contributors; FilmCraft contributors | Derived from `testorig.jpg` in [libjpeg-turbo 3.0.0 testimages](https://github.com/libjpeg-turbo/libjpeg-turbo/tree/3.0.0/testimages), decoded by FFmpeg and re-encoded with libjpeg-turbo `cjpeg -progressive -quality 88` | IJG License (`README.ijg` in the source distribution) |
 | `crates/ui-egui/src/i18n/sv.tsv` | FilmCraft contributors | Original work: clean-room Swedish interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/it.tsv` | FilmCraft contributors | Original work: clean-room Italian interface translations | MIT OR Apache-2.0 |
 | `crates/ui-egui/src/i18n/tr.tsv` | FilmCraft contributors | Original work: clean-room Turkish interface translations | MIT OR Apache-2.0 |
@@ -45,6 +48,11 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `assets/app-icon/filmcraft-macos-512.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; macOS runtime Dock icon (512 px) | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/filmcraft.icns` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; macOS .icns | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/filmcraft.ico` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Windows .ico (16-256 px) | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/app-icon/filmcraft-nightly.png` | Brandon Thomas (FilmCraft owner) | Derived from the FilmCraft app icon: only the background contribution is recoloured for the Nightly channel (deep field `#3c2a63`); artwork, alpha and padding unchanged; native 256 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/app-icon/filmcraft-nightly-1024.png` | Brandon Thomas (FilmCraft owner) | Nightly recolour of `filmcraft-1024.png`; 1024 px master on the Apple icon grid | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/app-icon/filmcraft-nightly.ico` | Brandon Thomas (FilmCraft owner) | Nightly recolour of the FilmCraft app icon, Windows .ico (16-256 px); embedded in `filmcraft.exe` for the nightly channel only | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/app-icon/filmcraft-nightly.icns` | Brandon Thomas (FilmCraft owner) | Nightly recolour of the FilmCraft app icon, macOS .icns (16-1024 px PNG slots) | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
+| `assets/app-icon/filmcraft-nightly-macos-512.png` | Brandon Thomas (FilmCraft owner) | Nightly recolour of `filmcraft-macos-512.png`; the runtime Dock icon of FilmCraft Nightly | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/hicolor/16x16/apps/ai.storyteller.filmcraft.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Linux hicolor theme 16 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/hicolor/24x24/apps/ai.storyteller.filmcraft.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Linux hicolor theme 24 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `assets/app-icon/hicolor/32x32/apps/ai.storyteller.filmcraft.png` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; Linux hicolor theme 32 px | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
@@ -91,7 +99,6 @@ procedural demo footage (`crates/media/src/generators.rs`); no external media. R
 | `crates/golden/goldens/vfx_spacer_stroke_shadow.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_spacer_stroke_shadow`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/vfx_vr_rotate.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_vr_rotate`) from procedurally generated media | MIT OR Apache-2.0 |
 | `crates/golden/goldens/vfx_stylize.png` | FilmCraft contributors | Original work: golden reference rendered by FilmCraft (crates/golden/tests/golden.rs, scene `vfx_stylize`) from procedurally generated media | MIT OR Apache-2.0 |
-| `crates/ac3/src/golden_frames.bin` | FilmCraft contributors | Original work: 12 AC-3 / E-AC-3 syncframes (6 KB) encoded by ffmpeg from synthetic tones and noise, test vector for crates/ac3 | MIT OR Apache-2.0 |
 
 ## Third-party media shown in screenshots
 
@@ -146,7 +153,7 @@ carry each font's licence as `OFL-<family>.txt`.
 The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team. They are not open source and
 are not covered by the project licence; they may be used only unmodified and only in the context of
 FilmCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt). Forks and modified versions must
-remove them (AGENTS.md §1.8).
+remove them (`AGENTS.md`, `## This repository`: attribution).
 
 | File | Author | Source | Licence |
 |---|---|---|---|

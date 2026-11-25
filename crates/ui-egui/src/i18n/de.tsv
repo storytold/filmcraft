@@ -638,6 +638,11 @@
 	(gap)	(Lücke)
 	Out: {name}	Out: {name}
 	In: {name}	In: {name}
+	Previous: {name}	Vorheriger: {name}
+	Next: {name}	Nächster: {name}
+	Slip: {offset} frame	Slip: {offset} Frame
+	Slip: {offset} frames	Slip: {offset} Frames
+	at the media limit	an der Mediengrenze
 	Play Around Edit (Space loops, Shift+K once)	Um Schnitt herum abspielen (Leertaste in Schleife, Umschalt+K einmal)
 	Trim Backward Many	Weit rückwärts trimmen
 	Trim Backward	Rückwärts trimmen
@@ -3601,6 +3606,7 @@
 	The default graphics are used from the next start.	Die Standardgrafik wird ab dem nächsten Start verwendet.
 	DirectX 12 only	Nur DirectX 12
 	software rendering	Software-Rendering
+	integrated GPU	integrierte GPU
 	Label Color Presets	Vorgaben für Markierungsfarben
 	{name} (Modified)	{name} (geändert)
 	Revert to the preset's colors and names	Auf die Farben und Namen der Vorgabe zurücksetzen

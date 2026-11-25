@@ -618,6 +618,11 @@
 	(gap)	(ギャップ)
 	Out: {name}	アウト: {name}
 	In: {name}	イン: {name}
+	Previous: {name}	前: {name}
+	Next: {name}	次: {name}
+	Slip: {offset} frame	スリップ: {offset} フレーム
+	Slip: {offset} frames	スリップ: {offset} フレーム
+	at the media limit	メディアの端
 	Play Around Edit (Space loops, Shift+K once)	編集点の前後を再生 (Space でループ、Shift+K で 1 回)
 	Trim Backward Many	後方へ複数フレームトリム
 	Trim Backward	後方へトリム
@@ -3624,6 +3629,7 @@
 	The default graphics are used from the next start.	次回の起動からデフォルトのグラフィックが使用されます。
 	DirectX 12 only	DirectX 12 のみ
 	software rendering	ソフトウェアレンダリング
+	integrated GPU	内蔵 GPU
 	Label Color Presets	ラベルカラープリセット
 	{name} (Modified)	{name} (変更あり)
 	Revert to the preset's colors and names	プリセットのカラーと名前に戻す
