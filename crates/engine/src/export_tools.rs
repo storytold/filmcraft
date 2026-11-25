@@ -1024,7 +1024,7 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h, rate, sr) = (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
     let r = settings.resolve(w, h, rate, sr);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let summary = settings.summary(w, h, rate, sr, range.duration);
+    let summary = settings.summary(w, h, rate, sr, range.duration, q.settings.color.working.is_hdr());
     Ok(json!({
         "preset": preset.map(|x| x.name),
         "settings": settings,

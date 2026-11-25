@@ -215,7 +215,7 @@ fn mxf_formats_and_presets() {
     let s: ExportSettings = serde_json::from_value(serde_json::json!({"format": "mxf-op1a", "mxfVideoCodec": "proRes"})).unwrap();
     assert_eq!((s.format, s.video_format()), (Format::MxfOp1a, Format::ProRes));
     assert_eq!(s.audio_codec(), AudioCodec::Pcm);
-    assert!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).format.contains("MXF OP1a (Apple ProRes)"));
+    assert!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).format.contains("MXF OP1a (Apple ProRes)"));
     let names: Vec<String> = builtin_presets().into_iter().filter(|p| p.settings.format.is_mxf()).map(|p| p.name).collect();
     assert_eq!(names.len(), 4, "{names:?}");
     assert_eq!(
