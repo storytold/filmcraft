@@ -410,6 +410,9 @@ mod tests {
             assert!(fixture.refuse(Platform::Linux, &candidate).contains("overlap"));
         }
         assert!(!flatpak.exists());
+        // These are POSIX absolute paths: on a Windows host `/usr/bin/...` has no root and fails the
+        // absolute-path check before the fence, so the case only means anything on unix.
+        #[cfg(unix)]
         for install in ["/usr/bin/filmcraft", "/usr/local/bin/filmcraft", "/opt/filmcraft"] {
             assert!(fixture.refuse(Platform::Linux, &PathBuf::from(install).join("profile")).contains("overlap"));
         }
