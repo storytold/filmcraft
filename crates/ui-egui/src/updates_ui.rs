@@ -5,13 +5,18 @@ use serde_json::Value;
 use crate::FilmcraftApp;
 
 #[cfg(not(target_arch = "wasm32"))]
-use craft_update::updater::{Action, Status, Updater};
+use craft_ui::dialog::DialogHost;
 #[cfg(not(target_arch = "wasm32"))]
-use craft_update::{CheckResultDialog, CheckResultResponse};
+use craft_update::stack_dialogs::{CheckChoice, UpdateCheckDialog};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_update::updater::{Action, Status, Updater};
 
 pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
     updater: Updater,
+    /// The update prompt and the check result dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    dialogs: DialogHost,
     /// The desktop app turns the check at start on; tests and the web build leave it off.
     #[cfg(not(target_arch = "wasm32"))]
     startup_check: bool,
@@ -28,6 +33,8 @@ impl Default for Runtime {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
+            #[cfg(not(target_arch = "wasm32"))]
+            dialogs: DialogHost::new(),
             #[cfg(not(target_arch = "wasm32"))]
             startup_check: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -70,9 +77,9 @@ pub(crate) fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let rt = &mut app.updates_rt;
         rt.repaint = Some(ctx.clone());
         if std::mem::take(&mut rt.check_requested) {
-            rt.updater.check_now(ctx);
+            rt.updater.check_now();
         } else if rt.startup_check {
-            rt.updater.check_at_start(ctx);
+            rt.updater.check_at_start();
         }
         rt.updater.tick(ctx);
     }
@@ -80,16 +87,37 @@ pub(crate) fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let _ = (app, ctx);
 }
 
-pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub(crate) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let ctx = &ctx;
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
         let clean = !app.session.is_dirty();
         let prior_commands = ctx.output(|output| output.commands.len());
-        let action = app.updates_rt.updater.show_if(ctx, clean);
+        let rt = &mut app.updates_rt;
+        let action = rt.updater.run(&mut rt.dialogs, clean);
+        rt.manual_window_open = result_window_open(rt.manual_window_open, rt.updater.status(), rt.check_requested);
+        sync_check_dialog(rt);
+        rt.dialogs.run(ui);
+        if let Some(result) = rt.dialogs.take::<UpdateCheckDialog>() {
+            match result.ok() {
+                Some(CheckChoice::CheckAgain | CheckChoice::CheckNow) => rt.check_requested = true,
+                // The next pass's `run` asks the window to close once nothing is unsaved.
+                Some(CheckChoice::RestartToUpdate) => {
+                    rt.updater.restart_to_update();
+                    ctx.request_repaint();
+                }
+                // OK, Esc and the close box.
+                _ => {
+                    rt.manual_window_open = false;
+                    rt.updater.dismiss_status();
+                }
+            }
+        }
         if app.hooks.open_url.is_some() {
-            // The shared updater emits egui URL commands for its release-notes link. The desktop
-            // host handles links itself, so forward only commands emitted by this prompt.
+            // The update dialogs emit egui URL commands for their release-notes links. The desktop
+            // host handles links itself, so forward only commands emitted by these dialogs.
             let urls = ctx.output_mut(|output| {
                 let tail = output.commands.split_off(prior_commands.min(output.commands.len()));
                 let mut urls = Vec::new();
@@ -108,25 +136,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         match action {
             Action::OpenUrl(url) => crate::links::open(app, ctx, &url),
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Action::None => {}
-        }
-        let rt = &mut app.updates_rt;
-        rt.manual_window_open = result_window_open(rt.manual_window_open, rt.updater.status(), rt.check_requested);
-        if rt.manual_window_open {
-            let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
-            match dialog.show(ctx, rt.updater.status()) {
-                CheckResultResponse::Close => {
-                    rt.manual_window_open = false;
-                    rt.updater.dismiss_status();
-                }
-                CheckResultResponse::CheckAgain => rt.check_requested = true,
-                // The next frame's `show_if` asks the window to close once nothing is unsaved.
-                CheckResultResponse::RestartToUpdate => {
-                    rt.updater.restart_to_update();
-                    ctx.request_repaint();
-                }
-                CheckResultResponse::None => {}
-            }
+            _ => {}
         }
     }
 
@@ -139,7 +149,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 ui.label(crate::i18n::t("Update check is not supported in the web browser."));
                 ui.add_space(8.0);
                 if ui.button(crate::i18n::t("OK")).clicked() {
@@ -161,6 +171,27 @@ fn result_window_open(open: bool, status: &Status, check_requested: bool) -> boo
     !matches!(status, Status::Idle) || (open && check_requested)
 }
 
+/// Opens the check result dialog on the host while it should show and feeds it the updater's
+/// status, or closes it once it should not.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_check_dialog(rt: &mut Runtime) {
+    use craft_ui::dialog::StackDialog;
+    if !rt.manual_window_open {
+        if let Some(id) = rt.dialogs.get::<UpdateCheckDialog>().map(StackDialog::id) {
+            rt.dialogs.close_by_id(id);
+        }
+        return;
+    }
+    let status = rt.updater.status().clone();
+    if let Some(dialog) = rt.dialogs.get_mut::<UpdateCheckDialog>() {
+        dialog.set_status(status);
+    } else {
+        let mut dialog = UpdateCheckDialog::new(env!("CARGO_PKG_VERSION"));
+        dialog.set_status(status);
+        rt.dialogs.open(dialog);
+    }
+}
+
 /// Starts an update that waits for the app to exit. Called from `on_exit`; dropping the updater
 /// does the same, and later calls do nothing.
 pub(crate) fn exiting(app: &mut FilmcraftApp) {
@@ -175,27 +206,21 @@ mod tests {
     use super::*;
 
     /// Offers `release` and returns once its prompt is open. The updater reads the installed
-    /// files for an offer on a thread of its own, which asks the context the updater keeps for a
-    /// repaint after it answers; the next tick opens the prompt. The observer sees every repaint
-    /// request, so each immediate one is followed by a tick until the prompt opens. A copy the
-    /// launcher manages ignores the offer and fails the test.
+    /// files for an offer on a thread of its own and does not wake the UI when it answers: each
+    /// tick polls for the answer, so the test ticks until the prompt opens, and fails rather than
+    /// waits forever if the answer never comes. A copy the launcher manages ignores the offer and
+    /// fails the test.
     #[cfg(not(target_arch = "wasm32"))]
     fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
         let ctx = egui::Context::default();
-        let (answered, wait) = std::sync::mpsc::channel();
-        ctx.set_repaint_observer(move |info| {
-            if info.delay.is_zero() {
-                let _ = answered.send(());
-            }
-        });
-        // Keeps `ctx` for the offer's thread.
-        updater.tick(&ctx);
         updater.offer(release);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !updater.prompt_open() {
             // `offer`, and the tick that takes the thread's answer, read the launcher's choice: a
             // managed copy opens no prompt, and no further answer would come.
             assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
-            wait.recv().unwrap();
+            assert!(std::time::Instant::now() < deadline, "the offer's inspection never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
             updater.tick(&ctx);
         }
     }
@@ -217,25 +242,28 @@ mod tests {
             craft_update::Release { tag: "v99.0.0".into(), version: craft_update::parse_version("99.0.0"), html_url: url.into(), ..Default::default() },
         );
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         ctx.global_style_mut(|style| style.animation_time = 0.0);
         let frame = |app: &mut FilmcraftApp, events| {
+            crate::framework::before_input(&ctx, app);
             let mut output = ctx.run_ui(
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))), events, ..Default::default() },
-                |ui| show(app, ui.ctx()),
+                |ui| show(app, ui),
             );
             output.textures_delta.clear();
             output
         };
         frame(&mut app, vec![]);
         let output = frame(&mut app, vec![]);
-        fn position(shape: &egui::Shape) -> Option<egui::Pos2> {
+        let link = craft_update::stack_dialogs::UpdateWords::default().whats_new.as_str().to_owned();
+        fn position(shape: &egui::Shape, link: &str) -> Option<egui::Pos2> {
             match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().find_map(position),
-                egui::Shape::Text(t) if t.galley.text() == "What's new" => Some(t.pos + t.galley.rect.center().to_vec2()),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| position(shape, link)),
+                egui::Shape::Text(t) if t.galley.text() == link => Some(t.pos + t.galley.rect.center().to_vec2()),
                 _ => None,
             }
         }
-        let at = output.shapes.iter().find_map(|shape| position(&shape.shape)).expect("update notes link");
+        let at = output.shapes.iter().find_map(|shape| position(&shape.shape, &link)).expect("update notes link");
         frame(&mut app, vec![egui::Event::PointerMoved(at)]);
         for pressed in [true, false] {
             frame(&mut app, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }]);
@@ -269,8 +297,10 @@ mod tests {
         };
         offer_and_wait(&mut app.updates_rt.updater, release);
 
+        crate::framework::install_headless(&ctx);
+        crate::framework::before_input(&ctx, &app);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            show(&mut app, ui.ctx());
+            show(&mut app, ui);
         });
         output.textures_delta.clear();
         assert!(app.updates_rt.updater.prompt_open());

@@ -43,7 +43,7 @@ impl FilmcraftApp {
     /// leaves the saved layout in place).
     pub(crate) fn restore_remembered_layout(&mut self, workspace: &str) {
         if let Some(saved) = self.workspaces.last.as_ref().filter(|l| l.name == workspace).and_then(dock::read_saved) {
-            self.ui.dock = saved.layout;
+            self.ui.dock = saved.layout().clone();
         }
     }
 
@@ -59,7 +59,7 @@ impl FilmcraftApp {
     pub fn set_workspace(&mut self, name: &str) {
         self.ui.workspace = name.to_string();
         self.ui.dock = dock::saved_docking(&self.workspaces, name);
-        self.pending_panel_raise = None;
+        self.dock_focus = None;
         self.ui.keys.maximized = None;
         if self.workspaces.current != name {
             let mut next = self.workspaces.clone();
@@ -107,14 +107,14 @@ impl FilmcraftApp {
         }
         if let Some(rect) = refloat.filter(|r| r.iter().all(|v| v.is_finite())) {
             let rect = [rect[0], rect[1], rect[2].max(160.0), rect[3].max(120.0)];
-            if let Err(e) = self.apply_dock(craft_ui::docking::Action::Float { panel: p, rect }) {
+            if let Err(e) = self.apply_dock(craft_behavior::dock::Action::float(p, dock::rect_of(rect))) {
                 // refused (it is the only docked panel left): it stays docked, and its floating
                 // place is kept rather than lost
                 log::warn!("could not float {} again: {e}", p.id());
                 self.ui.closed_floating.push((p, rect));
             }
         }
-        let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: p });
+        let _ = self.apply_dock(craft_behavior::dock::Action::activate(p));
         self.ui.focused = p;
     }
 

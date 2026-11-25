@@ -8,18 +8,10 @@
 //! into the next frame's `RawInput` through the app's own `raw_input_hook`, exactly as eframe does.
 //! Screenshots (`ui.screenshot`) need a real viewport and are not covered here.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, first_media_item, reveal_in_effect_controls};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The app with the demo project open, after its first frames (theme and fonts installed).
@@ -29,63 +21,8 @@ impl Driver {
 
     /// `render`: with a wgpu renderer so `Harness::render` can take screenshots (needs a GPU).
     fn demo_with(render: bool) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if render {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    /// Run `n` frames, feeding queued synthetic input like eframe's `raw_input_hook`.
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    /// Run frames until `done` holds, for at most two minutes of wall-clock time.
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let t0 = std::time::Instant::now();
-        while !done(self) {
-            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    /// Send a control request and run frames until it is answered.
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    /// `call` that must succeed; returns `result`.
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let b = builder();
+        Self::open(demo_session(), if render { b.wgpu() } else { b })
     }
 
     fn sequence(&mut self) -> Value {
@@ -160,22 +97,6 @@ fn insert_from_source_ripples_the_sequence() {
     let dur1 = d.sequence()["duration"].as_i64().unwrap();
     assert!(dur1 > dur0, "insert lengthens the sequence: {dur0} → {dur1}");
     d.frames(2);
-}
-
-/// First movie item id anywhere in `project.inspect` JSON.
-fn first_media_item(v: &Value) -> Option<u64> {
-    match v {
-        Value::Object(m) => {
-            if let Some(id) = m.get("item").and_then(Value::as_u64)
-                && m.get("type").and_then(Value::as_str).is_some_and(|t| t == "Movie")
-            {
-                return Some(id);
-            }
-            m.values().find_map(first_media_item)
-        }
-        Value::Array(a) => a.iter().find_map(first_media_item),
-        _ => None,
-    }
 }
 
 #[test]
@@ -394,6 +315,17 @@ fn trim_monitor_buttons_and_dynamic_jkl_trimming() {
 }
 
 impl Driver {
+    fn rect(&mut self, id: &str) -> [f64; 4] {
+        self.expect_rect(id)
+    }
+
+    /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits in
+    /// the panel's upper part, where the user sees it: next's dock gives a panel a shorter body
+    /// than the old dock did. Stops when the element no longer moves (the list is at its end).
+    fn reveal(&mut self, id: &str) {
+        reveal_in_effect_controls(self, id, Self::rect);
+    }
+
     /// Let background frame workers deliver, then render the window to `<tmp>/<name>.png`.
     fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
         for _ in 0..30 {
@@ -603,6 +535,7 @@ fn eyedropper_picks_a_key_color_on_a_selected_clip() {
         seq["video"][0]["items"][0]["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "color_key").unwrap()["params"]["color"]["value"].clone()
     };
     let before = color(&mut d);
+    d.reveal("effectControls.color_key.color.eyedropper");
     d.ok("ui.click", json!({"id": "effectControls.color_key.color.eyedropper"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "program.picture"}));
