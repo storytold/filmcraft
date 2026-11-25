@@ -116,6 +116,62 @@ fn self_referencing_compound_media_is_ignored_without_recursing() {
 }
 
 #[test]
+fn media_cut_off_by_the_depth_limit_is_complete_when_reached_higher_up() {
+    // m0 … m64 nest one inside the next. Project A reaches m63 at the depth limit, so m64 is left
+    // out of it; project B refers to m63 directly, where m64 fits, and must not get the cut-off copy.
+    let mut media = String::new();
+    for i in 0..64 {
+        media.push_str(&format!(
+            r#"<media id="m{i}" name="M{i}"><sequence format="r1"><spine><ref-clip ref="m{}" offset="0s" start="0s" duration="1s"/></spine></sequence></media>"#,
+            i + 1
+        ));
+    }
+    media.push_str(r#"<media id="m64" name="M64"><sequence format="r1"><spine/></sequence></media>"#);
+    let xml = format!(
+        r#"<fcpxml version="1.10"><resources><format id="r1" frameDuration="1/24s" width="1920" height="1080"/>{media}</resources>
+        <library><event>
+          <project name="A"><sequence format="r1"><spine><ref-clip ref="m0" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine><ref-clip ref="m63" offset="0s" start="0s" duration="1s"/></spine></sequence></project>
+        </event></library></fcpxml>"#
+    );
+    let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    let m63 = imp.project.sequences().find(|i| i.name == "M63").and_then(|i| imp.project.sequence(i.id)).unwrap();
+    assert_eq!(m63.video_tracks[0].items.len(), 1, "M63 keeps its nested M64");
+}
+
+#[test]
+fn media_cut_off_by_xml_layout_is_complete_when_revisited_at_the_same_media_depth() {
+    // Both references have media-chain depth zero, but the first is reached through connected
+    // clips. Its resource must not remain cached as complete after the XML-layout guard fires.
+    for depth in [125, 126] {
+        let nested = format!(
+            "{}<ref-clip lane=\"1\" ref=\"m0\" offset=\"0s\" duration=\"1s\"/>{}",
+            "<gap lane=\"1\" offset=\"0s\" duration=\"1s\">".repeat(depth),
+            "</gap>".repeat(depth)
+        );
+        let xml = format!(
+            r#"<fcpxml version="1.10"><resources>
+          <format id="r1" frameDuration="1/24s" width="1920" height="1080"/>
+          <media id="m0" name="M0"><sequence format="r1"><spine>
+            <ref-clip ref="m1" offset="0s" duration="1s"/>
+          </spine></sequence></media>
+          <media id="m1" name="M1"><sequence format="r1"><spine/></sequence></media>
+        </resources><library><event>
+          <project name="A"><sequence format="r1"><spine>{nested}</spine></sequence></project>
+          <project name="B"><sequence format="r1"><spine>
+            <ref-clip ref="m0" offset="0s" duration="1s"/>
+          </spine></sequence></project>
+        </event></library></fcpxml>"#
+        );
+        let (imp, rep) = import(xml.as_bytes(), Format::Fcpxml, None).unwrap();
+        assert!(rep.mentions("XML") && rep.mentions("nested"), "{rep:?}");
+        let m0 = imp.project.sequences().find(|i| i.name == "M0").and_then(|i| imp.project.sequence(i.id)).unwrap();
+        assert_eq!(m0.video_tracks[0].items.len(), 1, "M0 keeps its nested M1 after the shallower revisit");
+    }
+}
+
+#[test]
 fn golden_connected_clips() {
     let d = doc();
     assert_eq!(detect(d.as_bytes(), Some("fcpxml")), Some(Format::Fcpxml));
@@ -200,6 +256,16 @@ fn hostile_lane_numbers_do_not_create_sparse_tracks() {
     assert!(s.video_tracks.len() <= 256);
     assert!(s.audio_tracks.len() <= 256);
     assert!(rep.has_warnings());
+}
+
+/// A `lane` that is not an integer that fits (`1.5`, `99999999999`) used to drop the clip without a word.
+#[test]
+fn a_lane_that_is_not_an_i32_is_reported_not_silently_dropped() {
+    for bad in ["1.5", "99999999999", "x"] {
+        let d = doc().replace("lane=\"1\"", &format!("lane=\"{bad}\""));
+        let (_, rep) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+        assert!(rep.warnings().any(|w| w.message.contains(&format!("lane \"{bad}\""))), "{bad}: {rep}");
+    }
 }
 
 /// Final Cut writes slideshow stills directly as video elements, including zero-duration assets.

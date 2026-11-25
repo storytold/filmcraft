@@ -3,71 +3,28 @@
 //! row under the pointer, and the drop then lands on exactly the previewed tracks.
 
 use std::collections::BTreeSet;
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, builder, demo_session, driver, egui_rect, launch, save_snapshot, start, with_snapshots};
 use filmcraft_project::{BinEntry, ItemId};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// `FILMCRAFT_UI_SNAPSHOT_DIR`: where each drag's mid-drag frame is saved (off by default).
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with a new, empty sequence open.
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         session.execute("file.newSequence", json!({"name": "Drop preview", "width": 1280, "height": 720, "fps": 24})).expect("sequence");
         session.prefs.timeline.clip_mismatch_warning = false;
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+        let (harness, tx) = launch(session, with_snapshots(builder()));
+        start(Driver { harness, tx })
     }
     fn ids(&mut self, prefix: &str) -> BTreeSet<String> {
         let v = self.ok("ui.elements", json!({"prefix": prefix}));
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
     fn rect(&mut self, id: &str) -> egui::Rect {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+        egui_rect(self.expect_rect(id))
     }
     fn send(&mut self, e: egui::Event) {
         self.harness.input_mut().events.push(e);
@@ -109,16 +66,7 @@ impl Driver {
         shown
     }
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                let path = dir.join(format!("{name}.png"));
-                img.save(&path).unwrap();
-                eprintln!("snapshot: {}", path.display());
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 0, &format!("{name}.png"));
     }
     /// "V2" / "A1" labels of the active sequence's tracks that hold a clip of `item`.
     fn tracks_holding(&self, item: ItemId) -> BTreeSet<String> {

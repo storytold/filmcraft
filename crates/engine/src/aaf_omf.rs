@@ -322,15 +322,16 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
                             .chunks_exact(bps)
                             .map(|b| if bps == 3 { i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8 } else { i16::from_le_bytes([b[0], b[1]]) as i32 })
                             .collect();
-                        let opts = filmcraft_mxf::OpAtomPcm {
+                        let opts = craft_media::mxf::OpAtomPcm {
                             sample_rate: plan.sample_rate,
                             bits: plan.bits as u32,
                             channels: n,
                             edit_rate: None,
-                            ids: filmcraft_mxf::PackageIds::from_seed(&path, &name),
+                            ids: craft_media::mxf::PackageIds::from_seed(&path, &name),
                             timecode: None,
                         };
-                        filmcraft_mxf::write_opatom_pcm(&opts, &samples).map_err(|e| EngineError::Other(format!("{path}: {e}")))?
+                        craft_media::mxf::write_opatom_pcm_as(&opts, &samples, "FilmCraft", "FilmCraft", env!("CARGO_PKG_VERSION"))
+                            .map_err(|e| EngineError::Other(format!("{path}: {e}")))?
                     } else if plan.aiff {
                         filmcraft_interchange::wav::aiff_file(&pcm, n as u16, plan.sample_rate, plan.bits)
                     } else {

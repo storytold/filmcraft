@@ -424,6 +424,7 @@ fn verify_audio_preset(name: &str, format: &str, settings: &Value, probe_result:
 fn verify_special_preset(name: &str, format: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
     match format {
         "aac" => verify_aac_preset(name, format_name, output, probe_result, start, end),
+        "mp3" => verify_mp3_preset(name, format_name, output, probe_result, start, end),
         "gif" => verify_gif_preset(probe_result),
         "mxf-opatom" => verify_opatom_preset(name, format_name, output, probe_result),
         _ => false,
@@ -437,6 +438,19 @@ fn verify_aac_preset(name: &str, format_name: &str, output: &str, probe_result: 
     let audio = stream(probe_result, "audio").unwrap();
     assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
     assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", probe_result["format"]["duration"]);
+    true
+}
+
+fn verify_mp3_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    // MP3: a plain Layer III stream, sound only, as long as the range plus the encoder
+    // delay (1057 samples) rounded up to whole 1152-sample frames
+    assert!(output.ends_with(".mp3"), "{name}: {output}");
+    assert_eq!(format_name, "mp3", "{name}");
+    assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)), "{name}");
+    let excess = num(&probe_result["format"]["duration"]) - (end - start);
+    assert!((0.0..0.06).contains(&excess), "{name}: {}", probe_result["format"]["duration"]);
     true
 }
 
@@ -966,7 +980,7 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     let srt = std::fs::read_to_string(dir.path("cap.srt")).unwrap();
     // Timed from In at 1 s (the caption starts on frame 35), clipped to the export duration.
     let resolved = s.execute("export.resolve", json!({"preset": "Waveform Audio 48 kHz 16-bit"})).unwrap();
-    let duration = filmcraft_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
+    let duration = filmcraft_captions::Tick(resolved["range"]["duration"].as_i64().unwrap());
     let timing = format!("00:00:00,460 --> {}", filmcraft_captions::format_clock(duration, ','));
     assert!(srt.contains("Hello sidecar") && srt.contains(&timing), "{srt}");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "wait": true})).unwrap();
@@ -1070,7 +1084,7 @@ fn caption_sidecars_keep_only_the_exported_interval() {
     let (mut s, files) = session(fixture);
     let original = serde_json::to_value(&s.project).unwrap();
     let history = s.execute("history.list", json!({})).unwrap();
-    let ticks = |tenths: i64| Tick(tenths * (TICKS_PER_SECOND / 10));
+    let ticks = |tenths: i64| filmcraft_captions::Tick(tenths * (TICKS_PER_SECOND / 10));
     let expected = [(ticks(0), ticks(4), "Crossing In"), (ticks(10), ticks(20), "Inside"), (ticks(26), ticks(30), "Crossing Out")];
     for format in [Format::Srt, Format::WebVtt] {
         for range in [json!({"range":"custom", "startTime":2 * TICKS_PER_SECOND, "endTime":5 * TICKS_PER_SECOND}), json!({"range":"inOut"}), json!({})] {
