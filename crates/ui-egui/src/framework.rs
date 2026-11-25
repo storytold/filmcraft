@@ -229,6 +229,35 @@ pub fn escape_pressed(ctx: &Context) -> bool {
     cancel
 }
 
+/// A value drag that Escape cancels (#580), for a slider's `resp`: the press keeps `before` under `id`, and once an
+/// Escape arrives during the drag `value` holds `before` until the release. Whether the drag was escaped. The runtime
+/// can take an Escape (as the cancel of a press in a dock group) without ending egui's physical drag, so the
+/// cancellation is remembered until the pointer is actually released.
+pub fn escape_cancels_drag(ctx: &Context, resp: &egui::Response, id: Id, before: f32, value: &mut f32) -> bool {
+    let escape_id = id.with("escaped");
+    if resp.drag_started() {
+        ctx.data_mut(|d| {
+            d.insert_temp(id, before);
+            d.remove::<bool>(escape_id);
+        });
+    }
+    let in_drag = resp.dragged() || resp.drag_stopped();
+    if in_drag && (escape_pressed(ctx) || escape_arrived(ctx)) {
+        ctx.data_mut(|d| d.insert_temp(escape_id, true));
+    }
+    let escaped = in_drag && ctx.data(|d| d.get_temp::<bool>(escape_id)).unwrap_or(false);
+    if escaped && let Some(start) = ctx.data(|d| d.get_temp::<f32>(id)) {
+        *value = start;
+    }
+    if resp.drag_stopped() {
+        ctx.data_mut(|d| {
+            d.remove::<f32>(id);
+            d.remove::<bool>(escape_id);
+        });
+    }
+    escaped
+}
+
 /// Takes this pass's Escape: egui's, while one of the app's widgets has focus, else the window's cancel that no
 /// framework component took. Whether there was one.
 pub fn take_window_cancel(ctx: &Context) -> bool {

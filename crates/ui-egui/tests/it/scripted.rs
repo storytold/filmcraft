@@ -45,13 +45,7 @@ impl Driver {
 
     /// Run `n` frames, feeding queued synthetic input like eframe's `raw_input_hook`.
     fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
+        crate::support::frames(&mut self.harness, n);
     }
 
     /// Run frames until `done` holds, for at most two minutes of wall-clock time.
@@ -66,15 +60,7 @@ impl Driver {
 
     /// Send a control request and run frames until it is answered.
     fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
+        crate::support::call(&mut self.harness, &self.tx, method, params)
     }
 
     /// `call` that must succeed; returns `result`.
