@@ -1,7 +1,7 @@
 //! Synthetic native import and persistence acceptance tests. MIT OR Apache-2.0.
 use crate::{Session, premiere::hash_file};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "premiere_corpus_tests.rs"]
@@ -204,7 +204,28 @@ fn premiere_missing_media_and_standard_import_route() {
     let r = s.execute("file.import", json!({"paths":[fixture.0.join("source.prproj")],"destination":fixture.0.join("offline")})).unwrap();
     assert_eq!(r["sequences"].as_array().unwrap().len(), 1);
     assert!(s.project.workflow.is_some());
-    assert!(s.project.items.values().any(|i| matches!(&i.kind,filmcraft_project::ItemKind::Media(m) if m.offline)));
+    // A file that is not there is missing, not made offline: Link Media and auto-relink look for it.
+    assert!(s.project.items.values().all(|i| !matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)));
+    let found = s.execute("media.findMissing", json!({})).unwrap();
+    assert_eq!(found["missing"].as_array().unwrap().iter().map(|m| m["status"].clone()).collect::<Vec<_>>(), [json!("missing")], "{found}");
+}
+
+#[test]
+fn premiere_media_moved_with_its_folder_auto_relinks() {
+    let fixture = Fixture::new();
+    let moved = fixture.0.join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    std::fs::rename(fixture.0.join("source.png"), moved.join("source.png")).unwrap();
+    let mut s = Session::default();
+    s.execute("premiere.import", json!({"path":fixture.0.join("source.prproj"),"destination":fixture.0.join("import")})).unwrap();
+    // The placeholder's size and duration are provisional (the sequence frame and the clip's
+    // extent), so this matches by name and file only.
+    let checks = json!({"duration": false, "metadata": false});
+    let r = s.execute("media.autoRelink", json!({"from": fixture.0.to_string_lossy(), "to": moved.to_string_lossy(), "match": checks})).unwrap();
+    assert!(s.execute("media.findMissing", json!({})).unwrap()["missing"].as_array().unwrap().is_empty(), "{r}");
+    let item = s.project.items.values().find_map(|i| i.as_media()).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+    assert!(!item.offline && matches!(&item.media, filmcraft_project::MediaRef::File { path } if Path::new(path).ends_with("moved/source.png")), "{r}");
 }
 #[cfg(unix)]
 #[test]
@@ -482,7 +503,7 @@ fn premiere_import_reports_levels_and_names_an_existing_destination() {
         assert!(matches!(entry["level"].as_str(), Some("info" | "warning")), "{entry}");
         assert!(entry["count"].as_u64().is_some_and(|n| n >= 1), "{entry}");
     }
-    assert!(entries.iter().any(|e| e["level"] == "warning" && e["message"].as_str().unwrap().contains("offline placeholder")), "{result}");
+    assert!(entries.iter().any(|e| e["level"] == "warning" && e["message"].as_str().unwrap().contains("missing, link it to reconnect")), "{result}");
     // (The project holds NaN auto anchors, so it is compared by identity: no edit at all.)
     let before = s.project.clone();
     let error = s.execute("premiere.import", json!({"path":doc,"destination":destination})).unwrap_err();
@@ -662,8 +683,8 @@ fn premiere_offline_media_lists_only_items_added_by_this_import() {
     std::fs::rename(&parked, &media).unwrap();
     let second = s.execute("premiere.import", json!({"path":doc,"destination":fixture.0.join("online")})).unwrap();
     assert_eq!(second["offlineMedia"], json!([]), "an earlier import's offline item is not this import's");
-    let offline = s.project.items.values().filter(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if m.offline)).count();
-    assert_eq!(offline, 1, "the earlier offline item stays in the project");
+    let placed = s.project.items.values().filter(|i| i.name == "source.png" && i.as_media().is_some()).count();
+    assert_eq!(placed, 2, "the earlier placeholder stays in the project");
 }
 
 #[test]

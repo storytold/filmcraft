@@ -101,6 +101,16 @@ fn probe_with_fallbacks(
     Err(errors)
 }
 
+/// Whether no file is at `original` nor at its project-relative path, both allowed by the
+/// document policy. Such an item is missing (Link Media and auto-relink look for it); one whose
+/// file exists but cannot be used, or whose path the policy refuses, stays offline.
+fn absent(original: &str, relative: Option<&String>, document: &Path) -> bool {
+    std::iter::once(original).chain(relative.map(String::as_str)).all(|candidate| {
+        crate::doc_path::resolve(candidate, Some(document))
+            .is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+    })
+}
+
 /// The one entry of `path`'s folder whose name equals its file name apart from letter case, when
 /// `path` itself does not exist. None when there is no such entry, more than one, or the folder
 /// could not be listed in full.
@@ -437,6 +447,8 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     write_new(&snapshot, &bytes)?;
     let mut records = BTreeMap::<String, SourceMedia>::new();
     let mut probed = BTreeMap::new();
+    // Stored paths with no file behind them: their items are missing, not offline.
+    let mut missing = std::collections::BTreeSet::<String>::new();
     // The sources probes opened (a linked file, or a finished copy), by the path their items keep:
     // the media pool takes them instead of opening those files again.
     let mut opened = BTreeMap::<String, filmcraft_media::SharedSource>::new();
@@ -496,6 +508,10 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
                     probed.insert(original.clone(), media_source.info().clone());
                     opened.insert(record.imported_path.clone(), media_source);
                 }
+                Err(error) if absent(&original, tree.relative_media.get(&original), &source) => {
+                    filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; missing, link it to reconnect"));
+                    missing.insert(original.clone());
+                }
                 Err(error) => filmcraft_interchange::premiere::warning(&mut report, format!("{original}: {error}; offline placeholder retained")),
             }
             records.insert(original.clone(), record);
@@ -508,11 +524,12 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
             m.info = info.clone();
             m.offline = false;
         } else {
-            m.offline = true;
+            m.offline = !missing.contains(&original);
         }
     }
-    // Offline placeholder dimensions are provisional; leave their source anchors automatic.
-    fragment.project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !m.offline));
+    let placeholder = |m: &filmcraft_project::MediaClip| m.offline || matches!(&m.media, MediaRef::File { path } if missing.contains(path));
+    // Placeholder dimensions are provisional; leave their source anchors automatic.
+    fragment.project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !placeholder(m)));
     // Refuse a changed project input rather than attaching the wrong source hash to its snapshot.
     if hash(&source)?.0 != source_hash {
         return Err(bad(COMMAND, "project changed during import; try again"));
@@ -547,13 +564,16 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     // any other item of that file opens its own, as the pool keeps one source per item.
     for item in s.project.items.values().filter(|i| !before.contains(&i.id)) {
         if let ItemKind::Media(m) = &item.kind
-            && !m.offline
+            && !placeholder(m)
             && let MediaRef::File { path } = &m.media
             && let Some(source) = opened.remove(path).or_else(|| s.media.open_file(path, &*s.services).ok())
         {
             s.media.insert_file(item.id, path, source);
         }
     }
+    // A missing file opens later (Link Media, a file that reappears) only as the project's document
+    // policy allows, like the stored paths of an opened project.
+    s.media.add_stored_paths(missing.iter().cloned(), Some(&stored_path(&source)));
     // Only this import's items: offline media already in the project is not part of its result.
     let offline: Vec<_> = s
         .project
@@ -561,7 +581,7 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
         .values()
         .filter(|i| !before.contains(&i.id))
         .filter_map(|i| match &i.kind {
-            ItemKind::Media(m) if m.offline => Some(i.name.clone()),
+            ItemKind::Media(m) if placeholder(m) => Some(i.name.clone()),
             _ => None,
         })
         .collect();

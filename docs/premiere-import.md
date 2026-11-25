@@ -38,7 +38,7 @@ are imported. Without it, the sequence with the most video items wins; “Sequen
 a tie-break, followed by the latest video end time.
 
 The result has the new `sequences`, the `destination`, `sourceSha256`, `mediaMode`,
-`offlineMedia` (the names of this import's media items left offline), `report` (the import's
+`offlineMedia` (the names of this import's media items left as placeholders, missing or offline), `report` (the import's
 diagnostic messages) and `reportEntries`: the same diagnostics, in the same order, as
 `{"level": "info" | "warning", "message", "count"}` like `events.list` entries.
 
@@ -112,8 +112,12 @@ intrinsic audio controls, scalar Lumetri controls, and named native transitions.
 records without absolute timing retain clip-edge fades. Unknown effects remain
 in the original snapshot and are reported once per distinct effect name with an occurrence count,
 rather than silently recreated with guessed parameters.
-Fonts/styles and transition appearance are not guaranteed to match Premiere. Missing, ambiguous
-or unreadable media remains visible as offline placeholders. A media path saved on the other
+Fonts/styles and transition appearance are not guaranteed to match Premiere. Media that cannot be
+used remains visible as a placeholder. When no file is at its stored path or its relative path,
+the item is missing, so Link Media, Relink others and `media.autoRelink` look for it; ambiguous,
+unreadable or refused media stays offline. A placeholder's frame size and duration are provisional
+(the sequence frame and the clip's extent), so relinking it may need Match File Properties'
+duration and metadata checks turned off. A media path saved on the other
 system family (POSIX against a Windows drive or share, or the reverse) is replaced by the stored
 `RelativePath` resolved against the project's folder; a stored path that cannot be opened falls
 back to that relative path with a warning. A `RelativePath` that names a drive (`..\..\C:\...`)
