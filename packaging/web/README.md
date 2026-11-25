@@ -8,9 +8,13 @@ static site in `filmcraft-web-<version>/`:
 | `index.html` | The page. It loads everything through relative URLs. |
 | `filmcraft_web.js` | wasm-bindgen glue (generated, ES module) |
 | `filmcraft_web_bg.wasm` | The app, about 13 MB, or 5 MB with compression |
+| `filmcraft-cjk-sc.otf`, `filmcraft-hangul.ttf`, `filmcraft-japanese.ttf` | Interface fonts fetched on demand when the corresponding language is selected |
 | `_headers`, `.htaccess` | Sample header rules for Netlify/Cloudflare Pages and Apache |
 
 There is no server-side code. Upload the folder's contents anywhere that serves static files.
+When building a release package, set `CRAFT_FONTS_DIR` to the pinned craft-fonts checkout so the
+three font files are included. A failed font download leaves the current language unchanged and
+shows a message; the user can retry the selection.
 
 ## Any path works
 
