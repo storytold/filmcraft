@@ -348,6 +348,33 @@ fn link_media_dialog_relinks_moved_media() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Link one clip; Relink others indexes Search-in (and the linked file's parent tree) so a nested sibling is found by exact name.
+#[test]
+fn link_media_relink_others_finds_nested_sibling_by_name() {
+    let root = tmp_dir("link-nested");
+    let path = moved_project(&root);
+    let media = root.join("Moved").join("Media");
+    let day2 = media.join("day2");
+    std::fs::create_dir_all(&day2).unwrap();
+    std::fs::rename(media.join("Night.mov"), day2.join("Night.mov")).unwrap();
+
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": path})).unwrap();
+    let mut d = Driver::new(s);
+    d.frames(6);
+    assert_eq!(d.ids("linkMedia.row.").len(), 2);
+    // Search-in is the move root; Link passes it as media.relink's folder for Relink others.
+    d.app().ui.link_media.as_mut().unwrap().folder = root.join("Moved").to_string_lossy().into_owned();
+    d.click("linkMedia.search");
+    assert_eq!(d.ids("linkMedia.candidate.").len(), 1);
+    d.click("linkMedia.link");
+    d.frames(4);
+    assert!(d.app().ui.link_media.is_none(), "Night.mov under day2/ linked by file-name index");
+    let st = d.exec("media.status", json!({}));
+    assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "{st}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn offline_badges_proxy_toggle_and_dialogs() {
     let root = tmp_dir("badges");

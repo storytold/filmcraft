@@ -318,7 +318,7 @@ have no identity, so relinking them skips the fingerprint check.
 | `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
 | `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
 | `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
-| `media.relink {item, path, force?, relinkOthers?=true, relinkOffline?, alignTimecode?, match?}` | check, link, then the others |
+| `media.relink {item, path, force?, relinkOthers?=true, relinkOffline?, alignTimecode?, folder?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
 | `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
@@ -337,8 +337,11 @@ have no identity, so relinking them skips the fingerprint check.
 file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
 `/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
 files (and **Offline** files when Include Offline media is on; Premiere's default) and checks each
-one. It also looks in the new file's folder. Windows and macOS separators both work.
-`relinkOffline` overrides that for one command; otherwise Settings ▸ Media ▸
+one. It also looks for the same file name next to the new file. Remaining clips are then matched by
+exact file name under a folder tree (`index_folder`): the optional `folder` on `media.relink` (Link
+Media's **Search in** path when set), otherwise the new file's parent directory — so one Locate finds
+siblings in nested subfolders the way a folder auto-relink does. Windows and macOS separators both
+work. `relinkOffline` overrides Include Offline for one command; otherwise Settings ▸ Media ▸
 `media.relinkOfflineMedia` is used (and seeds the Link Media checkbox). **Align Timecode** keeps
 clips on the same timecode when the new file starts at a different timecode: the clips' source
 in-points, keyframes, marks and markers move with it (`Project::shift_media_time`). Media an EDL

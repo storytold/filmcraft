@@ -658,6 +658,11 @@ fn relink_to(app: &mut FilmcraftApp, d: &mut LinkMediaDraft, item: &Value, path:
     let mut p = match_params(d);
     p["item"] = item.clone();
     p["path"] = json!(path);
+    // Search-in folder becomes Relink others' tree root (exact file-name index) when set.
+    let folder = d.folder.trim();
+    if !folder.is_empty() {
+        p["folder"] = json!(folder);
+    }
     match app.session.execute("media.relink", p) {
         Ok(v) => {
             d.message.clear();

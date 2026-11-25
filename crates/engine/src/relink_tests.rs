@@ -87,6 +87,65 @@ fn moved_media_opens_offline_and_relinks_others_by_folder() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Relink others: when remap and same-dir miss, index the new file's parent tree by exact name.
+#[test]
+fn relink_others_finds_nested_siblings_by_file_name() {
+    let root = tmp_dir("relink-nested");
+    let (path, items) = saved_project(&root);
+    let shoot = root.join("Moved").join("shoot");
+    let day2 = shoot.join("day2");
+    std::fs::create_dir_all(&day2).unwrap();
+    std::fs::rename(root.join("Media").join("a.mov"), shoot.join("a.mov")).unwrap();
+    std::fs::rename(root.join("Media").join("b.mov"), day2.join("b.mov")).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("Media"));
+
+    let mut s = open(&path);
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": shoot.join("a.mov").to_string_lossy()})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "nested b found under a's parent tree: {r}");
+    assert_eq!(r["remaining"], json!([]));
+    let b_path = s.project.item(items[1]).unwrap().as_media().unwrap().media.clone();
+    let filmcraft_project::MediaRef::File { path: b_path } = b_path else { panic!("file media") };
+    assert_eq!(std::path::Path::new(&b_path), day2.join("b.mov"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Relink others: optional `folder` indexes a Search-in tree when the linked file's parent has no siblings.
+#[test]
+fn relink_others_uses_folder_param_when_parent_tree_misses() {
+    let root = tmp_dir("relink-folder-param");
+    let (path, items) = saved_project(&root);
+    let link_here = root.join("LinkHere");
+    let search = root.join("SearchTree").join("nested");
+    std::fs::create_dir_all(&link_here).unwrap();
+    std::fs::create_dir_all(&search).unwrap();
+    std::fs::rename(root.join("Media").join("a.mov"), link_here.join("a.mov")).unwrap();
+    std::fs::rename(root.join("Media").join("b.mov"), search.join("b.mov")).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("Media"));
+
+    let mut s = open(&path);
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": link_here.join("a.mov").to_string_lossy()})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "parent tree has no b: {r}");
+    assert_eq!(r["remaining"], json!([items[1].0]));
+
+    let mut s = open(&path);
+    let r = s
+        .execute(
+            "media.relink",
+            json!({
+                "item": items[0].0,
+                "path": link_here.join("a.mov").to_string_lossy(),
+                "folder": root.join("SearchTree").to_string_lossy(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "folder param finds nested b: {r}");
+    assert_eq!(r["remaining"], json!([]));
+    let b_path = s.project.item(items[1]).unwrap().as_media().unwrap().media.clone();
+    let filmcraft_project::MediaRef::File { path: b_path } = b_path else { panic!("file media") };
+    assert_eq!(std::path::Path::new(&b_path), search.join("b.mov"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn auto_relink_by_prefix_and_by_folder_search() {
     let root = tmp_dir("relink-auto");
