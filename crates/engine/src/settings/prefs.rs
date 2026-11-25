@@ -335,6 +335,9 @@ impl Default for MemoryPrefs {
     }
 }
 
+/// The least and most the Timeline Scroll Speed multiplier can be.
+pub const SCROLL_SPEED_RANGE: (f64, f64) = (0.25, 4.0);
+
 /// Settings ▸ Timeline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -350,6 +353,9 @@ pub struct TimelinePrefs {
     pub auto_scroll: String,
     /// "Timeline Mouse Scrolling": `vertical` | `horizontal`.
     pub mouse_scrolling: String,
+    /// "Timeline Scroll Speed" (#5190): a multiplier on how far a wheel turn or a swipe moves the
+    /// Timeline, sideways and up and down. 1 is the wheel's own distance. Zoom is not scaled.
+    pub scroll_speed: f64,
     /// Default Audio Tracks per media type: `useFile` | `mono` | `stereo` | `5.1` | `adaptive`.
     pub mono_media_tracks: String,
     pub stereo_media_tracks: String,
@@ -382,6 +388,7 @@ impl Default for TimelinePrefs {
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
             mouse_scrolling: "vertical".into(),
+            scroll_speed: 1.0,
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
@@ -407,6 +414,11 @@ fn duration_in(value: f64, unit: &str, rate: FrameRate) -> Tick {
 }
 
 impl TimelinePrefs {
+    /// [`Self::scroll_speed`] kept to what the setting allows, so a hand-edited or damaged value
+    /// never freezes the Timeline or sends it flying.
+    pub fn scroll_speed_factor(&self) -> f64 {
+        if self.scroll_speed.is_finite() { self.scroll_speed.clamp(SCROLL_SPEED_RANGE.0, SCROLL_SPEED_RANGE.1) } else { 1.0 }
+    }
     /// "Still Image Default Duration" at a sequence rate (whole frames, at least one).
     pub fn still_duration(&self, rate: FrameRate) -> Tick {
         duration_in(self.still_image_duration, &self.still_image_unit, rate)

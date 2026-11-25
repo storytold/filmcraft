@@ -291,6 +291,8 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             v.target_pps = (v.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
+            // Settings ▸ Timeline ▸ Timeline Scroll Speed: how far a turn or a swipe goes (#5190)
+            let w = WheelInput { delta: w.delta * app.session.prefs.timeline.scroll_speed_factor() as f32, ..w };
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
             let sideways = if w.delta.x.abs() > w.delta.y.abs() {
                 Some(w.delta.x)
