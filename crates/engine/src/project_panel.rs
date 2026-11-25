@@ -325,6 +325,12 @@ pub fn usage(p: &Project, id: ItemId) -> (usize, usize) {
     (v, a)
 }
 
+/// Every project item some clip of a sequence uses, found in one pass over the sequences (the
+/// Project panel marks these; [`usage`] counts one item's uses).
+pub fn used_items(p: &Project) -> BTreeSet<u64> {
+    p.sequences().filter_map(|q| q.as_sequence()).flat_map(|q| q.all_tracks()).flat_map(|t| t.items.iter()).map(|i| i.item.0).collect()
+}
+
 /// The text and sort key of one List view cell.
 pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
     let media = media_of(p, it);

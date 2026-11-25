@@ -106,6 +106,9 @@ pub struct ProjectPanelUi {
     /// draws its view (once; cleared after that draw).
     #[serde(skip)]
     pub reveal: Option<u64>,
+    /// The items some sequence uses, read once each time a view is drawn, for the "used" badge.
+    #[serde(skip)]
+    pub used: std::collections::BTreeSet<u64>,
 }
 
 /// Which panel instance a view belongs to.
