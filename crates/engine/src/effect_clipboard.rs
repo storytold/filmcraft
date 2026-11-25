@@ -160,18 +160,21 @@ pub(crate) fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // a video clip's linked audio takes the audio effects (and the other way round)
     let targets = with_links(s, &named);
-    let n = s.edit_sequence("Paste Effects", |q, _, _| {
-        let mut n = 0;
-        for c in &targets {
-            if paste_on(q, *c, &copied) {
-                n += 1;
-            }
-        }
-        Ok(n)
-    })?;
-    if n == 0 {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let takes = |c: &ClipId| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == copied.kind);
+    if !targets.iter().any(takes) {
         let what = if copied.kind == TrackKind::Audio { "an audio clip" } else { "a video clip or an adjustment layer" };
         return Err(bad(CMD, format!("select {what} to paste this effect on")));
+    }
+    // a clip that already has the copied settings (Motion pasted on itself) changes nothing: no undo
+    // step. An error leaves the project and the history as they were.
+    let mut n = 0;
+    let r = s.edit_sequence("Paste Effects", |q, _, _| {
+        n = targets.iter().filter(|c| paste_on(q, **c, &copied)).count();
+        if n == 0 { Err(bad(CMD, "nothing to change")) } else { Ok(()) }
+    });
+    if n > 0 {
+        r?;
     }
     Ok(json!({"clips": n}))
 }

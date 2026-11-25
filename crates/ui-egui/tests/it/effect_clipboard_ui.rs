@@ -139,3 +139,30 @@ fn motion_clicked_and_copied_pastes_on_a_clip_clicked_in_the_timeline() {
         format!("{:?}", d.clip(a).effects.iter().find(|e| e.effect == "motion").unwrap().param("scale").unwrap().value)
     );
 }
+
+/// With a caption selected Effect Controls shows no clip: Cut and Copy there leave the caption alone
+/// and say to select an effect.
+#[test]
+fn cut_in_effect_controls_leaves_a_selected_caption_alone() {
+    let mut d = Driver::demo();
+    let id = d.exec("captions.add", json!({"seconds": 1.0, "durationSeconds": 1.0, "text": "stay"}))["caption"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"none": true}));
+    d.exec("captions.select", json!({"captions": [id]}));
+    d.focus("EffectControls");
+    d.press(egui::Key::X, CMD);
+    let captions = d.exec("captions.list", json!({}));
+    assert_eq!(captions["tracks"][0]["captions"].as_array().unwrap().len(), 1, "the caption stays: {captions}");
+    assert_eq!(d.harness.state_mut().ui.status, "select an effect in Effect Controls first");
+}
+
+/// A transition shown in Effect Controls is not an effect: Copy and Cut go to the Timeline as before.
+#[test]
+fn a_transition_shown_in_effect_controls_keeps_the_timelines_cut_and_copy() {
+    let mut d = Driver::demo();
+    let x = d.harness.state_mut().session.active_sequence().unwrap().all_tracks().flat_map(|t| &t.transitions).next().expect("the demo has a transition").id;
+    d.exec("timeline.select", json!({"none": true}));
+    d.harness.state_mut().session.state.transition_selection = [x].into_iter().collect();
+    d.focus("EffectControls");
+    d.press(egui::Key::C, CMD);
+    assert_ne!(d.harness.state_mut().ui.status, "select an effect in Effect Controls first");
+}

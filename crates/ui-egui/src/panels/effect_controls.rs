@@ -205,7 +205,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return None;
     }
     let shown = selected_clips(app);
-    if shown.is_empty() {
+    if shown.is_empty() && crate::panels::transition_controls::selected(app).is_some() {
         return None;
     }
     let selected = app.session.state.selected_effect.clone();

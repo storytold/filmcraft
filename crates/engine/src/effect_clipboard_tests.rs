@@ -131,9 +131,29 @@ fn paste_needs_a_clip_of_the_effects_kind() {
     let audio = s.active_sequence().unwrap().audio_tracks[0].items[0].clone();
     s.execute("sequence.linkedSelection", json!({"on": false})).unwrap();
     s.execute("timeline.select", json!({"clips": [audio.id.0]})).unwrap();
-    let rev = s.project.clone();
+    let (rev, undo, redo) = (s.project.clone(), s.history.undo.len(), s.history.redo.len());
     assert!(s.execute("edit.paste", json!({})).is_err());
     assert_eq!(s.project, rev);
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "a refused paste adds no undo step");
+}
+
+#[test]
+fn a_paste_that_changes_nothing_leaves_the_history_alone() {
+    let mut s = demo();
+    let a = v1(&s)[0].id;
+    s.execute("effects.setParam", json!({"clip": a.0, "effect": "motion", "param": "scale", "value": 40.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": a.0, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let motion = clip(&s, a).effects.iter().position(|e| e.effect == "motion").unwrap();
+    s.execute("effects.copy", json!({"clip": a.0, "effect": motion})).unwrap();
+    let before = (s.project.clone(), s.history.undo.len(), s.history.redo.len(), s.is_dirty());
+    let r = s.execute("effects.paste", json!({"clips": [a.0]})).unwrap();
+    assert_eq!(r["clips"], 0);
+    assert_eq!((s.project.clone(), s.history.undo.len(), s.history.redo.len(), s.is_dirty()), before, "redo is still there");
+    // a paste that changes a clip is one undo step
+    let b = v1(&s)[1].id;
+    s.execute("effects.paste", json!({"clips": [b.0]})).unwrap();
+    assert_eq!(s.history.undo.len(), before.1 + 1);
 }
 
 #[test]
