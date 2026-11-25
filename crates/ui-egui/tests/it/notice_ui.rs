@@ -22,7 +22,12 @@ impl Driver {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
         app.notice = notice;
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        // The window hosts the craft runtime now: a harness that drives frames without installing it
+        // headless panics ("the runtime plugin's hooks did not run for the previous pass").
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut d = Driver { harness, tx };
         d.frames(4);
         d
