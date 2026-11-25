@@ -384,6 +384,9 @@ fn factory_with(
     }
 
     if format == Format::H264 {
+        if !has_device() {
+            return None;
+        }
         let cfg = match config(format, w, h, rate, s) {
             Ok(c) => c,
             Err(why) => {
@@ -392,9 +395,6 @@ fn factory_with(
                 return None;
             }
         };
-        if !has_device() {
-            return None;
-        }
         return match open(cfg) {
             Ok(session) => {
                 filmcraft_export::note_hw_encode_session();

@@ -115,11 +115,98 @@ pub struct Packet {
     pub dts: i64,
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsyncEvent {
+    NeedInput,
+    HaveOutput,
+    DrainComplete,
+    Other,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, Default)]
+struct AsyncInputCredits {
+    credits: usize,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl AsyncInputCredits {
+    fn submit_with(
+        &mut self,
+        mut next_event: impl FnMut(bool) -> Result<Option<AsyncEvent>, String>,
+        mut process_input: impl FnMut() -> Result<(), String>,
+        mut pull_output: impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        const MAX_EVENTS_PER_INPUT: usize = 4096;
+        if let Some(remaining) = self.credits.checked_sub(1) {
+            self.credits = remaining;
+            process_input()?;
+        } else {
+            let mut fed = false;
+            for _ in 0..MAX_EVENTS_PER_INPUT {
+                let Some(ev) = next_event(true)? else { break };
+                match ev {
+                    AsyncEvent::HaveOutput => pull_output()?,
+                    AsyncEvent::NeedInput => {
+                        process_input()?;
+                        fed = true;
+                        break;
+                    }
+                    AsyncEvent::DrainComplete | AsyncEvent::Other => {}
+                }
+            }
+            if !fed {
+                return Err("Intel async encoder did not signal METransformNeedInput within event bound".into());
+            }
+        }
+        self.drain_no_wait_with(next_event, pull_output)
+    }
+
+    fn drain_no_wait_with(
+        &mut self,
+        mut next_event: impl FnMut(bool) -> Result<Option<AsyncEvent>, String>,
+        mut pull_output: impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        const MAX_DRAIN_EVENTS: usize = 4096;
+        for _ in 0..MAX_DRAIN_EVENTS {
+            let Some(ev) = next_event(false)? else { break };
+            match ev {
+                AsyncEvent::HaveOutput => pull_output()?,
+                AsyncEvent::NeedInput => {
+                    self.credits = self.credits.saturating_add(1);
+                }
+                AsyncEvent::DrainComplete | AsyncEvent::Other => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_with(
+        &mut self,
+        bound: usize,
+        mut next_event: impl FnMut(bool) -> Result<Option<AsyncEvent>, String>,
+        mut pull_output: impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.credits = 0;
+        for _ in 0..bound {
+            let Some(ev) = next_event(true)? else { break };
+            match ev {
+                AsyncEvent::HaveOutput => pull_output()?,
+                AsyncEvent::DrainComplete => break,
+                AsyncEvent::NeedInput | AsyncEvent::Other => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub struct QsvSession {
     _gpu: Arc<IntelGpu>,
     transform: IMFTransform,
     events: Option<IMFMediaEventGenerator>,
+    async_state: AsyncInputCredits,
     provides_samples: bool,
     sequence_header: Vec<u8>,
     config: Config,
@@ -201,6 +288,7 @@ impl QsvSession {
             _gpu: gpu,
             transform,
             events,
+            async_state: AsyncInputCredits::default(),
             provides_samples: false,
             sequence_header: Vec::new(),
             config: config.clone(),
@@ -350,50 +438,43 @@ impl QsvSession {
         Ok(packets)
     }
 
-    fn submit_async(&mut self, mf_api: &MfApi, events: &IMFMediaEventGenerator, sample: &IMFSample) -> Result<Vec<Packet>, String> {
-        const MAX_EVENTS_PER_INPUT: usize = 4096;
-        let mut packets = Vec::new();
-        let mut fed = false;
-
-        for _ in 0..MAX_EVENTS_PER_INPUT {
-            // SAFETY: blocking wait on encoder event queue for METransformNeedInput / METransformHaveOutput.
-            let event = unsafe { events.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) }.map_err(|e| format!("Intel async GetEvent failed: {e}"))?;
-            // SAFETY: query event type constant.
-            let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async event GetType failed: {e}"))?;
-            if kind == METransformHaveOutput.0 as u32 {
-                let _ = self.pull_one_output(mf_api, &mut packets)?;
-            } else if kind == METransformNeedInput.0 as u32 {
-                // SAFETY: encoder explicitly requested one input sample via METransformNeedInput.
-                unsafe { self.transform.ProcessInput(0, sample, 0) }.map_err(|e| format!("Intel async ProcessInput failed: {e}"))?;
-                fed = true;
-                break;
-            }
-        }
-
-        if !fed {
-            return Err("Intel async encoder did not signal METransformNeedInput within event bound".into());
-        }
-
-        self.drain_async_no_wait(mf_api, events, &mut packets)?;
-        Ok(packets)
+    fn poll_async_event(events: &IMFMediaEventGenerator, wait: bool) -> Result<Option<AsyncEvent>, String> {
+        let flags = if wait { MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0) } else { MF_EVENT_FLAG_NO_WAIT };
+        // SAFETY: IMFMediaEventGenerator::GetEvent on live COM interface.
+        let event = match unsafe { events.GetEvent(flags) } {
+            Ok(ev) => ev,
+            Err(e) if !wait && e.code() == MF_E_NO_EVENTS_AVAILABLE => return Ok(None),
+            Err(e) => return Err(format!("Intel async GetEvent failed: {e}")),
+        };
+        // SAFETY: IMFMediaEvent::GetType on live COM interface.
+        let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async event GetType failed: {e}"))?;
+        let ev = if kind == METransformNeedInput.0 as u32 {
+            AsyncEvent::NeedInput
+        } else if kind == METransformHaveOutput.0 as u32 {
+            AsyncEvent::HaveOutput
+        } else if kind == METransformDrainComplete.0 as u32 {
+            AsyncEvent::DrainComplete
+        } else {
+            AsyncEvent::Other
+        };
+        Ok(Some(ev))
     }
 
-    fn drain_async_no_wait(&mut self, mf_api: &MfApi, events: &IMFMediaEventGenerator, packets: &mut Vec<Packet>) -> Result<(), String> {
-        const MAX_DRAIN_EVENTS: usize = 4096;
-        for _ in 0..MAX_DRAIN_EVENTS {
-            // SAFETY: non-blocking poll of any outputs ready right now.
-            let event = match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
-                Ok(ev) => ev,
-                Err(e) if e.code() == MF_E_NO_EVENTS_AVAILABLE => break,
-                Err(e) => return Err(format!("Intel async poll failed: {e}")),
-            };
-            // SAFETY: query event type constant.
-            let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async event GetType failed: {e}"))?;
-            if kind == METransformHaveOutput.0 as u32 {
-                let _ = self.pull_one_output(mf_api, packets)?;
-            }
-        }
-        Ok(())
+    fn submit_async(&mut self, mf_api: &MfApi, events: &IMFMediaEventGenerator, sample: &IMFSample) -> Result<Vec<Packet>, String> {
+        let mut packets = Vec::new();
+        let mut async_state = self.async_state;
+        let transform = self.transform.clone();
+        let res = async_state.submit_with(
+            |wait| Self::poll_async_event(events, wait),
+            || {
+                // SAFETY: encoder signaled METransformNeedInput for this sample (directly or via preserved credit).
+                unsafe { transform.ProcessInput(0, sample, 0) }.map_err(|e| format!("Intel async ProcessInput failed: {e}"))
+            },
+            || self.pull_one_output(mf_api, &mut packets).map(|_| ()),
+        );
+        self.async_state = async_state;
+        res?;
+        Ok(packets)
     }
 
     /// Flush remaining buffered packets at stream end.
@@ -406,18 +487,10 @@ impl QsvSession {
         let mut packets = Vec::new();
         if let Some(events) = self.events.clone() {
             let bound = self.pending.len().saturating_mul(16).saturating_add(4096);
-            for _ in 0..bound {
-                // SAFETY: blocking poll during drain until METransformDrainComplete arrives.
-                let event =
-                    unsafe { events.GetEvent(MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS(0)) }.map_err(|e| format!("Intel async drain GetEvent failed: {e}"))?;
-                // SAFETY: query event type constant.
-                let kind = unsafe { event.GetType() }.map_err(|e| format!("Intel async drain GetType failed: {e}"))?;
-                if kind == METransformHaveOutput.0 as u32 {
-                    let _ = self.pull_one_output(mf_api, &mut packets)?;
-                } else if kind == METransformDrainComplete.0 as u32 {
-                    break;
-                }
-            }
+            let mut async_state = self.async_state;
+            let res = async_state.flush_with(bound, |wait| Self::poll_async_event(&events, wait), || self.pull_one_output(mf_api, &mut packets).map(|_| ()));
+            self.async_state = async_state;
+            res?;
             return Ok(packets);
         }
         self.drain_sync(mf_api, &mut packets)?;
@@ -800,5 +873,76 @@ mod tests {
         // Overlong LEB128 (> 8 bytes) must be rejected without panic or shift overflow
         let overlong_leb128 = [0x32, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01, 0x00];
         assert!(!is_key_frame(Codec::Av1, &overlong_leb128));
+    }
+
+    #[test]
+    fn async_need_input_credit_preserved_across_output_drain_poll() {
+        use std::collections::VecDeque;
+
+        // Sequence:
+        // 1. Frame 0 wait -> NeedInput -> submit frame 0
+        // 2. Output-drain no-wait poll sees HaveOutput then NeedInput (for frame 1!) -> must preserve credit
+        // 3. Frame 1 submit must consume preserved credit without blocking on a fresh NeedInput
+        // 4. Flush sees HaveOutput then DrainComplete
+        let mut queue = VecDeque::from([
+            (true, Some(AsyncEvent::NeedInput)),
+            (false, Some(AsyncEvent::HaveOutput)),
+            (false, Some(AsyncEvent::NeedInput)),
+            (false, None),
+            (false, Some(AsyncEvent::HaveOutput)),
+            (false, None),
+            (true, Some(AsyncEvent::HaveOutput)),
+            (true, Some(AsyncEvent::DrainComplete)),
+        ]);
+
+        let mut next_event = |wait: bool| -> Result<Option<AsyncEvent>, String> {
+            let (expected_wait, ev) = queue.pop_front().ok_or_else(|| format!("unexpected GetEvent(wait={wait}) on empty queue"))?;
+            assert_eq!(wait, expected_wait, "unexpected wait flag for event {ev:?}");
+            Ok(ev)
+        };
+
+        let mut state = AsyncInputCredits::default();
+        let mut inputs = 0usize;
+        let mut outputs = 0usize;
+
+        state
+            .submit_with(
+                &mut next_event,
+                || {
+                    inputs += 1;
+                    Ok(())
+                },
+                || {
+                    outputs += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!((inputs, outputs, state.credits), (1, 1, 1));
+
+        // Second frame must succeed without any blocking NeedInput wait.
+        state
+            .submit_with(
+                &mut next_event,
+                || {
+                    inputs += 1;
+                    Ok(())
+                },
+                || {
+                    outputs += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!((inputs, outputs, state.credits), (2, 2, 0));
+
+        state
+            .flush_with(16, &mut next_event, || {
+                outputs += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!((inputs, outputs, state.credits), (2, 3, 0));
+        assert!(queue.is_empty());
     }
 }
