@@ -645,6 +645,15 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return dec(v);
 }
 
+// `effects::crop_px` at one edge, `d` pixels inside it: alpha over `fe` pixels, or a half-pixel
+// antialiased edge when `fe` is 0.
+fn crop_ramp(d: f32, fe: f32) -> f32 {
+    if fe > 0.0 {
+        return clamp(d / fe, 0.0, 1.0);
+    }
+    return clamp(d + 0.5, 0.0, 1.0);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -718,14 +727,10 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             return vec4(select(o.rgb, sharpened, abs(d) >= vec3(th * o.a)), o.a);
         }
         case OP_CROP: {
-            let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;
-            let d = min(min(pc.x - x0, x1 - pc.x), min(pc.y - y0, y1 - pc.y));
-            var a: f32;
-            if fe > 0.0 {
-                a = clamp(d / fe, 0.0, 1.0);
-            } else {
-                a = clamp(d + 0.5, 0.0, 1.0);
-            }
+            // rectangle p0 = (x0, x1, y0, y1), feather per edge p1 = (left, right, top, bottom)
+            let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1;
+            let ax = min(crop_ramp(pc.x - x0, fe.x), crop_ramp(x1 - pc.x, fe.y));
+            let a = min(ax, min(crop_ramp(pc.y - y0, fe.z), crop_ramp(y1 - pc.y, fe.w)));
             let o = ld(p);
             return select(o, o * a, a < 1.0);
         }

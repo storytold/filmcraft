@@ -544,19 +544,27 @@ pub(crate) fn warp_opt(img: &mut Image, f: impl Fn(f64, f64) -> Option<(f64, f64
 
 pub(crate) fn crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, feather: f32) {
     let (w, h) = (img.w as f32, img.h as f32);
-    crop_px(img, l * w, w * (1.0 - r), t * h, h * (1.0 - b), feather.max(0.0));
+    crop_px(img, l * w, w * (1.0 - r), t * h, h * (1.0 - b), crop_feather(l, t, r, b, feather.max(0.0)));
 }
 
-/// Fade alpha towards the edges of the rectangle x0..x1 × y0..y1 (working pixels): over `fe`
-/// pixels inside it, or a half-pixel antialiased edge when `fe` is 0.
-pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f32) {
+/// Crop's Edge Feather per edge of [`crop_px`] (left, right, top, bottom): `feather` along the
+/// sides the crop cuts, 0 (a hard edge) along a side it leaves at 0% (#4543).
+pub(crate) fn crop_feather(l: f32, t: f32, r: f32, b: f32, feather: f32) -> [f32; 4] {
+    [l, r, t, b].map(|c| if c > 0.0 { feather } else { 0.0 })
+}
+
+/// Fade alpha towards the edges of the rectangle x0..x1 × y0..y1 (working pixels). `fe` is a
+/// feather per edge (left, right, top, bottom): over that many pixels inside the edge, or a
+/// half-pixel antialiased edge where it is 0. A pixel takes the lowest alpha of the four edges.
+pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: [f32; 4]) {
+    let ramp = |d: f32, fe: f32| if fe > 0.0 { (d / fe).clamp(0.0, 1.0) } else { (d + 0.5).clamp(0.0, 1.0) };
     let wi = img.w;
     img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
         let py = y as f32 + 0.5;
+        let ay = ramp(py - y0, fe[2]).min(ramp(y1 - py, fe[3]));
         for x in 0..wi {
             let px = x as f32 + 0.5;
-            let d = (px - x0).min(x1 - px).min(py - y0).min(y1 - py);
-            let a = if fe > 0.0 { (d / fe).clamp(0.0, 1.0) } else { (d + 0.5).clamp(0.0, 1.0) };
+            let a = ramp(px - x0, fe[0]).min(ramp(x1 - px, fe[1])).min(ay);
             if a < 1.0 {
                 for v in &mut row[x * 4..x * 4 + 4] {
                     *v *= a;
@@ -1127,6 +1135,65 @@ mod tests {
         e.params.get_mut("right").unwrap().value = ParamValue::Float(50.0);
         apply(&mut img, &e, &cx());
         assert_eq!(img.get(3, 0)[3], 0.0);
+    }
+
+    /// #4543: Crop's Edge Feather fades only along the edges the crop cuts. A side with 0% crop
+    /// stays hard (the feather used to fade towards every side of the frame), so the band along a
+    /// crop line runs the whole length of it. Edge Feather, its own effect, still fades all four
+    /// frame edges.
+    #[test]
+    fn crop_feather_fades_only_the_cropped_edges() {
+        let (w, h) = (40, 20);
+        let run = |id: &str, set: &[(&str, f64)]| {
+            let mut img = Image::filled(w, h, [1.0; 4]);
+            let mut e = find_effect(id).unwrap().instance();
+            for (k, v) in set {
+                e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+            }
+            apply(&mut img, &e, &cx());
+            img
+        };
+        // Left and Right 25% (crop lines at x 10 and 30) with a 4 px feather: every row, the top
+        // and bottom ones included, ramps over 4 px inside each crop line and is opaque between
+        let img = run("crop", &[("left", 25.0), ("right", 25.0), ("feather", 4.0)]);
+        let mut row = vec![1.0f32; w];
+        row[..10].fill(0.0);
+        row[10..14].copy_from_slice(&[0.125, 0.375, 0.625, 0.875]);
+        row[26..30].copy_from_slice(&[0.875, 0.625, 0.375, 0.125]);
+        row[30..].fill(0.0);
+        for y in 0..h {
+            assert_eq!((0..w).map(|x| img.get(x, y)[3]).collect::<Vec<_>>(), row, "alpha of row {y}");
+        }
+        // Top 25% only (crop line at y 5) with a 2 px feather: only the top fades, every column
+        // alike; the left, right and bottom stay hard
+        let img = run("crop", &[("top", 25.0), ("feather", 2.0)]);
+        let mut col = vec![1.0f32; h];
+        col[..5].fill(0.0);
+        col[5..7].copy_from_slice(&[0.25, 0.75]);
+        for x in 0..w {
+            assert_eq!((0..h).map(|y| img.get(x, y)[3]).collect::<Vec<_>>(), col, "alpha of column {x}");
+        }
+        let img = run("edge_feather", &[("amount", 20.0)]);
+        for (x, y) in [(w / 2, 0), (w / 2, h - 1), (0, h / 2), (w - 1, h / 2)] {
+            assert!(img.get(x, y)[3] < 1.0, "Edge Feather left the frame edge at ({x}, {y}) hard");
+        }
+    }
+
+    /// #4543: hostile Crop values (NaN, infinite, negative, huge) on any side or the feather
+    /// neither panic nor leave a non-finite or out-of-range alpha.
+    #[test]
+    fn crop_feather_survives_hostile_values() {
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 1e30] {
+            for k in ["left", "top", "right", "bottom", "feather"] {
+                let mut img = Image::filled(8, 6, [1.0; 4]);
+                let mut e = find_effect("crop").unwrap().instance();
+                e.params.get_mut("right").unwrap().value = ParamValue::Float(20.0);
+                e.params.get_mut("feather").unwrap().value = ParamValue::Float(3.0);
+                e.params.get_mut(k).unwrap().value = ParamValue::Float(v);
+                apply(&mut img, &e, &cx());
+                assert!(img.px.iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)), "{k} = {v}: {:?}", img.px);
+            }
+        }
     }
 
     #[test]
