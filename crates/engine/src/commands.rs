@@ -5354,12 +5354,19 @@ fn project_name_for(path: &str) -> Option<String> {
     (!stem.is_empty()).then_some(stem)
 }
 
-fn name_project(p: &mut filmcraft_project::Project, name: String) {
+pub(crate) fn name_project(p: &mut filmcraft_project::Project, name: String) {
     p.root.name.clone_from(&name);
     p.name = name;
 }
 
 fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+    if is_premiere_project_path(path) {
+        return crate::premiere::save_document(s, path, adopt);
+    }
+    // Saving as FilmCraft leaves the Premiere XML behind: further Saves go to `.fcproj`.
+    if adopt {
+        s.premiere_native = None;
+    }
     let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt
@@ -5399,6 +5406,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // Callers that open a Premiere project re-attach `premiere_native` after this.
+    s.premiere_native = None;
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
@@ -5430,7 +5439,15 @@ pub(crate) fn install_project(s: &mut Session, mut proj: filmcraft_project::Proj
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
+fn is_premiere_project_path(path: &str) -> bool {
+    crate::premiere::is_project(path)
+}
+
 fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+    if is_premiere_project_path(path) {
+        crate::masks::discard_jobs(s);
+        return crate::premiere::open_document(s, path);
+    }
     let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());

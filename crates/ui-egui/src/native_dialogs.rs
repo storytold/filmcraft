@@ -45,8 +45,8 @@ pub enum FileDialog {
     OpenFile { filter: String, exts: Vec<String> },
     /// Choose a FilmCraft project to open.
     OpenProject,
-    /// Save a FilmCraft project, suggesting `name`.
-    SaveProject { name: String },
+    /// Save a project, suggesting `name`. `default_ext` (`fcproj` or `prproj`) is the first Save-as-type filter and the extension added to a bare name; the other project type stays selectable.
+    SaveProject { name: String, default_ext: String },
     /// Save a file, suggesting `name`.
     SaveAs { filter: String, exts: Vec<String>, name: String, adds_ext: bool },
     /// Choose a folder, starting at `at` when there is one.
@@ -107,11 +107,19 @@ impl FileDialog {
         Self::SaveAs { filter: filter.to_string(), exts: strings(exts), name: name.to_string(), adds_ext: false }
     }
 
+    /// Save Project dialog for the live document: `default_ext` is `prproj` when that is the open format, else `fcproj`.
+    pub fn save_project(name: impl Into<String>, default_ext: &str) -> Self {
+        let default_ext = if default_ext.eq_ignore_ascii_case("prproj") { "prproj" } else { "fcproj" };
+        Self::SaveProject { name: name.into(), default_ext: default_ext.to_string() }
+    }
+
     /// The extensions a file saved through this dialog ends in (see [`with_save_extension`]);
     /// `None` for dialogs that don't save, or that accept any name.
-    fn save_extensions(&self) -> Option<Vec<String>> {
+    pub(crate) fn save_extensions(&self) -> Option<Vec<String>> {
         match self {
-            Self::SaveProject { .. } => Some(vec!["fcproj".to_string()]),
+            // Preferred format first (bare names); the other stays accepted when the user switches type.
+            Self::SaveProject { default_ext, .. } if default_ext.eq_ignore_ascii_case("prproj") => Some(vec!["prproj".to_string(), "fcproj".to_string()]),
+            Self::SaveProject { .. } => Some(vec!["fcproj".to_string(), "prproj".to_string()]),
             Self::SaveAs { exts, adds_ext: true, .. } if exts.iter().any(|e| !e.is_empty() && e != "*") => Some(exts.clone()),
             _ => None,
         }
@@ -138,7 +146,7 @@ impl FileDialog {
             Self::OpenFiles { exts } => hooks.pick_files.as_mut().map(|f| f(&refs(&exts))).unwrap_or_default(),
             Self::OpenFile { filter, exts } => one(hooks.pick_open_file.as_mut().and_then(|f| f(&filter, &refs(&exts)))),
             Self::OpenProject => one(hooks.pick_open_project.as_mut().and_then(|f| f())),
-            Self::SaveProject { name } => one(hooks.pick_save.as_mut().and_then(|f| f(&name))),
+            Self::SaveProject { name, default_ext } => one(hooks.pick_save.as_mut().and_then(|f| f(&name, &default_ext))),
             Self::SaveAs { filter, exts, name, .. } => one(hooks.pick_save_as.as_mut().and_then(|f| f(&filter, &refs(&exts), &name))),
             Self::Folder { at } => one(match (at, hooks.pick_folder_at.as_mut()) {
                 (Some(dir), Some(f)) => f(&dir),
@@ -283,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_saved_name_gets_the_first_extension_unless_it_has_one_of_them() {
-        let project = exts(&["fcproj"]);
+        let project = exts(&["fcproj", "prproj"]);
         assert_eq!(with_save_extension("/edits/cut", &project), "/edits/cut.fcproj");
         assert_eq!(with_save_extension("/edits/cut.", &project), "/edits/cut.fcproj");
         assert_eq!(with_save_extension("/edits/a.filmcraft", &project), "/edits/a.filmcraft.fcproj");
@@ -291,6 +299,11 @@ mod tests {
         for kept in ["/edits/cut.fcproj", "/edits/CUT.FCPROJ", "/edits/Cut.FcProj", r"C:\Edits\cut.fcproj"] {
             assert_eq!(with_save_extension(kept, &project), kept);
         }
+        // either project type is kept when the user switched Save-as-type
+        assert_eq!(with_save_extension("/edits/cut.prproj", &project), "/edits/cut.prproj");
+        let premiere = exts(&["prproj", "fcproj"]);
+        assert_eq!(with_save_extension("/edits/cut", &premiere), "/edits/cut.prproj");
+        assert_eq!(with_save_extension("/edits/cut.fcproj", &premiere), "/edits/cut.fcproj");
         // any of several extensions is kept; none gets the first
         let captions = exts(&["srt", "vtt", "scc"]);
         assert_eq!(with_save_extension("/c/subs.vtt", &captions), "/c/subs.vtt");
@@ -302,5 +315,14 @@ mod tests {
         for odd in ["", ".", "/", "é.", "🦀", ".fcproj"] {
             let _ = with_save_extension(odd, &project);
         }
+    }
+
+    #[test]
+    fn save_project_orders_extensions_by_the_open_format() {
+        use super::FileDialog;
+        let fc = FileDialog::save_project("cut.fcproj", "fcproj");
+        assert_eq!(fc.save_extensions().as_deref(), Some(["fcproj".to_string(), "prproj".to_string()].as_slice()));
+        let pr = FileDialog::save_project("cut.prproj", "prproj");
+        assert_eq!(pr.save_extensions().as_deref(), Some(["prproj".to_string(), "fcproj".to_string()].as_slice()));
     }
 }

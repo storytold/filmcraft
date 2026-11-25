@@ -72,6 +72,11 @@ mod markers;
 #[path = "premiere_items.rs"]
 mod items;
 
+#[path = "premiere_native.rs"]
+mod native;
+
+pub use native::{NativeBindings, NativeSource, encode, expand, read_native, retains_unknown_elements, sync_from_project};
+
 /// What [`read`] found in a project; an import keeps it as its provenance source tree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
@@ -239,6 +244,12 @@ pub struct Item {
     pub motion_keys: BTreeMap<String, Param>,
     /// Its head and tail transitions.
     pub transitions: Vec<SourceTransition>,
+    /// The VideoClip / AudioClip ObjectID (`InPoint` / `OutPoint`), when the SubClip names one.
+    #[serde(default)]
+    pub clip_object_id: Option<String>,
+    /// The Media ObjectUID the clip plays, when its source is a media file.
+    #[serde(default)]
+    pub media_uid: Option<String>,
 }
 
 /// Generated media: the four-character code Premiere stores as its file path (`BLAK` is stored
@@ -745,6 +756,8 @@ struct ItemSource {
     adjustment_layer: Option<String>,
     nested_sequence: Option<String>,
     media_markers: Vec<filmcraft_project::Marker>,
+    /// Media ObjectUID when the source is a `Media` element.
+    media_uid: Option<String>,
 }
 
 /// State shared while reading a document's sequences: the object index and link groups, the work
@@ -963,6 +976,8 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             effects: parts.effects,
             motion: parts.motion,
             transitions,
+            clip_object_id: clip.and_then(|c| c.attribute("ObjectID")).map(str::to_string),
+            media_uid: source.media_uid,
         }))
     }
 
@@ -1130,15 +1145,18 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             None => {}
         }
         let mut media_path = target.filter(|n| n.has_tag_name("Media")).and_then(|n| media_path(n, self.base_dir));
+        let mut media_uid = target.filter(|n| n.has_tag_name("Media")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
         let mut nested_sequence = target.filter(|n| n.has_tag_name("Sequence")).and_then(|n| n.attribute("ObjectUID")).map(str::to_string);
         if adjustment_layer.is_some() {
             media_path = None;
+            media_uid = None;
             nested_sequence = None;
         }
         if parts.graphic {
             // Generated graphic media may have an internal numeric pseudo-path.
             // It is a native canvas, not a missing filesystem asset.
             media_path = None;
+            media_uid = None;
             nested_sequence = None;
         }
         if media_path.is_none()
@@ -1150,12 +1168,14 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             && parts.text.is_none()
         {
             (media_path, nested_sequence) = self.title_fallback(label);
+            // Title fallback has no ObjectUID; Save cannot patch that media by uid.
+            media_uid = None;
         }
         if let Some(path) = &media_path {
             *self.work = self.work.checked_sub(path.len() / 64).ok_or_else(|| error("media reference work limit exceeded"))?;
         }
         let media_markers = if media_path.is_some() { self.media_markers(master, label, skipped)? } else { Vec::new() };
-        Ok(ItemSource { media_path, synthetic, adjustment_layer, nested_sequence, media_markers })
+        Ok(ItemSource { media_path, synthetic, adjustment_layer, nested_sequence, media_markers, media_uid })
     }
 
     /// The media path or nested sequence an unresolved source reference names by its title. A
@@ -1224,6 +1244,16 @@ fn validate_nesting(sequences: &[Sequence]) -> Result<()> {
 /// Build native sequences, preserving nesting and exact ticks. An explicit frame-rate override
 /// wins over each sequence's video track group rate; only absent rates use a warned 24 fps fallback.
 pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Result<(Imported, Document, Report)> {
+    import_into(bytes, opts, rate, None)
+}
+
+/// [`import`], optionally recording FilmCraft ↔ Premiere id bindings for native open/save.
+pub fn import_into(
+    bytes: &[u8],
+    opts: &ImportOptions,
+    rate: Option<FrameRate>,
+    mut bindings: Option<&mut NativeBindings>,
+) -> Result<(Imported, Document, Report)> {
     let mut report = Report::default();
     let doc = read(bytes, opts.base_dir.as_deref(), &mut report)?;
     let mut b = Builder::new(opts.name.as_deref().unwrap_or("Premiere import"));
@@ -1238,10 +1268,13 @@ pub fn import(bytes: &[u8], opts: &ImportOptions, rate: Option<FrameRate>) -> Re
         settings.validate().map_err(error)?;
         let id = b.reserve_sequence(&seq.name, settings, None);
         sequences.insert(seq.object_uid.clone(), id);
+        if let Some(bindings) = bindings.as_deref_mut() {
+            bindings.note_sequence(id, &seq.object_uid);
+        }
         b.top.push(id);
     }
     for src in &doc.sequences {
-        let seq = native_sequence(src, rate, &mut b, &mut report, &sequences)?;
+        let seq = native_sequence(src, rate, &mut b, &mut report, &sequences, bindings.as_deref_mut())?;
         if let Some(id) = sequences.get(&src.object_uid) {
             b.put_sequence(*id, seq);
         }
@@ -1258,11 +1291,12 @@ fn native_sequence(
     b: &mut Builder,
     report: &mut Report,
     sequences: &BTreeMap<String, ItemId>,
+    bindings: Option<&mut NativeBindings>,
 ) -> Result<filmcraft_project::Sequence> {
     let fps = rate.or(src.frame_rate).unwrap_or(FrameRate::FPS_24);
     let mut settings = settings_for(fps, src.width, src.height, false);
     settings.sample_rate = src.sample_rate.unwrap_or(48000);
-    let mut build = SequenceImport { b, report, sequences, src, fps, seq: empty_sequence(settings), link_ids: BTreeMap::new() };
+    let mut build = SequenceImport { b, report, sequences, src, fps, seq: empty_sequence(settings), link_ids: BTreeMap::new(), bindings };
     if src.work_out > Tick::ZERO {
         build.seq.work_area = Some(filmcraft_time::TimeRange::new(Tick::ZERO, src.work_out));
     }
@@ -1291,6 +1325,7 @@ struct SequenceImport<'b> {
     seq: filmcraft_project::Sequence,
     /// The native link id of each source link group.
     link_ids: BTreeMap<String, u64>,
+    bindings: Option<&'b mut NativeBindings>,
 }
 
 impl SequenceImport<'_> {
@@ -1402,6 +1437,9 @@ impl SequenceImport<'_> {
             m.offline = true;
         }
         attach_markers(self.b, id, &item.media_markers);
+        if let (Some(bindings), Some(uid)) = (self.bindings.as_deref_mut(), item.media_uid.as_deref()) {
+            bindings.note_media(id, uid);
+        }
         if item.media_path.is_none() {
             warning(self.report, format!("{}: media unresolved; kept offline placeholder", item.label));
         }
@@ -1444,6 +1482,9 @@ impl SequenceImport<'_> {
         }
         for (key, param) in &item.motion_keys {
             set_param(&mut clip, "motion", &key.to_ascii_lowercase(), motion::in_pixels(param.clone(), self.src.width, self.src.height));
+        }
+        if let Some(bindings) = self.bindings.as_deref_mut() {
+            bindings.note_track_item(clip.id, &item.object_id, item.clip_object_id.as_deref());
         }
         clip
     }
@@ -2073,6 +2114,8 @@ mod tests {
             motion: BTreeMap::new(),
             motion_keys: BTreeMap::new(),
             transitions: vec![],
+            clip_object_id: None,
+            media_uid: None,
         };
         let mut seqs = Vec::new();
         for i in 0..65 {

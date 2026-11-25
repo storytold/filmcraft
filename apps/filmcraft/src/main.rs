@@ -408,12 +408,19 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }));
-        app.hooks.pick_save = Some(Box::new(|name: &str| {
-            rfd::FileDialog::new()
-                .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
-                .set_file_name(name)
-                .save_file()
-                .map(|p| p.to_string_lossy().to_string())
+        app.hooks.pick_save = Some(Box::new(|name: &str, default_ext: &str| {
+            // First filter is the dialog's default Save-as-type (matches the open document).
+            let fc_name = filmcraft_ui_egui::i18n::t("FilmCraft Project");
+            let pr_name = filmcraft_ui_egui::i18n::t("Premiere project");
+            let fc_exts = file_filters::extensions(&["fcproj"]);
+            let pr_exts = file_filters::extensions(&["prproj"]);
+            let mut dialog = rfd::FileDialog::new();
+            dialog = if default_ext.eq_ignore_ascii_case("prproj") {
+                dialog.add_filter(pr_name, &pr_exts).add_filter(fc_name, &fc_exts)
+            } else {
+                dialog.add_filter(fc_name, &fc_exts).add_filter(pr_name, &pr_exts)
+            };
+            dialog.set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
         }));
         app.hooks.pick_save_as = Some(Box::new(|filter: &str, exts: &[&str], name: &str| {
             // a full path (Quick Export, Export mode) opens the dialog in its folder
@@ -459,7 +466,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         app.hooks.pick_open_project = Some(Box::new(|| {
             rfd::FileDialog::new()
+                // Default: every project type `file.open` understands.
+                .add_filter(filmcraft_ui_egui::i18n::t("Projects"), &file_filters::extensions(&["fcproj", "prproj"]))
                 .add_filter(filmcraft_ui_egui::i18n::t("FilmCraft Project"), &file_filters::extensions(&["fcproj"]))
+                .add_filter(filmcraft_ui_egui::i18n::t("Premiere project"), &file_filters::extensions(&["prproj"]))
                 // #1644: where the system MIME database doesn't know `.fcproj`, the project
                 // filter hides every saved project; "All files" keeps them reachable.
                 .add_filter(filmcraft_ui_egui::i18n::t("All files"), &file_filters::all_files())
@@ -614,10 +624,14 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
     use filmcraft_ui_egui::native_dialogs::FileDialog;
     let t = |s: &str| filmcraft_ui_egui::i18n::t(s).to_string();
     let media = t("Media");
+    let projects = t("Projects");
     let project = t("FilmCraft Project");
+    let premiere = t("Premiere project");
     let all_files = t("All files");
     let all_files_exts = file_filters::all_files();
+    let projects_exts = open_project_patterns();
     let project_exts = project_patterns();
+    let premiere_exts = premiere_project_patterns();
     let dialog = prepare_dialog(dialog);
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn(move || {
@@ -630,7 +644,9 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                 FileDialog::OpenFile { filter, exts } => rfd::FileDialog::new().add_filter(&filter, &exts).pick_file().map(path).into_iter().collect(),
                 FileDialog::Relink { exts, .. } => rfd::FileDialog::new().add_filter(&media, &exts).pick_file().map(path).into_iter().collect(),
                 FileDialog::OpenProject => rfd::FileDialog::new()
+                    .add_filter(&projects, &projects_exts)
                     .add_filter(&project, &project_exts)
+                    .add_filter(&premiere, &premiere_exts)
                     // #1644: same "All files" fallback as the synchronous picker, so a
                     // project hidden by an unregistered `.fcproj` MIME type stays openable.
                     .add_filter(&all_files, &all_files_exts)
@@ -638,8 +654,15 @@ fn run_dialog_off_thread(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) 
                     .map(path)
                     .into_iter()
                     .collect(),
-                FileDialog::SaveProject { name } => {
-                    rfd::FileDialog::new().add_filter(&project, &project_exts).set_file_name(name).save_file().map(path).into_iter().collect()
+                FileDialog::SaveProject { name, default_ext } => {
+                    // Same filter order as the synchronous Save Project picker: open format first.
+                    let mut d = rfd::FileDialog::new();
+                    d = if default_ext.eq_ignore_ascii_case("prproj") {
+                        d.add_filter(&premiere, &premiere_exts).add_filter(&project, &project_exts)
+                    } else {
+                        d.add_filter(&project, &project_exts).add_filter(&premiere, &premiere_exts)
+                    };
+                    d.set_file_name(name).save_file().map(path).into_iter().collect()
                 }
                 FileDialog::SaveAs { filter, exts, name, .. } => {
                     rfd::FileDialog::new().add_filter(&filter, &exts).set_file_name(name).save_file().map(path).into_iter().collect()
@@ -684,10 +707,22 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
     }
 }
 
-/// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
+/// Open-dialog default: every project extension `file.open` understands.
+#[cfg(target_os = "linux")]
+fn open_project_patterns() -> Vec<String> {
+    file_filters::extensions(&["fcproj", "prproj"])
+}
+
+/// FilmCraft-only project filter (`EDIT.FCPROJ` included); Save Project lists this and Premiere, preferred format first.
 #[cfg(target_os = "linux")]
 fn project_patterns() -> Vec<String> {
     file_filters::extensions(&["fcproj"])
+}
+
+/// Premiere-only open-dialog filter (`EDIT.PRPROJ` included).
+#[cfg(target_os = "linux")]
+fn premiere_project_patterns() -> Vec<String> {
+    file_filters::extensions(&["prproj"])
 }
 
 #[cfg(test)]
@@ -754,9 +789,17 @@ mod tests {
             assert_eq!(exts.first().map(String::as_str), Some("mp4"), "the literal extension stays first (save suffix)");
             assert!(exts.iter().any(|e| e == "[mM][pP]4"), "{exts:?}");
         }
+        let open = super::open_project_patterns();
+        assert_eq!(open.first().map(String::as_str), Some("fcproj"));
+        assert!(open.iter().any(|e| e == "prproj"), "{open:?}");
+        assert!(open.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{open:?}");
+        assert!(open.iter().any(|e| e == "[pP][rR][pP][rR][oO][jJ]"), "{open:?}");
         let project = super::project_patterns();
         assert_eq!(project.first().map(String::as_str), Some("fcproj"));
         assert!(project.iter().any(|e| e == "[fF][cC][pP][rR][oO][jJ]"), "{project:?}");
+        let premiere = super::premiere_project_patterns();
+        assert_eq!(premiere.first().map(String::as_str), Some("prproj"));
+        assert!(premiere.iter().any(|e| e == "[pP][rR][pP][rR][oO][jJ]"), "{premiere:?}");
         // #1644: the Open Project dialog's "All files" fallback is a single `*`.
         assert_eq!(super::file_filters::all_files(), ["*"]);
     }

@@ -41,10 +41,12 @@ impl FilmcraftApp {
                 r
             }),
             "file.saveAs" | "file.save" | "file.saveCopy" => {
+                // Default Save-as-type matches the live document; the user can still pick the other project type.
+                let ext = if self.session.premiere_native.is_some() { "prproj" } else { "fcproj" };
                 let suggested =
-                    if id == "file.saveCopy" { format!("{} copy.fcproj", self.session.project.name) } else { format!("{}.fcproj", self.session.project.name) };
+                    if id == "file.saveCopy" { format!("{} copy.{ext}", self.session.project.name) } else { format!("{}.{ext}", self.session.project.name) };
                 let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
-                self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
+                self.pick(FileDialog::save_project(suggested, ext), move |app, paths| {
                     let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                     let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
                     match &r {

@@ -597,6 +597,8 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// When the open document is a Premiere `.prproj`, the expanded XML and id bindings for Save.
+    pub premiere_native: Option<premiere::NativeOpen>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -692,6 +694,7 @@ impl Session {
             command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
+            premiere_native: None,
         }
     }
 
@@ -1553,6 +1556,8 @@ mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
 
+#[cfg(test)]
+mod premiere_native_tests;
 #[cfg(test)]
 mod premiere_tests;
 

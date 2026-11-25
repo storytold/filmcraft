@@ -168,7 +168,10 @@ pub async fn import_blob(name: String, blob: web_sys::Blob) {
 /// Handle files from a picker or a drop: projects open, everything else is imported.
 pub fn take_files(files: Vec<web_sys::File>) {
     wasm_bindgen_futures::spawn_local(async move {
-        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.name().to_ascii_lowercase().ends_with(".fcproj"));
+        let (projects, media): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| {
+            let name = f.name().to_ascii_lowercase();
+            name.ends_with(".fcproj") || name.ends_with(".prproj")
+        });
         for p in projects {
             if let Err(e) = open_project_file(p).await {
                 crate::post(move |w, _| w.app.status(e));
@@ -283,11 +286,11 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
         Vec::new()
     }));
     app.hooks.pick_open_project = Some(Box::new(|| {
-        pick(&["fcproj"], false);
+        pick(&["fcproj", "prproj"], false);
         None
     }));
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
-    app.hooks.pick_save = Some(Box::new(|name: &str| Some(format!("/projects/{name}"))));
+    app.hooks.pick_save = Some(Box::new(|name: &str, _default_ext: &str| Some(format!("/projects/{name}"))));
     app.hooks.pick_save_as = Some(Box::new(|_filter: &str, _exts: &[&str], name: &str| {
         let file = std::path::Path::new(name).file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy);
         Some(format!("/exports/{file}"))

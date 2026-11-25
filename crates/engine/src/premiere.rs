@@ -719,6 +719,90 @@ fn observation_row(reference: &SourceMedia, observation: Observation) -> Value {
     row
 }
 
+/// Live `.prproj` document kept beside the FilmCraft project for File → Save round-trip.
+#[derive(Clone, Debug)]
+pub struct NativeOpen {
+    /// Expanded Premiere XML (unknown elements retained).
+    pub source: filmcraft_interchange::premiere::NativeSource,
+    /// FilmCraft ↔ Premiere ObjectID / ObjectUID map.
+    pub bindings: filmcraft_interchange::premiere::NativeBindings,
+    /// Whether the file on disk was gzip-compressed when opened (Save writes the same).
+    pub gzip: bool,
+}
+
+/// Open a `.prproj` as the session's live document (not an import into a new `.fcproj`).
+pub fn open_document(s: &mut Session, path: &str) -> Result<Value> {
+    let source_path = Path::new(path);
+    let bytes = filmcraft_interchange::premiere::read_input(std::fs::File::open(source_path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?)
+        .map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let gzip = bytes.starts_with(&[0x1f, 0x8b]);
+    let opts = ImportOptions {
+        base_dir: source_path.parent().map(stored_path),
+        name: source_path.file_stem().map(|p| p.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let mut bindings = filmcraft_interchange::premiere::NativeBindings::default();
+    let (fragment, _tree, report) =
+        filmcraft_interchange::premiere::import_into(&bytes, &opts, None, Some(&mut bindings)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let source = filmcraft_interchange::premiere::expand(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    crate::commands::install_project(s, fragment.project, Some(path.to_string()), true);
+    s.premiere_native = Some(NativeOpen { source, bindings, gzip });
+    if let Some(seq) = s.state.active_sequence {
+        s.events.push(crate::Event::OpenSequence(seq));
+    }
+    s.note_recent_project();
+    let missing = crate::relink::on_open(s);
+    let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
+    if !warnings.is_empty() {
+        s.toast(format!("Opened Premiere project with {} warning(s); Save writes mapped fields back into the .prproj", warnings.len()));
+    }
+    Ok(json!({
+        "path": path,
+        "format": "prproj",
+        "gzip": gzip,
+        "missingMedia": missing,
+        "warnings": warnings,
+        "native": true,
+    }))
+}
+
+/// Save the live project into a `.prproj`, patching mapped fields and retaining unmodeled XML.
+pub fn save_document(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+    let t0 = web_time::Instant::now();
+    let Some(native) = s.premiere_native.as_mut() else {
+        return Err(EngineError::Other("no Premiere project is open for native save; open a .prproj first or use Save As to a .fcproj".into()));
+    };
+    let mut report = filmcraft_interchange::Report::default();
+    filmcraft_interchange::premiere::sync_from_project(&mut native.source, &native.bindings, &s.project, &mut report)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
+    let gzip = native.gzip;
+    let bytes = filmcraft_interchange::premiere::encode(&native.source, gzip).map_err(|e| EngineError::Other(e.to_string()))?;
+    s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
+    for w in &warnings {
+        s.log.push(crate::panels::Level::Warning, "premiere.save", w.clone());
+    }
+    if adopt {
+        if let Some(name) = Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned())
+            && s.project.name != name
+        {
+            crate::commands::name_project(std::sync::Arc::make_mut(&mut s.project), name);
+        }
+        s.path = Some(path.to_string());
+        s.previews_follow_path();
+        s.note_recent_project();
+        s.saved_revision = s.revision;
+    }
+    Ok(json!({
+        "path": path,
+        "format": "prproj",
+        "bytes": bytes.len(),
+        "ms": t0.elapsed().as_secs_f64() * 1000.0,
+        "warnings": warnings,
+        "native": true,
+    }))
+}
+
 /// The Premiere commands: `premiere.import` and `premiere.hashMedia`.
 pub fn commands() -> Vec<CommandSpec> {
     vec![
