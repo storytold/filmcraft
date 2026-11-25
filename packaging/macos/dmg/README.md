@@ -2,8 +2,8 @@
 
 What Finder shows when the DMG opens: a 660 × 400 pt background with the app icon and the
 `Applications` link side by side. `package.sh` copies these files into the image; nothing here is
-generated at build time, so the DMG still builds with `hdiutil makehybrid` (no mounted device, no
-Finder scripting on CI, nothing extra installed in the signing job).
+generated at build time, so the DMG builds with a plain `hdiutil create -srcfolder` (no Finder
+scripting on CI, nothing extra installed in the signing job).
 
 | File | What |
 |---|---|
@@ -18,6 +18,20 @@ The mounted volume is called `FilmCraft`, not `FilmCraft <version>`. The layout 
 through an alias that includes the volume name, and Finder resolves it by that name: with a
 versioned name the window keeps its size and icon positions but shows no background (tested).
 The DMG file name (`filmcraft-<version>-macos-<arch>.dmg`) still carries the version.
+
+## `hdiutil create`, not `makehybrid`
+
+`hdiutil makehybrid -hfs` gives every file and folder on the volume a `com.apple.FinderInfo` (a
+Finder location of -1,-1), even when the staged files have none. `codesign --verify --strict`
+rejects it on the app in the image and on every copy installed from it ("resource fork, Finder
+information, or similar detritus not allowed", #882), though Gatekeeper accepts the app.
+`hdiutil create -srcfolder` writes the files as they are. `package.sh` checks the app in the
+finished image (`check_dmg_app` in `../dmg.sh`), and `../dmg-test.sh` tests both ways.
+
+The one thing `create` can't do is `makehybrid -hfs-openfolder`, which listed the volume's root as
+its first open folder. Opening the window doesn't depend on it: double-clicking a read-only disk
+image opens its volume in the Finder (hdiutil(1), `auto-open-ro-root`). The window's background,
+icon size and positions come from `.DS_Store`, as before.
 
 ## Rules
 
