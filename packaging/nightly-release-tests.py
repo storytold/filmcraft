@@ -721,13 +721,16 @@ class LinuxNightlyTarTemplate(unittest.TestCase):
         self.assertIn('dir=$(CDPATH=\'\' cd -- "$(dirname -- "$0")" && pwd -P)', source)
         self.assertIn('target="$dir/filmcraft-bin"', source)
         self.assertIn('profile_root="${XDG_DATA_HOME:-$HOME/.local/share}/ai.storyteller.filmcraft.nightly"', source)
-        # One version query form, then the launch profile: no pass-through and no caller `--` rule.
+        # The Launcher's own profile line passes through; a version query answers with one plain
+        # `--version`; every other argument is wrapped in the fixed profile.
+        self.assertIn('  --launch-profile) exec "$target" "$@" ;;', source)
         self.assertIn('  --version | -V) exec "$target" --launch-profile nightly-v1 --profile-root "$profile_root" --version ;;', source)
         self.assertIn('exec "$target" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"', source)
         for placeholder in ("@BINARY@", "@APP_ID@"):
             self.assertNotIn(placeholder, source, "the template is rendered, not a placeholder")
         self.assertEqual([line for line in source.splitlines() if "--launch-profile" in line],
-                         ['  --version | -V) exec "$target" --launch-profile nightly-v1 --profile-root "$profile_root" --version ;;',
+                         ['  --launch-profile) exec "$target" "$@" ;;',
+                          '  --version | -V) exec "$target" --launch-profile nightly-v1 --profile-root "$profile_root" --version ;;',
                           'exec "$target" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"'])
 
     def test_no_linux_wrapper_routes_the_profile_through_the_environment(self):

@@ -45,10 +45,13 @@ expect "$(launch -- --version)" -- --version
 # Both version spellings reach the GUI as one plain `--version`.
 expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" --version)" --version
 expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$profile" --version)" -V
-# The template has no pass-through: a command line that already names a profile is wrapped, and the
-# template's own root is the one the GUI starts with.
-expect "$(launch --launch-profile nightly-v1 --profile-root /launcher/profile -- a.fcproj)" \
-  --launch-profile nightly-v1 --profile-root /launcher/profile -- a.fcproj
+# The ArtCraft Launcher starts the entry point with its own profile pair and per-install root; the
+# template hands that line to the GUI unchanged.
+expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root '/launcher profile' -- a.fcproj)" \
+  --launch-profile nightly-v1 --profile-root '/launcher profile' -- a.fcproj
+# Anything else is wrapped in the template's own root, including a profile line that does not open
+# the arguments.
+expect "$(launch --profile-root /launcher/profile --)" --profile-root /launcher/profile --
 # XDG_DATA_HOME decides the root when it is set.
 XDG_DATA_HOME="$work/xdg with space" expect "$(printf '<%s>\n' --launch-profile nightly-v1 --profile-root "$work/xdg with space/$identity" -- b.fcproj)" b.fcproj
 # Nothing but the GUI beside the script is started, and no data folder means no launch.
