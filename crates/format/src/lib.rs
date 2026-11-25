@@ -55,6 +55,11 @@ pub use atomic::{atomic_write, atomic_write_new};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
+/// The `format` tag of a project that carries workflow provenance (`Project::workflow`). Builds that
+/// do not know it refuse the file instead of silently dropping the records when they save it.
+/// Everything else about the envelope is [`FORMAT_ID`]'s; plain projects keep that tag.
+pub const WORKFLOW_FORMAT_ID: &str = "filmcraft.project.workflow";
+
 /// Largest project file this build will read (256 MiB). Project JSON is read whole, so
 /// larger files would commit several times their size in memory before validation.
 pub const MAX_PROJECT_BYTES: u64 = 256 << 20;
@@ -99,7 +104,24 @@ pub fn encode(project: &Project, pretty: bool) -> Vec<u8> {
 /// outside the schema's promises: builds that do not know it ignore it, and it is dropped rather
 /// than migrated when it cannot be read.
 pub fn encode_with_view(project: &Project, view: Option<&ProjectView>, pretty: bool) -> Vec<u8> {
-    craft_fcproj_format::encode(project, view, generator(), pretty)
+    let bytes = craft_fcproj_format::encode(project, view, generator(), pretty);
+    if project.workflow.is_none() {
+        return bytes;
+    }
+    retag(&bytes, FORMAT_ID, WORKFLOW_FORMAT_ID, pretty).unwrap_or(bytes)
+}
+
+/// `bytes` with the envelope's `format` tag changed from `from` to `to`, or `None` when the
+/// document is not an envelope tagged `from`. Only projects with workflow provenance take this
+/// path, on save and on open.
+fn retag(bytes: &[u8], from: &str, to: &str, pretty: bool) -> Option<Vec<u8>> {
+    let mut doc: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let format = doc.get_mut("format")?;
+    if format.as_str() != Some(from) {
+        return None;
+    }
+    *format = serde_json::Value::String(to.to_string());
+    if pretty { serde_json::to_vec_pretty(&doc) } else { serde_json::to_vec(&doc) }.ok()
 }
 
 /// Read a project file (any supported schema).
@@ -107,13 +129,26 @@ pub fn decode(bytes: &[u8]) -> Result<Loaded, FormatError> {
     if bytes.len() as u64 > MAX_PROJECT_BYTES {
         return Err(FormatError::Corrupt(format!("project file is {} bytes, over the {MAX_PROJECT_BYTES} byte limit", bytes.len())));
     }
-    let (env, found) = craft_fcproj_format::decode::<Project>(bytes)?;
+    let (env, found) = match craft_fcproj_format::decode::<Project>(bytes) {
+        Ok(decoded) => decoded,
+        // The shared envelope reader knows only the plain tag: a project with workflow provenance
+        // is read as one after its tag is switched back.
+        Err(e) => match retag(bytes, WORKFLOW_FORMAT_ID, FORMAT_ID, false) {
+            Some(plain) => craft_fcproj_format::decode::<Project>(&plain)?,
+            None => return Err(e),
+        },
+    };
     validate_loaded(loaded(env, found))
 }
 
 /// Refuse only values that would overflow or exhaust memory later (`Sequence::check_bounds`);
 /// structural rules such as overlaps are left to the editor, so projects that open today still open.
 fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
+    if let Some(workflow) = &loaded.project.workflow
+        && workflow.version != 1
+    {
+        return Err(FormatError::Corrupt(format!("unsupported workflow record version {} (supported: 1)", workflow.version)));
+    }
     // Graphic layers written before they carried a uid get a stable identity now, before any
     // undo history exists. The field is optional in the schema, so this is not a schema upgrade.
     loaded.project.ensure_graphic_layer_uids();
