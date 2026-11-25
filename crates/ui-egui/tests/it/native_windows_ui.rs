@@ -4,6 +4,7 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use crate::support::demo_session;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
@@ -87,8 +88,7 @@ impl Driver {
     /// The demo project with a new sequence open and `source` in the Source Monitor.
     fn new(source: u64) -> Self {
         native_host();
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut s = demo_session();
         s.execute("file.newSequence", json!({"name": "Native", "width": 1280, "height": 720, "fps": 24})).unwrap();
         s.prefs.timeline.clip_mismatch_warning = false;
         s.execute("source.open", json!({"item": source})).unwrap();

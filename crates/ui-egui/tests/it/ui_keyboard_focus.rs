@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
+use crate::support::demo_session;
 use egui::{Event, Id, Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::{FilmcraftApp, dock::PanelKind, state::Tool};
-use serde_json::json;
 
 fn key(h: &mut Harness<'_, FilmcraftApp>, key: Key, modifiers: Modifiers) {
     for pressed in [true, false] {
@@ -20,12 +19,14 @@ fn key(h: &mut Harness<'_, FilmcraftApp>, key: Key, modifiers: Modifiers) {
 
 #[test]
 fn tab_traversal_and_space_select_only_the_focused_tool_with_visible_focus() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let project = session.project.clone();
     let playheads = session.state.playheads.clone();
     let app = FilmcraftApp::new(session);
-    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_eframe(crate::support::headless_creator(app));
+    let mut h = Harness::builder().with_size(vec2(1200.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     h.run_steps(4);
     h.state_mut().ui.dock = craft_behavior::dock::Layout::new(Some(craft_behavior::dock::Node::tabs(vec![PanelKind::Tools], 0)), Vec::new());
     h.run_steps(3);

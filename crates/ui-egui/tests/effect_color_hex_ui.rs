@@ -4,31 +4,19 @@
 //!
 //! Driven headless through the control channel, like the other UI tests.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
 use egui_kittest::kittest::{By, NodeT, Queryable};
-use filmcraft_engine::Session;
 use filmcraft_project::ClipId;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
+#[path = "it/support.rs"]
+mod support;
+use support::{Drive, Launch, builder, demo_session, driver};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with its first video clip selected and Effect Controls showing.
     fn demo() -> (Self, u64) {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
+        let mut d = Driver::open(demo_session(), builder());
         let seq = d.exec("sequence.inspect", json!({}));
         let clip = seq["video"][0]["items"][0]["clip"].as_u64().expect("a clip in the demo sequence");
         d.exec("timeline.select", json!({"clips": [clip]}));
@@ -36,26 +24,9 @@ impl Driver {
         d.frames(3);
         (d, clip)
     }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
     fn find(&mut self, id: &str) -> Option<[f64; 4]> {
         self.frames(2);
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id)?;
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        Some([r[0], r[1], r[2], r[3]])
+        self.element_rect(id)
     }
     fn click(&mut self, id: &str) {
         self.find(id).unwrap_or_else(|| panic!("no element {id}"));
@@ -187,5 +158,3 @@ fn every_keying_effect_with_a_color_parameter_has_the_field() {
         assert!(d.find(&id).is_some(), "no hex field for {effect}.{param}");
     }
 }
-
-mod support;

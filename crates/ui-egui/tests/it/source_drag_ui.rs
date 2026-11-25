@@ -1,17 +1,10 @@
+use super::support::step_repaint as step;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint(); // Direct engine edits in a harness do not wake the native event loop.
-    h.step();
-}
 fn harness(item: u64) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     // the demo's 1080p 23.976 clip doesn't match the empty 720p 24 fps sequence: these tests are

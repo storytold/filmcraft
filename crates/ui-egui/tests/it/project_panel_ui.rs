@@ -9,81 +9,29 @@
 
 #![allow(dead_code)]
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, build, builder, demo_footage, demo_session, driver, f32x4, snapshot_dir, with_snapshots};
 use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_engine::project_panel::{FREEFORM_POS, FREEFORM_STACK, ViewMode};
 use filmcraft_project::{BinEntry, ItemId};
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn with(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
+        Self::open(session, with_snapshots(builder()))
     }
-
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         Self::with(session)
     }
 
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        self.ids(id).iter().any(|i| i == id)
-    }
-
     fn rect(&mut self, id: &str) -> [f32; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r = &e["rect"];
-        [r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32, r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32]
+        f32x4(self.expect_rect(id))
     }
 
     fn label(&mut self, id: &str) -> String {
@@ -91,46 +39,18 @@ impl Driver {
         v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).and_then(|e| e["label"].as_str().map(str::to_string)).unwrap_or_default()
     }
 
-    /// Step frames until `id` is registered, for at most two minutes of wall-clock time.
-    fn wait_for(&mut self, id: &str) {
-        let t0 = std::time::Instant::now();
-        while t0.elapsed().as_secs() < 120 {
-            if self.has(id) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            self.frames(1);
-        }
-        panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
-    }
-
     fn key(&mut self, key: &str) {
         self.ok("ui.key", json!({"key": key}));
         self.frames(2);
     }
 
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     /// The demo's Footage bin and its media items.
     fn footage(&mut self) -> (u64, Vec<u64>) {
-        let p = &self.app().session.project;
-        let bin = p
-            .root
-            .children
-            .iter()
-            .find_map(|e| match e {
-                BinEntry::Bin(b) if b.name == "Footage" => Some(b.clone()),
-                _ => None,
-            })
-            .expect("Footage bin");
-        let items = bin.children.iter().filter_map(|e| if let BinEntry::Item(i) = e { Some(i.0) } else { None }).collect();
-        (bin.id.0, items)
+        demo_footage(self.app())
     }
 
     fn snapshot(&mut self, name: &str, prefix: Option<&str>) {
-        let Some(dir) = self.snapshots.clone() else { return };
+        let Some(dir) = snapshot_dir() else { return };
         let crop = prefix.map(|p| self.rect(p));
         self.frames(2);
         let img = match self.harness.render() {
@@ -1052,8 +972,7 @@ fn media_browser_list_clamps_a_hand_edited_column_width() {
 #[test]
 fn media_browser_drag_imports_into_the_project_panel() {
     let dir = media_dir("drag");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     // the Editing workspace has Project and Media Browser in one group: put the browser beside it
     d.ok("ui.set", json!({"workspace": "Editing"}));
@@ -1081,8 +1000,7 @@ fn media_browser_drag_imports_into_the_project_panel() {
 #[test]
 fn media_browser_drag_places_every_selected_file() {
     let dir = media_dir("drag-many");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     d.ok("ui.set", json!({"workspace": "Editing"}));
     d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
@@ -1168,12 +1086,8 @@ fn double_click_empty_area_imports_with_a_project_loaded() {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Vec::new()
         }));
-        let harness = Harness::builder()
-            .with_size(egui::vec2(1600.0, 980.0))
-            .with_step_dt(1.0 / 60.0)
-            .with_max_steps(10_000)
-            .build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, snapshots: None };
+        let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+        let mut d = Driver { harness, tx };
         d.frames(10);
         (d, picks)
     }
@@ -1241,12 +1155,8 @@ fn double_click_imports_with_audio_in_the_timeline() {
         seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Vec::new()
     }));
-    let harness = Harness::builder()
-        .with_size(egui::vec2(1600.0, 980.0))
-        .with_step_dt(1.0 / 60.0)
-        .with_max_steps(10_000)
-        .build_eframe(crate::support::headless_creator(app));
-    let mut d = Driver { harness, tx, snapshots: None };
+    let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+    let mut d = Driver { harness, tx };
     d.frames(10);
     let double_click = |d: &mut Driver, at: egui::Pos2| {
         let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
@@ -1438,8 +1348,7 @@ fn a_bin_in_the_selection_does_not_stop_the_items_being_placed() {
 #[test]
 fn escape_takes_back_a_media_browser_drag() {
     let dir = media_dir("drag-escape");
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut d = Driver::with(session);
     d.ok("ui.set", json!({"workspace": "Editing"}));
     d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));

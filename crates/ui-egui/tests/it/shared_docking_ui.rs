@@ -1,5 +1,6 @@
 //! Shared docking preserves FilmCraft document state and legacy workspace files.
 
+use crate::support::demo_session;
 use craft_behavior::dock::{Action, DockPlacement, DockSide, Node, SplitSize, Target};
 use craft_behavior::flow::Axis;
 use egui::{Event, Modifiers, PointerButton, Rect, pos2, vec2};
@@ -34,7 +35,10 @@ fn context() -> egui::Context {
 
 /// The app in a harness of `size`, with the framework runtime installed.
 fn harness(size: egui::Vec2, app: FilmcraftApp) -> Harness<'static, FilmcraftApp> {
-    Harness::builder().with_size(size).build_eframe(crate::support::headless_creator(app))
+    Harness::builder().with_size(size).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    })
 }
 
 /// Whether a panel is in the docked frame tree (not a floating window).
@@ -250,15 +254,17 @@ fn maximize_frame_round_trip(h: &mut Harness<'_, FilmcraftApp>, action_log: &mut
 
 #[test]
 fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let app = FilmcraftApp::new(session);
     let snapshots = std::env::var_os("CRAFT_UI_DOCKING_SNAPSHOT_DIR").map(std::path::PathBuf::from);
     let mut builder = Harness::builder().with_size(vec2(1200.0, 760.0));
     if snapshots.is_some() {
         builder = builder.wgpu();
     }
-    let mut h = builder.build_eframe(crate::support::headless_creator(app));
+    let mut h = builder.build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        app
+    });
     for _ in 0..4 {
         step(&mut h);
     }
@@ -519,8 +525,7 @@ fn unreadable_floating_workspace_does_not_erase_valid_workspaces_or_current_name
 
 #[test]
 fn floating_tts_and_timeline_reveal_keeps_one_owner_and_draft_without_project_edits() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let mut app = FilmcraftApp::new(session);
     app.ui.tts.text = "Synthetic retained narration".into();
     app.show_panel(PanelKind::TextToSpeech);
@@ -549,8 +554,7 @@ fn floating_tts_and_timeline_reveal_keeps_one_owner_and_draft_without_project_ed
 
 #[test]
 fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_project() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     let clip = session
         .active_sequence()
         .unwrap()
@@ -741,8 +745,7 @@ fn window_layer(h: &Harness<'_, FilmcraftApp>, panel: PanelKind) -> egui::LayerI
 }
 
 fn demo_harness() -> Harness<'static, FilmcraftApp> {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let session = demo_session();
     let app = FilmcraftApp::new(session);
     let mut h = harness(vec2(1400.0, 900.0), app);
     for _ in 0..4 {

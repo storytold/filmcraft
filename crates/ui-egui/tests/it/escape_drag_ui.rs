@@ -3,53 +3,21 @@
 //! clip. Each test
 //! also makes the same drag without Escape, so it shows the drag would otherwise have done something.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, driver, f32x4};
 use filmcraft_engine::project_panel::FREEFORM_POS;
 use filmcraft_project::{BinEntry, ItemId};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+driver! {
+    Driver;
+    fn after_ok(&mut self) {
+        self.frames(2);
+    }
 }
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                self.frames(2);
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
     fn rect(&mut self, id: &str) -> [f32; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        [r[0], r[1], r[2], r[3]]
+        f32x4(self.expect_rect(id))
     }
     fn send(&mut self, e: egui::Event) {
         self.harness.input_mut().events.push(e);

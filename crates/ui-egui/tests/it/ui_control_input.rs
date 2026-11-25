@@ -5,9 +5,9 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
+use crate::support::demo_session;
 use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::{FilmcraftApp, control::ControlRequest};
 use serde_json::{Value, json};
 
@@ -18,12 +18,17 @@ struct Driver {
 
 impl Driver {
     fn new(isolated: bool) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).unwrap();
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session);
         let app = if isolated { app.with_control_input_only(rx) } else { app.with_control(rx) };
-        let mut driver = Self { h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(crate::support::headless_creator(app)), tx };
+        let mut driver = Self {
+            h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+                filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+                app
+            }),
+            tx,
+        };
         driver.frames(4, true);
         driver
     }

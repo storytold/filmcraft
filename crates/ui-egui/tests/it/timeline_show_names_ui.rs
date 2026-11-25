@@ -1,45 +1,13 @@
 //! The wrench menu's Show Video Names / Show Audio Names hide the name of the clips on video or on
 //! audio tracks.
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, Launch, driver};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
-
-impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                self.frames(2);
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+driver! {
+    Driver;
+    fn after_ok(&mut self) {
+        self.frames(2);
     }
 }
 

@@ -3,75 +3,26 @@
 //! control channel (like `graphics_ui.rs`). With `FILMCRAFT_UI_SHOTS=<dir>` it also renders the
 //! UI with wgpu and writes PNGs there for review.
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, builder, demo_session, driver, launch, reveal_in_panel, save_shot, start, with_shots};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo(data: &str) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         let dir = std::env::temp_dir().join(format!("filmcraft-gfx-ui-{data}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         session.prefs_path = Some(dir.join("prefs.json"));
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let (harness, tx) = launch(session, with_shots(builder()));
+        start(Driver { harness, tx })
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(8);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_shot(self, 8, &format!("{name}.png"));
     }
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-    fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        [r[0], r[1], r[2], r[3]]
-    }
-    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part,
-    /// where the user sees it: next's dock gives a panel a shorter body than the old dock did.
-    /// Stops when the element no longer moves (the panel is at the end of its content).
+    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part.
     fn reveal(&mut self, id: &str) {
-        crate::reveal::panel_containing(self, id, Self::rect, Self::ok, Self::frames);
+        reveal_in_panel(self, id);
     }
     fn clips_named(&mut self, name: &str) -> Vec<u64> {
         let q = self.exec("sequence.inspect", json!({}));

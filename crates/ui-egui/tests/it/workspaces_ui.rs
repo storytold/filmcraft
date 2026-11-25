@@ -7,52 +7,21 @@
 //! `workspaces-*.png`.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_snapshot, with_snapshots};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::dock::PanelKind;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     /// The demo project with its preferences (and workspaces) in `data`.
     fn launch(data: &Path) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         session.prefs_path = Some(data.join("preferences.json"));
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, snapshots };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
+        Self::open(session, with_snapshots(builder()))
     }
 
     fn menu(&mut self, id: &str, params: Value) -> Value {
@@ -65,26 +34,12 @@ impl Driver {
         v["error"].as_str().unwrap_or_default().to_string()
     }
 
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
     /// Replace the text of the field `id`.
     fn retype(&mut self, id: &str, text: &str) {
         self.click(id);
         self.ok("ui.key", json!({"key": "A", "command": true}));
         self.ok("ui.type", json!({"text": text}));
         self.frames(2);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
     }
 
     fn workspace(&mut self) -> String {
@@ -108,15 +63,7 @@ impl Driver {
     }
 
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(2);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("workspaces-{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 2, &format!("workspaces-{name}.png"));
     }
 }
 

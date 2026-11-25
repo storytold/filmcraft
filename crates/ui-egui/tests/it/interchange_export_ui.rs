@@ -2,18 +2,14 @@
 //! through the control channel, export through the host's save panel.
 
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, driver, start};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(session: Session, save_to: std::path::PathBuf) -> Self {
@@ -23,29 +19,8 @@ impl Driver {
             assert!(suggested.ends_with(&format!(".{}", exts[0])), "{suggested}");
             Some(save_to.join(suggested).to_string_lossy().into_owned())
         }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+        let harness = build(builder(), app);
+        start(Driver { harness, tx })
     }
 }
 

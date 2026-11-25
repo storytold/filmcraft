@@ -3,14 +3,12 @@
 //! while the playhead is scrubbed with audio scrubbing on.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use craft_behavior::dock::Node;
 use craft_behavior::dock::SplitSize;
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::dock::PanelKind;
 use filmcraft_ui_egui::{AudioOut, FilmcraftApp};
 use serde_json::{Value, json};
@@ -40,39 +38,25 @@ impl AudioOut for Out {
     }
 }
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    fill: Arc<Mutex<Option<Fill>>>,
-    /// How many times the output was started.
-    starts: Arc<AtomicUsize>,
+driver! {
+    Driver {
+        fill: Arc<Mutex<Option<Fill>>>,
+        /// How many times the output was started.
+        starts: Arc<AtomicUsize>,
+    }
 }
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         session.prefs.audio.scrub_audio = true;
         let (tx, rx) = channel();
         let fill = Arc::new(Mutex::new(None));
         let starts = Arc::new(AtomicUsize::new(0));
         let mut app = FilmcraftApp::new(session).with_control(rx);
         app.audio = Some(Box::new(Out { fill: fill.clone(), starts: starts.clone() }));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, fill, starts };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
+        let harness = build(builder(), app);
+        start(Driver { harness, tx, fill, starts })
     }
     fn element(&mut self, id: &str) -> Option<Value> {
         let v = self.ok("ui.elements", json!({"prefix": id}));

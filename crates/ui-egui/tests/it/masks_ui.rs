@@ -4,96 +4,55 @@
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes PNGs there.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, Launch, builder, demo_session, driver, save_settled_shot, with_shots};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(pub(crate) Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
+        Self::open(demo_session(), with_shots(builder().with_step_dt(1.0 / 60.0)))
     }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let t0 = std::time::Instant::now();
-        while !done(self) {
-            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-    fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        [r[0], r[1], r[2], r[3]]
+    pub(crate) fn rect(&mut self, id: &str) -> [f64; 4] {
+        self.expect_rect(id)
     }
     /// Scrolls Effect Controls with the wheel over its parameter list until element `id` sits
     /// inside the panel's upper part, where the user sees it: next's dock gives a panel a shorter
     /// body than the old dock did. Stops when the element no longer moves (the list's end).
     fn reveal(&mut self, id: &str) {
-        crate::reveal::effect_controls(self, id, Self::rect, Self::ok, Self::frames, true);
+        let p = self.rect("panel.EffectControls");
+        let mut last = None;
+        for _ in 0..30 {
+            let e = self.rect(id);
+            let dy = if e[1] < p[1] + 40.0 {
+                40.0
+            } else if e[1] + e[3] > p[1] + p[3] * 0.6 {
+                -40.0
+            } else {
+                return;
+            };
+            if last == Some(e[1]) {
+                return;
+            }
+            last = Some(e[1]);
+            self.ok("ui.scroll", json!({"x": p[0] + 40.0, "y": p[1] + p[3] / 2.0, "dy": dy}));
+            self.frames(3);
+        }
     }
-    fn center(&mut self, id: &str) -> (f64, f64) {
+    pub(crate) fn center(&mut self, id: &str) -> (f64, f64) {
         let r = self.rect(id);
         (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
     }
-    fn drag(&mut self, id: &str, dx: f64, dy: f64) {
+    pub(crate) fn drag(&mut self, id: &str, dx: f64, dy: f64) {
         let (x, y) = self.center(id);
         self.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + dx, "y": y + dy}, "steps": 6}));
         self.frames(2);
     }
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().is_some_and(|a| a.iter().any(|e| e["id"] == id))
-    }
-    fn masks(&mut self) -> Vec<Value> {
+    pub(crate) fn masks(&mut self) -> Vec<Value> {
         self.exec("masks.list", json!({}))["masks"].as_array().unwrap().clone()
     }
-    fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        // let the background frame workers finish the (blurred) frame
-        for _ in 0..40 {
-            self.frames(1);
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+    pub(crate) fn shot(&mut self, name: &str) {
+        save_settled_shot(self, &format!("{name}.png"));
     }
 }
 

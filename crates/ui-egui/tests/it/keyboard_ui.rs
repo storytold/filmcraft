@@ -1,9 +1,9 @@
 //! Keyboard parity (M3.12): every Premiere-table entry names a real command, the active key sets
 //! have no conflicts in the new commands, and a few of the new keys pressed headlessly.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use filmcraft_engine::Session;
 use filmcraft_engine::shortcut_presets as presets;
 use filmcraft_engine::shortcuts::{PREMIERE_PRESET, Platform};
@@ -11,43 +11,16 @@ use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let s = demo_session();
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(s).with_control(rx);
         app.hooks.open_path = Some(Box::new(|_, _| Ok(())));
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let harness = build(builder(), app);
+        start(Driver { harness, tx })
     }
 
     fn key(&mut self, key: &str) {

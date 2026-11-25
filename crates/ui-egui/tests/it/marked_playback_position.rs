@@ -1,13 +1,12 @@
+use crate::support::demo_session;
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::{FilmcraftApp, menus};
 use serde_json::json;
 
 #[test]
 fn program_range_playback_rests_on_inclusive_out_frame() {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).unwrap();
+    let mut session = demo_session();
     let rate = session.sequence_rate();
     let out = rate.tick_of(24);
     let fd = rate.frame_duration();

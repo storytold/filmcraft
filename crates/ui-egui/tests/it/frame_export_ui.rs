@@ -1,3 +1,4 @@
+use super::support::step_repaint as step;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_time::{FrameRate, Tick};
@@ -5,14 +6,6 @@ use filmcraft_ui_egui::{FilmcraftApp, dock::PanelKind, menus};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
-fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint();
-    h.step();
-}
 fn harness() -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.newSequence", json!({"name":"Program clip","width":128,"height":72,"fps":24})).unwrap();

@@ -3,35 +3,23 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, driver, start};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::graphics_notice::GraphicsNotice;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(notice: Option<GraphicsNotice>) -> Self {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
         app.graphics_notice = notice;
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
+        let harness = build(builder(), app);
+        start(Driver { harness, tx })
     }
     fn ids(&mut self) -> Vec<String> {
         let v = self.call("ui.elements", json!({"prefix": "graphics.notice"}));
@@ -46,9 +34,6 @@ impl Driver {
         let v = self.call("ui.click", json!({"id": id}));
         assert_eq!(v["ok"], json!(true), "{id}: {v}");
         self.frames(3);
-    }
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
     }
 }
 

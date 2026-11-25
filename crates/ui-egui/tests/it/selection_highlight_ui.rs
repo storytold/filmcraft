@@ -2,64 +2,12 @@
 //! the Icon view's cards expose a `…selected` marker while their item is in the selection, and
 //! lose it again when the selection goes away.
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, Launch, demo_footage, driver};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_project::BinEntry;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(crate::support::headless_creator(app));
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        crate::support::frames(&mut self.harness, n);
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        crate::support::call(&mut self.harness, &self.tx, method, params)
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(2);
-    }
-
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        self.ids(id).iter().any(|i| i == id)
-    }
-
     /// Step frames until `id` is registered.
     fn wait_for(&mut self, id: &str) {
         for _ in 0..400 {
@@ -72,24 +20,9 @@ impl Driver {
         panic!("{id} never appeared: {:?}", self.ids(id.split('.').next().unwrap()));
     }
 
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     /// The demo's Footage bin and its media items.
     fn footage(&mut self) -> (u64, Vec<u64>) {
-        let p = &self.app().session.project;
-        let bin = p
-            .root
-            .children
-            .iter()
-            .find_map(|e| match e {
-                BinEntry::Bin(b) if b.name == "Footage" => Some(b.clone()),
-                _ => None,
-            })
-            .expect("Footage bin");
-        let items = bin.children.iter().filter_map(|e| if let BinEntry::Item(i) = e { Some(i.0) } else { None }).collect();
-        (bin.id.0, items)
+        demo_footage(self.app())
     }
 }
 
