@@ -21,7 +21,7 @@ use filmcraft_audio_dsp::LoudnessMeter;
 use filmcraft_project::essential::{self as es, AudioType, EssentialSound, Preset, Section};
 use filmcraft_project::{ClipId, ParamValue, Project, TrackItem};
 use filmcraft_render::SourceProvider;
-use filmcraft_time::Tick;
+use filmcraft_time::{Tick, TimeRange};
 
 use crate::autosave::UserSoundPreset;
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, with_links};
@@ -268,14 +268,20 @@ fn delete_preset(s: &mut Session, p: &Value) -> Result<Value> {
 /// the way BS.1770 and ffmpeg's `ebur128` measure a mono programme. Metering the dual-mono pair the
 /// clip plays would read 3 LU louder than the file and match it 3 dB too quietly (#296).
 pub fn clip_loudness(item: &TrackItem, sr: u32, sources: &dyn SourceProvider) -> Option<f64> {
-    let a0 = item.start.to_units_floor(sr as i64);
-    let a1 = item.end().to_units_floor(sr as i64);
-    let mono = filmcraft_render::audio::clip_is_mono(item, sources)?;
+    Some(clip_meter(item, item.range(), sr, sources)?.integrated()).filter(|v| v.is_finite())
+}
+
+/// The same clip signal as Auto-Match, with the meter left available for the other R128 readings.
+pub(crate) fn clip_meter(item: &TrackItem, range: TimeRange, sr: u32, sources: &dyn SourceProvider) -> Option<LoudnessMeter> {
+    let a0 = range.start.to_units_floor(sr as i64);
+    let a1 = range.end().to_units_floor(sr as i64);
+    let sources = filmcraft_render::audio::isolated_sources(sources);
+    let mono = filmcraft_render::audio::clip_is_mono(item, &sources)?;
     let mut meter = LoudnessMeter::new(sr as f64, if mono { 1 } else { 2 });
     let mut pos = a0;
     while pos < a1 {
         let n = (a1 - pos).min(sr as i64) as usize;
-        let [l, r] = filmcraft_render::audio::clip_signal(item, pos, n, sr, sources)?;
+        let [l, r] = filmcraft_render::audio::clip_signal(item, pos, n, sr, &sources)?;
         if mono {
             let m: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
             meter.process(&[&m]);
@@ -284,7 +290,7 @@ pub fn clip_loudness(item: &TrackItem, sr: u32, sources: &dyn SourceProvider) ->
         }
         pos += n as i64;
     }
-    Some(meter.integrated()).filter(|v| v.is_finite())
+    Some(meter)
 }
 
 fn auto_match(s: &mut Session, p: &Value) -> Result<Value> {

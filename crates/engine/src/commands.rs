@@ -493,7 +493,11 @@ pub(crate) fn track_p(s: &Session, p: &Value, k: &str, cmd: &str) -> Result<Opti
         None | Some(Value::Null) => return Ok(None),
         Some(v) => v,
     };
-    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    track_p_in(s.active_sequence().ok_or(EngineError::NoSequence)?, v, k, cmd).map(Some)
+}
+
+/// Resolve a track id or numbered track name against an explicitly chosen sequence.
+pub(crate) fn track_p_in(seq: &filmcraft_project::Sequence, v: &Value, k: &str, cmd: &str) -> Result<TrackId> {
     let by_name = |name: &str| {
         let mut rest = name.chars();
         let tracks = match rest.next()? {
@@ -509,7 +513,7 @@ pub(crate) fn track_p(s: &Session, p: &Value, k: &str, cmd: &str) -> Result<Opti
         None => v.as_str().and_then(by_name),
     };
     let named = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
-    found.map(Some).ok_or_else(|| bad(cmd, format!("no track {named} in this sequence (`{k}`)")))
+    found.ok_or_else(|| bad(cmd, format!("no track {named} in this sequence (`{k}`)")))
 }
 pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
@@ -2660,6 +2664,12 @@ fn build() -> Vec<CommandSpec> {
             |s, p| crate::mixer::audio_gain(s, p)
         ),
         query!("clip.audioPeak", "Audio Clip Peak Amplitude", r#"{"clips":[id]?}"#, |s, p| crate::mixer::audio_peak(s, p)),
+        query!(
+            "audio.measureLoudness",
+            "Measure Loudness",
+            r#"{"sequence":id?,"of":"mix|track|clips"?,"track":id|str?,"clips":[id]?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?}"#,
+            |s, p| crate::loudness::measure(s, p)
+        ),
         cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, r#"{"clips":[id]?,"time":ticks?}"#, has_seq, |s, p| {
             crate::clip_ops::add_frame_hold(s, p)
         }),

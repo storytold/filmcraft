@@ -1,6 +1,6 @@
 //! Mixer graph tests: gain and pan laws, automation, solo/mute, sends, latency, identity, speed.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::{AudioStreamInfo, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
@@ -24,6 +24,25 @@ fn dc(_: i64, _: usize) -> f32 {
 
 fn close(a: f32, b: f32, tol: f32) -> bool {
     (a - b).abs() <= tol
+}
+
+#[test]
+fn track_renderers_keep_effect_history_with_their_source() {
+    let mut signal = Rig::new(&[|i, c| if (0..SR).contains(&i) { noise(i, c) } else { 0.0 }]);
+    let mut silent = Rig::new(&[|_, _| 0.0]);
+    for rig in [&mut signal, &mut silent] {
+        rig.track(0).effects.push(filmcraft_project::find_effect("studio_reverb").unwrap().instance());
+    }
+    let signal_seq = signal.p.sequence(signal.seq).unwrap();
+    let silent_seq = silent.p.sequence(silent.seq).unwrap();
+    let track = signal_seq.audio_tracks[0].id;
+    assert_eq!(track, silent_seq.audio_tracks[0].id);
+
+    let signal_render = mixer::track_renderer(&signal.p, signal_seq, track, &signal.map).unwrap();
+    let silent_render = mixer::track_renderer(&silent.p, silent_seq, track, &silent.map).unwrap();
+    assert!(signal_render(0, SR as usize).channels.iter().flatten().any(|s| s.abs() > 0.01));
+    assert!(silent_render(SR, SR as usize).channels.iter().flatten().all(|s| *s == 0.0));
+    assert!(signal_render(SR, SR as usize).channels.iter().flatten().any(|s| s.abs() > 0.001));
 }
 
 /// The renderer must request the stream selected by each clip, rather than reading stream zero
@@ -849,10 +868,12 @@ fn a_stretch_too_long_for_one_read_falls_back_to_varispeed() {
         Some(AudioBuffer::silence(48_000, 2, n))
     };
     // 200 000 output samples at 100× read 20 million source samples, more than 2^24
-    assert!(crate::stretch::read(&item, &src, 0, 200_000, 48_000, 2).is_none());
+    let cache = Mutex::default();
+    let window = |frames| crate::audio::Window { start: 0, frames, sr: 48_000 };
+    assert!(crate::stretch::read(&item, &src, window(200_000), 2, &cache).is_none());
     assert_eq!(reads.get(), 0, "the source is not read");
     // a short read of the same clip is stretched
-    assert!(crate::stretch::read(&item, &src, 0, 4_800, 48_000, 2).is_some());
+    assert!(crate::stretch::read(&item, &src, window(4_800), 2, &cache).is_some());
 }
 
 #[test]
@@ -916,11 +937,13 @@ fn stretched_clip(id: u64, speed: f64, reverse: bool) -> filmcraft_project::Trac
 
 /// Timeline samples `[a0, a0 + total)` of `item` read with `stretch::read` in blocks of `block`.
 fn stretched(item: &filmcraft_project::TrackItem, src: &dyn Fn(i64, usize) -> Option<AudioBuffer>, a0: i64, total: usize, block: usize) -> Vec<Vec<f32>> {
+    let cache = &crate::audio::shared_cache().stretch;
     let mut out = vec![Vec::new(), Vec::new()];
     let mut at = a0;
     while ((at - a0) as usize) < total {
         let n = block.min(total - (at - a0) as usize);
-        let b = crate::stretch::read(item, src, at, n, 48_000, 2).expect("stretched");
+        let window = crate::audio::Window { start: at, frames: n, sr: 48_000 };
+        let b = crate::stretch::read(item, src, window, 2, cache).expect("stretched");
         for (o, c) in out.iter_mut().zip(&b.channels) {
             o.extend_from_slice(c);
         }

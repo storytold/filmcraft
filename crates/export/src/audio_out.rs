@@ -8,9 +8,10 @@
 
 use std::sync::Arc;
 
-use filmcraft_audio_dsp::AudioEffect;
 use filmcraft_audio_dsp::effects::Limiter;
-use filmcraft_project::{ItemId, Project, Sequence};
+use filmcraft_audio_dsp::loudness::LoudnessSummary;
+use filmcraft_audio_dsp::{AudioEffect, LoudnessMeter};
+use filmcraft_project::{AudioChannels, ItemId, Project, Sequence};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::TimeRange;
 
@@ -22,6 +23,21 @@ pub struct LoudnessReport {
     pub measured_lufs: f64,
     /// Applied gain before the limiter, including bounded loudness correction.
     pub gain_db: f64,
+}
+
+/// Measure the sequence Mix at its sample rate and in its saved channel layout, using the same
+/// input as export's loudness normalization.
+pub fn measure_mix_loudness(project: Arc<Project>, seq: ItemId, range: TimeRange, sources: &dyn SourceProvider) -> Result<LoudnessSummary> {
+    let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
+    q.check_bounds().map_err(ExportError::Unsupported)?;
+    crate::validate_range(range)?;
+    let mut settings = ExportSettings::default();
+    settings.audio.channels = match q.settings.audio_master {
+        AudioChannels::Mono => 1,
+        AudioChannels::Surround51 => 6,
+        AudioChannels::Stereo | AudioChannels::Adaptive => 2,
+    };
+    Ok(AudioOut::new(project, seq, &settings, range)?.input_meter(sources, &|| false)?.summary())
 }
 
 pub(crate) struct AudioOut {
@@ -64,26 +80,32 @@ impl AudioOut {
         Ok(AudioOut { project, seq, sr, channels: r.channels as usize, gain: 1.0, limiter, latency, next_in: start, out: start, end, loudness: None })
     }
 
-    /// The loudness pass: measure the integrated loudness of the whole range and set the gain
-    /// that brings it to the target. `cancel` is polled between chunks.
-    pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<()> {
-        let ln = &settings.effects.loudness;
-        if !ln.enabled {
-            return Ok(());
-        }
-        let mut meter = filmcraft_audio_dsp::LoudnessMeter::new(self.sr as f64, self.channels);
+    /// Meter before normalization and limiting, in the exact delivery channel layout.
+    fn input_meter(&self, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<LoudnessMeter> {
+        let sources = filmcraft_render::audio::isolated_sources(sources);
+        let mut meter = LoudnessMeter::new(self.sr as f64, self.channels);
         let mut pos = self.out;
         while pos < self.end {
             if cancel() {
                 return Err(ExportError::Cancelled);
             }
             let n = (self.end - pos).min(self.sr as i64) as usize;
-            let buf = self.mix(pos, n, sources);
+            let buf = self.mix(pos, n, &sources);
             let refs: Vec<&[f32]> = buf.iter().map(Vec::as_slice).collect();
             meter.process(&refs);
             pos += n as i64;
         }
-        let measured = meter.integrated();
+        Ok(meter)
+    }
+
+    /// The loudness pass: measure the integrated loudness of the whole range and set the gain
+    /// that brings it to the target. Cancellation is polled between chunks.
+    pub fn measure(&mut self, settings: &ExportSettings, sources: &dyn SourceProvider, cancel: &dyn Fn() -> bool) -> Result<()> {
+        let ln = &settings.effects.loudness;
+        if !ln.enabled {
+            return Ok(());
+        }
+        let measured = self.input_meter(sources, cancel)?.integrated();
         let gain_db = filmcraft_audio_dsp::normalize_gain_db(measured, ln.target_lufs);
         // Limiting changes integrated loudness. Measure the actual limited signal and
         // refine its INPUT gain; the peak ceiling remains in force on every pass.
@@ -96,7 +118,7 @@ impl AudioOut {
         if measured.is_finite() && ln.target_lufs.is_finite() {
             for _ in 0..4 {
                 self.rewind(start, trial_gain);
-                let mut limited = filmcraft_audio_dsp::LoudnessMeter::new(self.sr as f64, self.channels);
+                let mut limited = LoudnessMeter::new(self.sr as f64, self.channels);
                 while self.out < self.end {
                     if cancel() {
                         self.rewind(start, best_gain);

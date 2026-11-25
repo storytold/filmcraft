@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use filmcraft_frame::{PixelData, VideoFrame, pool};
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_media::{FrameRequest, SharedSource};
+use filmcraft_media::{FrameRequest, MediaError, SharedSource};
 use filmcraft_project::{ItemId, ItemKind, ParamValue, Project, Sequence, TrackItem};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 
@@ -50,6 +50,14 @@ pub use image::Image;
 /// Resolves project items to media sources (the engine owns the media pool).
 pub trait SourceProvider: Sync {
     fn source(&self, item: ItemId) -> Option<SharedSource>;
+
+    /// Report an unsuccessful read of a source's audio to a caller that records unavailable media.
+    fn audio_read_failed(&self, _item: ItemId, _error: &MediaError) {}
+
+    /// Audio history available to the renderer while reading this source.
+    fn audio_render_cache(&self) -> &audio::RenderCache {
+        audio::shared_cache()
+    }
 }
 
 impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
