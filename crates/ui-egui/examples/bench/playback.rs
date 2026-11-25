@@ -44,7 +44,15 @@ pub fn build_sequence(s: &mut Session, w: u32, h: u32, layers: &[(ItemId, f64, O
 
 /// As [`build_sequence`], with the effect ids of each layer (`per_layer[i]` on V(i+1)).
 pub fn build_sequence_fx(s: &mut Session, w: u32, h: u32, layers: &[(ItemId, f64, Option<(f64, f64)>, f64, f64)], per_layer: &[&[&str]], secs: f64) -> ItemId {
-    let rate = FrameRate::FPS_23_976;
+    // The clip's own rate where one is known (real corpus footage must be measured at
+    // the rate it plays at), else the fixtures' rate.
+    let rate = layers
+        .iter()
+        .find_map(|l| match s.project.item(l.0).map(|i| &i.kind) {
+            Some(filmcraft_project::ItemKind::Media(m)) => m.info.video.as_ref().map(|v| v.frame_rate),
+            _ => None,
+        })
+        .unwrap_or(FrameRate::FPS_23_976);
     let sizes: Vec<(u32, u32)> = layers
         .iter()
         .map(|l| match s.project.item(l.0).map(|i| &i.kind) {
@@ -610,6 +618,7 @@ struct Args {
     seconds: f64,
     refresh: f64,
     workers: usize,
+    noproxy: bool,
     json: Option<String>,
     repeat: usize,
 }
@@ -622,6 +631,7 @@ fn parse_args() -> Args {
         seconds: 8.0,
         refresh: 60.0,
         workers: FrameServer::default_workers(),
+        noproxy: false,
         json: None,
         repeat: 1,
     };
@@ -646,11 +656,12 @@ fn parse_args() -> Args {
             "--seconds" => a.seconds = it.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--refresh" => a.refresh = it.next().and_then(|v| v.parse().ok()).unwrap_or(60.0),
             "--workers" => a.workers = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.workers),
+            "--noproxy" => a.noproxy = true,
             "--repeat" => a.repeat = it.next().and_then(|v| v.parse().ok()).unwrap_or(1),
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,insta360,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--noproxy] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -759,6 +770,22 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             s.execute("file.openDemoProject", json!({})).ok()?;
             s.state.active_sequence?
         }
+        // Real Insta360 dual-fisheye footage (an INSV, its first spanned part, or any
+        // stitched clip): the stitch's full-resolution pipeline under the real frame
+        // server. Set FILMCRAFT_INSV=/path/VID_...insv; skipped when unset or missing.
+        // Camera LRV proxies apply as usual unless --noproxy turns them off.
+        "insta360" => {
+            let path = std::env::var_os("FILMCRAFT_INSV").map(std::path::PathBuf::from).filter(|p| p.is_file())?;
+            let a = import(&mut s, &path);
+            let (w, h) = match s.project.item(a).map(|i| &i.kind) {
+                Some(filmcraft_project::ItemKind::Media(m)) => {
+                    let v = m.info.video.as_ref()?;
+                    (v.width, v.height)
+                }
+                _ => return None,
+            };
+            build_sequence(&mut s, w, h, &[(a, 100.0, None, 0.0, 100.0)], &[], 60.0)
+        }
         _ => {
             eprintln!("unknown scenario {name}");
             return None;
@@ -791,9 +818,16 @@ pub fn cli_main() {
                 continue;
             }
             let Some((mut s, seq)) = scenario_session(name) else {
-                println!("{name}: skipped (fixtures unavailable: is ffmpeg installed?)");
+                println!(
+                    "{name}: skipped (fixtures unavailable{}; is ffmpeg{} installed?)",
+                    if name == "insta360" { ", or FILMCRAFT_INSV unset" } else { "" },
+                    if name == "insta360" { " and the env var points at an .insv" } else { "" }
+                );
                 continue;
             };
+            if args.noproxy {
+                let _ = s.execute("prefs.set", json!({ "key": "media.enableProxies", "value": false }));
+            }
             let fps = s.project.sequence(seq).map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             for rep_i in 0..args.repeat {
                 // A fresh frame server per run so caches start cold, as after opening a project.
