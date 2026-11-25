@@ -81,6 +81,7 @@ impl FilmcraftApp {
             clock_start: web_time::Instant::now(),
             ui_clock: 0.0,
             ui_clock_offset: None,
+            notice: None,
             #[cfg(test)]
             test_now: None,
             value_press: None,
@@ -398,6 +399,9 @@ impl FilmcraftApp {
             self.cancel_value_drag(&ctx);
         }
         self.error_window(ui.ctx());
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| notices::show(self, ui.ctx()))).is_err() {
+            log::warn!("the notice window panicked");
+        }
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
@@ -517,6 +521,9 @@ impl eframe::App for FilmcraftApp {
         self.session.shutdown();
         // An update waiting for the exit starts its install helper now.
         crate::updates_ui::exiting(self);
+        // The one path macOS has: its quit ends the process after this, before `run_native`
+        // returns, so the Nightly session record is finished here (and once, everywhere else).
+        crate::exit_hook::run_once();
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no

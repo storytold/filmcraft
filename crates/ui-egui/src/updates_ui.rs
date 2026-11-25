@@ -20,6 +20,9 @@ pub(crate) struct Runtime {
     /// The desktop app turns the check at start on; tests and the web build leave it off.
     #[cfg(not(target_arch = "wasm32"))]
     startup_check: bool,
+    /// The Nightly channel is updated by ArtCraft Launcher, never by this app's updater.
+    #[cfg(not(target_arch = "wasm32"))]
+    disabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
     check_requested: bool,
     /// The context of the last frame, to wake the UI when a check is queued from a menu callback.
@@ -38,6 +41,8 @@ impl Default for Runtime {
             #[cfg(not(target_arch = "wasm32"))]
             startup_check: false,
             #[cfg(not(target_arch = "wasm32"))]
+            disabled: false,
+            #[cfg(not(target_arch = "wasm32"))]
             check_requested: false,
             #[cfg(not(target_arch = "wasm32"))]
             repaint: None,
@@ -52,11 +57,22 @@ impl FilmcraftApp {
     pub fn set_startup_update_check(&mut self, on: bool) {
         self.updates_rt.startup_check = on;
     }
+
+    /// Turn the updater off: a Nightly build is updated by ArtCraft Launcher, and offering stable
+    /// releases here would replace it with a different channel.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn disable_updates(&mut self) {
+        self.updates_rt.disabled = true;
+        self.updates_rt.startup_check = false;
+    }
 }
 
 pub(crate) fn check(app: &mut FilmcraftApp) -> Result<Value, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if app.updates_rt.disabled {
+            return Err("Updates are managed by ArtCraft Launcher.".into());
+        }
         app.updates_rt.check_requested = true;
         app.updates_rt.manual_window_open = true;
         if let Some(ctx) = &app.updates_rt.repaint {
@@ -76,6 +92,9 @@ pub(crate) fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
     {
         let rt = &mut app.updates_rt;
         rt.repaint = Some(ctx.clone());
+        if rt.disabled {
+            return;
+        }
         if std::mem::take(&mut rt.check_requested) {
             rt.updater.check_now();
         } else if rt.startup_check {
@@ -91,6 +110,9 @@ pub(crate) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if app.updates_rt.disabled {
+            return;
+        }
         let ctx = &ctx;
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
         let clean = !app.session.is_dirty();
@@ -326,5 +348,18 @@ mod tests {
         assert!(!result_window_open(true, &Status::Idle, false), "a check that found a release closes it");
         assert!(result_window_open(true, &Status::Idle, true), "a queued check keeps it open");
         assert!(!result_window_open(false, &Status::Idle, true), "a queued check does not open it");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod nightly_tests {
+    /// A Nightly build is updated by ArtCraft Launcher: the stable updater must not run, and a
+    /// manual check says so instead of offering a release from another channel.
+    #[test]
+    fn a_nightly_app_never_asks_the_stable_updater() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.set_startup_update_check(true);
+        app.disable_updates();
+        assert!(super::check(&mut app).unwrap_err().contains("ArtCraft Launcher"));
     }
 }

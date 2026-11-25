@@ -48,6 +48,7 @@ pub mod crash;
 pub mod credits;
 pub mod dock;
 mod dock_ui;
+pub mod exit_hook;
 mod legacy_dropdown;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
@@ -63,6 +64,8 @@ mod ime_reset;
 pub mod links;
 pub mod menus;
 pub mod native_dialogs;
+pub mod notices;
+pub mod os_window;
 pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
@@ -352,6 +355,9 @@ pub struct FilmcraftApp {
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
     /// button back to the default mode (see [`graphics_notice`]).
     pub graphics_notice: Option<graphics_notice::GraphicsNotice>,
+    /// A plain notice the host posts (Nightly session health), shown above the status bar
+    /// until dismissed (see [`notices`]). Not a modal: a Launcher start has nobody to dismiss one.
+    pub notice: Option<notices::Notice>,
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,

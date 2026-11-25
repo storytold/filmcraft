@@ -2856,6 +2856,7 @@ dependencies = [
  "egui",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-gpu",
  "filmcraft-platform",
  "filmcraft-project",
@@ -2873,9 +2874,11 @@ dependencies = [
  "rfd",
  "serde_json",
  "sys-locale",
+ "thiserror 2.0.21",
  "winit",
  "winreg",
  "winresource",
+ "winsafe",
  "zbus",
 ]
 
