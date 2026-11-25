@@ -41,16 +41,20 @@
       "app_id": 12526,
       "check_name": "SonarCloud Code Analysis",
       "details_url": "https://sonarcloud.io/dashboard?id=storytold_filmcraft&branch=main",
-      "issue_types": [],
-      "accepted_conditions": [],
+      "issue_types": [
+        "VULNERABILITY"
+      ],
+      "accepted_conditions": [
+        {
+          "metric": "new_security_rating",
+          "comparator": "GT",
+          "error_threshold": "1",
+          "maximum": "5"
+        }
+      ],
       "required_conditions": [
         {
           "metric": "new_reliability_rating",
-          "comparator": "GT",
-          "error_threshold": "1"
-        },
-        {
-          "metric": "new_security_rating",
           "comparator": "GT",
           "error_threshold": "1"
         },
