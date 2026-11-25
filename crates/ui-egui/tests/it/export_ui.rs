@@ -514,6 +514,42 @@ fn frame_rate_offers_the_high_rates_a_sequence_can_have() {
     assert_eq!(d.app().ui.export.settings.frame_rate, Some(FrameRate::FPS_119_88));
 }
 
+/// #5220: coming back to Export mode after an export, the panel says whether it worked, and a
+/// finished file can be opened or shown in its folder from there.
+#[test]
+fn a_finished_export_says_so_and_offers_the_file() {
+    let mut d = Driver::new("outcome");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 24-bit", "location": loc, "fileName": "outcome", "range": "custom", "customStart": 0.0, "customEnd": 0.5}}));
+    d.frames(2);
+    assert!(!d.has("export.result"), "nothing to report before an export");
+    d.click("export.button");
+    let out = d.path("outcome.wav");
+    d.wait_until("the export to finish", |d| d.app().session.jobs.last().is_some_and(|j| j.result.lock().unwrap().is_some()));
+    d.frames(3);
+    let label = |d: &mut Driver, id: &str| d.ok("ui.elements", json!({"prefix": id}))[0]["label"].as_str().unwrap().to_string();
+    assert!(label(&mut d, "export.result").starts_with("Succeeded"), "{}", label(&mut d, "export.result"));
+    assert!(label(&mut d, "export.result").contains("outcome.wav"));
+    d.snapshot("export-outcome-done");
+    d.click("export.result.reveal");
+    d.click("export.result.open");
+    let opened = d.app().ui.extras.opened.clone();
+    assert_eq!(opened.len(), 2, "{opened:?}");
+    assert!(opened.iter().all(|p| p == &out), "{opened:?}");
+    // an export that cannot write says so instead, with no file to open
+    let blocker = d.path("blocker");
+    std::fs::write(&blocker, b"a file where a folder is needed").unwrap();
+    d.ok("ui.set", json!({"export": {"location": blocker, "fileName": "never"}}));
+    d.frames(2);
+    d.click("export.button");
+    d.wait_until("the failure", |d| d.app().session.jobs.last().is_some_and(|j| j.result.lock().unwrap().as_ref().is_some_and(|r| r.is_err())));
+    d.frames(3);
+    assert!(label(&mut d, "export.result").starts_with("Failed"), "{}", label(&mut d, "export.result"));
+    assert!(!d.has("export.result.open") && !d.has("export.result.reveal"));
+    d.snapshot("export-outcome-failed");
+}
+
 #[test]
 fn export_button_locks_and_cancels_during_active_export() {
     let mut d = Driver::new("lock_test");

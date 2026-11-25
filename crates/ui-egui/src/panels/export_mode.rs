@@ -197,6 +197,26 @@ pub(super) fn active_export_job(app: &FilmcraftApp) -> Option<filmcraft_engine::
         .cloned()
 }
 
+/// How the latest export from this panel ended (#5220), so the panel can say so once the status
+/// bar's progress is gone.
+pub(super) enum ExportOutcome {
+    /// The file written.
+    Done(String),
+    Failed(String),
+    Cancelled,
+}
+
+/// The outcome of the newest finished export job, `None` while there is none.
+pub(super) fn last_export_outcome(app: &FilmcraftApp) -> Option<ExportOutcome> {
+    let job = app.session.jobs.iter().rev().find(|j| j.label.starts_with("Export") || j.label.starts_with("Quick Export"))?;
+    let res = job.result.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    Some(match res {
+        Ok(r) => ExportOutcome::Done(r.path),
+        Err(e) if e == "cancelled" => ExportOutcome::Cancelled,
+        Err(e) => ExportOutcome::Failed(e),
+    })
+}
+
 pub(super) fn is_export_busy(app: &FilmcraftApp) -> bool {
     active_export_job(app).is_some() || app.session.export_queue.is_active()
 }
