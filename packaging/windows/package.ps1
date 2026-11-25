@@ -21,9 +21,14 @@
 #>
 param(
   [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
-  [switch] $SkipBuild
+  [switch] $SkipBuild,
+  # Nightly: the isolated GUI-only channel (packaging/windows/nightly.ps1). -BuildOnly stops at
+  # the unsigned intermediate, which is all that may be produced without the trusted signer.
+  [switch] $Nightly,
+  [switch] $BuildOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($BuildOnly -and -not $Nightly) { throw '-BuildOnly is only for secret-free nightly compilation' }
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
@@ -50,10 +55,22 @@ $Dist = if ($env:DIST) { $env:DIST } else { Join-Path $Root 'dist\release' }
 $TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $Root 'target' }
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
-if (-not $env:FILMCRAFT_BUILD_SHA) { $env:FILMCRAFT_BUILD_SHA = (git -C $Root rev-parse HEAD 2>$null) }
-if (-not $env:FILMCRAFT_BUILD_DATE) { $env:FILMCRAFT_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') }
+# Nightly requires the prepared commit and original run date explicitly; nightly.ps1 checks both.
+if (-not $Nightly) {
+  if (-not $env:FILMCRAFT_BUILD_SHA) { $env:FILMCRAFT_BUILD_SHA = (git -C $Root rev-parse HEAD 2>$null) }
+  if (-not $env:FILMCRAFT_BUILD_DATE) { $env:FILMCRAFT_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd') }
+}
 
 Write-Output "FilmCraft $Version for Windows $Arch ($Target)"
+
+if ($Nightly) {
+  & (Join-Path $PSScriptRoot 'nightly.ps1') -Arch $Arch -Version $Version -Target $Target -TargetDir $TargetDir -Dist $Dist -SkipBuild:$SkipBuild -BuildOnly:$BuildOnly
+  return
+}
+if (-not $SkipBuild) {
+  # A stable package is never built from a nightly channel leftover in the environment.
+  $env:FILMCRAFT_BUILD_CHANNEL = 'stable'
+}
 
 if (-not $SkipBuild) {
   # Static CRT: no VC++ redistributable needed. Scoped to the target so host build scripts and
@@ -83,6 +100,9 @@ foreach ($check in @(@('filmcraft.exe', 2), @('filmcraft-cli.exe', 3))) {
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
   Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
+}
+if ((Get-Item -LiteralPath (Join-Path $Bin 'filmcraft.exe')).VersionInfo.ProductName -eq 'FilmCraft Nightly') {
+  throw 'a nightly executable cannot be packaged as stable'
 }
 $Stage = Join-Path $TargetDir "windows-package\$Arch"
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue

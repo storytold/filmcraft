@@ -3,61 +3,26 @@
 //! counters plus playback, frame-worker and UI timings. Also how closely the Program monitor's
 //! picture follows a value that is dragged and a scrub.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
-use egui_kittest::Harness;
+use crate::support::{Drive, build, builder, demo_session, driver, start};
 use egui_kittest::kittest::Queryable;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::frames::{FrameKey, Target};
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         // Align UI clock steps with the drag test's 16 ms worker yields. The default
         // 250 ms steps can advance playback faster than the workers can show its frames.
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params}: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method}");
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let harness = build(builder().with_step_dt(1.0 / 60.0), app);
+        start(Driver { harness, tx })
     }
 
     /// The frame due in the Program monitor: `shown` at the project's revision and the playhead.

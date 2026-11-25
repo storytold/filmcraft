@@ -441,7 +441,7 @@ pub(crate) fn install_fonts(ctx: &egui::Context, language: crate::i18n::Language
     if !crate::cjk::install_interface(&mut fonts, language) {
         return false;
     }
-    ctx.set_fonts(fonts);
+    craft_ui::fonts::load(ctx, fonts);
     true
 }
 

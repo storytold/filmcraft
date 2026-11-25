@@ -17,7 +17,7 @@ pub struct Tiff<'a> {
     pub big_endian: bool,
 }
 impl<'a> Tiff<'a> {
-    fn inner(&self) -> craft_tiff::classic::Tiff<'a> {
+    pub(crate) fn inner(&self) -> craft_tiff::classic::Tiff<'a> {
         craft_tiff::classic::Tiff { data: self.data, big_endian: self.big_endian }
     }
     /// Read the classic TIFF header and first IFD offset.

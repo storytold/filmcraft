@@ -1,0 +1,222 @@
+name: Nightly build check
+
+# Builds the unsigned FilmCraft Nightly for all three platforms on hosted runners and checks the
+# archive exactly as the Launcher unpacks it (packaging/*/nightly.sh, then the version query in
+# the Launcher's form). No secrets and no environment: the real Nightly is signed by the shared
+# release-ref signer (craft-common-actions), which calls the app's own signing scripts.
+#
+# macOS minutes are metered: that leg runs only for a pull request with the `full-ci` label or on
+# dispatch, one app at a time, on the standard runner (never an xlarge).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-build-${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows:
+    name: Nightly GUI ZIP (x86_64, unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out craft-fonts
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - id: rust
+        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          targets: ${{ steps.rust.outputs.targets }}
+          components: ${{ steps.rust.outputs.components }}
+      - name: Prepare a Nightly identity for this commit
+        shell: pwsh
+        run: |
+          # The version lives in [workspace.package] version (no python3 on the Windows image).
+          $inPkg = $false
+          $base = $null
+          foreach ($line in Get-Content -LiteralPath 'Cargo.toml') {
+            if ($line -match '^\s*\[') { $inPkg = ($line.Trim() -eq '[workspace.package]'); continue }
+            if ($inPkg -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $base = ($Matches[1] -split '-')[0]; break }
+          }
+          if (-not $base) { throw 'could not read [workspace.package] version from Cargo.toml' }
+          $sha = (git rev-parse HEAD).Trim()
+          $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          @(
+            "FILMCRAFT_BUILD_SHA=$sha"
+            "FILMCRAFT_BUILD_DATE=$date"
+            "FILMCRAFT_VERSION=${base}-nightly.$($date.Replace('-', '')).$env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT.g$($sha.Substring(0, 12))"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build the unsigned Nightly ZIP
+        shell: pwsh
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: ./packaging/windows/package.ps1 -Arch x64 -Nightly -BuildOnly
+      - name: Synthetic Windows packaging contracts
+        shell: pwsh
+        run: |
+          $fixtures = Join-Path $env:RUNNER_TEMP 'nightly-fixtures'
+          New-Item -ItemType Directory -Force -Path $fixtures | Out-Null
+          ./packaging/windows/nightly-package-tests.ps1 -FixtureRoot $fixtures
+          ./packaging/windows/nightly-signing-tests.ps1 -FixtureRoot $fixtures
+      - name: Keep the unsigned intermediate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filmcraft-nightly-windows-x86_64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/filmcraft-${{ env.FILMCRAFT_VERSION }}-windows-x86_64-nightly.unsigned.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  linux:
+    name: Nightly tar (x86_64, unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out craft-fonts
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - id: rust
+        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          components: ${{ steps.rust.outputs.components }}
+      - name: Install the Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libasound2-dev libxkbcommon-dev libwayland-dev
+      - name: Prepare a Nightly identity for this commit
+        run: |
+          set -euo pipefail
+          base="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"].split("-")[0])')"
+          sha="$(git rev-parse HEAD)"
+          date="$(date -u +%Y-%m-%d)"
+          {
+            echo "FILMCRAFT_BUILD_SHA=$sha"
+            echo "FILMCRAFT_BUILD_DATE=$date"
+            echo "FILMCRAFT_VERSION=$base-nightly.${date//-/}.$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT.g${sha:0:12}"
+          } >>"$GITHUB_ENV"
+      - name: Build the unsigned Nightly tar
+        env:
+          FILMCRAFT_BUILD_CHANNEL: nightly-v1
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: bash packaging/linux/nightly.sh --arch x86_64
+      - name: Check the archive and the version query
+        run: bash packaging/linux/nightly-check.sh --input "$RUNNER_TEMP/nightly-dist/filmcraft-$FILMCRAFT_VERSION-linux-x86_64-nightly.tar.gz"
+      - name: Keep the unsigned archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filmcraft-nightly-linux-x86_64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/filmcraft-${{ env.FILMCRAFT_VERSION }}-linux-x86_64-nightly.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  macos:
+    name: Nightly .app (aarch64, unsigned)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out craft-fonts
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - id: rust
+        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        with:
+          targets: aarch64-apple-darwin
+      - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
+        with:
+          toolchain: ${{ steps.rust.outputs.toolchain }}
+          targets: ${{ steps.rust.outputs.targets }}
+          components: ${{ steps.rust.outputs.components }}
+      - name: Prepare a Nightly identity for this commit
+        run: |
+          set -euo pipefail
+          base="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"].split("-")[0])')"
+          sha="$(git rev-parse HEAD)"
+          date="$(date -u +%Y-%m-%d)"
+          {
+            echo "FILMCRAFT_BUILD_SHA=$sha"
+            echo "FILMCRAFT_BUILD_DATE=$date"
+            echo "FILMCRAFT_VERSION=$base-nightly.${date//-/}.$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT.g${sha:0:12}"
+          } >>"$GITHUB_ENV"
+      - name: Build the unsigned Nightly bundle
+        env:
+          FILMCRAFT_BUILD_CHANNEL: nightly-v1
+          CARGO_TARGET_DIR: ${{ runner.temp }}/nightly-targets
+          DIST: ${{ runner.temp }}/nightly-dist
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+        run: bash packaging/macos/nightly.sh --arch aarch64
+      - name: Check the archive and the bundle's version
+        run: bash packaging/macos/nightly-verify.sh --expect unsigned --input "$RUNNER_TEMP/nightly-dist/filmcraft-$FILMCRAFT_VERSION-macos-aarch64-nightly.zip"
+      - name: Keep the unsigned archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filmcraft-nightly-macos-aarch64-unsigned
+          path: ${{ runner.temp }}/nightly-dist/filmcraft-${{ env.FILMCRAFT_VERSION }}-macos-aarch64-nightly.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

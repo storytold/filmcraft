@@ -311,6 +311,39 @@ impl MediaPool {
         self.resolve(p, item, services, false)
     }
 
+    /// The size the file behind a still item decodes to, and the orientation its
+    /// decoder applies, probed from the file's headers alone
+    /// ([`filmcraft_media::still::probe_geometry_reader`]): no picture is decoded and the
+    /// pool retains no source for the item, so a caller deciding from geometry alone (the
+    /// load-time still migration) never pulls a decoded frame into the pool. `None`
+    /// when the item is not a still, was made offline, or its file cannot be probed.
+    /// Like [`Self::full_res_source`] this reads the original file, never a proxy,
+    /// follows the same path policy ([`Self::follow_media`]), and when random-access
+    /// reads are available it reads only bounded header bytes (so files larger than
+    /// [`PROBE_WHOLE_FILE_MAX`] still probe cleanly). Hosts without a random-access
+    /// reader fall back to [`Services::read_file_bounded`] up to [`PROBE_WHOLE_FILE_MAX`].
+    pub fn still_geometry(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<(u32, u32, image::metadata::Orientation)> {
+        let (_, m, _) = p.resolve_media(item)?;
+        if m.offline || m.info.kind != filmcraft_media::MediaKind::Still {
+            return None;
+        }
+        match &m.media {
+            // A generator has no file to probe: its source reports the stored size,
+            // which is what resolving it would say.
+            MediaRef::Generator(_) => m.info.video.as_ref().map(|v| (v.width, v.height, image::metadata::Orientation::NoTransforms)),
+            MediaRef::File { path } => {
+                let file = self.follow_media(path).ok()?;
+                if let Some(r) = services.reader(&file) {
+                    let r = r.ok()?;
+                    filmcraft_media::still::probe_geometry_reader(&file_name(&file), &*r)
+                } else {
+                    let bytes = services.read_file_bounded(&file, PROBE_WHOLE_FILE_MAX).ok()?;
+                    filmcraft_media::still::probe_geometry(&file_name(&file), &bytes)
+                }
+            }
+        }
+    }
+
     fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let it = p.item(item)?;
@@ -596,6 +629,11 @@ impl MediaSource for UnsupportedAsSlate {
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio(start, frames, sample_rate)
     }
+    /// The inner source's orientation: the wrapper only changes what a failed frame
+    /// shows, never the picture's own geometry.
+    fn still_orientation(&self) -> image::metadata::Orientation {
+        self.inner.still_orientation()
+    }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
     }
@@ -655,6 +693,11 @@ impl MediaSource for DamagedAsSlate {
     }
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio(start, frames, sample_rate)
+    }
+    /// The inner source's orientation: the wrapper only changes what a failed frame
+    /// shows, never the picture's own geometry.
+    fn still_orientation(&self) -> image::metadata::Orientation {
+        self.inner.still_orientation()
     }
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)

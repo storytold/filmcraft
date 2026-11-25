@@ -264,7 +264,7 @@ pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
     let current = app.ui.keys.maximized.filter(|q| app.ui.dock.is_docked(*q));
     app.ui.keys.maximized = if current.is_some() || !app.ui.dock.is_docked(p) { None } else { Some(p) };
     if let Some(p) = app.ui.keys.maximized {
-        let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: p });
+        let _ = app.apply_dock(craft_behavior::dock::Action::activate(p));
         app.ui.focused = p;
     }
     json!({"maximized": app.ui.keys.maximized.map(|p| p.title())})

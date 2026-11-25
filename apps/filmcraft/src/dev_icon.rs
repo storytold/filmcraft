@@ -20,7 +20,12 @@
 //! `Exec=` the same two-layer way as here; keep the two in sync.
 //!
 //! Every failure is logged and skipped — a missing dev icon must never stop the app
-//! ([`AGENTS.md`](/AGENTS.md) §0 "never crash").
+//! ([`AGENTS.md`](/AGENTS.md) rule 13, "never crash").
+
+/// Reverse-DNS app id of the entry installed here: the `.desktop` file name and the hicolor icon
+/// name. A window takes its own id from the channel before it exists
+/// (`filmcraft_ui_egui::os_window`), so this dev entry is always the stable one's.
+const APP_ID: &str = filmcraft_ui_egui::os_window::APP_ID;
 
 /// Install the user-level desktop entry and icons for a source-tree run (Linux).
 pub fn ensure_dev_desktop_entry() {
@@ -43,7 +48,7 @@ pub fn ensure_dev_desktop_entry() {
 
 /// Install missing files; `Ok` whether anything was written or an entry already existed.
 fn ensure() -> Result<(), DevIconError> {
-    let file_name = format!("{}.desktop", crate::APP_ID);
+    let file_name = format!("{}.desktop", APP_ID);
     let user_dir = user_data_dir()?;
     let exe = std::env::current_exe().map_err(DevIconError::Io)?;
     // Not `to_string_lossy`: a substituted U+FFFD would install an `Exec` that can never start
@@ -73,7 +78,7 @@ fn ensure() -> Result<(), DevIconError> {
         break; // a dev entry from another checkout: fall through and rewrite it
     }
     for size in ICON_SIZES {
-        let rel = std::path::Path::new("hicolor").join(format!("{size}x{size}")).join("apps").join(format!("{}.png", crate::APP_ID));
+        let rel = std::path::Path::new("hicolor").join(format!("{size}x{size}")).join("apps").join(format!("{}.png", APP_ID));
         let dest = user_dir.join("icons").join(&rel);
         if !dest.is_file()
             && let Some(parent) = dest.parent()
@@ -90,7 +95,7 @@ fn ensure() -> Result<(), DevIconError> {
     }
     let applications = user_dir.join("applications");
     std::fs::create_dir_all(&applications).map_err(DevIconError::Io)?;
-    let body = desktop_file_content(crate::APP_ID, "FilmCraft", exe);
+    let body = desktop_file_content(APP_ID, "FilmCraft", exe);
     std::fs::write(applications.join(&file_name), body).map_err(DevIconError::Io)?;
     Ok(())
 }

@@ -51,7 +51,7 @@ use filmcraft_project::{Project, ProjectView};
 #[cfg(test)]
 use serde_json::Value;
 
-pub use atomic::{atomic_write, atomic_write_new};
+pub use atomic::{atomic_write, atomic_write_new, atomic_write_no_follow};
 
 pub use craft_fcproj_format::{FORMAT_ID, FormatError, MIGRATIONS, Migration, OLDEST_SCHEMA, SCHEMA_VERSION, detect_version, migrate_with};
 
@@ -136,7 +136,9 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
         let name = item.name.clone();
         match &mut item.kind {
             filmcraft_project::ItemKind::Media(m) => {
-                if let Some(video) = &m.info.video {
+                if let Some(video) = &m.info.video
+                    && (video.width, video.height) != (0, 0)
+                {
                     filmcraft_project::validate_frame_size(video.width, video.height).map_err(|e| FormatError::Corrupt(format!("media `{name}`: {e}")))?;
                 }
                 if m.info.audio_streams.len() > max {
