@@ -48,6 +48,11 @@ craft-docpath = { workspace = true }
 web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 
+# Only the failed-restart path of `malloc_arenas` uses it: `Command::exec` leaves SIGPIPE at its
+# default when it fails, and a SIGPIPE handler is how safe code gets `EPIPE` back.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+signal-hook = { version = "0.4", default-features = false }
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 tempfile = "3"
