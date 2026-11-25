@@ -318,7 +318,7 @@ have no identity, so relinking them skips the fingerprint check.
 | `media.findMissing` | `{missing: [{item, name, fileName, path, status: missing\|offline\|proxyMissing, duration, startTimecode}]}` |
 | `media.status {item?}` | per item: `online`, `missing`, `offline`, `unreadable` or `generated`, plus identity and proxy |
 | `media.linkMedia` | File ▸ Link Media… (rescans; the UI opens the dialog) |
-| `media.relink {item, path, force?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
+| `media.relink {item, path, force?, relinkOthers?=true, relinkOffline?, alignTimecode?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
 | `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
@@ -336,17 +336,23 @@ have no identity, so relinking them skips the fingerprint check.
 `force: true` links regardless. **Relink others automatically** works out the folder remap from the
 file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
 `/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
-files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
-work. **Align Timecode** keeps clips on the same timecode when the new file starts at a different
-timecode: the clips' source in-points, keyframes, marks and markers move with it
-(`Project::shift_media_time`). Media an EDL names starts at timecode 00:00:00:00 until its file is
-linked, because the list's source times are timecodes; relink it with Align Timecode to land on the
-same frames as importing the EDL next to its media. One relink, together with the files it pulls
-along, is one undo step.
+files (and **Offline** files when Include Offline media is on; Premiere's default) and checks each
+one. It also looks in the new file's folder. Windows and macOS separators both work.
+`relinkOffline` overrides that for one command; otherwise Settings ▸ Media ▸
+`media.relinkOfflineMedia` is used (and seeds the Link Media checkbox). **Align Timecode** keeps
+clips on the same timecode when the new file starts at a different timecode: the clips' source
+in-points, keyframes, marks and markers move with it (`Project::shift_media_time`). Media an EDL
+names starts at timecode 00:00:00:00 until its file is linked, because the list's source times are
+timecodes; relink it with Align Timecode to land on the same frames as importing the EDL next to its
+media. One relink, together with the files it pulls along, is one undo step.
+
+**Offline All** is remembered with the project by default (`media.rememberOfflineAll`): reopening
+does not ask again for those clips. Turn that pref off to prompt for Offline media on open as well.
+File ▸ Link Media… still lists Offline clips so they can be reconnected.
 
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
-`linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,
+`linkMedia.relinkOthers`, `linkMedia.includeOffline`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a

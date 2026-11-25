@@ -9,8 +9,11 @@
 //! - **Matching.** [`check_candidate`] compares a candidate with the clip: file name, extension,
 //!   fingerprint ("Clip ID"), duration, media start (timecode) and stream metadata.
 //! - **Relink others automatically.** Linking one file derives a folder remap (the old path's
-//!   prefix → the new one) and applies it to every other missing file, checking each one.
-//! - **Search.** [`search`] walks a folder for files named like the missing ones.
+//!   prefix → the new one) and applies it to every other missing file (and Offline files when
+//!   Include Offline media / `media.relinkOfflineMedia` is on; Premiere's default), checking each.
+//! - **Search.** [`search`] walks a folder for files named like the missing ones (same Offline rule).
+//! - **Open prompt.** Offline All is remembered by default (`media.rememberOfflineAll`); made-offline
+//!   clips do not re-prompt on open unless that pref is off.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -156,16 +159,31 @@ pub struct MatchOptions {
     pub align_timecode: bool,
     /// After one file is found, apply its folder remap to the other missing files.
     pub relink_others: bool,
+    /// Also remap / search Offline (made-offline) items with Relink others and autoRelink.
+    pub relink_offline: bool,
 }
 
 impl Default for MatchOptions {
     fn default() -> Self {
-        Self { file_name: true, extension: true, clip_id: true, duration: true, media_start: false, metadata: true, align_timecode: false, relink_others: true }
+        Self {
+            file_name: true,
+            extension: true,
+            clip_id: true,
+            duration: true,
+            media_start: false,
+            metadata: true,
+            align_timecode: false,
+            relink_others: true,
+            // Premiere: Offline and Missing reconnect together; Settings can default this off.
+            relink_offline: true,
+        }
     }
 }
 
 impl MatchOptions {
-    pub fn from_params(p: &Value) -> Self {
+    /// Build match options from command params. `relink_offline` uses `relinkOffline` when set,
+    /// otherwise `relink_offline_default` (the session's `media.relinkOfflineMedia` pref).
+    pub fn from_params(p: &Value, relink_offline_default: bool) -> Self {
         let mut o: MatchOptions = p.get("match").and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
         if let Some(b) = bool_p(p, "relinkOthers") {
             o.relink_others = b;
@@ -173,8 +191,14 @@ impl MatchOptions {
         if let Some(b) = bool_p(p, "alignTimecode") {
             o.align_timecode = b;
         }
+        o.relink_offline = bool_p(p, "relinkOffline").unwrap_or(relink_offline_default);
         o
     }
+}
+
+/// Whether Relink others / autoRelink should try this scan row (`proxyMissing` never).
+fn wants_relink(status: &str, include_offline: bool) -> bool {
+    status == "missing" || (include_offline && status == "offline")
 }
 
 /// The result of checking one candidate file against a clip.
@@ -369,14 +393,14 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
     Ok(rows)
 }
 
-/// Other missing items that the remap (or the new file's folder) finds, checked.
+/// Other missing (and Offline, when opted in) items that the remap or the new file's folder finds, checked.
 fn others(s: &Session, skip: ItemId, old: &str, new: &str, o: &MatchOptions) -> Vec<Plan> {
     let remap = derive_remap(old, new);
     let new_dir = Path::new(new).parent().map(Path::to_path_buf);
     let mut out = Vec::new();
     for m in scan(&s.project, &s.media, &*s.services) {
         let id = ItemId(m.item);
-        if id == skip || m.status != "missing" {
+        if id == skip || !wants_relink(m.status, o.relink_offline) {
             continue;
         }
         let mut tries = Vec::new();
@@ -408,7 +432,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let item = u64_p(p, "item").map(ItemId).ok_or_else(|| bad("media.relink", "need `item`"))?;
     let path = str_p(p, "path").ok_or_else(|| bad("media.relink", "need `path`"))?.to_string();
     let force = bool_p(p, "force").unwrap_or(false);
-    let o = MatchOptions::from_params(p);
+    let o = MatchOptions::from_params(p, s.prefs.media.relink_offline_media);
     let old = match s.project.item(item).and_then(|i| i.as_media()).map(|m| m.media.clone()) {
         Some(MediaRef::File { path }) => path,
         _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
@@ -436,8 +460,8 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `media.autoRelink`: `{from, to}` remaps a folder prefix; `{folder}` searches a folder tree.
 pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
-    let o = MatchOptions::from_params(p);
-    let missing: Vec<Missing> = scan(&s.project, &s.media, &*s.services).into_iter().filter(|m| m.status == "missing").collect();
+    let o = MatchOptions::from_params(p, s.prefs.media.relink_offline_media);
+    let missing: Vec<Missing> = scan(&s.project, &s.media, &*s.services).into_iter().filter(|m| wants_relink(m.status, o.relink_offline)).collect();
     let mut plans = Vec::new();
     let mut failed = Vec::new();
     if let (Some(from), Some(to)) = (str_p(p, "from"), str_p(p, "to")) {
@@ -513,10 +537,10 @@ pub fn index_folder(root: &Path, limit: usize) -> BTreeMap<String, Vec<PathBuf>>
 pub fn search(s: &Session, p: &Value) -> Result<Value> {
     let folder = str_p(p, "folder").ok_or_else(|| bad("media.search", "need `folder`"))?;
     let exact = bool_p(p, "exactName").unwrap_or(true);
-    let o = MatchOptions::from_params(p);
+    let o = MatchOptions::from_params(p, s.prefs.media.relink_offline_media);
     let items: Vec<ItemId> = match u64_p(p, "item") {
         Some(i) => vec![ItemId(i)],
-        None => scan(&s.project, &s.media, &*s.services).into_iter().filter(|m| m.status == "missing").map(|m| ItemId(m.item)).collect(),
+        None => scan(&s.project, &s.media, &*s.services).into_iter().filter(|m| wants_relink(m.status, o.relink_offline)).map(|m| ItemId(m.item)).collect(),
     };
     let index = index_folder(Path::new(folder), 20_000);
     let mut out = Vec::new();
@@ -686,7 +710,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Relink Media",
             menu: &[],
             shortcut: None,
-            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
+            params: r#"{"item":id,"path":str,"force":bool=false,"relinkOthers":bool=true,"relinkOffline":bool?,"alignTimecode":bool=false,"match":{"fileName":bool,"extension":bool,"clipId":bool,"duration":bool,"mediaStart":bool,"metadata":bool}?}"#,
             enabled: always,
             run: relink,
             journal: true,
@@ -800,11 +824,12 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
-    let missing = list.iter().filter(|m| m.status == "missing").count();
-    s.offline.prompt = missing > 0;
-    if missing > 0 {
-        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
+    // Offline All is remembered by default (Premiere); opt out with media.rememberOfflineAll = false.
+    let ask_offline = !s.prefs.media.remember_offline_all;
+    let to_ask = list.iter().filter(|m| wants_relink(m.status, ask_offline)).count();
+    s.offline.prompt = to_ask > 0;
+    if to_ask > 0 {
+        s.toast(format!("{to_ask} media file(s) need linking; File > Link Media… reconnects them"));
     }
     list.len()
 }

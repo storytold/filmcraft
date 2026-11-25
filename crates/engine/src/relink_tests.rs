@@ -111,7 +111,8 @@ fn auto_relink_by_prefix_and_by_folder_search() {
 
 // An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
 // file, the clip is missing like any file that isn't found: the folder search and Relink Others
-// find it, and opening the project asks for it. It was made offline, which all three skip.
+// find it, and opening the project asks for it. Importing them as made-offline would skip the
+// open prompt (while media.rememberOfflineAll is on); Relink others includes Offline by default.
 #[test]
 fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
     let root = tmp_dir("relink-edl-reel");
@@ -520,6 +521,72 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     s.execute("file.save", json!({})).unwrap();
     assert!(open(&path).offline.prompt, "newly missing media asks again");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Premiere default: Relink others reconnects Offline media; prefs / `relinkOffline` opt out.
+#[test]
+fn relink_others_includes_offline_by_default_with_prefs_to_opt_out() {
+    let setup = |label: &str| {
+        let root = tmp_dir(label);
+        let (path, items) = saved_project(&root);
+        let moved = root.join("Moved").join("Media");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(root.join("Media"), &moved).unwrap();
+        let a = moved.join("a.mov").to_string_lossy().into_owned();
+        (root, path, items, moved, a)
+    };
+
+    // Default: Offline All, then Relink others pulls the sibling Offline clip too.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-default");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "Offline included by default: {r}");
+        assert_eq!(r["remaining"], json!([]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Explicit opt-out on the command: only the linked item comes online.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-param");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOffline": false})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(r["remaining"], json!([items[1].0]), "{r}");
+        assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Pref off: autoRelink skips Offline.
+    {
+        let (root, path, items, moved, _a) = setup("relink-offline-others-pref");
+        let mut s = open(&path);
+        s.prefs.media.relink_offline_media = false;
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.autoRelink", json!({"folder": moved.to_string_lossy()})).unwrap();
+        assert!(r["relinked"].as_array().unwrap().is_empty(), "pref off skips Offline: {r}");
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Opt out of remembering Offline All: on_open asks for Offline media.
+    {
+        let (root, path, items, _moved, _a) = setup("relink-offline-others-prompt");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        s.execute("file.save", json!({})).unwrap();
+        // Prefs live outside the project; set them then re-run on_open.
+        let mut s = open(&path);
+        assert!(!s.offline.prompt, "setup: Offline All remembered with default pref");
+        s.prefs.media.remember_offline_all = false;
+        crate::relink::on_open(&mut s);
+        assert!(s.offline.prompt, "rememberOfflineAll off prompts for Offline media");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// The first video clip of the active sequence: (its media item, its source in-point).

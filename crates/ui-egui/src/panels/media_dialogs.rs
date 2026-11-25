@@ -5,7 +5,7 @@
 //!
 //! Automation ids:
 //! - Link Media: `linkMedia.row.<n>`, `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`,
-//!   `linkMedia.alignTimecode`, `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`,
+//!   `linkMedia.alignTimecode`, `linkMedia.relinkOthers`, `linkMedia.includeOffline`, `linkMedia.folder`, `linkMedia.browse`,
 //!   `linkMedia.exactName`, `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`,
 //!   `linkMedia.link`, `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 //! - Make Offline: `makeOffline.keep`, `makeOffline.delete`, `makeOffline.ok`, `makeOffline.cancel`.
@@ -34,10 +34,15 @@ fn mb(b: u64) -> String {
 /// Draw whichever media dialogs are open; open Link Media when a project needs it.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if app.session.offline.prompt && app.ui.link_media.is_none() {
-        // Asked on open: list only the newly missing files, not the ones already made offline.
+        // Asked on open: list only the newly missing files, not the ones already made offline
+        // (unless Settings ▸ Media ▸ Remember Offline All is off, then Offline is prompted too).
         let s = &app.session;
-        let skipped = s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
-        app.ui.link_media = Some(LinkMediaDraft { skipped, ..LinkMediaDraft::default() });
+        let mut draft = LinkMediaDraft::from_prefs(&s.prefs);
+        if s.prefs.media.remember_offline_all {
+            draft.skipped =
+                s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
+        }
+        app.ui.link_media = Some(draft);
     }
     if app.ui.link_media.is_some() {
         link_media(app, ctx);
@@ -69,7 +74,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
                 app.ui.status = tl!("All media is online.").into();
                 return Some(r);
             }
-            app.ui.link_media = Some(LinkMediaDraft::default());
+            app.ui.link_media = Some(LinkMediaDraft::from_prefs(&app.session.prefs));
             Some(r)
         }
         "media.makeOffline" => Some(enabled(app, id).map(|_| {
@@ -128,6 +133,7 @@ fn match_params(d: &LinkMediaDraft) -> Value {
         "match": {"fileName": d.file_name, "extension": d.extension, "clipId": d.clip_id, "duration": d.duration, "mediaStart": d.media_start, "metadata": d.metadata},
         "alignTimecode": d.align_timecode,
         "relinkOthers": d.relink_others,
+        "relinkOffline": d.include_offline,
     })
 }
 
@@ -216,6 +222,8 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
                     let r = ui.checkbox(&mut d.relink_others, tl!("Relink others automatically"));
                     push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
+                    let r = ui.checkbox(&mut d.include_offline, tl!("Include Offline media"));
+                    push(&mut elems, "linkMedia.includeOffline", &r, "Include Offline media");
                 });
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {
