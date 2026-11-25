@@ -307,6 +307,7 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
+        filmcraft_ui_egui::framework::install(&cc.egui_ctx, APP_ID).map_err(|error| format!("the UI runtime could not be installed: {error}"))?;
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
         created.store(true, Ordering::Relaxed);
         // Start the control server before anything touches recovery state: `file.recover`
@@ -547,6 +548,17 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
 
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
+    }
+
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
     }
 }
 

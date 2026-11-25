@@ -1,69 +1,17 @@
 //! Headless UI tests for Escape key drag cancellation in the Timeline (#580).
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, Launch, driver};
 use egui::pos2;
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_project::ClipId;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::Drag;
 use serde_json::{Value, json};
 
 const DUNES: &str = "Desert_Dunes.mp4";
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        session.execute("sequence.snap", json!({"on": false})).expect("snapping off");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d.ok("ui.elements", json!({"prefix": "timeline.clip."}));
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
     fn app(&self) -> &FilmcraftApp {
         self.harness.state()
     }
@@ -78,10 +26,7 @@ impl Driver {
     }
 
     fn rect(&mut self, id: &str) -> [f64; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
-        [r[0], r[1], r[2], r[3]]
+        self.expect_rect(id)
     }
 
     fn v1_clip(&self, name: &str) -> u64 {
@@ -109,7 +54,7 @@ impl Driver {
 
 #[test]
 fn escape_cancels_clip_move_drag() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let q = d.app().session.active_sequence().unwrap().clone();
     let v2 = q.video_tracks[1].items[0].clone();
     let r = d.rect(&format!("timeline.clip.{}", v2.id.0));
@@ -137,7 +82,7 @@ fn escape_cancels_clip_move_drag() {
 
 #[test]
 fn escape_cancels_clip_trim_drag() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let clip = d.v1_clip(DUNES);
     let (s0, e0) = d.span(clip);
     let (_, x_out, y) = d.edges(clip);
@@ -162,7 +107,7 @@ fn escape_cancels_clip_trim_drag() {
 
 #[test]
 fn escape_cancels_ruler_scrub_and_restores_playhead() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let initial_playhead = d.app().session.playhead();
     let layout = d.app().tl.layout.as_ref().expect("layout").clone();
     let from = pos2(layout.x_of(initial_playhead), layout.ruler.center().y);
@@ -188,7 +133,7 @@ fn escape_cancels_ruler_scrub_and_restores_playhead() {
 
 #[test]
 fn escape_cancels_marquee_selection() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let q = d.app().session.active_sequence().unwrap().clone();
     let v2 = q.video_tracks[1].items[0].clone();
     d.exec("timeline.select", json!({"clips": [v2.id.0]}));

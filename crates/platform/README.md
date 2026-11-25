@@ -105,8 +105,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   bit-exact. Each picture is sent as one picture-parameter buffer, the scaling matrices, and a slice
   parameter + slice data buffer per slice (the NAL unit as stored, emulation prevention included).
   HEVC pictures are sent the same way per slice segment (scaling lists only when enabled, converted
-  to raster order). Pictures the DPB outputs are read back right away (`vaGetImage` into an NV12 or
-  P010 image, then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  to raster order). Pictures the DPB outputs are read back right away (`vaDeriveImage`, which maps the
+  surface's own NV12 or P010 memory, or `vaGetImage` into an image where a driver cannot derive it;
+  then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
   - *frame_num gaps* (and every start at a non-IDR picture: an open-GOP seek) get "non-existing"
     frames like the software decoder's: copies of the latest decoded frame, mid-gray when there is
     none (`vaPutImage`). Pictures predicted from them (the leading pictures of an open GOP after a

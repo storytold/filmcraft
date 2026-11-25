@@ -58,6 +58,7 @@ pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod slip;
 pub mod source_monitor;
+pub mod still_migration;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
@@ -1522,6 +1523,8 @@ mod shortcuts_tests;
 mod slip_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
+#[cfg(test)]
+mod still_migration_tests;
 #[cfg(test)]
 mod stored_paths_tests;
 #[cfg(test)]

@@ -4,68 +4,19 @@
 //! release exactly what it showed; Escape drops it. The real `FilmcraftApp` under `egui_kittest`
 //! with the demo project, the pointer moving a few pixels per frame as a mouse does.
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, Launch, builder, driver, screenshot};
 use egui::{Pos2, pos2};
-use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_project::{ClipId, ItemId, TrackItem};
 use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::Drag;
 use filmcraft_ui_egui::state::Tool;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    /// The demo project, snapping off so drags land exactly where the pointer goes; frames 1/60 s
-    /// apart, as on a display.
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        session.execute("sequence.snap", json!({"on": false})).expect("snapping off");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d.ok("ui.elements", json!({"prefix": "timeline.clip."}));
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
     fn app(&self) -> &FilmcraftApp {
         self.harness.state()
     }
@@ -155,15 +106,7 @@ impl Driver {
 
     /// Render the window to `<target tmp>/ui-screenshots/<name>.png` (needs a GPU).
     fn screenshot(&mut self, name: &str) -> std::path::PathBuf {
-        self.frames(2);
-        let img = self.harness.render().expect("render");
-        let png = filmcraft_ui_egui::control::encode_png(img.as_raw(), img.width(), img.height()).expect("png");
-        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-screenshots");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.png"));
-        std::fs::write(&path, png).unwrap();
-        eprintln!("screenshot: {}", path.display());
-        path
+        screenshot(self, name)
     }
 }
 
@@ -194,7 +137,7 @@ fn assert_pictures_show(d: &mut Driver, p: &Value, prev: &Value, next: &Value) {
 
 #[test]
 fn dragging_with_the_slip_tool_shows_the_four_up_and_follows_the_pointer() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (clip, at) = d.middle_clip();
     let before = d.clip(clip);
     let partners = filmcraft_engine::commands::with_links(&d.app().session, &[clip]);
@@ -286,7 +229,7 @@ fn dragging_with_the_slip_tool_shows_the_four_up_and_follows_the_pointer() {
 
 #[test]
 fn escape_drops_the_slip_and_its_monitor() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (clip, at) = d.middle_clip();
     let before = d.clip(clip);
     let project = d.app().session.project.clone();
@@ -310,7 +253,7 @@ fn escape_drops_the_slip_and_its_monitor() {
 
 #[test]
 fn a_slip_far_past_the_media_stops_at_its_end_and_commits_that() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (clip, at) = d.middle_clip();
     d.key(egui::Key::Y);
     d.press(at);
@@ -330,7 +273,7 @@ fn a_slip_far_past_the_media_stops_at_its_end_and_commits_that() {
 
 #[test]
 fn a_fast_slip_keeps_one_decode_per_picture_waiting() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (_, at) = d.middle_clip();
     d.key(egui::Key::Y);
     d.press(at);
@@ -351,7 +294,7 @@ fn a_fast_slip_keeps_one_decode_per_picture_waiting() {
 fn slip_and_trim_tools_still_edit_after_a_slip() {
     // Trim Monitor drags and ordinary trims keep working once a slip has run (the pictures share
     // `trim_monitor::picture`)
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (clip, at) = d.middle_clip();
     d.key(egui::Key::Y);
     d.press(at);
@@ -375,7 +318,7 @@ fn slip_and_trim_tools_still_edit_after_a_slip() {
 #[test]
 #[ignore]
 fn slip_monitor_screenshots() {
-    let mut d = Driver::demo();
+    let mut d = Driver::demo_snap_off();
     let (_, at) = d.middle_clip();
     d.screenshot("slip-before");
     d.key(egui::Key::Y);
@@ -456,11 +399,7 @@ fn perf_slip_monitor_4k_long_gop() {
                 )
                 .unwrap();
         }
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(100_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
+        let mut d = Driver::open(session, builder().with_step_dt(1.0 / 60.0).with_max_steps(100_000));
         d.ok("ui.set", json!({"timeline": {"fit": true}}));
         d.frames(10);
         let (clip, at) = d.middle_clip();
