@@ -162,6 +162,22 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
+/// Before `command` (with `params`) replaces a project that has unsaved changes, asks Save /
+/// Don't Save / Cancel (the Close Project prompt) and returns true; the command runs after Save or
+/// Don't Save, and Cancel drops it. Returns false, asking nothing, when there is nothing to save.
+pub fn ask_to_save_before(app: &mut FilmcraftApp, command: &str, params: &Value) -> bool {
+    if !app.session.is_dirty() {
+        return false;
+    }
+    app.ui.clip_dialog = Some(ClipDialogDraft {
+        command: "file.closeProject".into(),
+        params: json!({"then": {"command": command, "params": params}}),
+        info: Value::Null,
+        error: String::new(),
+    });
+    true
+}
+
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
@@ -814,6 +830,15 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
     if command == "app.quit" {
         app.quit_confirmed = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    // Asked before a Home action replaces this project (New Project): it runs now
+    if command == "file.closeProject"
+        && let Some(then) = prompt.params.get("then")
+    {
+        let next = then["command"].as_str().unwrap_or_default().to_string();
+        if let Err(e) = crate::menus::invoke(app, ctx, &next, then["params"].clone()) {
+            app.ui.status = e;
+        }
     }
     if command == "file.open"
         && let Some(path) = prompt.params["path"].as_str()
