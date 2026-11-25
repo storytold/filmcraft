@@ -142,7 +142,25 @@ fn av1_default_export_preserves_frame_order_and_timestamps() {
     assert!(pkt_probe.status.success(), "{}", String::from_utf8_lossy(&pkt_probe.stderr));
     let pkt_text = String::from_utf8_lossy(&pkt_probe.stdout);
     eprintln!("AV1 default export ffprobe packets:\n{pkt_text}");
-    assert_eq!(pkt_text.lines().filter(|l| !l.is_empty()).count(), 12, "{pkt_text}");
+    let mut pts_dts: Vec<(i64, i64)> = Vec::new();
+    for line in pkt_text.lines().filter(|l| !l.is_empty()) {
+        let mut pts = None;
+        let mut dts = None;
+        for field in line.split('|') {
+            if let Some(v) = field.strip_prefix("pts=") {
+                pts = Some(v.parse::<i64>().unwrap());
+            } else if let Some(v) = field.strip_prefix("dts=") {
+                dts = Some(v.parse::<i64>().unwrap());
+            }
+        }
+        pts_dts.push((pts.unwrap(), dts.unwrap()));
+    }
+    assert_eq!(pts_dts.len(), 12, "{pkt_text}");
+    assert!(pts_dts.windows(2).all(|w| w[0].1 < w[1].1), "dts must be strictly increasing: {pts_dts:?}");
+    assert!(pts_dts.iter().all(|&(pts, dts)| dts <= pts), "dts must never exceed pts: {pts_dts:?}");
+    let mut pts_sorted: Vec<i64> = pts_dts.iter().map(|&(pts, _)| pts).collect();
+    pts_sorted.sort_unstable();
+    assert_eq!(pts_sorted, (0..12).collect::<Vec<_>>(), "pts must cover 0..12: {pts_dts:?}");
 
     let ff_out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&path).args(["-f", "null", "-"]).output().unwrap();
     assert!(ff_out.status.success(), "{}", String::from_utf8_lossy(&ff_out.stderr));
