@@ -33,19 +33,19 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out craft-fonts
-        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
         with:
           ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
       - id: rust
-        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/rust-channel@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
         with:
           targets: x86_64-pc-windows-msvc
       - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
@@ -108,19 +108,19 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out craft-fonts
-        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
         with:
           ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
       - id: rust
-        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/rust-channel@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
       - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
         with:
           toolchain: ${{ steps.rust.outputs.toolchain }}
@@ -171,19 +171,19 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out craft-fonts
-        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/checkout-craft-fonts@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
         with:
           ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+      - uses: storytold/craft-common-actions/actions/checkout-craft-i18n@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
       - id: rust
-        uses: storytold/craft-common-actions/actions/rust-channel@f5141455aac7b2eb4708aa259d8ffcdf10fde939
+        uses: storytold/craft-common-actions/actions/rust-channel@1754016e67ca9b74dfa4cf4678b2ac3548e9840f
         with:
           targets: aarch64-apple-darwin
       - uses: step-security/dtolnay-rust-toolchain@8dd607977d06adf4ed49b190381e74c17a9dd25f # v1.0.0
