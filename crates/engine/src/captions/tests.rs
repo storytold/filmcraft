@@ -429,3 +429,32 @@ fn caption_export_warns_about_characters_608_and_708_cannot_carry() {
     assert_eq!(export(&mut s, "srt")["warnings"], json!([]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #5147: Select Caption at Playhead picks the caption on screen, also one that starts exactly at
+/// the playhead, and an old selection does not win.
+#[test]
+fn select_caption_at_playhead_ignores_the_old_selection() {
+    let mut s = demo();
+    for (sec, text) in [(1.0, "one"), (3.0, "two")] {
+        s.execute("playhead.set", json!({"seconds": sec})).unwrap();
+        s.execute("captions.add", json!({"text": text, "durationSeconds": 1.0})).unwrap();
+    }
+    let text = |s: &Session| s.active_sequence().unwrap().find_caption(s.state.caption_selection[0]).unwrap().1.text.clone();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("captions.goTo", json!({"caption": s.active_sequence().unwrap().caption_tracks[0].captions[0].id.0})).unwrap();
+    assert_eq!(text(&s), "one");
+    // exactly on the start of "two": `captions.next` would skip it, and the selection is still "one"
+    s.execute("playhead.set", json!({"seconds": 3.0})).unwrap();
+    let parked = s.playhead();
+    s.execute("captions.selectAtPlayhead", json!({})).unwrap();
+    assert_eq!(text(&s), "two");
+    assert_eq!(s.playhead(), parked, "the playhead stays put");
+    // inside "one" with "two" selected
+    s.execute("playhead.set", json!({"seconds": 1.5})).unwrap();
+    s.execute("captions.selectAtPlayhead", json!({})).unwrap();
+    assert_eq!(text(&s), "one");
+    // in the gap between them: an error, and the selection is left alone
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    assert!(s.execute("captions.selectAtPlayhead", json!({})).is_err());
+    assert_eq!(text(&s), "one");
+}
