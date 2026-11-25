@@ -92,16 +92,23 @@ fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2
         x += 18.0;
     }
     if b.used {
-        used_badge(app, ui, Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0)), pre, id);
+        used_badge(app, ui, Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0)), pre, id, false);
     }
 }
 
 /// The "used" chip: a tick in a box, drawn with lines so it needs no font. It marks an item some
-/// sequence uses, and registers its automation id and a hover text (#5224).
-fn used_badge(app: &mut FilmcraftApp, ui: &egui::Ui, r: Rect, pre: &str, id: ItemId) {
-    let t = app.tokens;
-    let stroke = Stroke::new(1.5, t.accent);
-    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
+/// sequence uses, and registers its automation id and a hover text (#5224). On a thumbnail it sits
+/// on a dark plate with a white tick, as the other thumbnail badges do, so any picture shows it; in
+/// a row it takes the theme's active icon colour, which contrasts with the row in every theme.
+fn used_badge(app: &mut FilmcraftApp, ui: &egui::Ui, r: Rect, pre: &str, id: ItemId, on_thumb: bool) {
+    let color = if on_thumb {
+        ui.painter().rect_filled(r, 2.0, Color32::from_black_alpha(170));
+        Color32::WHITE
+    } else {
+        app.tokens.icon_active
+    };
+    let stroke = Stroke::new(1.5, color);
+    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, color), StrokeKind::Inside);
     let c = r.center();
     ui.painter().line_segment([c + vec2(-3.5, 0.0), c + vec2(-1.0, 2.5)], stroke);
     ui.painter().line_segment([c + vec2(-1.0, 2.5), c + vec2(3.5, -2.5)], stroke);
@@ -1039,7 +1046,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
         app.auto.add(&format!("{pre}.item.{}.proxy", id.0), pr, "Proxy attached");
     }
     if badge.used {
-        used_badge(app, ui, Rect::from_min_size(pos2(th.min.x + 4.0, th.min.y + 4.0), vec2(18.0, 14.0)), pre, id);
+        used_badge(app, ui, Rect::from_min_size(pos2(th.min.x + 4.0, th.min.y + 4.0), vec2(18.0, 14.0)), pre, id, true);
     }
     let f = font(app);
     let ty = th.max.y + 11.0;
