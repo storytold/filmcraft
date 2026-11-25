@@ -22,3 +22,6 @@ tempfile = "3.27"
 
 [dev-dependencies]
 filmcraft-time = { workspace = true }
+craft-docpath = { workspace = true }
+serde = { workspace = true }
+sha2 = "0.10"

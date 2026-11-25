@@ -89,6 +89,38 @@ A file with a `schema_version` newer than the build supports is **refused**, not
 
 Reading it partially and saving it back would silently drop whatever the newer version added.
 
+## Developer project-folder converter
+
+Use the native `project_folder` example to split a saved project into a new directory or
+rebuild a standard project file from that directory. Both destination parents must exist.
+
+```sh
+cargo run -p filmcraft-format --example project_folder -- pack edit.fcproj edit-folder
+cargo run -p filmcraft-format --example project_folder -- unpack edit-folder restored.fcproj
+```
+
+Each bin and project item (including each sequence) has its own JSON record. The
+`project.fcmod` manifest maps stable project IDs to filenames. Each filename is the
+lowercase SHA-256 digest of its contents. A separate record retains the project envelope,
+view, and item inventory. Bin order, unfiled items and extension fields survive conversion.
+Packing an older supported standard project applies the ordinary in-memory schema migrations.
+
+The converter rebases relative original-media and proxy paths against each destination
+document so offline media can still be relinked. It reads only project data. Media files
+stay where they are. Moving a completed folder later can change what its relative paths
+resolve to, just as moving a standard project can.
+
+Packing reserves a fresh directory, reads the records back, reconstructs the project with
+FilmCraft's standard reader, and publishes the manifest last. An interruption can leave
+records in the new directory. A folder without a manifest is incomplete. Retry packing
+the original project into a fresh destination. Unpacking checks every referenced digest
+and record ID before publishing a new standard file. Both commands refuse occupied
+destinations and keep their inputs intact.
+
+Folder layout version 1 accepts at most 100,000 bin and item records, a 16 MiB manifest,
+and 256 MiB of combined record data. A standard input or export must also fit FilmCraft's
+ordinary project size limit.
+
 ## Saving is atomic
 
 Every write of a project file, auto-save, recovery snapshot or preferences file goes through
