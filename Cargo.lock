@@ -2894,6 +2894,7 @@ dependencies = [
  "craft-control-protocol",
  "craft-jsonrpc",
  "filmcraft-engine",
+ "filmcraft-media",
  "filmcraft-time",
  "image",
  "rmcp",
