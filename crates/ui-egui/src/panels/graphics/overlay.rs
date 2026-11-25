@@ -216,8 +216,9 @@ fn set_hover_cursor(
     // cursors
     if let Some(p) = hover {
         match tool {
-            Tool::Type | Tool::VerticalType => ui.ctx().set_cursor_icon(egui::CursorIcon::Text),
-            Tool::Rectangle | Tool::Ellipse | Tool::Pen => ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair),
+            Tool::Type | Tool::VerticalType | Tool::Rectangle | Tool::Ellipse | Tool::Pen => {
+                crate::tool_cursor::set(ui.ctx(), crate::tool_cursor::base(tool, egui::Modifiers::NONE), p)
+            }
             Tool::Selection => {
                 let selected = || views.iter().filter(|v| Some(v.clip) == sel_clip && sel_layers.contains(&v.layer));
                 let handle = selected().find_map(|v| resize_handle_cursor(v, p));

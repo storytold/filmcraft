@@ -398,6 +398,8 @@ impl FilmcraftApp {
             self.cancel_value_drag(&ctx);
         }
         self.error_window(ui.ctx());
+        // last, so a drawn tool cursor is painted only if nothing replaced it this frame
+        crate::tool_cursor::paint_pending(ui.ctx());
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
