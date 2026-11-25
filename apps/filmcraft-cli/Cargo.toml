@@ -27,12 +27,11 @@ filmcraft-gpu = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-platform = { workspace = true }
-filmcraft-mxf = { workspace = true }
-filmcraft-mpegts = { workspace = true }
-filmcraft-ogg = { workspace = true }
+craft-media = { workspace = true, features = ["mpegts", "mxf", "ogg"] }
 filmcraft-automation = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+tempfile = "3"

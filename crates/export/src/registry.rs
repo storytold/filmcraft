@@ -4,7 +4,7 @@ use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
-use super::{FrameRate, ItemId, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
+use super::{FrameRate, ItemId, Mutex, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
 
 /// A packet produced by a video encoder.
 pub struct EncodedPacket {
@@ -31,23 +31,6 @@ pub struct EncoderFrame<'a> {
 pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
 
 pub trait VideoEncoder: Send {
-    /// What wrote the stream: "software", or the hardware encoder's name ("NVENC",
-    /// "Media Foundation", "VideoToolbox"). The export result says it, so a file the hardware
-    /// encoder declined, and the software encoder took instead, is visible.
-    fn name(&self) -> &'static str {
-        "software"
-    }
-    /// A stable identifier of the encoder that writes the stream: "software", "nvenc",
-    /// "videotoolbox", "media_foundation". The export result carries it, so a consumer can
-    /// compare it across versions of the app: [`name`](Self::name) is the readable text and
-    /// may be reworded, this is the machine-readable one.
-    ///
-    /// It defaults to "software", the same as [`name`](Self::name), so an encoder that does
-    /// not override either is a software encoder. **An encoder that overrides `name` must
-    /// override this too**, or its hardware export would report the id of a software one.
-    fn id(&self) -> &'static str {
-        "software"
-    }
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
     fn timescale(&self) -> u32;
@@ -58,7 +41,7 @@ pub trait VideoEncoder: Send {
         None
     }
     /// First-pass statistics of a two-pass encode (H.264).
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<craft_video::h264::PassStats> {
         None
     }
     /// Work on a rendered picture that needs nothing of the encoder's state (H.264: the colour
@@ -67,6 +50,19 @@ pub trait VideoEncoder: Send {
     /// itself for a picture that has none; the encoded bytes are the same either way.
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
         None
+    }
+    /// The hardware encoder doing the work ("NVENC", "VideoToolbox"), `None` for FilmCraft's own
+    /// software encoders: what the export's [`crate::Report::encoder`] names.
+    fn hardware(&self) -> Option<&'static str> {
+        None
+    }
+    /// A stable identifier of the encoder for [`crate::Report::encoder_id`]: "software",
+    /// "nvenc", "videotoolbox", "media_foundation". Machine-readable where
+    /// [`VideoEncoder::hardware`] is the display name, so a consumer can compare it without
+    /// matching text. A hardware encoder that overrides `hardware` must override this too,
+    /// or its export is reported as software.
+    fn id(&self) -> &'static str {
+        "software"
     }
 }
 
@@ -134,6 +130,33 @@ pub trait FrameRenderer: Send {
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
     ) -> Option<filmcraft_render::Image>;
+
+    /// What the renderer's device runs. The export plans with it before taking a renderer
+    /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
+    /// on the export's own thread instead of on the CPU inside the renderer.
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+
+    /// The frame as [`render`](Self::render) followed by
+    /// [`over_black_rgba8`](filmcraft_render::Image::over_black_rgba8) would give it: opaque 8-bit
+    /// sRGB RGBA at the render size, `(width, height, pixels)`. The export asks for this instead
+    /// when it needs nothing else done to the picture (SDR, no alpha, no resampling or placement,
+    /// no overlay), so a renderer can hand over the final bytes without making the float frame.
+    /// `None` to let the CPU render this frame.
+    fn render_rgba8(
+        &mut self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.render(project, seq, t, opts, sources).map(|img| {
+            let rgba = img.over_black_rgba8();
+            let (w, h) = (img.w, img.h);
+            filmcraft_frame::pool::recycle_f32(img.px);
+            (w, h, rgba)
+        })
+    }
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).
@@ -150,6 +173,8 @@ pub fn register_frame_renderer(f: FrameRendererFactory) {
     let mut g = frame_renderer_factories().write().unwrap_or_else(PoisonError::into_inner);
     if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
         g.insert(0, f);
+        // renderers built by the factories before this one are not what a new export would get
+        release_idle_renderers();
     }
 }
 
@@ -163,6 +188,7 @@ pub fn frame_renderer_registered(f: FrameRendererFactory) -> bool {
 #[cfg(test)]
 pub(crate) fn reset_frame_renderers_for_tests() {
     frame_renderer_factories().write().unwrap_or_else(PoisonError::into_inner).clear();
+    release_idle_renderers();
     GPU_FRAMES.store(0, Ordering::Relaxed);
     GPU_FALLBACKS.store(0, Ordering::Relaxed);
 }
@@ -171,6 +197,47 @@ pub(crate) fn reset_frame_renderers_for_tests() {
 pub(crate) fn build_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
     let g = frame_renderer_factories().read().unwrap_or_else(PoisonError::into_inner);
     g.iter().filter_map(|f| f()).next()
+}
+
+/// The most renderers kept between exports: one export's pool.
+const MAX_IDLE_RENDERERS: usize = 4;
+
+/// Frame renderers of finished exports that are parts of a larger job, kept for the next part.
+/// Building one (a GPU device, its pipelines and shaders) costs far more than a short part
+/// renders: a preview segment of a cut-heavy timeline spent most of its setup on it.
+fn idle_renderers() -> &'static Mutex<Vec<Box<dyn FrameRenderer>>> {
+    static I: OnceLock<Mutex<Vec<Box<dyn FrameRenderer>>>> = OnceLock::new();
+    I.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// A renderer for an export: one kept from an earlier part of the same job, else a new one.
+pub(crate) fn take_frame_renderer() -> Option<Box<dyn FrameRenderer>> {
+    let kept = idle_renderers().lock().unwrap_or_else(PoisonError::into_inner).pop();
+    kept.or_else(build_frame_renderer)
+}
+
+/// Keep `renderers` (a finished part's, all working) for the next part, up to one pool's worth.
+pub(crate) fn keep_idle_renderers(renderers: Vec<Box<dyn FrameRenderer>>) {
+    let mut idle = idle_renderers().lock().unwrap_or_else(PoisonError::into_inner);
+    for r in renderers {
+        if idle.len() >= MAX_IDLE_RENDERERS {
+            break;
+        }
+        idle.push(r);
+    }
+}
+
+/// Free the renderers kept between exports (their GPU devices and memory). A standalone export
+/// does this when it ends, and so does a job of several parts (render previews, proxies)
+/// through the engine's job wrapper; registering a frame renderer factory does it too.
+pub fn release_idle_renderers() {
+    let idle = std::mem::take(&mut *idle_renderers().lock().unwrap_or_else(PoisonError::into_inner));
+    drop(idle);
+}
+
+/// How many renderers are kept between exports (tests).
+pub fn idle_renderer_count() -> usize {
+    idle_renderers().lock().unwrap_or_else(PoisonError::into_inner).len()
 }
 
 pub fn register_audio_encoder(f: AudioEncoderFactory) {

@@ -256,13 +256,16 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                         let list_w = ui.available_width();
                         // nowhere to choose from while the sequence has no track of the kind
                         ui.add_enabled_ui(!tracks.is_empty(), |ui| {
-                            let r = craft_ui::ComboBox::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
-                                for n in 0..=tracks.len() {
-                                    let label = place(n);
-                                    let o = ui.selectable_value(after, n, &label);
-                                    elems.push((format!("addTracks.{kind}.placement.option.{n}"), o.rect, label));
-                                }
-                            });
+                            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("add-tracks-placement", kind)).selected_text(&shown).width(list_w).show_ui(
+                                ui,
+                                |ui| {
+                                    for n in 0..=tracks.len() {
+                                        let label = place(n);
+                                        let o = ui.selectable_value(after, n, &label);
+                                        elems.push((format!("addTracks.{kind}.placement.option.{n}"), o.rect, label));
+                                    }
+                                },
+                            );
                             elems.push((format!("addTracks.{kind}.placement"), r.response.rect, shown.clone()));
                         });
                     });
@@ -271,12 +274,15 @@ fn add_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                             label(ui, tl!("Track type"));
                             let shown = types.iter().find(|(id, _)| *id == chosen.as_str()).map_or(types[0].1, |(_, label)| label).to_string();
                             let list_w = ui.available_width();
-                            let r = craft_ui::ComboBox::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(ui, |ui| {
-                                for (id, label) in types {
-                                    let o = ui.selectable_value(chosen, id.to_string(), *label);
-                                    elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
-                                }
-                            });
+                            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("add-tracks-type", kind)).selected_text(&shown).width(list_w).show_ui(
+                                ui,
+                                |ui| {
+                                    for (id, label) in types {
+                                        let o = ui.selectable_value(chosen, id.to_string(), *label);
+                                        elems.push((format!("addTracks.{kind}.type.option.{id}"), o.rect, label.to_string()));
+                                    }
+                                },
+                            );
                             elems.push((format!("addTracks.{kind}.type"), r.response.rect, shown));
                         });
                     }
@@ -365,7 +371,7 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                     ui.add_space(22.0);
                     let shown = if target == "empty" { tl!("All Empty Tracks").to_string() } else { target.clone() };
                     ui.add_enabled_ui(*on, |ui| {
-                        let r = craft_ui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
+                        let r = crate::legacy_dropdown::Dropdown::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
                             let e = ui.selectable_value(target, "empty".to_string(), tl!("All Empty Tracks"));
                             elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
                             for n in list {
@@ -469,8 +475,8 @@ fn about_tab(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
     crate::brand::paint_wordmark(ui, egui::pos2(r.min.x, r.center().y), 20.0, app.ui.dark);
     ui.add_space(6.0);
-    ui.heading("FilmCraft");
-    ui.label(tlf!("Version {version}", version = env!("CARGO_PKG_VERSION")));
+    ui.heading(crate::os_window::name());
+    ui.label(tlf!("Version {version}", version = crate::os_window::display_version()));
     ui.label(tl!("A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family."));
     ui.add_space(10.0);
     let mut link = |ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, url: &str, primary: bool| {

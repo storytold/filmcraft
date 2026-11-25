@@ -37,6 +37,24 @@ pub fn note_hw_encode_declined() {
     HW_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+thread_local! {
+    /// Why a hardware encoder last declined a request on this thread ([`note_hw_encode_declined_by`]).
+    static HW_DECLINE: std::cell::Cell<Option<String>> = const { std::cell::Cell::new(None) };
+}
+
+/// A hardware encoder (`encoder`: "NVENC", "VideoToolbox") declined a request, and why: counted as
+/// [`note_hw_encode_declined`], and kept for the export that asked (factories run on its thread), so
+/// its report can say that the software encoder took over and why.
+pub fn note_hw_encode_declined_by(encoder: &str, why: &str) {
+    note_hw_encode_declined();
+    HW_DECLINE.set(Some(format!("{encoder}: {why}")));
+}
+
+/// Take the reason [`note_hw_encode_declined_by`] kept on this thread.
+pub(crate) fn take_hw_encode_decline() -> Option<String> {
+    HW_DECLINE.take()
+}
+
 /// The stages of an export whose wall time [`stage_times`] adds up (`perf.stats` `export.stages`). The
 /// render of one batch overlaps the encoding of the previous one (`Exporter::overlapping`), so
 /// [`Stage::Render`] and [`Stage::Encode`] with its neighbours can sum to more than the export took;
@@ -151,39 +169,4 @@ pub struct GpuRenderStats {
 
 pub fn gpu_render_stats() -> GpuRenderStats {
     GpuRenderStats { frames: GPU_FRAMES.load(Ordering::Relaxed), fallbacks: GPU_FALLBACKS.load(Ordering::Relaxed) }
-}
-
-/// The reason the last hardware encoder declined, on this thread.
-///
-/// The export asks the hardware encoders in turn, and a decline is not an error: the software
-/// encoder takes the export instead. The reason the hardware encoder gave is what tells the user
-/// why their file is not what they asked for, and it is only known where the decline happened â€”
-/// so it is left there for the export to pick up ([`hw_decline_reason`]).
-pub fn note_hw_encode_declined_with(reason: &str) {
-    note_hw_encode_declined();
-    DECLINE_REASON.with(|r| {
-        if let Ok(mut r) = r.try_borrow_mut()
-            && r.is_none()
-        {
-            *r = Some(reason.to_string());
-        }
-    });
-}
-
-/// The reason the hardware encoder declined on this thread, if one did.
-pub fn hw_decline_reason() -> Option<String> {
-    DECLINE_REASON.with(|r| r.borrow().clone())
-}
-
-thread_local! {
-    static DECLINE_REASON: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-/// Forget the decline reason of a previous export on this thread, so an export that had no
-/// hardware decline does not report the last one's.
-pub fn clear_hw_decline_reason() {
-    DECLINE_REASON.with(|r| {
-        if let Ok(mut r) = r.try_borrow_mut() {
-            *r = None;
-        }
-    });
 }

@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true }
+craft-behavior = { workspace = true }
+craft-host = { workspace = true }
+craft-window = { workspace = true }
+craft-keymap = { workspace = true }
+craft-theme = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
@@ -49,6 +54,7 @@ cpu-time = "1"
 
 [dev-dependencies]
 pollster = "1"
+filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)

@@ -24,7 +24,18 @@ const EXACT: f32 = 1e-4;
 const FLIPS: f64 = 0.01;
 
 fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
-    FxCtx { t, px_scale, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working: filmcraft_color::WorkingSpace::Rec709 }
+    FxCtx {
+        t,
+        px_scale,
+        mask_scale: px_scale,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: "",
+        project: None,
+        env: None,
+        frame_rate: 24.0,
+        working: filmcraft_color::WorkingSpace::Rec709,
+    }
 }
 
 fn effect(id: &str, params: &[(&str, ParamValue)]) -> EffectInstance {
@@ -620,6 +631,10 @@ fn hostile_parameters_are_bounded() {
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
     assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, turns: 0, ops: vec![FxOp::BlackWhite] }).is_none());
+    // and the refusal ends its frame: the next frame, which uses no effect, releases the working
+    // images the first one pooled
+    c.composite(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] });
+    assert!(c.fx.as_ref().is_some_and(|f| f.is_idle()), "working images kept after a refused effect image");
 }
 
 #[test]

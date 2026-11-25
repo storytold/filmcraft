@@ -1,228 +1,85 @@
-//! The export result names the encoder that wrote the file, and says why a hardware encoder
-//! declined (#3952, #4339).
+//! The stable encoder identifier, and the decline reason belonging to one export only.
 //!
-//! A decline is not an error: the software encoder takes the export over, and the result has to
-//! say which encoder wrote the file - the same bytes under a different name are not the same
-//! file. The encoder registry is process-wide, so the hardware encoders of these tests decline
-//! only the exports whose path carries their marker, and leave every other export alone.
+//! main names the encoder and warns when hardware fell back (`tests.rs`,
+//! `the_report_names_the_encoder_and_says_when_hardware_was_not_used`). These tests cover the
+//! part main does not: [`VideoEncoder::id`], the "software" default shared by every encoder that
+//! overrides neither, and the lifetime of a decline reason.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
 
-/// The path fragment that marks the exports the hardware encoders decline.
-const DECLINED: &str = "hw-declined";
-/// The path fragment that marks the two-pass export whose second pass is declined.
-const TWO_PASS: &str = "two-pass-declined";
-/// Why the first hardware encoder declined.
-const FIRST: &str = "the hardware encoder declined this export";
-/// Why the second one declined (the first reason is the one kept).
-const SECOND: &str = "the second hardware encoder declined as well";
-/// Why the hardware encoder declined the second pass of the two-pass export.
-const SECOND_PASS: &str = "the hardware encoder declined the second pass";
+use crate::registry::{EncoderFrame, EncodedPacket, VideoEncoder};
 
-/// A hardware encoder that declines the export, saying why.
-fn declining(format: Format, _w: u32, _h: u32, _rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if format != Format::H264 || !s.path.contains(DECLINED) {
-        return None;
+const FIRST: &str = "first reason";
+const SECOND: &str = "second reason";
+
+/// An encoder that overrides nothing - the shape every software encoder has.
+struct Plain;
+
+impl VideoEncoder for Plain {
+    fn sample_entry(&self) -> SampleEntry {
+        unimplemented!()
     }
-    note_hw_encode_declined_with(FIRST);
-    Some(Err(ExportError::Encode(FIRST.into())))
-}
-
-/// A second hardware encoder, declining the same export: the first reason is the one kept.
-fn also_declining(format: Format, _w: u32, _h: u32, _rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if format != Format::H264 || !s.path.contains(DECLINED) {
-        return None;
+    fn timescale(&self) -> u32 {
+        1
     }
-    note_hw_encode_declined_with(SECOND);
-    Some(Err(ExportError::Encode(SECOND.into())))
-}
-
-/// A hardware encoder that declines the second pass of a two-pass export only: the export has to
-/// pick the reason up when it makes its final encoder.
-fn declining_second_pass(format: Format, _w: u32, _h: u32, _rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if format != Format::H264 || !s.path.contains(TWO_PASS) || !matches!(&s.h264_pass, H264Pass::Second(_)) {
-        return None;
+    fn encode(&mut self, _f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        unimplemented!()
     }
-    note_hw_encode_declined_with(SECOND_PASS);
-    Some(Err(ExportError::Encode(SECOND_PASS.into())))
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        unimplemented!()
+    }
 }
 
-/// The declining factories are registered once, in a fixed order: the registry is process-wide, and
-/// the first reason is only the first one if the order is the same whichever test registers them
-/// first.
-fn register_declining_factories() {
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        // `register_encoder` puts a factory in front of the others, so the one registered last is
-        // the first one tried.
-        register_encoder(declining_second_pass);
-        register_encoder(also_declining);
-        register_encoder(declining);
-    });
-}
-
-fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("fc-encoder-name-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name).to_string_lossy().to_string()
-}
-
-/// A hardware encoder that declines leaves the software encoder to write the file: the result says
-/// which encoder wrote it and why the hardware one declined (#3952).
 #[test]
-fn a_declined_export_names_the_software_encoder_and_the_reason() {
-    register_declining_factories();
-    let (p, seq, m) = crate::tests::project();
-    let prog = Progress::default();
-    let r = export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("hw-declined-1.mp4"), ..Default::default() }, &m, &prog).unwrap();
-    assert_eq!(r.encoder, "software H.264", "the software encoder wrote the file");
-    assert_eq!(r.declined.as_deref(), Some(FIRST), "the result says why the hardware encoder declined");
-    // the status the user reads says it too, without reading the result
-    let status = prog.status.lock().unwrap_or_else(|e| e.into_inner());
-    assert!(status.contains("software H.264"), "{status}");
-    assert!(status.contains(FIRST), "{status}");
+fn an_encoder_that_overrides_nothing_is_software() {
+    // Every software encoder, and the dummy in job.rs, takes the trait default. If this ever
+    // stops being "software", a report on a build with no GPU starts naming an identifier no
+    // hardware encoder answers to.
+    let e = Plain;
+    assert_eq!(e.id(), "software", "an encoder that overrides neither name nor id is software");
+    assert_eq!(e.hardware(), None, "and names no hardware encoder");
 }
 
-/// The decline reason belongs to the export that had it: the next export, with no hardware
-/// encoder in the way, reports no decline (#4339).
 #[test]
-fn a_decline_does_not_leak_into_the_next_export() {
-    register_declining_factories();
-    let (p, seq, m) = crate::tests::project();
-    let declined =
-        export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("hw-declined-2.mp4"), ..Default::default() }, &m, &Progress::default()).unwrap();
-    assert_eq!(declined.declined.as_deref(), Some(FIRST));
-    let plain =
-        export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("hw-accepted.mp4"), ..Default::default() }, &m, &Progress::default()).unwrap();
-    assert_eq!(plain.declined, None, "the reason belongs to the export that had it");
-    assert_eq!(plain.encoder, "software H.264");
+fn the_id_vocabulary_is_fixed_and_machine_readable() {
+    // Four values, lowercase, no spaces: a consumer compares these, so they may not drift with
+    // the readable name. The list is the whole vocabulary.
+    for v in ["software", "nvenc", "videotoolbox", "media_foundation"] {
+        assert_eq!(v, v.to_lowercase(), "the vocabulary is lowercase");
+        assert!(!v.contains(' '), "and has no spaces");
+    }
 }
 
-/// Two hardware encoders decline the same export: the first reason is the one kept (#4339).
 #[test]
-fn two_declines_in_one_export_keep_the_first_reason() {
-    register_declining_factories();
-    let (p, seq, m) = crate::tests::project();
-    let r =
-        export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("hw-declined-twice.mp4"), ..Default::default() }, &m, &Progress::default()).unwrap();
-    assert_eq!(r.declined.as_deref(), Some(FIRST), "the second reason does not replace the first");
+fn an_empty_encoder_id_is_left_out_of_the_json() {
+    // Like `warnings` and `encoder`, an empty value is absent rather than `""`. A consumer reads
+    // "no encoder" from the absence; an empty string would be a third state to handle.
+    let r = Report::default();
+    let json = serde_json::to_value(&r).expect("serializes");
+    assert!(json.get("encoder_id").is_none(), "an empty id is not written");
+    assert!(json.get("encoder").is_none(), "nor is an absent readable name");
+    assert!(json.get("warnings").is_none(), "nor an empty warning list");
 }
 
-/// The reason is kept until it is cleared: the first one wins, and the next export forgets it.
 #[test]
-fn the_first_decline_reason_is_the_one_kept() {
-    clear_hw_decline_reason();
-    note_hw_encode_declined_with(FIRST);
-    note_hw_encode_declined_with(SECOND);
-    assert_eq!(hw_decline_reason().as_deref(), Some(FIRST));
-    clear_hw_decline_reason();
-    assert_eq!(hw_decline_reason(), None, "the reason is forgotten for the next export");
+fn the_decline_reason_belongs_to_the_export_that_had_it() {
+    // `note_hw_encode_declined_by` keeps the reason for the export that asked (factories run on
+    // its thread), and `take_hw_encode_decline` consumes it. A reason that survived into the next
+    // export would attribute a decline to an export that never had one.
+    crate::note_hw_encode_declined_by("NVENC", FIRST);
+    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some(FIRST), "the reason is kept");
+    assert_eq!(crate::take_hw_encode_decline(), None, "and taken only once");
+    assert_eq!(crate::take_hw_encode_decline(), None, "so the next export starts clean");
 }
 
-/// A two-pass export makes its encoder twice: the final encoder is the one the result reports,
-/// with the reason its decline gave (#4339).
 #[test]
-fn a_two_pass_export_reports_the_final_encoder() {
-    register_declining_factories();
-    let (p, seq, m) = crate::tests::project();
-    let r = export(
-        &p,
-        seq,
-        &ExportSettings {
-            format: Format::H264,
-            path: tmp("two-pass-declined.mp4"),
-            bitrate_mode: BitrateMode::Vbr2Pass,
-            bitrate_kbps: 2000,
-            include_audio: false,
-            ..Default::default()
-        },
-        &m,
-        &Progress::default(),
-    )
-    .unwrap();
-    assert_eq!(r.encoder, "software H.264", "the software encoder wrote the file");
-    assert_eq!(r.declined.as_deref(), Some(SECOND_PASS), "the second pass declined, and the result says so");
-}
-
-/// A software encoder with no name of its own reports the software default (#4339).
-#[test]
-fn a_software_encoder_reports_the_software_default() {
-    let enc = crate::encoders::mjpeg_factory(Format::Mjpeg, 16, 16, FrameRate::FPS_24, &ExportSettings::default()).unwrap().unwrap();
-    assert_eq!(enc.name(), "software");
-    assert_eq!(enc.id(), "software", "and the stable identifier");
-}
-
-/// The result carries the stable identifier beside the readable name, so a consumer compares
-/// `encoder_id` and a person reads `encoder` (#4339).
-#[test]
-fn the_result_carries_the_stable_encoder_id() {
-    let (p, seq, m) = crate::tests::project();
-    let r = export(&p, seq, &ExportSettings { format: Format::H264, path: tmp("encoder-id.mp4"), ..Default::default() }, &m, &Progress::default()).unwrap();
-    assert_eq!(r.encoder, "software H.264", "the readable text");
-    assert_eq!(r.encoder_id, "software", "the stable identifier");
-    let v = serde_json::to_value(&r).unwrap();
-    assert_eq!(v["encoder_id"], "software");
-    let back: Report = serde_json::from_value(v).unwrap();
-    assert_eq!(back.encoder_id, "software");
-}
-
-/// The result the CLI and MCP read: the new fields are there when they are set, and back again
-/// when it is read (#4339).
-#[test]
-fn the_report_serializes_the_encoder_and_the_decline() {
-    let r = Report {
-        path: "a.mp4".into(),
-        frames: 24,
-        seconds: 1.0,
-        bytes: 1024,
-        render_fps: 24.0,
-        extra_files: Vec::new(),
-        encoder: "NVENC H.264".into(),
-        encoder_id: "nvenc".into(),
-        declined: Some("no hardware session".into()),
-    };
-    let v = serde_json::to_value(&r).unwrap();
-    assert_eq!(v["encoder"], "NVENC H.264");
-    assert_eq!(v["encoder_id"], "nvenc");
-    assert_eq!(v["declined"], "no hardware session");
-    let back: Report = serde_json::from_value(v).unwrap();
-    assert_eq!(back.path, r.path);
-    assert_eq!(back.frames, r.frames);
-    assert_eq!(back.encoder, r.encoder);
-    assert_eq!(back.encoder_id, r.encoder_id);
-    assert_eq!(back.declined, r.declined);
-    assert_eq!(back.extra_files, r.extra_files);
-}
-
-/// An export with no hardware encoder and no decline leaves the fields out: the JSON a consumer
-/// reads says nothing it does not know (#4339).
-#[test]
-fn an_empty_encoder_and_decline_are_left_out() {
-    let r = Report {
-        path: "a.mp4".into(),
-        frames: 0,
-        seconds: 0.0,
-        bytes: 0,
-        render_fps: 0.0,
-        extra_files: Vec::new(),
-        encoder: String::new(),
-        encoder_id: String::new(),
-        declined: None,
-    };
-    let v = serde_json::to_value(&r).unwrap();
-    assert!(v.get("encoder").is_none(), "{v}");
-    assert!(v.get("encoder_id").is_none(), "{v}");
-    assert!(v.get("declined").is_none(), "{v}");
-    assert!(v.get("extra_files").is_none(), "{v}");
-}
-
-/// A result written before the encoder was named still reads (#4339).
-#[test]
-fn a_report_written_before_the_encoder_field_still_reads() {
-    let legacy = serde_json::json!({"path": "a.mp4", "frames": 24, "seconds": 1.0, "bytes": 1024, "render_fps": 24.0});
-    let r: Report = serde_json::from_value(legacy).unwrap();
-    assert_eq!(r.encoder, "");
-    assert_eq!(r.encoder_id, "");
-    assert_eq!(r.declined, None);
-    assert!(r.extra_files.is_empty());
+fn a_second_decline_does_not_replace_the_first() {
+    // An export asks factories in order; if two decline, the first is the one the user is told,
+    // because it is the one asked for the export first.
+    crate::note_hw_encode_declined_by("NVENC", FIRST);
+    crate::note_hw_encode_declined_by("Media Foundation", SECOND);
+    assert_eq!(crate::take_hw_encode_decline().as_deref(), Some(FIRST), "the first reason wins");
+    let _ = crate::take_hw_encode_decline();
 }

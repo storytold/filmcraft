@@ -111,3 +111,10 @@ real_name = "Alexander Alber"
 sync_github_name = true
 [people.helenkwok]
 real_name = "Helen Kwok"
+
+[people.dotCooCoo]
+real_name = "Robert Lee"
+sync_github_name = true
+
+[people.Terra854]
+display_name = "Terra854"
