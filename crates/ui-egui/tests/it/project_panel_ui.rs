@@ -657,6 +657,24 @@ fn a_dragged_bin_nests_in_another_and_back_out() {
     assert_eq!(parent(&mut d, inner), Some(root));
 }
 
+/// #5135: items dragged onto the up button move out of the open bin into the one above it.
+#[test]
+fn an_item_dropped_on_the_up_button_leaves_the_bin() {
+    let mut d = project_driver();
+    let (footage, items) = d.footage();
+    let item = items[0];
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": footage, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{item}"));
+    let parent = |d: &mut Driver| d.app().session.project.root.parent_of(ItemId(item)).map(|p| p.0);
+    assert_eq!(parent(&mut d), Some(footage), "the item starts in the open bin");
+    let (from, to) = (centre(d.rect(&format!("project.item.{item}"))), centre(d.rect("project.up")));
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": to.0, "y": to.1}, "steps": 12}));
+    d.frames(3);
+    let root = d.app().session.project.root.id.0;
+    assert_ne!(parent(&mut d), Some(footage), "dropping on the up button takes the item out of the bin");
+    assert!(parent(&mut d).is_some(), "the item is still in the project (at {root})");
+}
+
 #[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();
