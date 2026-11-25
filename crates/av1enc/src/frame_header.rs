@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_write_frame_header_has_spec_conforming_trailing_bits() {
-        let seq = SequenceConfig { width: 64, height: 64, bit_depth: 8, mono_chrome: false, enable_cdef: true };
+        let seq = SequenceConfig { width: 64, height: 64, bit_depth: 8, mono_chrome: false, enable_cdef: true, seq_level_idx: 8 };
         let cfg =
             FrameHeaderConfig { frame_type: KEY_FRAME, show_frame: true, error_resilient_mode: false, disable_cdf_update: false, qindex: 100, order_hint: 0 };
 

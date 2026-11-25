@@ -27,7 +27,7 @@ fn test_residual_decode_non_skip_block() {
 #[test]
 fn test_raw_non_skip_residual_tile() {
     let (w, h) = (64u32, 64u32);
-    let seq_cfg = obu::SequenceConfig { width: w, height: h, bit_depth: 8, mono_chrome: false, enable_cdef: false };
+    let seq_cfg = obu::SequenceConfig { width: w, height: h, bit_depth: 8, mono_chrome: false, enable_cdef: false, seq_level_idx: 8 };
     let fh_cfg = frame_header::FrameHeaderConfig {
         frame_type: frame_header::KEY_FRAME,
         show_frame: true,

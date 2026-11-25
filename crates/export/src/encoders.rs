@@ -615,7 +615,10 @@ pub(crate) fn av1_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
     if format != Format::Av1 {
         return None;
     }
-    let mut cfg = filmcraft_av1enc::EncoderConfig::new(w, h, rate.num.max(1) as u32, rate.den.max(1) as u32);
+    let (Ok(fps_num), Ok(fps_den)) = (u32::try_from(rate.num), u32::try_from(rate.den)) else {
+        return Some(Err(ExportError::Encode("invalid frame rate for AV1 encoder".into())));
+    };
+    let mut cfg = filmcraft_av1enc::EncoderConfig::new(w, h, fps_num, fps_den);
     let keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| ((rate.num as f64 / rate.den.max(1) as f64) * 2.0).round().max(1.0) as u32);
     cfg.key_int = keyint.max(1);
     let kbps = s.bitrate_kbps.max(100);

@@ -93,6 +93,7 @@ pub struct YuvFrame<'a> {
 #[derive(Debug)]
 pub struct Encoder {
     config: EncoderConfig,
+    seq_level_idx: u8,
     frame_count: u64,
     active_qindex: u8,
     bit_reservoir: i64,
@@ -183,6 +184,8 @@ impl Encoder {
         if config.fps_num == 0 || config.fps_den == 0 || config.key_int == 0 {
             return Err(Error::Invalid("frame rate and keyframe interval must be positive"));
         }
+        let seq_level_idx = obu::select_seq_level_idx(config.width, config.height, config.fps_num, config.fps_den)
+            .ok_or(Error::Invalid("dimensions and frame rate exceed supported AV1 Level 5.3 single-tile limits"))?;
         if let Some(rc) = config.rate_control {
             match rc {
                 RateControl::Cbr { kbps: 0 } => {
@@ -204,6 +207,7 @@ impl Encoder {
         let uv_len = ((config.width as usize) / 2).saturating_mul((config.height as usize) / 2);
         Ok(Self {
             config,
+            seq_level_idx,
             frame_count: 0,
             active_qindex: initial_qindex,
             bit_reservoir: 0,
@@ -238,7 +242,7 @@ impl Encoder {
     }
 
     pub fn seq_level_idx(&self) -> u8 {
-        obu::select_seq_level_idx(self.config.width, self.config.height)
+        self.seq_level_idx
     }
 
     pub fn sequence_header_obu(&self) -> Vec<u8> {
@@ -248,6 +252,7 @@ impl Encoder {
             bit_depth: 8,
             mono_chrome: false,
             enable_cdef: self.config.enable_cdef,
+            seq_level_idx: self.seq_level_idx,
         };
         obu::write_sequence_header(&seq_cfg)
     }
@@ -317,6 +322,7 @@ impl Encoder {
             bit_depth: 8,
             mono_chrome: false,
             enable_cdef: self.config.enable_cdef,
+            seq_level_idx: self.seq_level_idx,
         };
 
         // Determine base quantization index for this frame (clamped to 1..=255 for DCT coding)
@@ -1824,5 +1830,32 @@ mod tests {
                 assert!(adj >= 1 && adj <= q, "q={q} var={var} raised qindex to {adj}");
             }
         }
+    }
+
+    #[test]
+    fn selects_annex_a_level_from_dimensions_and_rational_frame_rate() {
+        assert_eq!(obu::select_seq_level_idx(1920, 1080, 30, 1), Some(8)); // Level 4.0
+        assert_eq!(obu::select_seq_level_idx(1920, 1080, 60, 1), Some(9)); // Level 4.1 (124,416,000 <= 141,557,760)
+        assert_eq!(obu::select_seq_level_idx(1920, 1080, 60000, 1001), Some(9)); // Level 4.1
+        assert_eq!(obu::select_seq_level_idx(1920, 1080, 120, 1), Some(12)); // Level 5.0 (248,832,000 <= 267,386,880)
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, 30, 1), Some(12)); // Level 5.0
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, 60, 1), Some(13)); // Level 5.1 (497,664,000 <= 534,773,760)
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, 60000, 1001), Some(13)); // Level 5.1
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, 120, 1), Some(14)); // Level 5.2 (995,328,000 <= 1,069,547,520)
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, 240, 1), None);
+        assert_eq!(obu::select_seq_level_idx(3840, 2160, u32::MAX, 1), None);
+
+        for (w, h, num, den, expected_level) in [(1920, 1080, 60, 1, 9u8), (3840, 2160, 60, 1, 13u8)] {
+            let enc = Encoder::new(EncoderConfig::new(w, h, num, den)).unwrap();
+            assert_eq!(enc.seq_level_idx(), expected_level);
+            let seq_obu = enc.sequence_header_obu();
+            let payload_start = if (seq_obu[1] & 0x80) != 0 { 3 } else { 2 };
+            // Parse level from seq_level_idx[0]: bits 24..29 (top 5 bits of payload[3])
+            let payload = &seq_obu[payload_start..];
+            let level = (payload[3] >> 3) & 0x1F;
+            assert_eq!(level, expected_level, "{w}x{h}@{num}/{den} header level mismatch");
+        }
+
+        assert!(matches!(Encoder::new(EncoderConfig::new(3840, 2160, 240, 1)), Err(Error::Invalid(_))));
     }
 }

@@ -14,10 +14,10 @@ Decoding Process Specification v1.0.0 with Errata 1.
 
 This crate provides a pure-Rust baseline software encoder (Layer 0):
 
-1. **Compliant Single-Tile Bitstream Synthesis (up to 4K Level 5.0)**:
+1. **Compliant Single-Tile Bitstream Synthesis (Levels 4.0–5.3 up to 4K)**:
    - Temporal Delimiter, Sequence Header, Frame Header, and single-tile Tile Group OBUs.
-   - Profile 0 (8-bit 4:2:0) bounded by single-tile Level 5.0 limits (`width <= 4096` / `sb_cols <= 64`, `height <= 4352`, `sb_cols * sb_rows <= 2304`, and `width * height <= 8,912,896`).
-   - Level selection (`seq_level_idx_0`): Level 4.0 (`8`) up to 1920x1080, Level 5.0 (`12`) above 1080p within the single-tile 4K bounds.
+   - Profile 0 (8-bit 4:2:0) bounded by single-tile limits (`width <= 4096` / `sb_cols <= 64`, `height <= 4352`, `sb_cols * sb_rows <= 2304`, and `width * height <= 8,912,896`).
+   - Level selection (`seq_level_idx_0`): selected from picture dimensions and rational frame rate (`width * height * fps_num / fps_den`) per AV1 Annex A Main-tier limits (Levels 4.0–5.3); configurations exceeding Level 5.3 display rate or single-tile size bounds are rejected in `Encoder::new`.
 2. **Range Entropy Coder**:
    - Daala-style arithmetic coder (`SymbolEncoder`) operating on 15-bit precision CDF tables (AV1 Spec §8.2 / §9) with Spec §8.2.4 `exit_symbol` trailing-bit termination.
 3. **Intra & Inter Prediction**:

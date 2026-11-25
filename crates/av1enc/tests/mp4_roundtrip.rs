@@ -292,3 +292,33 @@ fn test_av1enc_arbitrary_resolutions_colored_gradients() {
         }
     }
 }
+
+#[test]
+fn mp4_av1c_and_sequence_header_agree_for_1080p60_and_4k60() {
+    for (w, h, fps_num, fps_den, expected_level) in [(1920u32, 1080u32, 60u32, 1u32, 9u8), (3840, 2160, 60, 1, 13)] {
+        let enc = Encoder::new(EncoderConfig::new(w, h, fps_num, fps_den)).unwrap();
+        assert_eq!(enc.seq_level_idx(), expected_level);
+        let config_obu = enc.sequence_header_obu();
+        let payload_start = if (config_obu[1] & 0x80) != 0 { 3 } else { 2 };
+        let parsed = craft_video::av1::decode::SequenceHeader::parse(&config_obu[payload_start..]).unwrap();
+        assert_eq!(parsed.seq_level_idx[0], expected_level);
+
+        let av1c = Av1Config {
+            seq_profile: 0,
+            seq_level_idx_0: enc.seq_level_idx(),
+            seq_tier_0: false,
+            high_bitdepth: false,
+            twelve_bit: false,
+            monochrome: false,
+            chroma_subsampling_x: true,
+            chroma_subsampling_y: true,
+            chroma_sample_position: 0,
+            initial_presentation_delay_minus_one: None,
+            config_obus: config_obu,
+        };
+        let entry = SampleEntry::av1(av1c, w as u16, h as u16);
+        let filmcraft_isobmff::CodecConfig::Av1(stored) = &entry.codec else { panic!("expected Av1 config") };
+        assert_eq!(stored.seq_level_idx_0, expected_level);
+        assert_eq!(stored.seq_level_idx_0, parsed.seq_level_idx[0]);
+    }
+}

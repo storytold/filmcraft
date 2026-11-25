@@ -2,8 +2,36 @@
 
 use filmcraft_bitstream::BitWriter;
 
-pub fn select_seq_level_idx(width: u32, height: u32) -> u8 {
-    if width > 1920 || height > 1080 { 12 } else { 8 }
+/// Select the lowest AV1 Annex A Main-tier `seq_level_idx` (4.0 through 5.3) that satisfies
+/// the picture dimensions and rational display rate (`width * height * fps_num / fps_den`),
+/// or `None` if the configuration exceeds Level 5.3 limits.
+pub fn select_seq_level_idx(width: u32, height: u32, fps_num: u32, fps_den: u32) -> Option<u8> {
+    if width == 0 || height == 0 || fps_num == 0 || fps_den == 0 {
+        return None;
+    }
+    let pic_size = u64::from(width).checked_mul(u64::from(height))?;
+    let lhs = u128::from(pic_size).checked_mul(u128::from(fps_num))?;
+    let den = u128::from(fps_den);
+    // AV1 Annex A Main-tier level limits: (seq_level_idx, MaxPicSize, MaxHSize, MaxVSize, MaxDisplayRate).
+    const LEVELS: [(u8, u64, u32, u32, u128); 6] = [
+        (8, 2_359_296, 4096, 2176, 70_778_880),     // Level 4.0
+        (9, 2_359_296, 4096, 2176, 141_557_760),    // Level 4.1
+        (12, 8_912_896, 8192, 4352, 267_386_880),   // Level 5.0
+        (13, 8_912_896, 8192, 4352, 534_773_760),   // Level 5.1
+        (14, 8_912_896, 8192, 4352, 1_069_547_520), // Level 5.2
+        (15, 8_912_896, 8192, 4352, 1_179_648_000), // Level 5.3
+    ];
+    for (idx, max_pic, max_h, max_v, max_display_rate) in LEVELS {
+        if pic_size <= max_pic
+            && width <= max_h
+            && height <= max_v
+            && let Some(rhs) = max_display_rate.checked_mul(den)
+            && lhs <= rhs
+        {
+            return Some(idx);
+        }
+    }
+    None
 }
 
 pub const OBU_SEQUENCE_HEADER: u8 = 1;
@@ -53,6 +81,7 @@ pub struct SequenceConfig {
     pub bit_depth: u8,
     pub mono_chrome: bool,
     pub enable_cdef: bool,
+    pub seq_level_idx: u8,
 }
 
 /// Write a Sequence Header OBU (spec 5.5).
@@ -72,8 +101,8 @@ pub fn write_sequence_header(cfg: &SequenceConfig) -> Vec<u8> {
     w.write_bits(0, 5);
     // operating_point_idc[0] = 0
     w.write_bits(0, 12);
-    // seq_level_idx[0] = 8 (Level 4.0 - up to 1080p, or 12 for 4K)
-    let level = select_seq_level_idx(cfg.width, cfg.height);
+    // seq_level_idx[0]
+    let level = cfg.seq_level_idx;
     w.write_bits(level as u32, 5);
     if level > 7 {
         w.write_bit(false); // seq_tier = 0
