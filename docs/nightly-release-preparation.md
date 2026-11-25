@@ -209,10 +209,15 @@ per-run human approval is introduced by candidate-v3; provider gaps remain block
 
 A Nightly build refuses to start without its private profile, and refuses the stable
 `FILMCRAFT_DATA_DIR` override, so every Linux format starts the GUI through the Launcher's literal
-protocol `--launch-profile nightly-v1 --profile-root <dir> -- <files>`. The profile is
+protocol `--launch-profile nightly-v1 --profile-root <dir> -- <files>`. The deb/rpm wrapper, the
+AppImage's `AppRun`, the Arch handoff and the Flatpak use
 `${XDG_DATA_HOME:-$HOME/.local/share}/filmcraft-nightly/profile` (outside stable's folders and
-outside the installed copy, which the app's own fence would reject). A first-argument `--version`
-or `-V`, and an already-named protocol, pass through untouched, so version queries still answer.
+outside the installed copy, which the app's own fence would reject). The plain tar is the exception:
+its `filmcraft` is craft-common-actions' shared launcher template, rendered for this app, whose
+default root is `${XDG_DATA_HOME:-$HOME/.local/share}/ai.storyteller.filmcraft.nightly`. A
+first-argument `--version` or `-V` still answers, and a first-argument `--launch-profile` pair is
+forwarded unchanged; the packaged launchers also pass `--profile-root`, `--help` and `-h` through
+untouched, which the plain tar's narrower template does not.
 
 | Format | Shape |
 |---|---|
