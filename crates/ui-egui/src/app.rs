@@ -1,9 +1,6 @@
 use super::audio::{AUDIO_RETRY_S, AUDIO_STALL_S};
 use super::gpu::{gpu_compositor_unsupported, plan_side};
 use super::hooks::HostHooks;
-use super::raw_input::drop_native_input;
-#[cfg(target_os = "macos")]
-use super::raw_input::synthesize_mac_ctrl_click;
 use super::*;
 
 mod commands;
@@ -55,7 +52,7 @@ impl FilmcraftApp {
             ime_composition: None,
             ime_reset: Default::default(),
             ime_composition_viewport: None,
-            ime_composer: craft_ui::ime::Composer::new(),
+            ime_composer: crate::ime_composer::Composer::new(),
             ime_composer_target: None,
             ime_drawn_editor: None,
             ime_document_epoch,
@@ -65,7 +62,11 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
-            pending_panel_raise: None,
+            dock_live: Arc::new(dock::Workspace::new(dock::Layout::default())),
+            dock_specs: craft_ui::contract::Tracked::new(dock_ui::FilmSpecs::default()),
+            dock_windows: Vec::new(),
+            dock_float_space: None,
+            dock_focus: None,
             control_input_only: false,
             native_window_focused: None,
             synthetic_modifiers: egui::Modifiers::NONE,
@@ -82,8 +83,6 @@ impl FilmcraftApp {
             ui_clock_offset: None,
             #[cfg(test)]
             test_now: None,
-            mac_ctrl_click_armed: false,
-            native_ctrl_click_armed: Arc::default(),
             value_press: None,
             escape_cancel: false,
             loudness: None,
@@ -108,6 +107,7 @@ impl FilmcraftApp {
             clip_mismatch: None,
             file_drag_hover: None,
             window_files: Vec::new(),
+            native_timeline_drops: VecDeque::new(),
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,
@@ -242,12 +242,8 @@ impl FilmcraftApp {
         now
     }
 
-    /// Close-request handling and control-driven synthetic input, in the original order.
+    /// Control-driven synthetic input. The close request is decided in `framework::close_path`.
     fn logic_control(&mut self, ctx: &egui::Context) {
-        // Quitting with unsaved changes asks to save them first.
-        if ctx.input(|i| i.viewport().close_requested()) && panels::clip_dialogs::intercept_quit(self) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
         let had_synthetic = !self.synthetic.is_empty() || self.synthetic_pending_step.is_some();
         self.drain_control(ctx);
         if (!self.synthetic.is_empty() || self.synthetic_pending_step.is_some()) && !had_synthetic {
@@ -296,7 +292,7 @@ impl FilmcraftApp {
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
+                    let _ = self.apply_dock(craft_behavior::dock::Action::activate(PanelKind::Timeline));
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     // a closed Source panel reopens, and another panel's maximize would hide it
@@ -437,16 +433,15 @@ impl FilmcraftApp {
 }
 
 impl eframe::App for FilmcraftApp {
-    /// Snapshot this callback's fresh surface geometry, optionally synthesize macOS ctrl-click
-    /// and agent input, and offer at most one queued synthetic step. A step already preserved by
+    /// Snapshot this callback's fresh surface geometry, optionally drop the window system's
+    /// input (`--control-input-only`), synthesize agent input, and offer at most one queued synthetic step. A step already preserved by
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::framework::before_input(ctx, self);
         self.native_window_focused = Some(raw_input.focused);
         capture::note_raw_geometry(self, ctx, raw_input);
-        #[cfg(target_os = "macos")]
-        if !self.control_input_only {
-            synthesize_mac_ctrl_click(&mut self.mac_ctrl_click_armed, raw_input);
-        }
+        // (the runtime makes a macOS Control+Click a secondary click in every viewport, and drops a
+        // hosted window's input under `--control-input-only`; the main window's is the app's to drop)
         if self.control_input_only {
             drop_native_input(raw_input);
         }
@@ -493,13 +488,18 @@ impl eframe::App for FilmcraftApp {
                 self.synthetic_step_offered = true;
             }
         }
+        crate::framework::note_press_suffix(ctx, &raw_input.events);
+        crate::framework::note_ctrl_wheels(ctx, &raw_input.events);
+        crate::framework::note_escape(ctx, &raw_input.events);
     }
 
     /// Eframe's hidden logic callback: run the logic pass, sync the IME target context, then
-    /// suspend reset state because a logic-only callback is never a UI pass.
+    /// suspend reset state because a logic-only callback is never a UI pass. The root window's
+    /// close path runs last.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.logic_inner(ctx);
         self.finish_ime_reset_logic(ctx);
+        crate::framework::close_path(ctx, self);
     }
 
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
@@ -523,15 +523,18 @@ impl eframe::App for FilmcraftApp {
     /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::framework::before_ui(&ctx, frame);
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
-        let another_field = ctx.memory(|memory| memory.focused().is_some_and(|id| id != egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
+        let another_field = crate::framework::field_focused(&ctx, Some(egui::Id::unique(panels::graphics::TEXT_EDIT_ID)));
         if !self.fonts_ready || self.ui.gfx_edit.is_none() || self.ime_modal_blocks_input() || !focused || another_field {
             self.suspended_ime_controls(&ctx);
         }
         self.ui_inner(ui, frame);
         self.finish_ime_reset_ui(&ctx);
+        crate::framework::zoom_keys(&ctx);
     }
 }
 
@@ -559,6 +562,7 @@ mod lifecycle_synthetic_tests {
     #[test]
     fn one_synthetic_step_survives_hidden_logic_callbacks() {
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut app = FilmcraftApp::new(Session::default());
         app.synthetic = vec![
             Event::PointerMoved(pos2(10.0, 10.0)),
@@ -595,6 +599,7 @@ mod lifecycle_synthetic_tests {
     #[test]
     fn hidden_callbacks_do_not_duplicate_a_step_preserved_in_raw_input() {
         let ctx = egui::Context::default();
+        crate::framework::install_headless(&ctx);
         let mut app = FilmcraftApp::new(Session::default());
         app.synthetic =
             vec![Event::Text("once".into()), Event::Key { key: egui::Key::F35, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }];

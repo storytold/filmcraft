@@ -388,7 +388,10 @@ pub fn timeline(o: &Opts) -> Vec<Value> {
         if gpu {
             b = b.wgpu();
         }
-        let harness = b.build_eframe(move |_cc| app);
+        let harness = b.build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
         let mut ui = Ui { harness, tx };
         for _ in 0..8 {
             ui.frame();

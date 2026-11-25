@@ -1,60 +1,13 @@
 //! Headless UI test of Unlink from the timeline clip menu (#220): after unlinking, the clip that
 //! was right-clicked is the only one selected, so a drag moves it away from its former partner.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, driver};
 use filmcraft_engine::project::{ClipId, TrackItem};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
-    fn new() -> Self {
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            // the control channel's clicks and keys enter through the input hook
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn item(&mut self, c: ClipId) -> TrackItem {
         self.app().session.active_sequence().unwrap().find_item(c).unwrap().1.clone()
     }
@@ -84,7 +37,7 @@ impl Driver {
 
 #[test]
 fn unlinked_picture_drags_away_from_its_sound() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (v, a) = d.linked_pair();
     let (v0, a0) = (d.item(v).start, d.item(a).start);
     d.menu_link(v);
@@ -100,7 +53,7 @@ fn unlinked_picture_drags_away_from_its_sound() {
 
 #[test]
 fn unlinking_from_the_sound_keeps_the_sound_selected_and_link_keeps_both() {
-    let mut d = Driver::new();
+    let mut d = Driver::demo();
     let (v, a) = d.linked_pair();
     d.menu_link(a);
     assert_eq!(d.selection(), [a]);

@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true }
+craft-behavior = { workspace = true }
+craft-host = { workspace = true }
+craft-window = { workspace = true }
+craft-keymap = { workspace = true }
+craft-theme = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }

@@ -5,9 +5,10 @@
 //! decode happened to finish within a refresh. Each picture now has its own view. The real
 //! `FilmcraftApp` under `egui_kittest`.
 
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+use crate::support::{builder, demo_session, launch};
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_project::ItemId;
@@ -23,9 +24,7 @@ struct Driver {
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(100_000).build_eframe(move |_cc| app);
+        let (harness, tx) = launch(session, builder().with_step_dt(1.0 / 60.0).with_max_steps(100_000));
         let mut d = Driver { harness, _tx: tx };
         d.frames(4);
         d
@@ -85,8 +84,7 @@ impl Driver {
 /// setup (a warm-up frame the razor's new revision replaces or cancels) are not the Trim Monitor's,
 /// and a cancelled job is only counted when its worker finishes it.
 fn demo_through_edit() -> (Driver, u64) {
-    let mut session = Session::default();
-    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let session = demo_session();
     let seq = session.active_sequence().expect("sequence");
     let it = seq.video_tracks[0].items.first().expect("a V1 clip").clone();
     let mid = it.start + Tick((it.end().0 - it.start.0) / 2);
