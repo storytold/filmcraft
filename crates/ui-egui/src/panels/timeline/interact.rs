@@ -785,9 +785,17 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             Drag::Transition { id, edge, from, start, duration } => {
                 let delta = rate.snap_nearest(t_here - from);
-                let span = seq
-                    .all_tracks()
-                    .find_map(|tr| tr.transitions.iter().find(|x| x.id == id).and_then(|x| snap_transition(app, seq, layout, tr, x, edge, delta)));
+                // Alt: an end mirrors about the cut, so the transition stays centred (#5164)
+                let mirrored = edge.is_some() && ctx.input(|i| i.modifiers.alt);
+                let span = seq.all_tracks().find_map(|tr| {
+                    tr.transitions.iter().find(|x| x.id == id).and_then(|x| {
+                        if mirrored {
+                            filmcraft_edit::transitions::drag_span_mirrored(tr, x, edge, delta, rate.frame_duration())
+                        } else {
+                            snap_transition(app, seq, layout, tr, x, edge, delta)
+                        }
+                    })
+                });
                 let (start, duration) = span.unwrap_or((start, duration));
                 Some(Drag::Transition { id, edge, from, start, duration })
             }
