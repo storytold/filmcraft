@@ -339,9 +339,9 @@ fn a_non_stream_report_has_no_encoder() {
     let job = s.jobs.iter().find(|j| j.id == id).unwrap();
     let res = job.result.lock().unwrap_or_else(|e| e.into_inner());
     let report = res.as_ref().unwrap().as_ref().unwrap();
-    assert_eq!(report.encoder, "", "a job that writes no stream names no encoder");
+    assert_eq!(report.encoder, None, "a job that writes no stream names no encoder");
     assert_eq!(report.encoder_id, "");
-    assert_eq!(report.declined, None);
+    assert!(report.warnings.is_empty(), "and has nothing to warn about");
 }
 
 /// #813: a rectangle mask with rounded corners (created rounded, or rounded afterwards) cuts the
