@@ -11,8 +11,8 @@ use super::{Codec, Config, Profile, Session};
 
 pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     // AMF opens its device on the default adapter. Where an NVIDIA GPU with NVENC is present, it
-    // takes H.264 and H.265 (an AMD iGPU as the default adapter must not get them); AV1 is AMF's
-    // alone. The NVENC probe is cached, and warmed when the platform registers.
+    // takes H.264 and H.265 (an AMD iGPU as the default adapter must not get them).
+    // The NVENC probe is cached, and warmed when the platform registers.
     if matches!(format, Format::H264 | Format::Hevc) && crate::nvenc::hevc_available() {
         return None;
     }
@@ -79,7 +79,6 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     let codec = match format {
         Format::H264 if s.hardware_encoding == HardwareEncoding::Auto && !s.signal.is_hdr() => Codec::H264,
         Format::Hevc => Codec::Hevc,
-        Format::Av1 => Codec::Av1,
         _ => return Ok(None),
     };
     if s.format.is_mxf() {
@@ -482,13 +481,13 @@ mod factory_tests {
             ("H.264 CRF", Format::H264, ExportSettings { bitrate_mode: BitrateMode::Crf, ..auto() }),
             ("H.265 CRF", Format::Hevc, ExportSettings { bitrate_mode: BitrateMode::Crf, ..auto() }),
             ("all-intra H.264", Format::H264, ExportSettings { h264_intra_only: true, ..auto() }),
-            ("two-pass VBR", Format::Av1, ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..auto() }),
+            ("two-pass VBR", Format::Hevc, ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..auto() }),
             ("non-square pixels, H.265", Format::Hevc, ExportSettings { pixel_aspect: Some((4, 3)), ..auto() }),
-            ("non-square pixels, AV1", Format::Av1, ExportSettings { pixel_aspect: Some((10, 11)), ..auto() }),
             ("interlaced", Format::Hevc, ExportSettings { field_order: FieldOrder::UpperFirst, ..auto() }),
             ("BT.601 SDR", Format::Hevc, ExportSettings { signal: ColorSignal { primaries: 6, transfer: 6, matrix: 6 }, ..auto() }),
-            ("PQ with BT.709 primaries", Format::Av1, ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 1 }, ..auto() }),
+            ("PQ with BT.709 primaries", Format::Hevc, ExportSettings { signal: ColorSignal { primaries: 1, transfer: 16, matrix: 1 }, ..auto() }),
             ("H.264 with Hardware encoding off", Format::H264, ExportSettings::default()),
+            ("AV1 deferred to follow-up", Format::Av1, auto()),
         ] {
             assert!(!opens(format, 1920, 1080, &s), "{what}: declined");
         }
@@ -504,7 +503,6 @@ mod factory_tests {
         assert!(opens(Format::H264, 1920, 1080, &ExportSettings { bitrate_mode: BitrateMode::Cbr, pixel_aspect: Some((1, 1)), ..auto() }));
         assert!(opens(Format::Hevc, 1920, 1080, &ExportSettings::default()), "H.265 needs no opt-in");
         assert!(opens(Format::Hevc, 3840, 2160, &ExportSettings { signal: ColorSignal::PQ, ..auto() }));
-        assert!(opens(Format::Av1, 3840, 2160, &ExportSettings { signal: ColorSignal::HLG, ..auto() }));
         let cfg = config(Format::Hevc, 3840, 2160, RATE, &ExportSettings { signal: ColorSignal::PQ, ..auto() }).unwrap().unwrap();
         assert_eq!((cfg.profile, cfg.signal), (Profile::HevcMain10, ColorSignal::PQ), "Main 10 with the export's colour");
     }

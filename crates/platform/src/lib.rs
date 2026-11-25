@@ -85,19 +85,17 @@ pub fn register() -> Availability {
         filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
         Availability::Available("VideoToolbox")
     }
-    // Export ▸ H.265 / AV1: NVENC and AMD AMF are FilmCraft's hardware encoders on Windows.
+    // Export ▸ H.265: NVENC and AMD AMF are FilmCraft's hardware encoders on Windows
+    // (AMD AMF AV1 export is deferred to a follow-up pending RDNA 3/4 hardware verification).
     #[cfg(target_os = "windows")]
     {
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, amf::hevc_available);
-        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, amf::av1_available);
         // HDR sequences export as HEVC Main 10 (PQ / HLG) only where an encoder has a 10-bit encoder
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, amf::hevc_hdr_available);
-        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, amf::av1_hdr_available);
         nvenc::warm_hevc_probe();
         amf::warm_hevc_probe();
-        amf::warm_av1_probe();
     }
     #[cfg(target_os = "windows")]
     {

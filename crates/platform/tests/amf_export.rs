@@ -216,6 +216,7 @@ fn test_amf_h264_export_and_decode() {
 }
 
 #[test]
+#[ignore = "AMF AV1 export is deferred to a follow-up pending RDNA 3/4 hardware verification"]
 fn test_amf_av1_export_and_decode() {
     let _lock = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !av1_available() {
