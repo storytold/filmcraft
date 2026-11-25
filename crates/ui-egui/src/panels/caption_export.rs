@@ -53,13 +53,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ui.set_min_width(340.0);
         egui::Grid::new("caption-export-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label(tl!("File Format"));
-            let r = craft_ui::ComboBox::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-format").selected_text(d.format.name()).width(240.0).show_ui(ui, |ui| {
                 for f in Format::ALL {
                     let o = ui.selectable_value(&mut d.format, f, f.name());
                     elems.push((format!("captionExport.format.option.{}", f.extension()), o.rect, f.name().into()));
                 }
             });
-            elems.push(("captionExport.format".into(), r.response.rect, d.format.name().into()));
+            let r = crate::widgets::accessible_name(r.response, tl!("File Format"));
+            elems.push(("captionExport.format".into(), r.rect, d.format.name().into()));
             ui.end_row();
             let tracks: Vec<(u64, String)> =
                 app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
@@ -74,13 +75,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
                 let mut pick = chosen;
                 ui.label(tl!("Caption Track"));
-                let r = craft_ui::ComboBox::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
+                let r = crate::legacy_dropdown::Dropdown::from_id_salt("caption-export-track").selected_text(label(chosen)).width(240.0).show_ui(ui, |ui| {
                     for i in 0..tracks.len() {
                         let o = ui.selectable_value(&mut pick, i, label(i));
                         elems.push((format!("captionExport.track.option.{}", i + 1), o.rect, label(i)));
                     }
                 });
-                elems.push(("captionExport.track".into(), r.response.rect, label(pick)));
+                let r = crate::widgets::accessible_name(r.response, tl!("Caption Track"));
+                elems.push(("captionExport.track".into(), r.rect, label(pick)));
                 if pick != chosen {
                     d.params.insert("track".into(), json!(tracks[pick].0));
                 }
@@ -188,8 +190,8 @@ mod tests {
             ("subs.srt", "subs.srt", Format::Srt),
             ("Subs.SCC", "Subs.SCC", Format::Scc),
             ("subs.final", "subs.final.vtt", Format::WebVtt),
-            ("/home/a.b/subs", "/home/a.b/subs.vtt", Format::WebVtt),
-            ("/home/a.b/Main Edit.ttml", "/home/a.b/Main Edit.ttml", Format::Ttml),
+            ("/path/to/local/subs", "/path/to/local/subs.vtt", Format::WebVtt),
+            ("/path/to/local/Main Edit.ttml", "/path/to/local/Main Edit.ttml", Format::Ttml),
         ] {
             assert_eq!(destination(typed, Format::WebVtt), (saved.to_string(), format), "{typed}");
         }

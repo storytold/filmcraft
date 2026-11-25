@@ -3,78 +3,28 @@
 //! wheel moves the tracks up and down, Cmd + wheel moves the Timeline sideways, Option + wheel
 //! zooms, and the view stops ten minutes past the end of the sequence.
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, builder, demo_session, driver, f32x4, launch, start};
 use egui::CursorIcon;
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    /// Where the pointer was last put by `move_to` or `press`.
-    pointer: egui::Pos2,
+driver! {
+    Driver {
+        /// Where the pointer was last put by `move_to` or `press`.
+        pointer: egui::Pos2,
+    }
 }
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, pointer: egui::Pos2::ZERO };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let (harness, tx) = launch(demo_session(), builder());
+        start(Driver { harness, tx, pointer: egui::Pos2::ZERO })
     }
 }
 
 impl Driver {
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
-    }
-
     fn rect(&mut self, id: &str) -> [f32; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r = e["rect"].as_array().unwrap();
-        [0, 1, 2, 3].map(|k| r[k].as_f64().unwrap() as f32)
+        f32x4(self.expect_rect(id))
     }
 
     /// Turn the wheel over the tracks (`fy`: 0.2 is among the video tracks, 0.8 among the audio

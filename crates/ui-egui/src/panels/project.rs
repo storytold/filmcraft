@@ -102,6 +102,10 @@ pub struct ProjectPanelUi {
     /// The Project panel's thumbnail size while its slider is dragged; written on release.
     #[serde(skip)]
     pub icon_size_drag: Option<f32>,
+    /// Reveal in Project: the item whose row or card the panel scrolls into view the next time it
+    /// draws its view (once; cleared after that draw).
+    #[serde(skip)]
+    pub reveal: Option<u64>,
 }
 
 /// Which panel instance a view belongs to.
@@ -467,6 +471,10 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         ViewMode::Icon => crate::panels::project_views::icon_view(app, &mut cui, content, v, &filter, actions),
         ViewMode::Freeform => crate::panels::project_views::freeform_view(app, &mut cui, content, v, &filter, actions),
     }
+    // a revealed item the view did not draw (hidden from the panel) is not scrolled to later
+    if v.inst == Inst::Main {
+        app.ui.project_panel.reveal = None;
+    }
     footer(app, ui, Rect::from_min_max(pos2(rect.min.x, rect.max.y - FOOTER_H), rect.max), v, actions);
 }
 
@@ -597,16 +605,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
     let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
-    if resp.drag_started() {
-        ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
-    }
-    let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-    if resp.drag_stopped()
-        && let Some(before) = ui.data_mut(|d| d.remove_temp(orig_id))
-        && escaped
-    {
-        sz = before;
-    }
+    let escaped = crate::framework::escape_cancels_drag(ui.ctx(), &resp, orig_id, v.icon_size, &mut sz);
     if sz != v.icon_size {
         match v.inst {
             Inst::Main => app.ui.project_panel.icon_size_drag = Some(sz),

@@ -1,8 +1,0 @@
-asset:        golden_frames.bin
-title:        AC-3 and E-AC-3 test syncframes for the decoder golden-hash test
-author:       FilmCraft contributors
-source:       original work (12 syncframes, 6210 bytes: two frames each of six short streams that ffmpeg's ac3 and eac3 encoders made from signals ffmpeg's lavfi generators synthesised: a 1 kHz sine, summed sines, seeded pink noise; no third-party or recorded audio)
-license:      MIT OR Apache-2.0
-license-file:
-added:        2026-11-02 by FilmCraft contributors
-notes:        Used by crates/ac3/src/tests.rs (decoded_output_matches_golden_hashes). Random payload bits almost never get past the first audio block, so real frames are needed to reach exponents, bit allocation and mantissas. Streams: mono 64k 32 kHz, coupled stereo 96k 44.1 kHz, noise stereo 96k, 5.1 192k (AC-3); noise stereo 96k, 5.1 192k (E-AC-3). Frames 0 and 2 of each, concatenated. Contains no Adobe artwork.

@@ -7,7 +7,7 @@
 //! - `web [--dev] [--serve PORT]`: build the web app (`apps/filmcraft-web`) into
 //!   `<target>/web/dist` with `wasm-bindgen` (docs/web.md); `--serve` serves it on localhost.
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
-//!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
+//!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (standards/clean-room.md).
 //! - `fixtures [crate…]`: pre-generate the ffmpeg fixture matrix of the oracle tests (runs each
 //!   crate's ignored `generate_fixtures` test, i.e. the same generators the tests use) and print
 //!   what was made, reused or skipped.
@@ -37,31 +37,15 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("bitstream", 0),
     ("isobmff", 0),
-    ("avi", 0),
     ("matroska", 0),
-    ("mxf", 0),
     ("cfb", 0),
-    ("mpegts", 0),
-    ("mpeg2v", 0),
-    ("ac3", 0),
-    ("mpa", 0),
-    ("ogg", 0),
     ("riff", 0),
-    ("h264", 0),
     ("h264enc", 0),
-    ("hevc", 0),
     ("vp8", 0),
-    ("vp9", 0),
     ("prores", 0),
     ("mjpeg", 0),
     ("dnx", 0),
-    ("apv", 0),
     ("dng", 0),
-    ("av1", 0),
-    ("aac", 0),
-    ("mp3enc", 0),
-    ("flac", 0),
-    ("opus", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -184,7 +168,7 @@ fn layers() -> Result<(), String> {
     }
 }
 
-/// File extensions that count as assets (AGENTS.md §1).
+/// File extensions that count as assets (standards/clean-room.md).
 const ASSET_EXT: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "icns", "bmp", "tif", "tiff", "heic", "avif", "exr", "ttf", "otf", "ttc", "woff", "woff2", "cube",
     "3dl", "lut", "look", "wav", "mp3", "aac", "flac", "ogg", "opus", "m4a", "aif", "aiff", "mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "psd", "ai",
@@ -471,8 +455,6 @@ const FIXTURE_GENERATORS: &[(&str, &str, &str)] = &[
     ("codecs", "it", "mxf_oracle::generate_fixtures"),
     ("codecs", "it", "mpeg_oracle::generate_fixtures"),
     ("mpeg2v", "it", "oracle::generate_fixtures"),
-    ("ac3", "oracle", "generate_fixtures"),
-    ("mpa", "oracle", "generate_fixtures"),
     ("codecs", "it", "ogg_oracle::generate_fixtures"),
 ];
 
@@ -570,7 +552,9 @@ fn bench() -> Result<(), String> {
 
 /// The workspace root (the parent of `xtask/`).
 fn root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // `xtask/` always has a parent; if it somehow did not, fall back to the manifest dir itself.
+    manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf()
 }
 
 fn main() -> ExitCode {
