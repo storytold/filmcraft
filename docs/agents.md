@@ -14,7 +14,7 @@ FilmCraft from an agent. Part 2 covers developing FilmCraft as an agent.
 | Headless | `filmcraft-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
 | Bridge | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmcraft --control 9876` |
 
-Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
+Headless mode also takes `--data-dir DIR` (preferences and user export presets). Any other option is rejected (exit 2):
 there are no folder-confinement flags such as `--automation-read-root`, so the server can read
 and write wherever the user can.
 
@@ -262,6 +262,14 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
+
+Headless engine commands, including MCP, load `preferences.json` from `--data-dir` (or the app's default
+data directory, including `FILMCRAFT_DATA_DIR`) before opening a project or importing media.
+Saved settings such as Playback ▸ Hardware decoding therefore apply to CLI renders and exports.
+`prefs.set` and `prefs.reset` persist to that same file, so subsequent invocations see the change.
+A missing or unreadable preferences file uses defaults, as in the desktop app. Loading preferences
+does not start auto-save or scan recovery journals. Bridge mode uses the running app's preferences.
+`probe` and `bench-decode` do not create an engine session and do not load these preferences.
 
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
