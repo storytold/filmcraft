@@ -1,6 +1,8 @@
 //! The Nightly session-health notice: posted inside the window (never a modal), listed for
 //! automation, and dismissed by Close.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
@@ -55,6 +57,25 @@ impl Driver {
         assert_eq!(v["ok"], json!(true), "{id}: {v}");
         self.frames(3);
     }
+}
+
+#[test]
+fn the_notice_acknowledges_its_record_only_once_it_is_drawn() {
+    // The Nightly session-health record is cleared by this flag, so a window that closes before
+    // the notice reached a kept pass keeps the record for the next launch.
+    let drawn = Arc::new(AtomicBool::new(false));
+    let mut notice = Notice::new("FilmCraft Nightly", vec!["The previous FilmCraft Nightly session did not finish normally.".into()]);
+    notice.shown = Some(drawn.clone());
+    let mut d = Driver::new(Some(notice));
+    assert!(d.ids().iter().any(|id| id == "notice"));
+    assert!(drawn.load(Ordering::Relaxed), "a drawn notice acknowledges the interruption it reports");
+
+    let dismissed = Arc::new(AtomicBool::new(false));
+    let mut notice = Notice::new("FilmCraft Nightly", vec!["The previous FilmCraft Nightly session did not finish normally.".into()]);
+    notice.closed = true;
+    notice.shown = Some(dismissed.clone());
+    let _d = Driver::new(Some(notice));
+    assert!(!dismissed.load(Ordering::Relaxed), "a dismissed notice reports nothing and clears nothing");
 }
 
 #[test]

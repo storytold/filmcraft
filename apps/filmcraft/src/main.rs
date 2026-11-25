@@ -563,8 +563,11 @@ fn app_creator(
                 } else {
                     "FilmCraft Nightly could not record session health in its private profile. You can still edit, but abnormal-exit detection is unavailable."
                 };
-                app.notice = Some(filmcraft_ui_egui::notices::Notice::new(filmcraft_ui_egui::os_window::name(), vec![message.to_owned()]));
-                health.shown.store(health.previous_unclean, Ordering::Relaxed);
+                let mut notice = filmcraft_ui_egui::notices::Notice::new(filmcraft_ui_egui::os_window::name(), vec![message.to_owned()]);
+                // Cleared only once a kept pass drew the notice: closing before that keeps the
+                // interruption record for the next launch instead of dropping it unseen.
+                notice.shown = Some(health.shown.clone());
+                app.notice = Some(notice);
             }
         }
         app.graphics_notice = notice;

@@ -1,6 +1,7 @@
 //! App-owned nightly profile fences; no stable fallback, migration or process environment changes.
 
 use std::ffi::OsString;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::path::{Component, Path, PathBuf};
 
@@ -150,18 +151,23 @@ fn forbidden_roots(platform: Platform, env: &impl Fn(&str) -> Option<OsString>, 
     roots.into_iter().map(|p| canonical_future(&p)).collect()
 }
 
-fn private_subdirectory(root: &Path, name: impl AsRef<Path>, label: &str) -> Result<PathBuf, String> {
+fn private_subdirectory(root: &Path, name: impl AsRef<Path>, label: &str, platform: Platform) -> Result<PathBuf, String> {
     let chosen = canonical_future(&absolute(root.to_path_buf(), "the nightly profile root")?)?;
     let child = canonical_future(&chosen.join(name))?;
     if child == chosen || !child.starts_with(&chosen) {
         return Err(format!("the nightly {label} must stay inside its selected profile"));
+    }
+    // The target's own ancestors decide this, not the profile's: an alias may otherwise point into
+    // a Stable portable install that happens to sit inside the selected profile.
+    if is_portable_layout(&child, platform) {
+        return Err(format!("the nightly {label} must not use a portable FilmCraft installation or its data folder"));
     }
     Ok(child)
 }
 
 /// Every existing entry directly in the profile (logs, preferences and so on) must resolve inside
 /// it, so a link there cannot point Nightly's writes at another app's data.
-fn entries_stay_inside(root: &Path) -> Result<(), String> {
+fn entries_stay_inside(root: &Path, platform: Platform) -> Result<(), String> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -169,7 +175,7 @@ fn entries_stay_inside(root: &Path) -> Result<(), String> {
     };
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot inspect the nightly profile: {e}"))?;
-        private_subdirectory(root, entry.file_name(), "profile entry")?;
+        private_subdirectory(root, entry.file_name(), "profile entry", platform)?;
     }
     Ok(())
 }
@@ -194,7 +200,10 @@ fn is_portable_layout(path: &Path, platform: Platform) -> bool {
 
 /// The app's existing exclusive write probe: create and remove a file in the profile.
 pub fn ensure_writable(dir: &Path) -> std::io::Result<()> {
-    let probe = dir.join("exclusive-write-probe");
+    // The name is unique to this validation: two windows may validate the same writable profile at
+    // once, and a shared name would make the second `create_new` fail with AlreadyExists.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!("exclusive-write-probe-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?;
     drop(file);
     std::fs::remove_file(probe)
@@ -243,11 +252,11 @@ fn validate_for(
     if forbidden.iter().any(|stable| overlaps(&chosen, stable, platform)) {
         return Err("the nightly root must not overlap stable data or an installation".into());
     }
-    entries_stay_inside(&chosen)?;
+    entries_stay_inside(&chosen, platform)?;
     // Recovery can read, adopt, overwrite and sweep entries, and the log writer rotates files.
-    // Never let their aliases leave this private profile.
-    private_subdirectory(&chosen, "Recovery", "recovery folder")?;
-    private_subdirectory(&chosen, "Logs", "log folder")?;
+    // Never let their aliases leave this private profile or alias portable data inside it.
+    private_subdirectory(&chosen, "Recovery", "recovery folder", platform)?;
+    private_subdirectory(&chosen, "Logs", "log folder", platform)?;
     let mut create = std::fs::DirBuilder::new();
     create.recursive(true);
     #[cfg(unix)]
@@ -260,9 +269,9 @@ fn validate_for(
     if confirmed != chosen || forbidden.iter().any(|stable| overlaps(&confirmed, stable, platform)) {
         return Err("the nightly profile changed while it was being validated".into());
     }
-    private_subdirectory(&confirmed, "Recovery", "recovery folder")?;
-    private_subdirectory(&confirmed, "Logs", "log folder")?;
-    entries_stay_inside(&confirmed)?;
+    private_subdirectory(&confirmed, "Recovery", "recovery folder", platform)?;
+    private_subdirectory(&confirmed, "Logs", "log folder", platform)?;
+    entries_stay_inside(&confirmed, platform)?;
     writable(&confirmed).map_err(|e| format!("the nightly profile is not writable: {e}"))?;
     Ok(confirmed)
 }
@@ -508,6 +517,42 @@ mod tests {
         std::os::unix::fs::symlink(&private, private.join("Recovery")).unwrap();
         assert!(!fixture.refuse(Platform::Linux, &private).is_empty(), "Recovery cannot treat all profile settings as recovery entries");
         assert_eq!(std::fs::read(stable.join("stable-autosave")).unwrap(), b"stable recovery bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_and_log_aliases_cannot_alias_a_portable_install_inside_the_profile() {
+        let fixture = Fixture::new();
+        for name in ["Recovery", "Logs"] {
+            // A Stable portable install nested in the selected profile: the alias target resolves
+            // inside the profile, so only the target's own ancestors can refuse it.
+            let private = fixture.root.join(format!("nightly-portable-{name}"));
+            let portable = private.join("downloads/stable");
+            let stable_data = portable.join("data");
+            std::fs::create_dir_all(stable_data.join(name)).unwrap();
+            std::fs::write(portable.join("portable.txt"), b"owned portable fixture").unwrap();
+            std::fs::write(portable.join("filmcraft"), b"fixture executable, never run").unwrap();
+            std::fs::write(stable_data.join("preferences.json"), b"stable settings must not change").unwrap();
+            std::os::unix::fs::symlink(stable_data.join(name), private.join(name)).unwrap();
+            assert!(fixture.refuse(Platform::Linux, &private).contains("portable"), "{name} must not alias portable data");
+            assert_eq!(std::fs::read(stable_data.join("preferences.json")).unwrap(), b"stable settings must not change");
+        }
+        // Ordinary nested directories stay accepted, as before.
+        let private = fixture.root.join("nightly-plain");
+        std::fs::create_dir_all(private.join("private-recovery")).unwrap();
+        std::os::unix::fs::symlink(private.join("private-recovery"), private.join("Recovery")).unwrap();
+        assert!(fixture.check(Platform::Linux, &private).is_ok());
+    }
+
+    #[test]
+    fn the_write_probe_does_not_collide_with_another_validation() {
+        let fixture = Fixture::new();
+        let dir = fixture.root.join("probe");
+        std::fs::create_dir(&dir).unwrap();
+        // A probe another window left in this profile must not refuse this launch.
+        std::fs::write(dir.join("exclusive-write-probe"), b"another validation").unwrap();
+        ensure_writable(&dir).unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "this validation left no probe behind");
     }
 
     #[cfg(unix)]

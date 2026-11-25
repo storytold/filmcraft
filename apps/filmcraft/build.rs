@@ -93,6 +93,11 @@ mod windows {
 #[cfg(not(windows))]
 mod windows {
     pub fn embed_resources(_nightly: bool, _version: &str) {
+        // The release and nightly builds require the icon and the PE `ProductVersion` the Launcher
+        // verifies, so a cross-build that cannot embed them fails instead of shipping without.
+        if std::env::var_os("FILMCRAFT_REQUIRE_WINRES").is_some() {
+            panic!("FILMCRAFT_REQUIRE_WINRES=1 needs a Windows host: a cross-compiled filmcraft.exe has no icon or ProductVersion");
+        }
         println!("cargo:warning=filmcraft.exe built without icon/version resources (cross-compiled from a non-Windows host)");
     }
 }
