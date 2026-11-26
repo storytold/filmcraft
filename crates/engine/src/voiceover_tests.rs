@@ -364,7 +364,9 @@ fn hostile_marker_names_make_safe_file_names() {
     let (mut s, rt, _) = demo();
     let dir = tmp("marker-hostile");
     let long = "x".repeat(5_000);
-    let names = ["../../etc/passwd", "a/b\\c", "..", ".hidden", "con:*?\"<>|", "tab\there\nnewline\0nul", " . ", &long, "日本語のナレーション", "...."];
+    let four_byte = "\u{1F3AC}".repeat(80);
+    let names =
+        ["../../etc/passwd", "a/b\\c", "..", ".hidden", "con:*?\"<>|", "tab\there\nnewline\0nul", " . ", &long, &four_byte, "日本語のナレーション", "...."];
     for name in names {
         let marker = range_marker(&mut s, 1.0, 1.0, name);
         s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 0})).unwrap();
@@ -400,6 +402,32 @@ fn a_marker_without_duration_or_that_does_not_exist_is_refused_and_nothing_recor
     let error = s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "time": sec(5.0)})).unwrap_err().to_string();
     assert!(error.contains("not both"), "{error}");
     assert!(!s.voiceover.recording());
+}
+
+#[test]
+fn every_stop_result_carries_the_marker_id_or_null() {
+    let (mut s, rt, _) = demo();
+    let dir = tmp("marker-stop-results");
+    let marker = range_marker(&mut s, 1.0, 1.0, "Intro");
+    let start = |s: &mut Session, marker: Option<u64>| {
+        let v = s.execute("audio.voiceover.start", json!({"track": rt, "marker": marker, "preroll": 0})).unwrap();
+        assert_eq!(v["marker"], json!(marker), "start reports the marker or null");
+    };
+    for marker in [Some(marker), None] {
+        // discarded
+        start(&mut s, marker);
+        let v = s.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
+        assert_eq!((v["placed"].as_bool(), v.get("marker")), (Some(false), Some(&json!(marker))), "discard: {v}");
+        // stopped at the record point: nothing to place
+        start(&mut s, marker);
+        let v = s.execute("audio.voiceover.stop", json!({"time": sec(if marker.is_some() { 1.0 } else { 0.0 }), "dir": dir})).unwrap();
+        assert_eq!((v["placed"].as_bool(), v.get("marker")), (Some(false), Some(&json!(marker))), "early stop: {v}");
+        // placed
+        start(&mut s, marker);
+        let v = s.execute("audio.voiceover.stop", json!({"time": sec(9.0), "dir": dir})).unwrap();
+        assert_eq!((v["placed"].as_bool(), v.get("marker")), (Some(true), Some(&json!(marker))), "placed: {v}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

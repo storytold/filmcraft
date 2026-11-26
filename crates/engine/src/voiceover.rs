@@ -378,13 +378,23 @@ fn marker_p(s: &Session, p: &Value) -> Result<Option<(RecordMarker, Tick, Tick)>
 }
 
 /// `name` as the base of a file name: separators, reserved and control characters become `_`,
-/// leading dots and trailing dots and spaces go, and the length is capped. None when nothing
+/// leading dots and trailing dots and spaces go, and the length is capped (80 characters and, for a file name's 255 bytes, 245 bytes). None when nothing
 /// usable is left.
 fn file_base(name: &str) -> Option<String> {
     const MAX_CHARS: usize = 80;
+    // a file name is at most 255 bytes: leave room for " 99999.wav"
+    const MAX_BYTES: usize = 255 - " 99999.wav".len();
     let clean: String = name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
     let clean = clean.trim_start_matches(['.', ' ']);
-    let clipped: String = clean.chars().take(MAX_CHARS).collect();
+    let mut bytes = 0;
+    let clipped: String = clean
+        .chars()
+        .take(MAX_CHARS)
+        .take_while(|c| {
+            bytes += c.len_utf8();
+            bytes <= MAX_BYTES
+        })
+        .collect();
     let clipped = clipped.trim_end_matches(['.', ' ']);
     (!clipped.is_empty()).then(|| clipped.to_string())
 }
@@ -502,7 +512,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false}));
+        return Ok(json!({"recording": false, "placed": false, "marker": rec.marker.as_ref().map(|m| m.id.0)}));
     }
     if rec.epoch != s.document_epoch {
         // another project was installed since the take started: its ids name other tracks now
@@ -552,7 +562,7 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
         s.voiceover.rec = None;
         s.voiceover.pending_stop = None;
         s.voiceover.captured.clear();
-        return Ok(json!({"recording": false, "placed": false}));
+        return Ok(json!({"recording": false, "placed": false, "marker": rec.marker.as_ref().map(|m| m.id.0)}));
     }
     let sample_count = samples.len();
     let sequence = s.project.sequence(rec.seq).ok_or(EngineError::NoSequence)?;

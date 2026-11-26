@@ -242,13 +242,17 @@ header's microphone does. The engine decisions, which automation sees too:
   `timecode`) is refused as ambiguous.
 - The take is named `<marker name> <n>.wav`; an unnamed marker uses the Name setting. The name is
   read when the take starts and made safe: separators, reserved and control characters become `_`,
-  leading dots and trailing dots and spaces are dropped, at most 80 characters.
+  leading dots and trailing dots and spaces are dropped, at most 80 characters and 245 bytes (room
+  for ` 99999.wav` in a 255-byte file name).
+- With Loop on, a marker take is not wrapped back to the loop's start: it runs to its own punch-out
+  plus post-roll. A take without a marker keeps the earlier loop behaviour.
 - The entry is offered only for markers of the open sequence, not source markers. It is disabled,
   with the reason on hover, for a marker with no duration and while a take is recording.
-- `audio.voiceover.start` and `.stop` report `marker`.
+- `audio.voiceover.start` and every successful `.stop` result (placed, discarded, or stopped before
+  the record point) report `marker`, the id or `null`.
 
 Limitation: the placed clip does not store its marker yet. That needs a project schema version
 bump in `storytold/craft-libs`, so the takes of a section can be found by file name only.
 
-Tests: `voiceover_tests` in the engine (bounds, In/Out untouched, naming, hostile names, refusals)
-and `marker_menus_record_a_take_of_the_range` in `tests/it/sequence_ui.rs`.
+Tests: `voiceover_tests` in the engine (bounds, In/Out untouched, naming, hostile names, refusals, `marker` in every stop result)
+`a_marker_take_is_not_wrapped_by_loop_playback` in the UI crate, and `marker_menus_record_a_take_of_the_range` in `tests/it/sequence_ui.rs`.
