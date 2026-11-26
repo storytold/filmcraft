@@ -197,8 +197,16 @@ pub(super) fn active_export_job(app: &FilmcraftApp) -> Option<filmcraft_engine::
         .cloned()
 }
 
+/// Export and Quick Export wait for the queue: two encodes at once would compete for the machine.
 pub(super) fn is_export_busy(app: &FilmcraftApp) -> bool {
     active_export_job(app).is_some() || app.session.export_queue.is_active()
+}
+
+/// The settings, the range and Send to Queue lock only while an Export runs (#2670). A queued
+/// item keeps its own copy of the settings and the project, so more can be queued while the queue
+/// encodes (#4040).
+pub(super) fn are_settings_locked(app: &FilmcraftApp) -> bool {
+    active_export_job(app).is_some()
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
