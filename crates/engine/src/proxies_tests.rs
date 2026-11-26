@@ -461,11 +461,13 @@ fn a_finished_job_of_a_replaced_project_applies_nothing() {
     make_movie(&a, DemoScene::OceanSunset, W, H, 12);
     let (mut s, items, _) = session_with(&[&a]);
     let before = s.project.item(items[0]).unwrap().as_media().unwrap().media.clone();
+    let identity = s.project.item(items[0]).unwrap().as_media().unwrap().identity;
     let out = root.join("copy.mov");
     make_movie(&out, DemoScene::Aurora, W, H, 12);
     let pending = |epoch| crate::proxies::PendingJob {
         job: u64::MAX,
         on_done: crate::proxies::OnDone::ReplaceMedia,
+        sources: vec![(items[0], before.clone(), identity)],
         outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![(items[0], out.to_string_lossy().into_owned())])),
         source_durations: Default::default(),
         started_from: Vec::new(),
