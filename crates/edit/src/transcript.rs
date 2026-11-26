@@ -156,14 +156,35 @@ pub fn search(words: &[SeqWord], query: &str) -> Vec<std::ops::Range<usize>> {
         return Vec::new();
     }
     let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
-    let mut out = Vec::new();
-    for i in 0..norm.len().saturating_sub(q.len() - 1) {
-        let ok = q.iter().enumerate().all(|(k, qw)| if k + 1 == q.len() { norm[i + k].starts_with(qw.as_str()) } else { norm[i + k] == *qw });
-        if ok {
-            out.push(i..i + q.len());
+    let m = q.len();
+    // The leading query words must match whole words; the last may be a prefix. Find every
+    // occurrence of the leading words in one pass (KMP: a mismatch never restarts the query).
+    let (lead, last) = (&q[..m - 1], &q[m - 1]);
+    let mut fail = vec![0usize; lead.len()];
+    for i in 1..lead.len() {
+        let mut k = fail[i - 1];
+        while k > 0 && lead[i] != lead[k] {
+            k = fail[k - 1];
+        }
+        fail[i] = k + usize::from(lead[i] == lead[k]);
+    }
+    let mut starts = Vec::new();
+    if lead.is_empty() {
+        starts.extend(0..norm.len());
+    } else {
+        let mut k = 0;
+        for (j, w) in norm.iter().enumerate() {
+            while k > 0 && *w != lead[k] {
+                k = fail[k - 1];
+            }
+            k += usize::from(*w == lead[k]);
+            if k == lead.len() {
+                starts.push(j + 1 - k);
+                k = fail[k - 1];
+            }
         }
     }
-    out
+    starts.into_iter().filter(|&i| norm.get(i + m - 1).is_some_and(|w| w.starts_with(last.as_str()))).map(|i| i..i + m).collect()
 }
 
 /// Timeline range of words `a..=b`, snapped outward to frames.

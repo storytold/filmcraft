@@ -137,7 +137,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             let shown = crate::i18n::t(align.label());
             let r = ui
                 .add_enabled_ui(!one_sided, |ui| {
-                    craft_ui::ComboBox::from_id_salt(("tr-align", id.0))
+                    crate::legacy_dropdown::Dropdown::from_id_salt(("tr-align", id.0))
                         .selected_text(shown)
                         .width(170.0)
                         .show_ui(ui, |ui| {
@@ -507,7 +507,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, ki
             let shown = opts.get(*c as usize).copied().unwrap_or("");
             let mut picked = None;
             let mut options = Vec::new();
-            let r = craft_ui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     let r = ui.selectable_label(i == *c as usize, crate::i18n::t(o));
                     if r.clicked() && i != *c as usize {
@@ -522,12 +522,16 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, ki
             picked.map(|i| json!({"params": { pid: i }}))
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut c = *c;
-            let r = ui.color_edit_button_rgba_unmultiplied(&mut c);
+            // sRGB-encoded, as in Effect Controls: the transitions decode it with `srgb_to_linear`
+            // (`render/src/transitions`), so it must not be read through egui's linear colours
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mut srgb = egui::Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
+            let r = egui::color_picker::color_edit_button_srgba(ui, &mut srgb, egui::color_picker::Alpha::Opaque);
             elems.push((eid, r.rect, format!("{c:?}")));
+            let alpha = c[3];
             r.changed().then(|| {
                 let mut v = drag(&r);
-                v["params"] = json!({ pid: [c[0], c[1], c[2], c[3]] });
+                v["params"] = json!({ pid: [f32::from(srgb.r()) / 255.0, f32::from(srgb.g()) / 255.0, f32::from(srgb.b()) / 255.0, alpha] });
                 v
             })
         }
@@ -604,7 +608,7 @@ pub fn duration_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     for (eid, r, l) in elems {
         app.auto.add(&eid, r, &l);
     }
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(ctx) {
         keep = false;
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input() {

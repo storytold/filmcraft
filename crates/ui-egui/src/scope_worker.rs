@@ -1,4 +1,4 @@
-//! The Lumetri Scopes' background worker: the scope signal of a frame (for HDR scopes a
+//! The Video Scopes' background worker: the scope signal of a frame (for HDR scopes a
 //! working-space render, sources decoded) and the scope images are computed here, never in the UI
 //! pass, so an open Scopes panel cannot stall the preview.
 //!

@@ -5,7 +5,7 @@ source:       original work (screenshot of FilmCraft captured with its ui.screen
 license:      MIT OR Apache-2.0 (screenshot); embedded film frames are public domain, music CC0-1.0
 license-file:
 added:        2026-09-30 by Claude (agent) for Brandon Thomas
-notes:        Crop of the Effects workspace: Effect Controls, Program monitor showing NASA Earth Views with a Lumetri Golden Hour look, Effects browser. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork.
+notes:        Crop of the Effects workspace: Effect Controls, Program monitor showing NASA Earth Views with a Color Grading Golden Hour look, Effects browser. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork.
 Media visible in the screenshot (none of it is committed to the repository):
   - Night of the Living Dead (1968), dir. George A. Romero, Image Ten. US public domain (released without a copyright notice). Source: https://archive.org/details/night-of-the-living-dead-1968-english (Public Domain Mark).
   - Carnival of Souls (1962), dir. Herk Harvey, Harcourt Productions. US public domain. Source: https://archive.org/details/CarnivalOfSoulsVideoQualityUpgrade (Public Domain Mark).
