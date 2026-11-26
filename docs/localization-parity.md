@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Bosnian covers the strings added since it landed; previously minor: German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-26 · **Change:** minor (Korean covers the strings added since it landed; previously minor: Bosnian covers the strings added since it landed; German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -51,7 +51,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Indonesian | id | 3,541 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts); System Language also maps the legacy `in` code | not recorded; welcome | partial (#867) | review |
 | Japanese | ja | 3,487 (99.7%) | as zh-cn; system-font kanji may pick the Chinese fallback (#547) | CJK fonts, vertical title text | not recorded | partial | 4–8 h + review |
 | German | de | 3,590 (same entries as Spanish) | as Spanish | Latin (bundled fonts) | menus yes (#630); the rest not recorded, welcome | partial | review |
-| Korean | ko | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | installed system Hangul font (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…); refused without one | not recorded; welcome | partial (#508) | review; Hangul in craft-fonts for the web |
+| Korean | ko | 3,754 (every entry of the Spanish and Simplified Chinese catalogs) | as Spanish | installed system Hangul font (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…); refused without one | not recorded; welcome | partial (#508) | review; Hangul in craft-fonts for the web |
 | Russian | ru | 3,592 (100%; every Spanish entry) | dialogs, Settings, effects, shortcuts, status; engine errors English | Cyrillic (bundled fonts), «ё» | not recorded; welcome | partial | native review |
 | Vietnamese | vi | 0 (0%) | — | Latin with stacked diacritics (font coverage to check) | — | none | 6–12 h + review |
 | *Other shipped:* Italian | it | 3,573 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
@@ -101,6 +101,7 @@ creative effect names, and the shared `Subtitle` key (caption format and graphic
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-26 | minor | Korean (ko): 58 strings added since it landed translated (clip mismatch, presets, updates, History, work area bar, tracks, MP3 export, encoder and decoder notes), 3,754 entries |
 | 2026-10-31 | minor | Bosnian (bs): 41 strings added since it landed translated (markers, clip mismatch, updates, work area bar, track names), 3,651 entries |
 | 2026-10-30 | minor | Bosnian (bs, Latin, Ijekavian) covers the whole interface: 3,610 entries, Edit ▸ Language ▸ Bosanski, every `bs-*` locale; AI-assisted, not native-reviewed |
 | 2026-10-26 | minor | Swedish (sv) covers the whole interface (all 3,581 strings); System Language picks it for `sv-*` locales |
