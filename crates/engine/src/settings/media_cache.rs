@@ -22,6 +22,12 @@ pub fn previews_root(cache: &Path) -> PathBuf {
     cache.join("Previews")
 }
 
+/// Where finished Warp Stabilizer analyses are kept inside the media cache (a few hundred KB per
+/// minute of clip; deleting them only means the clips are analysed again).
+pub fn stabilizer_root(cache: &Path) -> PathBuf {
+    cache.join("Stabilizer")
+}
+
 /// Files under `dir` (recursively): (path, bytes, modified).
 fn cache_files(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
     let mut out = Vec::new();
@@ -155,6 +161,7 @@ impl Session {
     /// deletion policy (on startup and when the Media Cache settings change).
     pub fn apply_media_cache(&mut self) {
         let Some(dir) = self.media_cache_dir() else { return };
+        filmcraft_render::vfx::set_stabilizer_cache_dir(Some(stabilizer_root(&dir)));
         let root = previews_root(&dir);
         if self.previews.temp_root() != Some(root.clone()) {
             self.previews.set_temp_root(Some(root));
