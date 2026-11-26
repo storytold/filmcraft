@@ -265,6 +265,11 @@ pub struct MediaPrefs {
     pub growing_refresh_seconds: u32,
     pub hardware_decoding: bool,
     pub prores_hardware_encoding: bool,
+    /// "Trusted Network Folders": network shares (`\\server\share`, separated by `;` or line
+    /// breaks) whose media a project or an imported document follows wherever it is saved. Other
+    /// computers' paths are followed only from a document on the same share
+    /// ([`crate::doc_path::resolve_trusting`]). Empty (the default) trusts no share.
+    pub trusted_shares: String,
 }
 
 impl Default for MediaPrefs {
@@ -289,6 +294,7 @@ impl Default for MediaPrefs {
             growing_refresh_seconds: 60,
             hardware_decoding: true,
             prores_hardware_encoding: true,
+            trusted_shares: String::new(),
         }
     }
 }

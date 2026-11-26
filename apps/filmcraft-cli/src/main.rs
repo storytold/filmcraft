@@ -111,6 +111,10 @@ OPTIONS
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
+  --trust-share <share>         a network share root (\\\\server\\share or //server/share): media a
+                                project or an imported document names on it is opened wherever
+                                the document is saved (repeatable; Settings > Media > Trusted
+                                Network Folders for this run)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -137,6 +141,19 @@ fn diag(msg: std::fmt::Arguments) {
 fn usage(msg: impl std::fmt::Display) -> ! {
     diag(format_args!("filmcraft-cli: {msg}\nRun `filmcraft-cli help` for usage."));
     std::process::exit(2)
+}
+
+/// The shares of the `--trust-share` values, or None when one of them is not exactly one share
+/// root: each value is checked on its own, so a value holding a list (`a;b`) is refused even when
+/// the count of the joined list happens to match.
+fn trusted_share_args(values: &[&str]) -> Option<Vec<String>> {
+    values
+        .iter()
+        .map(|v| match filmcraft_engine::doc_path::trusted_shares(v).as_slice() {
+            [share] if !v.contains([';', '\n', '\r']) => Some(share.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Read a file off the runtime thread: `cli` is async because MCP, bridge calls and control
@@ -178,6 +195,16 @@ impl Backend {
             return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
+        // Settings ▸ Media ▸ Trusted Network Folders for this run (the desktop app keeps it in its
+        // preferences): media on these shares is opened from a document saved anywhere.
+        let shares = a.opts("--trust-share");
+        if !shares.is_empty() {
+            let Some(trusted) = trusted_share_args(&shares) else {
+                usage("--trust-share takes a network share root such as \\\\server\\share or //server/share");
+            };
+            s.prefs.media.trusted_shares = trusted.join(";");
+            s.media.set_trusted_shares(trusted);
+        }
         // user export presets (and other per-user libraries) from the data directory
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
@@ -573,7 +600,7 @@ async fn cli_render(a: &Args) {
 }
 
 async fn cli_mcp(a: &Args) {
-    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--trust-share"]) {
         usage(format!("unknown mcp option `{opt}`"));
     }
     let server = match a.opt("--bridge") {
@@ -711,6 +738,16 @@ mod format_tests {
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    /// Each `--trust-share` value is one share root; a list in one value is refused, even when
+    /// another value that is not a share brings the count back.
+    #[test]
+    fn each_trust_share_value_is_one_share_root() {
+        assert_eq!(super::trusted_share_args(&[r"\\nas\media", "//other/share"]).map(|t| t.len()), Some(2));
+        for values in [&[r"\\nas\media;\\other\share", r"C:\local"][..], &[r"\\nas\media;"], &[r"C:\local"]] {
+            assert_eq!(super::trusted_share_args(values), None, "{values:?}");
+        }
     }
 
     #[test]

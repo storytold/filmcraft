@@ -452,6 +452,10 @@ pub(super) static CATEGORIES: &[Category] = &[
             b("media.createFolderForImportedProjects", "Create folder for imported projects", false),
             b("media.autoHideDependentClips", "Automatically Hide Dependent Clips", false),
             b("media.importImageSequences", "Import numbered stills as image sequences", false),
+            f("media.trustedShares", "Trusted Network Folders", Kind::Text, true),
+            Row::Note(
+                "Media a project names on another computer is opened only from a project saved on that share. Network folders listed here (\\\\server\\share, separated by ;) are opened from a project saved anywhere.",
+            ),
             Row::Group(
                 "Growing Files",
                 &[

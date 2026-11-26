@@ -23,6 +23,7 @@ const VALUED: &[&str] = &[
     "--data-dir",
     "--settings",
     "--gpu-rendering",
+    "--trust-share",
 ];
 
 #[derive(Debug, Default)]
@@ -58,6 +59,11 @@ impl Args {
 
     pub fn opt(&self, k: &str) -> Option<&str> {
         self.opts.iter().rev().find(|(n, _)| n == k).and_then(|(_, v)| v.as_deref())
+    }
+
+    /// Every value of a repeatable option, in order.
+    pub fn opts(&self, k: &str) -> Vec<&str> {
+        self.opts.iter().filter(|(n, _)| n == k).filter_map(|(_, v)| v.as_deref()).collect()
     }
 
     pub fn flag(&self, k: &str) -> bool {
