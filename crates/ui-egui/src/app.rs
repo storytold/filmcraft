@@ -62,6 +62,7 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
+            control_status: None,
             dock_live: Arc::new(dock::Workspace::new(dock::Layout::default())),
             dock_specs: craft_ui::contract::Tracked::new(dock_ui::FilmSpecs::default()),
             dock_windows: Vec::new(),
