@@ -480,7 +480,14 @@ pub fn link_media(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|m| m.status == "missing" || m.status == "offline")
         .filter(|m| scoped.as_ref().is_none_or(|set| set.contains(&ItemId(m.item))))
         .collect();
-    s.offline.prompt = !missing.is_empty();
+    // Whole-project calls drive the open prompt. Selection-scoped calls (Clip ▸ Link Media /
+    // `media.linkSelectedMedia`) must not: the UI opens the dialog itself, and a control-channel
+    // execute must not leave `prompt` set so `show` opens Link Media for unrelated missing rows.
+    if scoped.is_none() {
+        s.offline.prompt = !missing.is_empty();
+    } else {
+        s.offline.prompt = false;
+    }
     Ok(json!({"missing": missing}))
 }
 

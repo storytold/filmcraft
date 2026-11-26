@@ -586,13 +586,36 @@ fn link_media_items_scopes_the_missing_list() {
     let mut s = open(&path);
     let all = s.execute("media.linkMedia", json!({})).unwrap();
     assert_eq!(all["missing"].as_array().unwrap().len(), 2, "{all}");
+    assert!(s.offline.prompt, "whole-project linkMedia still requests the dialog");
     let one = s.execute("media.linkMedia", json!({"items": [items[0].0]})).unwrap();
     assert_eq!(one["missing"].as_array().unwrap().len(), 1, "{one}");
     assert_eq!(one["missing"][0]["item"], json!(items[0].0));
+    assert!(!s.offline.prompt, "scoped linkMedia must not raise the open prompt");
     s.execute("project.select", json!({"items": [items[1].0]})).unwrap();
     let sel = s.execute("media.linkSelectedMedia", json!({})).unwrap();
     assert_eq!(sel["missing"].as_array().unwrap().len(), 1, "{sel}");
     assert_eq!(sel["missing"][0]["item"], json!(items[1].0));
+    assert!(!s.offline.prompt, "linkSelectedMedia must not raise the open prompt");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// After linking one item, a scoped `media.linkMedia` / linkSelectedMedia must not leave `prompt` set for a sibling that is still missing.
+#[test]
+fn link_selected_media_clears_prompt_when_selection_is_online() {
+    let root = tmp_dir("link-selected-no-prompt");
+    let (path, items) = saved_project(&root);
+    let moved = root.join("Moved").join("Media");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::rename(root.join("Media"), &moved).unwrap();
+    let a = moved.join("a.mov").to_string_lossy().into_owned();
+    let mut s = open(&path);
+    assert!(s.offline.prompt);
+    s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOthers": false})).unwrap();
+    assert!(s.offline.missing.iter().any(|i| *i == items[1]), "sibling stays missing");
+    // Same path as Clip ▸ Link Media / linkSelectedMedia (scoped items); the linked item is no longer missing.
+    let r = s.execute("media.linkMedia", json!({"items": [items[0].0]})).unwrap();
+    assert!(r["missing"].as_array().unwrap().is_empty(), "{r}");
+    assert!(!s.offline.prompt, "must not open Link Media for the other missing item after a scoped control-channel call");
     let _ = std::fs::remove_dir_all(&root);
 }
 
