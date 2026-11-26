@@ -197,11 +197,15 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 sampled on a 2..65 lattice in the sequence's output encoding and written as a 3D `.cube`; the
 result's `leftOut` names what a LUT cannot hold: vignette, sharpen, HSL Secondary denoise and blur,
 and the clip's other effects; Rec. 709 sequences without wide gamut only; the Color Grading panel menu
-entry `panel.menu.LumetriColor.exportCube` asks for the path). Without
+entry `panel.menu.LumetriColor.exportCube` asks for the path),
+`lumetri.hslKey {clip?, mode: set|add|remove, x?, y?, color?}` (HSL Secondary ▸ Set / Add / Remove
+color: the key's Hue, Hue Range, Saturation Min and Luma Min / Max from the point at x, y (0..1) of
+the clip at the playhead, read before HSL Secondary (refused when the playhead is not on the
+clip), or from a linear `color`). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Color Grading panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,
-`lumetri.match.*`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
+`lumetri.match.*`, `lumetri.hslKey.set|add|remove`; HDR scopes: `scopes.hdrWaveform`. `file.exportMedia {sdr: true}` exports an HDR
 sequence as tone-mapped SDR.
 
 **Keyboard shortcuts** (`crates/engine/src/shortcuts.rs`): `shortcuts.list {query?, panel?}`,
