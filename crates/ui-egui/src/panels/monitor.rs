@@ -26,6 +26,13 @@ pub enum Which {
     Program,
 }
 
+fn monitor_gpu(app: &FilmcraftApp, which: Which) -> Option<&crate::GpuState> {
+    match which {
+        Which::Source => app.source_gpu.as_ref(),
+        Which::Program => app.gpu.as_ref(),
+    }
+}
+
 /// What the monitor's picture block draws this frame.
 struct PictureCtx {
     target: Target,
@@ -70,12 +77,14 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     let channel = display.is_channel();
     // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
     let grid = mv.transparency_grid && !channel;
-    let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+    let gpu = monitor_gpu(app, which);
+    let use_gpu = gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
     // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
     let live = grid || display == DisplayMode::Alpha;
     let cpu_target = target;
-    let target = match (app.gpu.as_ref().filter(|_| use_gpu), target) {
+    let target = match (gpu.filter(|_| use_gpu), target) {
         (Some(g), Target::Sequence(s)) => Target::SequencePlan(s, g.compositor.caps()),
+        (Some(g), Target::Item(i)) => Target::ItemPlan(i, g.compositor.caps()),
         (None, Target::Sequence(s)) if live => Target::SequenceLive(s),
         (_, t) => t,
     };
@@ -116,7 +125,10 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
             .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
         match found {
             Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
-            None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
+            None => {
+                let gpu = monitor_gpu(app, which);
+                (gpu.and_then(|g| g.texture), gpu.and_then(|g| g.last_key))
+            }
         }
     } else if grid {
         let recent = playing_recent(app, key, dir);

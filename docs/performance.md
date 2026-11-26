@@ -1163,3 +1163,50 @@ Test: `crates/ui-egui/tests/it/scrub_stop_ui.rs` — a press that only moves the
 stream, and a press while playing still stops the transport. `apps/filmcraft` (`audio::tests`) —
 the device default rate needs no configuration search.
 
+## 4K60 Source preview on Apple Silicon (#2058)
+
+The Source monitor used the CPU image path even with GPU rendering enabled. For portrait phone
+video this rotated full-size YUV planes, converted them into linear RGBA floats, then converted
+those floats back to sRGB bytes. Lowering playback resolution still paid for the full-size
+rotation. Source now plans decoded planes through `plan::plan_item`; the GPU handles rotation
+and supported SDR/HDR input transforms. Source and Program have separate compositors and output
+textures, so seeking one does not overwrite the other's picture. Channel views, transparency
+grids, unavailable GPUs and unsupported colour transforms retain their CPU paths.
+
+Measured on an Apple M4 Pro (14 CPU cores, 48 GiB RAM), release build, starting from `fdcac71e`:
+a locally supplied 3840×2160 HEVC Main clip, 60 fps, full range, displayed with a quarter turn.
+The clip stays local and is not a repository fixture. Six seconds per play, two runs at each
+resolution, through the actual frame scheduler and compositor with VideoToolbox registered.
+
+| Source playback | Before: dropped / 360 | After: dropped / 360 | CPU ms per due frame, before → after |
+|---|---|---|---|
+| Full | 38, 174 | 0, 0 | 86–135 → 5.4–6.0 |
+| Half | 0, 0 | 0, 0 | 89 → 5.8 |
+| Quarter | 2, 0 | 0, 0 | 79–81 → 5.9 |
+
+These are wall-clock playback measurements on one Mac, without the desktop chrome or audio
+output. Full Program playback already showed all 360 frames in both comparison runs; its
+render path is unchanged. The GPU's existing reduced-resolution filter differs from the CPU
+box filter, as it does for Program preview. Export rendering is unchanged.
+
+Reproduce with a local clip (its path is not included in the JSON report):
+
+```sh
+cargo run --release -p filmcraft-ui-egui --example bench_playback -- \
+  --media /path/to/clip.mp4 --source --res full,half,quarter --seconds 6 --repeat 2 --json target/source-preview.json
+```
+
+Omit `--source` for Program; add `--cpu` for the original CPU Source path. `--hw off` disables
+hardware decoding. The generated `--scenario hevc60-2160` case exercises 4K60 Main 10 without
+camera footage, and reports count hardware-decoded frames to distinguish decode fallback from
+compositing costs. Existing scenarios are retained.
+
+Validation: renderer tests, the GPU monitor-independence test (including `ui.screenshot` and
+AccessKit-tree inspection), formatting, Clippy for `filmcraft-render` and `filmcraft-ui-egui`
+(`--all-targets -- -D warnings`, stable toolchain), `cargo xtask assets` and the 30-crate
+`cargo xtask wasm` check pass. The full UI run has 385 passing unit tests (one existing ignored)
+and 816 passing integration tests (eight existing ignored). Three integration failures also
+reproduce individually on the untouched `fdcac71e` snapshot with identical assertions:
+`clip_dialogs_ui::quitting_with_unsaved_changes_asks_to_save`,
+`clip_dialogs_ui::quit_save_on_a_new_project_uses_the_save_dialog_and_scripted_quit_does_not_ask`,
+and `multicam_ui::create_multicam_dialog_view_and_live_switching`.

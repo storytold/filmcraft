@@ -857,6 +857,9 @@ pub fn arc_source(s: impl filmcraft_media::MediaSource + 'static) -> SharedSourc
 mod tests;
 
 #[cfg(test)]
+mod source_plan_tests;
+
+#[cfg(test)]
 mod lumetri_hdr_tests;
 
 #[cfg(test)]

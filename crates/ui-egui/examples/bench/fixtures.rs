@@ -55,6 +55,8 @@ const AV1_AOM: &[&str] = &["-c:v", "libaom-av1", "-crf", "35", "-b:v", "0", "-cp
 const PRORES: &[&str] = &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"];
 
 const SPECS: &[Spec] = &[
+    // 60 fps Main 10: exercises the phone-footage preview path at a 16.7 ms frame budget.
+    Spec { name: "hevc60_2160.mp4", src: "testsrc2=s=3840x2160:r=60:d=8", secs: 8, audio: false, codec: X265_MAIN10 },
     // Playback scenarios (also used by `bench_playback`).
     Spec { name: "a1080.mp4", src: "testsrc2=s=1920x1080:r=24000/1001:d=20,noise=alls=6:allf=t", secs: 20, audio: true, codec: X264 },
     Spec { name: "b1080.mp4", src: "mandelbrot=s=1920x1080:r=24000/1001,trim=duration=20,noise=alls=6:allf=t", secs: 20, audio: false, codec: X264 },

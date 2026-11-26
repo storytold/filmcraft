@@ -1,6 +1,7 @@
 # Control protocol & MCP
 
 ## Desktop control channel
+
 `filmcraft --control 9886` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
 The listener requires `FILMCRAFT_CONTROL_TOKEN`: 64 random hex characters shared with authorized
 clients through their inherited environment. Generate a fresh token for each desktop session, then
@@ -72,6 +73,11 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled (while running), `replaced` (dropped while waiting for a newer frame in their view), `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+
+`perf.stats` also reports the Source monitor separately: `sourcePlayback` contains `playing`,
+`shown`, `dropped` and `resolution`; `sourceGpu` contains `uploadedBytes` and the last `submitMs`
+(`null` when GPU compositing is unavailable). The existing `playback` and `gpu` fields describe
+the Program monitor.
 
 For `ui.click` and `ui.drag`, omitted or null counts/steps use the defaults. Out-of-range or
 non-integer values return `{"ok": false, "error": "…"}` before queuing any pointer input.
