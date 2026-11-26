@@ -26,6 +26,7 @@ filmcraft-frame = { workspace = true }
 filmcraft-media = { workspace = true }
 craft-media = { workspace = true, features = ["mxf"] }
 filmcraft-codecs = { workspace = true }
+filmcraft-insta360 = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }

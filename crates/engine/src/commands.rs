@@ -1095,6 +1095,11 @@ fn import_source(
     }
     let path_s = path.to_string();
     s.media.allow(path);
+    // the camera's own proxy beside the file (an Insta360 LRV chain): attached as the
+    // item's proxy so Toggle Proxies can play the recording from it
+    let proxy = crate::proxies::camera_proxy_for(s, path, &src).inspect(|p| {
+        s.media.allow(p);
+    });
     let id = s.edit(&format!("Import {name}"), |p, _| {
         Ok(p.add_item(
             &name,
@@ -1107,7 +1112,7 @@ fn import_source(
                 mark_out: None,
                 markers: vec![],
                 offline: false,
-                proxy: None,
+                proxy: proxy.map(|path| MediaRef::File { path }),
                 identity: Some(identity),
             })),
             bin,

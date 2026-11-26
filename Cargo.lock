@@ -2443,6 +2443,7 @@ dependencies = [
  "filmcraft-format",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-insta360",
  "filmcraft-interchange",
  "filmcraft-isobmff",
  "filmcraft-media",

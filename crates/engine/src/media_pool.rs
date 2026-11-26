@@ -280,8 +280,17 @@ impl MediaPool {
     }
 
     /// Read and open a file through `services` (through its random-access reader when the host
-    /// has one: containers then read only their index now and samples on demand).
+    /// has one: containers then read only their index now and samples on demand). A part of a
+    /// spanned multi-part recording (Insta360 `VID_…_<seg>.insv`) opens as the whole clip; see
+    /// [`crate::spanned`].
     pub fn open_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        if let Some(s) = crate::spanned::open_spanned(path, services, |p| self.open_single_file(p, services)) {
+            return Ok(s);
+        }
+        self.open_single_file(path, services)
+    }
+
+    fn open_single_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
         let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
         if let Some(r) = services.reader(path) {
             let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
@@ -293,9 +302,17 @@ impl MediaPool {
 
     /// Open a file to look at it (Media Browser properties and thumbnails), not to import it: a
     /// format without a streaming reader is read whole only up to [`PROBE_WHOLE_FILE_MAX`] bytes
-    /// (#157). Hosts without random-access readers open the file as [`Self::open_file`] does.
+    /// (#157). Hosts without random-access readers open the file as [`Self::open_file`] does. A
+    /// part of a spanned recording reports the whole clip, as import does.
     pub fn probe_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
-        let Some(r) = services.reader(path) else { return self.open_file(path, services) };
+        if let Some(s) = crate::spanned::open_spanned(path, services, |p| self.probe_single_file(p, services)) {
+            return Ok(s);
+        }
+        self.probe_single_file(path, services)
+    }
+
+    fn probe_single_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
+        let Some(r) = services.reader(path) else { return self.open_single_file(path, services) };
         let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)
@@ -371,15 +388,29 @@ impl MediaPool {
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
             MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
-                if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                let r = if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
                     open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
                 } else {
                     self.open_file(&file, services)
-                }
+                };
+                r.map(|s| (file, s))
             }) {
-                Ok(s) => {
+                Ok((file, s)) => {
                     self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
-                    self.unsupported_as_slate(item, path, s)
+                    // A multi-part recording whose join this pass declined while
+                    // another part's bytes were still on their way (pending) is
+                    // right to play alone for now, but caching the shortened
+                    // single part would strand it: no later resolve would open
+                    // the recording again once the parts have arrived. Siblings
+                    // that fail permanently never set the flag, so the
+                    // standalone open of a half-restored card caches normally.
+                    let provisional = crate::spanned::has_part_name(&file) && filmcraft_media::pending::is_set();
+                    let src = self.unsupported_as_slate(item, path, s);
+                    if provisional {
+                        return Some(src);
+                    }
+                    self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
+                    return Some(src);
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
                     // the host is still fetching the file's bytes: show the slate for now, retry later
@@ -398,7 +429,12 @@ impl MediaPool {
     }
 
     /// A copy of `item`'s file for a background job: the file opened again through the host's
-    /// reader, with decoders and decoded frames of its own, closed when the job drops it. None
+    /// reader, with decoders and decoded frames of its own, closed when the job drops it. A
+    /// spanned recording is copied whole - every part opened through its own reader and joined,
+    /// as [`Self::open_file`] does for the monitors, so a job never renders just one part of a
+    /// clip the monitors show joined; while a sibling part's bytes are still on their way the
+    /// job shares the pool's source (retrying every frame, as the monitors do) instead of
+    /// keeping a shortened copy. None
     /// when the item shares the pool's source instead: not a file (a generator), made offline, an
     /// image sequence, a host without a reader (the browser), a format that would be read whole,
     /// or a file that does not open or that the pool last saw offline (the pool's source renders
@@ -410,10 +446,26 @@ impl MediaPool {
             return None;
         }
         let file = self.follow_media(path).ok()?;
-        let reader = services.reader(&file)?.ok()?;
         let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let src = filmcraft_media::reader::open_reader_within(&file_name(&file), reader, &filmcraft_codecs::reader_openers(), &openers, 0).ok()?;
-        Some(self.unsupported_as_slate(item, path, src))
+        let own_one = |p: &str| -> Result<SharedSource, MediaError> {
+            let r = services
+                .reader(p)
+                .ok_or_else(|| MediaError::Offline(format!("{p}: the host has no reader")))?
+                .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(format!("{p}: {e}")) } else { MediaError::Io(e.to_string()) })?;
+            filmcraft_media::reader::open_reader_within(&file_name(p), r, &filmcraft_codecs::reader_openers(), &openers, 0)
+        };
+        let src = crate::spanned::open_spanned(&file, services, |part| own_one(part)).or_else(|| own_one(&file).ok());
+        // The same rule as in resolve and proxy_source, which the job's own-cache would
+        // otherwise freeze: a part opened alone because the recording's *siblings* were
+        // still fetching (the declined join left reads pending) is provisional - hand
+        // back None so the provider shares the pool's source and retries, instead of
+        // caching the shortened copy into the job. Recordings that permanently are this
+        // one file (no siblings on the host, a half-restored card) never set the flag,
+        // and their own copies cache normally.
+        if src.is_some() && filmcraft_media::pending::is_set() && crate::spanned::has_part_name(&file) {
+            return None;
+        }
+        Some(self.unsupported_as_slate(item, path, src?))
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
@@ -427,8 +479,9 @@ impl MediaPool {
         {
             return Some(s.clone());
         }
-        match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
-            Ok(s) => {
+        let opened = self.follow_media(path).and_then(|file| self.open_file(&file, services).map(|s| (file, s)));
+        match opened {
+            Ok((file, s)) => {
                 // a proxy with fewer audio streams than the original (say one track of an OBS
                 // recording's seven) still stands in for the picture; the audio comes from the
                 // original, so every clip keeps the stream it plays
@@ -442,7 +495,11 @@ impl MediaPool {
                     None
                 };
                 let src: SharedSource = Arc::new(ProxySource { proxy: s, info: m.info.clone(), audio_from });
-                self.proxies.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
+                // the same rule as in resolve: one proxy part opened because its siblings'
+                // bytes were still on their way must not sit in the cache after they arrive
+                if !(crate::spanned::has_part_name(&file) && filmcraft_media::pending::is_set()) {
+                    self.proxies.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
+                }
                 Some(src)
             }
             Err(e) => {

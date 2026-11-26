@@ -58,6 +58,7 @@ pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod slip;
 pub mod source_monitor;
+pub mod spanned;
 pub mod still_migration;
 pub mod sync;
 pub mod transcript;
