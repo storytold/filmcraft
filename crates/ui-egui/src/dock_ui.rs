@@ -488,7 +488,7 @@ impl FilmcraftApp {
         }
         // The fallback delivers a drop once. Keep it until root input drains it, even if
         // another layout pass publishes an empty output before the next root frame.
-        self.window_files.extend(output.window_files);
+        self.window_files.extend(output.window_files.into_iter().flat_map(|drop| drop.files));
         if !self.window_files.is_empty() {
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
