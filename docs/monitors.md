@@ -90,7 +90,8 @@ returns the same content for the active sequence at any time (default: the playh
 duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
 characters, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
 `sections` (the number of range markers). It is disabled when no sequence is open. Code:
-`crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
+A time that is given but cannot be read (`{"timecode": "invalid"}`) is refused, not answered for the
+playhead. `crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
 (drawing). Tests: `cargo test -p filmcraft-engine prompter_tests::` and
 `cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
 

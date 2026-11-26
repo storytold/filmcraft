@@ -209,6 +209,20 @@ fn prompter_inspect_reports_the_section_at_a_time_and_changes_nothing() {
 }
 
 #[test]
+fn prompter_inspect_refuses_a_time_it_cannot_read_instead_of_answering_for_the_playhead() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let fps = s.sequence_rate().frame_at(Tick(TICKS_PER_SECOND));
+    s.execute("markers.add", json!({"time": 0, "name": "Intro", "durationFrames": 6 * fps})).unwrap();
+    for bad in [json!({"timecode": "invalid"}), json!({"seconds": "three"}), json!({"frame": "x"}), json!({"time": 1.5})] {
+        let r = s.execute("prompter.inspect", bad.clone());
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad} is refused: {r:?}");
+    }
+    assert!(s.execute("prompter.inspect", json!({"timecode": "00:00:01:00"})).is_ok(), "a valid timecode still works");
+    assert!(s.execute("prompter.inspect", json!({"timecode": null})).is_ok(), "null is no time: the playhead");
+}
+
+#[test]
 fn hostile_comments_markers_and_times_never_panic() {
     let long_line = "x".repeat(200_000);
     let many_points = "- p\n".repeat(MAX_POINTS * 3);

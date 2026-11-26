@@ -384,9 +384,20 @@ pub fn prompt_at(seq: &Sequence, t: Tick) -> Prompt {
     }
 }
 
-/// `prompter.inspect`: the prompt for the active sequence at `time` (any time format), else at the playhead.
+/// The time parameters `prompter.inspect` reads.
+const TIME_KEYS: [&str; 4] = ["time", "frame", "seconds", "timecode"];
+
+/// `prompter.inspect`: the prompt for the active sequence at `time` (any time format), else at the
+/// playhead. A time that is given but cannot be read is refused, not answered for the playhead.
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = sequence_time_p(s, p, "", "prompter.inspect")?.unwrap_or(s.playhead());
+    let given = TIME_KEYS.iter().any(|k| p.get(k).is_some_and(|v| !v.is_null()));
+    let t = match sequence_time_p(s, p, "", "prompter.inspect")? {
+        Some(t) => t,
+        None if given => {
+            return Err(crate::commands::bad("prompter.inspect", "the time must be ticks, a frame, seconds or a timecode such as 00:00:01:00"));
+        }
+        None => s.playhead(),
+    };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     serde_json::to_value(prompt_at(seq, t)).map_err(|e| EngineError::Other(e.to_string()))
 }
