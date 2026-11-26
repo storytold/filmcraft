@@ -391,14 +391,15 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Some("offline") => {
             let _ = app.session.execute("media.makeOffline", json!({"items": [item]}));
+            // Keep the id in `pool` and hide it via `skipped`. Removing it would empty a
+            // one-item selection pool, and an empty pool means unrestricted (File open / legacy).
             d.skipped.push(item);
-            d.pool.retain(|&id| id != item);
             d.candidates.clear();
             d.candidate = None;
         }
         Some("offlineAll") => {
             // Scope to the dialog pool (minus skipped); empty pool means the whole missing list.
-            let params = if d.pool.is_empty() { json!({}) } else { json!({"items": others_scope(d)}) };
+            let params = if d.pool.is_empty() { json!({}) } else { json!({"items": others_scope(&d)}) };
             let _ = app.session.execute("media.offlineAll", params);
             keep = false;
         }

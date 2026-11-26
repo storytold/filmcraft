@@ -583,6 +583,46 @@ fn link_media_from_item_menu_keeps_the_whole_selection() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Clip ▸ Link Media… Offline on a one-item selection keeps the pool (via `skipped`) so the dialog
+/// closes instead of expanding to other missing clips in the project.
+#[test]
+fn link_media_offline_exhausts_selection_without_widening_pool() {
+    let root = tmp_dir("link-offline-exhaust");
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    let files = [media.join("A.mov"), media.join("B.mov"), media.join("C.mov")];
+    make_movie(&files[0], DemoScene::OceanSunset, 320, 180, 12);
+    make_movie(&files[1], DemoScene::CityNight, 320, 180, 12);
+    make_movie(&files[2], DemoScene::Aurora, 320, 180, 12);
+    let mut s = Session::default();
+    let r = s.execute("file.import", json!({"paths": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
+    let items: Vec<u64> = r["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let path = root.join("p.fcproj").to_string_lossy().into_owned();
+    s.execute("file.save", json!({"path": &path})).unwrap();
+    drop(s);
+    std::fs::create_dir_all(root.join("Moved")).unwrap();
+    std::fs::rename(&media, root.join("Moved").join("Media")).unwrap();
+    let mut s = Session::default();
+    s.execute("file.open", json!({"path": &path})).unwrap();
+    let mut d = Driver::new(s);
+    d.frames(6);
+    d.click("linkMedia.cancel");
+    d.exec("project.select", json!({"items": [items[0]]}));
+    d.ok("ui.menu.invoke", json!({"id": "media.linkSelectedMedia"}));
+    d.frames(4);
+    assert_eq!(d.ids("linkMedia.row.").len(), 1);
+    assert_eq!(d.app().ui.link_media.as_ref().unwrap().pool, vec![items[0]]);
+    d.click("linkMedia.offline");
+    d.frames(4);
+    assert!(d.app().ui.link_media.is_none(), "exhausted selection closes; must not reopen on B/C");
+    let st = d.exec("media.status", json!({}));
+    let by: std::collections::BTreeMap<u64, &str> = st.as_array().unwrap().iter().filter_map(|m| Some((m["item"].as_u64()?, m["status"].as_str()?))).collect();
+    assert_eq!(by.get(&items[0]).copied(), Some("offline"), "{st}");
+    assert_eq!(by.get(&items[1]).copied(), Some("missing"), "{st}");
+    assert_eq!(by.get(&items[2]).copied(), Some("missing"), "{st}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Clip ▸ Link Media… (selection pool): only the selected missing clips appear; a third outside the
 /// selection stays missing after Relink others.
 #[test]

@@ -757,9 +757,9 @@ pub struct LinkMediaDraft {
     /// Search results for the selected row: (path, ok, identity match, problems).
     pub candidates: Vec<(String, bool, Option<bool>, String)>,
     pub candidate: Option<usize>,
-    /// Rows the user set offline in this session of the dialog (item ids).
+    /// Rows the user set Offline in this session of the dialog (item ids). Kept in `pool` so an exhausted selection stays distinct from an empty (unrestricted) pool.
     pub skipped: Vec<u64>,
-    /// Item ids this dialog may list and Relink others may touch. Empty = every missing/offline row (legacy / File open before pool is filled).
+    /// Item ids this dialog may list and Relink others may touch. Empty = every missing/offline row (legacy / File open before pool is filled). Offline rows stay here and go in `skipped`.
     pub pool: Vec<u64>,
     pub message: String,
 }
