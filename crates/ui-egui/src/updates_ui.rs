@@ -7,7 +7,7 @@ use crate::FilmcraftApp;
 #[cfg(not(target_arch = "wasm32"))]
 use craft_ui::dialog::DialogHost;
 #[cfg(not(target_arch = "wasm32"))]
-use craft_update::stack_dialogs::{CheckChoice, UpdateCheckDialog};
+use craft_update::stack_dialogs::{CheckChoice, UpdateCheckDialog, UpdateWords};
 #[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Status, Updater};
 
@@ -35,7 +35,7 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
-            updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
+            updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_translator(translate),
             #[cfg(not(target_arch = "wasm32"))]
             dialogs: DialogHost::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +49,32 @@ impl Default for Runtime {
             manual_window_open: false,
         }
     }
+}
+
+/// The updater's messages under the update prompt in the interface language: craft-update passes its
+/// English text and the values of its `{name}` placeholders each time it draws.
+#[cfg(not(target_arch = "wasm32"))]
+fn translate(text: &str, args: &[(&str, &str)]) -> String {
+    crate::i18n::fmt(crate::i18n::t(text), args)
+}
+
+/// The check dialog's words in the interface language.
+#[cfg(not(target_arch = "wasm32"))]
+fn update_words() -> UpdateWords {
+    use craft_i18n::{WordSet, Words};
+    UpdateWords::english().localized_in(&Words::new(|word| Some(crate::i18n::t(word.english).to_owned())))
+}
+
+/// The English texts of the update dialogs, for the catalog scan (`i18n/tests.rs`): the check
+/// dialog's words, and the updater's own messages that `translate` handles. The update prompt's
+/// own words are drawn by craft-ui from the host's catalogs, which FilmCraft does not use.
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn update_texts() -> Vec<&'static str> {
+    use craft_i18n::WordSet;
+    let mut out: Vec<&'static str> = UpdateWords::WORDS.iter().map(|word| word.english).collect();
+    out.extend(["Couldn't start the update ({error})", "Save or close your open work first; the update restarts the app."]);
+    out
 }
 
 impl FilmcraftApp {
@@ -165,16 +191,16 @@ pub(crate) fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
-        egui::Window::new(crate::i18n::t("FilmCraft Updates"))
+        egui::Window::new(tl!("FilmCraft Updates"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .show(&ctx, |ui| {
-                ui.label(crate::i18n::t("Update check is not supported in the web browser."));
+                ui.label(tl!("Update check is not supported in the web browser."));
                 ui.add_space(8.0);
-                if ui.button(crate::i18n::t("OK")).clicked() {
+                if ui.button(tl!("OK")).clicked() {
                     app.updates_rt.manual_window_open = false;
                 }
             });
@@ -208,7 +234,7 @@ fn sync_check_dialog(rt: &mut Runtime) {
     if let Some(dialog) = rt.dialogs.get_mut::<UpdateCheckDialog>() {
         dialog.set_status(status);
     } else {
-        let mut dialog = UpdateCheckDialog::new(env!("CARGO_PKG_VERSION"));
+        let mut dialog = UpdateCheckDialog::new(env!("CARGO_PKG_VERSION")).words(update_words());
         dialog.set_status(status);
         rt.dialogs.open(dialog);
     }
@@ -245,6 +271,19 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
             updater.tick(&ctx);
         }
+    }
+
+    /// The updater's messages go through the interface language and fill their placeholders; a text
+    /// the catalog lacks stays English.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn translate_follows_the_interface_language() {
+        crate::i18n::set_current(crate::i18n::Language::De);
+        assert_eq!(translate("{panel} — coming in a later milestone", &[("panel", "Titel")]), "Titel – kommt in einem späteren Meilenstein");
+        let missing = "The update could not be installed: {reason}";
+        assert_eq!(translate(missing, &[("reason", "disk full")]), "The update could not be installed: disk full");
+        assert!(update_texts().contains(&"Check for Updates"));
+        crate::i18n::set_current(crate::i18n::Language::En);
     }
 
     #[test]
