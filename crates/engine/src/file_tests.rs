@@ -152,6 +152,8 @@ fn media_paths_are_stored_relative_to_the_project_file() {
     let m = loaded.project.item(item).and_then(|i| i.as_media()).unwrap();
     assert_eq!(m.media, filmcraft_project::MediaRef::File { path: "../media/clip.mov".into() });
     // Move the whole folder: the moved project opens with its media found.
+    // Windows does not rename a folder with files open in it: close the session first.
+    drop(s);
     let moved = temp_dir("rel-paths-moved");
     std::fs::remove_dir(&moved).unwrap();
     std::fs::rename(&d, &moved).unwrap();

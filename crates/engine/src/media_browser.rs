@@ -602,14 +602,17 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
 /// The project item that already references a file. Items loaded from a project file carry stored
 /// paths (relative to it), so the comparison is between the files they resolve to.
 pub fn item_for_path(s: &Session, path: &str) -> Option<ItemId> {
-    let path = crate::doc_path::resolve(path, None).unwrap_or_else(|_| path.to_string());
+    // A path that does not resolve on its own (on Windows, a rooted path without a drive) is
+    // compared as given, on both sides.
+    let file = |p: &str| crate::doc_path::resolve(p, None).unwrap_or_else(|_| p.to_string());
+    let path = file(path);
     s.project
         .items
         .values()
         .find(|i| {
             i.as_media().is_some_and(|m| {
                 matches!(&m.media, filmcraft_project::MediaRef::File { path: p }
-                    if s.media.follow(p).ok().and_then(|f| crate::doc_path::resolve(&f, None).ok()).as_deref() == Some(path.as_str()))
+                    if s.media.follow(p).ok().map(|f| file(&f)).as_deref() == Some(path.as_str()))
             })
         })
         .map(|i| i.id)
