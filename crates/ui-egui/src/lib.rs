@@ -90,7 +90,7 @@ use filmcraft_engine::{Services, Session};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-pub use control::ControlRequest;
+pub use control::{ControlRequest, ControlStatus};
 use dock::{LayoutExt as _, PanelKind};
 use frames::{FrameKey, FrameServer, Target};
 use native_dialogs::FileDialog;
@@ -195,9 +195,10 @@ pub(crate) enum ImeComposition {
 /// `control_server::DisabledWhy` onto this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlNotice {
-    /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
-    /// #3318 reworks port-collision reporting.)
+    /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed.
     Token,
+    /// The port could not be bound — usually another program is already listening on it (#3313).
+    Bind { port: u16, error: String },
 }
 
 /// A file drop claimed by a native Timeline viewport, ready for the next root input pass.
@@ -266,6 +267,9 @@ pub struct FilmcraftApp {
     /// `FILMCRAFT_CONTROL_TOKEN`, a port that cannot be bound): shown whenever the status bar is
     /// idle (#3436). It is also in `filmcraft.log`; `None` when the server is running.
     pub(crate) control_notice: Option<ControlNotice>,
+    /// How the `--control` listener came up (set by the host): `ui.inspect` reports it under
+    /// `control`, so a port that failed to bind is visible to agents, not just stderr (#3313).
+    pub control_status: Option<ControlStatus>,
     /// The workspace the dock area shows: `ui.dock` stays the saved source of truth, and this
     /// follows it (`dock_ui::sync_live`). One `Arc` across frames, so an idle pass reads no spec.
     pub(crate) dock_live: Arc<dock::Workspace>,

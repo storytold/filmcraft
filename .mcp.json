@@ -2,7 +2,7 @@
   "mcpServers": {
     "filmcraft": {
       "command": "target/release/filmcraft-cli",
-      "args": ["mcp", "--bridge", "127.0.0.1:9876"]
+      "args": ["mcp", "--bridge", "127.0.0.1:9886"]
     },
     "filmcraft-headless": {
       "command": "target/release/filmcraft-cli",
