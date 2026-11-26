@@ -16,6 +16,7 @@ pub mod captions;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod conform;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;

@@ -126,7 +126,9 @@ the card says "No section at the prompter's position" with the readout.
 **Take log.** During a voice-over recording every move is logged with its time:
 `prompter.takeLog` returns `inProgress` (the take being recorded) and `last` (the last finished
 take), and `audio.voiceover.stop` returns the finished take's log as `promptLog`. A log has
-`sequence`, `recordStart`, `entries` and `dropped` (moves past the first 10 000). The first entry
+`sequence`, `recordStart`, `entries`, `dropped` (moves past the first 10 000) and `sections` (each range
+marker's `marker`, `start` and `duration` when the take began); `prompter.takeLog` also returns
+`lastClip`, where the last take was placed (null for a discarded take). The first entry
 (`kind` `start`) is where the prompt was when the capture began; then one entry per move (`next`,
 `previous`, `toPlayhead`, `rate`) with `takeTime` (the playhead minus the record point, negative in the
 pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), `rateBefore` and `rateAfter` (percent), and the `marker`,
@@ -135,6 +137,45 @@ reset when playback stops during the take); its prompt time is unchanged. Betwee
 prompt runs with the playhead at the last entry's `rateAfter`, so the prompt time at take time `x`
 is `promptAfter + (x - takeTime) * rateAfter / 100` of the last entry before `x`. The log is kept in the
 session; it is not yet stored with the recorded clip.
+
+**Conform the sections to the take (#5265).** Sequence ▸ Conform Sections to Last Take
+(`sequence.conformSections {}`) fits each section's picture to how long the narrator spent on it in
+the last take, as one undo step; `sequence.conformSectionsReport {}` returns the same result without
+changing anything. A section was entered when the prompt time reached its start for the last time
+during the take and left when it reached its end for the last time; the difference is its delivered
+length. Longer than the picture: the section is extended at its end by holding the last frame of
+each video track (a frame hold segment; a clip spanning the end is split and the hold goes between
+the halves; audio and caption tracks get empty time there). Shorter: the difference is removed
+from the section's end as Extract removes a range. Everything after ripples on every sync-locked
+track; tracks with sync lock off stay. The take's clip stays exactly where it is. The section
+markers get their new lengths and every later marker moves with the ripple; a point marker in a
+removed range is removed, as in a ripple delete. New boundaries are the frame boundaries nearest to
+where the narrator entered and left each section, so rounding never adds up across sections.
+
+Only sections the take covers whole are conformed. Not conformed, with the reason in the row: a
+section the take started or ended inside, one the prompter jumped into the middle of, one it went
+back before and ended there, a skipped one (entered and left less than a frame apart), one ending
+during a transition (a held frame cannot show a mix of two clips), one whose marker is not on frame
+boundaries. Sections the prompter never reached, or was past from the start, are `outside`. A
+re-entered section (Previous back into it) lasts until it was left for the last time, so a false
+start on the next section belongs to it. Time between sections and sections not conformed keep
+their length; when that differs from the narration, later sections are off by the difference, which
+each row reports as `offset`.
+
+The result has `applied`, `blocked` (report only: why the edit would be refused), `take` (`clip`,
+`track`, `start`, `duration`), `sections` (per section: `marker`, `name`, `start`, `plannedLength`,
+`enteredAt` and `leftAt` in take time, `deliveredLength`, `change` `extend|trim|none|notConformed|outside`,
+`by`, `byFrames`, `newLength`, `offset`, `reason`), `totals` (`sections`, `extended`, `trimmed`,
+`unchanged`, `notConformed`, `outside`, `extendedBy`, `trimmedBy`, `change`), `durationBefore`,
+`durationAfter` and `removedMarkers`. The command is disabled, with the reason, when no sequence is
+open, a take is recording, no take was recorded in this session or it was discarded, the project
+was replaced or another sequence is active, the take's clip was deleted, moved, trimmed or changed
+in speed, any range marker changed since the take (so a conformed take is not conformed twice; undo
+brings it back), the log does not replay, sections the take touches overlap, a locked sync-locked
+track has material after the first change, or there is nothing to change. A clip that would slide
+under the take on its own track refuses the run. Only the last take of the session can be conformed
+until the log is stored with the clip. Code: `crates/engine/src/conform.rs` (the plan) and
+`crates/edit/src/conform.rs` (the edit).
 
 **Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
 node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`

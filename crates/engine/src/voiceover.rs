@@ -559,6 +559,9 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     s.voiceover.pending_stop = None;
     s.voiceover.captured.clear();
     let prompt_log = crate::prompter::finish_take(s);
+    // where the take went, so the picture can be conformed to it (#5265)
+    s.prompter.last_take_clip =
+        s.project.sequence(rec.seq).and_then(|q| q.find_item(clip)).map(|(track, it)| crate::conform::TakeClip::of(rec.epoch, rec.seq, track, it));
     Ok(json!({
         "recording": false,
         "placed": true,

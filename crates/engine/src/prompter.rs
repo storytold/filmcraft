@@ -60,7 +60,9 @@
 //! the log. It is kept for
 //! the take in progress and the last finished take (`prompter.takeLog`), and `audio.voiceover.stop`
 //! returns it as `promptLog`. It is not stored on the recorded clip yet (that needs a project
-//! schema change).
+//! schema change). The log also records the sections (range markers) as they were when the take
+//! began, and the session keeps where the take's clip was placed ([`PrompterState::last_take_clip`]):
+//! `sequence.conformSections` ([`crate::conform`]) fits the sections to the take from them.
 
 use std::cmp::Reverse;
 
@@ -506,6 +508,9 @@ pub struct PrompterState {
     pub take: Option<TakeLog>,
     /// The log of the last finished take.
     pub last_take: Option<TakeLog>,
+    /// Where the last finished take was placed, when it was (`sequence.conformSections` checks
+    /// that the clip is still there). None for a discarded or failed take.
+    pub last_take_clip: Option<crate::conform::TakeClip>,
 }
 
 /// The anchor, when it belongs to the active sequence of the current document (another sequence
@@ -689,6 +694,24 @@ pub struct TakeLog {
     pub entries: Vec<PromptMove>,
     /// Moves not kept after [`MAX_TAKE_LOG_ENTRIES`].
     pub dropped: u64,
+    /// The sequence's sections (range markers) when the take began, in marker order: the prompt
+    /// times in `entries` refer to them (`sequence.conformSections` refuses once they changed).
+    #[serde(default)]
+    pub sections: Vec<SectionMark>,
+}
+
+/// Where a section (range marker) was when a take began.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionMark {
+    pub marker: MarkerId,
+    pub start: Tick,
+    pub duration: Tick,
+}
+
+/// The sequence's sections as [`TakeLog::sections`] records them.
+pub fn section_marks(seq: &Sequence) -> Vec<SectionMark> {
+    seq.markers.iter().filter(|m| is_section(m)).map(|m| SectionMark { marker: m.id, start: m.start, duration: m.duration }).collect()
 }
 
 /// What an entry records: the playhead, the prompt time before and after, and the rate before and after.
@@ -728,11 +751,13 @@ pub(crate) fn begin_take(s: &mut Session, record_start: Tick, capture_start: Tic
         record_start,
         Change { kind: MoveKind::Start, playhead: at, before: at, after: at, rates: (NORMAL_RATE_PERCENT, NORMAL_RATE_PERCENT) },
     );
-    s.prompter.take = Some(TakeLog { sequence, record_start, entries: vec![first], dropped: 0 });
+    let sections = s.active_sequence().map(section_marks).unwrap_or_default();
+    s.prompter.take = Some(TakeLog { sequence, record_start, entries: vec![first], dropped: 0, sections });
 }
 
 /// The take ended (placed, discarded or failed): its log becomes the last take's, returned as JSON.
 pub(crate) fn finish_take(s: &mut Session) -> Value {
+    s.prompter.last_take_clip = None;
     match s.prompter.take.take() {
         Some(log) => {
             let v = serde_json::to_value(&log).unwrap_or(Value::Null);
@@ -869,7 +894,7 @@ fn to_playhead(s: &mut Session, _: &Value) -> Result<Value> {
 
 /// `prompter.takeLog`: the log of the take in progress and of the last finished take.
 fn take_log(s: &mut Session, _: &Value) -> Result<Value> {
-    Ok(json!({"recording": s.voiceover.recording(), "inProgress": s.prompter.take, "last": s.prompter.last_take}))
+    Ok(json!({"recording": s.voiceover.recording(), "inProgress": s.prompter.take, "last": s.prompter.last_take, "lastClip": s.prompter.last_take_clip}))
 }
 
 /// The time parameters `prompter.inspect` reads.
