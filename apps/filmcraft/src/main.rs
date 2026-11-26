@@ -648,6 +648,7 @@ fn app_creator(
         // that waits for the browser never freezes the UI.
         app.hooks.open_url = Some(Box::new(|url: &str| open::that_detached(url).map_err(|e| e.to_string())));
         app.hooks.clipboard_media = Some(Box::new(clipboard_media));
+        app.hooks.clipboard_text = Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok()));
         // Settings ▸ General ▸ Interface Language ▸ System Language (#218).
         app.hooks.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
         app.hooks.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
@@ -681,12 +682,22 @@ fn app_creator(
             app.ui.show_menu_bar = false;
         }
         if let Some((rx, ready, disabled)) = control {
+            // A listener that never came up is reported where a user or agent will see it:
+            // the status bar and `ui.inspect` → `control` (#3313).
+            if let Some(port) = control_port {
+                app.control_status = Some(filmcraft_ui_egui::ControlStatus { port, error: disabled.as_ref().map(control_server::DisabledWhy::reason) });
+            }
             app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            // The token cause is shown in the app as a fully translated sentence (the English
-            // `reason()` stays for the log and the input-only error); a bind failure stays in the
-            // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            // Each cause is shown in the app as a fully translated sentence (the English
+            // `reason()` stays for the log and the input-only error).
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+                }
+                Some(control_server::DisabledWhy::Bind { port, error }) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Bind { port: *port, error: error.clone() });
+                }
+                None => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);

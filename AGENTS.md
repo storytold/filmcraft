@@ -63,7 +63,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119
 ## This repository
 <!-- craft-agents:end -->
 
-FilmCraft is a Rust video editor (workspace edition 2024). Run it with `cargo run -p filmcraft -- --control 9876` (`docs/control-protocol.md`); look at `ui.screenshot` for UI work.
+FilmCraft is a Rust video editor (workspace edition 2024). Run it with `cargo run -p filmcraft -- --control 9886` (`docs/control-protocol.md`); look at `ui.screenshot` for UI work.
 
 - **Layout:** `crates/*` and `apps/*` (globbed), `xtask/`. Layers L0 to L5 are in `docs/architecture.md` §1; nothing below L5 depends on egui, eframe, winit, rfd or cpal. New crates include `[lints] workspace = true`; production crate roots declare their lint attributes before modules.
 - **Checks for the crates you changed:** `cargo fmt --check`; `cargo clippy -p <crate> --all-targets -- -D warnings`; `cargo nextest run -p <crate>` (or `cargo test -p <crate>`); `cargo xtask layers` for dependency changes; `cargo xtask assets` for asset changes; `cargo xtask wasm` for L0 to L4, `filmcraft-ui-egui` and `filmcraft-web` (wasm32). `cargo xtask ci` runs all of them. Set `CRAFT_FONTS_DIR` too for font code.
