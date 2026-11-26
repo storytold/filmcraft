@@ -640,7 +640,8 @@ fn save_as_template(s: &mut Session, p: &Value) -> Result<Value> {
     let mut proj = (*s.project).clone();
     proj.name = name.clone();
     proj.root.name = name.clone();
-    s.services.write_file(&path, &filmcraft_format::encode(&proj, false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let view = s.project_view();
+    s.services.write_file(&path, &filmcraft_format::encode_with_view(&proj, Some(&view), false)).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "name": name}))
 }
 
@@ -669,8 +670,9 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         templates_dir(s).map(|d| d.join(format!("{}.fcproj", sanitize(t))).to_string_lossy().to_string()).unwrap_or_else(|| t.to_string())
     };
-    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let mut proj = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?.project;
+    let bytes = s.services.read_file_bounded(&path, filmcraft_format::MAX_PROJECT_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut proj = loaded.project;
     if s.has_unsaved_changes() && !bool_p(p, "force").unwrap_or(false) {
         return Err(EngineError::Other("the project has unsaved changes: save it first, or pass {\"force\": true} to discard them".into()));
     }
@@ -687,6 +689,12 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     s.state = Session::default().state;
     s.state.active_sequence = s.project.sequences().next().map(|i| i.id);
     s.state.open_sequences = s.state.active_sequence.into_iter().collect();
+    if let Some(view) = loaded.view {
+        s.state.timeline_ui = view.timeline_ui.clone().checked();
+        if s.prefs.timeline.restore_open_sequences {
+            s.restore_project_view(view);
+        }
+    }
     if s.path.take().is_some() {
         s.previews.reset_temp();
     }
@@ -699,6 +707,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     fence.revision = s.revision;
     fence.view_epoch = s.view_epoch;
     fence.path.clone_from(&s.path);
+    fence.fingerprint = None;
     s.events.push(crate::Event::ProjectChanged { revision: s.revision });
     if let Some(q) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(q));
@@ -1135,6 +1144,11 @@ fn edit_original(s: &mut Session, p: &Value) -> Result<Value> {
             paths.push(path.to_string());
         }
     }
+    // The files as media access resolves them: a stored path it refuses is not handed to the system.
+    let paths = paths
+        .iter()
+        .map(|path| s.media.follow(path).map_err(|why| bad("edit.editOriginal", format!("{path} is not opened: {why}"))))
+        .collect::<Result<Vec<String>>>()?;
     if paths.is_empty() {
         return Err(EngineError::Other("select a clip with a media file".into()));
     }
@@ -1218,7 +1232,16 @@ fn update_metadata(s: &mut Session, p: &Value) -> Result<Value> {
     for id in targets(s, p) {
         let Some(it) = s.project.item(id) else { continue };
         let Some(path) = media_of(&s.project, id).and_then(|(_, m)| file_path(m)) else { continue };
-        let side = sidecar_path(path);
+        // Resolve through media access before writing beside the media file. A refused stored path
+        // must not cause a sidecar write at an arbitrary URL-like path.
+        let file = match s.media.follow(path) {
+            Ok(file) => file,
+            Err(why) => {
+                skipped.push(json!({"item": id.0, "path": path, "reason": format!("{path} is not opened: {why}")}));
+                continue;
+            }
+        };
+        let side = sidecar_path(&file);
         if let Ok(old) = s.services.read_file(&side)
             && !String::from_utf8_lossy(&old).contains("xmp:CreatorTool=\"FilmCraft\"")
         {

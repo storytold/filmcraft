@@ -66,6 +66,36 @@ fn timeline_view_changes_are_unsaved_until_the_project_is_written() {
 }
 
 #[test]
+fn track_slider_only_settings_survive_save_close_and_reopen() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let settings = filmcraft_project::TimelineUiSettings {
+        track_slider_hidden: true,
+        track_slider_smooth: true,
+        track_slider_alternate_position: true,
+        track_slider_decouple: true,
+        track_slider_snap: true,
+        track_slider_shift_drag_speed: 2.5,
+        track_slider_shift_drag_custom: true,
+        ..filmcraft_project::TimelineUiSettings::default()
+    };
+    s.state.timeline_ui = settings.clone();
+    s.project_view_changed();
+    assert!(!s.is_dirty(), "changing only track-slider settings must not dirty project content");
+    assert!(s.has_unsaved_changes(), "track-slider settings still need to be saved");
+
+    let dir = temp_dir("track-slider-only-reopen");
+    let path = dir.join("slider-settings.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    assert!(!s.has_unsaved_changes());
+    s.execute("file.closeProject", json!({})).unwrap();
+    s.execute("file.open", json!({"path": path})).unwrap();
+
+    assert_eq!(s.state.timeline_ui, settings.checked(), "saved track-slider settings return after closing and reopening");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn close_others_keeps_one_tab_and_shows_it() {
     let (mut s, [main, b, c]) = three_tabs();
     // from the active tab
@@ -127,9 +157,9 @@ fn a_tab_moves_to_another_place_among_the_tabs() {
     // past the end is the end; the active tab is the default
     assert_eq!(s.execute("sequence.moveTab", json!({"index": u64::MAX})).unwrap()["index"], json!(2));
     assert_eq!(s.state.open_sequences, [main, b, c]);
-    // not an undo step and not an edit: the revision may move (it is a view change, and that is
-    // what carries the new tab order into the autosave journal) but a clean project stays clean
-    let _ = revision;
+    // not an undo step or content edit: revision is unchanged and view_epoch carries the tab-order
+    // change saved with the project or journaled alongside unsaved content; a clean project stays clean
+    assert_eq!(s.revision, revision, "a tab move changes view_epoch, not the content revision");
     assert_eq!(s.history.undo.len(), steps);
     assert_eq!(s.is_dirty(), dirty, "a tab move is not an edit");
     s.execute("sequence.close", json!({"item": b.0})).unwrap();

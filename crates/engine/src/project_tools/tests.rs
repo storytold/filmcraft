@@ -172,8 +172,12 @@ fn close_commands_and_templates() {
     // template round trip
     let dir = tmp_dir("templates");
     let path = dir.join("Doc Template.fcproj").to_string_lossy().to_string();
+    s.state.timeline_ui =
+        filmcraft_project::TimelineUiSettings { smooth_animations: true, alternate_slider_position: true, playhead_side_seconds: 23.0, ..Default::default() };
     let r = s.execute("file.saveAsTemplate", json!({"path": path, "name": "Doc Template"})).unwrap();
     assert_eq!(r["path"], path);
+    let template = filmcraft_format::decode(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(template.view.unwrap().timeline_ui, s.state.timeline_ui);
     let n = s.project.items.len();
     s.execute("file.newBin", json!({"name": "Unsaved"})).unwrap();
     assert!(s.execute("file.closeAllProjects", json!({})).is_err(), "dirty: needs force");
@@ -187,6 +191,9 @@ fn close_commands_and_templates() {
     assert!(s.project.items.values().any(|i| i.name == "Main Edit"));
     assert_eq!(s.project.items.len(), n);
     assert_eq!(s.project.name, "Ep 2");
+    assert!(s.state.timeline_ui.smooth_animations);
+    assert!(s.state.timeline_ui.alternate_slider_position);
+    assert_eq!(s.state.timeline_ui.playhead_side_seconds, 23.0);
     assert!(s.path.is_none() && !s.is_dirty());
     assert!(!s.has_unsaved_changes());
 }
@@ -409,6 +416,32 @@ fn edit_original_update_metadata_and_clip_items() {
     let r = s.execute("clip.updateMetadata", json!({})).unwrap();
     assert!(r["written"].as_array().unwrap().is_empty() && r["skipped"].as_array().unwrap().len() == 1);
     assert!(std::fs::read_to_string(&side).unwrap().contains("someone else"));
+}
+
+/// A stored path that media access refuses (here a URL) is not opened, revealed or given a sidecar.
+#[test]
+fn edit_original_and_update_metadata_refuse_a_stored_path_media_access_refuses() {
+    let dir = tmp_dir("orig-refused");
+    let path = dir.join("take.mp4");
+    make_movie(&path, DemoScene::Aurora, 64, 36, 8);
+    let (mut s, items, _) = session_with(&[&path]);
+    let id = items[0];
+    let url = "jar:take.mp4".to_string();
+    s.edit("relink", |pr, _| {
+        if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|it| &mut it.kind) {
+            m.media = filmcraft_project::MediaRef::File { path: url.clone() };
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.media.add_stored_paths([url.clone()], Some(&dir.join("p.fcproj").to_string_lossy()));
+    s.execute("project.select", json!({"items": [id.0]})).unwrap();
+    let e = s.execute("edit.editOriginal", json!({})).unwrap_err().to_string();
+    assert!(e.contains("is not opened"), "{e}");
+    let r = s.execute("clip.updateMetadata", json!({})).unwrap();
+    assert!(r["written"].as_array().unwrap().is_empty() && r["skipped"].as_array().unwrap().len() == 1, "{r}");
+    assert!(!std::path::Path::new("jar:take.xmp").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

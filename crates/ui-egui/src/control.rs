@@ -8,7 +8,7 @@
 //! - `engine.commands`: list engine commands; `ui.menu.list`: menu tree with enablement
 //! - `ui.inspect`: UI state + every registered widget (`elements`: id, label, rect)
 //! - `ui.elements {prefix?}`: registered widgets (optionally filtered by id prefix)
-//! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll}}`
+//! - `ui.set {tool?, workspace?, mode?, theme?, focused?, playbackRes?, timeline?:{pps,scroll,positionIndicator}, timelineSettings?:{smoothAnimations,maxZoomLevel,zoomBarHidden}}`
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
 //! - `ui.set {tts: {voice, pitch, pace, text…}}`: patch the Text to Speech panel draft
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
@@ -173,6 +173,9 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
     if let Err(e) = set_timeline(app, p) {
         return err(e);
     }
+    if let Err(e) = set_timeline_settings(app, ctx, p) {
+        return err(e);
+    }
     if explicit_view {
         app.explicit_timeline_view_edit(app.ui.timeline.fit_pending && !explicit_zoom_or_scroll);
     }
@@ -261,11 +264,19 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
     let Some(tl) = p.get("timeline") else { return Ok(()) };
     // Validate every fallible field before changing any state. A bad thumbnail name must not
     // leave the other requested view fields applied without their persistence notification.
+    for field in ["videoTrackHeight", "audioTrackHeight"] {
+        if let Some(value) = tl.get(field).and_then(Value::as_f64)
+            && (!value.is_finite() || !(8.0..=600.0).contains(&value))
+        {
+            return Err(format!("timeline.{field} must be a finite number between 8 and 600"));
+        }
+    }
     let thumbnails = match tl.get("thumbnails").and_then(Value::as_str) {
         Some(m) if m.eq_ignore_ascii_case("off") => Some(None),
         Some(m) => Some(Some(ThumbnailMode::from_name(m).ok_or_else(|| format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"))?)),
         None => None,
     };
+    let previous_position_indicator = app.session.state.timeline_ui.show_position_indicator;
     if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
         app.ui.timeline.target_pps = v;
     }
@@ -295,6 +306,52 @@ fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
         } else {
             app.ui.timeline.show_thumbnails = false;
         }
+    }
+    if let Some(show) = tl.get("positionIndicator").and_then(Value::as_bool) {
+        app.session.state.timeline_ui.show_position_indicator = show;
+    }
+    if app.session.state.timeline_ui.show_position_indicator != previous_position_indicator {
+        app.session.project_view_changed();
+    }
+    Ok(())
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct TimelineSettingsPatch {
+    #[serde(rename = "smoothAnimations")]
+    smooth_animations: Option<bool>,
+    #[serde(rename = "maxZoomLevel")]
+    max_zoom_level: Option<f64>,
+    #[serde(rename = "zoomBarHidden")]
+    zoom_bar_hidden: Option<bool>,
+}
+
+/// Apply project-scoped Timeline settings that automation can also change through the controls.
+fn set_timeline_settings(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Result<(), String> {
+    let Some(value) = p.get("timelineSettings") else { return Ok(()) };
+    let patch: TimelineSettingsPatch = serde_json::from_value(value.clone()).map_err(|e| format!("timelineSettings: {e}"))?;
+    if let Some(seconds) = patch.max_zoom_level
+        && (!seconds.is_finite() || !(0.05..=3.0).contains(&seconds))
+    {
+        return Err("timelineSettings.maxZoomLevel must be a finite number between 0.05 and 3 seconds".into());
+    }
+
+    let before = app.session.state.timeline_ui.clone();
+    if let Some(smooth) = patch.smooth_animations {
+        app.session.state.timeline_ui.smooth_animations = smooth;
+    }
+    if let Some(seconds) = patch.max_zoom_level {
+        app.session.state.timeline_ui.max_zoom_seconds = seconds;
+        app.session.state.timeline_ui.max_zoom_last_custom = seconds;
+        app.session.state.timeline_ui.max_zoom_custom = true;
+    }
+    let hidden_changed = patch.zoom_bar_hidden.is_some_and(|hidden| hidden != before.zoom_bar_hidden);
+    if let Some(hidden) = patch.zoom_bar_hidden {
+        crate::panels::timeline::set_zoombar_hidden(app, ctx, hidden);
+    }
+    if app.session.state.timeline_ui != before && !hidden_changed {
+        app.session.project_view_changed();
     }
     Ok(())
 }
@@ -663,6 +720,12 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "input": {"mode": if app.control_input_only { "controlOnly" } else { "interactive" },
             "nativeWindowFocused": app.native_window_focused, "effectiveWindowFocused": ctx.input(|input| input.focused)},
         "ui": app.ui,
+        "timelineSettings": {
+            "smoothAnimations": app.session.state.timeline_ui.smooth_animations,
+            "maxZoomLevel": app.session.state.timeline_ui.max_zoom_seconds,
+            "zoomBarHidden": app.session.state.timeline_ui.zoom_bar_hidden,
+            "show_position_indicator": app.session.state.timeline_ui.show_position_indicator,
+        },
         "sourcePlayback": {"playing": app.source_playback.clock.playing, "audioClock": app.source_playback.clock.audio_clock, "playhead": app.session.state.source_playhead.0},
         "playback": {"playing": app.playback.playing, "speed": app.playback.speed, "loop": app.playback.looping, "audioClock": app.playback.audio_clock, "dropped": app.playback.meter.counts().1, "shown": app.playback.meter.counts().0, "preroll": app.playback.preroll.is_some()},
         "playhead": app.session.playhead().0,
@@ -929,6 +992,15 @@ mod input_bounds_tests {
     }
 
     #[test]
+    fn invalid_track_height_is_field_specific_and_does_not_partially_apply_timeline_settings() {
+        let mut app = app();
+        let before = (app.ui.timeline.target_pps, app.ui.timeline.audio_track_h);
+        let result = set_timeline(&mut app, &json!({"timeline": {"pps": 123.0, "audioTrackHeight": 601.0}}));
+        assert_eq!(result.unwrap_err(), "timeline.audioTrackHeight must be a finite number between 8 and 600");
+        assert_eq!((app.ui.timeline.target_pps, app.ui.timeline.audio_track_h), before);
+    }
+
+    #[test]
     fn explicit_timeline_settings_are_saved_before_the_control_reply() {
         let mut app = app();
         app.session.execute("file.openDemoProject", json!({})).unwrap();
@@ -949,6 +1021,55 @@ mod input_bounds_tests {
         assert!(!app.session.state.timeline_pending_fits.contains(&active));
         let view = app.session.state.timeline_views.get(&active).unwrap();
         assert_eq!((view.pps, view.scroll), (120.0, 3.5));
+    }
+
+    #[test]
+    fn project_timeline_settings_can_be_set_and_read_back() {
+        let mut app = app();
+        let Outcome::Done(reply) =
+            request(&mut app, "ui.set", json!({"timelineSettings": {"smoothAnimations": true, "maxZoomLevel": 0.8, "zoomBarHidden": true}}))
+        else {
+            panic!("a valid Timeline settings patch should be acknowledged");
+        };
+        assert_eq!(reply["ok"], true);
+        let snapshot = inspect(&app, &egui::Context::default());
+        assert_eq!(
+            snapshot["timelineSettings"],
+            json!({"smoothAnimations": true, "maxZoomLevel": 0.8, "zoomBarHidden": true, "show_position_indicator": true}),
+            "inspection reports the project settings that automation changed"
+        );
+        assert_ne!(app.session.view_epoch, app.session.saved_view_epoch, "a changed project setting is marked unsaved");
+    }
+
+    #[test]
+    fn position_indicator_uses_the_serialized_project_view_readback_name() {
+        let mut app = app();
+        app.session.execute("file.openDemoProject", json!({})).unwrap();
+        let before_epoch = app.session.view_epoch;
+        let requested = !app.session.state.timeline_ui.show_position_indicator;
+        let Outcome::Done(reply) = request(&mut app, "ui.set", json!({"timeline": {"positionIndicator": requested}})) else {
+            panic!("a valid position-indicator setting should be acknowledged");
+        };
+
+        assert_eq!(reply["ok"], true);
+        assert_eq!(app.session.state.timeline_ui.show_position_indicator, requested);
+        assert_eq!(inspect(&app, &egui::Context::default())["timelineSettings"]["show_position_indicator"], requested);
+        assert_eq!(app.session.view_epoch, before_epoch + 1, "the project-scoped setting is marked unsaved");
+    }
+
+    #[test]
+    fn invalid_project_timeline_setting_is_rejected_without_partial_changes() {
+        let mut app = app();
+        let before = app.session.state.timeline_ui.clone();
+        let epoch = app.session.view_epoch;
+        assert_rejected(
+            &mut app,
+            "ui.set",
+            json!({"timelineSettings": {"smoothAnimations": true, "maxZoomLevel": 3.1, "zoomBarHidden": true}}),
+            "maxZoomLevel",
+        );
+        assert_eq!(app.session.state.timeline_ui, before);
+        assert_eq!(app.session.view_epoch, epoch);
     }
 
     /// Verify missing/null defaults and accepted drag bounds retain endpoints and button release.

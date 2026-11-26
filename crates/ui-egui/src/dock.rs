@@ -170,7 +170,7 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 
 /// Window ▸ Workspaces: the user's own workspaces and saved changes to the built-in ones, and the
 /// workspace in use (reopened at launch).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
@@ -182,6 +182,16 @@ pub struct WorkspacePrefs {
     pub last: Option<SavedWorkspace>,
 }
 
+impl Default for WorkspacePrefs {
+    fn default() -> Self {
+        Self { saved: Vec::new(), current: "Editing".into(), last: None }
+    }
+}
+
+/// A named workspace. Each representation stays as JSON so one unreadable entry does not
+/// lose the rest of the preferences. `workspace` is readable by the previous release, with
+/// the complete new layout in a nested `filmcraftV4` field the previous preferences writer
+/// carries through untouched entries. Older releases still read `layout` and `floating`.
 /// A named workspace. Each representation stays as JSON so one unreadable entry does not
 /// lose the rest of the preferences. `workspace` is readable by the previous release, with
 /// the complete new layout in a nested `filmcraftV4` field the previous preferences writer

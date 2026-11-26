@@ -1,6 +1,7 @@
 //! Preferences, auto-save ring and crash recovery through the command interface.
 
 use super::*;
+use crate::test_support::TestDir;
 use serde_json::json;
 
 fn demo() -> Session {
@@ -9,11 +10,8 @@ fn demo() -> Session {
     s
 }
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("fc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn temp_dir(tag: &str) -> TestDir {
+    TestDir::new(tag)
 }
 
 fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
@@ -30,12 +28,161 @@ fn start(s: &mut Session, data: &std::path::Path) {
     s.start_autosave(cfg).unwrap();
 }
 
+#[test]
+fn view_recovery_check_detects_a_changed_project_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_path = temp.path().join("project.fcproj");
+    let recovery_dir = temp.path().join("recovery");
+    std::fs::create_dir_all(&recovery_dir).unwrap();
+    let original = filmcraft_format::encode(&filmcraft_project::Project::new("Original"), false);
+    std::fs::write(&project_path, &original).unwrap();
+    let candidate = autosave::RecoveryCandidate {
+        id: "candidate".into(),
+        dir: recovery_dir.clone(),
+        snapshot_path: recovery_dir.join("snapshot.fcproj"),
+        meta: autosave::JournalMeta {
+            project_path: Some(project_path.to_string_lossy().into_owned()),
+            project_fingerprint: Some(autosave::snapshot_fingerprint(&original)),
+            view_only: true,
+            ..Default::default()
+        },
+    };
+
+    assert!(!autosave::view_recovery_project_changed(&candidate), "the unchanged project still matches its view journal");
+    let changed = filmcraft_format::encode(&filmcraft_project::Project::new("Changed"), false);
+    std::fs::write(&project_path, changed).unwrap();
+    assert!(autosave::view_recovery_project_changed(&candidate), "the view journal is stale after its project file changes");
+}
+
+#[test]
+fn a_clean_view_change_writes_a_compact_journal_but_is_not_offered_as_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let d = temp.path().to_path_buf();
+    let mut s = Session::default();
+    let project_path = d.join("project.fcproj");
+    s.execute("file.saveAs", json!({"path": project_path.to_string_lossy()})).unwrap();
+    start(&mut s, &d);
+    let session_dir = s.persistence.as_ref().unwrap().session_dir.clone();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+
+    s.state.timeline_ui.inverted_controls = !s.state.timeline_ui.inverted_controls;
+    let expected_setting = s.state.timeline_ui.inverted_controls;
+    let revision = s.revision;
+    let journals_before = s.persistence.as_ref().unwrap().status.journals_written;
+    s.project_view_changed();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+    s.poll_persistence();
+
+    assert!(s.has_unsaved_changes(), "a clean project's view still needs the save/close prompt");
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(session_dir.join("session.json")).unwrap()).unwrap();
+    assert_eq!(metadata["viewOnly"], true, "view-only recovery must remain distinct from content edits");
+    assert_eq!(metadata["dirty"], false, "journaling the view must not mark project content dirty");
+    assert_eq!(metadata["projectFingerprint"].as_array().map(Vec::len), Some(32));
+    assert_eq!(s.revision, revision, "view-only changes re-journal without advancing the content revision");
+    assert!(s.persistence.as_ref().unwrap().status.journals_written > journals_before);
+    let view: filmcraft_project::ProjectView = serde_json::from_slice(&std::fs::read(session_dir.join("snapshot.fcproj")).unwrap()).unwrap();
+    assert_eq!(view, s.project_view(), "the recovery payload contains only the current project view");
+    let journaled_epoch = s.persistence.as_ref().unwrap().last_sent.as_ref().unwrap().view_epoch;
+    let last_view_sent = s.persistence.as_ref().unwrap().last_view_sent.expect("the first view change records its coalescing time");
+    s.state.timeline_ui.smooth_animations = true;
+    s.view_changed();
+    s.sync_persistence_at(last_view_sent + std::time::Duration::from_millis(1));
+    assert_ne!(s.persistence.as_ref().unwrap().last_sent.as_ref().unwrap().view_epoch, s.view_epoch, "per-frame view updates are coalesced");
+    s.shutdown();
+    let final_view: filmcraft_project::ProjectView = serde_json::from_slice(&std::fs::read(session_dir.join("snapshot.fcproj")).unwrap()).unwrap();
+    assert!(final_view.timeline_ui.smooth_animations, "shutdown flushes the latest view even when a drag update was coalesced");
+    assert_eq!(journaled_epoch + 1, s.view_epoch);
+
+    let mut recovered = Session::default();
+    start(&mut recovered, &d);
+    assert!(recovered.recovery_candidates().is_empty(), "clean view-only state is not unsaved project content");
+    assert!(!session_dir.exists(), "stale clean view-only journals are removed during startup cleanup");
+    assert_ne!(recovered.state.timeline_ui.inverted_controls, expected_setting, "a clean view-only change is not installed as recovery");
+    recovered.shutdown();
+}
+
+#[test]
+fn dirty_view_change_updates_recovery_view_without_rewriting_project_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let project_path = data.join("project.fcproj");
+    let mut s = Session::default();
+    s.execute("file.saveAs", json!({"path": project_path.to_string_lossy()})).unwrap();
+    start(&mut s, data);
+    s.execute("project.setNotes", json!({"text": "unsaved project content"})).unwrap();
+    assert!(s.is_dirty());
+
+    let session_dir = s.persistence.as_ref().unwrap().session_dir.clone();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+    let snapshot_path = session_dir.join("snapshot.fcproj");
+    let original_snapshot = std::fs::read(&snapshot_path).unwrap();
+
+    s.state.timeline_ui.inverted_controls = !s.state.timeline_ui.inverted_controls;
+    s.project_view_changed();
+    let latest_view = s.project_view();
+    s.persistence.as_mut().unwrap().flush().unwrap();
+
+    assert_eq!(std::fs::read(&snapshot_path).unwrap(), original_snapshot, "view-only updates must leave the content snapshot untouched");
+    let metadata: autosave::JournalMeta = serde_json::from_slice(&std::fs::read(session_dir.join("session.json")).unwrap()).unwrap();
+    assert_eq!(metadata.recovery_view.as_ref(), Some(&latest_view), "the metadata carries the latest project view");
+    assert_eq!(metadata.snapshot_fingerprint, Some(autosave::snapshot_fingerprint(&original_snapshot)));
+
+    let candidate = autosave::RecoveryCandidate {
+        id: session_dir.file_name().unwrap().to_string_lossy().into_owned(),
+        dir: session_dir.clone(),
+        snapshot_path,
+        meta: metadata,
+    };
+    let loaded = autosave::load_candidate(&candidate).unwrap();
+    assert_eq!(loaded.view, Some(latest_view), "recovery overlays the separately journaled view on the content snapshot");
+    assert_eq!(loaded.project.notes, "unsaved project content");
+    s.shutdown();
+}
+
+#[test]
+fn changed_project_does_not_turn_a_clean_view_journal_into_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path();
+    let project_path = data.join("project.fcproj");
+    let mut original = Session::default();
+    original.execute("file.saveAs", json!({"path": project_path.to_string_lossy()})).unwrap();
+    start(&mut original, data);
+    original.state.timeline_ui.inverted_controls = !original.state.timeline_ui.inverted_controls;
+    original.project_view_changed();
+    original.persistence.as_mut().unwrap().flush().unwrap();
+    original.shutdown();
+
+    std::fs::write(&project_path, b"changed after the view was journaled").unwrap();
+    let mut recovery = Session::default();
+    let expected_name = recovery.project.name.clone();
+    start(&mut recovery, data);
+    assert!(recovery.recovery_candidates().is_empty(), "clean view-only journals are not offered after an unexpected exit");
+    assert_eq!(recovery.project.name, expected_name, "a clean view journal cannot install project content");
+    recovery.shutdown();
+}
+
+#[test]
+fn project_view_changes_are_save_dirty_without_marking_content_dirty() {
+    let mut s = Session::default();
+    let revision = s.revision;
+    let saved_revision = s.saved_revision;
+    let saved_view_epoch = s.saved_view_epoch;
+
+    s.project_view_changed();
+
+    assert_eq!(s.revision, revision, "view-only changes must not invalidate content caches");
+    assert_eq!(s.saved_revision, saved_revision, "view-only changes must not change the saved content revision");
+    assert_eq!(s.view_epoch, saved_view_epoch + 1);
+    assert!(s.has_unsaved_changes(), "the view change still needs to be saved");
+    assert!(!s.is_dirty(), "view-only changes must remain distinct from content edits");
+}
+
 fn journaled(s: &mut Session) -> u64 {
     s.poll_persistence();
     s.persistence.as_ref().unwrap().status.journaled_revision
 }
 
-fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
+fn discard_fixture(tag: &str) -> (Session, TestDir) {
     let d = temp_dir(tag);
     let mut s = Session::default();
     start(&mut s, &d);
@@ -257,7 +404,7 @@ fn recovery_preserves_original(tag: &str, block: Option<&str>, journal_enabled: 
     std::fs::write(&original, &bytes).unwrap();
 
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(d.to_path_buf());
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     s.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": journal_enabled})).unwrap();
@@ -302,7 +449,7 @@ fn recovery_can_retry_after_a_failed_journal_write() {
     let project = (*demo().project).clone();
     std::fs::write(old_dir.join("snapshot.fcproj"), filmcraft_format::encode(&project, false)).unwrap();
     let mut s = Session::default();
-    let mut cfg = autosave::AutosaveConfig::new(&d);
+    let mut cfg = autosave::AutosaveConfig::new(d.to_path_buf());
     cfg.journal_debounce = std::time::Duration::from_secs(60);
     s.start_autosave(cfg).unwrap();
     let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");

@@ -800,6 +800,24 @@ mod tests {
     }
 
     #[test]
+    fn hot_number_editor_limits_pasted_text_before_processing() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("bounded-hot-number");
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        crate::theme::install(&ctx, &t);
+        let mut buf = String::new();
+        let mut draw = |events: Vec<egui::Event>| {
+            let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                hot_number_editor(ui, "Value", id, 0.0, (0.0, 1000.0), "", &mut buf, false);
+            });
+            output.textures_delta.clear();
+        };
+        draw(Vec::new());
+        draw(vec![egui::Event::Paste("9".repeat(1000))]);
+        assert_eq!(buf.len(), 32, "the TextEdit cap applies before numeric input is processed");
+    }
+
+    #[test]
     fn numeric_only_up_step_normalizes_invalid_draft_before_stepping() {
         let ctx = egui::Context::default();
         let id = egui::Id::unique("numeric-only-step");

@@ -81,7 +81,6 @@ impl FilmcraftApp {
             clock_start: web_time::Instant::now(),
             ui_clock: 0.0,
             ui_clock_offset: None,
-            notice: None,
             #[cfg(test)]
             test_now: None,
             value_press: None,
@@ -327,6 +326,9 @@ impl FilmcraftApp {
         self.logic_theme(ctx);
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);
+        if self.tl.zoombar_cursor_lock.is_some() {
+            panels::timeline::zoombar_cursor_watchdog(&mut self.tl, ctx, &self.session.state.timeline_ui);
+        }
         self.logic_background(ctx, now);
         self.logic_session_events();
         self.logic_command_inbox(ctx);
@@ -369,7 +371,7 @@ impl FilmcraftApp {
         // observed as this pass's editor.
         self.ime_drawn_editor = None;
         // Only an actual pass counts toward screenshot settlement; hidden logic ticks do not draw.
-        self.timeline_still = if self.ui.timeline.animating() { 0 } else { self.timeline_still.saturating_add(1) };
+        self.begin_timeline_settle_pass();
         // This is a real UI pass: the one synthetic step offered to raw_input_hook has been fed to
         // egui now. A hidden logic tick never reaches this point and keeps it pending.
         self.synthetic_pending_step = None;
@@ -401,13 +403,14 @@ impl FilmcraftApp {
             self.ui_error = Some(crash::take_last().unwrap_or_else(|| "unknown error".into()));
             self.playback.playing = false;
         }
+        // A control or panel can start an animation during this pass, after the pre-draw settle
+        // count. Reset without incrementing so `ui.elements` below cannot treat moving rects as
+        // settled, while each idle rendered pass still counts only once.
+        self.finish_timeline_settle_pass();
         if !ctx.will_discard() {
             self.cancel_value_drag(&ctx);
         }
         self.error_window(ui.ctx());
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| notices::show(self, ui.ctx()))).is_err() {
-            log::warn!("the notice window panicked");
-        }
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graphics_notice::show(self, ui.ctx()))).is_err() {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
@@ -527,18 +530,15 @@ impl eframe::App for FilmcraftApp {
         self.session.shutdown();
         // An update waiting for the exit starts its install helper now.
         crate::updates_ui::exiting(self);
-        // The one path macOS has: its quit ends the process after this, before `run_native`
-        // returns, so the Nightly session record is finished here (and once, everywhere else).
-        crate::exit_hook::run_once();
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no
     /// eligible editor owns input, draw `ui_inner`, then run end-of-pass IME reconciliation.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        panels::timeline::flush_pending_zoombar_view_change(self, &ctx);
         #[cfg(not(target_arch = "wasm32"))]
         crate::framework::before_ui(&ctx, frame);
+        panels::timeline::flush_pending_zoombar_view_change(self, &ctx);
         self.ime_reset.begin_pass(&ctx);
         self.ime_drawn_editor = None;
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(input.focused));
@@ -552,12 +552,37 @@ impl eframe::App for FilmcraftApp {
     }
 }
 
+impl FilmcraftApp {
+    fn begin_timeline_settle_pass(&mut self) {
+        self.timeline_still = if self.ui.timeline.animating() || self.tl.track_anim.is_some() { 0 } else { self.timeline_still.saturating_add(1) };
+    }
+
+    fn finish_timeline_settle_pass(&mut self) {
+        if self.ui.timeline.animating() || self.tl.track_anim.is_some() {
+            self.timeline_still = 0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod lifecycle_synthetic_tests {
     use egui::{Event, Modifiers, PointerButton, pos2};
     use filmcraft_engine::Session;
 
     use super::FilmcraftApp;
+
+    #[test]
+    fn idle_ui_pass_counts_once_toward_timeline_settlement() {
+        let mut app = FilmcraftApp::new(Session::default());
+
+        app.begin_timeline_settle_pass();
+        app.finish_timeline_settle_pass();
+        assert_eq!(app.timeline_still, 1, "the post-draw check must not count the same idle pass twice");
+
+        app.begin_timeline_settle_pass();
+        app.finish_timeline_settle_pass();
+        assert_eq!(app.timeline_still, 2, "two rendered idle passes settle the Timeline");
+    }
 
     #[test]
     fn opening_a_sequence_clears_the_previous_playhead_observation() {

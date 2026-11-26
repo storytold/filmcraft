@@ -60,6 +60,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
     uic!("view.zoomToSequence", "Zoom to Sequence", ["View"], Some("\\")),
+    uic!("timeline.showHiddenSliders", "Show Hidden Timeline Sliders", ["View", "Timeline"], Some("Alt+Shift+S")),
     uic!("view.resetInterfaceZoom", "Reset Interface Zoom", ["View"], None),
     uic!("view.playbackRes.full", "Full", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
@@ -400,6 +401,15 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return r;
     }
     match id {
+        "timeline.showHiddenSliders" => {
+            if app.session.state.timeline_ui.zoom_bar_hidden {
+                crate::panels::timeline::set_zoombar_hidden(app, ctx, false);
+            }
+            if app.session.state.timeline_ui.track_slider_hidden {
+                crate::panels::timeline::set_track_slider_hidden(app, ctx, false);
+            }
+            return Ok(json!({"shown": true}));
+        }
         "playback.slowForward" | "playback.slowReverse" if targets_source(app, &params) => {
             app.shuttle_source(if id == "playback.slowForward" { 0.25 } else { -0.25 })?;
             return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
@@ -1265,7 +1275,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
         ("timeline.trackSliderAlternate", "Track Sliders: Alternate Drag Speed", Some("Shift+Drag")),
         ("timeline.adjustTrackHeight", "Track Sliders: Adjust Track Height", None),
         ("timeline.fastScroll", "Timeline: Fast Scroll", Some("Shift+Scroll")),
-        ("timeline.scrollTrackRows", "Track Sliders: Scroll Track Rows", Some("Cmd+Scroll")),
+        ("timeline.scrollTrackRows", "Track Sliders: Scroll Track Rows", Some("Ctrl+Scroll")),
         ("timeline.zoomScroll", "Timeline: Zoom", Some("Alt+Scroll")),
     ] {
         v.push(CommandInfo::new(id, label, &["Timeline"], default));
@@ -1582,6 +1592,23 @@ mod chord_held_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_hidden_timeline_sliders_command_restores_each_hidden_slider_and_has_a_shortcut() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.session.state.timeline_ui.zoom_bar_hidden = true;
+        app.session.state.timeline_ui.track_slider_hidden = true;
+        let ctx = egui::Context::default();
+
+        assert_eq!(invoke_command(&mut app, &ctx, "timeline.showHiddenSliders", json!({})).unwrap()["shown"], true);
+        assert!(!app.session.state.timeline_ui.zoom_bar_hidden);
+        assert!(!app.session.state.timeline_ui.track_slider_hidden);
+        assert!(
+            external_commands()
+                .iter()
+                .any(|command| command.id == "timeline.showHiddenSliders" && command.defaults.iter().any(|(keys, _)| keys == "Alt+Shift+S"))
+        );
+    }
 
     #[test]
     fn a_pending_slider_setting_change_prompts_before_closing_the_project() {

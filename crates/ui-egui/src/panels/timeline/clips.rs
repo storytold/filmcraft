@@ -10,6 +10,26 @@ pub(super) type DuplicatesKey = (u64, ItemId, usize);
 
 pub(super) type DuplicateMarkers = Arc<HashMap<ClipId, DuplicateFrames>>;
 
+fn thumbnail_tile_size(area: Rect, aspect: f32, width_cap: f32) -> egui::Vec2 {
+    let height = area.height();
+    let width = height * aspect;
+    if width > width_cap {
+        let width = width_cap;
+        vec2(width, (width / aspect).min(height))
+    } else {
+        vec2(width, height)
+    }
+}
+
+fn thumbnail_paint_geometry(x: f32, width: f32, area: Rect, aspect: f32) -> (Rect, Rect) {
+    let full_height = width / aspect;
+    let height = full_height.min(area.height());
+    let visible_height = height / full_height;
+    let image = Rect::from_min_size(pos2(x, area.min.y), vec2(width, height));
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, visible_height));
+    (image, uv)
+}
+
 /// The duplicate frame markers of sequence `seq_id`, worked out again on a background thread
 /// after the project changes: a long sequence takes too long for a frame. Until the new markers
 /// are ready, the last ones of the same sequence are shown.
@@ -244,12 +264,8 @@ pub(super) fn draw_clip(
             let subpixel = cap_w < 1.0;
             let cap_w = if subpixel { th.width() } else { cap_w };
             let frozen = if subpixel { None } else { frozen };
-            let mut fh = th.height();
-            let mut tw = fh * aspect;
-            if tw > cap_w {
-                tw = cap_w;
-                fh = (tw / aspect).min(th.height());
-            }
+            let tile_size = thumbnail_tile_size(th, aspect, cap_w);
+            let tw = tile_size.x;
             let cp = p.with_clip_rect(th.intersect(p.clip_rect()));
             let visible = (cp.clip_rect().min.x, cp.clip_rect().max.x);
             for (x, w, offset) in zoomed_thumbnail_tiles(mode, th.min.x, th.max.x, tw, visible, it.duration, rate.frame_duration(), pps, frozen) {
@@ -266,8 +282,8 @@ pub(super) fn draw_clip(
                     })
                     .unwrap_or((it.item, mt));
                 if let Some((tex, _)) = app.thumbnail(ctx, thumb_item, mt, 160) {
-                    let r = Rect::from_min_size(pos2(x, th.min.y), vec2(w, fh));
-                    cp.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    let (rect, uv) = thumbnail_paint_geometry(x, w, th, aspect);
+                    cp.image(tex, rect, uv, Color32::WHITE);
                 }
             }
         }
@@ -380,5 +396,45 @@ pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_projec
         let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
         cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
         cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn width_capped_thumbnail_keeps_its_aspect_ratio() {
+        let area = Rect::from_min_size(pos2(4.0, 8.0), vec2(50.0, 90.0));
+        let aspect = 16.0 / 9.0;
+        let size = thumbnail_tile_size(area, aspect, 50.0);
+
+        assert!(size.x <= area.width(), "thumbnail stays within the picture area's width");
+        assert!(size.y <= area.height(), "thumbnail stays within the picture area's height");
+        assert!((size.x / size.y - aspect).abs() <= f32::EPSILON * aspect, "width and height preserve the source aspect ratio");
+    }
+
+    #[test]
+    fn frozen_zoom_crops_tall_tiles_without_distorting_their_aspect_ratio() {
+        let area = Rect::from_min_size(pos2(4.0, 8.0), vec2(400.0, 90.0));
+        let aspect = 16.0 / 9.0;
+        let frozen_pps = 10.0;
+        let live_pps = frozen_pps * 2.0;
+        let frozen_width_cap = area.width() * (frozen_pps / live_pps) as f32;
+        let tile_width = thumbnail_tile_size(area, aspect, frozen_width_cap).x;
+        let tiles = zoomed_thumbnail_tiles(ThumbnailMode::Continuous, 20.0, 420.0, tile_width, (20.0, 420.0), Tick(400), Tick(1), live_pps, Some(frozen_pps));
+        let [(x, width, _), (next_x, _, _), ..] = tiles.as_slice() else {
+            panic!("the visible picture area contains adjacent continuous thumbnails");
+        };
+        let (x, width, next_x) = (*x, *width, *next_x);
+        let (image, uv) = thumbnail_paint_geometry(x, width, area, aspect);
+
+        assert!((image.width() - width).abs() <= f32::EPSILON * width.max(1.0), "the painted tile stays as wide as its zoomed interval");
+        assert!((image.right() - next_x).abs() <= f32::EPSILON * next_x.abs().max(1.0), "adjacent painted tiles stay contiguous during Continuous zoom");
+        assert!(image.height() <= area.height(), "the image remains clipped to the track picture area");
+        assert!(uv.height() < 1.0, "the over-height image is cropped instead of compressed");
+        let painted_aspect = image.width() / image.height();
+        let sampled_aspect = aspect * uv.width() / uv.height();
+        assert!((painted_aspect - sampled_aspect).abs() < 0.001, "cropping preserves the source aspect ratio");
     }
 }

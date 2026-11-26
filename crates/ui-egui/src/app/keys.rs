@@ -5,6 +5,9 @@ impl FilmcraftApp {
     /// to a focused text field.
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         panels::timeline::reconcile_controls_capture(self, ctx);
+        let modifiers = ctx.input(|i| i.modifiers);
+        let events = ctx.input(|i| i.events.clone());
+        let orphaned_v_release = self.sync_v_down(&events, modifiers);
         // Controls capture owns the whole input pass. Record its input and remove it before any
         // editor panel can interpret the same key or pointer gesture as an editing command.
         if panels::timeline::controls_listening(ctx) {
@@ -35,7 +38,7 @@ impl FilmcraftApp {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
-        // shortcuts use, so an input method can compose there (Vietnamese Telex, Korean, â€¦; #243).
+        // shortcuts use, so an input method can compose there (Vietnamese Telex, Korean, …; #243).
         // `egui_wants_keyboard_input` above is not enough: it is read before this pass lays the UI
         // out, so it still reports the previous pass, and it is true for any focused widget, which
         // would leave the editor without its single-key tool shortcuts while a slider has focus.
@@ -51,12 +54,76 @@ impl FilmcraftApp {
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = crate::dock_ui::divider_focused(ctx);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
+        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected, orphaned_v_release));
         self.fire_shortcuts(ctx, fire);
     }
 
+    /// Key, text and clipboard events that a floating panel in its own OS window left over
+    /// (`DockOutput::forwarded_events`): they run the main window's bindings in the frame they
+    /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
+    /// while that window's text field has focus.
+    pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
+        panels::timeline::reconcile_controls_capture(self, ctx);
+        let modifiers = self.floating_window_modifiers(ctx);
+        let orphaned_v_release = self.sync_v_down(&events, modifiers);
+        if events.is_empty() || panels::timeline::controls_listening(ctx) || self.dialog == Some(Dialog::Shortcuts) || self.modal_open(ctx) {
+            return;
+        }
+        let mut input = egui::InputState::default();
+        input.modifiers = modifiers;
+        input.events = events;
+        if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            let _ = self.session.execute("trim.cancelDynamic", json!({}));
+        }
+        let fire = self.match_shortcuts(&mut input, false, false, false, orphaned_v_release);
+        // The app's own bindings keep priority in a floating viewport. If none matched, give
+        // the remaining chord to Timeline Controls just as the main-window route does.
+        if fire.is_empty() {
+            panels::timeline::route_forwarded_slider_shortcut(self, ctx, &mut input.events, input.modifiers);
+        }
+        self.fire_shortcuts(ctx, fire);
+    }
+
+    /// Keep the V-key edge state current even when Controls, a modal, or a floating window
+    /// consumes this input pass before `match_shortcuts` runs.
+    fn sync_v_down(&mut self, events: &[egui::Event], modifiers: egui::Modifiers) -> bool {
+        let mut orphaned_v_release = false;
+        for event in events {
+            match event {
+                egui::Event::Key { key: egui::Key::V, pressed: false, modifiers, .. } => {
+                    orphaned_v_release |= !self.v_down && (modifiers.command || modifiers.ctrl || modifiers.mac_cmd);
+                    self.v_down = false;
+                }
+                egui::Event::Key { key: egui::Key::V, pressed: true, .. } => self.v_down = true,
+                egui::Event::Paste(_) | egui::Event::PasteImage(_) if modifiers.command => self.v_down = true,
+                _ => {}
+            }
+        }
+        orphaned_v_release
+    }
+
+    /// The modifiers held in the focused native floating window. Copy, Cut and Paste events
+    /// carry none, and egui-winit drops the key press they stand for.
+    fn floating_window_modifiers(&self, ctx: &egui::Context) -> egui::Modifiers {
+        self.ui
+            .dock
+            .floating
+            .iter()
+            .filter(|window| window.native.is_some())
+            .filter_map(|window| self.dock_windows.iter().find_map(|(panel, viewport)| window.contains(panel).then_some(*viewport)))
+            .find_map(|viewport| ctx.input_for(viewport, |i| (i.viewport().focused == Some(true)).then_some(i.modifiers)))
+            .unwrap_or_default()
+    }
+
     /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool, label_selected: bool) -> Vec<String> {
+    fn match_shortcuts(
+        &mut self,
+        i: &mut egui::InputState,
+        text_focused: bool,
+        divider_focused: bool,
+        label_selected: bool,
+        orphaned_v_release: bool,
+    ) -> Vec<String> {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // A chord fires only with exactly its modifiers held (`menus::chord_held`), except that a
         // punctuation or digit key may carry the Shift or Alt a layout needs to type it, so the
@@ -69,11 +136,13 @@ impl FilmcraftApp {
         // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
         // passes its release: put the press back, so Paste can paste files or an image (#611).
         let mut swallowed = None;
+        let mut recover_v_press = orphaned_v_release;
         for e in &i.events {
             match e {
                 egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
-                    if !pressed && !self.v_down {
+                    if !pressed && recover_v_press {
                         swallowed = Some(*m);
+                        recover_v_press = false;
                     }
                     self.v_down = *pressed;
                 }
@@ -105,7 +174,7 @@ impl FilmcraftApp {
         candidates.sort_by_key(|b| std::cmp::Reverse(menus::specificity(b.0)));
         for (m, k, id, _) in candidates {
             // With a text field focused, an unmodified key belongs to the field (and to the input
-            // method composing in it), not to a tool shortcut: `J`, `Z`, `R`, `A`â€¦ are the keys
+            // method composing in it), not to a tool shortcut: `J`, `Z`, `R`, `A`… are the keys
             // Vietnamese Telex combines into diacritics (#243). Chords with a modifier stay:
             // Ctrl+S and friends are not something a text field or an IME consumes.
             if lets_text_field_keep(*m, text_focused) {
@@ -233,7 +302,7 @@ fn repeats_when_held(id: &str) -> bool {
 
 /// Like `InputState::consume_key`, but the held modifiers must be exactly the chord's
 /// (`menus::chord_held`): egui's `consume_key` ignores extra modifiers, so Ctrl+Alt+Cmd+N ran
-/// File â–¸ New â–¸ Project (Cmd+Alt+N). Every press of the chord is consumed; it fires on key repeats
+/// File ▸ New ▸ Project (Cmd+Alt+N). Every press of the chord is consumed; it fires on key repeats
 /// too when `repeats`, else only on a fresh press, and the repeats are still consumed so they
 /// can't reach a less specific binding.
 fn consume_chord(i: &mut egui::InputState, modifiers: egui::Modifiers, key: egui::Key, repeats: bool) -> bool {
@@ -251,7 +320,7 @@ fn consume_chord(i: &mut egui::InputState, modifiers: egui::Modifiers, key: egui
 /// Whether a shortcut chord must be left alone because a text field is focused.
 ///
 /// A focused text field owns every unmodified key: an input method composes there from plain
-/// letters (Vietnamese Telex builds `Ã¡` from `a` + `s`, `áº£` from `a` + `r`, `áº¡` from `a` + `j`),
+/// letters (Vietnamese Telex builds `á` from `a` + `s`, `ả` from `a` + `r`, `ạ` from `a` + `j`),
 /// and our single-key tool shortcuts would swallow them before the field sees them (#243). Chords
 /// with a modifier are not what a text field or an IME consumes, so they keep working.
 fn lets_text_field_keep(modifiers: egui::Modifiers, text_focused: bool) -> bool {
@@ -318,12 +387,171 @@ mod clipboard_key_tests {
 }
 
 #[cfg(test)]
+mod forwarded_key_tests {
+    use egui::{Event, Key, Modifiers};
+
+    /// A key a floating native window left over runs the main window's bindings.
+    #[test]
+    fn forwarded_keys_fire_shortcuts() {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let shift_backtick = Event::Key { key: Key::Backtick, physical_key: Some(Key::Backtick), pressed: true, repeat: false, modifiers: Modifiers::SHIFT };
+        app.handle_forwarded_keys(&egui::Context::default(), vec![Event::Text("~".into()), shift_backtick]);
+        assert_eq!(app.ui.keys.maximized, Some(crate::dock::PanelKind::Timeline), "Shift+` maximizes the focused frame");
+    }
+
+    #[test]
+    fn forwarded_custom_slider_chord_reaches_the_general_shortcut_matcher() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + K".into();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.bindings = vec![(Modifiers::CTRL, Key::K, "file.openDemoProject".into(), None)];
+        let ctx = egui::Context::default();
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+
+        let before_epoch = app.session.document_epoch;
+        app.handle_forwarded_keys(&ctx, vec![key]);
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), None);
+        assert!(
+            app.session.document_epoch == before_epoch + 1 || app.ui.clip_dialog.as_ref().is_some_and(|dialog| dialog.command == "file.openDemoProject"),
+            "the app shortcut handles the overlapping forwarded chord, opening the replacement prompt when the project is dirty"
+        );
+    }
+
+    #[test]
+    fn forwarded_slider_only_chord_triggers_its_controls_action() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + Shift + Alt + K".into();
+        let mut app = super::FilmcraftApp::new(session);
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        let modifiers = Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT;
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers };
+
+        app.handle_forwarded_keys(&ctx, vec![key.clone()]);
+
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), Some(3));
+    }
+
+    fn listening_context(app: &mut super::FilmcraftApp, ctx: &egui::Context) {
+        app.tl.zoombar_settings_pos = Some(egui::pos2(20.0, 20.0));
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("tl-controls-listening"), Some(0usize));
+            d.insert_temp(egui::Id::unique("tl-controls-listening-track"), false);
+            d.insert_temp(egui::Id::unique("tl-controls-listening-document-epoch"), app.session.document_epoch);
+        });
+    }
+
+    #[test]
+    fn v_press_is_recorded_before_controls_consume_main_window_input() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        listening_context(&mut app, &ctx);
+        let input = egui::RawInput {
+            events: vec![Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: true, repeat: false, modifiers: Modifiers::CTRL }],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| app.handle_shortcuts(ui.ctx()));
+        output.textures_delta.clear();
+
+        assert!(app.v_down, "Controls return before the general shortcut matcher, but V state still updates");
+    }
+
+    #[test]
+    fn forwarded_v_press_is_recorded_before_controls_consume_it() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let ctx = egui::Context::default();
+        listening_context(&mut app, &ctx);
+        let key = Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+
+        app.handle_forwarded_keys(&ctx, vec![key.clone()]);
+
+        assert!(app.v_down, "the forwarded-key path returns while Controls listen, after syncing V state");
+    }
+
+    #[test]
+    fn controls_capture_records_before_editor_shortcuts_and_consumes_the_key() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.shortcuts.set("file.closeProject", "K", None, false, true).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.tl.zoombar_settings_pos = Some(egui::pos2(20.0, 20.0));
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("tl-controls-listening"), Some(0usize));
+            d.insert_temp(egui::Id::unique("tl-controls-listening-track"), false);
+            d.insert_temp(egui::Id::unique("tl-controls-listening-document-epoch"), app.session.document_epoch);
+        });
+        let input = egui::RawInput {
+            events: vec![Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| app.handle_shortcuts(ui.ctx()));
+        output.textures_delta.clear();
+
+        assert!(app.session.state.active_sequence.is_some(), "the overlapping file command must not run");
+        assert_eq!(app.session.shortcuts.primary("timeline.sliderCenter").as_deref(), Some("K"));
+        assert!(!ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key: Key::K, pressed: true, .. }))));
+        assert!(!crate::panels::timeline::controls_listening(&ctx));
+    }
+
+    #[test]
+    fn forwarded_floating_keys_do_not_reserve_slider_shortcuts_while_a_save_prompt_is_open() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_center_on_playhead = "Ctrl + K".into();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.ui.clip_dialog = Some(crate::state::ClipDialogDraft { command: "file.closeProject".into(), ..Default::default() });
+        let ctx = egui::Context::default();
+        let key = Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::CTRL };
+
+        app.handle_forwarded_keys(&ctx, vec![key.clone()]);
+
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(egui::Id::unique("tl-controls-zoom-trigger"))), None);
+    }
+
+    #[test]
+    fn a_modal_clears_controls_capture_before_keyboard_early_returns() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = super::FilmcraftApp::new(session);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app.dialog = Some(crate::Dialog::Preferences);
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("tl-controls-listening"), Some(0usize));
+            d.insert_temp(egui::Id::unique("tl-controls-listening-track"), false);
+            d.insert_temp(egui::Id::unique("tl-controls-listening-document-epoch"), app.session.document_epoch);
+        });
+
+        app.handle_shortcuts(&ctx);
+
+        assert!(!crate::panels::timeline::controls_listening(&ctx));
+    }
+}
+
+#[cfg(test)]
 mod text_focus_shortcut_tests {
     use super::lets_text_field_keep;
     use egui::{Key, Modifiers};
 
-    /// Vietnamese Telex composes diacritics from unmodified letters (`a` + `s` â†’ `Ã¡`, `a` + `r` â†’
-    /// `áº£`, `a` + `j` â†’ `áº¡`), and the editor binds `J`, `Z`, `R`, `A`, `C`, `T`, `K`, `L`, `B`, `N`,
+    /// Vietnamese Telex composes diacritics from unmodified letters (`a` + `s` → `á`, `a` + `r` →
+    /// `ả`, `a` + `j` → `ạ`), and the editor binds `J`, `Z`, `R`, `A`, `C`, `T`, `K`, `L`, `B`, `N`,
     /// `P`, `V`, `Y`, `U`, `H` as single-key tool shortcuts. While a text field is focused those
     /// keys must reach the field, or no diacritic can ever be typed (#243).
     #[test]
@@ -375,7 +603,7 @@ mod key_repeat_tests {
         app.ui.focused = crate::dock::PanelKind::Timeline;
         let mut input = egui::InputState::default();
         input.events = events;
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false, false, false)
     }
 
     /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per
@@ -402,6 +630,42 @@ mod key_repeat_tests {
 }
 
 #[cfg(test)]
+mod slider_clipboard_reservation_tests {
+    use crate::{FilmcraftApp, dock::PanelKind};
+    use egui::{Event, Key, Modifiers, RawInput, Rect, pos2};
+
+    #[test]
+    fn a_custom_copy_binding_does_not_leave_space_to_trigger_playback_with_selected_text() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        session.state.timeline_ui.control_settings = "Ctrl + C".into();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.focused = PanelKind::Timeline;
+        app.bindings = super::menus::bindings(&app);
+        let ctx = egui::Context::default();
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::unique("timeline-zoom-slider-rect"), Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0)));
+        });
+        let input = RawInput {
+            events: vec![
+                Event::ModifiersChanged(Modifiers::CTRL | Modifiers::COMMAND),
+                Event::PointerMoved(pos2(50.0, 50.0)),
+                Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: true, repeat: false, modifiers: Modifiers::NONE },
+                Event::Copy,
+            ],
+            ..Default::default()
+        };
+
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::panels::timeline::route_slider_shortcut(&app, ui.ctx());
+            let fired = ui.ctx().input_mut(|input| app.match_shortcuts(input, false, false, true, false));
+            assert!(!fired.iter().any(|id| id == "playback.toggle"), "the reserved Ctrl+C must not fall back to the earlier Space event");
+        });
+        output.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
 mod exact_modifier_tests {
     use crate::dock::PanelKind;
     use egui::{Event, Key, Modifiers};
@@ -420,10 +684,10 @@ mod exact_modifier_tests {
         let mut input = egui::InputState::default();
         input.modifiers = modifiers;
         input.events = vec![Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }];
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false, false, false)
     }
 
-    /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File â–¸ New â–¸ Project (Cmd+Opt+N) and its "discard
+    /// The bug: on a Mac, Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N) and its "discard
     /// the open project" path, because egui ignores an extra Control when matching a Cmd chord.
     /// The native menu bar matches key equivalents exactly, so the press reached these bindings.
     #[test]

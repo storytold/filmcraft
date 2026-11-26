@@ -194,8 +194,11 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "help.systemCompatibilityReport" => {
             let report = system_report(app);
-            app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
-            return Some(Ok(json!({"dialog": "systemReport", "report": report})));
+            if dialogs {
+                app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
+                return Some(Ok(json!({"dialog": "systemReport", "report": report})));
+            }
+            return Some(Ok(json!({"report": report})));
         }
         "edit.editOriginal" | "file.reveal" => {
             let reveal = id == "file.reveal";
@@ -1033,6 +1036,19 @@ pub fn search_bin_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_system_report_returns_data_without_opening_a_dialog() {
+        let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+
+        let result = route(&mut app, &ctx, "help.systemCompatibilityReport", &json!({}), false)
+            .expect("system report is handled by the UI route")
+            .expect("system report is available");
+
+        assert!(result["report"]["checks"].is_array(), "automation receives the report data");
+        assert!(app.ui.extras.dialog.is_none(), "automation does not open a modal it cannot operate");
+    }
 
     #[test]
     fn every_command_with_a_menu_dialog_can_be_bound() {

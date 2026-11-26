@@ -1633,6 +1633,7 @@ fn build() -> Vec<CommandSpec> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.fingerprint = None;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
             Ok(json!({"name": name, "revision": s.revision}))
@@ -1659,6 +1660,7 @@ fn build() -> Vec<CommandSpec> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.fingerprint = None;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
             Ok(json!({"sequence": seq.0}))
@@ -2030,8 +2032,13 @@ fn build() -> Vec<CommandSpec> {
             let keep = s.state.active_sequence;
             let r = open_project(s, &path)?;
             if let Some(k) = keep.filter(|k| s.project.sequence(*k).is_some()) {
+                let restored_active = s.state.active_sequence;
+                let restored_open = s.state.open_sequences.clone();
                 s.state.active_sequence = Some(k);
                 s.state.open_sequences = vec![k];
+                if s.state.active_sequence != restored_active || s.state.open_sequences != restored_open {
+                    s.project_view_changed();
+                }
             }
             Ok(r)
         }),
@@ -2752,8 +2759,8 @@ fn build() -> Vec<CommandSpec> {
             if from != to {
                 let tab = s.state.open_sequences.remove(from);
                 s.state.open_sequences.insert(to, tab);
-                // the tab order is part of the saved view: it must reach the autosave journal even
-                // on a clean project (view-only change: no cache invalidation, project stays clean)
+                // The tab order is part of the saved view. It reaches the recovery journal while
+                // content is dirty; a clean project keeps the view pending for its save prompt.
                 s.view_changed();
             }
             Ok(json!({"index": to}))
@@ -3184,16 +3191,7 @@ fn build() -> Vec<CommandSpec> {
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
                 let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
                 let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
-                let dur = match p.get("durationFrames").filter(|v| !v.is_null()) {
-                    None => Tick::ZERO,
-                    Some(value) => {
-                        let frames = value
-                            .as_i64()
-                            .filter(|f| (0..=10_000_000).contains(f))
-                            .ok_or_else(|| bad("markers.add", "durationFrames must be a whole number from 0 to 10000000"))?;
-                        s.sequence_rate().tick_of(frames)
-                    }
-                };
+                let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker {
@@ -5427,6 +5425,7 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
             fence.revision = s.revision;
             fence.view_epoch = s.view_epoch;
             fence.path.clone_from(&s.path);
+            fence.fingerprint = Some(crate::autosave::snapshot_fingerprint(&bytes));
         }
     }
     Ok(json!({"path": path, "bytes": bytes.len(), "ms": t0.elapsed().as_secs_f64() * 1000.0, "backup": backup}))
@@ -5476,6 +5475,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_FILE_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let fingerprint = crate::autosave::snapshot_fingerprint(&bytes);
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
@@ -5498,6 +5498,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     fence.revision = s.revision;
     fence.view_epoch = s.view_epoch;
     fence.path.clone_from(&s.path);
+    fence.fingerprint = Some(fingerprint);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
@@ -5510,21 +5511,45 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     };
     let c = per.candidates.get(idx).cloned().ok_or_else(|| bad("file.recover", "no recovery session"))?;
     let saved_at = per.local_time(c.meta.saved_unix);
-    let fence_arc = s.project_file_fence.clone();
-    let mut fence = fence_arc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
-    install_project(s, loaded.project, c.meta.project_path.clone(), false);
-    if let Some(view) = loaded.view {
+    if c.meta.view_only {
+        if s.has_unsaved_changes() {
+            return Err(EngineError::Other("save or close the current project before recovering Timeline view settings".into()));
+        }
+        let path = c.meta.project_path.as_deref().ok_or_else(|| EngineError::Other("view recovery has no project path".into()))?;
+        let expected = c.meta.project_fingerprint.ok_or_else(|| EngineError::Other("view recovery has no project fingerprint".into()))?;
+        let bytes = s.services.read_file_bounded(path, filmcraft_format::MAX_PROJECT_FILE_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        if crate::autosave::snapshot_fingerprint(&bytes) != expected {
+            return Err(EngineError::Other(format!("{path} changed since the Timeline view was journaled; the saved project was left untouched")));
+        }
+        let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        let view = crate::autosave::load_view_candidate(&c).map_err(EngineError::Other)?;
+        install_project(s, loaded.project, Some(path.to_string()), true);
         s.restore_project_view(view);
+        let mut fence = s.project_file_fence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.fingerprint = Some(expected);
+        fence.path.clone_from(&s.path);
+        drop(fence);
+        s.project_view_changed();
+    } else {
+        let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
+        install_project(s, loaded.project, c.meta.project_path.clone(), false);
+        if let Some(view) = loaded.view {
+            s.restore_project_view(view);
+        }
     }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
     crate::relink::on_open(s);
-    fence.revision = s.revision;
-    fence.view_epoch = s.view_epoch;
-    fence.path.clone_from(&s.path);
-    drop(fence);
+    {
+        let mut fence = s.project_file_fence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.revision = s.revision;
+        fence.view_epoch = s.view_epoch;
+        fence.path.clone_from(&s.path);
+        if !c.meta.view_only {
+            fence.fingerprint = None;
+        }
+    }
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
     let per = s.persistence.as_mut().ok_or_else(|| EngineError::Other("recovery is not running".into()))?;
@@ -5542,7 +5567,11 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         ))
     })?;
     per.candidates.remove(idx);
-    s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
+    if c.meta.view_only {
+        s.toast(format!("Recovered Timeline view settings for {} from {saved_at}", c.meta.project_name));
+    } else {
+        s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
+    }
     Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
 }
 
