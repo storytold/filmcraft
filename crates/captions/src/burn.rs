@@ -118,7 +118,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         return None;
     }
     let scale = h as f32 / 1080.0;
-    let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
+    let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0f32.min(h as f32), h as f32);
     let max_w = w as f32 * 0.9;
     let ts = caption_style(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
@@ -351,6 +351,20 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_shorter_than_four_pixels_does_not_panic() {
+        // The shared output-size contract allows heights from one pixel, but the font-size clamp
+        // below used to take 4.0 and the frame height as its bounds and panic from one to three.
+        for h in [1usize, 2, 3] {
+            let o = render_caption(&cap("Short"), &CaptionStyle::default(), 1080, h);
+            if let Some(o) = o {
+                assert!(o.w <= 1080 && o.h <= h, "h {h}: {}x{}", o.w, o.h);
+            }
+        }
+        // Four pixels is the shortest frame that keeps the four-pixel minimum, and it still renders.
+        assert!(render_caption(&cap("Short"), &CaptionStyle::default(), 1080, 4).is_some());
+    }
+
+    #[test]
     fn wraps_and_composites() {
         let long = "word ".repeat(60);
         let o = render_caption(&cap(&long), &CaptionStyle::default(), 640, 360).unwrap();
@@ -467,7 +481,7 @@ mod tests {
             return None;
         }
         let scale = h as f32 / 1080.0;
-        let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
+        let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0f32.min(h as f32), h as f32);
         let max_w = w as f32 * 0.9;
         let family = if style.font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { style.font.trim() };
         let ts = TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() };
