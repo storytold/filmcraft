@@ -998,6 +998,7 @@ fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> 
         "sequence.showThroughEdits" => st.show_through_edits,
         "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
         "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        "audio.voiceover.followSpeech" => session.prefs.voice_over.follow_speech,
         _ => return None,
     })
 }

@@ -181,3 +181,28 @@ fn recording_past_the_end_of_the_timeline_starts_there_not_at_the_beginning() {
     d.click("timeline.track.A2.voiceover");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn follow_speech_in_the_settings_dialog_is_disabled_with_its_reason_until_it_can_run() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id":"voiceover.settingsDialog"}));
+    d.frames(4);
+    let available = filmcraft_engine::follow::availability(&d.harness.state().session).is_ok();
+    if !available {
+        // this build or this machine cannot recognise speech: the box does nothing and says why
+        d.click("voiceover.followSpeech");
+        d.click("voiceover.ok");
+        assert_eq!(d.settings()["followSpeech"], false, "a disabled Follow Speech cannot be turned on");
+        let state = d.exec("audio.voiceover.followState", json!({}));
+        assert!(state["available"] == false && state["reason"].is_string(), "{state}");
+        d.ok("ui.menu.invoke", json!({"id":"voiceover.settingsDialog"}));
+        d.frames(4);
+    }
+    // with a recogniser it can be turned on from the dialog
+    d.harness.state_mut().session.voiceover.recognizer = Some(filmcraft_engine::follow::RecognizerFactory::scripted(Vec::new()));
+    d.frames(2);
+    d.click("voiceover.followSpeech");
+    d.click("voiceover.ok");
+    assert_eq!(d.settings()["followSpeech"], true, "turned on from the dialog");
+    assert_eq!(d.exec("audio.voiceover.followState", json!({}))["state"], "ready");
+}

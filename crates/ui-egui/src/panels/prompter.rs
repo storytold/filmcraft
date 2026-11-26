@@ -10,7 +10,13 @@
 //! the prompter); this module only draws it. When the prompt time is not the playhead, the header
 //! shows the gap in a readout badge before the time, "ahead 0:08" or "behind 0:12". When the
 //! prompter runs at another rate than the playhead (Faster and Slower, #5263) a second badge
-//! before it says "rate 105%".
+//! before it says "rate 105%". While a voice-over take records with Follow Speech on (#5266), a
+//! badge with a microphone before them says what it is doing in words ("following", "lost",
+//! "listening", …), and a footer row above the caption shows the words heard: the last committed
+//! ones, then the tentative ones in italics and dimmed. The reading line follows the narrator because
+//! the engine holds the prompt time at the tracked place. A second accessibility node
+//! (`program.prompter.follow`, a polite live region) carries only that state, so a change to "lost"
+//! and back is announced and the words are not.
 //! It is drawn with the monitor's painter, so it never reaches a render or an export, and it is
 //! still drawn in full-screen Program. Automation id `program.prompter`; its label and its
 //! accessibility node carry the text it shows.
@@ -24,6 +30,7 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use filmcraft_engine::follow::{CardState, FollowState};
 use filmcraft_engine::prompter::{Direction, NORMAL_RATE_PERCENT, Point, PointState, Prompt, Script, Section, direction, prompt_at, prompt_time_at, rate};
 use filmcraft_project::{MarkerId, Sequence};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
@@ -168,6 +175,46 @@ fn readout_icon(gap: Tick) -> Option<Icon> {
     })
 }
 
+/// Follow Speech's state in the header badge, in words; None when it shows no badge.
+pub fn follow_badge(state: FollowState) -> Option<&'static str> {
+    Some(match state {
+        FollowState::Following => tl!("following"),
+        FollowState::Lost => tl!("lost"),
+        FollowState::Listening => tl!("listening"),
+        FollowState::Starting => tl!("starting"),
+        FollowState::Unavailable => tl!("speech unavailable"),
+        FollowState::Failed => tl!("speech failed"),
+        FollowState::Off | FollowState::Ready => return None,
+    })
+}
+
+/// Follow Speech's state as a sentence: the live region's text and part of the card's name.
+pub fn follow_sentence(f: &CardState) -> String {
+    match f.state {
+        FollowState::Following => tl!("Following your voice").to_owned(),
+        FollowState::Lost => tl!("Lost your place: the prompter holds until you return to the script").to_owned(),
+        FollowState::Listening => tl!("Listening for the script").to_owned(),
+        FollowState::Starting => tl!("Starting speech recognition").to_owned(),
+        FollowState::Unavailable | FollowState::Failed => match &f.reason {
+            Some(why) => tlf!("Follow Speech is not working: {why}", why = why),
+            None => tl!("Follow Speech is not working").to_owned(),
+        },
+        FollowState::Off | FollowState::Ready => String::new(),
+    }
+}
+
+/// The words heard, for the card's name: the committed ones, then the tentative ones said as such.
+fn heard_text(f: &CardState) -> Option<String> {
+    if f.committed.is_empty() && f.tentative.is_empty() {
+        return None;
+    }
+    let mut text = tlf!("Heard: {words}", words = f.committed.join(" "));
+    if !f.tentative.is_empty() {
+        text = format!("{} {}", text.trim_end(), tlf!("(not final: {words})", words = f.tentative.join(" ")));
+    }
+    Some(text)
+}
+
 /// What the header says when the prompt time is in no section.
 fn no_section(p: &Prompt, gap: Tick) -> &'static str {
     if p.sections == 0 {
@@ -185,11 +232,13 @@ fn point_label(p: &Point) -> String {
 
 /// The text of the overlay, in reading order: its automation label and accessibility name. `gap`
 /// is the prompt time minus the playhead and `rate` the prompter's rate in percent.
-pub fn spoken(p: &Prompt, gap: Tick, rate: u32) -> String {
+pub fn spoken(p: &Prompt, gap: Tick, rate: u32, follow: Option<&CardState>) -> String {
     let mut parts = Vec::new();
+    let following = follow.map(follow_sentence).filter(|t| !t.is_empty());
     match &p.section {
         Some(s) => {
             parts.push(format!("{} {}", s.name, tlf!("{elapsed} of {length}", elapsed = clock(s.elapsed), length = clock_up(s.duration))));
+            parts.extend(following.clone());
             parts.extend(readout(gap));
             parts.extend(rate_text(rate));
             // the points the card lists when it has room (the same rows), and the count of the rest
@@ -206,9 +255,11 @@ pub fn spoken(p: &Prompt, gap: Tick, rate: u32) -> String {
             if let Some(line) = s.script.as_ref().and_then(|x| script_excerpt(&x.text, x.offset)) {
                 parts.push(tlf!("Script: {text}", text = line));
             }
+            parts.extend(follow.and_then(heard_text));
         }
         None => {
             parts.push(no_section(p, gap).to_owned());
+            parts.extend(following);
             parts.extend(readout(gap));
             parts.extend(rate_text(rate));
         }
@@ -400,6 +451,8 @@ struct Plan {
     body_h: f32,
     next: bool,
     warnings: usize,
+    /// The words Follow Speech heard.
+    heard: bool,
     caption: bool,
     /// The caption and the next section share one footer row.
     shared_foot: bool,
@@ -409,14 +462,15 @@ struct Plan {
 
 /// What the card holds when it may be at most `max_h` tall and `inner_w` wide inside, in order
 /// of what the narrator needs most: the header and the current point (or two script lines)
-/// always; then the next point, the next section, the warnings, the caption, a third script
-/// line, the other upcoming points, the last finished point and the count of the rest. When the
-/// script is under the points, two lines of it come right after the current point.
+/// always; then the next point, the next section, the warnings, the words Follow Speech heard, the
+/// caption, a third script line, the other upcoming points, the last finished point and the count
+/// of the rest. When the script is under the points, two lines of it come right after the current
+/// point.
 ///
 /// The current point (or the script) is cut to one row when two do not fit in `max_h`, and the
 /// card grows past `max_h` to hold that one row, up to `limit` (the picture inside its inset);
 /// beyond that the card holds the header alone.
-fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32, limit: f32) -> Plan {
+fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32, limit: f32, heard: bool) -> Plan {
     let m = &d.m;
     let mut p = Plan::default();
     let mut max_h = max_h;
@@ -513,6 +567,7 @@ fn plan(d: &Draw, prompt: &Prompt, inner_w: f32, max_h: f32, limit: f32) -> Plan
         }
         p.warnings += 1;
     }
+    p.heard = heard && foot(&mut left, &mut footer_started);
     if prompt.caption.is_some() {
         p.shared_foot = p.next && inner_w >= m.base * 36.0;
         p.caption = p.shared_foot || foot(&mut left, &mut footer_started);
@@ -633,6 +688,7 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     let at = prompt_time_at(&app.session, time);
     let gap = at.saturating_sub(time);
     let percent = rate(&app.session);
+    let follow = filmcraft_engine::follow::card(&app.session);
     let prompt = prompt_at(seq, at);
     let t = app.tokens;
     let c = palette(&t);
@@ -647,12 +703,17 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
 
     // ---- the card: centred at the bottom, inside the action-safe band
     let inset = (area.width().min(area.height()) * INSET).clamp(2.0 * t.gap, 10.0 * t.gap);
-    // the header's readouts before the time: the rate, then the gap, which is dropped last
-    let readouts: Vec<Trailing> = rate_text(percent)
-        .map(|text| Trailing::readout(&d, &text, None, 1))
+    // the header's readouts before the time: Follow Speech's state, the rate, then the gap; the
+    // state is dropped last, then the gap
+    let readouts: Vec<Trailing> = follow
+        .as_ref()
+        .and_then(|f| follow_badge(f.state))
+        .map(|text| Trailing::readout(&d, text, Some(Icon::Mic), 3))
         .into_iter()
+        .chain(rate_text(percent).map(|text| Trailing::readout(&d, &text, None, 1)))
         .chain(readout(gap).map(|text| Trailing::readout(&d, &text, readout_icon(gap), 2)))
         .collect();
+    let heard = follow.as_ref().is_some_and(|f| !f.committed.is_empty() || !f.tentative.is_empty());
     let empty = prompt.section.is_none().then(|| no_section(&prompt, gap));
     // between sections the card holds a line or two, so it is only as wide as its message needs
     let widest = match empty {
@@ -665,7 +726,7 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     };
     let width = (area.width() - 2.0 * inset).min(widest).max(1.0);
     let inner_w = width - 2.0 * m.pad;
-    let plan = plan(&d, &prompt, inner_w, area.height() * MAX_HEIGHT, area.height() - 2.0 * inset);
+    let plan = plan(&d, &prompt, inner_w, area.height() * MAX_HEIGHT, area.height() - 2.0 * inset, heard);
     let card = Rect::from_min_size(
         pos2((area.center().x - width / 2.0).round(), (area.max.y - inset - plan.height).round()),
         vec2(width.round(), plan.height.round()),
@@ -730,6 +791,9 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     for w in prompt.section.iter().flat_map(warnings).take(plan.warnings) {
         warning(&d, next_row(&mut y), &w);
     }
+    if let (true, Some(f)) = (plan.heard, &follow) {
+        heard_line(&d, next_row(&mut y), f);
+    }
     if let (true, Some(cap)) = (plan.caption, &prompt.caption) {
         let r = match caption_room.filter(|_| plan.shared_foot) {
             Some(r) => r,
@@ -738,10 +802,51 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
         caption_line(&d, r, caption_track.as_deref(), &cap.lines.join(" / "));
     }
 
-    let label = spoken(&prompt, gap, percent);
+    let label = spoken(&prompt, gap, percent, follow.as_ref());
     let response = ui.interact(card, egui::Id::unique("program-prompter"), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
     app.auto.add("program.prompter", card, &label);
+    // Follow Speech's state alone, as a polite live region: a change to "lost" and back is
+    // announced; the words heard and the clock are not
+    if let Some(f) = &follow {
+        let text = follow_sentence(f);
+        let id = egui::Id::unique("program-prompter-follow");
+        let response = ui.interact(card, id, Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Status, true, &text));
+        ui.ctx().accesskit_node_builder(id, |node| node.set_live(egui::accesskit::Live::Polite));
+        app.auto.add("program.prompter.follow", card, &text);
+    }
+}
+
+/// The words Follow Speech heard in `r`: "Heard:", the last committed words, then the tentative
+/// ones in italics and dimmed (they may still change). The oldest words give way when the row is
+/// full, so the newest are always shown.
+fn heard_line(d: &Draw, r: Rect, f: &CardState) {
+    let m = &d.m;
+    let font = m.foot(false);
+    let job = |skip: usize| {
+        let mut job = LayoutJob::default();
+        let format = |color: Color32, italics: bool| TextFormat { font_id: font.clone(), color, italics, ..Default::default() };
+        job.append(tl!("Heard:"), 0.0, format(d.c.dim, false));
+        if skip > 0 {
+            job.append(" …", 0.0, format(d.c.dim, false));
+        }
+        for w in f.committed.iter().skip(skip) {
+            job.append(&format!(" {w}"), 0.0, format(d.c.text, false));
+        }
+        for w in &f.tentative {
+            job.append(&format!(" {w}"), 0.0, format(d.c.dim, true));
+        }
+        job.wrap = TextWrapping { max_width: r.width(), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+        job
+    };
+    let mut skip = 0;
+    let mut g = d.p.layout_job(job(0));
+    while skip < f.committed.len() && g.elided {
+        skip += 1;
+        g = d.p.layout_job(job(skip));
+    }
+    d.p.galley(pos2(r.min.x, r.center().y - g.size().y / 2.0), g, d.c.text);
 }
 
 /// A piece of the header's right end: the time (plain) or a readout (in a badge).
@@ -1098,14 +1203,15 @@ mod tests {
         .clear();
     }
 
-    /// Plans the card for `prompt` over a picture of each size as the overlay does, and hands
-    /// each plan to `check` with the card's room for content.
-    fn plans(prompt: &Prompt, sizes: &[(f32, f32)], mut check: impl FnMut((f32, f32), &Draw, &Plan, f32)) {
+    /// Plans the card for `prompt` over a picture of each size as the overlay does (with a row of
+    /// words Follow Speech `heard` to fit in too), and hands each plan to `check` with the card's
+    /// room for content.
+    fn plans(prompt: &Prompt, sizes: &[(f32, f32)], heard: bool, mut check: impl FnMut((f32, f32), &Draw, &Plan, f32)) {
         drawing(sizes, |(w, h), d| {
             let t = Tokens::for_kind(ThemeKind::Dark);
             let inset = (w.min(h) * INSET).clamp(2.0 * t.gap, 10.0 * t.gap);
             let inner_w = (w - 2.0 * inset).min(d.m.base * MAX_WIDTH_EMS) - 2.0 * d.m.pad;
-            let plan = plan(d, prompt, inner_w, h * MAX_HEIGHT, h - 2.0 * inset);
+            let plan = plan(d, prompt, inner_w, h * MAX_HEIGHT, h - 2.0 * inset, heard);
             check((w, h), d, &plan, h - 2.0 * inset);
         });
     }
@@ -1141,14 +1247,28 @@ mod tests {
             "- Say hello to everyone in the room [0:04]\n- Introduce the topic",
             "Sales grew every quarter this year.\n- Say hello to everyone in the room [0:04]\n- Introduce the topic",
         ] {
-            plans(&prompt(comment, 1.0), &SIZES, |size, d, plan, limit| {
-                let m = &d.m;
-                let (_, current_h) = plan.current.as_ref().unwrap_or_else(|| panic!("{size:?}: the current point is on the card"));
-                let header = m.line(&m.item()) + m.gap + m.bar();
-                let above_and_in = 2.0 * m.pad + header + m.section + current_h;
-                assert!(above_and_in <= plan.height + 0.5, "{size:?}: the current row ends inside the card ({above_and_in} of {})", plan.height);
-                assert!(plan.height <= limit + 0.5, "{size:?}: the card stays inside the picture ({} of {limit})", plan.height);
-            });
+            let p = prompt(comment, 1.0);
+            // the current row's height without and then with a row of words Follow Speech heard
+            let mut rows = Vec::new();
+            for heard in [false, true] {
+                plans(&p, &SIZES, heard, |size, d, plan, limit| {
+                    let m = &d.m;
+                    let (_, current_h) = plan.current.as_ref().unwrap_or_else(|| panic!("{size:?}: the current point is on the card"));
+                    let header = m.line(&m.item()) + m.gap + m.bar();
+                    let above_and_in = 2.0 * m.pad + header + m.section + current_h;
+                    assert!(
+                        above_and_in <= plan.height + 0.5,
+                        "{size:?}, heard {heard}: the current row ends inside the card ({above_and_in} of {})",
+                        plan.height
+                    );
+                    assert!(plan.height <= limit + 0.5, "{size:?}, heard {heard}: the card stays inside the picture ({} of {limit})", plan.height);
+                    rows.push((size, *current_h));
+                });
+            }
+            let (without, with) = rows.split_at(SIZES.len());
+            for ((size, a), (_, b)) in without.iter().zip(with) {
+                assert!((a - b).abs() < 0.5, "{size:?}: the heard words never take the current point's room ({a} without, {b} with)");
+            }
         }
     }
 
@@ -1160,9 +1280,9 @@ mod tests {
         );
         let alone = prompt("- Say hello to everyone in the room [0:04]\n- Introduce the topic", 1.0);
         let mut seen = Vec::new();
-        plans(&alone, &SIZES, |_, _, plan, _| seen.push(shown(plan)));
+        plans(&alone, &SIZES, false, |_, _, plan, _| seen.push(shown(plan)));
         let mut alone_shown = seen.into_iter();
-        plans(&with_script, &SIZES, |size, _, plan, _| {
+        plans(&with_script, &SIZES, true, |size, _, plan, _| {
             let text = shown(plan);
             assert!(text.starts_with("Say hello to"), "{size:?}: the narrator can read the start of the point: {text:?}");
             // a section without a script keeps its full-width points

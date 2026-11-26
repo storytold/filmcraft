@@ -373,3 +373,139 @@ fn the_rate_is_shown_in_full_screen_program_too() {
     assert!(d.label().contains("rate 70%"), "{}", d.label());
     d.shot("prompter-full-screen-slower");
 }
+
+/// The script of "The numbers" (8 s to 18 s in [`Driver::sections`]).
+const NUMBERS: &str =
+    "Sales grew every quarter this year, and the second half carried most of it. The chart on screen shows each region, starting with the north.";
+
+impl Driver {
+    /// [`Driver::sections`] with the Prompter shown and Follow Speech on, hearing `words` (times
+    /// from the start of the take's capture) through the scripted recogniser.
+    fn following(words: Vec<filmcraft_engine::follow::ScriptedWord>) -> Self {
+        let mut d = Self::sections();
+        d.app().session.voiceover.recognizer = Some(filmcraft_engine::follow::RecognizerFactory::scripted(words));
+        d.exec("audio.voiceover.settings", json!({"followSpeech": true}));
+        d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+        d
+    }
+
+    /// Start a take at `seconds` (no pre-roll) and move the playhead on in quarter seconds to
+    /// `until`, a frame each, as playback would.
+    fn take(&mut self, seconds: f64, until: f64) {
+        self.at(seconds);
+        self.exec("audio.voiceover.start", json!({"preroll": 0}));
+        self.play_on(seconds, until);
+    }
+
+    fn play_on(&mut self, from: f64, until: f64) {
+        let mut t = from;
+        while t < until - 1e-9 {
+            t = (t + 0.25).min(until);
+            self.exec("playhead.set", json!({"seconds": t}));
+            self.frames(1);
+        }
+        self.frames(2);
+    }
+
+    /// The live region's node: its text and whether it is polite.
+    fn follow_node(&mut self) -> Option<(String, egui::accesskit::Live)> {
+        self.frames(1);
+        self.harness.query_all_by_role(egui::accesskit::Role::Status).find_map(|n| {
+            let node = n.accesskit_node();
+            let text = node.label().or_else(|| node.value()).unwrap_or_default();
+            (text.contains("voice") || text.contains("place") || text.contains("Listening")).then(|| (text, node.live()))
+        })
+    }
+
+    fn follow_shot(&mut self, name: &str) {
+        save_settled_shot(self, &format!("{name}.png"));
+        if let Some(dir) = shots_dir() {
+            let text = self.node_text().unwrap_or_default();
+            let live =
+                self.follow_node().map(|(t, l)| format!("role: Status\nlive: {l:?}\nautomation id: program.prompter.follow\ntext: {t}\n")).unwrap_or_default();
+            let state = self.exec("audio.voiceover.followState", json!({}));
+            std::fs::write(
+                dir.join(format!("{name}.a11y.txt")),
+                format!("role: Label\nautomation id: program.prompter\ntext: {text}\n\n{live}\naudio.voiceover.followState: {state}\n"),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn following_speech_shows_its_state_and_the_words_heard_and_the_reading_line_follows_the_narrator() {
+    // the narrator reads twice as fast as the section's clock
+    let mut d = Driver::following(filmcraft_engine::follow::ScriptedRecognizer::reading(NUMBERS, 0.5, 0.2, 0.6));
+    d.take(8.0, 9.0);
+    let label = d.label();
+    assert!(label.contains("Listening for the script") && !label.contains("Following"), "listening before the first words: {label}");
+    d.play_on(9.0, 12.0);
+    let label = d.label();
+    assert!(label.contains("Following your voice"), "the card says it follows, in words: {label}");
+    assert!(label.contains("Heard: ") && label.contains("second half carried"), "and shows the words it heard: {label}");
+    assert!(d.node_text().is_some_and(|t| t.contains("Following your voice") && t.contains("Heard: ")), "on the accessibility node too");
+    let (text, live) = d.follow_node().expect("a live region carries the state");
+    assert!(text == "Following your voice" && live == egui::accesskit::Live::Polite, "the state alone, politely: {text} {live:?}");
+
+    // the reading line is where the narrator is, not where the clock is
+    let q = d.exec("prompter.inspect", json!({}));
+    let offset = q["section"]["script"]["offset"].as_u64().unwrap();
+    let n = |v: &Value| v.as_i64().unwrap() as f64;
+    let through = (n(&q["playhead"]) - n(&q["section"]["start"])) / n(&q["section"]["duration"]);
+    let clock = (through * NUMBERS.chars().count() as f64) as u64;
+    assert!(q["held"] == true && offset > clock, "the engine holds the prompter at the tracked place ({offset} > clock {clock}): {q}");
+    let read_on = NUMBERS.chars().skip(offset as usize).collect::<String>();
+    let line = label.split("Script: ").nth(1).unwrap_or_default();
+    assert!(read_on.trim_start().starts_with(line.split(' ').next().unwrap_or("?")), "the card's script line starts at the tracked place: {line} / {read_on}");
+    d.follow_shot("prompter-following");
+
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.play_on(12.0, 13.0);
+    assert!(d.label().contains("Following your voice"), "also in full-screen Program: {}", d.label());
+    d.follow_shot("prompter-full-screen-following");
+    d.exec("audio.voiceover.stop", json!({"discard": true}));
+}
+
+#[test]
+fn losing_the_narrator_is_said_on_the_card_and_announced_and_finding_them_again_too() {
+    let words: Vec<&str> = NUMBERS.split_whitespace().collect();
+    let mut heard = filmcraft_engine::follow::ScriptedRecognizer::reading(&words[..10].join(" "), 0.5, 0.3, 0.6);
+    heard.extend(filmcraft_engine::follow::ScriptedRecognizer::reading("by the way the full figures are on the website linked below", 3.6, 0.3, 0.6));
+    heard.extend(filmcraft_engine::follow::ScriptedRecognizer::reading(&words[10..].join(" "), 7.5, 0.3, 0.6));
+    let mut d = Driver::following(heard);
+    d.take(8.0, 12.5);
+    assert!(d.label().contains("Following your voice"));
+    let held = d.exec("prompter.inspect", json!({}))["promptTime"].clone();
+    d.play_on(12.5, 15.0);
+    let label = d.label();
+    assert!(label.contains("Lost your place"), "the card says it lost the narrator, in words: {label}");
+    assert_eq!(d.exec("prompter.inspect", json!({}))["promptTime"], held, "and the prompter holds where it was");
+    let (text, _) = d.follow_node().expect("the live region");
+    assert!(text.starts_with("Lost your place"), "the change is announced through the live region: {text}");
+    d.follow_shot("prompter-lost");
+
+    // the light theme, while still lost
+    d.exec("prefs.set", json!({"values": {"appearance.appearanceMode": "light"}}));
+    d.frames(3);
+    d.follow_shot("prompter-light-lost");
+
+    d.play_on(15.0, 18.0);
+    assert!(d.label().contains("Following your voice"), "back on the script: {}", d.label());
+    assert!(d.follow_node().is_some_and(|(t, _)| t == "Following your voice"), "announced again");
+    d.exec("audio.voiceover.stop", json!({"discard": true}));
+}
+
+#[test]
+fn with_follow_speech_off_a_take_shows_no_badge_and_no_heard_words() {
+    let mut d = Driver::sections();
+    d.app().session.voiceover.recognizer =
+        Some(filmcraft_engine::follow::RecognizerFactory::scripted(filmcraft_engine::follow::ScriptedRecognizer::reading(NUMBERS, 0.5, 0.2, 0.6)));
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.take(8.0, 12.0);
+    let label = d.label();
+    assert!(!label.contains("Heard") && !label.contains("voice") && !label.contains("Listening"), "nothing of Follow Speech: {label}");
+    assert!(d.follow_node().is_none(), "and no live region");
+    assert_eq!(d.exec("prompter.inspect", json!({}))["held"], false);
+    d.exec("audio.voiceover.stop", json!({"discard": true}));
+}
