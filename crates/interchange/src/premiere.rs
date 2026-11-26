@@ -1167,7 +1167,10 @@ impl<'a, 'i> Reader<'a, 'i, '_> {
             media_uid = None;
             nested_sequence = None;
         }
-        if media_path.is_none()
+        // Title fallback only when the ObjectRef chain did not resolve. A resolved Media with no
+        // usable path stays offline; falling back by title can pick a same-named Sequence and look cyclic.
+        if target.is_none()
+            && media_path.is_none()
             && nested_sequence.is_none()
             && generated.is_none()
             && adjustment_layer.is_none()
@@ -1971,6 +1974,30 @@ mod tests {
                 "blank ActualMediaFilePath {blank:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolved_media_without_path_does_not_title_fallback_to_same_named_sequence() {
+        // Clip/media/sequence all named Intro: resolving Media with no path must stay offline, not nest Intro.
+        let xml = format!(
+            r#"<PremiereData>
+<Sequence ObjectUID="intro-seq"><Name>Intro</Name><TrackGroups><TrackGroup><Second ObjectRef="group"/></TrackGroup></TrackGroups></Sequence>
+<VideoTrackGroup ObjectID="group"><TrackGroup><FrameRate>8467200000</FrameRate><Tracks><Track ObjectURef="track"/></Tracks></TrackGroup></VideoTrackGroup>
+<VideoClipTrack ObjectUID="track"><ClipTrack><Track><Index>0</Index></Track><ClipItems><TrackItems><TrackItem ObjectRef="item"/></TrackItems></ClipItems></ClipTrack></VideoClipTrack>
+<VideoClipTrackItem ObjectID="item"><ClipTrackItem><TrackItem><Start>0</Start><End>{TPS}</End></TrackItem><SubClip ObjectRef="sub"/></ClipTrackItem></VideoClipTrackItem>
+<SubClip ObjectID="sub"><Name>Intro</Name><Clip ObjectRef="clip"/></SubClip>
+<VideoClip ObjectID="clip"><Clip><InPoint>0</InPoint><OutPoint>{TPS}</OutPoint><PlaybackSpeed>1</PlaybackSpeed><Source ObjectRef="src"/></Clip></VideoClip>
+<VideoMediaSource ObjectID="src"><MediaSource><Media ObjectURef="media"/></MediaSource></VideoMediaSource>
+<Media ObjectUID="media"><Title>Intro</Title></Media>
+</PremiereData>"#
+        );
+        let (fragment, tree, report) = import(xml.as_bytes(), &ImportOptions::default(), None).unwrap();
+        assert!(tree.sequences[0].tracks[0].items[0].media_path.is_none());
+        assert!(tree.sequences[0].tracks[0].items[0].nested_sequence.is_none(), "must not title-fallback to sequence Intro");
+        assert!(!report.mentions("using title fallback"), "{:?}", report.entries);
+        let clip_item = fragment.project.sequence(fragment.sequences[0]).unwrap().video_tracks[0].items[0].item;
+        assert_ne!(clip_item, fragment.sequences[0], "resolved empty Media must not become a nest of the same-named sequence");
+        assert!(fragment.project.item(clip_item).and_then(|i| i.as_media()).is_some(), "offline media placeholder retained");
     }
     // Hand-written XML: many pointers share one small caption item and one large payload.
     fn repeated_caption_block(pointers: usize) -> String {
