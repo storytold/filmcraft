@@ -181,8 +181,10 @@ pub(super) fn header(
                 let group_size = vec2(label_width + ui.spacing().item_spacing.x + 60.0, ui.spacing().interact_size.y);
                 ui.allocate_ui_with_layout(group_size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.label(caption);
-                    let combo =
-                        crate::legacy_dropdown::Dropdown::from_id_salt(format!("script.{key}.combo")).selected_text(selected.unwrap_or("—")).width(44.0).show_ui(ui, |ui| {
+                    let combo = crate::legacy_dropdown::Dropdown::from_id_salt(format!("script.{key}.combo"))
+                        .selected_text(selected.unwrap_or("—"))
+                        .width(44.0)
+                        .show_ui(ui, |ui| {
                             for (value, line) in &values {
                                 let response = ui.selectable_label(selected_line.is_some_and(|selected| selected.id == line.id), *value);
                                 app.auto.add(&format!("script.{key}.option.{}", line.id.0), response.rect, value);
@@ -292,8 +294,9 @@ pub(super) fn header(
         }
         if let Some(source) = app.ui.script.find_source {
             let matches = source_matches(app, ItemId(source));
-            let chooser =
-                crate::legacy_dropdown::Dropdown::from_id_salt("script.findSource").selected_text(tlf!("Choose linked take ({count})", count = matches.len())).width(190.0);
+            let chooser = crate::legacy_dropdown::Dropdown::from_id_salt("script.findSource")
+                .selected_text(tlf!("Choose linked take ({count})", count = matches.len()))
+                .width(190.0);
             chooser.show_ui(ui, |ui| {
                 for entry in matches {
                     let response = ui.selectable_label(false, &entry.label);
