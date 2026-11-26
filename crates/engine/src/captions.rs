@@ -139,6 +139,10 @@ impl CaptionStyleLibrary {
         let Some(dir) = &self.dir else { return Err("caption style preset persistence is not configured".into()) };
         std::fs::create_dir_all(dir).map_err(|e| format!("could not create caption style preset directory: {e}"))?;
         let bytes = style_preset_file_bytes(presets)?;
+        // what loads again: a file over the limit would be refused on the next launch
+        if bytes.len() as u64 > MAX_STYLE_PRESET_FILE_BYTES {
+            return Err("caption style presets would exceed the 1 MiB file limit".into());
+        }
         filmcraft_format::atomic_write(&dir.join(STYLE_PRESET_FILE), &bytes).map_err(|e| e.to_string())
     }
 }
@@ -150,6 +154,7 @@ fn style_preset_name_key(name: &str) -> String {
 
 fn normalize_style(mut style: CaptionStyle) -> Option<CaptionStyle> {
     if style.font.len() > MAX_STYLE_FONT_BYTES
+        || style.font_style.len() > MAX_STYLE_FONT_BYTES
         || !style.size.is_finite()
         || !style.margin.is_finite()
         || !style.line_spacing.is_finite()
@@ -926,5 +931,19 @@ mod preset_file_tests {
             let parsed = std::panic::catch_unwind(|| parse_style_presets(&candidate));
             assert!(parsed.is_ok(), "malformed preset data must return an error instead of panicking");
         }
+    }
+
+    /// A style the file couldn't load again is refused on save: the font style is bounded like the font.
+    #[test]
+    fn a_preset_with_an_oversized_font_style_is_refused_and_not_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut library = CaptionStyleLibrary::default();
+        library.set_dir(dir.path());
+        let style = CaptionStyle { font_style: "x".repeat(MAX_STYLE_FONT_BYTES + 1), ..CaptionStyle::default() };
+        assert!(library.save("Long", style).is_err());
+        assert!(library.all().is_empty());
+        assert!(!dir.path().join(STYLE_PRESET_FILE).exists());
+        library.save("Fine", CaptionStyle::default()).expect("a normal preset saves");
+        assert_eq!(library.all().len(), 1);
     }
 }

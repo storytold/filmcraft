@@ -11,16 +11,23 @@ use serde_json::{Value, json};
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    // presets are saved in the app data directory; the test's own, removed with it
+    _data: tempfile::TempDir,
 }
 
 impl Driver {
     fn demo() -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let data = tempfile::tempdir().expect("temp data dir");
+        session.caption_style_presets.set_dir(data.path());
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+            app
+        });
+        let mut d = Driver { harness, tx, _data: data };
         d.frames(4);
         d
     }

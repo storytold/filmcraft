@@ -779,7 +779,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         }
     });
-    caption_style_preset_save_dialog(app, child.ctx(), tr.id.0, actions);
+    caption_style_preset_save_dialog(app, child.ctx(), actions);
     child.min_rect().height()
 }
 
@@ -803,7 +803,8 @@ fn caption_style_actions_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: 
         app.auto.add("text.captions.style.preset.openSave", save_as.rect, "Save current caption style as a preset");
         if save_as.clicked() {
             ui.ctx().data_mut(|d| {
-                d.insert_temp(egui::Id::unique("caption-style-preset-save-open"), true);
+                // the track and document it was opened for: Save keeps that track's style
+                d.insert_temp(egui::Id::unique("caption-style-preset-save-open"), Some((track, app.session.document_epoch)));
                 d.insert_temp(egui::Id::unique("caption-style-preset-name"), String::new());
             });
         }
@@ -828,13 +829,17 @@ fn caption_style_actions_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: 
     });
 }
 
-fn caption_style_preset_save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, track: u64, actions: &mut Vec<(String, Value)>) {
+/// The Save Caption Style Preset dialog, bound to the track (and document) it was opened for: picking
+/// another track meanwhile doesn't change what it saves, and a replaced document closes it.
+fn caption_style_preset_save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context, actions: &mut Vec<(String, Value)>) {
     let open_id = egui::Id::unique("caption-style-preset-save-open");
     let name_id = egui::Id::unique("caption-style-preset-name");
-    let mut open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-    if !open {
+    let Some((track, epoch)) = ctx.data(|d| d.get_temp::<Option<(u64, u64)>>(open_id)).flatten() else { return };
+    if epoch != app.session.document_epoch {
+        ctx.data_mut(|d| d.insert_temp(open_id, None::<(u64, u64)>));
         return;
     }
+    let mut open = true;
     let mut name = ctx.data(|d| d.get_temp::<String>(name_id)).unwrap_or_default();
     let mut close = false;
     egui::Window::new(tl!("Save Caption Style Preset"))
@@ -864,7 +869,7 @@ fn caption_style_preset_save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context,
         open = false;
     }
     ctx.data_mut(|d| {
-        d.insert_temp(open_id, open);
+        d.insert_temp(open_id, open.then_some((track, epoch)));
         d.insert_temp(name_id, name);
     });
 }
