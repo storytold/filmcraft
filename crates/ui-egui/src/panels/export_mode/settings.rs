@@ -8,7 +8,15 @@ use super::{
 // middle: settings
 // ---------------------------------------------------------------------------------------------
 
-const LABEL_W: f32 = 132.0;
+// wide enough for the French labels ("Fréquence d'échantillonnage", "Intervalle entre images clés"),
+// which were cut at 132
+const LABEL_W: f32 = 168.0;
+
+/// A combo's width in a settings row: `max` points, or what is left after the label when the
+/// column is narrower, so the control never runs past its column.
+fn fit(ui: &egui::Ui, max: f32) -> f32 {
+    (ui.available_width() - 4.0).clamp(40.0_f32.min(max), max)
+}
 
 /// A labelled settings row.
 fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -360,7 +368,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
                 row(ui, &t, tl!("Multiplexer"), |ui| {
                     let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
-                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
+                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), fit(ui, 160.0)) {
                         s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
                     }
                 });
@@ -378,7 +386,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                     } else {
                         modes[0]
                     };
-                    if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), 220.0) {
+                    if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), fit(ui, 220.0)) {
                         s.burn_captions = i == 1;
                         s.caption_sidecar = (i == 2).then(|| s.caption_sidecar.clone().unwrap_or_else(|| "srt".into()));
                     }
@@ -387,7 +395,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                     row(ui, &t, tl!("File Format"), |ui| {
                         let formats = [tl!("SubRip Subtitle (.srt)"), tl!("WebVTT (.vtt)")];
                         let cur = if kind == "vtt" { formats[1] } else { formats[0] };
-                        if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&formats), 220.0) {
+                        if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&formats), fit(ui, 220.0)) {
                             s.caption_sidecar = Some(if i == 0 { "srt" } else { "vtt" }.into());
                         }
                     });
@@ -463,7 +471,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         if let Some(r) = s.frame_rate {
             let cur = RATES.iter().find(|(_, x)| *x == r).map(|(l, _)| l.to_string()).unwrap_or_else(|| r.label());
             let labels: Vec<(String, bool)> = RATES.iter().map(|(l, _)| (l.to_string(), true)).collect();
-            if let Some(i) = combo(ui, reg, "export.video.fps", &cur, &labels, 90.0) {
+            if let Some(i) = combo(ui, reg, "export.video.fps", &cur, &labels, fit(ui, 90.0)) {
                 s.frame_rate = Some(RATES[i].1);
             }
         }
@@ -471,21 +479,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     row(ui, t, tl!("Field Order"), |ui| {
         let o = [FieldOrder::Progressive, FieldOrder::UpperFirst, FieldOrder::LowerFirst];
         let labels: Vec<(String, bool)> = o.iter().map(|f| (f.label().to_string(), *f == FieldOrder::Progressive)).collect();
-        if let Some(i) = combo(ui, reg, "export.video.fieldOrder", s.field_order.label(), &labels, 160.0) {
+        if let Some(i) = combo(ui, reg, "export.video.fieldOrder", s.field_order.label(), &labels, fit(ui, 160.0)) {
             s.field_order = o[i];
         }
     });
     row(ui, t, tl!("Aspect"), |ui| {
         let cur = PARS.iter().find(|(_, p)| *p == s.pixel_aspect).map(|(l, _)| l.to_string()).unwrap_or_else(|| tl!("Custom").into());
         let labels: Vec<(String, bool)> = PARS.iter().map(|(l, _)| (l.to_string(), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, 220.0) {
+        // the column may be narrower than the wider label column plus 220: never past its edge
+        if let Some(i) = combo(ui, reg, "export.video.aspect", &cur, &labels, fit(ui, 220.0)) {
             s.pixel_aspect = PARS[i].1;
         }
     });
     if s.format.is_mxf() {
         row(ui, t, tl!("Video Codec"), |ui| {
             let labels: Vec<(String, bool)> = MxfVideoCodec::ALL.iter().map(|c| (c.label().to_string(), true)).collect();
-            if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, 180.0) {
+            if let Some(i) = combo(ui, reg, "export.video.mxfCodec", s.mxf_video_codec.label(), &labels, fit(ui, 180.0)) {
                 s.mxf_video_codec = MxfVideoCodec::ALL[i];
             }
         });
@@ -525,7 +534,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High, H264Profile::High10];
                     let labels: Vec<(String, Option<&str>)> = o.iter().map(|p| (p.label().to_string(), None)).collect();
                     let tip = |i: usize| (o.get(i) == Some(&H264Profile::High10)).then(|| tl!("10-bit color"));
-                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0, tip) {
+                    if let Some(i) = combo_tips(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, fit(ui, 120.0), tip) {
                         s.h264_profile = o[i];
                     }
                 });
@@ -537,7 +546,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                         [None, Some(30), Some(31), Some(32), Some(40), Some(41), Some(42), Some(50), Some(51), Some(52), Some(60), Some(61), Some(62)];
                     let lab = |l: &Option<u8>| l.map(|l| format!("{}.{}", l / 10, l % 10)).unwrap_or_else(|| tl!("Auto").into());
                     let labels: Vec<(String, bool)> = levels.iter().map(|l| (lab(l), true)).collect();
-                    if let Some(i) = combo(ui, reg, "export.video.level", &lab(&s.h264_level), &labels, 120.0) {
+                    if let Some(i) = combo(ui, reg, "export.video.level", &lab(&s.h264_level), &labels, fit(ui, 120.0)) {
                         s.h264_level = levels[i];
                     }
                 });
@@ -547,7 +556,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass, BitrateMode::Crf];
                 let labels: Vec<(String, bool)> =
                     o.iter().map(|m| (m.label().to_string(), !(hevc && matches!(m, BitrateMode::Vbr2Pass | BitrateMode::Crf)))).collect();
-                if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
+                if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, fit(ui, 140.0)) {
                     s.bitrate_mode = o[i];
                 }
             });
@@ -601,9 +610,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // every machine without one keeps the built-in encoder.
             // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
             if !hevc {
-                row(ui, t, "Hardware Encoding", |ui| {
+                row(ui, t, tl!("Hardware Encoding"), |ui| {
                     let mut on = s.hardware_encoding == HardwareEncoding::Auto;
-                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
+                    if check(ui, reg, "export.video.hardwareEncoding", &mut on, tl!("Use the hardware encoder when available")) {
                         s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
                     }
                 });
@@ -615,7 +624,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let labels =
                     ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ", "Apple ProRes 4444", "Apple ProRes 4444 XQ"];
                 let cur = keys.iter().position(|k| *k == s.prores_profile).unwrap_or(3);
-                if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels[cur], &opts(&labels), 220.0) {
+                if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels[cur], &opts(&labels), fit(ui, 220.0)) {
                     s.prores_profile = keys[i].into();
                 }
             });
@@ -625,7 +634,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let keys = ["lb", "sq", "hq", "hqx"];
                 let labels = ["DNxHR LB", "DNxHR SQ", "DNxHR HQ", "DNxHR HQX (10-bit)"];
                 let cur = keys.iter().position(|k| *k == s.dnx_profile).unwrap_or(2);
-                if let Some(i) = combo(ui, reg, "export.video.dnxProfile", labels[cur], &opts(&labels), 220.0) {
+                if let Some(i) = combo(ui, reg, "export.video.dnxProfile", labels[cur], &opts(&labels), fit(ui, 220.0)) {
                     s.dnx_profile = keys[i].into();
                 }
             });
@@ -635,7 +644,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 let keys = ["422-10", "422-12", "444-10", "444-12"];
                 let labels = ["APV 422-10", "APV 422-12", "APV 444-10", "APV 444-12"];
                 let cur = keys.iter().position(|k| *k == s.apv_profile).unwrap_or(0);
-                if let Some(i) = combo(ui, reg, "export.video.apvProfile", labels[cur], &opts(&labels), 220.0) {
+                if let Some(i) = combo(ui, reg, "export.video.apvProfile", labels[cur], &opts(&labels), fit(ui, 220.0)) {
                     s.apv_profile = keys[i].into();
                 }
             });
@@ -650,7 +659,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     ExrCompression::Zip => tl!("ZIP (16 scan lines)"),
                 };
                 let labels: Vec<&str> = ExrCompression::ALL.iter().map(|&c| label(c)).collect();
-                if let Some(i) = combo(ui, reg, "export.video.exrCompression", label(s.exr_compression), &opts(&labels), 220.0) {
+                if let Some(i) = combo(ui, reg, "export.video.exrCompression", label(s.exr_compression), &opts(&labels), fit(ui, 220.0)) {
                     s.exr_compression = ExrCompression::ALL[i];
                 }
             });
@@ -700,7 +709,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         ];
         if fixed {
             ui.label(cur);
-        } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
+        } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, fit(ui, 180.0)) {
             s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
         }
     });
@@ -708,7 +717,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
+        if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, fit(ui, 180.0)) {
             s.audio.sample_rate = rates[i];
         }
     });
@@ -719,7 +728,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             6 => names[2],
             _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
+        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), fit(ui, 120.0)) {
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });
@@ -728,7 +737,9 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // MP3 bit rates are Layer III's (16-24 kHz streams stop at 160 kbps)
             let rates: &[u32] = if s.audio_codec() == AudioCodec::Mp3 { &[64, 96, 128, 160, 192, 256, 320] } else { &[128, 160, 192, 256, 320] };
             let labels: Vec<(String, bool)> = rates.iter().map(|r| (format!("{r} kbps"), true)).collect();
-            if let Some(&r) = combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, 120.0).and_then(|i| rates.get(i)) {
+            if let Some(&r) =
+                combo(ui, reg, "export.audio.bitrate", &format!("{} kbps", s.audio.bitrate_kbps), &labels, fit(ui, 120.0)).and_then(|i| rates.get(i))
+            {
                 s.audio.bitrate_kbps = r;
             }
         });
@@ -748,7 +759,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             };
             let labels: Vec<(String, Option<&str>)> = SampleFormat::ALL.iter().zip(sizes).map(|(&f, l)| (l.to_string(), why(f))).collect();
             let cur = SampleFormat::ALL.iter().position(|&f| f == s.audio.sample_format()).and_then(|i| sizes.get(i).copied()).unwrap_or(sizes[0]);
-            if let Some(&f) = combo_why(ui, reg, "export.audio.bits", cur, &labels, 120.0).and_then(|i| SampleFormat::ALL.get(i)) {
+            if let Some(&f) = combo_why(ui, reg, "export.audio.bits", cur, &labels, fit(ui, 120.0)).and_then(|i| SampleFormat::ALL.get(i)) {
                 s.audio.set_sample_format(f);
             }
         });
@@ -767,7 +778,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
 
 fn placement_combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, p: &mut Placement) {
     let labels: Vec<(String, bool)> = Placement::ALL.iter().map(|x| (x.label().to_string(), true)).collect();
-    if let Some(i) = combo(ui, reg, id, p.label(), &labels, 150.0) {
+    if let Some(i) = combo(ui, reg, id, p.label(), &labels, fit(ui, 150.0)) {
         *p = Placement::ALL[i];
     }
 }

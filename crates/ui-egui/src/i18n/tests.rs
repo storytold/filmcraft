@@ -959,3 +959,19 @@ fn display_guard_catches_retired_marks_without_banning_descriptive_terms() {
         assert_eq!(retired_feature_label(label), None, "{label}");
     }
 }
+
+/// Sizes read in the interface's units ("34 Mo" in French).
+#[test]
+fn byte_units_follow_the_language() {
+    let before = current();
+    set_current(Language::Fr);
+    assert_eq!(byte_units("34 MB"), "34 Mo");
+    assert_eq!(byte_units("1.2 GB"), "1.2 Go");
+    assert_eq!(byte_units("12 KB"), "12 Ko");
+    for odd in ["", "MB", "34MB", "12 TB", "–", "junk MB", " MB", "NaN GB", "inf KB"] {
+        assert_eq!(byte_units(odd), odd);
+    }
+    set_current(Language::En);
+    assert_eq!(byte_units("34 MB"), "34 MB");
+    set_current(before);
+}
