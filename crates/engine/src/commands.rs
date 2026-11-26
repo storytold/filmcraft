@@ -5482,6 +5482,16 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);
+    // Re-attach the Premiere sidecar when the journal kept one; otherwise a `.prproj` path cannot Save natively.
+    let mut native_warning = None;
+    if let Some(native) = crate::autosave::load_native_sidecar(&c.dir) {
+        s.premiere_native = Some(native);
+    } else if c.meta.has_native || c.meta.project_path.as_deref().is_some_and(is_premiere_project_path) {
+        s.path = None;
+        native_warning = Some(
+            "Recovered Premiere project has no native sidecar; use Save As to a .fcproj, or reopen the .prproj".to_string(),
+        );
+    }
     if let Some(seq) = s.state.active_sequence {
         s.events.push(crate::Event::OpenSequence(seq));
     }
@@ -5503,8 +5513,19 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         ))
     })?;
     per.candidates.remove(idx);
+    if let Some(w) = &native_warning {
+        s.toast(w.clone());
+    }
     s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
-    Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
+    Ok(json!({
+        "id": c.id,
+        "name": c.meta.project_name,
+        "path": s.path,
+        "savedAt": saved_at,
+        "revision": c.meta.revision,
+        "native": s.premiere_native.is_some(),
+        "nativeWarning": native_warning,
+    }))
 }
 
 /// Where auto-saves of the current project go.

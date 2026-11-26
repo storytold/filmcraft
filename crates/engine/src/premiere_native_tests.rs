@@ -129,6 +129,88 @@ fn autosave_also_saves_current_prproj_via_native_writer() {
 }
 
 #[test]
+fn recover_reattaches_premiere_native_and_save_patches_prproj() {
+    // Crash recovery must restore the Premiere sidecar so ordinary Save writes the `.prproj` again.
+    let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-recover").join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prproj = dir.join("live.prproj");
+    std::fs::write(&prproj, fixture_xml()).unwrap();
+
+    let mut a = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&dir);
+    cfg.journal_debounce = std::time::Duration::from_millis(20);
+    a.start_autosave(cfg).unwrap();
+    a.execute("file.open", json!({"path": prproj.to_string_lossy()})).unwrap();
+    assert!(a.premiere_native.is_some());
+    let seq_id = a.state.active_sequence.expect("sequence");
+    {
+        let project = std::sync::Arc::make_mut(&mut a.project);
+        let seq = project.sequence_mut(seq_id).unwrap();
+        seq.video_tracks[0].items[0].start = filmcraft_time::Tick(50);
+        seq.video_tracks[0].items[0].duration = filmcraft_time::Tick(150);
+    }
+    a.revision += 1;
+    a.sync_persistence();
+    assert_eq!(a.persistence.as_ref().unwrap().flush().unwrap(), Some(a.revision));
+    a.persistence.take().unwrap().simulate_crash();
+
+    let mut b = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&dir);
+    cfg.journal_debounce = std::time::Duration::from_millis(20);
+    b.start_autosave(cfg).unwrap();
+    assert_eq!(b.recovery_candidates().len(), 1);
+    let recovered = b.execute("file.recover", json!({})).unwrap();
+    assert_eq!(recovered["native"], true);
+    assert!(b.premiere_native.is_some(), "sidecar must re-attach on recover");
+    assert_eq!(b.path.as_deref(), Some(prproj.to_string_lossy().as_ref()));
+    let saved = b.execute("file.save", json!({})).unwrap();
+    assert_eq!(saved["format"], "prproj");
+    assert_eq!(saved["native"], true);
+    let xml = std::fs::read_to_string(&prproj).unwrap();
+    assert!(xml.contains("<Start>50</Start>") && xml.contains("<End>200</End>"), "{xml}");
+    assert!(xml.contains("OrphanCustom"));
+    b.shutdown();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn recover_prproj_without_native_sidecar_clears_path() {
+    // Legacy journals with a `.prproj` path but no native files must not leave Save claiming a native path.
+    let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-recover-legacy").join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prproj = dir.join("orphan.prproj");
+    std::fs::write(&prproj, fixture_xml()).unwrap();
+
+    let old = autosave::recovery_root(&dir).join("1-1");
+    std::fs::create_dir_all(&old).unwrap();
+    let project = filmcraft_project::Project::new("orphan");
+    let bytes = filmcraft_format::encode(&project, false);
+    std::fs::write(old.join("snapshot.fcproj"), &bytes).unwrap();
+    let meta = autosave::JournalMeta {
+        project_name: "orphan".into(),
+        project_path: Some(prproj.to_string_lossy().into_owned()),
+        has_native: false,
+        ..Default::default()
+    };
+    std::fs::write(old.join("session.json"), serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&dir);
+    cfg.journal_debounce = std::time::Duration::from_millis(20);
+    s.start_autosave(cfg).unwrap();
+    let recovered = s.execute("file.recover", json!({"id": "1-1"})).unwrap();
+    assert_eq!(recovered["native"], false);
+    assert!(recovered["nativeWarning"].as_str().unwrap().contains("Save As"));
+    assert!(s.path.is_none(), "path cleared so Save asks for Save As");
+    assert!(s.premiere_native.is_none());
+    assert!(s.execute("file.save", json!({})).unwrap_err().to_string().contains("Save As"));
+    s.shutdown();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn new_and_demo_clear_premiere_native_sidecar() {
     // Replacing the project must drop the previous `.prproj` sidecar so Save As cannot patch old XML.
     let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-new-demo").join(std::process::id().to_string());

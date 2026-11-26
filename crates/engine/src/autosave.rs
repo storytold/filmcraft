@@ -541,6 +541,16 @@ pub struct JournalMeta {
     pub bytes: usize,
     /// True when the app was closed normally while changes were unsaved (no crash).
     pub clean_exit: bool,
+    /// True when `native.xml` / `native.json` were written with this journal (Premiere open/save).
+    pub has_native: bool,
+}
+
+/// Gzip flag + bindings stored beside the recovery snapshot for a live `.prproj`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeJournalEnvelope {
+    gzip: bool,
+    bindings: filmcraft_interchange::premiere::NativeBindings,
 }
 
 /// Unsaved changes left behind by a session that is no longer running.
@@ -558,6 +568,8 @@ pub struct RecoveryCandidate {
 const SNAPSHOT: &str = "snapshot.fcproj";
 const META: &str = "session.json";
 const LOCK: &str = "lock";
+const NATIVE_XML: &str = "native.xml";
+const NATIVE_JSON: &str = "native.json";
 
 pub fn recovery_root(data_dir: &Path) -> PathBuf {
     data_dir.join("Recovery")
@@ -605,6 +617,36 @@ pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded,
     let b = filmcraft_media::reader::read_regular_file_bounded(&c.dir.join(SNAPSHOT), filmcraft_format::MAX_PROJECT_BYTES)
         .map_err(|e| format!("{}: {e}", c.dir.display()))?;
     filmcraft_format::decode(&b).map_err(|e| e.to_string())
+}
+
+/// Load the Premiere sidecar written with a recovery journal, if present and within size bounds.
+pub fn load_native_sidecar(dir: &Path) -> Option<crate::premiere::NativeOpen> {
+    let xml_path = dir.join(NATIVE_XML);
+    let json_path = dir.join(NATIVE_JSON);
+    if !xml_path.is_file() || !json_path.is_file() {
+        return None;
+    }
+    let xml_bytes = filmcraft_media::reader::read_regular_file_bounded(&xml_path, filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES as u64).ok()?;
+    let xml = String::from_utf8(xml_bytes).ok()?;
+    let env_bytes = filmcraft_media::reader::read_regular_file_bounded(&json_path, filmcraft_format::MAX_PROJECT_BYTES).ok()?;
+    let envelope: NativeJournalEnvelope = serde_json::from_slice(&env_bytes).ok()?;
+    Some(crate::premiere::NativeOpen { source: filmcraft_interchange::premiere::NativeSource { xml }, bindings: envelope.bindings, gzip: envelope.gzip })
+}
+
+fn remove_native_sidecar(dir: &Path) {
+    let _ = fs::remove_file(dir.join(NATIVE_XML));
+    let _ = fs::remove_file(dir.join(NATIVE_JSON));
+}
+
+fn write_native_sidecar(dir: &Path, native: &crate::premiere::NativeOpen) -> io::Result<()> {
+    if native.source.xml.len() > filmcraft_interchange::premiere::MAX_DOCUMENT_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Premiere XML exceeds 512 MiB limit"));
+    }
+    let envelope = NativeJournalEnvelope { gzip: native.gzip, bindings: native.bindings.clone() };
+    let json = serde_json::to_vec_pretty(&envelope).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    filmcraft_format::atomic_write(&dir.join(NATIVE_XML), native.source.xml.as_bytes())?;
+    filmcraft_format::atomic_write(&dir.join(NATIVE_JSON), &json)?;
+    Ok(())
 }
 
 pub fn discard_candidate(c: &RecoveryCandidate) -> io::Result<()> {
@@ -1052,9 +1094,18 @@ impl Worker {
         meta.project_name = s.project.name.clone();
         meta.project_path = s.path.clone();
         meta.bytes = bytes.len();
-        // Snapshot first, then the meta that makes it a candidate.
-        let r = filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)
-            .and_then(|_| filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default()));
+        meta.has_native = s.premiere_native.is_some();
+        // Snapshot, optional Premiere sidecar, then the meta that makes it a candidate.
+        let r = (|| -> io::Result<()> {
+            filmcraft_format::atomic_write(&self.session_dir.join(SNAPSHOT), &bytes)?;
+            if let Some(native) = &s.premiere_native {
+                write_native_sidecar(&self.session_dir, native)?;
+            } else {
+                remove_native_sidecar(&self.session_dir);
+            }
+            filmcraft_format::atomic_write(&self.session_dir.join(META), &serde_json::to_vec_pretty(&meta).unwrap_or_default())?;
+            Ok(())
+        })();
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(()) => {
@@ -1077,6 +1128,7 @@ impl Worker {
     fn clear_journal(&mut self) {
         let _ = fs::remove_file(self.session_dir.join(META));
         let _ = fs::remove_file(self.session_dir.join(SNAPSHOT));
+        remove_native_sidecar(&self.session_dir);
         self.journaled = 0;
     }
 

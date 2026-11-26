@@ -19,7 +19,10 @@ Premiere Clip object and their source ranges disagree, Save leaves that objectâ€
 unchanged and warns instead of last-wins overwrite. `.fcproj` remains the
 native FilmCraft format; Save As to `.fcproj` clears the Premiere XML sidecar. When
 **Auto Save also saves the current project** is on, the original-path write uses that same
-native Premiere writer (recovery / Auto-Save ring copies stay `.fcproj`).
+native Premiere writer (Auto-Save ring copies stay `.fcproj`). The crash-recovery journal also
+stores the Premiere XML and bindings beside `snapshot.fcproj`, so Recover can Save back into the
+`.prproj`. A journal without that sidecar clears the `.prproj` path and asks for Save As to
+`.fcproj` (or reopen the `.prproj`).
 
 `premiere.import` remains available to bring a Premiere project into an `.fcproj` with an
 immutable source snapshot and provenance.

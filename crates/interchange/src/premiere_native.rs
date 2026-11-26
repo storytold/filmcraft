@@ -9,6 +9,7 @@ use filmcraft_time::Tick;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use roxmltree::Node;
+use serde::{Deserialize, Serialize};
 
 use super::{Document, warning};
 use crate::{Error, Report, Result};
@@ -21,7 +22,8 @@ pub struct NativeSource {
 }
 
 /// Maps FilmCraft ids to Premiere ObjectID / ObjectUID strings so Save can patch the XML.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct NativeBindings {
     /// Timeline clip → ClipTrackItem ObjectID (`Start` / `End`).
     pub track_items: BTreeMap<ClipId, String>,
