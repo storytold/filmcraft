@@ -66,6 +66,8 @@ pub(crate) struct FxStage {
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
+    /// Bound when a pass has no Color Grading LUT or look, so the storage binding still exists.
+    grade_none: wgpu::Buffer,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
     /// Open [`begin_frame`](Self::begin_frame)s.
@@ -105,6 +107,8 @@ struct Step {
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
+    /// Color Grading Input LUT and Creative Look, packed for `fx.wgsl` (`grade`). Empty: none.
+    grade: Vec<f32>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -112,7 +116,95 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new(), grade: Vec::new() }
+}
+
+/// Header slots in a grade table: sizes, look id and intensity, then four domains (cube and
+/// shaper, input then look). Each slot is one `vec4`. Table texels follow, input shaper, input
+/// cube, look shaper, look cube.
+const GRADE_HEADER: usize = 18;
+
+fn put_domain(buf: &mut [f32], slot: usize, min: [f32; 3], max: [f32; 3]) {
+    let i = slot * 4;
+    buf[i] = min[0];
+    buf[i + 1] = min[1];
+    buf[i + 2] = min[2];
+    buf[i + 4] = max[0];
+    buf[i + 5] = max[1];
+    buf[i + 6] = max[2];
+}
+
+fn append_lut(buf: &mut Vec<f32>, lut: Option<&filmcraft_color::Lut>) {
+    let Some(lut) = lut else { return };
+    if let Some(s) = &lut.shaper {
+        for c in &s.data {
+            buf.extend_from_slice(&[c[0], c[1], c[2], 0.0]);
+        }
+    }
+    if let Some(c) = &lut.cube {
+        for p in &c.data {
+            buf.extend_from_slice(&[p[0], p[1], p[2], 0.0]);
+        }
+    }
+}
+
+fn put4(buf: &mut [f32], slot: usize, v: [f32; 4]) {
+    let i = slot * 4;
+    buf[i..i + 4].copy_from_slice(&v);
+}
+
+/// The storage-buffer table for a Color Grading op. Empty when the op has no LUT, look, wheels,
+/// curves or HSL key (the shader then leaves the binding unread). Sharpen is a later pass.
+fn grade_table(
+    input: Option<&filmcraft_color::Lut>,
+    look_lut: Option<&filmcraft_color::Lut>,
+    look: u32,
+    look_k: f32,
+    wheels: Option<&filmcraft_render::gpufx::GradeWheels>,
+    curves: Option<&filmcraft_render::gpufx::GradeCurves>,
+    hsl: Option<&filmcraft_render::gpufx::GradeHsl>,
+) -> Vec<f32> {
+    let cube_n = |l: Option<&filmcraft_color::Lut>| l.and_then(|l| l.cube.as_ref()).map(|c| c.size).unwrap_or(0);
+    let shaper_n = |l: Option<&filmcraft_color::Lut>| l.and_then(|l| l.shaper.as_ref()).map(|s| s.data.len()).unwrap_or(0);
+    let (ic, isz) = (cube_n(input), shaper_n(input));
+    let (lc, lsz) = (cube_n(look_lut), shaper_n(look_lut));
+    if ic == 0 && isz == 0 && lc == 0 && lsz == 0 && look == 0 && wheels.is_none() && curves.is_none() && hsl.is_none() {
+        return Vec::new();
+    }
+    let mut buf = vec![0.0; GRADE_HEADER * 4];
+    buf[0] = ic as f32;
+    buf[1] = isz as f32;
+    buf[2] = lc as f32;
+    buf[3] = lsz as f32;
+    buf[4] = look as f32;
+    buf[5] = look_k;
+    let dom = |l: Option<&filmcraft_color::Lut>, cube: bool| {
+        l.and_then(|l| if cube { l.cube.as_ref().map(|c| (c.domain_min, c.domain_max)) } else { l.shaper.as_ref().map(|s| (s.domain_min, s.domain_max)) })
+            .unwrap_or(([0.0; 3], [1.0; 3]))
+    };
+    for (slot, (min, max)) in [(2, dom(input, true)), (4, dom(input, false)), (6, dom(look_lut, true)), (8, dom(look_lut, false))] {
+        put_domain(&mut buf, slot, min, max);
+    }
+    if let Some(w) = wheels {
+        put4(&mut buf, 10, [w.sh[0], w.sh[1], w.sh[2], w.ls]);
+        put4(&mut buf, 11, [w.md[0], w.md[1], w.md[2], w.lm]);
+        put4(&mut buf, 12, [w.hi[0], w.hi[1], w.hi[2], w.lh]);
+        buf[17 * 4] = 1.0;
+    }
+    if let Some(c) = curves {
+        buf[13 * 4] = c.mask as f32;
+        buf.extend_from_slice(&c.samples);
+    }
+    if let Some(h) = hsl {
+        buf[13 * 4 + 1] = 1.0;
+        buf[13 * 4 + 2] = h.show as f32;
+        put4(&mut buf, 14, [h.hc, h.hr, h.smin, h.lmin]);
+        put4(&mut buf, 15, [h.lmax, h.soft, h.temp, h.tint]);
+        put4(&mut buf, 16, [h.sat, h.shift, 0.0, 0.0]);
+    }
+    append_lut(&mut buf, input);
+    append_lut(&mut buf, look_lut);
+    buf
 }
 
 /// Texels a row of a kernel texture holds.
@@ -148,6 +240,21 @@ fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i3
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
+fn push_unsharp(out: &mut Vec<Step>, rx: &[u32], ry: &[u32], amount: f32, threshold: f32) {
+    if rx.iter().chain(ry).all(|r| *r == 0) {
+        return;
+    }
+    let start = out.len();
+    boxes(rx, false, true, out);
+    boxes(ry, true, true, out);
+    for s in &mut out[start..] {
+        s.unsharp_blur = true;
+    }
+    let mut s = step(OP_UNSHARP, [0; 4], &[amount, threshold]);
+    s.combine = true;
+    out.push(s);
+}
+
 fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
     for &r in radii.iter().filter(|r| **r > 0) {
         let mut s = step(OP_BOX, [r, repeat as u32, vertical as u32, 0], &[]);
@@ -219,16 +326,7 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 }
             }
         }
-        FxOp::Unsharp { rx, ry, amount, threshold } => {
-            boxes(rx, false, true, &mut out);
-            boxes(ry, true, true, &mut out);
-            for s in &mut out {
-                s.unsharp_blur = true;
-            }
-            let mut s = step(OP_UNSHARP, [0; 4], &[*amount, *threshold]);
-            s.combine = true;
-            out.push(s);
-        }
+        FxOp::Unsharp { rx, ry, amount, threshold } => push_unsharp(&mut out, rx, ry, *amount, *threshold),
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
         FxOp::Resample(r) => {
             let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
@@ -282,6 +380,11 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             vround,
             vfeather,
             aspect,
+            input_lut,
+            look_lut,
+            look,
+            look_k,
+            tone,
             ..
         } => {
             let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
@@ -319,7 +422,16 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
                 ht_k[2],
                 0.0,
             ];
-            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+            let (wheels, curves, hsl) = tone.as_ref().map(|t| (t.wheels.as_ref(), t.curves.as_ref(), t.hsl.as_ref())).unwrap_or((None, None, None));
+            let grade = grade_table(input_lut.as_deref(), look_lut.as_deref(), *look, *look_k, wheels, curves, hsl);
+            let mut s = step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, (!grade.is_empty()) as u32, 0], &p);
+            s.grade = grade;
+            out.push(s);
+            if let Some(t) = tone
+                && t.sharpen.abs() > 1e-3
+            {
+                push_unsharp(&mut out, &t.sharpen_rx, &t.sharpen_ry, t.sharpen, 0.0);
+            }
         }
     }
     out
@@ -331,6 +443,8 @@ impl FxStage {
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 1
+            && l.max_storage_buffer_binding_size >= 16 * 1024 * 1024
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -373,6 +487,16 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -407,7 +531,17 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        let grade_none = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-grade-none"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        if let Ok(mut view) = grade_none.slice(..).get_mapped_range_mut() {
+            view.copy_from_slice(&[0; 16]);
+        }
+        grade_none.unmap();
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, grade_none, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -515,6 +649,19 @@ impl FxStage {
                 mapped_at_creation: false,
             });
             queue.write_buffer(&buf, 0, &bytes);
+            let grade = if s.grade.is_empty() {
+                self.grade_none.clone()
+            } else {
+                let raw: Vec<u8> = s.grade.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let g = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("fx-grade"),
+                    size: raw.len() as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                queue.write_buffer(&g, 0, &raw);
+                g
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -523,6 +670,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: grade.as_entire_binding() },
                 ],
             });
             let groups = if s.run {

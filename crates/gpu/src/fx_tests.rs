@@ -359,6 +359,64 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        ("lumetri", vec![("look", ch(1)), ("look_intensity", fl(40.0)), ("exposure", fl(0.25))], false),
+        ("lumetri", vec![("look", ch(4)), ("creative_sat", fl(80.0))], false),
+        ("lumetri", vec![("look", ch(8))], false),
+        ("lumetri", vec![("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())), ("exposure", fl(0.4)), ("contrast", fl(10.0))], false),
+        (
+            "lumetri",
+            vec![("look", ch(2)), ("look_lut", ParamValue::Text("builtin:look-teal-orange".into())), ("look_intensity", fl(70.0)), ("saturation", fl(90.0))],
+            false,
+        ),
+        ("lumetri", vec![("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]])), ("contrast", fl(15.0))], false),
+        ("lumetri", vec![("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.2], [0.5, 0.9], [1.0, 0.2]]))], false),
+        ("lumetri", vec![("wheel_shadows", pt(0.4, -0.2)), ("wheel_highlights_l", fl(25.0)), ("exposure", fl(0.2))], false),
+        (
+            "lumetri",
+            vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(30.0)), ("hsl_hue_range", fl(80.0)), ("hsl_sat", fl(40.0)), ("hsl_hue_shift", fl(40.0))],
+            false,
+        ),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ch(3)), ("hsl_hue", fl(120.0)), ("hsl_hue_range", fl(60.0))], false),
+        ("lumetri", vec![("sharpen", fl(40.0)), ("contrast", fl(10.0))], false),
+        (
+            "lumetri",
+            vec![
+                ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())),
+                ("curve_green", ParamValue::Curve(vec![[0.0, 0.05], [1.0, 0.85]])),
+                ("exposure", fl(0.3)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("look_lut", ParamValue::Text("builtin:look-teal-orange".into())),
+                ("hue_vs_hue", ParamValue::Curve(vec![[0.0, 0.4], [1.0, 0.6]])),
+                ("look_intensity", fl(60.0)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())),
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_temp", fl(40.0)),
+                ("hsl_sat", fl(140.0)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("look", ch(7)),
+                ("look_intensity", fl(50.0)),
+                ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [1.0, 0.8]])),
+                ("wheel_midtones", pt(-0.3, 0.2)),
+                ("sharpen", fl(15.0)),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -640,55 +698,61 @@ fn hostile_parameters_are_bounded() {
 #[test]
 fn lumetri_unsupported_sections_fall_back() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT (explicitly required by brief)
+    // An unresolved LUT string is not a table, so it stays on the GPU. Sharpen, curves, wheels
+    // and the HSL key do too. HSL Denoise and Blur still need the CPU mask filters.
     let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // sharpen alone
     let e = effect("lumetri", &[("sharpen", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // input_lut alone
+    // a reference that does not resolve changes nothing and stays on the GPU
     let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // look_lut
     let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // look > 0
+    // procedural Look and a resolved Look LUT stay on the GPU
     let e = effect("lumetri", &[("look", ch(1))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // curve_luma modified
+    let e = effect("lumetri", &[("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into()))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
+
     let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // hue_vs_sat non-empty
     let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // wheel offset
     let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // wheel lightness
     let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
 
-    // HSL secondary on
     let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(|o| o.gpu_ok()));
+
+    let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_denoise", fl(30.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "HSL Denoise stays on the CPU");
+
+    let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_blur", fl(10.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "HSL Blur stays on the CPU");
 
     // HDR working space
     let e = effect("lumetri", &[]);
@@ -696,6 +760,64 @@ fn lumetri_unsupported_sections_fall_back() {
     cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
     let op = FxOp::eval(&e, &cx_hdr, w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+
+    // a cube past the shader's cap stays on the CPU, which has no size limit
+    let mut op = FxOp::eval(&effect("lumetri", &[]), &cx(Tick::ZERO, 1.0), w, h).expect("lumetri");
+    if let FxOp::Lumetri { input_lut, .. } = &mut op {
+        *input_lut = Some(std::sync::Arc::new(filmcraft_color::Lut::from_cube(filmcraft_color::Lut3d::identity(66))));
+    }
+    assert!(!op.gpu_ok());
+}
+
+/// A 1D shaper, a cube with a non-unit domain, and a procedural look in one grade.
+#[test]
+fn lumetri_shaper_and_look_match_cpu() {
+    use filmcraft_color::{Lut, Lut1d, Lut3d};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let shaper = Lut1d { domain_min: [0.0; 3], domain_max: [1.0; 3], data: vec![[0.0, 0.05, 0.1], [0.2, 0.55, 0.9]] };
+    let cube = Lut3d {
+        title: String::new(),
+        size: 2,
+        domain_min: [0.0; 3],
+        domain_max: [0.5, 1.0, 1.0],
+        data: vec![
+            [0.05, 0.1, 0.2],
+            [0.9, 0.1, 0.2],
+            [0.05, 0.8, 0.2],
+            [0.9, 0.8, 0.15],
+            [0.05, 0.1, 0.7],
+            [0.85, 0.15, 0.7],
+            [0.1, 0.75, 0.65],
+            [0.95, 0.9, 0.4],
+        ],
+    };
+    let look = Lut::from_cube(Lut3d {
+        title: String::new(),
+        size: 2,
+        domain_min: [0.0; 3],
+        domain_max: [1.0; 3],
+        data: vec![[0.02, 0.03, 0.04], [0.8, 0.1, 0.1], [0.1, 0.7, 0.1], [0.7, 0.7, 0.1], [0.1, 0.1, 0.75], [0.6, 0.1, 0.6], [0.1, 0.6, 0.6], [0.85, 0.8, 0.7]],
+    });
+    let (w, h) = (48u32, 28u32);
+    let px = picture(w, h);
+    let mut op =
+        FxOp::eval(&effect("lumetri", &[("exposure", fl(0.3)), ("contrast", fl(20.0)), ("look", ch(6))]), &cx(Tick::ZERO, 1.0), w as usize, h as usize)
+            .expect("lumetri");
+    let FxOp::Lumetri { input_lut, look_lut, look_k, .. } = &mut op else { panic!("lumetri") };
+    *input_lut = Some(std::sync::Arc::new(Lut { title: String::new(), shaper: Some(shaper), cube: Some(cube) }));
+    *look_lut = Some(std::sync::Arc::new(look));
+    *look_k = 0.35;
+    assert!(op.gpu_ok());
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    op.apply(&mut cpu);
+    let mut c = GpuCompositor::new(&dev, &q);
+    let frame = VideoFrame::rgba_f32(w, h, px);
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
+    let (worst, flips) = compare(&cpu.px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "shaper/look LUT: {worst:.2e}, flips {flips:.4}");
 }
 
 /// A log source with effects: the effect stage draws it onto the working image through the CPU's

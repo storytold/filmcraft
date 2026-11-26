@@ -617,10 +617,16 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   never in the UI pass: the newest request per scope wins and the last result stays on screen until
   the next lands. An HDR scope render (the frame rendered again, in working space) starts at most
   every 100 ms while playing.
-- **LUTs.** Color Grading Input LUT and Creative Look reference `lib:<id>` (the project's LUT library,
-  `Project::luts`, embedded `.cube`/`.3dl` text) or `builtin:<id>` (code-generated camera
-  conversions and looks). `filmcraft-gpu::GpuLut` is the WGSL tetrahedral counterpart, tested for
-  parity.
+- **LUTs.** Color Grading's Input LUT (Basic Correction) and Look LUT (Creative) reference
+  `lib:<id>` (the project's LUT library, `Project::luts`, embedded `.cube`/`.3dl` text) or
+  `builtin:<id>` (code-generated camera conversions and looks). Look is a procedural grade; a
+  Look LUT, when set, replaces it, and Intensity mixes either toward the graded picture. Input
+  LUT runs first, at full strength, before white balance. On a Rec. 709 sequence the effect
+  shader samples both tables (tetrahedral, the CPU's interpolation) and runs the procedural
+  looks, curves, colour wheels, HSL Secondary's key and correction, and Creative Sharpen, so
+  those controls stay on the GPU path. A cube above 65³, a shaper above 4096 entries, HSL
+  Denoise and Blur, and an HDR working space still grade on the CPU. `filmcraft-gpu::GpuLut`
+  remains the standalone WGSL counterpart, tested for parity.
 
 ### 5.4 Multi-camera and synchronisation
 
