@@ -128,13 +128,48 @@ fn which_exports_are_hdr() {
         assert!(!hdr_output(false, false, f, hevc_only), "{f:?}: SDR working space");
         assert!(!hdr_output(true, true, f, hevc_only), "{f:?}: SDR asked for");
     }
-    // H.265 only where a registered encoder writes HDR
-    assert!(!hdr_output(true, false, Format::Hevc, never), "no probe: tone-mapped SDR, as with VideoToolbox");
+    // H.265 plans HDR with the built-in software Main 10 encoder even without a registered probe
+    assert!(hdr_output(true, false, Format::Hevc, never), "built-in software encoder writes Main 10 HDR");
     assert!(hdr_output(true, false, Format::Hevc, hevc_only));
+    assert!(!hdr_output(true, true, Format::Hevc, never), "settings.sdr forces SDR");
     assert!(!hdr_output(true, true, Format::Hevc, hevc_only), "settings.sdr forces SDR");
+    assert!(!hdr_output(false, false, Format::Hevc, never), "SDR working space");
     assert!(!hdr_output(false, false, Format::Hevc, hevc_only));
     // formats without HDR output
     assert!(!hdr_output(true, false, Format::Mjpeg, |_| true));
+}
+
+#[test]
+fn hevc_plans_hdr_for_pq_or_hlg_without_probe_and_honours_sdr_override() {
+    use crate::job::hdr_output;
+    use filmcraft_color::WorkingSpace;
+
+    let no_probe = |_: Format| false;
+
+    // Both Rec2100 PQ and HLG are HDR working spaces
+    for ws in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        assert!(ws.is_hdr(), "{ws:?} is an HDR working space");
+        // No-probe case: HEVC plans HDR via the built-in Main 10 software encoder
+        assert!(hdr_output(ws.is_hdr(), false, Format::Hevc, no_probe), "{ws:?}: plans HDR without registered probe");
+        // SDR override: setting sdr = true preserves SDR output even for PQ/HLG
+        assert!(!hdr_output(ws.is_hdr(), true, Format::Hevc, no_probe), "{ws:?}: sdr override forces SDR");
+    }
+
+    // SDR working space is never HDR
+    assert!(!hdr_output(WorkingSpace::Rec709.is_hdr(), false, Format::Hevc, no_probe));
+    assert!(!hdr_output(WorkingSpace::Rec709.is_hdr(), true, Format::Hevc, no_probe));
+
+    // Verify software HEVC encoder configures Main 10 for PQ/HLG HDR signals and Main for SDR
+    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
+        let s = ExportSettings { format: Format::Hevc, signal, ..Default::default() };
+        let enc = encoders::hevc_factory(Format::Hevc, 64, 48, FrameRate::FPS_24, &s).unwrap().unwrap();
+        let filmcraft_isobmff::CodecConfig::Hevc(cfg) = &enc.sample_entry().codec else { panic!() };
+        assert_eq!(cfg.general_profile_idc, 2, "Main 10 profile (profile_idc 2) for {signal:?}");
+    }
+    let s_sdr = ExportSettings { format: Format::Hevc, signal: ColorSignal::default(), sdr: true, ..Default::default() };
+    let enc_sdr = encoders::hevc_factory(Format::Hevc, 64, 48, FrameRate::FPS_24, &s_sdr).unwrap().unwrap();
+    let filmcraft_isobmff::CodecConfig::Hevc(cfg_sdr) = &enc_sdr.sample_entry().codec else { panic!() };
+    assert_eq!(cfg_sdr.general_profile_idc, 1, "Main profile (profile_idc 1) for SDR");
 }
 
 #[test]

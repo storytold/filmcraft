@@ -695,7 +695,7 @@ pub struct Summary {
 
 impl ExportSettings {
     /// Summary lines for a sequence of `seq_w`×`seq_h` at `seq_rate` / `seq_sr` exporting `duration`.
-    pub fn summary(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32, duration: Tick) -> Summary {
+    pub fn summary(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32, duration: Tick, seq_hdr: bool) -> Summary {
         let r = self.resolve(seq_w, seq_h, seq_rate, seq_sr);
         let mbps = |k: u32| format!("{:.2} Mbps", k as f64 / 1000.0);
         let video = if !self.has_video() {
@@ -721,12 +721,19 @@ impl ExportSettings {
                     v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
                 }
                 Format::Hevc => {
-                    // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
-                    let profile = if crate::hdr_available(Format::Hevc) { "HEVC Main / Main 10 for HDR" } else { "HEVC Main" };
-                    v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
+                    let is_hdr = seq_hdr && !self.sdr;
+                    let is_hw = if is_hdr {
+                        self.hardware_encoding == HardwareEncoding::Auto && crate::hdr_available(Format::Hevc)
+                    } else {
+                        self.hardware_encoding == HardwareEncoding::Auto && (crate::hardware_available(Format::Hevc) || crate::hdr_available(Format::Hevc))
+                    };
+                    let profile = if is_hdr { "HEVC Main 10" } else { "HEVC Main" };
+                    let hw_label = if is_hw { " (hardware encoder)" } else { "" };
+                    v += &format!(", {profile}{hw_label}, {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
-                        _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
+                        _ if is_hw => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
+                        _ => format!(", Target {}", mbps(r.target_kbps)),
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }

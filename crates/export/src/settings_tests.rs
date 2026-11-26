@@ -724,7 +724,7 @@ fn aac_audio_settings_and_names() {
     assert_eq!(Format::from_name(Format::Aac.id()), Some(Format::Aac));
     assert!(Format::ALL.contains(&Format::Aac) && Format::Aac.is_audio_only() && !Format::H264.is_audio_only());
     let s = ExportSettings { format: Format::Aac, include_audio: false, ..Default::default() };
-    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(10 * TICKS_PER_SECOND));
+    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(10 * TICKS_PER_SECOND), false);
     assert_eq!(sum.video, "No video");
     assert_eq!(sum.audio, "AAC, 320 kbps, 48000 Hz, Stereo");
     assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s, no picture");
@@ -801,7 +801,7 @@ fn mp3_settings_and_names() {
     assert_eq!(Format::from_name(Format::Mp3.id()), Some(Format::Mp3));
     assert!(Format::ALL.contains(&Format::Mp3) && Format::Mp3.is_audio_only());
     let s = ExportSettings { format: Format::Mp3, ..Default::default() };
-    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 44_100, Tick(10 * TICKS_PER_SECOND));
+    let sum = s.summary(1920, 1080, FrameRate::FPS_24, 44_100, Tick(10 * TICKS_PER_SECOND), false);
     assert_eq!(sum.video, "No video");
     assert_eq!(sum.audio, "MP3, 320 kbps, 44100 Hz, Stereo");
     assert_eq!(sum.estimated_bytes, 400_000, "320 kbps for 10 s");
@@ -809,7 +809,7 @@ fn mp3_settings_and_names() {
     let mut s = ExportSettings { format: Format::Mp3, ..Default::default() };
     s.audio.bitrate_kbps = 300;
     s.audio.sample_rate = Some(16_000);
-    assert_eq!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio, "MP3, 160 kbps, 16000 Hz, Stereo");
+    assert_eq!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).audio, "MP3, 160 kbps, 16000 Hz, Stereo");
     let mut mov = ExportSettings { format: Format::ProRes, ..Default::default() };
     mov.audio.codec = AudioCodec::Mp3;
     assert_eq!(mov.audio_codec(), AudioCodec::Pcm);
@@ -927,7 +927,7 @@ fn flac_audio_in_mp4_and_mov() {
         let path = dir.path(name);
         let s = ExportSettings { format, multiplexer: mux, path: path.clone(), range, audio: audio.clone(), ..Default::default() };
         assert_eq!(s.audio_codec(), AudioCodec::Flac, "{name}");
-        assert!(s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio.starts_with("FLAC (lossless) 24-bit"), "{name}");
+        assert!(s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).audio.starts_with("FLAC (lossless) 24-bit"), "{name}");
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         // `dfLa` was rewritten at the end: STREAMINFO with frame sizes, total samples and the MD5
@@ -973,7 +973,7 @@ fn flac_settings_round_trip_and_summary() {
     // settings saved before FLAC read the default level
     let old: AudioSettings = serde_json::from_value(serde_json::json!({"bits": 24})).unwrap();
     assert_eq!(old.flac_level, 5);
-    let sum = ExportSettings { format: Format::Flac, ..Default::default() }.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    let sum = ExportSettings { format: Format::Flac, ..Default::default() }.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false);
     assert!(sum.audio.starts_with("FLAC (lossless) 16-bit, level 5, 48000 Hz"), "{}", sum.audio);
     assert_eq!(sum.video, "No video");
     // estimated below PCM
@@ -1151,7 +1151,7 @@ fn crf_h264() {
     }
     // the value only matters in CRF mode
     assert!(ExportSettings { crf: f32::NAN, ..Default::default() }.validate().is_ok());
-    let summary = c.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    let summary = c.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
     assert!(summary.video.contains("CRF (constant quality) 18"), "{}", summary.video);
 
     // one pass at constant quality: a lower factor spends more bits, and both decode to the picture
@@ -1220,10 +1220,11 @@ fn h264_high10_and_all_intra_export() {
             s.multiplexer = Multiplexer::Mov;
         }
         s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(12)));
-        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).video;
         assert_eq!(summary.contains("every frame a keyframe"), intra, "{summary}");
         assert!(summary.contains(if intra { "High 10 Intra (10-bit)" } else { "High 10 (10-bit)" }), "{summary}");
-        let high = ExportSettings { h264_profile: H264Profile::High, ..s.clone() }.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).video;
+        let high =
+            ExportSettings { h264_profile: H264Profile::High, ..s.clone() }.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).video;
         assert!(high.contains("High (8-bit)") || high.contains("High Intra (8-bit)"), "{high}");
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let Some(j) = ffprobe_json(&["-show_streams"], &path) else { return };
@@ -1405,8 +1406,11 @@ fn a_time_left_reads_like_a_clock() {
     assert!(!format_eta(Duration::MAX).is_empty(), "the largest duration cannot overflow");
 }
 
+static AV1_PROBE_LOCK: Mutex<()> = Mutex::new(());
+
 #[test]
 fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
+    let _lock = AV1_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for name in ["av1", "AV1", "av01"] {
         assert_eq!(Format::from_name(name), Some(Format::Av1), "{name}");
     }
@@ -1423,7 +1427,7 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
     assert_eq!((mov.audio_codec(), mov.extension()), (AudioCodec::Aac, "mp4"));
     let b = a.estimate_bytes(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
-    let summary = a.summary(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    let summary = a.summary(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
     assert_eq!(summary.format, "AV1 (MP4)");
     assert!(summary.video.contains("AV1 Main"), "{}", summary.video);
     let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..a.clone() }.validate().unwrap_err();
@@ -1439,7 +1443,8 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
 }
 
 #[test]
-fn h265_is_a_format_that_needs_a_registered_encoder() {
+fn h265_has_a_builtin_software_encoder() {
+    let _lock = AV1_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use std::sync::atomic::{AtomicBool, Ordering};
     // names, ids, files and serialized settings
     for name in ["hevc", "H.265", "h265", "HVC1", "x265"] {
@@ -1459,9 +1464,10 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     // 10 s of 20 Mbps video + 320 kbps AAC ≈ 25.4 MB, like H.264
     let b = h.estimate_bytes(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
     assert!((b as f64 - 25.4e6).abs() < 0.2e6, "{b}");
-    let summary = h.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND));
+    let summary = h.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
     assert_eq!(summary.format, "H.265 (HEVC) (MP4)");
-    assert!(summary.video.contains("HEVC Main") && summary.video.contains("Target 20.00 Mbps"), "{}", summary.video);
+    assert!(summary.video.contains("HEVC Main") && summary.video.contains("Target 20.00 Mbps") && !summary.video.contains("Max"), "{}", summary.video);
+    assert!(!summary.video.contains("hardware encoder"), "hardware encoding is off by default");
 
     // a hardware encoder has one pass
     let e = ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h.clone() }.validate().unwrap_err();
@@ -1470,26 +1476,145 @@ fn h265_is_a_format_that_needs_a_registered_encoder() {
     let e = ExportSettings { bitrate_mode: BitrateMode::Crf, ..h.clone() }.validate().unwrap_err();
     assert!(e.to_string().contains("CRF"), "{e}");
 
-    // formats with a built-in encoder are always available; this one only when a registered probe says so
+    // formats with a built-in encoder are always available; H.265 now has a built-in software encoder
     assert!(Format::ALL.iter().filter(|f| f.has_builtin_encoder()).all(|f| available(*f)));
-    assert!(!Format::Hevc.has_builtin_encoder());
+    assert!(Format::Hevc.has_builtin_encoder());
+    assert!(available(Format::Hevc));
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
+    let sc_hevc = Scratch::new("h265-builtin");
+    let out = export(&p, seq, &ExportSettings { path: sc_hevc.path("x.mp4"), include_audio: false, ..h.clone() }, &m, &Progress::default()).unwrap();
+    assert_eq!(out.frames, 24);
+    assert_eq!(out.encoder.as_deref(), Some("software"));
+
+    // software encoder rejects unsupported bitrate modes (CBR) and maximum bitrate targets
+    let cbr_err = export(
+        &p,
+        seq,
+        &ExportSettings { path: sc_hevc.path("cbr.mp4"), bitrate_mode: BitrateMode::Cbr, include_audio: false, ..h.clone() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(cbr_err.contains("CBR"), "{cbr_err}");
+
+    let max_err = export(
+        &p,
+        seq,
+        &ExportSettings { path: sc_hevc.path("max.mp4"), max_bitrate_kbps: Some(25_000), include_audio: false, ..h.clone() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(max_err.contains("maximum bitrate"), "{max_err}");
+
+    // AV1 remains the format that needs a registered probe
+    assert!(!Format::Av1.has_builtin_encoder());
     static HERE: AtomicBool = AtomicBool::new(false);
     fn probe() -> bool {
         HERE.load(Ordering::SeqCst)
     }
-    assert!(!available(Format::Hevc), "nothing registered an encoder for it");
-    // and an export says so, honestly
-    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 160, 90, None);
-    let sc = Scratch::new("h265-missing");
-    let err = export(&p, seq, &ExportSettings { path: sc.path("x.mp4"), include_audio: false, ..h.clone() }, &m, &Progress::default()).unwrap_err().to_string();
-    assert!(err.contains("H.265") && err.contains("encoder not available"), "{err}");
-    register_format_probe(Format::Hevc, probe);
-    register_format_probe(Format::Hevc, probe); // the same probe twice is harmless
-    assert!(!available(Format::Hevc));
+    assert!(!available(Format::Av1), "nothing registered an encoder for it");
+    let sc = Scratch::new("av1-missing");
+    let av1 = ExportSettings { format: Format::Av1, ..Default::default() };
+    let err = export(&p, seq, &ExportSettings { path: sc.path("x.mp4"), include_audio: false, ..av1 }, &m, &Progress::default()).unwrap_err().to_string();
+    assert!(err.contains("AV1") && err.contains("encoder not available"), "{err}");
+    register_format_probe(Format::Av1, probe);
+    register_format_probe(Format::Av1, probe); // the same probe twice is harmless
+    assert!(!available(Format::Av1));
     HERE.store(true, Ordering::SeqCst);
-    assert!(available(Format::Hevc));
+    assert!(available(Format::Av1));
     HERE.store(false, Ordering::SeqCst);
-    assert!(!available(Format::Hevc));
+    assert!(!available(Format::Av1));
+}
+
+#[test]
+fn hevc_summary_reflects_selected_encoder_and_hardware_probes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static HW_PROBE: AtomicBool = AtomicBool::new(false);
+    static HDR_PROBE: AtomicBool = AtomicBool::new(false);
+
+    fn hw_probe_fn() -> bool {
+        HW_PROBE.load(Ordering::SeqCst)
+    }
+    fn hdr_probe_fn() -> bool {
+        HDR_PROBE.load(Ordering::SeqCst)
+    }
+
+    register_format_probe(Format::Hevc, hw_probe_fn);
+    register_hdr_probe(Format::Hevc, hdr_probe_fn);
+
+    let h_off = ExportSettings { format: Format::Hevc, hardware_encoding: HardwareEncoding::Off, ..Default::default() };
+    let h_auto = ExportSettings { format: Format::Hevc, hardware_encoding: HardwareEncoding::Auto, ..Default::default() };
+
+    // 1. No hardware encoder available:
+    //    - SDR: reports HEVC Main without Max or hardware label
+    //    - HDR: reports HEVC Main 10 without Max or hardware label
+    HW_PROBE.store(false, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
+    let s_off_sdr = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
+    assert!(s_off_sdr.video.contains("HEVC Main"), "{}", s_off_sdr.video);
+    assert!(!s_off_sdr.video.contains("Main 10"), "{}", s_off_sdr.video);
+    assert!(!s_off_sdr.video.contains("hardware encoder"), "{}", s_off_sdr.video);
+    assert!(s_off_sdr.video.contains("Target 20.00 Mbps") && !s_off_sdr.video.contains("Max"), "{}", s_off_sdr.video);
+
+    let s_off_hdr = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), true);
+    assert!(s_off_hdr.video.contains("HEVC Main 10"), "{}", s_off_hdr.video);
+    assert!(!s_off_hdr.video.contains("hardware encoder"), "{}", s_off_hdr.video);
+    assert!(s_off_hdr.video.contains("Target 20.00 Mbps") && !s_off_hdr.video.contains("Max"), "{}", s_off_hdr.video);
+
+    let s_auto_sdr = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
+    assert!(s_auto_sdr.video.contains("HEVC Main"), "{}", s_auto_sdr.video);
+    assert!(!s_auto_sdr.video.contains("hardware encoder"), "{}", s_auto_sdr.video);
+    assert!(s_auto_sdr.video.contains("Target 20.00 Mbps") && !s_auto_sdr.video.contains("Max"), "{}", s_auto_sdr.video);
+
+    // 2. Hardware encoder available (8-bit SDR only, e.g. VideoToolbox):
+    //    - SDR: Auto reports HEVC Main (hardware encoder) with Target and Max; Off reports HEVC Main without Max
+    //    - HDR: VideoToolbox cannot write HDR, so Auto falls back to built-in encoder reporting HEVC Main 10 without hardware label or Max
+    //    - HDR with sdr override: Auto reports HEVC Main (hardware encoder)
+    HW_PROBE.store(true, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
+    let s_auto_hw8 = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
+    assert!(s_auto_hw8.video.contains("HEVC Main (hardware encoder)"), "{}", s_auto_hw8.video);
+    assert!(s_auto_hw8.video.contains("Target 20.00 Mbps, Max 30.00 Mbps"), "{}", s_auto_hw8.video);
+
+    let s_auto_hw8_hdr = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), true);
+    assert!(s_auto_hw8_hdr.video.contains("HEVC Main 10"), "{}", s_auto_hw8_hdr.video);
+    assert!(!s_auto_hw8_hdr.video.contains("hardware encoder"), "{}", s_auto_hw8_hdr.video);
+    assert!(s_auto_hw8_hdr.video.contains("Target 20.00 Mbps") && !s_auto_hw8_hdr.video.contains("Max"), "{}", s_auto_hw8_hdr.video);
+
+    let h_auto_sdr_override = ExportSettings { sdr: true, ..h_auto.clone() };
+    let s_auto_override = h_auto_sdr_override.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), true);
+    assert!(s_auto_override.video.contains("HEVC Main (hardware encoder)"), "{}", s_auto_override.video);
+    assert!(s_auto_override.video.contains("Target 20.00 Mbps, Max 30.00 Mbps"), "{}", s_auto_override.video);
+
+    let s_off_hw8 = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
+    assert!(s_off_hw8.video.contains("HEVC Main"), "{}", s_off_hw8.video);
+    assert!(!s_off_hw8.video.contains("hardware encoder"), "{}", s_off_hw8.video);
+    assert!(s_off_hw8.video.contains("Target 20.00 Mbps") && !s_off_hw8.video.contains("Max"), "{}", s_off_hw8.video);
+
+    // 3. Hardware encoder available with HDR probe (e.g. NVENC Main 10):
+    //    - Auto reports HEVC Main 10 (hardware encoder) for HDR and HEVC Main (hardware encoder) for SDR, with Target and Max
+    //    - Off reports HEVC Main 10 for HDR and HEVC Main for SDR, without hardware label or Max
+    HDR_PROBE.store(true, Ordering::SeqCst);
+    let s_auto_hw10_hdr = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), true);
+    assert!(s_auto_hw10_hdr.video.contains("HEVC Main 10 (hardware encoder)"), "{}", s_auto_hw10_hdr.video);
+    assert!(s_auto_hw10_hdr.video.contains("Target 20.00 Mbps, Max 30.00 Mbps"), "{}", s_auto_hw10_hdr.video);
+
+    let s_auto_hw10_sdr = h_auto.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), false);
+    assert!(s_auto_hw10_sdr.video.contains("HEVC Main (hardware encoder)"), "{}", s_auto_hw10_sdr.video);
+    assert!(s_auto_hw10_sdr.video.contains("Target 20.00 Mbps, Max 30.00 Mbps"), "{}", s_auto_hw10_sdr.video);
+
+    let s_off_hw10_hdr = h_off.summary(1920, 1080, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND), true);
+    assert!(s_off_hw10_hdr.video.contains("HEVC Main 10"), "{}", s_off_hw10_hdr.video);
+    assert!(!s_off_hw10_hdr.video.contains("hardware encoder"), "{}", s_off_hw10_hdr.video);
+    assert!(s_off_hw10_hdr.video.contains("Target 20.00 Mbps") && !s_off_hw10_hdr.video.contains("Max"), "{}", s_off_hw10_hdr.video);
+
+    // Reset probes so other tests are not affected
+    HW_PROBE.store(false, Ordering::SeqCst);
+    HDR_PROBE.store(false, Ordering::SeqCst);
 }
 
 #[test]
@@ -1522,7 +1647,7 @@ fn tiff_size_estimate_tracks_alpha_and_real_output() {
         settings.validate().unwrap();
 
         let expected = 320_u64 * 180 * if alpha { 4 } else { 3 };
-        let summary = settings.summary(320, 180, rate, 48_000, duration);
+        let summary = settings.summary(320, 180, rate, 48_000, duration, false);
         assert_eq!(summary.estimated_bytes, expected, "alpha={alpha}");
         assert_eq!(settings.estimate_bytes(320, 180, rate, 48_000, duration), expected);
         let result = export(&project, sequence, &settings, &sources, &Progress::default()).unwrap();
@@ -1994,7 +2119,7 @@ fn sample_format_settings_round_trip_summary_and_estimate() {
         let mut s = ExportSettings { format, ..Default::default() };
         s.audio.set_sample_format(sf);
         (
-            s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio,
+            s.summary(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND), false).audio,
             s.estimate_bytes(64, 36, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)),
         )
     };

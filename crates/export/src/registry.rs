@@ -1,6 +1,6 @@
 #[cfg(test)]
 use super::Ordering;
-use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
+use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, hevc_factory, mjpeg_factory, prores_factory};
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
@@ -86,7 +86,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 pub(crate) fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, hevc_factory, prores_factory, dnx_factory, apv_factory, mjpeg_factory]))
 }
 
 pub(crate) fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
@@ -259,9 +259,10 @@ fn hdr_probes() -> &'static RwLock<Vec<FormatProbe>> {
 }
 
 /// Say how to find out whether the registered encoder of `format` can write HDR (PQ / HLG) on this
-/// machine: `probe` runs when [`hdr_available`] asks (it should cache its answer). Only H.265 needs
-/// one: its encoders are hardware-only and not all of them take 10-bit pictures, so an HDR sequence
-/// exports as tone-mapped SDR unless a probe says otherwise. Registering the same probe twice is harmless.
+/// machine: `probe` runs when [`hdr_available`] asks (it should cache its answer). For H.265, the
+/// built-in software encoder writes Main 10 HDR; hardware encoders may register a probe if they
+/// support 10-bit HDR (NVENC writes Main 10; VideoToolbox is 8-bit only). Registering the same probe
+/// twice is harmless.
 pub fn register_hdr_probe(format: Format, probe: fn() -> bool) {
     let mut g = hdr_probes().write().unwrap_or_else(PoisonError::into_inner);
     if !g.iter().any(|(f, p)| *f == format && std::ptr::fn_addr_eq(*p, probe)) {
@@ -276,11 +277,18 @@ pub fn hdr_available(format: Format) -> bool {
     probes.into_iter().any(|p| p())
 }
 
+/// Whether a registered probe says a hardware encoder of `format` is available on this machine.
+pub fn hardware_available(format: Format) -> bool {
+    let probes: Vec<fn() -> bool> =
+        format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().filter(|(f, _)| *f == format).map(|(_, p)| *p).collect();
+    probes.into_iter().any(|p| p())
+}
+
 /// Whether a format can currently be exported: it has a built-in encoder, or a registered probe
 /// says its encoder works here.
 pub fn available(format: Format) -> bool {
     if !Format::ALL.contains(&format) {
         return false;
     }
-    format.has_builtin_encoder() || format_probes().read().unwrap_or_else(PoisonError::into_inner).iter().any(|(f, probe)| *f == format && probe())
+    format.has_builtin_encoder() || hardware_available(format)
 }

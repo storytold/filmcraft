@@ -101,7 +101,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     });
     // summary
     let range = range_ticks(ex, &q);
-    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, q.settings.sample_rate, range.1 - range.0);
+    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, q.settings.sample_rate, range.1 - range.0, q.settings.color.working.is_hdr());
     child.add_space(8.0);
     let resp = egui::Frame::NONE
         .fill(t.field_bg)
