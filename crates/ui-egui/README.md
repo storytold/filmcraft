@@ -124,23 +124,56 @@ same result over automation. The model's decisions (in `crates/engine/src/prompt
 
 The overlay's decisions:
 
-- **Edge and height:** a band along the bottom of the visible picture, at most 45% of its height.
-  The voice-over countdown at the top of the window stays clear, and the band repeats the caption
-  line, so the burned-in captions it covers are not lost. It is drawn with the monitor's painter
-  only (never rendered or exported) and stays on in full-screen Program.
-- **Rows shown:** up to four talking points (the one before the current point, the current one, the
-  next ones), with "N more" when the list goes on; three script lines; then the next section, the
-  caption and any warnings.
-- **Script scrolling:** smooth, so the narrator's position sits on a reading line marked by a bar;
-  what is already read is dimmed.
-- **Signals:** the current point is bold on `row_selected` with ▶, finished points are dimmed with
-  ✓, later ones have •; warnings start with ⚠ and are bold. Colour is never the only signal.
-- **Colours** are theme tokens (`panel_bg` at 92% opacity, `text`, `text_dim`, `row_selected`).
-  The `danger` and `accent` tokens fall below 3:1 on the band over some pictures or themes, so the
-  progress bar uses `text` with a `text_dim` outline.
+- **Shape and edge:** a card centred at the bottom of the visible picture, inset from its edges by
+  the action-safe band the Safe Margins draw (5% of the picture's shorter side, 8 to 40 pt), at
+  most 60 base type sizes wide and 45% of the picture tall. It has a window's look: `panel_bg`,
+  opaque, a 1 pt `field_border` edge, the theme's popup shadow and `radius_sm` corners scaled with
+  the type. Opaque, so no picture (a burned-in caption included) shows through its text; the card
+  repeats the caption line, so the burned-in captions it covers are not lost. The voice-over
+  countdown at the top of the window stays clear. It is drawn with the monitor's painter only
+  (never rendered or exported) and stays on in full-screen Program.
+- **Regions, top to bottom:** a header (the marker's flag, the section name, the time; room is left
+  before the time for a short readout), the progress bar, the body (talking points, script, or both
+  side by side with the points on the left), then a footer (the next section, warnings, the caption).
+- **Hierarchy:** the current talking point is the most prominent line, semibold at 1.4 times the
+  base size on the current-point highlight; the script is 1.3 times the base size with its reading
+  line on the same highlight. The section name (semibold) and the time (tabular figures,
+  `text_dim`) are at the base size. Upcoming points are at the base size in `text_dim`; the last
+  finished point is smaller, with ✓. Points not listed are counted ("N more").
+- **Talking points:** ▶ (the Play icon) marks the current point, ✓ finished ones, a hollow dot the
+  upcoming ones, so state never rests on colour. Each listed point has its length (written or its
+  share) in an outlined badge; the current point wraps to two lines and has a bar under it showing
+  how far through it the narrator is. Long names and points are cut with an ellipsis.
+- **Progress:** a 0.4-em bar on a `control_well` groove, split into segments where one talking
+  point ends and the next begins (a single bar when the segments would be too short).
+- **Script:** the line holding the narrator's position sits on a reading line (the highlight and a
+  bar at its left), the second of three lines or the first while the first line is read; what is
+  already read is dimmed. The script moves up a whole line at a time, eased over the theme's
+  animation time, so no line is shown cut in half; with animation turned off in Settings ▸
+  Appearance it moves without easing.
+- **Marker colour:** the section's marker colour (its custom colour, else its label's) is the
+  accent of the flag and the bars' fill. A marker can have any colour, so its lightness is moved,
+  hue kept, just enough for 3:1 against the card and the groove (`craft_theme::ensure_contrast`).
+  No text is ever drawn on it, and it is never the only signal: the name is beside the flag. The
+  next section's flag has the next marker's colour.
+- **Caption line:** drawn as the Timeline draws captions: the track's badge (C1) and the caption
+  text in a block, both in the Timeline's caption block colour with white text.
+- **Warnings:** bold text with ⚠ on a `pill_active_bg` block, one row each.
+- **Scaling:** the base size is 3% of the picture's height (2.2% of its width for a narrow picture),
+  from 11 pt (the theme's small text, the normal layout's Program panel) to 19 pt; spacing and
+  radius are the theme's `gap` and `radius_sm` scaled by the same factor. When the card would pass
+  45% of the picture, it keeps the header and the current point (or two script lines), then adds in
+  this order what fits: the next point, the next section, the warnings, the caption, a third script
+  line, the other upcoming points (three at most), the last finished point, the "N more" count.
+  Between sections the card is only as wide as its message.
+- **Colours** are theme tokens: `panel_bg`, `field_border`, `text`, `text_dim`, `control_well`,
+  `pill_active_bg`, and for the current-point highlight `row_selected`, or `pill_active_bg` or
+  `hover` where `row_selected` does not stand apart from the card (Dark) or gives `text_dim` less
+  than 4.5:1 (Light). The caption uses the Timeline's caption block colour.
 - **Times:** lengths and countdowns round up to whole seconds, elapsed time rounds down.
 - **Accessibility:** the automation element `program.prompter` and one `Label` node carry the
-  overlay's text in reading order (a label node keeps its text in its value).
+  overlay's text in reading order (a label node keeps its text in its value). What is dropped from
+  the card for lack of room stays in that text.
 
 Tests:
 
@@ -155,23 +188,33 @@ Tests:
   `prompter_inspect_reports_the_section_at_a_time_and_changes_nothing`,
   `hostile_comments_markers_and_times_never_panic`.
 - Unit, `panels::prompter::tests`:
-  `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (4.5:1 for text, dimmed
-  text and the current point's highlight, 3:1 for the progress bar, over black, white, red and
-  blue pictures in all three themes).
+  `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (in all three themes, with
+  and without accessible contrast: the card is opaque; 4.5:1 for text and dimmed text on the card,
+  on the current-point highlight and on the warning block, and for the caption's white on its
+  block; 3:1 for the reading bar and a bar without a marker colour; the highlight stands apart from
+  the card; and 3:1 against the card and the groove for the accent of 216 marker colours spread
+  over the RGB cube) and `a_marker_colour_that_already_reads_is_kept_as_it_is` (the accent is the
+  marker's own colour when it reads, and keeps its hue when it is lightened).
 - Headless UI, `tests/it/prompter_ui.rs`:
   `the_prompter_is_off_by_default_and_the_view_command_toggles_it`,
   `the_prompter_follows_the_playhead_through_points_and_sections`,
   `the_prompter_runs_along_the_bottom_of_the_picture_and_stays_in_full_screen_program`,
   `points_longer_than_their_section_are_reported_on_the_overlay`.
 
-Results on Linux (2026-11-25): all 9 engine and 5 UI prompter tests pass, and the 4 headless tests
-fail with the overlay's draw call removed. In the full UI suite, 1205 of 1207 passed under heavy
-load; the two that failed are timing tests outside the prompter and pass alone.
+Results on Linux (2026-11-25): all 9 engine and 6 UI prompter tests pass, and the 4 headless tests
+fail with the overlay's draw call removed. In the full UI suite, 1207 of 1208 passed under heavy
+load; the one that failed, `perf_ui::queued_frames_do_not_poll_the_ui`, is a known intermittent
+test outside the prompter that fails the same way on `main` on the same machine. The two unit tests
+fail when the current-point highlight is `row_selected` in every theme, or when the accent ignores
+the marker's colour.
 
 Limitations: changes on the overlay, and turning it on or off by shortcut, are not announced
-through a live region (no shared helper yet). The script scrolls smoothly, and the app has no
-reduced-motion setting for it to follow. The band's text size follows the picture's height, not the
-system text size. Right after a seek, the monitor shows the nearest cached picture until the new
+through a live region (no shared helper yet). The script's line-by-line easing follows the app's
+animation setting, not a system reduced-motion setting. The card's text size follows the picture,
+not the system text size. In the normal layout's small Program panel the card has room for the
+header, the current point and one or two more rows, so the caption is often among what it leaves
+out; it is then still in the accessibility text, and the burned-in caption under the card is not
+visible. Right after a seek, the monitor shows the nearest cached picture until the new
 frame renders, while the prompter already shows the new time.
 
 ## Pane layout controls

@@ -111,7 +111,9 @@ fn the_prompter_runs_along_the_bottom_of_the_picture_and_stays_in_full_screen_pr
     let band = rect_of(&d.prompter().expect("the prompter"));
     let inside = |r: [f64; 4], o: [f64; 4]| r[0] >= o[0] - 0.5 && r[1] >= o[1] - 0.5 && r[0] + r[2] <= o[0] + o[2] + 0.5 && r[1] + r[3] <= o[1] + o[3] + 0.5;
     assert!(inside(band, picture), "inside the picture: {band:?} in {picture:?}");
-    assert!((band[1] + band[3] - (picture[1] + picture[3])).abs() < 1.0, "along its bottom edge");
+    // inset from the edge by the safe margin (5% of the picture's shorter side), so near it, not on it
+    let gap = picture[1] + picture[3] - (band[1] + band[3]);
+    assert!((0.0..picture[3] * 0.1).contains(&gap), "at its bottom edge: {gap} above it");
     assert!(band[3] < picture[3] / 2.0, "leaving most of the picture clear");
 
     let cinema = d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
