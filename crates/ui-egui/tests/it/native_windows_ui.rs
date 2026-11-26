@@ -4,6 +4,7 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use crate::support::demo_session;
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
@@ -15,7 +16,10 @@ use serde_json::{Value, json};
 #[derive(Default)]
 struct WindowIo {
     focused: bool,
+    viewport: Option<(egui::ViewportId, egui::Rect)>,
     events: Vec<egui::Event>,
+    hovered_files: Vec<egui::HoveredFile>,
+    dropped_files: Vec<egui::DroppedFileHandle>,
     ime: Option<egui::output::IMEOutput>,
     reset_requests: Vec<egui::ImeResetId>,
 }
@@ -28,21 +32,38 @@ thread_local! {
 fn native_host() {
     WINDOW.with(|w| *w.borrow_mut() = WindowIo::default());
     egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
-        let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
-        let place = egui::Rect::from_min_size(viewport.builder.position.unwrap_or_default(), size);
         let id = viewport.ids.this;
-        let (focused, events) = WINDOW.with(|w| {
+        // A viewport builder is a delta after creation: omitted geometry keeps
+        // the OS window's last reported position and size.
+        let previous = ctx.input_for(egui::ViewportId::ROOT, |i| i.raw.viewports.get(&id).and_then(|info| info.inner_rect));
+        let size = viewport.builder.inner_size.or_else(|| previous.map(|rect| rect.size())).unwrap_or(egui::vec2(400.0, 300.0));
+        let min = viewport.builder.position.or_else(|| previous.map(|rect| rect.min)).unwrap_or_default();
+        let place = egui::Rect::from_min_size(min, size);
+        let (focused, events, hovered_files, dropped_files) = WINDOW.with(|w| {
             let mut w = w.borrow_mut();
-            (w.focused, std::mem::take(&mut w.events))
+            w.viewport = Some((id, place));
+            (w.focused, std::mem::take(&mut w.events), std::mem::take(&mut w.hovered_files), std::mem::take(&mut w.dropped_files))
         });
-        let info = egui::ViewportInfo { inner_rect: Some(place), outer_rect: Some(place), focused: Some(focused), ..Default::default() };
+        let info = egui::ViewportInfo {
+            parent: Some(viewport.ids.parent),
+            inner_rect: Some(place),
+            outer_rect: Some(place),
+            focused: Some(focused),
+            ..Default::default()
+        };
+        // The real integration lists every open window, including the root, on
+        // child input. Otherwise a drag can treat its source viewport as closed.
+        let mut viewports = ctx.input_for(egui::ViewportId::ROOT, |i| i.raw.viewports.clone());
+        viewports.insert(id, info);
         let input = egui::RawInput {
             viewport_id: id,
-            viewports: std::iter::once((id, info)).collect(),
+            viewports,
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             time: ctx.input(|i| Some(i.time)),
             focused,
             events,
+            hovered_files,
+            dropped_files,
             ..Default::default()
         };
         let mut out = ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui));
@@ -58,24 +79,29 @@ fn native_host() {
 struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
+    /// The OS stand-in's desktop pointer, which a panel's own OS window reads during a drag
+    /// that started in the main window.
+    system: std::sync::Arc<craft_window::system::FakeSystem>,
 }
 
 impl Driver {
     /// The demo project with a new sequence open and `source` in the Source Monitor.
     fn new(source: u64) -> Self {
         native_host();
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut s = demo_session();
         s.execute("file.newSequence", json!({"name": "Native", "width": 1280, "height": 720, "fps": 24})).unwrap();
         s.prefs.timeline.clip_mismatch_warning = false;
         s.execute("source.open", json!({"item": source})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
+        let system = std::sync::Arc::new(craft_window::system::FakeSystem::new());
+        let installed = system.clone();
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |cc| {
+            filmcraft_ui_egui::framework::install_headless_with(&cc.egui_ctx, installed);
             filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
             app
         });
-        let mut d = Driver { harness, tx };
+        let mut d = Driver { harness, tx, system };
         d.harness.ctx.set_embed_viewports(false);
         // A main window that reports its desktop place, as under X11: craft-ui otherwise keeps
         // floating windows in-window.
@@ -90,6 +116,25 @@ impl Driver {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
             let mut raw = std::mem::take(self.harness.input_mut());
+            // Keep a floated child in the root's next input as long as the last
+            // frame drew it, like the native integration. A missing source window
+            // otherwise cancels a file drag before its deferred delivery pass.
+            raw.viewports.retain(|id, _| *id == egui::ViewportId::ROOT);
+            WINDOW.with(|w| {
+                let mut w = w.borrow_mut();
+                if let Some((id, place)) = w.viewport.take() {
+                    raw.viewports.insert(
+                        id,
+                        egui::ViewportInfo {
+                            parent: Some(egui::ViewportId::ROOT),
+                            inner_rect: Some(place),
+                            outer_rect: Some(place),
+                            focused: Some(w.focused),
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             ctx.request_repaint();
@@ -129,7 +174,31 @@ impl Driver {
         self.harness.state()
     }
 
+    /// Send a real hosted file drag and drop over the element's native viewport.
+    fn drop_files_at(&mut self, element: &str, paths: Vec<std::path::PathBuf>) {
+        let mut at = rect(&self.element(element)).center();
+        if element.starts_with("timeline.track.") {
+            let panel = rect(&self.element("panel.Timeline"));
+            at.x = panel.min.x + self.app().ui.timeline.header_w + 60.0;
+        }
+        let (viewport, place) = WINDOW.with(|w| w.borrow().viewport.unwrap());
+        assert_ne!(viewport, egui::ViewportId::ROOT);
+        let desktop = place.min + at.to_vec2();
+        self.system.set_pointer(Some([desktop.x, desktop.y]));
+        WINDOW.with(|w| {
+            let mut w = w.borrow_mut();
+            w.focused = true;
+            w.hovered_files = paths.iter().map(|path| egui::HoveredFile { path: Some(path.clone()), mime: String::new() }).collect();
+        });
+        self.frames(1);
+        WINDOW.with(|w| w.borrow_mut().dropped_files = paths.into_iter().map(|path| std::sync::Arc::new(OsDrop(path)) as _).collect());
+        self.frames(12);
+    }
+
+    /// The pointer in the main window, which also puts the OS pointer there: the main window's
+    /// content starts at the desktop origin.
     fn pointer(&mut self, pos: egui::Pos2, pressed: Option<bool>) {
+        self.system.set_pointer(Some([pos.x, pos.y]));
         self.harness.input_mut().events.push(egui::Event::PointerMoved(pos));
         if pressed == Some(true) {
             self.frames(1);
@@ -146,9 +215,74 @@ impl Driver {
     }
 }
 
+#[derive(Debug)]
+struct OsDrop(std::path::PathBuf);
+
+impl egui::DroppedFile for OsDrop {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|error| error.to_string())
+    }
+}
+
 fn rect(element: &Value) -> egui::Rect {
     let r: Vec<f32> = element["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
     egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+}
+
+/// Route a native-window file session through the framework, not directly to the dock's
+/// already-flattened fallback. Only drops over a Timeline track with the preference on place a clip.
+#[test]
+fn files_dropped_on_the_native_timeline_reach_the_track_once() {
+    let dir = tempfile::tempdir().unwrap();
+    for (panel, element, enabled, expected) in
+        [("Timeline", "timeline.track.V1.target", true, 1), ("Timeline", "timeline.track.V1.target", false, 0), ("Info", "panel.Info", true, 0)]
+    {
+        let mut d = Driver::new(5);
+        d.harness.state_mut().session.prefs.timeline.drop_import_to_timeline = enabled;
+        d.float(panel, [900.0, 120.0, 680.0, 420.0]);
+        let path = dir.path().join(format!("native_{panel}_{enabled}.png"));
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 140, 220, 255])).save(&path).unwrap();
+        let before = d.app().session.project.items.len();
+        d.drop_files_at(element, vec![path]);
+        let clips: usize = d.app().session.active_sequence().unwrap().video_tracks.iter().map(|track| track.items.len()).sum();
+        assert_eq!(d.app().session.project.items.len(), before + 1, "{panel}: one bin import");
+        assert_eq!(clips, expected, "{panel}, preference {enabled}: {}", d.app().ui.status);
+    }
+}
+
+/// A dropped project is handled through the normal root confirmation path, not
+/// substituted while the native dock body is drawing the old project. Cancel
+/// leaves that project dirty, and later passes must not replay the drop.
+#[test]
+fn a_native_timeline_project_drop_asks_before_replacing_a_dirty_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = dir.path().join("current.fcproj");
+    let other = dir.path().join("other.fcproj");
+    let mut destination = Session::default();
+    destination.execute("file.newProject", json!({"name": "Drop target"})).unwrap();
+    destination.execute("file.saveAs", json!({"path": other})).unwrap();
+
+    let mut d = Driver::new(5);
+    d.harness.state_mut().session.prefs.timeline.drop_import_to_timeline = true;
+    d.ok("engine.execute", json!({"command": "file.saveAs", "params": {"path": current}}));
+    d.ok("engine.execute", json!({"command": "file.newBin", "params": {"name": "Unsaved bin"}}));
+    assert!(d.app().session.is_dirty());
+
+    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
+    d.drop_files_at("timeline.track.V1.target", vec![other.clone()]);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["path"], json!(other));
+    assert_eq!(d.app().session.path.as_deref(), current.to_str());
+    assert!(d.app().session.is_dirty());
+
+    d.ok("ui.click", json!({"id": "openProject.cancel"}));
+    d.frames(12);
+    assert!(d.app().ui.clip_dialog.is_none(), "the consumed drop must not open a second prompt");
+    assert_eq!(d.app().session.path.as_deref(), current.to_str());
+    assert!(d.app().session.is_dirty());
 }
 
 /// The header of a panel in its own OS window (the ≡ menu, the Timeline's sequence tabs) is

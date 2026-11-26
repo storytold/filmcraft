@@ -1,7 +1,7 @@
 # ADR 0001: `unsafe` OS media FFI in `crates/platform`, and nowhere else
 
 - **Status:** accepted (2026-10-05, approved by the project owner; recorded in
-  [AGENTS.md](../../AGENTS.md) §0 item 3)
+  [AGENTS.md](../../AGENTS.md) (rule 13, `unsafe` in `## This repository`))
 - **Issue:** #30 (hardware acceleration)
 
 ## Context
@@ -245,6 +245,16 @@ the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parse
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
 
+## Addendum (2026-10-24): VA-API surface export as DMABUF (Linux)
+
+The first half of zero-copy playback on Linux adds no `unsafe` module: `vaapi::va` gained
+`Display::export_surface` (`vaExportSurfaceHandle`, DRM PRIME 2). The declarations are transcribed
+from libva's MIT-licensed `va.h` / `va_drmcommon.h` and checked in `vaapi/abi_tests.rs`, as before.
+The driver hands over file descriptors; every one is owned (`OwnedFd`) before anything else is
+checked, so an error closes them all and none leaks. The driver's counts are clamped to the arrays
+and every plane's object index is checked. The public result (`SurfaceDmabuf`) is plain data and
+owned descriptors, no raw pointers. Nothing imports it yet, so the readback stays the only path and
+the fallback guarantee is unchanged.
 ## Addendum (2026-11-17): AMD AMF hardware encoding on Windows
 
 H.264, H.265 (Main, Main 10) and AV1 encoding on AMD GPUs through AMF (`amf/`, #880). The rules

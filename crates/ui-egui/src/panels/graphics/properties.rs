@@ -283,7 +283,7 @@ impl Ctx<'_> {
             _ => 0,
         };
         let mut sel = cur;
-        let r = craft_ui::ComboBox::from_id_salt(("gfxc", self.clip.0, self.layer, id))
+        let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfxc", self.clip.0, self.layer, id))
             .selected_text(opts.get(cur).map_or("", |o| crate::i18n::t(o)))
             .width(width)
             .show_ui(vui, |ui| {
@@ -679,18 +679,21 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             };
             let fams = filmcraft_text::picker_families();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                for (f, _) in &fams {
-                    if ui.selectable_label(*f == family, f).clicked() {
-                        cx.set("font", json!(f));
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(
+                &mut vui,
+                |ui| {
+                    for (f, _) in &fams {
+                        if ui.selectable_label(*f == family, f).clicked() {
+                            cx.set("font", json!(f));
+                        }
                     }
-                }
-            });
+                },
+            );
             let response = crate::widgets::accessible_name(r.response, "Font");
             cx.auto("font", response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
+            let r = crate::legacy_dropdown::Dropdown::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
                     move |x: &&str| {
@@ -870,7 +873,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let id = egui::Id::unique("gfx-text-properties");
     egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.label(tl!("Text Layer Type"));
-        let r = craft_ui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
+        let r = crate::legacy_dropdown::Dropdown::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
             for paragraph in [false, true] {
                 // vertical text has no box to wrap in
                 let r = ui.add_enabled_ui(!(paragraph && d.vertical), |ui| ui.selectable_label(d.paragraph == paragraph, name(paragraph))).inner;

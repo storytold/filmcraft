@@ -18,6 +18,7 @@ use std::io::Write;
 mod aac_out;
 mod audio_out;
 mod job;
+mod mix_store;
 mod mp3_out;
 mod mxf_out;
 mod pace;

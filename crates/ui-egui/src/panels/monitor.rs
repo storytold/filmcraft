@@ -588,7 +588,7 @@ const ASKED_KEYS: usize = 64;
 /// is, and showing it keeps the picture one pass behind the mouse instead of frozen until the
 /// mouse rests. Playback has its own schedule and remembers nothing (what was on screen before
 /// Play is no stand-in for where it stopped).
-fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
+pub(crate) fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
     let asked = app.monitor_asked.entry(prefix.to_string()).or_default();
     if playing {
         asked.clear();
@@ -618,7 +618,7 @@ fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
 /// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
 /// with the display mode's channel mapping. Returns the texture and the frame it shows.
-fn cpu_texture(
+pub(crate) fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,
@@ -686,7 +686,7 @@ fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, 
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
     let pending_id = egui::Id::unique("eyedropper-pending");
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::framework::escape_pressed(&ctx) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
         return;
@@ -1166,7 +1166,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     // roomy spacing when every button fits with it, tight spacing before any goes to the overflow menu
     let count = buttons.len() as f32;
     let gap = if count * TRANSPORT_BUTTON + (count - 1.0).max(0.0) * 6.0 <= available { 6.0 } else { 2.0 };
-    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
+    let Some(fit) = crate::widgets::toolbar_fit::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
         ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(row.min, pos2((row.right() - 30.0).max(row.left()), row.bottom()))), |ui| {
             egui::ScrollArea::horizontal().id_salt((prefix, "transport-scroll")).show(ui, |ui| {
                 ui.horizontal(|ui| {

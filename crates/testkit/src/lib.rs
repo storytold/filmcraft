@@ -9,7 +9,7 @@
 //!   (`FILMCRAFT_BLESS=1` regenerates references).
 //!
 //! ffmpeg/ffprobe are external test oracles and fixture generators only; they are never linked
-//! or shipped (AGENTS.md §2).
+//! or shipped (standards/clean-room.md).
 
 pub mod cuts;
 pub mod deadline;

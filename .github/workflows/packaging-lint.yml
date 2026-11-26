@@ -5,9 +5,9 @@ name: Packaging lint
 on:
   push:
     branches: [main, release]
-    paths: [".github/workflows/**", "packaging/**", "assets/app-icon/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", "packaging/**", "assets/app-icon/**", "docs/nightly-signing-policy.example.json", ".github/nightly-signing-policy.json", ".github/nightly-linux-signing-key.asc", "sonar-project.properties"]
   pull_request:
-    paths: [".github/workflows/**", "packaging/**", "assets/app-icon/**"]
+    paths: [".github/workflows/**", ".github/actionlint.yaml", "packaging/**", "assets/app-icon/**", "docs/nightly-signing-policy.example.json", ".github/nightly-signing-policy.json", ".github/nightly-linux-signing-key.asc", "sonar-project.properties"]
   workflow_dispatch:
 
 permissions:
@@ -49,3 +49,25 @@ jobs:
       - name: Build and check non-executable installer fixtures
         shell: pwsh
         run: ./packaging/windows/test-install-policy.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'craft-install-policy-tests')
+
+  nightly-source-contract:
+    name: Nightly source contracts (no build or signing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enforce nightly serialization and synthetic packaging contracts
+        run: python3 packaging/nightly-tests.py
+      - name: Check the Linux Nightly launchers (no build, argv recorders only)
+        run: |
+          bash packaging/linux/nightly-launch-test.sh
+          bash packaging/linux/apprun-test.sh
+          bash packaging/linux/nightly-arch-tar-test.sh

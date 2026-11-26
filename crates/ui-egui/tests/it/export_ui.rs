@@ -6,19 +6,15 @@
 //! `export-*.png` there; without it no GPU is needed.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use crate::support::{Drive, builder, demo_session, driver, launch, save_snapshot, start, with_snapshots};
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    snapshots: Option<PathBuf>,
-    dir: PathBuf,
+driver! {
+    Driver {
+        dir: PathBuf,
+    };
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
@@ -26,70 +22,14 @@ impl Driver {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/export-tests").join(format!("ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("data")).unwrap();
-        let mut s = Session::default();
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut s = demo_session();
         s.export_presets.set_dir(&dir.join("data"));
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if snapshots.is_some() {
-            b = b.wgpu();
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, snapshots, dir };
-        d.frames(4);
-        d
+        let (harness, tx) = launch(s, with_snapshots(builder()));
+        start(Driver { harness, tx, dir })
     }
 
     fn path(&self, name: &str) -> String {
         self.dir.join(name).to_string_lossy().to_string()
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let v = self.call(method, params.clone());
-        assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-        v["result"].clone()
-    }
-
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == json!(id))
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
     }
 
     fn queue(&mut self) -> Vec<Value> {
@@ -97,25 +37,12 @@ impl Driver {
     }
 
     /// Step frames until `done` holds (the app advances the queue and jobs every frame).
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let t0 = std::time::Instant::now();
-        while !done(self) {
-            assert!(t0.elapsed().as_secs() < 300, "timed out waiting for {what}");
-            self.frames(2);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+    fn wait_until(&mut self, what: &str, done: impl FnMut(&mut Self) -> bool) {
+        self.wait_until_for(what, std::time::Duration::from_secs(300), 2, done);
     }
 
     fn snapshot(&mut self, name: &str) {
-        let Some(dir) = self.snapshots.clone() else { return };
-        self.frames(2);
-        match self.harness.render() {
-            Ok(img) => {
-                std::fs::create_dir_all(&dir).unwrap();
-                img.save(dir.join(format!("{name}.png"))).unwrap();
-            }
-            Err(e) => eprintln!("snapshot {name} skipped: {e}"),
-        }
+        save_snapshot(self, 2, &format!("{name}.png"));
     }
 }
 
@@ -561,6 +488,81 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     d.click("export.audio.bits.option.3");
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
+}
+
+#[test]
+fn export_preview_plays_steps_and_scrubs_without_changing_settings() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new("preview");
+    // Entering Export picks the Range from the sequence marks (#2749); choose Custom afterwards.
+    d.ok("ui.set", json!({"mode":"export"}));
+    d.frames(2);
+    d.ok("ui.set", json!({"export":{"range":"custom","customStart":2.0,"customEnd":4.0}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "custom");
+    let settings = serde_json::to_value(&d.app().ui.export.settings).unwrap();
+    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let dirty = d.app().session.is_dirty();
+    d.click("export.preview.first");
+    let rate = d.app().session.sequence_rate();
+    assert_eq!(d.app().session.playhead(), rate.snap(filmcraft_engine::time::Tick::from_seconds_f64(2.0)));
+    d.click("export.preview.stepForward");
+    assert_eq!(rate.frame_at(d.app().session.playhead()), rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(2.0)) + 1);
+    d.click("export.preview.stepBack");
+    d.click("export.preview");
+    d.app().ui.focused = PanelKind::Source;
+    d.ok("ui.key", json!({"key":"Space"}));
+    assert!(d.app().playback.playing);
+    assert!(!d.app().source_playback.clock.playing);
+    d.click("export.preview.toggle");
+    assert!(!d.app().playback.playing);
+    let elements = d.ok("ui.elements", json!({"prefix":"export.preview.scrub"}));
+    let rect = elements[0]["rect"].as_array().unwrap();
+    let x = rect[0].as_f64().unwrap();
+    let y = rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0;
+    let w = rect[2].as_f64().unwrap();
+    d.ok("ui.drag", json!({"from":{"x":x+12.0,"y":y},"to":{"x":x+w*0.65,"y":y},"steps":8}));
+    assert!(d.app().session.playhead().seconds() > 2.5);
+    assert!(d.app().session.playhead().seconds() < 4.0);
+    assert!(!d.app().playback.playing);
+    d.click("export.preview.last");
+    assert_eq!(rate.frame_at(d.app().session.playhead()), rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(4.0) - filmcraft_engine::time::Tick(1)));
+    assert_eq!(serde_json::to_value(&d.app().ui.export.settings).unwrap(), settings);
+    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(d.app().session.is_dirty(), dirty);
+    d.snapshot("export-preview-controls");
+    // Audio-only exports keep navigation and audition available without requesting picture.
+    d.app().ui.export.settings.format = filmcraft_engine::export::Format::Wav;
+    d.frames(3);
+    d.click("export.preview.first");
+    assert!(d.has("export.preview.scrub"));
+    d.snapshot("export-preview-audio");
+}
+
+#[test]
+fn export_preview_range_change_stops_at_the_new_start() {
+    let mut d = Driver::new("preview-range-change");
+    d.ok("ui.set", json!({"mode":"export"}));
+    d.ok("ui.set", json!({"export":{"range":"custom","customStart":0.0,"customEnd":10.0}}));
+    d.click("export.preview.first");
+    d.wait_until("initial preview picture", |d| d.app().texture_key("export-preview").is_some_and(|key| key.frame == 0));
+    d.click("export.preview.toggle");
+    assert!(d.app().playback.playing);
+    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let undo = d.app().session.undo_mark();
+    let dirty = d.app().session.is_dirty();
+    d.ok("ui.set", json!({"export":{"customStart":8.0,"customEnd":10.0}}));
+    d.frames(3);
+    assert!(!d.app().playback.playing);
+    let rate = d.app().session.sequence_rate();
+    assert_eq!(d.app().session.playhead(), rate.snap(filmcraft_engine::time::Tick::from_seconds_f64(8.0)));
+    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(d.app().session.undo_mark(), undo);
+    assert_eq!(d.app().session.is_dirty(), dirty);
+    let first = rate.frame_at(filmcraft_engine::time::Tick::from_seconds_f64(8.0));
+    assert!(d.app().texture_key("export-preview").is_none_or(|key| key.frame >= first));
+    d.wait_until("new range preview picture", |d| d.app().texture_key("export-preview").is_some_and(|key| key.frame == first));
+    d.snapshot("export-preview-range-change");
 }
 
 #[test]

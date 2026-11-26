@@ -615,6 +615,11 @@
 	(gap)	(celah)
 	Out: {name}	Keluar: {name}
 	In: {name}	Masuk: {name}
+	Previous: {name}	Sebelumnya: {name}
+	Next: {name}	Berikutnya: {name}
+	Slip: {offset} frame	Slip: {offset} bingkai
+	Slip: {offset} frames	Slip: {offset} bingkai
+	at the media limit	di batas media
 	Play Around Edit (Space loops, Shift+K once)	Putar di Sekitar Edit (Space berulang, Shift+K sekali)
 	Trim Backward Many	Pangkas Mundur Banyak
 	Trim Backward	Pangkas Mundur
@@ -3590,6 +3595,7 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Set Playhead	Atur kepala putar
 	Enter a positive duration within the supported speed range.	Masukkan durasi positif dalam rentang kecepatan yang didukung.
 	Show Video Names	Tampilkan Nama Video
 	Show Audio Names	Tampilkan Nama Audio

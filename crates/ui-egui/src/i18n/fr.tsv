@@ -610,6 +610,11 @@
 	(gap)	(espace vide)
 	Out: {name}	Sortie : {name}
 	In: {name}	Entrée : {name}
+	Previous: {name}	Précédent : {name}
+	Next: {name}	Suivant : {name}
+	Slip: {offset} frame	Glissement : {offset} image
+	Slip: {offset} frames	Glissement : {offset} images
+	at the media limit	à la limite du média
 	Play Around Edit (Space loops, Shift+K once)	Lire autour du point de montage (Espace en boucle, Maj+K une fois)
 	Trim Backward Many	Rogner de plusieurs images en arrière
 	Trim Backward	Rogner en arrière
@@ -3596,6 +3601,7 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+	Set Playhead	Positionner la tête de lecture
 
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Un marqueur de plage doit avoir une durée positive

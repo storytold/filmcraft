@@ -591,6 +591,11 @@
 	(gap)	(промежуток)
 	Out: {name}	Выход: {name}
 	In: {name}	Вход: {name}
+	Previous: {name}	Предыдущий: {name}
+	Next: {name}	Следующий: {name}
+	Slip: {offset} frame	Скольжение: {offset} кадр
+	Slip: {offset} frames	Скольжение, кадров: {offset}
+	at the media limit	на границе медиа
 	Play Around Edit (Space loops, Shift+K once)	Воспроизвести вокруг склейки (пробел — цикл, Shift+K — один раз)
 	Trim Backward Many	Подрезать назад на несколько кадров
 	Trim Backward	Подрезать назад
@@ -3566,6 +3571,8 @@
 	Docking Action	Действие пристыковки
 	Resize floating panel	Изменить размер плавающей панели
 	Project Notes	Заметки проекта
+
+	Set Playhead	Установить курсор воспроизведения
 	Get Project Notes	Получить заметки проекта
 	Edit Project Notes	Редактировать заметки проекта
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Заметки для этого проекта: задачи, инструкции, номера кадров… Сохраняются вместе с проектом.
