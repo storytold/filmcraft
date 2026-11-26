@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
-    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job, export_params, format_bytes,
-    is_export_busy, json, output_path, pos2, vec2,
+    Align2, CUSTOM, Color32, ExportOutcome, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, active_export_job,
+    export_params, format_bytes, is_export_busy, json, last_export_outcome, output_path, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -45,10 +45,12 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let busy = is_export_busy(app);
     let active_job = active_export_job(app);
     let queue_active = app.session.export_queue.is_active();
+    let outcome = if busy { None } else { last_export_outcome(app) };
+    let outcome_h = if outcome.is_some() { 34.0 } else { 0.0 };
     // range + scaling
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 50.0)))
+            .max_rect(Rect::from_min_max(pos2(rect.min.x + 14.0, pv_area.max.y + 8.0), pos2(rect.max.x - 14.0, rect.max.y - 50.0 - outcome_h)))
             .id_salt("export-right"),
     );
     let ex = &mut app.ui.export;
@@ -184,7 +186,15 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     ui.painter().rect_filled(go, 15.0, fill_color);
     ui.painter().text(go.center(), Align2::CENTER_CENTER, button_label, Tokens::semibold(13.0), if go_enabled { Color32::WHITE } else { t.text_faint });
     reg.add("export.button", go, button_label);
+    let opened = outcome.and_then(|o| {
+        export_outcome_row(ui, &mut reg, &t, Rect::from_min_max(pos2(rect.min.x + 14.0, go.min.y - 38.0), pos2(rect.max.x - 14.0, go.min.y - 6.0)), o)
+    });
     reg.flush(app);
+    if let Some((path, reveal)) = opened
+        && let Err(e) = crate::panels::menu_dialogs::open_path(app, ui.ctx(), &path, reveal)
+    {
+        app.ui.status = e;
+    }
 
     if resp.clicked() && go_enabled {
         if let Some(job) = active_job {
@@ -223,4 +233,45 @@ fn range_ticks(ex: &ExportUi, q: &filmcraft_engine::project::Sequence) -> (Tick,
         "custom" => (Tick::from_seconds_f64(ex.custom_start.max(0.0)), Tick::from_seconds_f64(ex.custom_end.max(ex.custom_start + 0.001))),
         _ => (Tick::ZERO, end),
     }
+}
+
+/// The line above the Export button once an export has ended: a tick and the file with Open File
+/// and Show in Folder, or a cross and why it failed (#5220). The mark and the words both say which,
+/// so the colour is not the only signal. Returns the path to hand to the system, and whether to
+/// reveal it instead of opening it.
+fn export_outcome_row(ui: &mut egui::Ui, reg: &mut Reg, t: &Tokens, row: Rect, outcome: ExportOutcome) -> Option<(String, bool)> {
+    let mut opened = None;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(row).id_salt("export-outcome").layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let mark = Rect::from_center_size(pos2(row.min.x + 8.0, row.center().y), vec2(14.0, 14.0));
+    child.add_space(22.0);
+    let (ok, text) = match &outcome {
+        ExportOutcome::Done(path) => {
+            (true, tlf!("Exported {file}", file = std::path::Path::new(path).file_name().map_or_else(|| path.clone(), |f| f.to_string_lossy().to_string())))
+        }
+        ExportOutcome::Failed(e) => (false, tlf!("Export failed: {e}", e = e)),
+        ExportOutcome::Cancelled => (false, tl!("Export cancelled").to_string()),
+    };
+    let p = child.painter();
+    let c = mark.center();
+    if ok {
+        let stroke = egui::Stroke::new(2.0, t.render_green);
+        p.line_segment([c + vec2(-5.0, 0.5), c + vec2(-1.5, 4.0)], stroke);
+        p.line_segment([c + vec2(-1.5, 4.0), c + vec2(5.5, -4.0)], stroke);
+    } else {
+        let stroke = egui::Stroke::new(2.0, t.danger);
+        p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], stroke);
+        p.line_segment([c + vec2(-4.5, 4.5), c + vec2(4.5, -4.5)], stroke);
+    }
+    child.add(egui::Label::new(egui::RichText::new(&text).color(t.text).size(12.0)).truncate()).on_hover_text(&text);
+    reg.add("export.result", row, if ok { format!("Succeeded: {text}") } else { format!("Failed: {text}") });
+    if let ExportOutcome::Done(path) = outcome {
+        for (key, name, reveal) in [("export.result.open", tl!("Open File"), false), ("export.result.reveal", tl!("Show in Folder"), true)] {
+            let r = child.add(egui::Button::new(egui::RichText::new(name).size(11.0)).small());
+            reg.add(key, r.rect, name);
+            if r.clicked() {
+                opened = Some((path.clone(), reveal));
+            }
+        }
+    }
+    opened
 }
