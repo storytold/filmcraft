@@ -17,7 +17,9 @@ use crate::mask::Mask;
 pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
 
 mod vfx;
-pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point, ultra_key_setting};
+pub use vfx::{
+    EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point, insta360_fov_preset, insta360_frame_range, ultra_key_setting,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
@@ -198,6 +200,14 @@ pub(crate) fn fs(
         animatable: true,
         group: None,
     }
+}
+/// Mark an otherwise-animatable parameter as not keyframable: its value is
+/// derived from another control by the editor's companion sync, so keyframes on
+/// it would be dropped by the next edit rather than animated (the stopwatch on
+/// such a parameter would be a lie).
+pub(crate) fn fixed(mut p: ParamDef) -> ParamDef {
+    p.animatable = false;
+    p
 }
 pub(crate) fn pt(id: &'static str, label: &'static str, x: f64, y: f64) -> ParamDef {
     ParamDef { id, label, kind: ParamKind::Point, default: ParamValue::Vec2(Vec2::new(x, y)), animatable: true, group: None }

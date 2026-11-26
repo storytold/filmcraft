@@ -3906,6 +3906,10 @@ fn build() -> Vec<CommandSpec> {
                             }
                         }
                     }
+                    // Sphere Reframe: the Fov Preset and Frame Range drive FOV
+                    // Control and Distortion Control one way — editing those two
+                    // never moves Frame Range.
+                    insta360_companion_sync(e, &pid, &v);
                     Ok((keyframes, accepted_value))
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
@@ -3934,7 +3938,19 @@ fn build() -> Vec<CommandSpec> {
                 {
                     e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                 }
-                crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?.toggle_animation(mt);
+                // the same rule `effects.setParam` applies: a parameter the definition
+                // marks non-animatable (Sphere Reframe's derived Frame Range is the case)
+                // cannot gain keyframes from the stopwatch — the renderer never evaluates
+                // them, so offering the animation would only promise motion it will not
+                // show. Turning animation *off* always stays available, so projects saved
+                // before the rule still clear stale keyframes.
+                let animatable = e.def().and_then(|d| d.param(&pid)).is_none_or(|d| d.animatable);
+                let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?;
+                if !prm.keyframes.is_empty() || animatable {
+                    prm.toggle_animation(mt);
+                } else {
+                    return Err(bad("effects.toggleAnimation", format!("`{pid}` cannot be animated")));
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -3985,6 +4001,14 @@ fn build() -> Vec<CommandSpec> {
                 .ok_or_else(|| bad("effects.resetParam", "no such effect on clip"))?;
                 if !reset_params(e, Some(&pid), frame, source, mt) {
                     return Err(bad("effects.resetParam", format!("no param `{pid}`")));
+                }
+                // the companion controls follow a reset the same way they follow a
+                // drag: derive from the value the driver now actually holds at the
+                // reset time. A reset of an animated driver lands in that keyframe
+                // - the parameter's static value keeps the old setting - so the
+                // value at the reset time, not the static one, is what they derive from.
+                if let Some(v) = e.params.get(&pid).map(|x| x.value_at(mt)) {
+                    insta360_companion_sync(e, &pid, &v);
                 }
                 Ok(())
             })?;
@@ -4283,6 +4307,45 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
     any
 }
 
+/// Sphere Reframe's one-way companion sync: the Fov Preset and Frame Range drive
+/// FOV Control and Distortion Control (editing those two never moves Frame Range).
+/// Called with the value the driving parameter just took - from `effects.setParam`
+/// and, after a reset, from `effects.resetParam` - so a reset cannot leave the
+/// derived controls on a stale value the driver no longer implies. Targets the
+/// user animated with their own keyframes are theirs to keep: the sync carries the
+/// derived value to the *static* control only; wiping keyframes here deleted
+/// animation the first time Frame Range or the Fov Preset moved.
+fn insta360_companion_sync(e: &mut filmcraft_project::EffectInstance, pid: &str, v: &ParamValue) {
+    if e.effect != "vr_insta360_reframe" {
+        return;
+    }
+    fn write(e: &mut filmcraft_project::EffectInstance, id: &str, value: f64) {
+        if e.params.get(id).is_some_and(|p| !p.keyframes.is_empty()) {
+            return;
+        }
+        if let Some(p) = e.param_mut(id) {
+            p.value = ParamValue::Float(value);
+        } else {
+            e.params.insert(id.to_string(), filmcraft_project::Param::new(ParamValue::Float(value)));
+        }
+    }
+    match (pid, v) {
+        ("fov_preset", ParamValue::Choice(preset)) => {
+            if let Some((range, fov, distortion)) = filmcraft_project::effect::insta360_fov_preset(*preset) {
+                write(e, "frame_range", range);
+                write(e, "fov", fov);
+                write(e, "distortion", distortion);
+            }
+        }
+        ("frame_range", ParamValue::Float(range)) => {
+            let (fov, distortion) = filmcraft_project::effect::insta360_frame_range(*range);
+            write(e, "fov", fov);
+            write(e, "distortion", distortion);
+        }
+        _ => {}
+    }
+}
+
 /// The `interpolation` parameter; a missing or unknown name is linear.
 pub(crate) fn interpolation_p(p: &Value) -> filmcraft_project::Interpolation {
     match str_p(p, "interpolation").unwrap_or("linear").to_ascii_lowercase().as_str() {
@@ -4332,11 +4395,22 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
             _ => None,
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
+        // A keyframe on a float the definition marks `fixed` (not animatable - the
+        // timeline's automation lanes use the same `Float && animatable` test) would
+        // only be motion the user cannot see or reach: Sphere Reframe's Frame Range
+        // is derived on every edit and the sync wipes its keyframes, so the diamond
+        // is refused. Stepped Bool/Choice parameters are different: a keyframe there
+        // does mean something to at least one renderer (Uniform Scale is the
+        // documented case), so the editor leaves them alone, as it always has.
+        let animatable = e.def().and_then(|d| d.param(&pid)).is_none_or(|d| d.animatable || !matches!(d.kind, filmcraft_project::ParamKind::Float { .. }));
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
                 let added = !prm.remove_keyframe_at(mt_now);
+                if added && !animatable {
+                    return Err(bad("keyframe", format!("`{pid}` cannot be animated")));
+                }
                 if added {
                     prm.add_keyframe(mt_now);
                 }

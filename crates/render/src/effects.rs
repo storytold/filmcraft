@@ -37,6 +37,12 @@ pub struct FxCtx<'a> {
     /// The sequence's working colour space: Color Grading grades HDR (PQ / HLG) working spaces in their
     /// own signal, normalised to HDR White ([`filmcraft_color::GradeSpace`]).
     pub working: filmcraft_color::WorkingSpace,
+    /// Sequence frame's pixel shape, for geometry specified against the sequence
+    /// (Sphere Reframe's Resolution choices); also known where `env` is `None` -
+    /// temporal re-evaluation of a clip's working layer by [`crate::vfx::ItemEnv::frame`],
+    /// whose layer is the clip's, not the sequence's. `None` where `env` is present,
+    /// which carries the sequence size.
+    pub seq_size: Option<(u32, u32)>,
 }
 
 pub(crate) fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
@@ -969,6 +975,7 @@ mod tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         }
     }
 
@@ -1781,6 +1788,7 @@ mod lumetri_cpu_parity_tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
 
         for (name, params) in cases {
@@ -1822,6 +1830,7 @@ mod lumetri_cpu_parity_tests {
             env: None,
             frame_rate: 24.0,
             working: filmcraft_color::WorkingSpace::Rec709,
+            seq_size: None,
         };
         let render = |roundness: f64| {
             let e = effect(&[

@@ -8,7 +8,7 @@
 
 use super::{
     ADJUST, BLUR, COLOR_CORR, DISTORT, EffectDef, EffectKind, GENERATE, IMAGE_CONTROL, KEYING, PERSPECTIVE, ParamDef, ParamKind, ParamValue, STYLIZE,
-    TRANSFORM, VIDEO, ang, b, ch, col, f, fs, grp, pt, txt, video,
+    TRANSFORM, VIDEO, ang, b, ch, col, f, fixed, fs, grp, pt, txt, video,
 };
 
 const IMMERSIVE: &[&str] = &["Video Effects", "Immersive Video"];
@@ -209,6 +209,69 @@ fn immersive() -> Vec<EffectDef> {
         vr("vr_rotate_sphere", "VR Rotate Sphere", vec![ang("tilt", "Tilt (X Axis)", 0.0), ang("pan", "Pan (Y Axis)", 0.0), ang("roll", "Roll (Z Axis)", 0.0)]),
         vr("vr_sharpen", "VR Sharpen", vec![fs("amount", "Sharpen Amount", 0.0, (0.0, 500.0), (0.0, 100.0), "", 0)]),
     ]
+}
+
+/// Our native re-creation (clean-room, mirroring the vendor plugin's Effect
+/// Controls layout): Sphere Reframe cuts a view from a stitched dual-fisheye
+/// frame, sized by FOV Control (which Frame Range and the Fov Preset write),
+/// aimed with Pan/Tilt and Roll, and letterboxes it to a resolution choice.
+pub(super) fn reframes() -> Vec<EffectDef> {
+    vec![video(
+        "vr_insta360_reframe",
+        "Sphere Reframe",
+        IMMERSIVE,
+        vec![
+            ch(
+                "resolution",
+                "Resolution",
+                &[
+                    "1080P 16:9 (1920x1080)",
+                    "1080P 9:16 (1080x1920)",
+                    "1080P 1:1 (1080x1080)",
+                    "1080P 2.35:1 (2538x1080)",
+                    "1080P 4:3 (1440x1080)",
+                    "1080P 3:4 (1080x1440)",
+                    "4K 16:9 (3840x2160)",
+                    "4K 9:16 (2160x3840)",
+                    "4K 1:1 (2160x2160)",
+                    "4K 2.35:1 (3840x1634)",
+                ],
+                0,
+            ),
+            ch("projection", "Projection", &["No Distortion", "Distortion"], 0),
+            ch("fov_preset", "Fov Preset", &["MegaView", "UltraWide", "Dewarp"], 0),
+            // Derived on every edit by the engine's companion sync (it drives `fov`
+            // and `distortion`), never read back at render time - keyframes here
+            // would be wiped by the next edit, so the parameter is not animatable.
+            fixed(fs("frame_range", "Frame Range", 76.0, (0.0, 100.0), (0.0, 100.0), "", 0)),
+            fs("pan", "Pan", 0.0, (-180.0, 180.0), (-180.0, 180.0), "°", 1),
+            fs("tilt", "Tilt", 0.0, (-90.0, 90.0), (-90.0, 90.0), "°", 1),
+            fs("roll", "Roll", 0.0, (-180.0, 180.0), (-180.0, 180.0), "°", 1),
+            fs("fov", "FOV Control", 88.0, (20.0, 150.0), (20.0, 150.0), "°", 1),
+            fs("distortion", "Distortion Control", 0.95, (0.0, 1.0), (0.0, 1.0), "", 2),
+        ],
+    )]
+}
+
+/// Parameter values written when Sphere Reframe's Fov Preset is MegaView, UltraWide or Dewarp:
+/// (Frame Range, FOV Control, Distortion Control). Dragging Frame Range afterwards keeps syncing
+/// FOV Control and Distortion Control one way (through [`insta360_frame_range`]); editing those
+/// two never moves Frame Range.
+pub fn insta360_fov_preset(preset: u32) -> Option<(f64, f64, f64)> {
+    match preset {
+        0 => Some((76.0, 88.0, 0.95)),
+        1 => Some((73.0, 79.0, 0.95)),
+        2 => Some((52.0, 100.0, 0.40)),
+        _ => None,
+    }
+}
+
+/// What Frame Range `range` (0–100) sets FOV Control and Distortion Control to, one way: the
+/// plugin maps the slider linearly from (20°, 0) at 0 to (150°, 0.95) at 100. Editing FOV Control
+/// or Distortion Control never moves Frame Range back.
+pub fn insta360_frame_range(range: f64) -> (f64, f64) {
+    let r = range.clamp(0.0, 100.0);
+    ((20.0 + 1.3 * r).clamp(20.0, 150.0), (0.0095 * r).clamp(0.0, 1.0))
 }
 
 /// The new effect definitions (appended after the core set).
@@ -1019,6 +1082,7 @@ pub(super) fn defs() -> Vec<EffectDef> {
         ),
     ];
     v.extend(immersive());
+    v.extend(reframes());
     v
 }
 
@@ -1172,9 +1236,19 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
 mod tests {
     use super::*;
     use crate::effect::find_effect_by_name;
+
+    /// Frame Range is a control surface for `fov`/`distortion`, not a render
+    /// input: offering it as animatable invited keyframes nothing reads.
+    #[test]
+    fn insta360_reframe_frame_range_is_not_animatable() {
+        let d = find_effect_by_name("vr_insta360_reframe").expect("catalogue");
+        assert!(!d.param("frame_range").expect("param").animatable);
+        assert!(d.param("fov").expect("param").animatable, "the render-read controls stay animatable");
+    }
     use crate::{effect_defs, find_effect};
 
-    /// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts).
+    /// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts),
+    /// plus the one beyond-parity 360 re-cut, inside the Immersive Video folder.
     const CATALOGUE: &[(&str, &[&str])] = &[
         ("Adjust", &["Extract", "Levels", "Lighting Effects", "ProcAmp"]),
         (
@@ -1209,6 +1283,7 @@ mod tests {
                 "VR Projection",
                 "VR Rotate Sphere",
                 "VR Sharpen",
+                "Sphere Reframe",
             ],
         ),
         ("Keying", &["Alpha Adjust", "Color Key", "Logo Cutout", "Luma Key", "Track Matte Key", "Ultra Key"]),
@@ -1269,7 +1344,7 @@ mod tests {
                 n += 1;
             }
         }
-        assert_eq!(n, 93);
+        assert_eq!(n, 94);
         assert_eq!(CATALOGUE.len(), 16);
         // nothing else sits in the current folders
         for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Video && d.category.first() == Some(&"Video Effects")) {

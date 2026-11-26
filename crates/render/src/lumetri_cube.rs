@@ -103,6 +103,7 @@ pub fn sample_lumetri(
         env: None,
         frame_rate: if frame_rate.is_finite() && frame_rate > 0.0 { frame_rate } else { 24.0 },
         working: pipe.working,
+        seq_size: None,
     };
     for e in &graded {
         effects::apply(&mut img, e, &cx);
@@ -165,6 +166,7 @@ mod tests {
             env: None,
             frame_rate: 24.0,
             working: ColorPipeline::REC709.working,
+            seq_size: None,
         };
         let mut worst = 0.0f32;
         for c in [[0.1, 0.2, 0.3], [0.5, 0.5, 0.5], [0.9, 0.4, 0.2], [0.25, 0.75, 0.6], [0.05, 0.05, 0.9]] {

@@ -347,6 +347,14 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
     let (w, h) = (below.w, below.h);
     let mt = item.effect_time_at(t);
     let mut adj = below.clone();
+    // The effects an adjustment layer runs see an environment describing the
+    // sequence, not the clip: there is no clip media to sample another frame
+    // of, but the geometry is real, and a control that measures in sequence
+    // pixels (Sphere Reframe's Resolution choices) must read them from the
+    // sequence rather than from this canvas, which is the sequence at
+    // `opts.scale`. Measuring on the canvas is what made a half-size preview
+    // and a full-size export frame the same setting differently.
+    let env = AdjustEnv { project, seq, item, t, scale: opts.scale, tc };
     let cx = effects::FxCtx {
         t: mt,
         px_scale: opts.scale,
@@ -355,14 +363,15 @@ fn adjustment_layer(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick
         timecode: tc,
         clip_name: &item.name,
         project: Some(project),
-        env: None,
+        env: Some(&env),
         frame_rate: seq.settings.frame_rate.as_f64(),
         working: seq.settings.color.working,
+        seq_size: Some((seq.settings.width, seq.settings.height)),
     };
     let ss = &seq.settings;
     for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
-        // no `env` here: a burn-in's Feet + Frames / Frames format comes as the sequence time in
-        // the `timecode` string
+        // the burn-in's Feet + Frames / Frames format comes as the sequence time
+        // in the `timecode` string (the environment says the same)
         match vfx::film_time_format(e) {
             Some(display) => {
                 let own = format_time(t, ss.frame_rate, ss.drop_frame, display, ss.sample_rate as i64);
@@ -406,6 +415,86 @@ fn adjustment_region(seq: &Sequence, item: &TrackItem, project: &Project, mt: Ti
 pub(crate) fn adjustment_covers_output(seq: &Sequence, item: &TrackItem, project: &Project, mt: Tick, scale: f32, w: usize, h: usize) -> bool {
     let (fw, fh, m) = adjustment_frame(seq, item, project, mt, scale);
     covers_output(fw, fh, &m, w, h)
+}
+
+/// The effect environment of an adjustment layer (see [`adjustment_layer`]). An
+/// adjustment layer has no media of its own: what its effects compose on is the
+/// picture already rendered beneath them, in output pixels at `scale`. So the
+/// cross-frame and cross-track queries have nothing to answer (`None`, exactly
+/// as when no environment was passed at all), while the geometry the effects
+/// measure against is the *sequence's*: the layer fills it, and controls like
+/// Sphere Reframe's Resolution choices are defined in sequence pixels rather
+/// than in whatever size this particular render pass happens to draw.
+pub(crate) struct AdjustEnv<'a> {
+    pub project: &'a Project,
+    pub seq: &'a Sequence,
+    pub item: &'a TrackItem,
+    pub t: Tick,
+    pub scale: f32,
+    pub tc: &'a str,
+}
+
+impl crate::vfx::FxEnv for AdjustEnv<'_> {
+    fn frame(&self, _dt: f64, _upto: &filmcraft_project::EffectInstance) -> Option<Image> {
+        None // the layer's picture is the composite it is drawn onto; nothing else to sample
+    }
+    fn source_frame(&self, _dt: f64, _scale: f32) -> Option<Image> {
+        None
+    }
+    fn track(&self, _index: usize) -> Option<Image> {
+        None
+    }
+    fn layer_to_output(&self) -> Affine {
+        Affine::IDENTITY // the adjustment layer's working image *is* the output
+    }
+    fn render_scale(&self) -> f32 {
+        self.scale
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.item.duration.seconds()
+    }
+    fn clip_offset(&self) -> f64 {
+        (self.t - self.item.start).seconds()
+    }
+    fn frame_rate(&self) -> f64 {
+        self.seq.settings.frame_rate.as_f64()
+    }
+    fn media_timecode(&self) -> String {
+        self.tc.to_string() // its "media" is the timeline picture: sequence time
+    }
+    fn media_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+        self.sequence_time(display) // same rule as media_timecode, in the asked-for format
+    }
+    fn sequence_time(&self, display: filmcraft_time::TimeDisplay) -> Option<String> {
+        let s = &self.seq.settings;
+        Some(format_time(self.t, s.frame_rate, s.drop_frame, display, s.sample_rate as i64))
+    }
+    fn file_name(&self) -> String {
+        self.item.name.clone()
+    }
+    fn sequence_name(&self) -> String {
+        self.project
+            .items
+            .values()
+            .find(|p| matches!(&p.kind, filmcraft_project::ItemKind::Sequence(s) if std::ptr::eq(&**s, self.seq)))
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        (self.seq.settings.width, self.seq.settings.height)
+    }
+    fn source_size(&self) -> (u32, u32) {
+        // the layer fills the sequence 1:1 at output scale; Auto Reframe's
+        // `layer px / source px` factor must therefore be exactly `scale`
+        (self.seq.settings.width, self.seq.settings.height)
+    }
+    fn clip_key(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for v in [self.item.item.0, self.item.start.0 as u64, self.item.duration.0 as u64] {
+            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
 }
 
 /// An adjustment layer's frame size at `scale` and its Motion map into output pixels.
@@ -618,6 +707,7 @@ pub(crate) fn item_layer_ex(
             env: Some(&env),
             frame_rate: seq.settings.frame_rate.as_f64(),
             working: seq.settings.color.working,
+            seq_size: Some((seq.settings.width, seq.settings.height)),
         };
         for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
             if filmcraft_media::cancel::cancelled() {
