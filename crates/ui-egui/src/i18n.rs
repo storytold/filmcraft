@@ -58,6 +58,9 @@ pub enum Language {
     /// Swedish.
     Sv,
     Tr,
+    /// Tamil; its letters need a Tamil font: a craft-fonts `Taml` face or an installed one
+    /// ([`install_tamil_font`]).
+    Ta,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -76,9 +79,10 @@ static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
 static CZECH: OnceLock<Catalog> = OnceLock::new();
 static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
+static TAMIL: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -96,6 +100,7 @@ impl Language {
         Self::Sv,
         Self::Tr,
         Self::Bs,
+        Self::Ta,
     ];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
@@ -119,6 +124,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Ta => "ta",
         }
     }
 
@@ -141,6 +147,7 @@ impl Language {
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
             Self::Tr => "Türkçe",
+            Self::Ta => "தமிழ்",
         }
     }
 
@@ -163,6 +170,7 @@ impl Language {
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
             "tr" => Some(Self::Tr),
+            "ta" => Some(Self::Ta),
             _ => None,
         }
     }
@@ -173,11 +181,11 @@ impl Language {
     /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
     /// the French one; any Indonesian (`id-ID`, `id_ID.UTF-8`, and the legacy `in-ID` that older Java
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
-    /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one. Chinese gets the Simplified catalog
+    /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one; any Tamil (`ta-IN`, `ta-LK`, `ta_IN.UTF-8`…) the Tamil one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 17] = [
+        const PRIMARY: [(&str, Language); 18] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -195,6 +203,7 @@ impl Language {
             ("pl", Language::Pl),
             ("sv", Language::Sv),
             ("tr", Language::Tr),
+            ("ta", Language::Ta),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -232,6 +241,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Ta => "ta",
         }
     }
 
@@ -255,6 +265,7 @@ impl Language {
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
             Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
+            Self::Ta => Some(TAMIL.get_or_init(|| Catalog::parse(include_str!("i18n/ta.tsv")))),
         }
     }
 
@@ -429,21 +440,25 @@ const JAPANESE_FONT: &str = "system-japanese";
 /// chosen face's file is read. `None` on the web and on systems without a Japanese font.
 pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
     static FONT: OnceLock<Option<Arc<egui::FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        filmcraft_text::fonts::scan_system();
-        let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
-        let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(JAPANESE_SAMPLE);
-        // within a family, the face closest to regular weight
-        let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
-        let preferred =
-            PREFERRED_JAPANESE.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
-        let face = preferred.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
-        // kept for the life of the process (one font, read once) so installing it again after a
-        // theme change shares the bytes instead of copying the whole file
-        let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
-        Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
-    })
-    .clone()
+    FONT.get_or_init(|| system_font_covering(JAPANESE_SAMPLE, PREFERRED_JAPANESE)).clone()
+}
+
+/// An installed (non-italic) face that covers `sample`: the first `preferred` family that does,
+/// else any face that does, the one closest to regular weight within a family. Scans the system
+/// font folders on first use (name tables only), then reads the chosen face's file. `None` on the
+/// web and on systems without such a face.
+fn system_font_covering(sample: &str, preferred: &[&str]) -> Option<Arc<egui::FontData>> {
+    filmcraft_text::fonts::scan_system();
+    let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
+    let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(sample);
+    // within a family, the face closest to regular weight
+    let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
+    let preferred = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
+    let face = preferred.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
+    // kept for the life of the process (one font, read once) so installing it again after a
+    // theme change shares the bytes instead of copying the whole file
+    let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
+    Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
 }
 
 /// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
@@ -488,6 +503,51 @@ pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
 
+/// Text every Tamil interface font must cover: consonants, vowels, vowel signs and the virama.
+const TAMIL_SAMPLE: &str = "தமிழ்கோப்புதிருத்துஔ";
+
+/// Installed families preferred for Tamil interface text, best first: the faces Windows, macOS and
+/// Linux ship for Tamil. Any other installed face that covers `TAMIL_SAMPLE` is used if none of
+/// these is present.
+const PREFERRED_TAMIL: &[&str] = &["Nirmala UI", "Tamil Sangam MN", "Tamil MN", "Noto Sans Tamil UI", "Noto Sans Tamil", "Lohit Tamil", "Latha"];
+
+const TAMIL_FONT: &str = "system-tamil";
+
+/// A Tamil font already installed on this system, for the interface. Looked up once per process.
+/// `None` on the web and on systems without a Tamil font.
+pub fn system_tamil_font() -> Option<Arc<egui::FontData>> {
+    static FONT: OnceLock<Option<Arc<egui::FontData>>> = OnceLock::new();
+    FONT.get_or_init(|| system_font_covering(TAMIL_SAMPLE, PREFERRED_TAMIL)).clone()
+}
+
+/// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
+/// Tamil interface font: some craft-fonts `Taml` face covers `TAMIL_SAMPLE`. `theme::install` adds
+/// these faces to every font family, so nothing else needs installing (and no system scan runs).
+pub fn craft_tamil_font() -> bool {
+    filmcraft_text::fonts::craft_tamil().next().is_some()
+        && filmcraft_text::fonts::all_faces()
+            .iter()
+            .any(|f| f.info.origin == filmcraft_text::fonts::CRAFT_ORIGIN && TAMIL_SAMPLE.chars().all(|c| f.has_char(c)))
+}
+
+/// Tamil for the interface: true when built with a craft-fonts Tamil face (already installed by
+/// `theme::install`). Otherwise add the system's Tamil font as the last fallback of every theme
+/// font family, from the next pass on. Returns false (and changes nothing) when no Tamil font is
+/// installed. Call it again after `theme::install`, which replaces the font definitions.
+pub fn install_tamil_font(ctx: &egui::Context) -> bool {
+    if craft_tamil_font() {
+        return true;
+    }
+    let Some(font) = system_tamil_font() else { return false };
+    let families = crate::theme::font_families()
+        .into_iter()
+        .map(|family| egui::epaint::text::InsertFontFamily { family, priority: egui::epaint::text::FontPriority::Lowest })
+        .collect();
+    // queued for the next pass (works before the first frame); a no-op when already installed
+    ctx.add_font(egui::epaint::text::FontInsert { name: TAMIL_FONT.into(), data: (*font).clone(), families });
+    true
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -526,6 +586,7 @@ mod feature_name_tests {
             ("pt-br", include_str!("i18n/pt-br.tsv")),
             ("ru", include_str!("i18n/ru.tsv")),
             ("sv", include_str!("i18n/sv.tsv")),
+            ("ta", include_str!("i18n/ta.tsv")),
             ("tr", include_str!("i18n/tr.tsv")),
             ("uk", include_str!("i18n/uk.tsv")),
             ("zh-cn", include_str!("i18n/zh-cn.tsv")),

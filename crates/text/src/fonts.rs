@@ -55,6 +55,10 @@ mod craft_wasm_tests {
             assert!(CRAFT_FONTS.iter().any(|f| f.family == *family && f.style == *style), "{family} {style}");
         }
         assert!(CRAFT_FONTS.iter().any(|f| f.family == "Noto Sans Thai" && f.scripts.contains(&"Thai")));
+        // the Tamil interface face too, when the checkout has it
+        if CRAFT_FONTS.iter().any(|f| f.family == "Noto Sans Tamil") {
+            assert!(CRAFT_WASM_FACES.contains(&("Noto Sans Tamil", "Regular")), "{CRAFT_WASM_FACES:?}");
+        }
     }
 }
 
@@ -62,6 +66,12 @@ mod craft_wasm_tests {
 /// built without craft-fonts.
 pub fn craft_japanese() -> impl Iterator<Item = &'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Jpan"))
+}
+
+/// The craft-fonts entries for Tamil (`Taml`), in [`CRAFT_FONTS`] order. Empty when the app was
+/// built without craft-fonts or its revision has no Tamil face.
+pub fn craft_tamil() -> impl Iterator<Item = &'static CraftFont> {
+    CRAFT_FONTS.iter().filter(|f| f.scripts.contains(&"Taml"))
 }
 
 /// Origin of faces registered from [`CRAFT_FONTS`].
