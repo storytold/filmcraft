@@ -111,11 +111,16 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     // ---- the new project
     let mut proj = (*s.project).clone();
     if exclude_unused {
+        // Scripts are project items too: a take can be the only user of a clip. Keep the
+        // source's complete dependency chain, including parents of linked subclips.
+        let scripts: Vec<ItemId> = proj.items.values().filter(|item| matches!(item.kind, ItemKind::Script(_))).map(|item| item.id).collect();
+        let script_used = crate::project_tools::closure(&proj, &scripts);
         let keep: BTreeSet<ItemId> = proj
             .items
             .values()
             .filter(|i| {
                 used.contains(&i.id)
+                    || script_used.contains(&i.id)
                     || matches!(i.kind, ItemKind::Graphic { .. })
                     || (!matches!(i.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)))
             })
@@ -222,9 +227,16 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let prev_dst = crate::previews::dir_for_project(&project_path);
     let services = s.services.clone();
+    let media = s.media.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
-        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), JobEnv { project_path: &project_path, pr, prog: &prog, services: &*services });
+        let r = execute(
+            proj,
+            work,
+            sources,
+            previews.map(|d| (d, prev_dst)),
+            JobEnv { project_path: &project_path, pr, prog: &prog, services: &*services, media: &media },
+        );
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
             path: project_path.clone(),
@@ -262,6 +274,7 @@ struct JobEnv<'a> {
     pr: &'a Preset,
     prog: &'a filmcraft_export::Progress,
     services: &'a dyn crate::Services,
+    media: &'a crate::MediaPool,
 }
 
 fn execute(
@@ -271,7 +284,7 @@ fn execute(
     previews: Option<(PathBuf, PathBuf)>,
     env: JobEnv<'_>,
 ) -> std::result::Result<u64, String> {
-    let JobEnv { project_path, pr, prog, services } = env;
+    let JobEnv { project_path, pr, prog, services, media } = env;
     let mut bytes = 0;
     let openers = filmcraft_codecs::openers();
     for w in &work {
@@ -323,7 +336,8 @@ fn execute(
     if let Some((from, to)) = previews {
         bytes += copy_dir(&from, &to).map_err(|e| format!("copying previews: {e}"))?;
     }
-    let data = filmcraft_format::encode(&proj, false);
+    let stored = crate::doc_path::project_for_document(&proj, Some(project_path), |p| media.follow(p));
+    let data = filmcraft_format::encode(&stored, false);
     filmcraft_format::atomic_write(Path::new(project_path), &data).map_err(|e| format!("{project_path}: {e}"))?;
     prog.done.fetch_add(1, Ordering::Relaxed);
     Ok(bytes + data.len() as u64)
