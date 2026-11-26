@@ -628,6 +628,7 @@ struct Args {
     hw: bool,
     media: Option<String>,
     source: bool,
+    interpret: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -643,6 +644,7 @@ fn parse_args() -> Args {
         hw: true,
         media: None,
         source: false,
+        interpret: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -665,6 +667,7 @@ fn parse_args() -> Args {
             "--hw" => a.hw = it.next().as_deref() != Some("off"),
             "--media" => a.media = it.next(),
             "--source" => a.source = true,
+            "--interpret" => a.interpret = it.next(),
             "--seconds" => a.seconds = it.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--refresh" => a.refresh = it.next().and_then(|v| v.parse().ok()).unwrap_or(60.0),
             "--workers" => a.workers = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.workers),
@@ -672,7 +675,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,hevc60-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm | --media FILE] [--source] [--res full,half,quarter] [--cpu|--gpu] [--hw auto|off] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,hevc60-2160,prores60-2160,prores42260-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm | --media FILE] [--source] [--interpret COLOR_SPACE] [--res full,half,quarter] [--cpu|--gpu] [--hw auto|off] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -775,9 +778,14 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("hevc2160.mp4")?);
             build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 10.0)
         }
-        "hevc60-2160" => {
-            let a = import(&mut s, &fixture("hevc60_2160.mp4")?);
-            let seq = build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 8.0);
+        "hevc60-2160" | "prores60-2160" | "prores42260-2160" => {
+            let (name, seconds) = match name {
+                "prores60-2160" => ("prores60_2160.mov", 12.0),
+                "prores42260-2160" => ("prores42260_2160.mov", 12.0),
+                _ => ("hevc60_2160.mp4", 8.0),
+            };
+            let a = import(&mut s, &fixture(name)?);
+            let seq = build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], seconds);
             s.edit("60 fps", |p, _| {
                 p.sequence_mut(seq).expect("seq").settings.frame_rate = FrameRate::FPS_60;
                 Ok(())
@@ -851,6 +859,13 @@ pub fn cli_main() {
                 println!("{name}: skipped (fixtures unavailable: is ffmpeg installed?)");
                 continue;
             };
+            if let Some(cs) = &args.interpret {
+                let items: Vec<_> = s.project.items.values().filter(|i| i.as_media().is_some()).map(|i| i.id.0).collect();
+                if let Err(e) = s.execute("clip.interpretFootage", json!({"items":items,"colorSpace":cs})) {
+                    eprintln!("could not interpret footage: {e}");
+                    return;
+                }
+            }
             let fps = s.project.sequence(seq).map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             for rep_i in 0..args.repeat {
                 // A fresh frame server per run so caches start cold, as after opening a project.
@@ -904,7 +919,8 @@ pub fn cli_main() {
         }
     }
     if let Some(p) = args.json {
-        let doc = json!({"cores": cores, "workers": args.workers, "refresh_hz": args.refresh, "seconds": args.seconds, "runs": out});
+        let doc =
+            json!({"cores": cores, "workers": args.workers, "refresh_hz": args.refresh, "seconds": args.seconds, "interpret":args.interpret, "runs": out});
         if let Err(e) = std::fs::write(&p, serde_json::to_string_pretty(&doc).unwrap_or_default()) {
             eprintln!("{p}: {e}");
         }

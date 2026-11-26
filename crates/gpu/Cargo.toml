@@ -22,6 +22,8 @@ log = { workspace = true }
 pollster = "1"
 tempfile = "3"
 rayon = { workspace = true }
+# Safe views of decoded u16 planes for packed GPU uploads (MIT).
+bytemuck = "1"
 
 [dev-dependencies]
 pollster = "1"

@@ -142,6 +142,47 @@ fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
 }
 
 #[test]
+fn evicted_upload_planes_are_reused_without_stale_pixels() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let mut reused = false;
+    for i in 0..80 {
+        let (w, h) = if i % 2 == 0 { (16, 8) } else { (8, 16) };
+        let frame = if i % 3 == 0 {
+            let n = (w * h) as usize;
+            VideoFrame {
+                width: w,
+                height: h,
+                data: PixelData::Yuv16 {
+                    planes: [Arc::new(vec![64 + i * 10; n]), Arc::new(vec![512; n / 2]), Arc::new(vec![512; n / 2])],
+                    chroma: Chroma::C422,
+                    bits: 10,
+                    alpha: None,
+                },
+                color: filmcraft_color::ColorInfo::REC709,
+                par: (1, 1),
+                pts: Default::default(),
+            }
+        } else {
+            VideoFrame::rgba8(w, h, [i as u8 * 3, 255 - i as u8 * 3, i as u8, 255].repeat((w * h) as usize))
+        };
+        let cpu = frame.to_rgba8();
+        let retired: Vec<_> = c.retired_planes.iter().chain(&c.plane_pool).map(|p| p.texture.clone()).collect();
+        let plan =
+            FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(Arc::new(frame), Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plan);
+        reused |= c.uploads.values().flat_map(|u| &u.planes).any(|p| retired.contains(&p.texture));
+        let gpu = c.read_output().expect("readback").2;
+        assert!(gpu.iter().zip(&cpu).all(|(a, b)| a.abs_diff(*b) <= 1), "stale pixels on frame {i}");
+        assert!(c.plane_pool_bytes <= PLANE_POOL_BYTES, "unbounded texture retention");
+    }
+    assert!(reused, "playback kept allocating instead of reusing evicted planes");
+}
+
+#[test]
 fn gpu_matches_cpu_plan() {
     let Some((dev, q)) = device() else {
         eprintln!("no GPU adapter; skipping");
@@ -353,6 +394,105 @@ fn prepared_upload_matches_inline_conversion() {
             b.composite_prepared(&plan, Some(&prep));
             let prepared = b.read_output().expect("readback");
             assert!(inline == prepared, "prepared upload differs (raw 16-bit uploads: {raw16})");
+        }
+    }
+}
+
+/// Bilinear filtering must reconstruct words across low-byte carries, including the alpha
+/// plane and colour-managed input. The 12-bit source carries the same signals through the
+/// existing half-float path; its code values and limited-range offsets are both four times larger.
+#[test]
+fn ten_bit_word_upload_filters_like_half_float_sources() {
+    let Some((dev, q)) = device() else { return };
+    let (w, h) = (16usize, 8usize);
+    let codes: [u16; 16] = [64, 127, 255, 256, 257, 511, 512, 513, 767, 768, 939, 940, 960, 1023, 128, 512];
+    for hdr in [false, true] {
+        let color = if hdr {
+            filmcraft_color::ColorInfo { transfer: Transfer::Hlg, primaries: filmcraft_color::Primaries::Bt2020, ..filmcraft_color::ColorInfo::REC709 }
+        } else {
+            filmcraft_color::ColorInfo::REC709
+        };
+        let input = hdr.then(|| {
+            Arc::new(filmcraft_color::InputTransform::new(
+                filmcraft_color::ColorSpace::from_info(&color),
+                color.range,
+                &filmcraft_color::ColorPipeline::REC709,
+                None,
+            ))
+        });
+        let make = |bits: u32| {
+            let scale = 1u16 << (bits - 10);
+            let samples = |n, offset| Arc::new((0..n).map(|i| codes[(i + offset) % codes.len()] * scale).collect());
+            let frame = Arc::new(VideoFrame {
+                width: w as u32,
+                height: h as u32,
+                data: PixelData::Yuv16 {
+                    planes: [samples(w * h, 0), samples(w * h / 2, 3), samples(w * h / 2, 7)],
+                    chroma: Chroma::C422,
+                    bits,
+                    alpha: Some(samples(w * h, 5)),
+                },
+                color,
+                par: (1, 1),
+                pts: Default::default(),
+            });
+            let matrix = Affine::translate(0.375, 0.25).then_apply(&Affine::scale(1.3, 1.3));
+            FramePlan::Layers { width: 24, height: 12, layers: vec![PlanLayer { input: input.clone(), ..PlanLayer::new(frame, matrix, 1.0, Blend::Normal) }] }
+        };
+        let mut packed = GpuCompositor::new(&dev, &q);
+        let mut half = GpuCompositor::new(&dev, &q);
+        // This checks the packed-word path. Devices that can upload 16-bit codes directly
+        // would otherwise take that path for both sides.
+        packed.raw16 = false;
+        half.raw16 = false;
+        let plan = make(10);
+        if cfg!(target_endian = "little") {
+            assert!(prepare(&plan).bytes() < plan.source_bytes(), "10-bit upload should not retain a second full-sized plane copy");
+        }
+        packed.composite_prepared(&plan, Some(&prepare(&plan)));
+        half.composite(&make(12));
+        let a = packed.read_output().unwrap().2;
+        let b = half.read_output().unwrap().2;
+        assert!(a.iter().zip(&b).all(|(a, b)| a.abs_diff(*b) <= 1), "packed interpolation/alpha/HDR differs from the half-float reference (HDR {hdr})");
+    }
+}
+
+#[test]
+fn apple_log_ten_bit_422_preview_matches_cpu() {
+    use filmcraft_color::{ColorPipeline, ColorSpace, InputTransform};
+    let Some((dev, q)) = device() else { return };
+    let (w, h) = (256usize, 4usize);
+    let mut c = GpuCompositor::new(&dev, &q);
+    for range in [Range::Limited, Range::Full] {
+        let input = Arc::new(InputTransform::new(ColorSpace::AppleLog, range, &ColorPipeline::REC709, None));
+        for (cb, cr) in [(512, 512), (256, 768), (768, 256)] {
+            let frame = Arc::new(VideoFrame {
+                width: w as u32,
+                height: h as u32,
+                data: PixelData::Yuv16 {
+                    planes: [
+                        Arc::new((0..w * h).map(|i| ((i % w) * 1023 / (w - 1)) as u16).collect()),
+                        Arc::new(vec![cb; w * h / 2]),
+                        Arc::new(vec![cr; w * h / 2]),
+                    ],
+                    chroma: Chroma::C422,
+                    bits: 10,
+                    alpha: None,
+                },
+                color: filmcraft_color::ColorInfo { matrix: Matrix::Bt2020Ncl, range, ..filmcraft_color::ColorInfo::REC709 },
+                par: (1, 1),
+                pts: Default::default(),
+            });
+            let plan = FramePlan::Layers {
+                width: w,
+                height: h,
+                layers: vec![PlanLayer { input: Some(input.clone()), ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal) }],
+            };
+            let cpu = execute_cpu(&plan).over_black_rgba8();
+            c.composite_prepared(&plan, Some(&prepare(&plan)));
+            let gpu = c.read_output().expect("readback").2;
+            let error = gpu.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(error <= 2, "Apple Log 10-bit 422 {range:?}, Cb {cb}, Cr {cr}: max error {error}");
         }
     }
 }

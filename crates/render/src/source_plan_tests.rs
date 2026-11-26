@@ -106,13 +106,35 @@ fn source_preview_keeps_decoded_planes_and_turns_the_picture_on_the_gpu() {
 
 #[test]
 fn source_preview_preserves_cpu_colour_management_when_the_gpu_cannot_run_it() {
-    let src = source(1, false);
+    let mut src = source(1, false);
+    // RGB input still needs CPU log decoding; YUV log footage now stays on the GPU.
+    Arc::get_mut(&mut src).unwrap().frame = Arc::new(VideoFrame::rgba8(16, 12, [100, 120, 140, 255].repeat(16 * 12)));
     let (mut p, item) = project(&src);
     let ItemKind::Media(media) = &mut p.item_mut(item).unwrap().kind else { panic!("media") };
     media.interpret.color_space = Some(ColorSpace::AppleLog);
     let provider = |_| Some(src.clone() as filmcraft_media::SharedSource);
     let plan = plan_item(&p, item, Tick::ZERO, 0.5, DeviceCaps::NONE, &provider).unwrap();
-    let FramePlan::Image(image) = plan else { panic!("log conversion must retain its CPU fallback") };
+    let FramePlan::Image(image) = plan else { panic!("RGB log conversion must retain its CPU fallback") };
     assert!(src.cpu_turns.load(Ordering::Relaxed) > 0);
     assert_eq!(image, crate::render_item(&p, item, Tick::ZERO, 0.5, &provider).unwrap());
+}
+
+#[test]
+fn apple_log_source_keeps_decoded_planes_and_matches_cpu_colour_management() {
+    for turns in 0..4 {
+        let src = source(turns, false);
+        let (mut p, item) = project(&src);
+        let ItemKind::Media(media) = &mut p.item_mut(item).unwrap().kind else { panic!("media") };
+        media.interpret.color_space = Some(ColorSpace::AppleLog);
+        let provider = |_| Some(src.clone() as filmcraft_media::SharedSource);
+        let plan = plan_item(&p, item, Tick::ZERO, 1.0, DeviceCaps::NONE, &provider).unwrap();
+        let FramePlan::Layers { layers, .. } = &plan else { panic!("Apple Log YUV must stay on the GPU") };
+        assert!(Arc::ptr_eq(&layers[0].frame, &src.frame), "no CPU colour conversion or pixel copy");
+        assert!(layers[0].input.is_some(), "interpretation must be retained");
+        assert_eq!(src.cpu_turns.load(Ordering::Relaxed), 0);
+        let cpu = crate::render_item(&p, item, Tick::ZERO, 1.0, &provider).unwrap();
+        let planned = execute_cpu(&plan);
+        assert_eq!((cpu.w, cpu.h), (planned.w, planned.h));
+        assert!(cpu.px.iter().zip(&planned.px).all(|(a, b)| (a - b).abs() < 1e-4), "Apple Log conversion differs for turn {turns}");
+    }
 }

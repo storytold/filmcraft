@@ -11,7 +11,7 @@ struct U {
     m0: vec4<f32>,   // a b c d
     m1: vec4<f32>,   // e f out_w out_h
     src: vec4<f32>,  // src_w src_h chroma_w chroma_h
-    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
+    p0: vec4<f32>,   // opacity, kind (0 rgba8, 1 rgba16f, 2 yuv, 3 packed-word yuv), taps, transfer
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
     p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, effect-source quarter turns
@@ -22,6 +22,7 @@ struct U {
     q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
     q4: vec4<f32>,   // gamut matrix row 2, tone-mapping target peak cd/m²
     q5: vec4<f32>,   // desaturation luma weights, desaturation on
+    q6: vec4<f32>,   // log decode table: lo, hi, entries, camera-gamut compression on
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -32,6 +33,10 @@ struct U {
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
 // The alpha plane of a Y'CbCr source (ProRes 4444, ...); a dummy texture when `u.p3.y` is 0.
 @group(0) @binding(5) var tex3: texture_2d<f32>;
+// A log source's decode table (`filmcraft_color::GpuCurve::Lut`), `u.q6.z` entries in rows of
+// `LUT_ROW`: the same numbers `DecodeTable::lookup` interpolates, so the shader needs no log curve
+// formula of its own.
+@group(0) @binding(6) var lut_tex: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -122,16 +127,56 @@ fn eetf(nits: f32, s: f32, d: f32) -> f32 {
     return pq1(e2 * smax) * 10000.0;
 }
 
+// `DecodeTable::lookup`: the table's domain (`q6.xy`) mapped to 0..entries-1 and interpolated.
+fn lut_lookup(v: f32) -> f32 {
+    let entries = u32(u.q6.z);
+    if entries < 2u { return v; }
+    let n = f32(entries - 1u);
+    let p = clamp((v - u.q6.x) / max(u.q6.y - u.q6.x, 1e-9), 0.0, 1.0) * n;
+    let i = min(u32(p), entries - 2u);
+    let f = p - f32(i);
+    return mix(lut_entry(i), lut_entry(i + 1u), f);
+}
+
+// Entry `i` of the decode table (`GpuCompositor::lut_texture` lays it out in rows of `LUT_ROW`).
+const LUT_ROW: u32 = 256u;
+fn lut_entry(i: u32) -> f32 {
+    return textureLoad(lut_tex, vec2<i32>(i32(i % LUT_ROW), i32(i / LUT_ROW)), 0).r;
+}
+
+// `gamut_compress` (crates/color): a camera gamut's out-of-gamut colour softened towards the
+// achromatic axis, in-gamut colour untouched.
+fn compress_channel(v: f32, ach: f32, s: f32) -> f32 {
+    let th = 0.8;
+    let d = (ach - v) / ach;
+    if d < th { return v; }
+    let x = (d - th) / s;
+    let dc = th + s * x / pow(1.0 + pow(x, 1.2), 1.0 / 1.2);
+    return ach - dc * ach;
+}
+
+fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
+    let ach = max(max(c.r, c.g), c.b);
+    if ach <= 1e-9 { return max(c, vec3(0.0)); }
+    let s = (1.25 - 0.8) / pow(pow((1.25 - 0.8) / (1.0 - 0.8), 1.2) - 1.0, 1.0 / 1.2);
+    return vec3(compress_channel(c.r, ach, s), compress_channel(c.g, ach, s), compress_channel(c.b, ach, s));
+}
+
 // Signal → working linear: `InputTransform::convert` (curve, HLG OOTF, gamut matrix, tone
-// mapping, desaturation into the working gamut). The CPU's decode tables clamp the signal to 0..1.
+// mapping, gamut compression, desaturation into the working gamut). The CPU's decode tables clamp
+// the signal to 0..1; a log curve is one of those tables (`lut_lookup`).
 fn managed(rgb: vec3<f32>) -> vec3<f32> {
-    let v = clamp(rgb, vec3(0.0), vec3(1.0));
     let curve = u32(u.q0.y);
     let white = u.q0.w;
+    // The CPU clamps inside each decode table: 0..1 for the curves it evaluates with a table of
+    // its own, and the log table's own domain (`q6.xy`, -0.1..1.1) for the one sampled here.
+    var v = clamp(rgb, vec3(0.0), vec3(1.0));
+    if curve == 4u { v = clamp(rgb, vec3(u.q6.x), vec3(u.q6.y)); }
     var c = v;
     if curve == 0u { c = srgb_to_linear(v); }
     if curve == 2u { c = vec3(pq1(v.r), pq1(v.g), pq1(v.b)) * (10000.0 / white); }
     if curve == 3u { c = hlg_inv(v); }
+    if curve == 4u { c = vec3(lut_lookup(v.r), lut_lookup(v.g), lut_lookup(v.b)); }
     if u.q0.z > 0.0 {
         let ys = max(dot(u.q1.xyz, c), 0.0);
         var g = 0.0;
@@ -154,6 +199,7 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
             c = c * k;
         }
     }
+    if u.q6.w > 0.5 { c = gamut_compress(c); }
     if u.q5.w > 0.5 {
         let mn = min(min(c.r, c.g), c.b);
         if mn < 0.0 {
@@ -168,6 +214,15 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+// A YUV code sample, still scaled by 1/code_scale. A packed word's low and high bytes are
+// independently normalized channels. Reconstruction is linear, so it commutes with bilinear
+// filtering, including across byte carries (255 -> 256).
+fn plane_sample(t: texture_2d<f32>, p: vec2<f32>) -> f32 {
+    let c = load4(t, p);
+    if u32(u.p0.y) == 3u { return c.r + c.g * 256.0; }
+    return c.r;
+}
+
 // One linear premultiplied sample at source position p.
 fn sample(p: vec2<f32>) -> vec4<f32> {
     let kind = u32(u.p0.y);
@@ -180,10 +235,10 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
         return load4(tex0, p);
     }
     let cs = u.p2.z;
-    let yc = load4(tex0, p).r * cs;
+    let yc = plane_sample(tex0, p) * cs;
     let cp = p * u.src.zw / u.src.xy;
-    let cb = load4(tex1, cp).r * cs;
-    let cr = load4(tex2, cp).r * cs;
+    let cb = plane_sample(tex1, cp) * cs;
+    let cr = plane_sample(tex2, cp) * cs;
     let y = (yc - u.p1.x) / u.p1.y;
     let b = (cb - u.p1.z) / u.p1.w;
     let r = (cr - u.p1.z) / u.p1.w;
@@ -194,7 +249,7 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     // straight alpha from the alpha plane (full resolution, like luma), premultiplied here
     var a = 1.0;
     if u.p3.y > 0.0 {
-        a = clamp(load4(tex3, p).r * u.p3.y, 0.0, 1.0);
+        a = clamp(plane_sample(tex3, p) * u.p3.y, 0.0, 1.0);
     }
     var lin = to_linear(vec3(R, G, B));
     if u.q0.x > 0.5 { lin = managed(vec3(R, G, B)); }
