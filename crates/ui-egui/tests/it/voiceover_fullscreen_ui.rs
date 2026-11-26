@@ -155,6 +155,23 @@ fn a_view_entered_by_hand_after_leaving_one_belongs_to_the_user() {
 }
 
 #[test]
+fn leaving_and_re_entering_within_one_frame_belongs_to_the_user() {
+    let (mut d, dir) = Driver::with_pref(true, "same-frame");
+    d.start_take();
+    assert!(d.full());
+    // two commands before any frame runs (a control-channel burst, a fast double key press)
+    let ctx = d.harness.ctx.clone();
+    for _ in 0..2 {
+        let r = filmcraft_ui_egui::panels::keyboard::route(d.harness.state_mut(), &ctx, "view.fullScreenProgram", &json!({}));
+        assert!(matches!(r, Some(Ok(_))));
+    }
+    assert!(d.full(), "left and entered again by hand");
+    d.discard_take();
+    assert!(d.full(), "the take's end leaves the user's own view alone");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_discarded_take_gives_the_layout_back() {
     let (mut d, dir) = Driver::with_pref(true, "discard");
     d.start_take();
