@@ -106,7 +106,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.horizontal(|ui| {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Look")).color(t.text_dim)));
                 let mut sel = look;
-                craft_ui::ComboBox::from_id_salt("lumetri-look")
+                crate::legacy_dropdown::Dropdown::from_id_salt("lumetri-look")
                     .selected_text(opts.get(look).map_or(tl!("None"), |o| crate::i18n::t(o)))
                     .width((ui.available_width() - 40.0).max(60.0))
                     .show_ui(ui, |ui| {
@@ -206,7 +206,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.add_sized(vec2(110.0, 20.0), egui::Label::new(egui::RichText::new(tl!("Show Mask")).color(t.text_dim)));
                 let mut sel = mask;
                 let modes = [tl!("Off"), tl!("Color/Gray"), tl!("Color/Black"), tl!("White/Black")];
-                craft_ui::ComboBox::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
+                crate::legacy_dropdown::Dropdown::from_id_salt("hsl-mask").selected_text(modes[mask.min(3)]).show_ui(ui, |ui| {
                     for (i, o) in modes.iter().enumerate() {
                         if ui.selectable_value(&mut sel, i, *o).changed() {
                             set(&mut actions, "hsl_show_mask", json!(i));
@@ -363,7 +363,7 @@ pub(crate) fn lut_menu(
     entries.extend(builtins.into_iter().map(|b| (format!("builtin:{}", b.id), b.label.clone())));
     entries.extend(app.session.project.luts.iter().map(|l| (format!("lib:{}", l.id), l.name.clone())));
     let mut pick = None;
-    let r = craft_ui::ComboBox::from_id_salt(salt).selected_text(shown).truncate().width(width).show_ui(ui, |ui| {
+    let r = crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(shown).truncate().width(width).show_ui(ui, |ui| {
         for (r, name) in &entries {
             let b = ui.selectable_label(r == cur, name);
             app.auto.add(&format!("{auto_id}.lut.{}", if r.is_empty() { "none" } else { r }), b.rect, name);

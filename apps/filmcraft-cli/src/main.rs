@@ -277,6 +277,17 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
     fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
         self.0.caps()
     }
+
+    fn render_rgba8(
+        &mut self,
+        project: &filmcraft_project::Project,
+        seq: filmcraft_project::ItemId,
+        t: filmcraft_time::Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<(usize, usize, Vec<u8>)> {
+        self.0.render_rgba8(project, seq, t, opts, sources)
+    }
 }
 
 fn register_gpu_frame_renderer() {
@@ -304,9 +315,20 @@ async fn main() {
     }
 }
 
+/// The desktop app's private Launcher protocol. The CLI is never started with it, so refuse it
+/// before parsing (both token and `=` forms) instead of reporting an unknown option.
+fn desktop_launch_profile_argument(arg: &str) -> bool {
+    ["--launch-profile", "--profile-root"].iter().any(|flag| arg == *flag || arg.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+}
+
 async fn cli() {
+    let raw: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if let Some(found) = raw.iter().find(|arg| desktop_launch_profile_argument(arg)) {
+        eprintln!("filmcraft-cli: {found} belongs to the FilmCraft desktop app's Launcher profile; the CLI has no launch profile");
+        std::process::exit(2);
+    }
     // `std::env::args` panics on an argument that is not Unicode (a Linux file name in Latin-1)
-    let a = Args::parse(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
+    let a = Args::parse(raw);
     // `--help` anywhere (`filmcraft-cli --help`, `filmcraft-cli export --help`) prints the reference:
     // the parser takes it as a flag option, so it never reaches the subcommand match.
     if a.flag("--help") {
@@ -521,6 +543,9 @@ async fn cli_export(a: &Args) {
             for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                 diag(format_args!("filmcraft-cli: warning: {warning} (CLI: --range entire)"));
             }
+            for warning in export_warnings(&v) {
+                diag(format_args!("filmcraft-cli: warning: {warning}"));
+            }
             check_offline(a, &offline_media(&v), &format!("export: {written}"));
             diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
         }
@@ -596,6 +621,17 @@ fn offline_media(result: &Value) -> Vec<Value> {
         }
     }
     out
+}
+
+/// What the exports in a result reported about how they ran (hardware encoding asked for, but the
+/// software encoder ran): the warnings of a direct export's report (`result`), or of each queued
+/// item's. `export.queue.add` answers with the whole queue, so only the items it `added` count: one
+/// that finished earlier (in the app, with `--bridge`) is not this export's.
+fn export_warnings(result: &Value) -> Vec<&str> {
+    let added: Vec<&Value> = result.get("added").and_then(Value::as_array).into_iter().flatten().collect();
+    let queued = result.get("items").and_then(Value::as_array).into_iter().flatten().filter(|i| i.get("id").is_some_and(|id| added.contains(&id)));
+    let reports = std::iter::once(result).chain(queued).filter_map(|r| r.get("result"));
+    reports.filter_map(|r| r.get("warnings").and_then(Value::as_array)).flatten().filter_map(Value::as_str).collect()
 }
 
 /// One stderr line per offline item that rendered as placeholder frames (#1054).
@@ -719,6 +755,37 @@ mod format_tests {
     }
 
     #[test]
+    fn export_warnings_from_direct_and_queued_results() {
+        use serde_json::json;
+        let fell_back = "hardware encoding declined (NVENC: two-pass VBR); the software H.264 encoder ran";
+        // `export.queue.add` answers with the whole queue; `added` names the items this call queued
+        let older = json!({"id": 1, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}});
+        let cases: [(&str, serde_json::Value, &[&str]); 8] = [
+            ("direct", json!({"path": "a.mp4", "result": {"encoder": "software", "warnings": [fell_back]}}), &[fell_back]),
+            ("direct, nothing to say", json!({"path": "a.mp4", "result": {"encoder": "NVENC"}}), &[]),
+            (
+                "queued, one of two",
+                json!({"added": [1, 2], "items": [{"id": 1, "status": "done", "result": {"warnings": [fell_back]}}, {"id": 2, "status": "done", "result": {"encoder": "software"}}]}),
+                &[fell_back],
+            ),
+            ("queued, failed", json!({"added": [1], "items": [{"id": 1, "status": "failed", "result": null}]}), &[]),
+            // an item finished earlier is not this export's: NVENC ran for the new one
+            ("queued after an older fallback", json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "NVENC"}}]}), &[]),
+            (
+                "queued, falls back after an older one did",
+                json!({"added": [2], "items": [older, {"id": 2, "status": "done", "result": {"encoder": "software", "warnings": [fell_back]}}]}),
+                &[fell_back],
+            ),
+            // the range advisory is printed on its own, with its CLI hint
+            ("range warning only", json!({"warnings": ["In/Out range is 1 frame"], "result": {}}), &[]),
+            ("no result", json!({}), &[]),
+        ];
+        for (name, result, want) in cases {
+            assert_eq!(super::export_warnings(&result), want, "{name}");
+        }
+    }
+
+    #[test]
     fn export_lone_bound_is_forwarded_as_custom_range() {
         use serde_json::json;
         let mut p = json!({});
@@ -761,5 +828,20 @@ mod format_tests {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(super::format_for("a.mov"), Some("prores"));
         assert_eq!(super::format_for("noext"), None);
+    }
+}
+
+#[cfg(test)]
+mod launch_profile_tests {
+    use super::desktop_launch_profile_argument;
+
+    #[test]
+    fn the_desktop_launcher_protocol_is_refused_in_both_forms() {
+        for arg in ["--launch-profile", "--launch-profile=nightly-v1", "--profile-root", "--profile-root=/tmp/nightly"] {
+            assert!(desktop_launch_profile_argument(arg), "{arg}");
+        }
+        for arg in ["--version", "-V", "--data-dir", "--profile", "--launch", "profile-root"] {
+            assert!(!desktop_launch_profile_argument(arg), "{arg}");
+        }
     }
 }
