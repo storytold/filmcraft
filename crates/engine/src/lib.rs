@@ -840,6 +840,18 @@ impl Session {
         }
     }
 
+    /// Import the files a launch was asked to open (`filmcraft clip.mp4`). Opening a file just to look at
+    /// it is not an edit: a project that was clean stays clean, so closing the window right away does
+    /// not ask to save. A project with unsaved changes stays modified.
+    pub fn import_startup_media(&mut self, paths: &[String]) -> Result<Value> {
+        let clean = !self.is_dirty();
+        let r = self.execute("file.import", serde_json::json!({ "paths": paths }))?;
+        if clean {
+            self.saved_revision = self.revision;
+        }
+        Ok(r)
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }

@@ -554,7 +554,7 @@ fn app_creator(
             let _ = session.execute("file.openDemoProject", json!({}));
         }
         if !media.is_empty() {
-            let _ = session.execute("file.import", json!({"paths": media}));
+            let _ = session.import_startup_media(&media);
         }
         if recover == Some(true) && !session.recovery_candidates().is_empty() {
             let id = session.recovery_candidates()[0].id.clone();

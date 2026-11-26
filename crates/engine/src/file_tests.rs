@@ -142,3 +142,42 @@ fn open_demo_project_clears_saved_path_so_save_does_not_overwrite() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A one-second silent mono WAV, a file any launch can be asked to open.
+fn silent_wav(dir: &std::path::Path) -> String {
+    let data = vec![0u8; 16_000];
+    let mut b = Vec::new();
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    for v in [16u32, 0x0001_0001, 8000, 16_000, 0x0010_0002] {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    b.extend_from_slice(&data);
+    let path = dir.join("silence.wav");
+    std::fs::write(&path, b).unwrap();
+    path.to_string_lossy().to_string()
+}
+
+#[test]
+fn opening_a_file_at_launch_does_not_mark_the_project_edited() {
+    let wav = silent_wav(&temp_dir("startup-import"));
+    // a clean project (the demo, or an empty one) stays clean, with the file imported
+    for mut s in [demo(), Session::default()] {
+        assert!(!s.is_dirty());
+        let before = s.project.items.len();
+        s.import_startup_media(std::slice::from_ref(&wav)).unwrap();
+        assert!(s.project.items.len() > before, "the file is imported");
+        assert!(!s.is_dirty(), "opening a file just to look at it is not an edit");
+    }
+    // unsaved changes stay unsaved, and a plain import is still an edit
+    let mut s = demo();
+    s.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    s.import_startup_media(std::slice::from_ref(&wav)).unwrap();
+    assert!(s.is_dirty());
+    let mut s = demo();
+    s.execute("file.import", json!({"paths": [wav]})).unwrap();
+    assert!(s.is_dirty());
+}
