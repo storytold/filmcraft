@@ -76,3 +76,25 @@ The Program monitor overlay that shows the section, talking points and script at
   prompter"), and Datavideo's dvPrompter.
 - **Decision:** used as a plain descriptive word. The register searches are still open; the pull
   request asks a Craft owner to confirm the name or to run them before it ships.
+
+### Conform Sections to Last Take (2026-11-25, #5265)
+
+The Sequence menu command that fits the sections' picture to a voice-over take
+(`sequence.conformSections`; the report is `sequence.conformSectionsReport`, labelled "Conform
+Sections Report"). The new word is "Conform", used as a verb.
+
+- **Owners' trademark lists:** not read for this name. The editors that use the word (Blackmagic
+  Design, Avid, Apple, Autodesk) were not checked against their trademark pages.
+- **Registers:** the USPTO, EUIPO eSearch, TMview and WIPO Global Brand Database searches were not
+  run; their search pages need a browser session that was not available. Third-party copies of
+  USPTO records (trademark.justia.com) show two CONFORM applications (serials 90047972 and
+  88442029) for hosted software that manages pharmaceutical and clinical-trial data, outside video
+  editing; their status could not be read. Longer marks starting with the word (CONFORMIA,
+  CONFORMIO, CONFORMANCEWARE) are for other fields.
+- **Descriptive use:** "conform" is the ordinary post-production word for matching one edit to
+  another. Unrelated products use it for their own feature: DaVinci Resolve's manuals ("Import and
+  Conform Projects", the Conform page), Autodesk's Flame-family documentation (conforming a
+  sequence), Lightworks (conform workflows with EDL and XML) and the Conform.Tools product name.
+- **Decision:** used as a plain descriptive verb in a longer label ("Conform Sections to Last
+  Take"), not as a feature name by itself. The register searches are still open; the pull request
+  asks a Craft owner to confirm the name or to run them before it ships.
