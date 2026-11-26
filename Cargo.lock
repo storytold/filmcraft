@@ -2376,6 +2376,7 @@ dependencies = [
  "filmcraft-bitstream",
  "filmcraft-color",
  "filmcraft-frame",
+ "filmcraft-insta360",
  "filmcraft-isobmff",
  "filmcraft-matroska",
  "filmcraft-media",
