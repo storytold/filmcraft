@@ -220,7 +220,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 && let Some(d) = dragging
             {
                 // egui ends a drag on Escape: that stop abandons it (#580)
-                if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if !crate::framework::escape_pressed(ui.ctx()) {
                     let nt = layout.tick_at(c.x).max(Tick::ZERO);
                     let nv = denorm(tr, &key, ((b.max.y - c.y) / b.height()).clamp(0.0, 1.0));
                     acts.push(("mixer.moveKeyframe", json!({"strip": r.track.0, "lane": key, "time": d.orig.0, "newTime": nt.0, "value": nv})));

@@ -4,20 +4,13 @@
 //! transition where it was until the release deletes it (Premiere) — an Option-drag adds a
 //! traveling copy while the original stays.
 
+use crate::support::{builder, demo_session, with_snapshots};
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
-pub(super) fn step(h: &mut Harness<'static, FilmcraftApp>) {
-    let ctx = h.ctx.clone();
-    let mut raw = std::mem::take(h.input_mut());
-    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
-    *h.input_mut() = raw;
-    ctx.request_repaint();
-    h.step();
-}
+pub(super) use super::support::step_repaint as step;
 
 pub(super) fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
@@ -32,13 +25,10 @@ pub(super) fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
     Rect::from_min_size(pos2(x, y), vec2(w, height))
 }
 
-fn build(s: Session) -> Harness<'static, FilmcraftApp> {
-    let app = FilmcraftApp::new(s);
-    let mut builder = Harness::builder().with_size(vec2(1600.0, 980.0)).with_max_steps(10_000);
-    if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
-        builder = builder.wgpu();
-    }
-    let mut h = builder.build_eframe(move |_cc| app);
+/// `app` in the usual window (wgpu when snapshots are on) after its first frames, the Timeline at
+/// 60 px a second.
+pub(super) fn zoomed(app: FilmcraftApp) -> Harness<'static, FilmcraftApp> {
+    let mut h = crate::support::build(with_snapshots(builder()), app);
     for _ in 0..4 {
         step(&mut h);
     }
@@ -53,8 +43,7 @@ fn build(s: Session) -> Harness<'static, FilmcraftApp> {
 /// A sequence with a cross dissolve: between two clips at 0..48f and 48..96f, or a fade-in on the
 /// single clip at 0..48f when `single`.
 pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();
     let rate = s.sequence_rate();
     for (at, frames) in if single { vec![(0, 48)] } else { vec![(0, 48), (48, 48)] } {
@@ -63,13 +52,12 @@ pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
     let seq = s.active_sequence().unwrap().clone();
     let clip = seq.video_tracks[0].items[if single { 0 } else { 1 }].id;
     s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": clip.0, "edge": "in"})).unwrap();
-    build(s)
+    zoomed(FilmcraftApp::new(s))
 }
 
 /// XYZ with a cut transition on each cut: X↔Y and Y↔Z.
 fn harness_xyz() -> Harness<'static, FilmcraftApp> {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
+    let mut s = demo_session();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();
     let rate = s.sequence_rate();
     for (at, frames) in [(0, 48), (48, 48), (96, 48)] {
@@ -80,7 +68,7 @@ fn harness_xyz() -> Harness<'static, FilmcraftApp> {
     for clip in [y, z] {
         s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": clip.0, "edge": "in"})).unwrap();
     }
-    build(s)
+    zoomed(FilmcraftApp::new(s))
 }
 
 /// A drag preview that keeps a transition's offset to its clip (it follows, not lags), and a drop

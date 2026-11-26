@@ -6,78 +6,19 @@
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the test also renders the UI with wgpu and writes
 //! `settings-*.png`.
 
-use std::sync::mpsc::{Sender, channel};
-
+use crate::support::{Drive, Launch, builder, demo_session, driver, egui_rect, save_shot, with_shots};
 use egui::accesskit::Role;
-use egui_kittest::Harness;
 use egui_kittest::kittest::{By, NodeT, Queryable};
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
+driver! {
+    Driver;
+    const CLICK_SETTLE: usize = 3;
 }
 
 impl Driver {
     fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
-    }
-    fn menu(&mut self, id: &str) -> Value {
-        let r = self.ok("ui.menu.invoke", json!({"id": id}));
-        self.frames(3);
-        r
-    }
-    fn click(&mut self, id: &str) {
-        self.ok("ui.click", json!({"id": id}));
-        self.frames(3);
-    }
-    fn has(&mut self, id: &str) -> bool {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        v.as_array().unwrap().iter().any(|e| e["id"] == id)
+        Self::open(demo_session(), with_shots(builder()))
     }
     fn inspect(&mut self) -> Value {
         self.ok("ui.inspect", json!({}))
@@ -88,20 +29,13 @@ impl Driver {
     }
     /// An automation element's rect.
     fn rect(&mut self, id: &str) -> egui::Rect {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}"));
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+        egui_rect(self.expect_rect(id))
     }
     fn pref(&mut self, key: &str) -> Value {
         self.exec("prefs.get", json!({"key": key}))
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(4);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("settings-{name}.png"))).unwrap();
+        save_shot(self, 4, &format!("settings-{name}.png"));
     }
 }
 
@@ -234,7 +168,10 @@ fn escape_mid_drag_reverts_a_setting_and_keeps_the_dialog() {
         for k in 1..=10 {
             send(egui::Event::PointerMoved(from + egui::vec2(6.0 * k as f32, 0.0)));
             if escape && k == 5 {
+                // a press and its release: the runtime reads a press of a key still down as a repeat, and a
+                // repeated Escape cancels nothing, so a press never let go would leave the dialog's Escape below
                 send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+                send(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
             }
         }
         send(button(from + egui::vec2(60.0, 0.0), false));

@@ -3,59 +3,21 @@
 //! clip. Each test
 //! also makes the same drag without Escape, so it shows the drag would otherwise have done something.
 
-use std::sync::mpsc::{Sender, channel};
-
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
+use crate::support::{Drive, Launch, driver, f32x4};
 use filmcraft_engine::project_panel::FREEFORM_POS;
 use filmcraft_project::{BinEntry, ItemId};
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
+driver! {
+    Driver;
+    fn after_ok(&mut self) {
+        self.frames(2);
+    }
 }
 
 impl Driver {
-    fn demo() -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                self.frames(2);
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
     fn rect(&mut self, id: &str) -> [f32; 4] {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}")).clone();
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        [r[0], r[1], r[2], r[3]]
+        f32x4(self.expect_rect(id))
     }
     fn send(&mut self, e: egui::Event) {
         self.harness.input_mut().events.push(e);
@@ -231,6 +193,52 @@ fn escape_puts_a_thumbnail_size_slider_back() {
     assert_eq!(size(&d), start, "the slider went back");
     d.drag(from, to, false);
     assert_ne!(size(&d), start, "without Escape the same drag resizes");
+}
+
+#[test]
+fn escape_keeps_the_media_browser_thumbnail_size_on_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "MediaBrowser"}));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.ok("engine.execute", json!({"command": "mediaBrowser.navigate", "params": {"path": dir.path()}}));
+    d.ok("engine.execute", json!({"command": "mediaBrowser.settings", "params": {"view": "thumbnails", "thumbnailSize": 100.0}}));
+    let size = |d: &Driver| d.harness.state().session.prefs.media_browser.thumbnail_size;
+    let start = size(&d);
+    let r = d.rect("mediaBrowser.thumbnailSize");
+    let (from, to) = (egui::pos2(r[0] + r[2] * 0.25, r[1] + r[3] / 2.0), egui::pos2(r[0] + r[2] * 0.8, r[1] + r[3] / 2.0));
+    d.drag(from, to, true);
+    assert_eq!(size(&d), start, "releasing after Escape does not commit the preview size");
+    d.drag(from, to, false);
+    assert!(size(&d) > start, "the next ordinary drag changes the preference");
+}
+
+#[test]
+fn escape_keeps_delayed_guide_releases_from_adding_moving_or_removing() {
+    let mut d = Driver::demo();
+    d.ok("ui.menu.invoke", json!({"id": "view.showRulers"}));
+    let guides = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["program"]["guides"].clone();
+    let empty = guides(&mut d);
+    let ruler_x = centre(d.rect("program.ruler.left")).x;
+    let pic = d.rect("program.picture");
+    let ruler = egui::pos2(ruler_x, pic[1] + pic[3] / 2.0);
+    let inside = egui::pos2(pic[0] + pic[2] * 0.4, ruler.y);
+
+    d.drag(ruler, inside, true);
+    assert_eq!(guides(&mut d), empty, "a cancelled ruler drag does not add a guide");
+    d.drag(ruler, inside, false);
+    let original = guides(&mut d);
+    assert_eq!(original.as_array().unwrap().len(), 1, "the next ordinary ruler drag adds a guide");
+
+    let from = centre(d.rect("program.guide.0"));
+    let moved = from + egui::vec2(pic[2] * 0.2, 0.0);
+    d.drag(from, moved, true);
+    assert_eq!(guides(&mut d), original, "a cancelled guide drag restores its starting position");
+    d.drag(from, egui::pos2(ruler.x, from.y), true);
+    assert_eq!(guides(&mut d), original, "a cancelled release onto the ruler does not remove the guide");
+    d.drag(from, moved, false);
+    assert_ne!(guides(&mut d), original, "the next ordinary guide drag moves it");
 }
 
 #[test]

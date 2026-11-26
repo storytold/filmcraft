@@ -3,77 +3,26 @@
 //! control channel (like `graphics_ui.rs`). With `FILMCRAFT_UI_SHOTS=<dir>` it also renders the
 //! UI with wgpu and writes PNGs there for review.
 
-use std::sync::mpsc::{Sender, channel};
+use crate::support::{Drive, builder, demo_session, driver, launch, reveal_in_panel, save_shot, start, with_shots};
+use serde_json::json;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
-
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    shots: Option<std::path::PathBuf>,
-}
+driver!(Driver);
 
 impl Driver {
     fn demo(data: &str) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         let dir = std::env::temp_dir().join(format!("filmcraft-gfx-ui-{data}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         session.prefs_path = Some(dir.join("prefs.json"));
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
-        if shots.is_some() {
-            b = b.wgpu().with_pixels_per_point(1.0);
-        }
-        let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn call(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                return v;
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let r = self.call(method, params.clone());
-        assert_eq!(r["ok"], true, "{method} {params}: {r}");
-        r["result"].clone()
-    }
-    fn exec(&mut self, command: &str, params: Value) -> Value {
-        self.ok("engine.execute", json!({"command": command, "params": params}))
+        let (harness, tx) = launch(session, with_shots(builder()));
+        start(Driver { harness, tx })
     }
     fn shot(&mut self, name: &str) {
-        let Some(dir) = self.shots.clone() else { return };
-        self.frames(8);
-        let img = self.harness.render().expect("wgpu render");
-        std::fs::create_dir_all(&dir).unwrap();
-        img.save(dir.join(format!("{name}.png"))).unwrap();
+        save_shot(self, 8, &format!("{name}.png"));
     }
-    fn ids(&mut self, prefix: &str) -> Vec<String> {
-        let v = self.ok("ui.elements", json!({"prefix": prefix}));
-        v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
+    /// Scrolls the panel that holds element `id` until the element sits in the panel's upper part.
+    fn reveal(&mut self, id: &str) {
+        reveal_in_panel(self, id);
     }
     fn clips_named(&mut self, name: &str) -> Vec<u64> {
         let q = self.exec("sequence.inspect", json!({}));
@@ -196,6 +145,7 @@ fn type_tool_selection_styles_characters() {
     // a Type-tool selection of "World" (bytes 6..11)
     d.ok("ui.set", json!({"tool": "Type", "gfxEdit": {"clip": clip, "layer": 0, "caret": 11, "anchor": 6}}));
     d.frames(3);
+    d.reveal("graphics.prop.faux_bold");
     d.ok("ui.click", json!({"id": "graphics.prop.faux_bold"}));
     d.frames(2);
     let l = d.exec("graphics.list", json!({"clip": clip}));

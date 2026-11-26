@@ -5,10 +5,10 @@ use std::sync::{
     mpsc::{Sender, channel},
 };
 
+use crate::support::demo_session;
 use egui::{Event, Key, Modifiers, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::{FilmcraftApp, control::ControlRequest, dock::PanelKind};
+use filmcraft_ui_egui::{FilmcraftApp, control::ControlRequest};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -18,26 +18,31 @@ struct Driver {
 
 impl Driver {
     fn new(isolated: bool) -> Self {
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).unwrap();
+        let session = demo_session();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session);
         let app = if isolated { app.with_control_input_only(rx) } else { app.with_control(rx) };
-        let mut driver = Self { h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |_| app), tx };
+        let mut driver = Self {
+            h: Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(move |cc| {
+                filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+                app
+            }),
+            tx,
+        };
         driver.frames(4, true);
         driver
     }
 
     fn frames(&mut self, count: usize, native_focused: bool) {
         for _ in 0..count {
-            let ctx = self.h.ctx.clone();
-            let mut raw = std::mem::take(self.h.input_mut());
+            // The backend's focus state; the harness runs the app's raw_input_hook on this input
+            // once per step, as eframe does. A second call here would drop, in control-only mode,
+            // the synthetic step the first call offered, and record the focus the first forced.
+            let raw = self.h.input_mut();
             raw.focused = native_focused;
             if let Some(viewport) = raw.viewports.get_mut(&egui::ViewportId::ROOT) {
                 viewport.focused = Some(native_focused);
             }
-            eframe::App::raw_input_hook(self.h.state_mut(), &ctx, &mut raw);
-            *self.h.input_mut() = raw;
             self.h.step();
             assert!(self.h.state().ui_error.is_none());
         }
@@ -81,46 +86,6 @@ fn native_j_cannot_start_reverse_playback_during_control_only_editing() {
     let after = d.ok("engine.execute", json!({"command":"sequence.inspect","params":{}}), true);
     assert_eq!(after["playhead"], before["playhead"]);
     assert_eq!(after["video"][0]["items"].as_array().unwrap().len(), before["video"][0]["items"].as_array().unwrap().len() + 1);
-}
-
-#[test]
-fn background_control_input_resizes_the_focused_divider_without_seeking() {
-    background_divider(true);
-}
-
-#[test]
-fn ordinary_control_input_also_resizes_a_background_divider() {
-    background_divider(false);
-}
-
-fn background_divider(isolated: bool) {
-    let mut d = Driver::new(isolated);
-    d.h.state_mut().ui.dock = craft_ui::docking::Layout {
-        root: Some(craft_ui::docking::Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
-            first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
-            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
-        }),
-        floating: vec![],
-    };
-    d.frames(3, true);
-    let before_project = d.h.state().session.project.clone();
-    let before_playheads = d.h.state().session.state.playheads.clone();
-    let divider = craft_ui::docking::DockArea::<PanelKind>::hit_id(
-        filmcraft_ui_egui::dock_area_id(),
-        &craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Split(vec![])),
-    );
-    d.h.ctx.memory_mut(|memory| memory.request_focus(divider));
-    d.frames(2, true);
-    d.h.input_mut().events.push(Event::WindowFocused(false));
-    d.ok("ui.key", json!({"key":"ArrowRight"}), false);
-    d.frames(2, false);
-    let width = d.h.state().auto.find("panel.Project").unwrap().rect[2];
-    assert!((width - 408.0).abs() < 0.5, "control input must work without native activation: Project is {width} wide");
-    assert_eq!(d.h.state().session.state.playheads, before_playheads);
-    assert!(Arc::ptr_eq(&d.h.state().session.project, &before_project));
-    assert!(!d.h.state().playback.playing);
 }
 
 #[test]

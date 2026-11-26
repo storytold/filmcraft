@@ -1117,6 +1117,7 @@ mod hevc_convert_tests {
             chroma_height,
             chroma,
             bit_depth: if wide { 10 } else { 8 },
+            bit_depth_chroma: if wide { 10 } else { 8 },
             y: plane(8, 64),
             u: plane(uv, 128),
             v: plane(uv, 128),

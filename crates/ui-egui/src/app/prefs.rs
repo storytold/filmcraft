@@ -323,7 +323,7 @@ mod playback_view_dirty_tests {
     #[test]
     fn startup_restores_the_remembered_layout_for_a_valid_workspace() {
         let mut app = FilmcraftApp::new(Session::default());
-        let expected = dock::saved_workspace(&dock::WorkspacePrefs::default(), "Color").layout;
+        let expected = dock::saved_workspace(&dock::WorkspacePrefs::default(), "Color").layout().clone();
         app.workspaces.current = "Editing".into();
         app.workspaces.last = Some(dock::SavedWorkspace::new("Editing", &expected).unwrap());
 

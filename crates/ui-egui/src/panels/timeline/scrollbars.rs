@@ -3579,7 +3579,7 @@ fn zoom_scrollbar_with_minimap_legacy(app: &mut FilmcraftApp, ui: &mut egui::Ui,
         }
     }
     if matches!(app.tl.drag, Some(Drag::ZoomBar { .. }))
-        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && crate::framework::escape_pressed(ui.ctx())
         && let Some(Drag::ZoomBar { start, start_pps, .. }) = app.tl.drag.take()
     {
         let v = &mut app.ui.timeline;

@@ -3,21 +3,16 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::{
-    Arc,
-    mpsc::{Sender, channel},
-};
+use std::sync::Arc;
 
-use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::{ClipboardMedia, FilmcraftApp};
-use serde_json::{Value, json};
+use crate::support::{Drive, builder, demo_session, driver, launch, start};
+use filmcraft_ui_egui::ClipboardMedia;
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-    dir: std::path::PathBuf,
+driver! {
+    Driver {
+        dir: std::path::PathBuf,
+    }
 }
 
 impl Driver {
@@ -26,42 +21,10 @@ impl Driver {
         let dir = std::env::temp_dir().join(format!("filmcraft-clipboard-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut session = Session::default();
-        session.execute("file.openDemoProject", json!({})).expect("demo project");
+        let mut session = demo_session();
         session.path = Some(dir.join("film.fcproj").to_string_lossy().into_owned());
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, dir };
-        d.frames(4);
-        d
-    }
-
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
-                return v["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
-    }
-
-    fn app(&mut self) -> &mut FilmcraftApp {
-        self.harness.state_mut()
+        let (harness, tx) = launch(session, builder());
+        start(Driver { harness, tx, dir })
     }
 
     /// The clipboard hook hands out `media` (a copy each time); returns how often it was asked.

@@ -500,11 +500,37 @@ pub fn portable_data_dir(exe_dir: &Path) -> Option<PathBuf> {
     exe_dir.join(PORTABLE_MARKER).is_file().then(|| exe_dir.join("data"))
 }
 
-/// The data directory. `FILMCRAFT_DATA_DIR` overrides; a portable install ([`PORTABLE_MARKER`] next
-/// to the executable) uses `<exe dir>/data`; otherwise the per-user directory:
+/// The private data directory a hosted (Nightly) start selected before its first write.
+///
+/// One place, so every root derived from the data directory follows it: preferences, workspaces,
+/// presets and shortcuts, auto-save and recovery, the media cache and the model downloads, and
+/// (in the desktop app) the log folder. The launcher installs it once, before anything reads a
+/// data path; nothing else may replace it.
+static DATA_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Install the data directory for this process. Fails when one is already selected, so a second,
+/// different root cannot silently take over the session.
+pub fn set_data_dir_override(root: PathBuf) -> Result<(), String> {
+    if root.as_os_str().is_empty() || !root.is_absolute() {
+        return Err("the selected data root must be an absolute path".into());
+    }
+    DATA_DIR_OVERRIDE.set(root).map_err(|_| "the data directory was already selected".to_owned())
+}
+
+/// The data directory in use, when one is selected (see [`set_data_dir_override`]).
+pub fn data_dir_override() -> Option<&'static Path> {
+    DATA_DIR_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+/// The data directory. A selected private root ([`set_data_dir_override`]) wins; otherwise
+/// `FILMCRAFT_DATA_DIR` overrides; a portable install ([`PORTABLE_MARKER`] next to the executable)
+/// uses `<exe dir>/data`; otherwise the per-user directory:
 /// macOS `~/Library/Application Support/FilmCraft`, Windows `%APPDATA%\FilmCraft`,
 /// elsewhere `$XDG_DATA_HOME/filmcraft` or `~/.local/share/filmcraft`.
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(root) = data_dir_override() {
+        return Some(root.to_path_buf());
+    }
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     if let Some(d) = env("FILMCRAFT_DATA_DIR") {
         return Some(d);

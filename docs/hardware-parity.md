@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (adjustment layers on the GPU compositor) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-08 · **Change:** minor (adjustment layers on the GPU compositor; VA-API read-back through vaDeriveImage) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 > **Naming update (2026-11-08):** First-party feature labels now follow the selected ArtCraft naming scheme in [PR #1880](https://github.com/storytold/filmcraft/pull/1880). Capabilities, estimates and parity scores were not re-measured.
 
@@ -29,7 +29,9 @@ release notes (Premiere does not run on Linux).
 
 Measured (`cargo xtask bench --hw off|auto`): M4 Pro, CPU per 2160p frame H.264 119 → 4.2 ms,
 HEVC 86 → 3.7 ms, 4K plays with no dropped frames at Full; Intel Iris Xe VA-API H.264 2160p
-417 → 11.4 ms, HEVC Main 10 2160p 212 → 18.4 ms. Every decoded picture is read back to the CPU
+417 → 11.4 ms, HEVC Main 10 2160p 212 → 18.4 ms. VA-API now reads pictures through `vaDeriveImage` where libva and the driver allow it (else `vaGetImage`): 4K HEVC
+Main 10 decode 35 → 66–68 fps on an RX 9070 XT (measured during development, not with the bench;
+[performance.md](performance.md#va-api-read-back-through-vaderiveimage)). Every decoded picture is read back to the CPU
 and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 ## Hardware encode
@@ -87,5 +89,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | VA-API read-back through vaDeriveImage |
 | 2026-10-23 | minor | Adjustment layers row: full-frame, opaque, Normal ones with GPU effects run on the GPU compositor |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Color Grading on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
