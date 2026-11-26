@@ -80,7 +80,8 @@ script goes under the points. The card's text and spacing grow with the picture,
 Program panel to full screen on a large display. When the picture is too small for everything, the
 card keeps the header and the current point (on one line if two do not fit; the card grows to
 hold it), or two script lines, and then, in this order, what fits: the next point, the next section, the
-warnings, the caption, more script, the other points, the last finished point, the count. Between
+warnings, the words Follow Speech heard, the caption, more script, the other points, the last
+finished point, the count. Between
 sections it says so, and a sequence without range markers says how to make sections. Only the
 first 64 KiB of a comment and its first 100 talking points are read.
 
@@ -128,27 +129,72 @@ the card says "No section at the prompter's position" with the readout.
 take), and `audio.voiceover.stop` returns the finished take's log as `promptLog`. A log has
 `sequence`, `recordStart`, `entries` and `dropped` (moves past the first 10 000). The first entry
 (`kind` `start`) is where the prompt was when the capture began; then one entry per move (`next`,
-`previous`, `toPlayhead`, `rate`) with `takeTime` (the playhead minus the record point, negative in the
+`previous`, `toPlayhead`, `rate`, and `follow` for Follow Speech) with `takeTime` (the playhead minus the record point, negative in the
 pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), `rateBefore` and `rateAfter` (percent), and the `marker`,
 `point` and `paragraph` the prompt landed on. A `rate` entry is a Faster, Slower or Reset (also the
 reset when playback stops during the take); its prompt time is unchanged. Between entries the
 prompt runs with the playhead at the last entry's `rateAfter`, so the prompt time at take time `x`
-is `promptAfter + (x - takeTime) * rateAfter / 100` of the last entry before `x`. The log is kept in the
-session; it is not yet stored with the recorded clip.
+is `promptAfter + (x - takeTime) * rateAfter / 100` of the last entry before `x`. A `follow` entry
+holding the prompter at the narrator's place has `rateAfter` 0, so the rule holds for it too, and a
+manual command out of a hold has `rateBefore` 0. The log is kept in the session; it is not yet
+stored with the recorded clip.
+
+**Follow Speech** (#5266). An option for voice-over recording, off by default: Voice-Over Record
+Settings ▸ Follow Speech, Markers ▸ Prompter ▸ Follow Speech, or `audio.voiceover.followSpeech
+{"on": bool?}` (no parameter toggles; `audio.voiceover.settings {"followSpeech": bool}` sets it
+too). While a take records with it on, the narration is recognised on this computer with the
+speech model the transcription preference names (Settings ▸ Media Analysis & Transcription ▸ Speech
+model; no separate model choice) and the prompter follows the narrator:
+
+- *Script.* The prompter is held at the narrator's place in the script (and the next section's), so
+  the reading line shows where they are, not where the clock is. It moves when the place is 24
+  characters on, so it moves a line at a time, and it waits while the narrator pauses or is behind
+  where the clock had carried it. It moves back only when the last four words heard match the script
+  exactly (a deliberate re-read). The matching tolerates added, dropped and changed words and words
+  the recogniser gets wrong: a move needs three of the last four words heard to match the script
+  near the place. When the words heard match nothing nearby (an ad-lib), the card says "lost" and the
+  prompter holds; a clear match anywhere in the two sections finds the narrator again. At the end of
+  the script the prompter runs with the playhead again.
+- *Talking points.* A point becomes current when two of its distinctive words are heard (its words
+  of four or more letters that no other point uses and that are not common words). Otherwise the
+  clock and the manual commands drive, as without the option.
+- *Manual commands win.* Next, Previous, Return to Playhead, Faster, Slower and Reset Rate do what
+  they always do and release a hold; tracking restarts from where they put the prompter and does not
+  move it for 3 seconds of playhead time, ignoring words spoken before the command.
+- *On the card.* A badge with a microphone before the other readouts says what it is doing in
+  words: "listening" (no match yet), "following", "lost", "starting" (the model is loading),
+  "speech unavailable" or "speech failed". A footer row above the caption shows "Heard:" and the
+  last words committed, then the tentative ones in italics and dimmed; the oldest give way when
+  the row is full. The card's accessibility label carries the state and the words; a second node,
+  `program.prompter.follow` (role Status, a polite live region), carries only the state as a
+  sentence, so a change to "lost" and back is announced and the words are not.
+- *Take log and transcript.* Each automatic move is a `follow` entry, so a take recorded without
+  pressing a key can still be conformed. The committed words with their take times are the take's
+  transcript, returned as `transcript` by `audio.voiceover.stop` (`model`, `language`, `words` with
+  `text`, `start`, `end` from the record point, `dropped`) and as `lastTranscript` by
+  `audio.voiceover.followState`. It is not stored with the recorded clip yet.
+- *State.* `audio.voiceover.followState` reports `state` (`off`, `unavailable`, `ready`,
+  `starting`, `listening`, `following`, `lost`, `failed`), `reason`, `model`, `language`, the latest
+  `committed` and `tentative` words, `place` (marker and script character), the recogniser's `stats`
+  (passes run, skipped and silent, busy time) and the transcripts. In a build without speech
+  recognition (the `whisper` feature, off in official builds) or without the model installed, the
+  option is disabled and says why, naming `transcript.downloadModel`. The position lags the voice by
+  a couple of seconds: enough to know the sentence or point, not word by word.
 
 **Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
 node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
 returns the same content for the active sequence at any time (default: the prompt time), with the
 prompter's `promptTime`, `playhead`, `gap` (prompt time minus playhead, ticks), `direction`
-(`ahead`, `behind` or null) and `rate` (percent): `section`
+(`ahead`, `behind` or null), `rate` (percent) and `held` (Follow Speech holds it): `section`
 (marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
 duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
 characters and its `paragraph`, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
 `sections` (the number of range markers). It is disabled when no sequence is open. Code:
 A time that is given but cannot be read (`{"timecode": "invalid"}`) is refused, not answered for the
 playhead. `crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`
-(drawing). Tests: `cargo test -p filmcraft-engine prompter_tests::` and
-`cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
+(drawing); Follow Speech in `crates/engine/src/follow.rs` and `crates/speech/src/stream.rs`.
+Tests: `cargo test -p filmcraft-engine prompter_tests:: follow`,
+`cargo test -p filmcraft-speech stream::` and `cargo test -p filmcraft-ui-egui --test it prompter_ui::`.
 
 ## Source playback
 

@@ -3,6 +3,20 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Prompter: Follow Speech
+
+During a voice-over take with Follow Speech on (#5266), `panels::voiceover::show` pumps the input
+to the engine's recogniser every frame, and the Prompter card (`panels/prompter.rs`) shows the
+state in a readout badge with a microphone ("following", "lost", …; dropped last in a short
+header), the words heard in a footer row above the caption (committed words, then tentative ones
+in italics and dimmed, the oldest giving way), and a polite live region node
+`program.prompter.follow` that carries only the state, so "lost" and back are announced and the
+words are not. Its colours are the card's existing text and dimmed-text pairs, already covered by
+the contrast test. Voice-Over Record Settings has a Follow Speech checkbox (`voiceover.followSpeech`),
+disabled with its reason when speech recognition or the model is missing; the Markers ▸ Prompter
+menu entry shows a checkmark. Tests: `prompter_ui::following_*`, `prompter_ui::losing_*`,
+`prompter_ui::with_follow_speech_off_*`.
+
 ## Selected text strokes
 
 With characters selected using the Type tool, both Stroke rows read and write that range's

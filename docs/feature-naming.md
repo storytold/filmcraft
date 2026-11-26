@@ -76,3 +76,24 @@ The Program monitor overlay that shows the section, talking points and script at
   prompter"), and Datavideo's dvPrompter.
 - **Decision:** used as a plain descriptive word. The register searches are still open; the pull
   request asks a Craft owner to confirm the name or to run them before it ships.
+
+### Follow Speech (2026-11-25, #5266)
+
+The voice-over option that recognises the narration while recording and keeps the prompter at the
+narrator's place (Voice-Over Record Settings ▸ Follow Speech, Markers ▸ Prompter ▸ Follow Speech,
+`audio.voiceover.followSpeech`).
+
+- **Owners' trademark lists:** not read for this name; the lists checked for Prompter (Apple,
+  Blackmagic Design) have no entry with "follow speech". The teleprompter products found below use
+  their own marks for the same feature: VoiceTrack (PromptSmart, described as patented), VoiceGlide
+  (Teleprompter.com, marked ™). Those names are avoided.
+- **Registers:** the USPTO, EUIPO eSearch, TMview and WIPO Global Brand Database searches were not
+  run; their search pages need a browser session that was not available. A web search for the exact
+  phrase with "trademark" found no registration of "Follow Speech".
+- **Descriptive use:** products describe the same feature in ordinary words built on "follow":
+  Riverside's teleprompter has a "Follow voice" option, NEEWER's prompters "AI Follow Along", and
+  SpeakSync's "Voice Tracking" is described as following along in real time; other apps say
+  "voice-activated scrolling" or "speech sync". "Follow" plus what is followed is the plain
+  description.
+- **Decision:** used as a plain descriptive name. The register searches are still open; the pull
+  request asks a Craft owner to confirm the name or to run them before it ships.
