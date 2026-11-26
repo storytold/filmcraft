@@ -84,12 +84,48 @@ warnings, the caption, more script, the other points, the last finished point, t
 sections it says so, and a sequence without range markers says how to make sections. Only the
 first 64 KiB of a comment and its first 100 talking points are read.
 
+**Next and Previous.** The prompter has its own position, the prompt time, which is normally the
+playhead. Markers ▸ Prompter ▸ Next Point (`prompter.next`, Alt+Page Down) and Previous Point
+(`prompter.previous`, Alt+Page Up) move it to the start of the next or previous talking point, or,
+in a section without talking points, script paragraph (paragraphs are separated by a blank line).
+A section with neither is one step. At the last point of a section Next goes to the start of the
+next section, also across a gap between sections; Previous goes back to the start of the current
+point once it is more than 2 seconds in, else to the point before, which at a section's first point
+is the previous section's last point. Only what the prompter shows counts, so points hidden under a
+nested section are skipped and the outer section is a step where it resumes. Neither changes
+playback, the picture, a recording or the project, and neither is an undo step. From its new
+position the prompter keeps moving with the playhead. Return to Playhead (`prompter.toPlayhead`,
+Alt+Home) puts it back; so does starting playback or a voice-over recording. Seeking and stopping
+playback keep the gap. The commands are disabled, saying why, without range markers, after the
+last point (Next), at or before the first (Previous) and when the prompter is at the playhead
+(Return to Playhead).
+
+**Ahead/behind.** While the prompt time is not the playhead, the card's header shows the gap in a
+readout badge before the time, an outlined pill with a chevron pointing forward or back: "ahead 0:08" when the prompter is later than the picture (the narrator moved
+on first), "behind 0:12" when it is earlier (the picture moved on). It rounds up to whole seconds,
+so any gap shows, and reads `h:mm:ss` from an hour on. In step it shows nothing. When the header is
+short of room the section name is cut first and the time goes before the readout. Between sections
+the card says "No section at the prompter's position" with the readout.
+
+**Take log.** During a voice-over recording every move is logged with its time:
+`prompter.takeLog` returns `inProgress` (the take being recorded) and `last` (the last finished
+take), and `audio.voiceover.stop` returns the finished take's log as `promptLog`. A log has
+`sequence`, `recordStart`, `entries` and `dropped` (moves past the first 10 000). The first entry
+(`kind` `start`) is where the prompt was when the capture began; then one entry per move (`next`,
+`previous`, `toPlayhead`) with `takeTime` (the playhead minus the record point, negative in the
+pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), and the `marker`, `point` and
+`paragraph` the prompt landed on. Between entries the prompt runs with the playhead, so the prompt
+time at any moment of the take follows from the last entry before it. The log is kept in the
+session; it is not yet stored with the recorded clip.
+
 **Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
 node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
-returns the same content for the active sequence at any time (default: the playhead): `section`
+returns the same content for the active sequence at any time (default: the prompt time), with the
+prompter's `promptTime`, `playhead`, `gap` (prompt time minus playhead, ticks) and `direction`
+(`ahead`, `behind` or null): `section`
 (marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
 duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
-characters, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
+characters and its `paragraph`, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
 `sections` (the number of range markers). It is disabled when no sequence is open. Code:
 A time that is given but cannot be read (`{"timecode": "invalid"}`) is refused, not answered for the
 playhead. `crates/engine/src/prompter.rs` (what is shown) and `crates/ui-egui/src/panels/prompter.rs`

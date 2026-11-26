@@ -31,6 +31,10 @@ impl FilmcraftApp {
         {
             self.session.set_playhead(Tick::ZERO);
         }
+        // playback starts with the Prompter in step with the picture
+        if filmcraft_engine::prompter::gap(&self.session) != Tick::ZERO {
+            let _ = self.session.execute("prompter.toPlayhead", json!({}));
+        }
         // A loop restart keeps counting into the same meter.
         if !self.playback.playing || self.playback.speed != speed {
             self.playback.meter.start(speed);

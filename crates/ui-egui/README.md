@@ -122,6 +122,46 @@ same result over automation. The model's decisions (in `crates/engine/src/prompt
 - **Limits:** only the first 64 KiB of a comment and its first 100 points are read, and a point is
   cut at 500 characters; the overlay and the query say so (`truncated`).
 
+Next and Previous (#5262; `prompter.next`, `prompter.previous`, `prompter.toPlayhead`,
+`prompter.takeLog`; Markers ▸ Prompter; Alt+Page Down, Alt+Page Up, Alt+Home) move the prompt time,
+which the overlay draws instead of the playhead. Decisions:
+
+- **State:** `Session::prompter` holds an anchor, "prompt time P at playhead H", in the sequence and
+  document it was set in; the prompt time is `P + (playhead - H)`. It is engine session state, so
+  every command and the control channel reach it; it is not saved and never an undo step. A rate
+  (#5263) becomes a factor on `playhead - H`; automatic tracking (#5266) sets the same anchor and
+  these commands override it by replacing it.
+- **Steps:** the section start, then its talking points' starts, or without points its script
+  paragraphs' starts (text after a blank line); a section with neither is one step. Points that
+  start past the section's end are not steps. Only what `section_at` shows counts: points under a
+  nested section are skipped, and the parent is a step where it resumes (consistent with
+  `next_after`).
+- **Previous:** to the current step's own start once the prompt is more than 2 s into it, else to
+  the step before. At a section's first point that is the previous section's last point (one step
+  back, not its start).
+- **Ends and gaps:** Next in a gap goes to the next section's start; Previous in a gap to the last
+  point before it. Next is disabled after the last step, Previous at or before the first, both
+  without range markers, Return to Playhead when in step; each says why.
+- **Returning:** Return to Playhead, starting playback (`FilmcraftApp::play` runs
+  `prompter.toPlayhead` when there is a gap) and starting a voice-over take. A seek (scrubbing,
+  clicking the ruler, `playhead.set`) and stopping playback keep the gap.
+- **Readout:** "ahead m:ss" / "behind m:ss" (the owner's words) in a readout badge in the header,
+  before the time: the duration badges' pill, outlined in `text` with a 1.5 pt line, semibold
+  tabular figures, and a chevron pointing forward when ahead and back when behind (the glyph only
+  repeats the words). It is also in the accessibility label; rounded up to whole seconds so any gap
+  shows, `h:mm:ss` from an hour on, nothing in step. In a short header the section name is cut
+  first; when it would get less than three ems the time goes, and the readout stays. Outside every
+  section the card says "No section at the prompter's position", with the readout at its right.
+- **Take log:** each move during a voice-over take is logged (`kind`, `takeTime` from the record
+  point, `playhead`, `promptBefore`, `promptAfter`, `marker`, `point`, `paragraph`, all times in
+  ticks; serde types `TakeLog` / `PromptMove`), starting with an entry for where the prompt was
+  when the capture began (restarted with the capture by `audio.voiceover.sync`). A
+  return-to-playhead that changes nothing is not logged. Up to 10 000 moves per take are kept.
+  The log lives in the session (the take in progress and the last finished one); it is not stored
+  on the recorded clip, which needs a project schema change in craft-libs.
+- **No buttons on the overlay:** it stays a read-only display; the commands are in the menu, on
+  the keyboard and over automation.
+
 The overlay's decisions:
 
 - **Shape and edge:** a card centred at the bottom of the visible picture, inset from its edges by
@@ -134,8 +174,7 @@ The overlay's decisions:
   caption burned into the media, is covered and not repeated. The voice-over
   countdown at the top of the window stays clear. It is drawn with the monitor's painter only
   (never rendered or exported) and stays on in full-screen Program.
-- **Regions, top to bottom:** a header (the marker's flag, the section name, the time; room is left
-  before the time for a short readout), the progress bar, the body (talking points, script, or both
+- **Regions, top to bottom:** a header (the marker's flag, the section name, any readout, the time), the progress bar, the body (talking points, script, or both
   side by side with the points on the left), then a footer (the next section, warnings, the caption).
   Beside the script the points take 42% of the width, more where that would leave the current
   point less than 10 of its type sizes; where that leaves the script less than 10 of its type
@@ -199,7 +238,14 @@ Tests:
   `the_next_section_is_announced_near_the_end_and_between_sections`,
   `the_caption_line_comes_from_the_top_enabled_track_with_a_caption_there`,
   `prompter_inspect_reports_the_section_at_a_time_and_changes_nothing`,
-  `hostile_comments_markers_and_times_never_panic`.
+  `hostile_comments_markers_and_times_never_panic`,
+  `next_visits_every_point_and_paragraph_in_order_across_sections_and_stops_at_the_last`,
+  `previous_restarts_the_current_point_unless_it_has_just_started`,
+  `next_follows_what_is_shown_where_sections_overlap`,
+  `moving_the_prompter_changes_neither_the_playhead_nor_the_project_nor_the_history`,
+  `next_and_previous_are_disabled_with_a_reason_where_they_cannot_move`,
+  `a_take_logs_every_prompter_move_relative_to_its_record_point`,
+  `hostile_prompter_positions_never_panic`.
 - Unit, `panels::prompter::tests`:
   `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (in all three themes, with
   and without accessible contrast: the card is opaque; 4.5:1 for text and dimmed text on the card,
@@ -213,7 +259,9 @@ Tests:
   `the_prompter_follows_the_playhead_through_points_and_sections`,
   `the_prompter_runs_along_the_bottom_of_the_picture_and_stays_in_full_screen_program`,
   `points_longer_than_their_section_are_reported_on_the_overlay`,
-  `the_accessibility_text_names_every_point_the_card_lists`.
+  `the_accessibility_text_names_every_point_the_card_lists`,
+  `after_next_the_overlay_shows_the_prompter_point_with_an_ahead_or_behind_readout_until_it_returns`,
+  `starting_playback_puts_the_prompter_back_in_step`.
 - Unit, `panels::prompter::tests`: `the_current_point_stays_inside_the_card_on_a_small_picture`,
   `the_current_point_beside_a_script_shows_its_first_words` (pictures from 213×120 to 1600×900),
   `reading_on_through_the_script_lays_it_out_once`.
@@ -229,13 +277,21 @@ point on a 213×120 picture, the current point beside a script showed "S…", th
 157 times for 157 reading positions, and the accessibility text named one of the three next
 points.
 
+Results with Next and Previous on Linux (2026-11-25): all 16 engine and 6 headless UI prompter
+tests pass; `starting_playback_puts_the_prompter_back_in_step` fails with the playback reset
+removed. The engine suite passed (970 of 970); in the full UI suite 1208 of 1209 passed at a load
+average of 64, and the one failure, `scrub_stream_ui::a_playhead_drag_opens_the_scrub_output_once`,
+passes alone.
+
 Limitations: changes on the overlay, and turning it on or off by shortcut, are not announced
 through a live region (no shared helper yet). The script's line-by-line easing follows the app's
 animation setting, not a system reduced-motion setting. The card's text size follows the picture,
 not the system text size. In the normal layout's small Program panel the card has room for the
 header, the current point and one or two more rows, so the script beside points, and the caption,
 are often among what it leaves out; it is then still in the accessibility text, and the burned-in caption under the card is not
-visible. Right after a seek, the monitor shows the nearest cached picture until the new
+visible. A move by Next or Previous is not announced through a live region either; the new text is
+on the overlay's node. The take log is not stored with the recorded clip. Right after a seek, the
+monitor shows the nearest cached picture until the new
 frame renders, while the prompter already shows the new time.
 
 ## Pane layout controls

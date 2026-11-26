@@ -1,12 +1,14 @@
 //! The Prompter overlay on the Program monitor (#5260), driven through the control channel: off by
 //! default, `view.prompter` shows it, it follows the playhead through the talking points and from
 //! section to section as `prompter.inspect` reports them, its text is on an accessibility node,
-//! and it stays along the bottom of the picture, also in full-screen Program.
+//! and it stays along the bottom of the picture, also in full-screen Program. Next and Previous
+//! (#5262) move it off the playhead, with an ahead/behind readout, until it returns to the
+//! playhead or playback starts.
 //!
 //! With `FILMCRAFT_UI_SHOTS=<dir>` the tests also render the window with wgpu and write
-//! `prompter-*.png` there.
+//! `prompter-*.png` there, with the prompter's accessibility node beside each as `*.a11y.txt`.
 
-use crate::support::{Drive, Launch, builder, demo_session, driver, rect_of, save_settled_shot, with_shots};
+use crate::support::{Drive, Launch, builder, demo_session, driver, rect_of, save_settled_shot, shots_dir, with_shots};
 use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
@@ -162,4 +164,100 @@ fn the_accessibility_text_names_every_point_the_card_lists() {
         assert!(label.contains(part), "the card lists it, so the text says it ({part}): {label}");
     }
     assert!(!label.contains("Then: Six"), "a point the card only counts is counted, not named: {label}");
+}
+
+impl Driver {
+    /// The text of the overlay's accessibility node (a Label), if there is one.
+    fn node_text(&mut self) -> Option<String> {
+        self.frames(2);
+        let section = self.exec("prompter.inspect", json!({}))["section"]["name"].as_str().unwrap_or("No section").to_owned();
+        self.harness.query_all_by_role(egui::accesskit::Role::Label).find_map(|n| {
+            let node = n.accesskit_node();
+            let text = node.label().or_else(|| node.value()).unwrap_or_default();
+            text.starts_with(&section).then_some(text)
+        })
+    }
+
+    /// The settled window as `<name>.png`, and the overlay's node beside it, when shots are on.
+    fn shot(&mut self, name: &str) {
+        save_settled_shot(self, &format!("{name}.png"));
+        if let Some(dir) = shots_dir() {
+            let text = self.node_text().unwrap_or_default();
+            std::fs::write(dir.join(format!("{name}.a11y.txt")), format!("role: Label\nautomation id: program.prompter\ntext: {text}\n")).unwrap();
+        }
+    }
+
+    fn point_at(&mut self, time: Option<i64>) -> String {
+        let q = match time {
+            Some(t) => self.exec("prompter.inspect", json!({"time": t})),
+            None => self.exec("prompter.inspect", json!({})),
+        };
+        let i = q["section"]["current"].as_u64().unwrap_or(0) as usize;
+        q["section"]["points"][i]["text"].as_str().unwrap_or_default().to_owned()
+    }
+}
+
+#[test]
+fn after_next_the_overlay_shows_the_prompter_point_with_an_ahead_or_behind_readout_until_it_returns() {
+    let mut d = Driver::sections();
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.at(1.0);
+    let playhead = d.exec("prompter.inspect", json!({}))["playhead"].as_i64();
+    let at_playhead = d.point_at(playhead);
+    assert!(!d.label().contains("ahead") && !d.label().contains("behind"), "no readout in step: {}", d.label());
+
+    d.ok("ui.key", json!({"key": "Alt+PageDown"}));
+    d.frames(3);
+    let q = d.exec("prompter.inspect", json!({}));
+    assert!(q["gap"].as_i64().unwrap_or(0) > 0, "the shortcut ran Next: {q}");
+    let prompted = d.point_at(None);
+    assert_ne!(prompted, at_playhead);
+    let label = d.label();
+    assert!(
+        label.contains(&format!("Now: {prompted}")) && !label.contains(&format!("Now: {at_playhead}")),
+        "the prompter's point, not the playhead's: {label}"
+    );
+    assert!(label.contains("ahead 0:0"), "ahead, in words: {label}");
+    assert!(d.node_text().is_some_and(|t| t.contains("ahead 0:0")), "the readout is on the accessibility node");
+    d.shot("prompter-ahead");
+
+    d.exec("prompter.toPlayhead", json!({}));
+    let label = d.label();
+    assert!(!label.contains("ahead") && label.contains(&format!("Now: {at_playhead}")), "back on the playhead's point: {label}");
+    d.shot("prompter-in-step");
+
+    d.at(7.5);
+    d.exec("prompter.previous", json!({}));
+    d.exec("prompter.previous", json!({}));
+    let label = d.label();
+    assert!(label.contains("behind 0:0") && !label.contains("ahead"), "behind when the picture moved on: {label}");
+    assert!(d.node_text().is_some_and(|t| t.contains("behind 0:0")));
+    d.shot("prompter-behind");
+
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.exec("prompter.next", json!({}));
+    d.exec("prompter.next", json!({}));
+    d.exec("prompter.next", json!({}));
+    assert!(d.label().starts_with("The numbers") && d.label().contains("ahead 0:0"), "into the next section, also in full-screen Program: {}", d.label());
+    d.shot("prompter-full-screen-ahead");
+}
+
+#[test]
+fn starting_playback_puts_the_prompter_back_in_step() {
+    let mut d = Driver::sections();
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.at(1.0);
+    d.exec("prompter.next", json!({}));
+    assert!(d.label().contains("ahead"), "{}", d.label());
+    d.exec("playback.toggle", json!({}));
+    d.frames(3);
+    assert!(d.app().playback.playing);
+    assert_eq!(d.exec("prompter.inspect", json!({}))["gap"], 0, "in step once playback starts");
+    assert!(!d.label().contains("ahead"), "and the readout is gone: {}", d.label());
+    d.exec("prompter.next", json!({}));
+    assert!(d.label().contains("ahead"), "Next still works while playing: {}", d.label());
+    d.shot("prompter-playing-ahead");
+    d.exec("playback.toggle", json!({}));
+    d.frames(2);
+    assert!(d.label().contains("ahead"), "stopping playback keeps the gap: {}", d.label());
 }

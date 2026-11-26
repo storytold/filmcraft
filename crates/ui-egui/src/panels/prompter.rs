@@ -5,7 +5,10 @@
 //! their durations, the next section near the end, the caption at the playhead as a caption block,
 //! and warnings when the talking points need more time than the section has.
 //!
-//! What it shows comes from [`filmcraft_engine::prompter::prompt_at`]; this module only draws it.
+//! What it shows comes from [`filmcraft_engine::prompter::prompt_at`] at the prompt time
+//! ([`filmcraft_engine::prompter::prompt_time_at`]: the playhead, or where Next and Previous moved
+//! the prompter); this module only draws it. When the prompt time is not the playhead, the header
+//! shows the gap in a readout badge before the time, "ahead 0:08" or "behind 0:12".
 //! It is drawn with the monitor's painter, so it never reaches a render or an export, and it is
 //! still drawn in full-screen Program. Automation id `program.prompter`; its label and its
 //! accessibility node carry the text it shows.
@@ -19,7 +22,7 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_engine::prompter::{Point, PointState, Prompt, Script, Section, prompt_at};
+use filmcraft_engine::prompter::{Direction, Point, PointState, Prompt, Script, Section, direction, prompt_at, prompt_time_at};
 use filmcraft_project::{MarkerId, Sequence};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
@@ -139,16 +142,48 @@ fn hms(s: i64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
+/// The ahead/behind readout for a gap (prompt time minus playhead), rounded up to whole seconds so
+/// any gap shows; None when the prompter is in step.
+pub fn readout(gap: Tick) -> Option<String> {
+    let time = clock_up(Tick(gap.0.saturating_abs()));
+    direction(gap).map(|d| match d {
+        Direction::Ahead => tlf!("ahead {time}", time = time),
+        Direction::Behind => tlf!("behind {time}", time = time),
+    })
+}
+
+/// The glyph beside the ahead/behind readout: a chevron pointing the way the prompter is from the
+/// picture (forward when ahead). It only repeats what the words say.
+fn readout_icon(gap: Tick) -> Option<Icon> {
+    direction(gap).map(|d| match d {
+        Direction::Ahead => Icon::ChevronRight,
+        Direction::Behind => Icon::ChevronLeft,
+    })
+}
+
+/// What the header says when the prompt time is in no section.
+fn no_section(p: &Prompt, gap: Tick) -> &'static str {
+    if p.sections == 0 {
+        tl!("No sections: range markers on the sequence become prompter sections")
+    } else if gap == Tick::ZERO {
+        tl!("No section at the playhead")
+    } else {
+        tl!("No section at the prompter's position")
+    }
+}
+
 fn point_label(p: &Point) -> String {
     if p.text.is_empty() { "—".to_owned() } else { p.text.clone() }
 }
 
-/// The text of the overlay, in reading order: its automation label and accessibility name.
-pub fn spoken(p: &Prompt) -> String {
+/// The text of the overlay, in reading order: its automation label and accessibility name. `gap`
+/// is the prompt time minus the playhead.
+pub fn spoken(p: &Prompt, gap: Tick) -> String {
     let mut parts = Vec::new();
     match &p.section {
         Some(s) => {
             parts.push(format!("{} {}", s.name, tlf!("{elapsed} of {length}", elapsed = clock(s.elapsed), length = clock_up(s.duration))));
+            parts.extend(readout(gap));
             // the points the card lists when it has room (the same rows), and the count of the rest
             let rows = PointRows::of(s);
             let name = |i: Option<usize>| i.and_then(|i| s.points.get(i)).map(point_label);
@@ -164,8 +199,10 @@ pub fn spoken(p: &Prompt) -> String {
                 parts.push(tlf!("Script: {text}", text = line));
             }
         }
-        None if p.sections == 0 => parts.push(tl!("No sections: range markers on the sequence become prompter sections").to_owned()),
-        None => parts.push(tl!("No section at the playhead").to_owned()),
+        None => {
+            parts.push(no_section(p, gap).to_owned());
+            parts.extend(readout(gap));
+        }
     }
     parts.extend(notices(p));
     // one sentence per part; a part that already ends a sentence gets no second period
@@ -577,13 +614,16 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, 
     }
 }
 
-/// Draw the prompter for `time` (the playhead) at the bottom of the visible picture `area`.
+/// Draw the prompter for the playhead `time` at the bottom of the visible picture `area`: what is
+/// at the prompt time, and the gap to the playhead.
 fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     let Some(seq) = app.session.active_sequence() else { return };
     if area.width() < 60.0 || area.height() < 40.0 {
         return;
     }
-    let prompt = prompt_at(seq, time);
+    let at = prompt_time_at(&app.session, time);
+    let gap = at.saturating_sub(time);
+    let prompt = prompt_at(seq, at);
     let t = app.tokens;
     let c = palette(&t);
     let body = ui.style().text_styles.get(&egui::TextStyle::Body).map_or(12.0, |f| f.size);
@@ -597,11 +637,17 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
 
     // ---- the card: centred at the bottom, inside the action-safe band
     let inset = (area.width().min(area.height()) * INSET).clamp(2.0 * t.gap, 10.0 * t.gap);
-    let empty = empty_text(&prompt);
+    // the header's readouts before the time, most important last (it is dropped last)
+    let readouts: Vec<Trailing> = readout(gap).into_iter().map(|text| Trailing::readout(&d, &text, readout_icon(gap), 2)).collect();
+    let empty = prompt.section.is_none().then(|| no_section(&prompt, gap));
     // between sections the card holds a line or two, so it is only as wide as its message needs
     let widest = match empty {
         None => m.base * MAX_WIDTH_EMS,
-        Some(text) => (d.p.layout_no_wrap(text.to_owned(), m.item(), c.dim).size().x + 2.0 * m.pad).max(m.base * MAX_WIDTH_EMS * 0.6),
+        Some(text) => {
+            let message = d.p.layout_no_wrap(text.to_owned(), m.item(), c.dim).size().x;
+            let badges: f32 = readouts.iter().map(|r| r.outer_w(&m) + m.section).sum();
+            (message + badges + 2.0 * m.pad).max(m.base * MAX_WIDTH_EMS * 0.6)
+        }
     };
     let width = (area.width() - 2.0 * inset).min(widest).max(1.0);
     let inner_w = width - 2.0 * m.pad;
@@ -615,25 +661,21 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     let content = card.shrink(m.pad);
     let d = Draw { p: d.p.with_clip_rect(d.p.clip_rect().intersect(card.shrink(1.0))), ..d };
 
-    // ---- header: flag, section name, [readout], time; the bar
-    let mut y = content.min.y;
-    match &prompt.section {
+    // ---- header: flag, section name, readouts, time; the bar
+    let mut y = match &prompt.section {
         Some(s) => {
             let time = Trailing::tabular(&d, &format!("{} / {}", clock(s.elapsed), clock_up(s.duration)), d.c.dim);
-            // a readout (ahead/behind, a rate) goes before the time: push it first
-            y = header(&d, content, Some(&s.name), &[time]);
-            y += m.gap;
-            let bar = Rect::from_min_size(pos2(content.min.x, y), vec2(inner_w, m.bar()));
+            let trailing: Vec<&Trailing> = readouts.iter().chain([&time]).collect();
+            let below = header(&d, content, Title::Section(&s.name), &trailing) + m.gap;
+            let bar = Rect::from_min_size(pos2(content.min.x, below), vec2(inner_w, m.bar()));
             section_bar(&d, bar, s);
-            y = bar.max.y;
+            bar.max.y
         }
         None => {
-            let g = d.p.layout_job(line_job(empty.unwrap_or_default(), m.item(), c.dim, inner_w));
-            let h = m.line(&m.item());
-            d.p.galley(pos2(content.min.x, y + (h - g.size().y) / 2.0), g, c.dim);
-            y += h;
+            let trailing: Vec<&Trailing> = readouts.iter().collect();
+            header(&d, content, Title::Message(empty.unwrap_or_default()), &trailing)
         }
-    }
+    };
 
     // ---- body: the talking points beside the script
     if let Some(s) = &prompt.section
@@ -682,56 +724,122 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
         caption_line(&d, r, caption_track.as_deref(), &cap.lines.join(" / "));
     }
 
-    let label = spoken(&prompt);
+    let label = spoken(&prompt, gap);
     let response = ui.interact(card, egui::Id::unique("program-prompter"), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
     app.auto.add("program.prompter", card, &label);
 }
 
-/// What the card says when there is no section at the playhead.
-fn empty_text(prompt: &Prompt) -> Option<&'static str> {
-    match (&prompt.section, prompt.sections) {
-        (Some(_), _) => None,
-        (None, 0) => Some(tl!("No sections: range markers on the sequence become prompter sections")),
-        (None, _) => Some(tl!("No section at the playhead")),
-    }
-}
-
-/// A piece of the header's right end: the time, and later a readout beside it.
+/// A piece of the header's right end: the time (plain) or a readout (in a badge).
 struct Trailing {
     pieces: Vec<(f32, Arc<Galley>)>,
     width: f32,
     color: Color32,
+    /// Drawn in a readout badge, with this glyph before the text.
+    badge: Option<Option<Icon>>,
+    /// The order pieces go in when the header is short of room: the lowest first.
+    keep: u8,
 }
 
 impl Trailing {
-    /// `text` in tabular figures, so its digits do not shift as they change.
+    /// `text` in tabular figures, so its digits do not shift as they change; the first piece to go.
     fn tabular(d: &Draw, text: &str, color: Color32) -> Self {
         let (pieces, width) = tabular_text(&d.p, text, &d.m.item(), color);
-        Trailing { pieces, width, color }
+        Trailing { pieces, width, color, badge: None, keep: 0 }
+    }
+
+    /// A readout badge: the duration badges' pill, but outlined in `text` with a heavier line and
+    /// semibold text, since it says the prompter is not where the picture is. Its text is a little
+    /// smaller than the header's so it sits clear of the outline in a pill as tall as the row. The
+    /// glyph only repeats what the words say.
+    fn readout(d: &Draw, text: &str, icon: Option<Icon>, keep: u8) -> Self {
+        let (pieces, width) = tabular_text(&d.p, text, &Tokens::semibold((d.m.base * 0.9).round()), d.c.text);
+        Trailing { pieces, width, color: d.c.text, badge: Some(icon), keep }
+    }
+
+    /// The width it takes in the header.
+    fn outer_w(&self, m: &Metrics) -> f32 {
+        match self.badge {
+            None => self.width,
+            Some(icon) => self.width + 2.0 * badge_pad(m) + icon.map_or(0.0, |_| readout_icon_w(m) + m.gap / 2.0),
+        }
+    }
+
+    /// Draw it with its left end at `x`, centred on `cy`.
+    fn paint(&self, d: &Draw, x: f32, cy: f32) {
+        let m = &d.m;
+        let Some(icon) = self.badge else {
+            paint_tabular(&d.p, pos2(x, cy), self.pieces.clone(), self.color);
+            return;
+        };
+        let h = m.line(&m.item());
+        let r = Rect::from_min_size(pos2(x, cy - h / 2.0), vec2(self.outer_w(m), h));
+        d.p.rect(r, h / 2.0, d.c.card, Stroke::new(1.5, d.c.text), StrokeKind::Inside);
+        let mut tx = r.min.x + badge_pad(m);
+        if let Some(icon) = icon {
+            let w = readout_icon_w(m);
+            icons::paint(&d.p, Rect::from_center_size(pos2(tx + w / 2.0, cy), vec2(w, w)), icon, d.c.text);
+            tx += w + m.gap / 2.0;
+        }
+        paint_tabular(&d.p, pos2(tx, cy), self.pieces.clone(), self.color);
     }
 }
 
-/// The header row at the top of `r`: the section's flag in its accent and its name, cut to the
-/// room the `trailing` pieces (right-aligned, the last at the right edge) leave; or only the
-/// pieces. Returns the row's bottom.
-fn header(d: &Draw, r: Rect, name: Option<&str>, trailing: &[Trailing]) -> f32 {
+/// The room between a readout badge's outline and its content, at either end.
+fn badge_pad(m: &Metrics) -> f32 {
+    (m.gap * 1.5).round()
+}
+
+/// The size of a readout badge's glyph.
+fn readout_icon_w(m: &Metrics) -> f32 {
+    (m.base * 0.75).round()
+}
+
+/// What the header row starts with.
+#[derive(Clone, Copy)]
+enum Title<'a> {
+    /// The section: its flag in its accent and its name.
+    Section(&'a str),
+    /// A message in place of a section ("No section at the playhead").
+    Message(&'a str),
+}
+
+/// The header row at the top of `r`: the title, cut to the room the `trailing` pieces leave
+/// (right-aligned, the last at the right edge). When the title would get less than three ems,
+/// pieces are dropped, lowest `keep` first (the time before a readout), but the last one stays:
+/// while a readout shows it matters more than the section's name. Returns the row's bottom.
+fn header(d: &Draw, r: Rect, title: Title, trailing: &[&Trailing]) -> f32 {
     let m = &d.m;
     let h = m.line(&m.item());
     let cy = r.min.y + h / 2.0;
+    let mut shown: Vec<&Trailing> = trailing.to_vec();
+    let needs = |shown: &[&Trailing]| shown.iter().map(|t| t.outer_w(m) + m.section).sum::<f32>();
+    while shown.len() > 1 && needs(&shown) > r.width() - m.base * 3.0 {
+        if let Some(i) = shown.iter().enumerate().min_by_key(|(_, t)| t.keep).map(|(i, _)| i) {
+            shown.remove(i);
+        }
+    }
     let mut right = r.max.x;
-    for piece in trailing.iter().rev() {
-        right -= piece.width;
-        paint_tabular(&d.p, pos2(right, cy), piece.pieces.clone(), piece.color);
+    for piece in shown.iter().rev() {
+        right -= piece.outer_w(m);
+        piece.paint(d, right, cy);
         right -= m.section;
     }
-    if let Some(name) = name {
-        let flag_h = (m.base * 0.85).round();
-        let flag = Rect::from_min_size(pos2(r.min.x, cy - flag_h / 2.0), vec2((flag_h * 0.75).round(), flag_h));
-        marker_glyph(&d.p, flag, (flag_h * 0.35).round(), MarkerPart::Whole, d.accent);
-        let x = flag.max.x + m.gap * 1.5;
-        let g = d.p.layout_job(line_job(name, Tokens::semibold(m.base), d.c.text, right - x));
-        d.p.galley(pos2(x, cy - g.size().y / 2.0), g, d.c.text);
+    match title {
+        Title::Section(name) => {
+            let flag_h = (m.base * 0.85).round();
+            let flag = Rect::from_min_size(pos2(r.min.x, cy - flag_h / 2.0), vec2((flag_h * 0.75).round(), flag_h));
+            marker_glyph(&d.p, flag, (flag_h * 0.35).round(), MarkerPart::Whole, d.accent);
+            let x = flag.max.x + m.gap * 1.5;
+            if right - x > m.base {
+                let g = d.p.layout_job(line_job(name, Tokens::semibold(m.base), d.c.text, right - x));
+                d.p.galley(pos2(x, cy - g.size().y / 2.0), g, d.c.text);
+            }
+        }
+        Title::Message(text) => {
+            let g = d.p.layout_job(line_job(text, m.item(), d.c.dim, right - r.min.x));
+            d.p.galley(pos2(r.min.x, cy - g.size().y / 2.0), g, d.c.dim);
+        }
     }
     r.min.y + h
 }
