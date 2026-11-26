@@ -689,6 +689,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     {
         return app.file_dialog(id, &params);
     }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops, then the
+    // step lands on its frame, as in Premiere Pro (#4655). Left running, the playback clock would
+    // carry the playhead on from its anchor on the next pass and overwrite the step. Stopping
+    // first ends an automation pass where playback actually was, not where the step lands.
+    if parks_playhead(id) && app.playback.playing {
+        app.stop();
+    }
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
@@ -714,6 +721,22 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Commands that move the playhead a frame or to an edit point: playback stops where they land,
+/// as Premiere Pro's Step and Go to Edit Point keys do (#4655).
+fn parks_playhead(id: &str) -> bool {
+    matches!(
+        id,
+        "playhead.stepBack"
+            | "playhead.stepForward"
+            | "playhead.stepBack5"
+            | "playhead.stepForward5"
+            | "playhead.prevEdit"
+            | "playhead.nextEdit"
+            | "playhead.prevEditAnyTrack"
+            | "playhead.nextEditAnyTrack"
+    )
 }
 
 /// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
