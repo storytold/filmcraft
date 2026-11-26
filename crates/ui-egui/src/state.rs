@@ -749,6 +749,8 @@ pub struct LinkMediaDraft {
     pub metadata: bool,
     pub align_timecode: bool,
     pub relink_others: bool,
+    /// Relink others also reconnects Offline media (seeded from `media.relinkOfflineMedia`).
+    pub include_offline: bool,
     /// Search: folder and "Display only exact name matches".
     pub folder: String,
     pub exact_name: bool,
@@ -772,6 +774,7 @@ impl Default for LinkMediaDraft {
             metadata: true,
             align_timecode: false,
             relink_others: true,
+            include_offline: true,
             folder: String::new(),
             exact_name: true,
             candidates: vec![],
@@ -779,6 +782,13 @@ impl Default for LinkMediaDraft {
             skipped: vec![],
             message: String::new(),
         }
+    }
+}
+
+impl LinkMediaDraft {
+    /// Open the dialog with Include Offline seeded from Settings ▸ Media.
+    pub fn from_prefs(prefs: &filmcraft_engine::autosave::Preferences) -> Self {
+        Self { include_offline: prefs.media.relink_offline_media, ..Self::default() }
     }
 }
 

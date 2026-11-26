@@ -160,6 +160,8 @@ fn every_schema_key_exists_with_a_valid_default() {
     assert_eq!(p.get("timeline.stillImageDuration"), Some(json!(5.0)));
     assert_eq!(p.get("playback.stepManyFrames"), Some(json!(5)));
     assert_eq!(p.get("media.indeterminateTimebase"), Some(json!("29.97df")));
+    assert_eq!(p.get("media.relinkOfflineMedia"), Some(json!(true)));
+    assert_eq!(p.get("media.rememberOfflineAll"), Some(json!(true)));
     assert_eq!(p.get("labels.colors.violet.color"), Some(json!("#380ea7")));
     assert_eq!(p.get("labels.defaults.movie"), Some(json!("Iris")));
     assert_eq!(p.get("audioHardware.bufferSize"), Some(json!(512)));

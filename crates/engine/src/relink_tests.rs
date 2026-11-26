@@ -87,6 +87,65 @@ fn moved_media_opens_offline_and_relinks_others_by_folder() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Relink others: when remap and same-dir miss, index the new file's parent tree by exact name.
+#[test]
+fn relink_others_finds_nested_siblings_by_file_name() {
+    let root = tmp_dir("relink-nested");
+    let (path, items) = saved_project(&root);
+    let shoot = root.join("Moved").join("shoot");
+    let day2 = shoot.join("day2");
+    std::fs::create_dir_all(&day2).unwrap();
+    std::fs::rename(root.join("Media").join("a.mov"), shoot.join("a.mov")).unwrap();
+    std::fs::rename(root.join("Media").join("b.mov"), day2.join("b.mov")).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("Media"));
+
+    let mut s = open(&path);
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": shoot.join("a.mov").to_string_lossy()})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "nested b found under a's parent tree: {r}");
+    assert_eq!(r["remaining"], json!([]));
+    let b_path = s.project.item(items[1]).unwrap().as_media().unwrap().media.clone();
+    let filmcraft_project::MediaRef::File { path: b_path } = b_path else { panic!("file media") };
+    assert_eq!(std::path::Path::new(&b_path), day2.join("b.mov"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Relink others: optional `folder` indexes a Search-in tree when the linked file's parent has no siblings.
+#[test]
+fn relink_others_uses_folder_param_when_parent_tree_misses() {
+    let root = tmp_dir("relink-folder-param");
+    let (path, items) = saved_project(&root);
+    let link_here = root.join("LinkHere");
+    let search = root.join("SearchTree").join("nested");
+    std::fs::create_dir_all(&link_here).unwrap();
+    std::fs::create_dir_all(&search).unwrap();
+    std::fs::rename(root.join("Media").join("a.mov"), link_here.join("a.mov")).unwrap();
+    std::fs::rename(root.join("Media").join("b.mov"), search.join("b.mov")).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("Media"));
+
+    let mut s = open(&path);
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": link_here.join("a.mov").to_string_lossy()})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "parent tree has no b: {r}");
+    assert_eq!(r["remaining"], json!([items[1].0]));
+
+    let mut s = open(&path);
+    let r = s
+        .execute(
+            "media.relink",
+            json!({
+                "item": items[0].0,
+                "path": link_here.join("a.mov").to_string_lossy(),
+                "folder": root.join("SearchTree").to_string_lossy(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "folder param finds nested b: {r}");
+    assert_eq!(r["remaining"], json!([]));
+    let b_path = s.project.item(items[1]).unwrap().as_media().unwrap().media.clone();
+    let filmcraft_project::MediaRef::File { path: b_path } = b_path else { panic!("file media") };
+    assert_eq!(std::path::Path::new(&b_path), search.join("b.mov"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn auto_relink_by_prefix_and_by_folder_search() {
     let root = tmp_dir("relink-auto");
@@ -111,7 +170,8 @@ fn auto_relink_by_prefix_and_by_folder_search() {
 
 // An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
 // file, the clip is missing like any file that isn't found: the folder search and Relink Others
-// find it, and opening the project asks for it. It was made offline, which all three skip.
+// find it, and opening the project asks for it. Importing them as made-offline would skip the
+// open prompt (while media.rememberOfflineAll is on); Relink others includes Offline by default.
 #[test]
 fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
     let root = tmp_dir("relink-edl-reel");
@@ -520,6 +580,72 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     s.execute("file.save", json!({})).unwrap();
     assert!(open(&path).offline.prompt, "newly missing media asks again");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Premiere default: Relink others reconnects Offline media; prefs / `relinkOffline` opt out.
+#[test]
+fn relink_others_includes_offline_by_default_with_prefs_to_opt_out() {
+    let setup = |label: &str| {
+        let root = tmp_dir(label);
+        let (path, items) = saved_project(&root);
+        let moved = root.join("Moved").join("Media");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(root.join("Media"), &moved).unwrap();
+        let a = moved.join("a.mov").to_string_lossy().into_owned();
+        (root, path, items, moved, a)
+    };
+
+    // Default: Offline All, then Relink others pulls the sibling Offline clip too.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-default");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "Offline included by default: {r}");
+        assert_eq!(r["remaining"], json!([]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Explicit opt-out on the command: only the linked item comes online.
+    {
+        let (root, path, items, _moved, a) = setup("relink-offline-others-param");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.relink", json!({"item": items[0].0, "path": a, "relinkOffline": false})).unwrap();
+        assert_eq!(r["relinked"].as_array().unwrap().len(), 1, "{r}");
+        assert_eq!(r["remaining"], json!([items[1].0]), "{r}");
+        assert!(s.project.item(items[1]).unwrap().as_media().unwrap().offline);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Pref off: autoRelink skips Offline.
+    {
+        let (root, path, items, moved, _a) = setup("relink-offline-others-pref");
+        let mut s = open(&path);
+        s.prefs.media.relink_offline_media = false;
+        s.execute("media.offlineAll", json!({})).unwrap();
+        let r = s.execute("media.autoRelink", json!({"folder": moved.to_string_lossy()})).unwrap();
+        assert!(r["relinked"].as_array().unwrap().is_empty(), "pref off skips Offline: {r}");
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Opt out of remembering Offline All: on_open asks for Offline media.
+    {
+        let (root, path, items, _moved, _a) = setup("relink-offline-others-prompt");
+        let mut s = open(&path);
+        s.execute("media.offlineAll", json!({})).unwrap();
+        assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+        s.execute("file.save", json!({})).unwrap();
+        // Prefs live outside the project; set them then re-run on_open.
+        let mut s = open(&path);
+        assert!(!s.offline.prompt, "setup: Offline All remembered with default pref");
+        s.prefs.media.remember_offline_all = false;
+        crate::relink::on_open(&mut s);
+        assert!(s.offline.prompt, "rememberOfflineAll off prompts for Offline media");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// The first video clip of the active sequence: (its media item, its source in-point).

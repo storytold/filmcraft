@@ -265,6 +265,10 @@ pub struct MediaPrefs {
     pub growing_refresh_seconds: u32,
     pub hardware_decoding: bool,
     pub prores_hardware_encoding: bool,
+    /// Default for Link Media ▸ Include Offline media, and for `media.autoRelink` / batch search (Premiere: on).
+    pub relink_offline_media: bool,
+    /// After Offline All, reopening does not ask again (Premiere: on). Off = prompt for Offline too.
+    pub remember_offline_all: bool,
 }
 
 impl Default for MediaPrefs {
@@ -289,6 +293,8 @@ impl Default for MediaPrefs {
             growing_refresh_seconds: 60,
             hardware_decoding: true,
             prores_hardware_encoding: true,
+            relink_offline_media: true,
+            remember_offline_all: true,
         }
     }
 }
