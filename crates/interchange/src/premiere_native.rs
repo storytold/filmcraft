@@ -54,26 +54,27 @@ pub fn encode(source: &NativeSource, gzip: bool) -> Result<Vec<u8>> {
 
 /// Patch mapped timeline and media fields from `project` into `source`. Unmapped Premiere data is left alone and listed in `report`.
 pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, project: &Project, report: &mut Report) -> Result<()> {
-    let mut patched = 0usize;
-    // Shared VideoClip/AudioClip ObjectIDs with disagreeing FilmCraft source ranges: skip In/Out writes (last-wins would discard an edit).
-    let conflicting_clips = conflicting_shared_clip_oids(bindings, project);
+    // One parse + object index for the whole Save; patches applied high-to-low so offsets stay valid.
+    let doc = roxmltree::Document::parse(&source.xml).map_err(|e| Error::Other(e.to_string()))?;
+    let objects = index_xml_objects(&doc);
+    let clips = index_project_clips(project);
+    let conflicting_clips = conflicting_shared_clip_oids(bindings, &clips);
     let mut warned_shared = BTreeSet::<String>::new();
+    // Deduped by byte range: last queued value for a range wins (agreeing shared clips write the same text).
+    let mut patches: BTreeMap<(usize, usize), String> = BTreeMap::new();
+
     for (clip_id, object_id) in &bindings.track_items {
-        let Some(clip) = find_clip(project, *clip_id) else {
+        let Some(clip) = clips.get(clip_id).copied() else {
             warning(report, format!("Premiere track item {object_id}: FilmCraft clip gone; left unchanged in the project file"));
             continue;
         };
         let end = clip.start + clip.duration;
-        if set_field(&mut source.xml, "ObjectID", object_id, "Start", &clip.start.0.to_string())? {
-            patched += 1;
-        }
-        if set_field(&mut source.xml, "ObjectID", object_id, "End", &end.0.to_string())? {
-            patched += 1;
-        }
+        queue_field_patch(&source.xml, &objects, "ObjectID", object_id, "Start", &clip.start.0.to_string(), &mut patches)?;
+        queue_field_patch(&source.xml, &objects, "ObjectID", object_id, "End", &end.0.to_string(), &mut patches)?;
         if let Some(clip_oid) = bindings.clips.get(clip_id) {
             if conflicting_clips.contains(clip_oid) {
                 if warned_shared.insert(clip_oid.clone()) {
-                    let names = shared_clip_labels(bindings, project, clip_oid);
+                    let names = shared_clip_labels(bindings, &clips, clip_oid);
                     warning(
                         report,
                         format!(
@@ -85,12 +86,8 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
                 continue;
             }
             let source_out = source_out_ticks(clip);
-            if set_field(&mut source.xml, "ObjectID", clip_oid, "InPoint", &clip.source_in.0.to_string())? {
-                patched += 1;
-            }
-            if set_field(&mut source.xml, "ObjectID", clip_oid, "OutPoint", &source_out.0.to_string())? {
-                patched += 1;
-            }
+            queue_field_patch(&source.xml, &objects, "ObjectID", clip_oid, "InPoint", &clip.source_in.0.to_string(), &mut patches)?;
+            queue_field_patch(&source.xml, &objects, "ObjectID", clip_oid, "OutPoint", &source_out.0.to_string(), &mut patches)?;
         }
     }
     for (item_id, media_uid) in &bindings.media {
@@ -100,11 +97,8 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
         };
         let ItemKind::Media(media) = &item.kind else { continue };
         let MediaRef::File { path } = &media.media else { continue };
-        // Prefer ActualMediaFilePath when the element already has one; else FilePath.
-        let field = if has_child_field(&source.xml, "ObjectUID", media_uid, "ActualMediaFilePath")? { "ActualMediaFilePath" } else { "FilePath" };
-        if set_field(&mut source.xml, "ObjectUID", media_uid, field, path)? {
-            patched += 1;
-        }
+        let field = if object_has_child(&objects, "ObjectUID", media_uid, "ActualMediaFilePath") { "ActualMediaFilePath" } else { "FilePath" };
+        queue_field_patch(&source.xml, &objects, "ObjectUID", media_uid, field, path, &mut patches)?;
     }
     for (item_id, seq_uid) in &bindings.sequences {
         let Some(item) = project.item(*item_id) else {
@@ -112,10 +106,7 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
             continue;
         };
         let Some(seq) = project.sequence(*item_id) else { continue };
-        if set_field(&mut source.xml, "ObjectUID", seq_uid, "Name", &item.name)? {
-            patched += 1;
-        }
-        // Frame size lives on the video track group FrameRect, not the Sequence element; report when we cannot write it yet.
+        queue_field_patch(&source.xml, &objects, "ObjectUID", seq_uid, "Name", &item.name, &mut patches)?;
         if seq.settings.width != 0 && seq.settings.height != 0 {
             warning(
                 report,
@@ -145,6 +136,7 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
             }
         }
     }
+    let patched = apply_patches_descending(&mut source.xml, patches);
     warning(
         report,
         format!("Premiere project save updated {patched} mapped field(s); effects, transitions, bins and other unmapped Premiere data were left as opened"),
@@ -190,16 +182,85 @@ fn input_limit(header: &[u8]) -> (usize, &'static str) {
     }
 }
 
-fn find_clip(project: &Project, id: ClipId) -> Option<&filmcraft_project::TrackItem> {
+fn index_project_clips(project: &Project) -> BTreeMap<ClipId, &filmcraft_project::TrackItem> {
+    let mut clips = BTreeMap::new();
     for item in project.items.values() {
         let ItemKind::Sequence(seq) = &item.kind else { continue };
         for track in seq.video_tracks.iter().chain(seq.audio_tracks.iter()) {
-            if let Some(clip) = track.items.iter().find(|c| c.id == id) {
-                return Some(clip);
+            for clip in &track.items {
+                clips.insert(clip.id, clip);
             }
         }
     }
-    None
+    clips
+}
+
+/// First element with each ObjectID / ObjectUID (same “first match” rule as a linear scan).
+struct XmlObjects<'a, 'input> {
+    by_id: BTreeMap<&'a str, Node<'a, 'input>>,
+    by_uid: BTreeMap<&'a str, Node<'a, 'input>>,
+}
+
+fn index_xml_objects<'a, 'input>(doc: &'a roxmltree::Document<'input>) -> XmlObjects<'a, 'input> {
+    let mut by_id = BTreeMap::new();
+    let mut by_uid = BTreeMap::new();
+    for node in doc.descendants().filter(Node::is_element) {
+        if let Some(id) = node.attribute("ObjectID") {
+            by_id.entry(id).or_insert(node);
+        }
+        if let Some(uid) = node.attribute("ObjectUID") {
+            by_uid.entry(uid).or_insert(node);
+        }
+    }
+    XmlObjects { by_id, by_uid }
+}
+
+fn object_node<'a, 'input>(objects: &XmlObjects<'a, 'input>, attr: &str, id: &str) -> Option<Node<'a, 'input>> {
+    match attr {
+        "ObjectID" => objects.by_id.get(id).copied(),
+        "ObjectUID" => objects.by_uid.get(id).copied(),
+        _ => None,
+    }
+}
+
+fn object_has_child(objects: &XmlObjects<'_, '_>, attr: &str, id: &str, field: &str) -> bool {
+    object_node(objects, attr, id).is_some_and(|object| object.descendants().any(|n| n.is_element() && n.tag_name().name() == field))
+}
+
+fn queue_field_patch(
+    xml: &str,
+    objects: &XmlObjects<'_, '_>,
+    attr: &str,
+    id: &str,
+    field: &str,
+    value: &str,
+    patches: &mut BTreeMap<(usize, usize), String>,
+) -> Result<()> {
+    let Some(object) = object_node(objects, attr, id) else { return Ok(()) };
+    let Some(node) = object.descendants().find(|n| n.is_element() && n.tag_name().name() == field) else {
+        return Ok(());
+    };
+    if let Some((range, replacement)) = text_patch(xml, node, value)? {
+        patches.insert((range.start, range.end), replacement);
+    }
+    Ok(())
+}
+
+/// Apply collected text replacements from high offset to low so earlier edits do not shift later ranges.
+fn apply_patches_descending(xml: &mut String, patches: BTreeMap<(usize, usize), String>) -> usize {
+    let mut list: Vec<_> = patches.into_iter().map(|((start, end), text)| (start..end, text)).collect();
+    list.sort_by(|a, b| b.0.start.cmp(&a.0.start).then(b.0.end.cmp(&a.0.end)));
+    let mut applied = 0usize;
+    let mut next_safe = usize::MAX;
+    for (range, replacement) in list {
+        if range.end > next_safe {
+            continue;
+        }
+        next_safe = range.start;
+        xml.replace_range(range, &replacement);
+        applied += 1;
+    }
+    applied
 }
 
 fn source_out_ticks(clip: &filmcraft_project::TrackItem) -> Tick {
@@ -208,10 +269,10 @@ fn source_out_ticks(clip: &filmcraft_project::TrackItem) -> Tick {
 }
 
 /// Premiere Clip ObjectIDs bound to more than one timeline item with different source ranges.
-fn conflicting_shared_clip_oids(bindings: &NativeBindings, project: &Project) -> BTreeSet<String> {
+fn conflicting_shared_clip_oids(bindings: &NativeBindings, clips: &BTreeMap<ClipId, &filmcraft_project::TrackItem>) -> BTreeSet<String> {
     let mut ranges: BTreeMap<&str, Vec<(Tick, Tick)>> = BTreeMap::new();
     for (clip_id, oid) in &bindings.clips {
-        let Some(clip) = find_clip(project, *clip_id) else { continue };
+        let Some(clip) = clips.get(clip_id).copied() else { continue };
         ranges.entry(oid.as_str()).or_default().push((clip.source_in, source_out_ticks(clip)));
     }
     ranges
@@ -224,13 +285,13 @@ fn conflicting_shared_clip_oids(bindings: &NativeBindings, project: &Project) ->
 }
 
 /// Display names for FilmCraft clips that share `clip_oid` (for save warnings).
-fn shared_clip_labels(bindings: &NativeBindings, project: &Project, clip_oid: &str) -> Vec<String> {
+fn shared_clip_labels(bindings: &NativeBindings, clips: &BTreeMap<ClipId, &filmcraft_project::TrackItem>, clip_oid: &str) -> Vec<String> {
     let mut names = Vec::new();
     for (clip_id, oid) in &bindings.clips {
         if oid != clip_oid {
             continue;
         }
-        let label = find_clip(project, *clip_id).map(|c| if c.name.is_empty() { "unnamed clip".into() } else { c.name.clone() }).unwrap_or_else(|| "missing clip".into());
+        let label = clips.get(clip_id).map(|c| if c.name.is_empty() { "unnamed clip".into() } else { c.name.clone() }).unwrap_or_else(|| "missing clip".into());
         if !names.contains(&label) {
             names.push(label);
         }
@@ -240,31 +301,11 @@ fn shared_clip_labels(bindings: &NativeBindings, project: &Project, clip_oid: &s
 
 /// Replace the text of the first descendant element named `field` under the object with `attr`=`id`.
 fn set_field(xml: &mut String, attr: &str, id: &str, field: &str, value: &str) -> Result<bool> {
-    let patch = {
-        let doc = roxmltree::Document::parse(xml).map_err(|e| Error::Other(e.to_string()))?;
-        let Some(object) = doc.descendants().find(|n| n.is_element() && n.attribute(attr) == Some(id)) else {
-            return Ok(false);
-        };
-        let Some(node) = object.descendants().find(|n| n.is_element() && n.tag_name().name() == field) else {
-            return Ok(false);
-        };
-        text_patch(xml, node, value)?
-    };
-    match patch {
-        None => Ok(false),
-        Some((range, replacement)) => {
-            xml.replace_range(range, &replacement);
-            Ok(true)
-        }
-    }
-}
-
-fn has_child_field(xml: &str, attr: &str, id: &str, field: &str) -> Result<bool> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| Error::Other(e.to_string()))?;
-    let Some(object) = doc.descendants().find(|n| n.is_element() && n.attribute(attr) == Some(id)) else {
-        return Ok(false);
-    };
-    Ok(object.descendants().any(|n| n.is_element() && n.tag_name().name() == field))
+    let objects = index_xml_objects(&doc);
+    let mut patches = BTreeMap::new();
+    queue_field_patch(xml, &objects, attr, id, field, value, &mut patches)?;
+    Ok(apply_patches_descending(xml, patches) > 0)
 }
 
 /// Compute a replacement for an element's text without mutating `xml` yet.
