@@ -16,7 +16,10 @@ fn playing() -> Harness<'static, FilmcraftApp> {
     session.execute("file.openDemoProject", json!({})).unwrap();
     let rate = session.sequence_rate();
     session.set_playhead(rate.tick_of(24));
-    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_eframe(move |_cc| FilmcraftApp::new(session));
+    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(1.0 / 60.0).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(session)
+    });
     harness.step();
     harness.state_mut().play(1.0);
     harness.step();
@@ -73,7 +76,10 @@ fn stepping_while_stopped_leaves_the_transport_alone() {
     session.execute("file.openDemoProject", json!({})).unwrap();
     let rate = session.sequence_rate();
     session.set_playhead(rate.tick_of(24));
-    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| FilmcraftApp::new(session));
+    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |cc| {
+        filmcraft_ui_egui::framework::install_headless(&cc.egui_ctx);
+        FilmcraftApp::new(session)
+    });
     harness.step();
     let ctx = harness.ctx.clone();
     menus::invoke(harness.state_mut(), &ctx, "playhead.stepForward", json!({})).unwrap();

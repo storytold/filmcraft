@@ -689,6 +689,13 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     {
         return app.file_dialog(id, &params);
     }
+    // Stepping a frame or jumping to an edit point parks the playhead: playback stops, then the
+    // step lands on its frame, as in Premiere Pro (#4655). Left running, the playback clock would
+    // carry the playhead on from its anchor on the next pass and overwrite the step. Stopping
+    // first ends an automation pass where playback actually was, not where the step lands.
+    if parks_playhead(id) && app.playback.playing {
+        app.stop();
+    }
     let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
@@ -702,12 +709,6 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
-    }
-    // Stepping a frame or jumping to an edit point parks the playhead: playback stops on the frame
-    // the step chose, as in Premiere Pro (#4655). Left running, the playback clock would carry the
-    // playhead on from its anchor on the next pass and overwrite the step.
-    if r.is_ok() && parks_playhead(id) && app.playback.playing {
-        app.stop();
     }
     let filled_clipboard = match id {
         "edit.copy" | "edit.cut" => r.is_ok(),
