@@ -27,6 +27,21 @@
 //! sequence or a replaced project starts in step. `prompter.inspect` reports `promptTime`,
 //! `playhead`, `gap` (prompt time minus playhead) and `direction` (`ahead`, `behind` or null).
 //!
+//! **Rate.** The prompt time can also run faster or slower than the playhead (#5263): `prompter.faster`
+//! and `prompter.slower` change the rate by [`RATE_STEP_PERCENT`] (5%) between [`MIN_RATE_PERCENT`]
+//! (50%) and [`MAX_RATE_PERCENT`] (200%), `prompter.resetRate` returns it to 100%. The rate is held in
+//! the [`Anchor`] as a whole percent, and the prompt time is `P + (playhead - H) * rate / 100`. Every
+//! change re-anchors at the current prompt time and playhead, so the position is continuous and only
+//! the speed from there on differs. Only the prompter's own clock changes: playback, its speed and
+//! the voice-over recording are not touched. The anchor is kept while the rate is not 100%, even when
+//! the prompter is at the playhead, so a rate of 100% is the same as no anchor at gap zero. Next,
+//! Previous and Return to Playhead keep the rate (they move the position; Return to Playhead puts the
+//! position back in step, and the reset command is the one that resets the rate). Starting playback
+//! (the UI) and starting a take reset the rate along with the gap, so it never survives into the next
+//! take; stopping playback (the UI) resets the rate and keeps the gap, as it always has. A seek while
+//! a rate is in force moves the prompt time by the rate times the jump; with the rate reset on stop,
+//! that only happens when seeking during playback. `prompter.inspect` reports `rate` (percent).
+//!
 //! **Steps.** A section's steps are its start and the starts of its talking points, or, without
 //! points, of its script paragraphs (text after a blank line); a section without either is one
 //! step. Points that start after the section's end (an overrun) are not steps. Only what the
@@ -37,8 +52,12 @@
 //! previous section's last point; from a gap, the last point before it). Both are disabled, with a
 //! reason, without range markers, after the last step (Next) and at or before the first (Previous).
 //!
-//! **Take log.** During a voice-over take each move is logged ([`TakeLog`], [`PromptMove`]): the
-//! first entry is where the prompt was when the capture began, then one per move. It is kept for
+//! **Take log.** During a voice-over take each move and each rate change is logged ([`TakeLog`],
+//! [`PromptMove`]): the first entry is where the prompt was when the capture began, then one per
+//! move or rate change (kind `rate`, with `rateBefore` and `rateAfter` in percent, and the same
+//! prompt time before and after). Every entry carries both rates; between entries the prompt time
+//! runs at `rateAfter` of the last one, so the prompt time at any take time can be rebuilt from
+//! the log. It is kept for
 //! the take in progress and the last finished take (`prompter.takeLog`), and `audio.voiceover.stop`
 //! returns it as `promptLog`. It is not stored on the recorded clip yet (that needs a project
 //! schema change).
@@ -439,13 +458,20 @@ pub fn prompt_at(seq: &Sequence, t: Tick) -> Prompt {
 /// Previous within this long of a step's start goes to the step before it; later, to the
 /// step's own start (the usual rule for "previous" controls).
 pub const PREVIOUS_GRACE_SECONDS: i64 = 2;
+/// A tempo step: one Faster or Slower changes the rate by this many percentage points.
+pub const RATE_STEP_PERCENT: u32 = 5;
+/// The slowest rate the prompter runs at, in percent of the playhead's speed.
+pub const MIN_RATE_PERCENT: u32 = 50;
+/// The fastest rate the prompter runs at, in percent of the playhead's speed.
+pub const MAX_RATE_PERCENT: u32 = 200;
+/// The prompter keeps pace with the playhead.
+pub const NORMAL_RATE_PERCENT: u32 = 100;
 /// Moves kept in one take's log; later moves are counted in [`TakeLog::dropped`].
 pub const MAX_TAKE_LOG_ENTRIES: usize = 10_000;
 
 /// Where the prompter is when it is not in step with the playhead: prompt time `prompt` at
 /// playhead `playhead`, in `sequence` of the document `epoch`. From there the prompt time moves
-/// with the playhead, so the gap stays `prompt - playhead`. A rate (#5263) is a factor on the
-/// playhead's movement since `playhead`, added here; nothing else changes.
+/// with the playhead at `rate` percent, so at 100% the gap stays `prompt - playhead`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Anchor {
@@ -453,12 +479,21 @@ pub struct Anchor {
     pub epoch: u64,
     pub prompt: Tick,
     pub playhead: Tick,
+    /// How fast the prompt time runs relative to the playhead, in percent
+    /// ([`MIN_RATE_PERCENT`] to [`MAX_RATE_PERCENT`]).
+    pub rate: u32,
+}
+
+/// `delta` at `percent` of its length, rounded toward zero and saturating.
+pub fn scale(delta: Tick, percent: u32) -> Tick {
+    let v = i128::from(delta.0) * i128::from(percent) / 100;
+    Tick(i64::try_from(v).unwrap_or(if v < 0 { i64::MIN } else { i64::MAX }))
 }
 
 impl Anchor {
     /// The prompt time when the playhead is at `playhead`.
     pub fn at(&self, playhead: Tick) -> Tick {
-        self.prompt.saturating_add(playhead.saturating_sub(self.playhead))
+        self.prompt.saturating_add(scale(playhead.saturating_sub(self.playhead), self.rate))
     }
 }
 
@@ -487,6 +522,19 @@ pub fn prompt_time_at(s: &Session, playhead: Tick) -> Tick {
 /// The prompt time now.
 pub fn prompt_time(s: &Session) -> Tick {
     prompt_time_at(s, s.playhead())
+}
+
+/// The rate the prompt time runs at relative to the playhead, in percent (100 when in step).
+pub fn rate(s: &Session) -> u32 {
+    anchor(s).map_or(NORMAL_RATE_PERCENT, |a| a.rate)
+}
+
+/// Put the prompter at `prompt` for `playhead` at `rate` percent. At 100% and at the playhead it is
+/// in step, which is no anchor.
+fn set_position(s: &mut Session, prompt: Tick, playhead: Tick, rate: u32) -> Result<()> {
+    let sequence = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    s.prompter.anchor = (prompt != playhead || rate != NORMAL_RATE_PERCENT).then_some(Anchor { sequence, epoch: s.document_epoch, prompt, playhead, rate });
+    Ok(())
 }
 
 /// Prompt time minus playhead: positive when the prompter is ahead of the picture.
@@ -599,11 +647,15 @@ pub enum MoveKind {
     Next,
     Previous,
     ToPlayhead,
+    /// Faster, Slower or Reset Rate (#5263): the position does not change, the rate does.
+    Rate,
 }
 
-/// One entry of a take's prompter log. Times are ticks. Between two entries the prompt time runs
-/// with the playhead, so the prompt time at take time `x` is `promptAfter + (x - takeTime)` of the
-/// last entry before `x`, and the section and point on screen follow from it.
+/// One entry of a take's prompter log. Times are ticks, rates are percent. Between two entries the
+/// prompt time runs with the playhead at `rateAfter` of the earlier one, so the prompt time at take
+/// time `x` is `promptAfter + (x - takeTime) * rateAfter / 100` (rounded toward zero) of the last
+/// entry before `x`, and the section and point on screen follow from it. A `rate` entry has equal
+/// `promptBefore` and `promptAfter`; moves have equal `rateBefore` and `rateAfter`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptMove {
@@ -614,6 +666,10 @@ pub struct PromptMove {
     pub playhead: Tick,
     pub prompt_before: Tick,
     pub prompt_after: Tick,
+    /// The rate in force just before this entry, in percent.
+    pub rate_before: u32,
+    /// The rate in force from this entry on, in percent.
+    pub rate_after: u32,
     /// The section (range marker) shown at `promptAfter`, if any.
     pub marker: Option<MarkerId>,
     /// Its talking point current at `promptAfter` (index in the marker's points).
@@ -635,7 +691,17 @@ pub struct TakeLog {
     pub dropped: u64,
 }
 
-fn entry(seq: Option<&Sequence>, kind: MoveKind, record_start: Tick, playhead: Tick, before: Tick, after: Tick) -> PromptMove {
+/// What an entry records: the playhead, the prompt time before and after, and the rate before and after.
+struct Change {
+    kind: MoveKind,
+    playhead: Tick,
+    before: Tick,
+    after: Tick,
+    rates: (u32, u32),
+}
+
+fn entry(seq: Option<&Sequence>, record_start: Tick, c: Change) -> PromptMove {
+    let Change { kind, playhead, before, after, rates } = c;
     let section = seq.and_then(|q| prompt_at(q, after).section);
     PromptMove {
         kind,
@@ -643,6 +709,8 @@ fn entry(seq: Option<&Sequence>, kind: MoveKind, record_start: Tick, playhead: T
         playhead,
         prompt_before: before,
         prompt_after: after,
+        rate_before: rates.0,
+        rate_after: rates.1,
         marker: section.as_ref().map(|x| x.marker),
         point: section.as_ref().and_then(|x| x.current),
         paragraph: section.as_ref().filter(|x| x.points.is_empty()).and_then(|x| x.script.as_ref()).map(|x| x.paragraph),
@@ -650,11 +718,16 @@ fn entry(seq: Option<&Sequence>, kind: MoveKind, record_start: Tick, playhead: T
 }
 
 /// A voice-over take starts with its capture at `capture_start`: the prompter returns to the
-/// playhead and a new log starts with where the prompt is then.
+/// playhead at the normal rate and a new log starts with where the prompt is then.
 pub(crate) fn begin_take(s: &mut Session, record_start: Tick, capture_start: Tick) {
     s.prompter.anchor = None;
     let Some(sequence) = s.state.active_sequence else { return };
-    let first = entry(s.active_sequence(), MoveKind::Start, record_start, capture_start, capture_start, capture_start);
+    let at = capture_start;
+    let first = entry(
+        s.active_sequence(),
+        record_start,
+        Change { kind: MoveKind::Start, playhead: at, before: at, after: at, rates: (NORMAL_RATE_PERCENT, NORMAL_RATE_PERCENT) },
+    );
     s.prompter.take = Some(TakeLog { sequence, record_start, entries: vec![first], dropped: 0 });
 }
 
@@ -672,23 +745,37 @@ pub(crate) fn finish_take(s: &mut Session) -> Value {
 
 // ------------------------------------------------------------------------------- commands
 
-/// Move the prompt time to `to` (in step when that is the playhead) and log the move on the take
-/// in progress.
-fn move_to(s: &mut Session, kind: MoveKind, to: Tick) -> Result<Value> {
-    let sequence = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let (before, playhead) = (prompt_time(s), s.playhead());
-    s.prompter.anchor = (to != playhead).then_some(Anchor { sequence, epoch: s.document_epoch, prompt: to, playhead });
-    if s.voiceover.recording() {
-        let seq = s.active_sequence();
-        let e = s.prompter.take.as_ref().map(|log| entry(seq, kind, log.record_start, playhead, before, to));
-        if let (Some(log), Some(e)) = (s.prompter.take.as_mut(), e) {
-            if log.entries.len() < MAX_TAKE_LOG_ENTRIES {
-                log.entries.push(e);
-            } else {
-                log.dropped = log.dropped.saturating_add(1);
-            }
+/// Log a change on the take in progress, if a voice-over is being recorded.
+fn log(s: &mut Session, c: Change) {
+    if !s.voiceover.recording() {
+        return;
+    }
+    let seq = s.active_sequence();
+    let e = s.prompter.take.as_ref().map(|log| entry(seq, log.record_start, c));
+    if let (Some(log), Some(e)) = (s.prompter.take.as_mut(), e) {
+        if log.entries.len() < MAX_TAKE_LOG_ENTRIES {
+            log.entries.push(e);
+        } else {
+            log.dropped = log.dropped.saturating_add(1);
         }
     }
+}
+
+/// Move the prompt time to `to` (in step when that is the playhead and the rate is 100%), keeping
+/// the rate, and log the move on the take in progress.
+fn move_to(s: &mut Session, kind: MoveKind, to: Tick) -> Result<Value> {
+    let (before, playhead, rate) = (prompt_time(s), s.playhead(), rate(s));
+    set_position(s, to, playhead, rate)?;
+    log(s, Change { kind, playhead, before, after: to, rates: (rate, rate) });
+    Ok(status(s))
+}
+
+/// Run at `to` percent from here on: re-anchor at the current prompt time and playhead, so the
+/// position does not jump, and log the change on the take in progress.
+fn set_rate(s: &mut Session, to: u32) -> Result<Value> {
+    let (prompt, playhead, from) = (prompt_time(s), s.playhead(), rate(s));
+    set_position(s, prompt, playhead, to)?;
+    log(s, Change { kind: MoveKind::Rate, playhead, before: prompt, after: prompt, rates: (from, to) });
     Ok(status(s))
 }
 
@@ -703,6 +790,7 @@ fn status(s: &Session) -> Value {
         "playhead": playhead,
         "gap": gap,
         "direction": direction(gap),
+        "rate": rate(s),
         "marker": section.as_ref().map(|x| x.marker),
         "point": section.as_ref().and_then(|x| x.current),
         "paragraph": section.as_ref().and_then(|x| x.script.as_ref()).map(|x| x.paragraph),
@@ -733,6 +821,35 @@ fn can_return(s: &Session) -> std::result::Result<(), String> {
     if gap(s) == Tick::ZERO { Err("the prompter is already at the playhead".into()) } else { Ok(()) }
 }
 
+fn can_faster(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if rate(s) >= MAX_RATE_PERCENT { Err(format!("the prompter is already at its fastest rate, {MAX_RATE_PERCENT}%")) } else { Ok(()) }
+}
+
+fn can_slower(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if rate(s) <= MIN_RATE_PERCENT { Err(format!("the prompter is already at its slowest rate, {MIN_RATE_PERCENT}%")) } else { Ok(()) }
+}
+
+fn can_reset_rate(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    if rate(s) == NORMAL_RATE_PERCENT { Err(format!("the prompter is already at {NORMAL_RATE_PERCENT}%")) } else { Ok(()) }
+}
+
+fn faster(s: &mut Session, _: &Value) -> Result<Value> {
+    let to = rate(s).saturating_add(RATE_STEP_PERCENT).min(MAX_RATE_PERCENT);
+    set_rate(s, to)
+}
+
+fn slower(s: &mut Session, _: &Value) -> Result<Value> {
+    let to = rate(s).saturating_sub(RATE_STEP_PERCENT).max(MIN_RATE_PERCENT);
+    set_rate(s, to)
+}
+
+fn reset_rate(s: &mut Session, _: &Value) -> Result<Value> {
+    set_rate(s, NORMAL_RATE_PERCENT)
+}
+
 fn next(s: &mut Session, _: &Value) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let to = next_step(seq, prompt_time(s)).ok_or_else(|| bad("prompter.next", "the prompter is at the last point of the last section"))?;
@@ -759,8 +876,8 @@ fn take_log(s: &mut Session, _: &Value) -> Result<Value> {
 const TIME_KEYS: [&str; 4] = ["time", "frame", "seconds", "timecode"];
 
 /// `prompter.inspect`: the prompt for the active sequence at `time` (any time format), else at the
-/// prompt time, with the prompter's position (`promptTime`, `playhead`, `gap`, `direction`). A
-/// time that is given but cannot be read is refused, not answered for the prompt time.
+/// prompt time, with the prompter's position (`promptTime`, `playhead`, `gap`, `direction`, `rate`).
+/// A time that is given but cannot be read is refused, not answered for the prompt time.
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let given = TIME_KEYS.iter().any(|k| p.get(k).is_some_and(|v| !v.is_null()));
     let t = match sequence_time_p(s, p, "", "prompter.inspect")? {
@@ -773,7 +890,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut v = serde_json::to_value(prompt_at(seq, t)).map_err(|e| EngineError::Other(e.to_string()))?;
     if let (Some(o), Value::Object(pos)) = (v.as_object_mut(), status(s)) {
-        for k in ["promptTime", "playhead", "gap", "direction"] {
+        for k in ["promptTime", "playhead", "gap", "direction", "rate"] {
             if let Some(x) = pos.get(k) {
                 o.insert(k.into(), x.clone());
             }
@@ -799,6 +916,9 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("prompter.next", "Next Point", &["Markers", "Prompter"], Some("Alt+PageDown"), "{}", can_next, next, true),
         spec("prompter.previous", "Previous Point", &["Markers", "Prompter"], Some("Alt+PageUp"), "{}", can_previous, previous, true),
         spec("prompter.toPlayhead", "Return to Playhead", &["Markers", "Prompter"], Some("Alt+Home"), "{}", can_return, to_playhead, true),
+        spec("prompter.faster", "Prompt Faster", &["Markers", "Prompter"], Some("Alt+Shift+PageDown"), "{}", can_faster, faster, true),
+        spec("prompter.slower", "Prompt Slower", &["Markers", "Prompter"], Some("Alt+Shift+PageUp"), "{}", can_slower, slower, true),
+        spec("prompter.resetRate", "Reset Prompt Rate", &["Markers", "Prompter"], Some("Alt+Shift+Home"), "{}", can_reset_rate, reset_rate, true),
         spec("prompter.takeLog", "Prompter Take Log", &[], None, "{}", crate::commands::always, take_log, false),
     ]
 }

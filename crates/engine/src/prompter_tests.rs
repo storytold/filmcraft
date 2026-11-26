@@ -1,13 +1,16 @@
 //! Tests of [`crate::prompter`]: talking points and script from a marker comment, their timing in
 //! the section, sections and the next one around overlapping range markers, the caption line, the
 //! `prompter.inspect` query, and hostile comments and markers; Next and Previous through points,
-//! paragraphs and sections, the ahead/behind gap, and the prompter log of a voice-over take.
+//! paragraphs and sections, the ahead/behind gap, the prompter log of a voice-over take, and the
+//! prompter's rate (Faster, Slower, Reset Rate) with its limits and its entries in the take log.
 
 use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SequenceSettings, TrackId};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
-use crate::prompter::{Anchor, MAX_POINTS, Note, PointState, allocate, next_step, parse_notes, previous_step, prompt_at, section_at};
+use crate::prompter::{
+    Anchor, MAX_POINTS, MAX_RATE_PERCENT, MIN_RATE_PERCENT, Note, PointState, allocate, next_step, parse_notes, previous_step, prompt_at, section_at,
+};
 use crate::{EngineError, Session};
 
 fn sec(s: f64) -> Tick {
@@ -458,9 +461,11 @@ fn a_take_logs_every_prompter_move_relative_to_its_record_point() {
         assert_eq!(e["point"], at["section"]["current"], "and its point");
     }
     for w in entries.windows(2) {
-        let ran = n(&w[0], "promptAfter") + (n(&w[1], "playhead") - n(&w[0], "playhead"));
-        assert_eq!(n(&w[1], "promptBefore"), ran, "between moves the prompt runs with the playhead, so the log replays");
+        let ran = n(&w[0], "promptAfter") + (n(&w[1], "playhead") - n(&w[0], "playhead")) * n(&w[0], "rateAfter") / 100;
+        assert_eq!(n(&w[1], "promptBefore"), ran, "between moves the prompt runs with the playhead at the rate in force, so the log replays");
+        assert_eq!(n(&w[1], "rateBefore"), n(&w[0], "rateAfter"), "and the rate carries over from entry to entry");
     }
+    assert!(entries.iter().all(|e| n(e, "rateBefore") == 100 && n(e, "rateAfter") == 100), "moves at the normal rate log it");
     assert_eq!(n(&entries[4], "promptAfter"), n(&entries[4], "playhead"), "return-to-playhead lands on the playhead");
 
     let project_before_stop = s.project.clone();
@@ -500,13 +505,257 @@ fn hostile_prompter_positions_never_panic() {
     let mut s = session_with_sections();
     let sequence = s.state.active_sequence.unwrap();
     for &prompt in &times {
-        for &playhead in &[i64::MIN, 0, i64::MAX] {
-            s.prompter.anchor = Some(Anchor { sequence, epoch: s.document_epoch, prompt: Tick(prompt), playhead: Tick(playhead) });
-            for id in ["prompter.next", "prompter.previous", "prompter.toPlayhead", "prompter.inspect", "prompter.takeLog"] {
+        for (&playhead, rate) in [i64::MIN, 0, i64::MAX].iter().zip([50, 100, 200]) {
+            s.prompter.anchor = Some(Anchor { sequence, epoch: s.document_epoch, prompt: Tick(prompt), playhead: Tick(playhead), rate });
+            for id in [
+                "prompter.next",
+                "prompter.previous",
+                "prompter.toPlayhead",
+                "prompter.faster",
+                "prompter.slower",
+                "prompter.resetRate",
+                "prompter.inspect",
+                "prompter.takeLog",
+            ] {
                 let mut s2 = std::panic::AssertUnwindSafe(&mut s);
                 let r = std::panic::catch_unwind(move || s2.execute(id, json!({})).map(|_| ()));
                 assert!(r.is_ok(), "{id} at prompt {prompt}, anchor playhead {playhead} panicked");
             }
         }
     }
+}
+
+// ------------------------------------------------------------------------------- rate (#5263)
+
+fn rate(s: &mut Session) -> i64 {
+    prompter(s)["rate"].as_i64().unwrap()
+}
+
+fn gap(s: &mut Session) -> i64 {
+    prompter(s)["gap"].as_i64().unwrap()
+}
+
+fn is_disabled(s: &mut Session, id: &str) -> Option<String> {
+    match s.execute(id, json!({})) {
+        Err(EngineError::Disabled(_, why)) => Some(why),
+        _ => None,
+    }
+}
+
+#[test]
+fn faster_advances_the_prompt_more_than_the_playhead_slower_less_and_reset_equally() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    assert_eq!(rate(&mut s), 100, "in step at the normal rate to begin with");
+
+    let before = prompter(&mut s)["promptTime"].as_i64().unwrap();
+    let r = s.execute("prompter.faster", json!({})).unwrap();
+    assert!(r["rate"].as_i64().unwrap() > 100, "Faster raises the rate: {r}");
+    assert_eq!(r["promptTime"].as_i64().unwrap(), before, "no jump at the moment the rate changes");
+    assert_eq!(r["gap"], 0, "the position is still the playhead's, and the gap is still zero");
+    s.execute("prompter.faster", json!({})).unwrap();
+    let (p0, h0) = (prompter(&mut s)["promptTime"].as_i64().unwrap(), s.playhead().0);
+    s.execute("playhead.set", json!({"seconds": 4.0})).unwrap();
+    let q = prompter(&mut s);
+    assert!(q["promptTime"].as_i64().unwrap() - p0 > s.playhead().0 - h0, "the prompt time advanced more than the playhead: {q}");
+    assert!(q["gap"].as_i64().unwrap() > 0 && q["direction"] == "ahead", "so the prompter pulls ahead of the picture: {q}");
+
+    // reset: the position stays, the speed from here is the playhead's
+    let at = gap(&mut s);
+    let r = s.execute("prompter.resetRate", json!({})).unwrap();
+    assert_eq!((r["rate"].as_i64(), r["gap"].as_i64()), (Some(100), Some(at)), "reset keeps the gap: {r}");
+    s.execute("playhead.set", json!({"seconds": 6.0})).unwrap();
+    assert_eq!(gap(&mut s), at, "and from then on the gap no longer changes");
+
+    // slower from the same footing: the prompter falls behind the picture
+    s.execute("prompter.toPlayhead", json!({})).unwrap();
+    for _ in 0..3 {
+        s.execute("prompter.slower", json!({})).unwrap();
+    }
+    assert!(rate(&mut s) < 100);
+    assert_eq!(gap(&mut s), 0, "no jump");
+    let (p0, h0) = (prompter(&mut s)["promptTime"].as_i64().unwrap(), s.playhead().0);
+    s.execute("playhead.set", json!({"seconds": 7.5})).unwrap();
+    let q = prompter(&mut s);
+    assert!(q["promptTime"].as_i64().unwrap() - p0 < s.playhead().0 - h0, "the prompt time advanced less than the playhead: {q}");
+    assert!(q["gap"].as_i64().unwrap() < 0 && q["direction"] == "behind", "so it falls behind: {q}");
+    // the gap closes again when the rate is raised past the playhead's
+    for _ in 0..8 {
+        s.execute("prompter.faster", json!({})).unwrap();
+    }
+    let behind = gap(&mut s);
+    s.execute("playhead.set", json!({"seconds": 9.5})).unwrap();
+    assert!(gap(&mut s) > behind, "a faster rate closes the gap");
+}
+
+#[test]
+fn the_rate_has_limits_and_each_command_says_why_it_is_disabled() {
+    let mut s = session_with_sections();
+    assert!(is_disabled(&mut s, "prompter.resetRate").is_some_and(|w| w.contains("100%")), "nothing to reset at the normal rate");
+    let mut last = 100;
+    while s.execute("prompter.faster", json!({})).is_ok() {
+        let now = rate(&mut s);
+        assert!(now > last, "each Faster raises the rate");
+        last = now;
+        assert!(last <= i64::from(MAX_RATE_PERCENT), "never past the limit");
+    }
+    assert_eq!(last, i64::from(MAX_RATE_PERCENT), "Faster stops at the limit");
+    assert!(is_disabled(&mut s, "prompter.faster").is_some_and(|w| w.contains("fastest")), "and says why");
+    assert!(is_disabled(&mut s, "prompter.slower").is_none(), "Slower is still possible at the fastest rate");
+    s.execute("prompter.resetRate", json!({})).unwrap();
+    assert_eq!(rate(&mut s), 100);
+    let mut last = 100;
+    while s.execute("prompter.slower", json!({})).is_ok() {
+        let now = rate(&mut s);
+        assert!(now < last, "each Slower lowers the rate");
+        last = now;
+    }
+    assert_eq!(last, i64::from(MIN_RATE_PERCENT), "Slower stops at the limit");
+    assert!(is_disabled(&mut s, "prompter.slower").is_some_and(|w| w.contains("slowest")), "and says why");
+
+    let mut empty = Session::default();
+    for id in ["prompter.faster", "prompter.slower", "prompter.resetRate"] {
+        assert!(is_disabled(&mut empty, id).is_some(), "{id} needs a sequence");
+    }
+}
+
+#[test]
+fn rate_changes_touch_neither_the_playhead_nor_the_project_nor_the_history() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    let (project, undo, redo, playhead) = (s.project.clone(), s.history.undo.len(), s.history.redo.len(), s.playhead());
+    for id in ["prompter.faster", "prompter.faster", "prompter.slower", "prompter.resetRate", "prompter.slower", "prompter.resetRate"] {
+        s.execute(id, json!({})).unwrap();
+        assert_eq!(s.playhead(), playhead, "{id} leaves the playhead where it is");
+    }
+    assert_eq!(*s.project, *project, "no rate command changed the project");
+    assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "or made an undo step");
+}
+
+#[test]
+fn next_previous_and_return_to_playhead_keep_the_rate() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    for _ in 0..4 {
+        s.execute("prompter.faster", json!({})).unwrap();
+    }
+    let fast = rate(&mut s);
+    s.execute("prompter.next", json!({})).unwrap();
+    assert_eq!(rate(&mut s), fast, "Next keeps the rate");
+    s.execute("prompter.previous", json!({})).unwrap();
+    assert_eq!(rate(&mut s), fast, "Previous keeps it");
+    // the moved prompter still runs faster than the playhead
+    let (g, h) = (gap(&mut s), s.playhead().0);
+    s.execute("playhead.set", json!({"seconds": 3.0})).unwrap();
+    assert!(gap(&mut s) > g, "after Previous the prompter still gains on the picture ({} ticks of playhead)", s.playhead().0 - h);
+    s.execute("prompter.toPlayhead", json!({})).unwrap();
+    assert_eq!((rate(&mut s), gap(&mut s)), (fast, 0), "Return to Playhead puts the position back in step and keeps the rate");
+    s.execute("playhead.set", json!({"seconds": 4.0})).unwrap();
+    assert!(gap(&mut s) > 0, "so the gap opens again");
+    s.execute("prompter.resetRate", json!({})).unwrap();
+    s.execute("prompter.toPlayhead", json!({})).unwrap();
+    assert_eq!((rate(&mut s), gap(&mut s)), (100, 0), "reset and return: fully in step");
+    assert!(is_disabled(&mut s, "prompter.toPlayhead").is_some(), "and nothing is left to return from");
+
+    // Next is measured from the prompt time, which a rate has moved off the playhead
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("prompter.faster", json!({})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 1.5})).unwrap();
+    let at = prompter(&mut s)["promptTime"].as_i64().unwrap();
+    let r = s.execute("prompter.next", json!({})).unwrap();
+    assert!(r["promptTime"].as_i64().unwrap() > at, "Next moves forward from the prompt time");
+}
+
+#[test]
+fn a_new_take_and_a_new_document_start_at_the_normal_rate() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("prompter.faster", json!({})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    assert!(rate(&mut s) > 100 && gap(&mut s) > 0);
+    s.execute("audio.voiceover.start", json!({"preroll": 0})).unwrap();
+    let q = prompter(&mut s);
+    assert_eq!((q["rate"].as_i64(), q["gap"].as_i64()), (Some(100), Some(0)), "the take starts in step at the normal rate: {q}");
+    let log = s.execute("prompter.takeLog", json!({})).unwrap();
+    let first = &log["inProgress"]["entries"][0];
+    assert_eq!((first["rateBefore"].as_i64(), first["rateAfter"].as_i64()), (Some(100), Some(100)), "and its log says so");
+    s.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
+
+    s.execute("prompter.faster", json!({})).unwrap();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    assert_eq!(rate(&mut s), 100, "a replaced project starts at the normal rate");
+}
+
+#[test]
+fn the_take_log_with_moves_and_rate_changes_replays_exactly_and_rebuilds_the_prompt_time() {
+    let mut s = session_with_sections();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    let record = s.playhead();
+    s.execute("audio.voiceover.start", json!({"preroll": 0})).unwrap();
+
+    // (playhead, command, prompt time and rate reported right after it)
+    let script = [
+        (1.5, "prompter.faster"),
+        (2.5, "prompter.faster"),
+        (3.0, "prompter.next"),
+        (4.25, "prompter.slower"),
+        (5.0, "prompter.previous"),
+        (5.5, "prompter.faster"),
+        (6.5, "prompter.toPlayhead"),
+        (7.0, "prompter.resetRate"),
+    ];
+    let mut observed = Vec::new();
+    for (at, id) in script {
+        s.execute("playhead.set", json!({"seconds": at})).unwrap();
+        s.execute(id, json!({})).unwrap();
+        let q = prompter(&mut s);
+        observed.push((s.playhead().0, q["promptTime"].as_i64().unwrap()));
+    }
+    let log = s.execute("prompter.takeLog", json!({})).unwrap()["inProgress"].clone();
+    let entries = log["entries"].as_array().unwrap();
+    let kinds: Vec<&str> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["start", "rate", "rate", "next", "rate", "previous", "rate", "toPlayhead", "rate"], "every move and rate change is an entry, in order");
+    let n = |e: &serde_json::Value, k: &str| e[k].as_i64().unwrap();
+
+    for e in entries {
+        assert_eq!(n(e, "takeTime"), n(e, "playhead") - record.0, "take times count from the record point");
+        if e["kind"] == "rate" {
+            assert_eq!(n(e, "promptBefore"), n(e, "promptAfter"), "a rate change does not move the prompt");
+            assert_ne!(n(e, "rateBefore"), n(e, "rateAfter"), "and changes the rate");
+        } else {
+            assert_eq!(n(e, "rateBefore"), n(e, "rateAfter"), "a move keeps the rate");
+        }
+    }
+    for w in entries.windows(2) {
+        let ran = n(&w[0], "promptAfter") + (n(&w[1], "playhead") - n(&w[0], "playhead")) * n(&w[0], "rateAfter") / 100;
+        assert_eq!(n(&w[1], "promptBefore"), ran, "the log replays: the prompt runs at the rate in force between entries");
+        assert_eq!(n(&w[1], "rateBefore"), n(&w[0], "rateAfter"), "and the rates chain");
+    }
+    assert!(
+        entries.iter().any(|e| n(e, "rateAfter") != 100) && n(entries.last().unwrap(), "rateAfter") == 100,
+        "the take ran at other rates and ended at the normal one"
+    );
+
+    // a reader rebuilds the prompt time at any take time from the log alone, and it matches what the
+    // prompter said at the moments it was asked
+    let rebuild = |take_time: i64| {
+        let e = entries.iter().rev().find(|e| n(e, "takeTime") <= take_time).unwrap();
+        n(e, "promptAfter") + (take_time - n(e, "takeTime")) * n(e, "rateAfter") / 100
+    };
+    for (playhead, prompt) in observed {
+        assert_eq!(rebuild(playhead - record.0), prompt, "the log gives the prompt time at take time {}", playhead - record.0);
+    }
+
+    let dir = std::env::temp_dir().join(format!("filmcraft-prompter-rate-{}", std::process::id()));
+    let stop = s.execute("audio.voiceover.stop", json!({"time": sec(8.0).0, "dir": dir.to_string_lossy()})).unwrap();
+    assert_eq!(stop["promptLog"], log, "stop returns the same log");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn rate_changes_outside_a_take_are_not_logged() {
+    let mut s = session_with_sections();
+    s.execute("prompter.faster", json!({})).unwrap();
+    let log = s.execute("prompter.takeLog", json!({})).unwrap();
+    assert!(log["inProgress"].is_null() && log["last"].is_null(), "only a recording keeps a log: {log}");
 }

@@ -261,3 +261,115 @@ fn starting_playback_puts_the_prompter_back_in_step() {
     d.frames(2);
     assert!(d.label().contains("ahead"), "stopping playback keeps the gap: {}", d.label());
 }
+
+#[test]
+fn the_overlay_shows_the_rate_while_it_is_not_normal_and_the_readout_shows_the_gap_growing_or_closing() {
+    let mut d = Driver::sections();
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.at(1.0);
+    assert!(!d.label().contains("rate"), "no rate shown at the normal rate: {}", d.label());
+    let playhead = d.app().session.playhead();
+    let (project, undo) = (d.app().session.project.clone(), d.app().session.history.undo.len());
+
+    // the shortcuts run the commands
+    for _ in 0..4 {
+        d.ok("ui.key", json!({"key": "Alt+Shift+PageDown"}));
+    }
+    d.frames(3);
+    let q = d.exec("prompter.inspect", json!({}));
+    assert!(q["rate"].as_i64().unwrap_or(100) > 100, "the shortcut ran Faster: {q}");
+    assert_eq!(d.app().session.playhead(), playhead, "Faster does not move the playhead");
+    assert!(d.label().contains("rate 120%"), "the overlay says the rate: {}", d.label());
+    assert!(d.node_text().is_some_and(|t| t.contains("rate 120%")), "and so does its accessibility node");
+    assert!(!d.label().contains("ahead") && !d.label().contains("behind"), "no gap yet, so no ahead/behind: {}", d.label());
+
+    // five seconds on, the prompter has pulled ahead of the picture
+    d.at(6.0);
+    let label = d.label();
+    assert!(label.contains("ahead 0:0") && label.contains("rate 120%"), "ahead, and the rate beside it: {label}");
+    assert!(d.node_text().is_some_and(|t| t.contains("ahead 0:0") && t.contains("rate 120%")));
+    d.shot("prompter-faster");
+
+    // the gap closes at a slower rate
+    d.exec("prompter.resetRate", json!({}));
+    assert!(!d.label().contains("rate"), "the rate is gone after reset: {}", d.label());
+    assert!(d.label().contains("ahead 0:0"), "the gap stays: {}", d.label());
+    for _ in 0..6 {
+        d.ok("ui.key", json!({"key": "Alt+Shift+PageUp"}));
+    }
+    assert!(d.label().contains("rate 70%"), "{}", d.label());
+    let wide = d.exec("prompter.inspect", json!({}))["gap"].as_i64().unwrap_or(0);
+    d.at(9.0);
+    let narrow = d.exec("prompter.inspect", json!({}))["gap"].as_i64().unwrap_or(0);
+    assert!(narrow < wide && narrow >= 0, "the gap is closing: {wide} then {narrow}");
+    assert!(d.label().contains("rate 70%") && d.label().contains("ahead"), "still ahead, closing: {}", d.label());
+    d.at(12.0);
+    assert!(d.label().contains("behind 0:0"), "and opened the other way: {}", d.label());
+    d.shot("prompter-slower");
+
+    d.ok("ui.key", json!({"key": "Alt+Shift+Home"}));
+    assert!(!d.label().contains("rate") && d.label().contains("behind"), "reset keeps the gap and drops the rate: {}", d.label());
+    assert!(!d.node_text().unwrap_or_default().contains("rate"), "also on the accessibility node");
+    assert_eq!(*d.app().session.project, *project, "no project change");
+    assert_eq!(d.app().session.history.undo.len(), undo, "and no undo step");
+}
+
+#[test]
+fn a_rate_does_not_change_playback_and_ends_when_playback_stops_or_starts() {
+    let mut d = Driver::sections();
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.at(1.0);
+    d.exec("playback.toggle", json!({}));
+    d.frames(3);
+    assert!(d.app().playback.playing);
+    let (speed, audio_clock) = (d.app().playback.speed, d.app().playback.audio_clock);
+    let before = d.app().session.playhead();
+    for _ in 0..4 {
+        d.exec("prompter.faster", json!({}));
+    }
+    d.frames(3);
+    assert!(d.app().playback.playing, "the picture keeps playing");
+    assert_eq!(d.app().playback.speed, speed, "at the speed it had");
+    assert_eq!(d.app().playback.audio_clock, audio_clock, "on the same clock");
+    assert!(d.app().session.playhead() >= before, "forward only, never skipped back or ahead by the rate");
+    assert!(d.label().contains("rate 120%"), "{}", d.label());
+    d.shot("prompter-playing-faster");
+
+    // stopping ends the rate and keeps what the prompter had gained
+    d.exec("playback.toggle", json!({}));
+    d.frames(3);
+    assert!(!d.app().playback.playing);
+    let q = d.exec("prompter.inspect", json!({}));
+    assert_eq!(q["rate"], 100, "stopping playback ends the rate: {q}");
+    assert!(q["gap"].as_i64().unwrap_or(0) >= 0, "the gap is kept, not lost: {q}");
+    assert!(!d.label().contains("rate"), "{}", d.label());
+
+    // and the next start begins at the normal rate
+    d.exec("prompter.faster", json!({}));
+    d.exec("playback.toggle", json!({}));
+    d.frames(3);
+    let q = d.exec("prompter.inspect", json!({}));
+    assert_eq!((q["rate"].as_i64(), q["gap"].as_i64()), (Some(100), Some(0)), "playback starts in step at the normal rate: {q}");
+    d.exec("playback.toggle", json!({}));
+}
+
+#[test]
+fn the_rate_is_shown_in_full_screen_program_too() {
+    let mut d = Driver::sections();
+    d.ok("ui.menu.invoke", json!({"id": "view.prompter", "params": {"enabled": true}}));
+    d.ok("ui.menu.invoke", json!({"id": "view.fullScreenProgram"}));
+    d.at(1.0);
+    for _ in 0..4 {
+        d.exec("prompter.faster", json!({}));
+    }
+    d.at(6.0);
+    assert!(d.label().contains("rate 120%") && d.label().contains("ahead"), "{}", d.label());
+    assert!(d.node_text().is_some_and(|t| t.contains("rate 120%") && t.contains("ahead")));
+    d.shot("prompter-full-screen-faster");
+    for _ in 0..10 {
+        d.exec("prompter.slower", json!({}));
+    }
+    d.at(10.0);
+    assert!(d.label().contains("rate 70%"), "{}", d.label());
+    d.shot("prompter-full-screen-slower");
+}

@@ -8,7 +8,9 @@
 //! What it shows comes from [`filmcraft_engine::prompter::prompt_at`] at the prompt time
 //! ([`filmcraft_engine::prompter::prompt_time_at`]: the playhead, or where Next and Previous moved
 //! the prompter); this module only draws it. When the prompt time is not the playhead, the header
-//! shows the gap in a readout badge before the time, "ahead 0:08" or "behind 0:12".
+//! shows the gap in a readout badge before the time, "ahead 0:08" or "behind 0:12". When the
+//! prompter runs at another rate than the playhead (Faster and Slower, #5263) a second badge
+//! before it says "rate 105%".
 //! It is drawn with the monitor's painter, so it never reaches a render or an export, and it is
 //! still drawn in full-screen Program. Automation id `program.prompter`; its label and its
 //! accessibility node carry the text it shows.
@@ -22,7 +24,7 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{Color32, FontId, Galley, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_engine::prompter::{Direction, Point, PointState, Prompt, Script, Section, direction, prompt_at, prompt_time_at};
+use filmcraft_engine::prompter::{Direction, NORMAL_RATE_PERCENT, Point, PointState, Prompt, Script, Section, direction, prompt_at, prompt_time_at, rate};
 use filmcraft_project::{MarkerId, Sequence};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
@@ -152,6 +154,11 @@ pub fn readout(gap: Tick) -> Option<String> {
     })
 }
 
+/// "rate 105%" when the prompter does not run at the playhead's speed; None at the normal rate.
+pub fn rate_text(percent: u32) -> Option<String> {
+    (percent != NORMAL_RATE_PERCENT).then(|| tlf!("rate {percent}%", percent = percent))
+}
+
 /// The glyph beside the ahead/behind readout: a chevron pointing the way the prompter is from the
 /// picture (forward when ahead). It only repeats what the words say.
 fn readout_icon(gap: Tick) -> Option<Icon> {
@@ -177,13 +184,14 @@ fn point_label(p: &Point) -> String {
 }
 
 /// The text of the overlay, in reading order: its automation label and accessibility name. `gap`
-/// is the prompt time minus the playhead.
-pub fn spoken(p: &Prompt, gap: Tick) -> String {
+/// is the prompt time minus the playhead and `rate` the prompter's rate in percent.
+pub fn spoken(p: &Prompt, gap: Tick, rate: u32) -> String {
     let mut parts = Vec::new();
     match &p.section {
         Some(s) => {
             parts.push(format!("{} {}", s.name, tlf!("{elapsed} of {length}", elapsed = clock(s.elapsed), length = clock_up(s.duration))));
             parts.extend(readout(gap));
+            parts.extend(rate_text(rate));
             // the points the card lists when it has room (the same rows), and the count of the rest
             let rows = PointRows::of(s);
             let name = |i: Option<usize>| i.and_then(|i| s.points.get(i)).map(point_label);
@@ -202,6 +210,7 @@ pub fn spoken(p: &Prompt, gap: Tick) -> String {
         None => {
             parts.push(no_section(p, gap).to_owned());
             parts.extend(readout(gap));
+            parts.extend(rate_text(rate));
         }
     }
     parts.extend(notices(p));
@@ -623,6 +632,7 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
     }
     let at = prompt_time_at(&app.session, time);
     let gap = at.saturating_sub(time);
+    let percent = rate(&app.session);
     let prompt = prompt_at(seq, at);
     let t = app.tokens;
     let c = palette(&t);
@@ -637,8 +647,12 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
 
     // ---- the card: centred at the bottom, inside the action-safe band
     let inset = (area.width().min(area.height()) * INSET).clamp(2.0 * t.gap, 10.0 * t.gap);
-    // the header's readouts before the time, most important last (it is dropped last)
-    let readouts: Vec<Trailing> = readout(gap).into_iter().map(|text| Trailing::readout(&d, &text, readout_icon(gap), 2)).collect();
+    // the header's readouts before the time: the rate, then the gap, which is dropped last
+    let readouts: Vec<Trailing> = rate_text(percent)
+        .map(|text| Trailing::readout(&d, &text, None, 1))
+        .into_iter()
+        .chain(readout(gap).map(|text| Trailing::readout(&d, &text, readout_icon(gap), 2)))
+        .collect();
     let empty = prompt.section.is_none().then(|| no_section(&prompt, gap));
     // between sections the card holds a line or two, so it is only as wide as its message needs
     let widest = match empty {
@@ -724,7 +738,7 @@ fn overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, time: Tick) {
         caption_line(&d, r, caption_track.as_deref(), &cap.lines.join(" / "));
     }
 
-    let label = spoken(&prompt, gap);
+    let label = spoken(&prompt, gap, percent);
     let response = ui.interact(card, egui::Id::unique("program-prompter"), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
     app.auto.add("program.prompter", card, &label);
@@ -806,7 +820,7 @@ enum Title<'a> {
 
 /// The header row at the top of `r`: the title, cut to the room the `trailing` pieces leave
 /// (right-aligned, the last at the right edge). When the title would get less than three ems,
-/// pieces are dropped, lowest `keep` first (the time before a readout), but the last one stays:
+/// pieces are dropped, lowest `keep` first (the time, then the rate), but the last one stays:
 /// while a readout shows it matters more than the section's name. Returns the row's bottom.
 fn header(d: &Draw, r: Rect, title: Title, trailing: &[&Trailing]) -> f32 {
     let m = &d.m;

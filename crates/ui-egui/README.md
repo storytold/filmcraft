@@ -128,8 +128,8 @@ which the overlay draws instead of the playhead. Decisions:
 
 - **State:** `Session::prompter` holds an anchor, "prompt time P at playhead H", in the sequence and
   document it was set in; the prompt time is `P + (playhead - H)`. It is engine session state, so
-  every command and the control channel reach it; it is not saved and never an undo step. A rate
-  (#5263) becomes a factor on `playhead - H`; automatic tracking (#5266) sets the same anchor and
+  every command and the control channel reach it; it is not saved and never an undo step. The rate
+  (#5263, below) is a factor on `playhead - H`; automatic tracking (#5266) sets the same anchor and
   these commands override it by replacing it.
 - **Steps:** the section start, then its talking points' starts, or without points its script
   paragraphs' starts (text after a blank line); a section with neither is one step. Points that
@@ -153,7 +153,7 @@ which the overlay draws instead of the playhead. Decisions:
   first; when it would get less than three ems the time goes, and the readout stays. Outside every
   section the card says "No section at the prompter's position", with the readout at its right.
 - **Take log:** each move during a voice-over take is logged (`kind`, `takeTime` from the record
-  point, `playhead`, `promptBefore`, `promptAfter`, `marker`, `point`, `paragraph`, all times in
+  point, `playhead`, `promptBefore`, `promptAfter`, `rateBefore`, `rateAfter`, `marker`, `point`, `paragraph`, all times in
   ticks; serde types `TakeLog` / `PromptMove`), starting with an entry for where the prompt was
   when the capture began (restarted with the capture by `audio.voiceover.sync`). A
   return-to-playhead that changes nothing is not logged. Up to 10 000 moves per take are kept.
@@ -161,6 +161,53 @@ which the overlay draws instead of the playhead. Decisions:
   on the recorded clip, which needs a project schema change in craft-libs.
 - **No buttons on the overlay:** it stays a read-only display; the commands are in the menu, on
   the keyboard and over automation.
+
+Faster and Slower (#5263; `prompter.faster`, `prompter.slower`, `prompter.resetRate`, labelled
+Prompt Faster, Prompt Slower and Reset Prompt Rate; Markers ▸ Prompter; Alt+Shift+Page Down,
+Alt+Shift+Page Up, Alt+Shift+Home in the FilmCraft Default set, free before this change) change the
+rate at which the prompt time advances relative to the playhead. Only the prompter's own clock
+changes: playback, its speed and the voice-over recording are untouched. Decisions:
+
+- **The anchor claim, checked:** "the anchor gets a rate field and `Anchor::at` multiplies
+  `playhead - H` by it; nothing else changes" was not enough. The anchor was dropped whenever the
+  prompt time equalled the playhead, which would have lost the rate at gap zero (the moment a rate
+  is first set, and after Return to Playhead). So the anchor is now kept while the rate is not
+  100%, and in step means "prompt equals playhead at 100%". The rate is a whole percent
+  (`Anchor::rate`, integers keep the anchor `Eq` and the log exact); the product is truncated toward
+  zero in `i128` and saturates (`prompter::scale`), so hostile anchors cannot panic.
+- **Step and limits:** 5% a step, from 50% to 200% (`RATE_STEP_PERCENT`, `MIN_RATE_PERCENT`,
+  `MAX_RATE_PERCENT`): slower than half speed or faster than double stops being a tempo nudge and
+  starts to be a different script. At a limit the command is disabled and says "the prompter is
+  already at its fastest rate, 200%" (or slowest, 50%); Reset Prompt Rate is disabled at 100%.
+  No parameters.
+- **No jump:** every change re-anchors at the current prompt time and playhead, so the position is
+  continuous and only the speed from there on differs. The gap grows when the prompter is faster
+  (ahead) and closes, then reverses, when it is slower (behind).
+- **Moves keep the rate:** Next and Previous move the position and keep the rate; so does Return
+  to Playhead, which puts the position back in step and leaves the rate to Reset Prompt Rate.
+- **When it ends:** the rate lasts until it is reset, playback stops, playback starts or a take
+  starts. Stopping playback (`FilmcraftApp::stop`) resets the rate and keeps the gap, as stopping
+  always kept the gap. Starting playback (`FilmcraftApp::play`, also a loop restart) and starting a
+  voice-over take return to the playhead at 100%, so a rate never survives into the next take. The
+  UI does this through `prompter.resetRate`, a registered command. Another sequence or a replaced
+  project starts at 100% with the anchor.
+- **Seeks:** a seek while a rate is in force (during playback) moves the prompt time by the rate
+  times the jump, since the prompt time is `P + (playhead - H) * rate`. Stopped, the rate is
+  already reset, so seeks keep the gap as before.
+- **Take log:** a rate change during a take is an entry of kind `rate`, with the same
+  `promptBefore` and `promptAfter` and `rateBefore` / `rateAfter` in percent. Every entry now
+  carries both rates (moves keep them equal; the first entry is 100 and 100). Between entries the
+  prompt time runs at `rateAfter` of the earlier entry, so the prompt time at take time `x` is
+  `promptAfter + (x - takeTime) * rateAfter / 100` (toward zero) of the last entry before `x`.
+  Stopping playback during a take logs the automatic reset as a `rate` entry. `prompter.inspect`
+  and every command result report `rate` (percent).
+- **Overlay:** when the rate is not 100% the header shows "rate 105%" in a readout badge of its
+  own (the same pill as the ahead/behind readout, without a glyph: the word "rate" says what the
+  number is), before the ahead/behind badge, and the accessibility label carries "rate 105%" after
+  the readout. Two badges rather than one, because they say different things (a setting and where
+  the prompter is) and either can show without the other. In a short header the section name is cut
+  first, then the time goes, then the rate; the ahead/behind badge goes last. Text, never colour
+  alone. The words "ahead" and "behind" are unchanged.
 
 The overlay's decisions:
 
@@ -245,7 +292,16 @@ Tests:
   `moving_the_prompter_changes_neither_the_playhead_nor_the_project_nor_the_history`,
   `next_and_previous_are_disabled_with_a_reason_where_they_cannot_move`,
   `a_take_logs_every_prompter_move_relative_to_its_record_point`,
-  `hostile_prompter_positions_never_panic`.
+  `hostile_prompter_positions_never_panic`, and for the rate (#5263)
+  `faster_advances_the_prompt_more_than_the_playhead_slower_less_and_reset_equally`,
+  `the_rate_has_limits_and_each_command_says_why_it_is_disabled`,
+  `rate_changes_touch_neither_the_playhead_nor_the_project_nor_the_history`,
+  `next_previous_and_return_to_playhead_keep_the_rate`,
+  `a_new_take_and_a_new_document_start_at_the_normal_rate`,
+  `the_take_log_with_moves_and_rate_changes_replays_exactly_and_rebuilds_the_prompt_time`,
+  `rate_changes_outside_a_take_are_not_logged` (the replay check in
+  `a_take_logs_every_prompter_move_relative_to_its_record_point` now includes the rate, and
+  `hostile_prompter_positions_never_panic` runs the rate commands from hostile anchors at three rates).
 - Unit, `panels::prompter::tests`:
   `the_prompter_text_keeps_its_contrast_over_any_picture_in_every_theme` (in all three themes, with
   and without accessible contrast: the card is opaque; 4.5:1 for text and dimmed text on the card,
@@ -261,7 +317,11 @@ Tests:
   `points_longer_than_their_section_are_reported_on_the_overlay`,
   `the_accessibility_text_names_every_point_the_card_lists`,
   `after_next_the_overlay_shows_the_prompter_point_with_an_ahead_or_behind_readout_until_it_returns`,
-  `starting_playback_puts_the_prompter_back_in_step`.
+  `starting_playback_puts_the_prompter_back_in_step`, and for the rate (#5263)
+  `the_overlay_shows_the_rate_while_it_is_not_normal_and_the_readout_shows_the_gap_growing_or_closing`
+  (by shortcut: label and accessibility node, ahead then closing then behind, reset),
+  `a_rate_does_not_change_playback_and_ends_when_playback_stops_or_starts`,
+  `the_rate_is_shown_in_full_screen_program_too`.
 - Unit, `panels::prompter::tests`: `the_current_point_stays_inside_the_card_on_a_small_picture`,
   `the_current_point_beside_a_script_shows_its_first_words` (pictures from 213×120 to 1600×900),
   `reading_on_through_the_script_lays_it_out_once`.
@@ -283,7 +343,15 @@ removed. The engine suite passed (970 of 970); in the full UI suite 1208 of 1209
 average of 64, and the one failure, `scrub_stream_ui::a_playhead_drag_opens_the_scrub_output_once`,
 passes alone.
 
-Limitations: changes on the overlay, and turning it on or off by shortcut, are not announced
+Results with Faster and Slower on Linux (2026-11-25): all 23 engine and 9 headless UI prompter
+tests pass. The engine suite passed (977 of 977, 3 skipped) and the full UI suite passed (1212 of
+1212, 9 skipped); `cargo xtask wasm` is ok (30 crates). Screenshots of the overlay at a faster and a
+slower rate, in the normal layout and in full-screen Program, were taken with the headless harness
+with the accessibility node read beside each.
+
+Limitations: the rate is not saved with the project and the take log is not stored on the clip (both
+need a project schema change in craft-libs); a seek during playback at a non-100% rate moves the
+prompter by the rate times the jump. changes on the overlay, and turning it on or off by shortcut, are not announced
 through a live region (no shared helper yet). The script's line-by-line easing follows the app's
 animation setting, not a system reduced-motion setting. The card's text size follows the picture,
 not the system text size. In the normal layout's small Program panel the card has room for the

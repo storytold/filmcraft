@@ -100,6 +100,22 @@ playback keep the gap. The commands are disabled, saying why, without range mark
 last point (Next), at or before the first (Previous) and when the prompter is at the playhead
 (Return to Playhead).
 
+**Faster and Slower.** Markers ▸ Prompter ▸ Prompt Faster (`prompter.faster`, Alt+Shift+Page Down),
+Prompt Slower (`prompter.slower`, Alt+Shift+Page Up) and Reset Prompt Rate (`prompter.resetRate`,
+Alt+Shift+Home) change how fast the prompter advances relative to the playhead, when you notice you
+are reading faster or slower than the sections were timed for. Each step is 5%, between 50% and
+200%; at a limit the command is disabled and says so, and Reset is disabled at 100%. Only the
+prompter's own clock changes: the picture plays at normal speed, playback speed is untouched and the
+voice-over recording is not affected. The change applies from where the prompter is, with no jump,
+and the ahead/behind readout shows the gap growing (faster: the prompter moves ahead) or closing
+and reversing (slower). Next, Previous and Return to Playhead keep the rate. The rate lasts until
+it is reset or playback stops (the gap it built up stays, as stopping always kept the gap); starting
+playback and starting a voice-over take also start at 100%, so a rate never carries into the next
+take. A seek during playback moves the prompter by the rate times the jump. While the rate is not
+100% the card's header shows "rate 105%" in a readout badge of its own before the ahead/behind
+badge, and the overlay's accessibility label carries it. In a short header the rate badge goes
+before the ahead/behind one. The rate is not saved with the project.
+
 **Ahead/behind.** While the prompt time is not the playhead, the card's header shows the gap in a
 readout badge before the time, an outlined pill with a chevron pointing forward or back: "ahead 0:08" when the prompter is later than the picture (the narrator moved
 on first), "behind 0:12" when it is earlier (the picture moved on). It rounds up to whole seconds,
@@ -112,17 +128,19 @@ the card says "No section at the prompter's position" with the readout.
 take), and `audio.voiceover.stop` returns the finished take's log as `promptLog`. A log has
 `sequence`, `recordStart`, `entries` and `dropped` (moves past the first 10 000). The first entry
 (`kind` `start`) is where the prompt was when the capture began; then one entry per move (`next`,
-`previous`, `toPlayhead`) with `takeTime` (the playhead minus the record point, negative in the
-pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), and the `marker`, `point` and
-`paragraph` the prompt landed on. Between entries the prompt runs with the playhead, so the prompt
-time at any moment of the take follows from the last entry before it. The log is kept in the
+`previous`, `toPlayhead`, `rate`) with `takeTime` (the playhead minus the record point, negative in the
+pre-roll), `playhead`, `promptBefore`, `promptAfter` (ticks), `rateBefore` and `rateAfter` (percent), and the `marker`,
+`point` and `paragraph` the prompt landed on. A `rate` entry is a Faster, Slower or Reset (also the
+reset when playback stops during the take); its prompt time is unchanged. Between entries the
+prompt runs with the playhead at the last entry's `rateAfter`, so the prompt time at take time `x`
+is `promptAfter + (x - takeTime) * rateAfter / 100` of the last entry before `x`. The log is kept in the
 session; it is not yet stored with the recorded clip.
 
 **Automation.** The overlay's automation id is `program.prompter`; its label, and its accessibility
 node, carry its text. The read-only engine query `prompter.inspect {"time"|"frame"|"seconds"|"timecode"?}`
 returns the same content for the active sequence at any time (default: the prompt time), with the
-prompter's `promptTime`, `playhead`, `gap` (prompt time minus playhead, ticks) and `direction`
-(`ahead`, `behind` or null): `section`
+prompter's `promptTime`, `playhead`, `gap` (prompt time minus playhead, ticks), `direction`
+(`ahead`, `behind` or null) and `rate` (percent): `section`
 (marker, name, start, duration, elapsed, remaining, progress, `points` with their text, written
 duration, time range and `state` `done|current|upcoming`, `current`, `script` with its `offset` in
 characters and its `paragraph`, `overrun`, `truncated`), `next` (name, `at`, `startsIn`, `soon`), `caption` and
