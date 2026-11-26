@@ -1,6 +1,7 @@
 //! Synthetic native import and persistence acceptance tests. MIT OR Apache-2.0.
 use crate::{Session, premiere::hash_file};
 use serde_json::json;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -442,6 +443,24 @@ fn premiere_copy_reads_media_in_one_pass() {
     let copied: Vec<_> = std::fs::read_dir(dest.join("media")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
     assert_eq!(copied, [std::ffi::OsString::from(format!("{}.png", expected.0))], "only the finished copy, named by its digest");
     assert_eq!(hash_file(std::path::Path::new(&media.imported_path)).unwrap(), expected);
+}
+
+#[test]
+fn premiere_import_rejects_grown_source_and_removes_destination() {
+    // Growing the project after parse must fail the bounded re-hash and leave no import directory.
+    let fixture = Fixture::new();
+    let doc = fixture.0.join("source.prproj").canonicalize().unwrap();
+    let destination = fixture.0.join("grown-source");
+    let grow = |from: &std::path::Path, to: &std::path::Path| {
+        std::fs::OpenOptions::new().append(true).open(&doc).unwrap().write_all(&[0u8; 1_048_576]).unwrap();
+        crate::premiere::copy_hashing(from, to)
+    };
+    let mut s = Session::default();
+    let before = s.project.clone();
+    let io = crate::premiere::FileIo { hash: &hash_file, copy: &grow };
+    let error = crate::premiere::import_with_io(&mut s, &json!({"path": doc, "destination": &destination, "mediaMode": "copy"}), &io).unwrap_err();
+    assert!(error.to_string().contains("project changed during import"), "{error}");
+    assert!(std::sync::Arc::ptr_eq(&s.project, &before) && !destination.exists(), "nothing imported, nothing left behind");
 }
 
 #[test]

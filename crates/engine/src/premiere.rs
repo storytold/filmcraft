@@ -227,6 +227,28 @@ pub(crate) fn hash_file(path: &Path) -> Result<(String, u64)> {
     hash_file_within(path, u64::MAX).map_err(|failure| failure.error)
 }
 
+/// Whether `path` still holds exactly `expected_len` bytes whose SHA-256 is `expected_hash`.
+/// Reads at most `expected_len + 1` bytes so a replaced, larger file cannot bypass the import input limit.
+fn source_unchanged(path: &Path, expected_len: u64, expected_hash: &str) -> Result<bool> {
+    let file = std::fs::File::open(path).map_err(io)?;
+    let mut hasher = Sha256::new();
+    let mut taken = file.take(expected_len.saturating_add(1));
+    let mut buf = [0u8; 65536];
+    let mut read = 0u64;
+    loop {
+        let n = taken.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(buf.get(..n).ok_or_else(|| EngineError::Other(format!("{}: read past the buffer", path.display())))?);
+        read = read.saturating_add(n as u64);
+    }
+    if read != expected_len {
+        return Ok(false);
+    }
+    Ok(format!("{:x}", hasher.finalize()) == expected_hash)
+}
+
 /// Why a file could not be hashed, with how many of its bytes were read first: they count against
 /// the caller's byte limit all the same.
 #[derive(Debug)]
@@ -408,7 +430,6 @@ pub fn import(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// [`import`] with its whole-file reads replaceable in tests.
 pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Result<Value> {
-    let hash = file_io.hash;
     if s.services.export_in_memory() {
         return Err(bad(COMMAND, "Premiere link/copy import requires a native filesystem host"));
     }
@@ -567,7 +588,8 @@ pub(super) fn import_with_io(s: &mut Session, p: &Value, file_io: &FileIo) -> Re
     // Placeholder dimensions are provisional; leave their source anchors automatic.
     fragment.project.resolve_placed_auto_points(|_| true, |it| it.as_media().is_none_or(|m| !placeholder(m)));
     // Refuse a changed project input rather than attaching the wrong source hash to its snapshot.
-    if hash(&source)?.0 != source_hash {
+    // Bound the re-read to the original length (+1 EOF byte) so a replaced huge file cannot bypass the import input limit.
+    if !source_unchanged(&source, bytes.len() as u64, &source_hash)? {
         return Err(bad(COMMAND, "project changed during import; try again"));
     }
     let warnings: Vec<String> = report.entries.iter().map(|e| e.message.clone()).collect();
@@ -900,6 +922,24 @@ mod tests {
         ] {
             assert_eq!(stored_path(Path::new(path)), expected);
         }
+    }
+
+    #[test]
+    fn source_unchanged_stops_after_original_length_plus_one() {
+        let dir = filmcraft_testkit::workspace_root().join("target/premiere-source-rehash").join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.prproj");
+        let original = b"<PremiereData/>";
+        std::fs::write(&path, original).unwrap();
+        let digest = format!("{:x}", Sha256::digest(original));
+        assert!(source_unchanged(&path, original.len() as u64, &digest).unwrap());
+        // A large replacement must be rejected after reading only one byte past the original length.
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(&vec![b'X'; 8 * 1024 * 1024]).unwrap();
+        assert!(!source_unchanged(&path, original.len() as u64, &digest).unwrap());
+        std::fs::write(&path, &original[..original.len() - 1]).unwrap();
+        assert!(!source_unchanged(&path, original.len() as u64, &digest).unwrap(), "a shorter file is a change");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn copies_hold_exactly_the_hashed_bytes_and_never_replace_a_file() {
