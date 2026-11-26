@@ -17,6 +17,10 @@
 //! sessions (CLI, MCP, tests) use [`SyntheticInput`], a deterministic generated signal that produces
 //! exactly as many samples as the timeline asks for, so a recording lands sample-accurately.
 //!
+//! The preference `fullScreenProgram` (Voice-Over Record Settings ▸ Full-screen Program while
+//! recording, off by default) is stored here and read by the UI: with it on, a take enters the
+//! full-screen Program view and the layout comes back when the take ends, however it ends.
+//!
 //! Files are named `<Name> <n>.wav` (Voice-over Record Settings ▸ Name, default `Voice-over`, `n`
 //! the first number not used by a project item or an existing file) and saved in Project Settings ▸
 //! Scratch Disks ▸ Captured Audio and Video, else next to the project file, else (unsaved project)
@@ -149,11 +153,23 @@ pub struct VoiceOverPrefs {
     pub preroll_seconds: f64,
     /// Playback continues this long after the punch-out (Out) point (seconds).
     pub postroll_seconds: f64,
+    /// Show the Program monitor full screen (`view.fullScreenProgram`) while a take is recording;
+    /// the layout that was there comes back when the take ends. The engine only stores the choice:
+    /// the view is a UI state, entered and left by the UI around each take.
+    pub full_screen_program: bool,
 }
 
 impl Default for VoiceOverPrefs {
     fn default() -> Self {
-        Self { source: String::new(), input_channel: 0, name: "Voice-over".into(), countdown_sound_cues: true, preroll_seconds: 2.0, postroll_seconds: 2.0 }
+        Self {
+            source: String::new(),
+            input_channel: 0,
+            name: "Voice-over".into(),
+            countdown_sound_cues: true,
+            preroll_seconds: 2.0,
+            postroll_seconds: 2.0,
+            full_screen_program: false,
+        }
     }
 }
 
@@ -334,6 +350,9 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(v) = bool_p(p, "countdownSoundCues") {
         vo.countdown_sound_cues = v;
+    }
+    if let Some(v) = bool_p(p, "fullScreenProgram") {
+        vo.full_screen_program = v;
     }
     if let Some(v) = f64_p(p, "prerollSeconds") {
         vo.preroll_seconds = v.clamp(0.0, 60.0);
@@ -581,7 +600,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "audio.voiceover.settings",
             "Voice-Over Record Settings",
-            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?}"#,
+            r#"{"source":str?,"inputChannel":n?,"name":str?,"countdownSoundCues":bool?,"prerollSeconds":f64?,"postrollSeconds":f64?,"fullScreenProgram":bool?}"#,
             crate::commands::always,
             settings,
             true,

@@ -226,3 +226,45 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Full-screen Program while recording
+
+Voice-Over Record Settings has a checkbox, "Full-screen Program while recording"
+(`voiceover.fullScreenProgram`), off by default (#5264). It is the preference `fullScreenProgram`
+of `audio.voiceover.settings` (get and set; persisted with the other `voiceOver` preferences, and
+an older preferences file without it loads with it off). The engine only stores it; entering and
+leaving go through the UI command `view.fullScreenProgram`, so the panel does nothing the
+automation interface cannot. `voiceover.recordToggle` honours it as the track header's microphone
+does.
+
+Behaviour decisions:
+
+- With it on, a take that has started (the engine accepted `audio.voiceover.start`) enters the
+  full-screen Program view. A start that fails never changes the layout.
+- `UiState::voiceover_cinema` says "the full-screen view now showing is the take's to give back".
+  It is set only when the take entered the view, so a view that was already full screen stays full
+  screen. `panels::voiceover::tick` runs every frame, also in the full-screen view (which draws no
+  dialogs, so it is called from `app/frame.rs` there), and gives the view back once no take is
+  recording: stopped, played out to the punch-out plus post-roll, input error, discarded from the
+  settings dialog or by `audio.voiceover.stop {discard}`, or the project replaced. Detecting the end
+  from the engine's state rather than hooking each ending keeps it right for all of them.
+- Leaving by hand during the take (Esc or the command) does not stop the recording. The flag is
+  dropped as soon as the view is seen to be off, so the take's end does not re-enter or touch the
+  layout or the focus, and a view the user enters again by hand during the take is theirs.
+- The flag is settled at the start of the next take too, so it never leaks into it.
+- Cinema mode shows the Program monitor whatever the dock holds (hidden or in another workspace
+  tab), so a take with no Program panel visible still works (read in `app/frame.rs`, not covered by a test). Other dialogs are not drawn in the full-screen
+  view and come back with the layout; a dialog open when the take starts is not closed.
+- The countdown and "Recording" overlay were not drawn in the full-screen view (the frame returned
+  before the dialogs); it is now, and it is exposed to assistive technology as a label that is a
+  polite live region, so each countdown number and "Recording" is announced.
+
+Tests: `tests/it/voiceover_fullscreen_ui.rs` (off by default; on: enter, stop restores layout and
+focus; already full screen stays; Esc and the command mid-take leave the take running and its end
+changes nothing; a view re-entered by hand stays; discard, punch-out plus post-roll, an input error
+restore; a refused start leaves the layout; the dialog checkbox saves the preference) and, in the
+engine, `voiceover_tests::{full_screen_program_is_off_by_default_and_round_trips_through_the_settings,
+preferences_saved_before_the_full_screen_option_load_with_it_off}`.
+
+Limitations: the full-screen view's own picture has no accessible content beyond the overlay; the
+Prompter overlay of #5260 stays visible in that view by its own change and is not part of this one.

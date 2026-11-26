@@ -104,5 +104,6 @@ mod ui_control_input;
 mod ui_keyboard_focus;
 mod unlink_ui;
 mod view_ui;
+mod voiceover_fullscreen_ui;
 mod voiceover_ui;
 mod workspaces_ui;

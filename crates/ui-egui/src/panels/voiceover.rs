@@ -7,9 +7,16 @@
 //! Automation ids: `timeline.track.<A1…>.voiceover` (click: record on that track / stop; right-
 //! click: menu), `timeline.track.<A1…>.voiceover.settings` (menu entry), and in the dialog
 //! `voiceover.source`, `voiceover.source.<i>`, `voiceover.input`, `voiceover.input.<i>`,
-//! `voiceover.name`, `voiceover.countdown`, `voiceover.preroll`, `voiceover.postroll`,
+//! `voiceover.name`, `voiceover.countdown`, `voiceover.fullScreenProgram`, `voiceover.preroll`, `voiceover.postroll`,
 //! `voiceover.ok`, `voiceover.cancel`; the countdown overlay is `voiceover.countdown.overlay`.
 //! UI commands: `voiceover.recordToggle {track?}` and `voiceover.settingsDialog`.
+//!
+//! With the preference `fullScreenProgram` on (`audio.voiceover.settings`), starting a take enters
+//! the full-screen Program view through `view.fullScreenProgram`, and the take's end leaves it the
+//! same way. `UiState::voiceover_cinema` says the view now showing is the take's to give back; it is
+//! set only when the take entered it, and [`tick`] (every frame, also in the full-screen view)
+//! clears it once the view is left by hand and gives the view back once the take is gone, however
+//! it went: stopped, played out to the punch-out and post-roll, an input error, discarded.
 
 use crate::widgets::CenteredDialog as _;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -70,7 +77,7 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, 
 
 pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, a: Action) {
     let r = match a {
-        Action::Toggle(t) => toggle(app, Some(t.0)),
+        Action::Toggle(t) => toggle(app, ctx, Some(t.0)),
         Action::Settings => {
             open_settings(app, ctx);
             Ok(Value::Null)
@@ -82,7 +89,7 @@ pub fn run(app: &mut FilmcraftApp, ctx: &egui::Context, a: Action) {
 }
 
 /// Start recording on `track` (None = the engine's choice), or stop the recording in progress.
-pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, String> {
+pub fn toggle(app: &mut FilmcraftApp, ctx: &egui::Context, track: Option<u64>) -> Result<Value, String> {
     if app.session.voiceover.recording() {
         if app.playback.playing {
             app.stop(); // runs `audio.voiceover.stop` (see `on_stop`)
@@ -93,11 +100,15 @@ pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, Strin
     if app.playback.playing {
         app.stop();
     }
+    // a previous take whose end no frame has seen yet gives its layout back before this one starts
+    give_back_layout(app, ctx);
     let p = match track {
         Some(t) => json!({"track": t}),
         None => json!({}),
     };
     let r = app.session.execute("audio.voiceover.start", p).map_err(|e| e.to_string())?;
+    // entered only once the take has started, so a start that fails never changes the layout
+    enter_full_screen(app, ctx);
     let from = Tick(r["captureStart"].as_i64().unwrap_or(0));
     app.session.set_playhead(from);
     app.play(1.0);
@@ -113,6 +124,34 @@ fn stop(app: &mut FilmcraftApp) -> Result<Value, String> {
         None => tl!("Voice-over recording stopped (nothing recorded)").into(),
     };
     Ok(r)
+}
+
+/// With the preference on, show the Program monitor full screen for the take that just started,
+/// unless it already is (then it stays, and is not the take's to give back).
+fn enter_full_screen(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    app.ui.voiceover_cinema = false;
+    if !app.session.prefs.voice_over.full_screen_program || app.ui.fullscreen_program {
+        return;
+    }
+    // the same path as the menu, the shortcut and the control channel
+    if let Some(Ok(_)) = crate::panels::keyboard::route(app, ctx, "view.fullScreenProgram", &json!({})) {
+        app.ui.voiceover_cinema = true;
+    }
+}
+
+/// Settle the full-screen view the take entered: forget it when the user has left the view by
+/// hand (the take goes on, and its end must not touch the layout), give it back once no take is
+/// recording.
+fn give_back_layout(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    if !app.ui.voiceover_cinema {
+        return;
+    }
+    if !app.ui.fullscreen_program {
+        app.ui.voiceover_cinema = false;
+    } else if !app.session.voiceover.recording() {
+        app.ui.voiceover_cinema = false;
+        let _ = crate::panels::keyboard::route(app, ctx, "view.fullScreenProgram", &json!({}));
+    }
 }
 
 /// Playback (and the audio clock) really started: capture from here.
@@ -177,7 +216,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, p: &Value, d
                     }
                 }
             };
-            Some(toggle(app, track))
+            Some(toggle(app, ctx, track))
         }
         "voiceover.settingsDialog" if !dialogs => Some(app.session.execute("audio.voiceover.settings", json!({})).map_err(|e| e.to_string())),
         "voiceover.settingsDialog" => {
@@ -198,15 +237,23 @@ fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
     ctx.data_mut(|m| m.insert_temp(draft_id(), Some(d)));
 }
 
-/// Every frame: the settings dialog, the countdown overlay, and the punch-out + post-roll stop.
+/// Every frame outside the full-screen view: the settings dialog and [`tick`].
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     settings_dialog(app, ctx);
+    tick(app, ctx);
+}
+
+/// Every frame, also in the full-screen Program view (where no dialog is drawn): the layout the
+/// take entered, the countdown overlay, and the punch-out + post-roll stop.
+pub fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    give_back_layout(app, ctx);
     let Some(rec) = app.session.voiceover.rec.clone() else { return };
     let input_error = app.session.voiceover.input.as_ref().and_then(|input| input.error());
     if input_error.is_some() {
         // The engine's stop command discards the failed take and reports the device error. Stop
         // playback too, so the overlay cannot keep claiming that voice-over is recording.
         app.stop();
+        give_back_layout(app, ctx);
         return;
     }
     if !app.playback.playing {
@@ -217,6 +264,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let post = Tick::from_seconds_f64(app.session.prefs.voice_over.postroll_seconds);
         if now >= out + post {
             app.stop();
+            give_back_layout(app, ctx);
             return;
         }
     }
@@ -235,6 +283,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         p.rect_filled(r, 8.0, Color32::from_black_alpha(180));
         p.rect_stroke(r, 8.0, Stroke::new(2.0, RED), egui::StrokeKind::Inside);
         p.text(r.center(), Align2::CENTER_CENTER, &text, Tokens::semibold(if text.len() <= 2 { 36.0 } else { 20.0 }), Color32::WHITE);
+        // the overlay is drawn, not a widget: give it a name and announce each change (the
+        // countdown numbers, then "Recording"), also in the full-screen view where nothing else is
+        let resp = ui.allocate_rect(r, Sense::hover());
+        let spoken = text.trim_start_matches('●').trim().to_string();
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, spoken.clone()));
+        if ctx.has_accesskit_node(resp.id) {
+            ctx.accesskit_node_builder(resp.id, |node| node.set_live(egui::accesskit::Live::Polite));
+        }
     });
     app.auto.add("voiceover.countdown.overlay", r, &text);
     ctx.request_repaint();
@@ -299,6 +355,10 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, tl!("Countdown Sound Cues"));
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
+            ui.label("");
+            let r = ui.checkbox(&mut d.prefs.full_screen_program, tl!("Full-screen Program while recording"));
+            elems.push(("voiceover.fullScreenProgram".into(), r.rect, "Full-screen Program while recording".into()));
+            ui.end_row();
             ui.label(tl!("Pre-roll:"));
             let r = ui.add(crate::widgets::number_drag(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(tl!(" seconds")));
             elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
@@ -361,6 +421,7 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "countdownSoundCues": v.countdown_sound_cues,
             "prerollSeconds": v.preroll_seconds,
             "postrollSeconds": v.postroll_seconds,
+            "fullScreenProgram": v.full_screen_program,
         });
         match app.session.execute("audio.voiceover.settings", p) {
             Ok(_) => close = true,

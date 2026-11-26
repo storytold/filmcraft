@@ -370,7 +370,7 @@ mod voiceover_playback_tests {
         let dur = app.session.active_sequence().map(|q| q.duration()).unwrap();
         let from = app.session.sequence_rate().snap(dur + Tick::from_seconds_f64(60.0));
         app.session.set_playhead(from);
-        panels::voiceover::toggle(&mut app, None).unwrap();
+        panels::voiceover::toggle(&mut app, &ctx, None).unwrap();
         // play() keeps the record point instead of returning to the beginning
         assert!(app.playback.playing);
         assert_eq!(app.session.playhead(), from);

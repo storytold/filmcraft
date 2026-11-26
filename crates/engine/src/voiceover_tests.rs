@@ -157,6 +157,35 @@ fn settings_persist_in_preferences() {
 }
 
 #[test]
+fn full_screen_program_is_off_by_default_and_round_trips_through_the_settings() {
+    let mut s = Session::default();
+    let v = s.execute("audio.voiceover.settings", json!({})).unwrap();
+    assert_eq!(v["settings"]["fullScreenProgram"], false, "off until asked for");
+    // setting another field leaves it alone
+    s.execute("audio.voiceover.settings", json!({"name": "Narration"})).unwrap();
+    assert!(!s.prefs.voice_over.full_screen_program);
+    let v = s.execute("audio.voiceover.settings", json!({"fullScreenProgram": true})).unwrap();
+    assert_eq!(v["settings"]["fullScreenProgram"], true);
+    s.execute("audio.voiceover.settings", json!({"name": "Narration 2"})).unwrap();
+    assert!(s.prefs.voice_over.full_screen_program, "a later change of another field keeps it");
+    // persisted with the other voice-over preferences
+    let j = serde_json::to_value(&s.prefs).unwrap();
+    assert_eq!(j["voiceOver"]["fullScreenProgram"], true);
+    let back: crate::autosave::Preferences = serde_json::from_value(j).unwrap();
+    assert_eq!(back.voice_over, s.prefs.voice_over);
+    let v = s.execute("audio.voiceover.settings", json!({"fullScreenProgram": false})).unwrap();
+    assert_eq!(v["settings"]["fullScreenProgram"], false);
+}
+
+#[test]
+fn preferences_saved_before_the_full_screen_option_load_with_it_off() {
+    let old = json!({"voiceOver": {"name": "Old take", "prerollSeconds": 5.0, "countdownSoundCues": false}});
+    let prefs: crate::autosave::Preferences = serde_json::from_value(old).unwrap();
+    assert!(!prefs.voice_over.full_screen_program);
+    assert_eq!((prefs.voice_over.name.as_str(), prefs.voice_over.preroll_seconds, prefs.voice_over.countdown_sound_cues), ("Old take", 5.0, false));
+}
+
+#[test]
 fn recording_lands_sample_accurately_after_the_preroll() {
     let (mut s, rt, ti) = demo();
     let dir = tmp("accurate");
