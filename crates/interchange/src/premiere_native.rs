@@ -110,6 +110,25 @@ pub fn sync_from_project(source: &mut NativeSource, bindings: &NativeBindings, p
             );
         }
     }
+    // Sequences / clips added in FilmCraft have no Premiere ObjectUID/ObjectID: name them so Save does not look clean.
+    for item in project.sequences() {
+        if !bindings.sequences.contains_key(&item.id) {
+            warning(report, format!("{}: sequence has no Premiere binding; not written to the project file", item.name));
+        }
+        let Some(seq) = item.as_sequence() else { continue };
+        for track in seq.video_tracks.iter().chain(seq.audio_tracks.iter()) {
+            for clip in &track.items {
+                if bindings.track_items.contains_key(&clip.id) {
+                    continue;
+                }
+                let clip_label = if clip.name.is_empty() { "unnamed clip" } else { clip.name.as_str() };
+                warning(
+                    report,
+                    format!("{clip_label} in {}: clip has no Premiere binding; not written to the project file", item.name),
+                );
+            }
+        }
+    }
     warning(
         report,
         format!("Premiere project save updated {patched} mapped field(s); effects, transitions, bins and other unmapped Premiere data were left as opened"),
@@ -332,5 +351,32 @@ mod tests {
         assert_eq!(doc.sequences[0].tracks[0].items[0].start, Tick(50));
         assert_eq!(doc.sequences[0].tracks[0].items[0].end, Tick(200));
         assert!(again.xml.contains("OrphanCustom"));
+    }
+
+    #[test]
+    fn sync_warns_for_unbound_sequence_and_clip_by_name() {
+        let mut bindings = NativeBindings::default();
+        let (fragment, _tree, _) = import_into(fixture().as_bytes(), &ImportOptions::default(), None, Some(&mut bindings)).unwrap();
+        let mut project = fragment.project;
+        let seq_id = fragment.sequences[0];
+        let media_id = project.items.values().find(|i| matches!(i.kind, ItemKind::Media(_))).map(|i| i.id).expect("media");
+        let rate = project.sequence(seq_id).unwrap().settings.frame_rate;
+        let mut unbound = project
+            .make_track_item(media_id, filmcraft_project::TrackKind::Video, Tick(300), filmcraft_time::TimeRange::new(Tick::ZERO, Tick(100)), rate)
+            .unwrap();
+        unbound.name = "ExtraClip".into();
+        {
+            let seq = project.sequence_mut(seq_id).unwrap();
+            seq.video_tracks[0].items.push(unbound);
+        }
+        let settings = project.sequence(seq_id).unwrap().settings.clone();
+        project.new_sequence("AddedSeq", settings, 1, 0, None);
+
+        let mut source = expand(fixture().as_bytes()).unwrap();
+        let mut report = Report::default();
+        sync_from_project(&mut source, &bindings, &project, &mut report).unwrap();
+        let messages: Vec<_> = report.entries.iter().map(|e| e.message.as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("AddedSeq") && m.contains("no Premiere binding")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("ExtraClip") && m.contains("no Premiere binding")), "{messages:?}");
     }
 }
