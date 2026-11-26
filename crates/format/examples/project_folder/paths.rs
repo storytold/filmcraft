@@ -1,6 +1,7 @@
 //! Rebase only file-backed originals and proxies. Keep opaque project fields and foreign
 //! absolute paths verbatim. Never stat the media: an offline reference has the same identity.
 use super::{ProjectRecords, invalid};
+use craft_docpath::{PathKind, Refused};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
@@ -25,15 +26,18 @@ fn relative_to(target: &Path, base: &Path) -> Option<PathBuf> {
 fn relocated(stored: &str, old: &Path, new: &Path) -> io::Result<Option<String>> {
     let resolve = |s: &str, doc: &Path| craft_docpath::resolve(s, Some(doc));
     let original = resolve(stored, old);
-    if original == resolve(stored, new) {
+    // An explicit network path already names its target independently of the document.
+    if original == resolve(stored, new) || craft_docpath::classify(stored) == PathKind::Network {
         return Ok(None);
     }
     let target = original.map_err(invalid)?;
     let base = new.parent().ok_or_else(|| invalid("missing destination parent"))?;
     for candidate in relative_to(&target, base).into_iter().chain(std::iter::once(target.clone())) {
-        if let Some(text) = candidate.to_str()
-            && resolve(text, new).as_ref() == Ok(&target)
-        {
+        let Some(text) = candidate.to_str() else { continue };
+        let at_destination = resolve(text, new);
+        // The original document resolved this absolute target. A different volume can
+        // retain the path as metadata even when media access there is denied.
+        if at_destination.as_ref() == Ok(&target) || (candidate == target && at_destination == Err(Refused::Network)) {
             return Ok(Some(text.to_owned()));
         }
     }
@@ -59,4 +63,25 @@ pub(super) fn rebase(records: &mut ProjectRecords, from: &Path, to: &Path) -> io
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relocated;
+    use craft_docpath::{Refused, resolve};
+    use std::path::Path;
+
+    #[test]
+    fn unc_links_survive_a_local_archive_roundtrip() {
+        let edit = Path::new(r"\\server\share\edit.fcproj");
+        let archive = Path::new("C:/archive/folder/project.fcmod");
+        let stored = r"media\a.mov";
+        let target = resolve(stored, Some(edit)).unwrap();
+        let archived = relocated(stored, edit, archive).unwrap().unwrap();
+        assert_eq!(Path::new(&archived), target);
+        assert_eq!(resolve(&archived, Some(archive)), Err(Refused::Network));
+        assert_eq!(relocated(&archived, archive, edit).unwrap(), None);
+        assert_eq!(resolve(&archived, Some(edit)).unwrap(), target);
+        assert_eq!(relocated("//server/share/media/a.mov", edit, archive).unwrap(), None);
+    }
 }

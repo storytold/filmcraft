@@ -113,7 +113,9 @@ Packing an older supported standard project applies the ordinary in-memory schem
 
 The converter rebases relative original-media and proxy paths against each destination
 document so offline media can still be relinked. It reads only project data. Media files
-stay where they are. Moving a completed folder later can change what its relative paths
+stay where they are. When a Windows network share and the destination are on different
+volumes, the converter can retain an absolute UNC path. FilmCraft still applies its network
+access rules when it opens media. Moving a completed folder later can change what its relative paths
 resolve to, just as moving a standard project can.
 
 Packing reserves a fresh directory, reads the records back, reconstructs the project with
@@ -250,7 +252,7 @@ Bezier curves, and keyframe scaling/anchoring modes.
 The UI thread only gives the worker thread an `Arc<Project>`: the immutable snapshot the engine
 already keeps for undo, passed through a channel. JSON encoding and all file I/O run on the
 `filmcraft-autosave` thread. Measured on the development Mac (release build) with a 2,000-clip project
-(`cargo test --release -p filmcraft-format --test fixtures -- --nocapture`):
+(`cargo test --release -p filmcraft-format --test it fixtures::large_project_roundtrip_and_timing -- --nocapture`):
 
 | Step | Time | Size |
 |---|---|---|

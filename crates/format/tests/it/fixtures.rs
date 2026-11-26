@@ -488,6 +488,3 @@ fn an_exhausted_id_space_is_refused_on_load() {
     p.next_id = Project::MAX_NEXT_ID;
     assert_eq!(decode(&encode(&p, false)).unwrap().project.next_id, Project::MAX_NEXT_ID, "the last usable next_id still opens");
 }
-
-#[path = "project_folder/suite.rs"]
-mod project_folder;
