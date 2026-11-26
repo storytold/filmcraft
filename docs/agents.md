@@ -96,6 +96,17 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+### Measuring what you can't watch
+
+An agent can't play the footage, so these read-only commands turn what an editor sees and hears
+into numbers. Run them before deciding what to cut and again after editing; none of them changes
+the project or adds an undo step.
+
+| Command | What it reports |
+|---|---|
+| `transcript.inspect` | the words, with their times and speakers (see [transcripts.md](transcripts.md)) |
+| `sequence.pacing {longSeconds=5}` | the shots the viewer sees (topmost enabled video clip; titles and adjustment layers don't start a shot, through edits aren't cuts), `cutsPerMinute`, shot length mean/median/min/max, the `longest` shot, `longShots` and black `gaps` |
+
 ### Conventions
 
 The server follows a few conventions that make it predictable for agents. They are not
