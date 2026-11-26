@@ -3,51 +3,19 @@
 //! `Visuals::interact_cursor` unset, so each dialog's `button` helper asks for the hand itself.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
+use crate::support::{Drive, Launch, builder, demo_session, driver, egui_rect};
 use egui::CursorIcon;
-use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_engine::autosave::AutosaveConfig;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use serde_json::{Value, json};
+use serde_json::json;
 
-struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
-    tx: Sender<ControlRequest>,
-}
+driver!(Driver);
 
 impl Driver {
     fn new(session: Session) -> Self {
-        let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx };
-        d.frames(4);
-        d
-    }
-    fn frames(&mut self, n: usize) {
-        for _ in 0..n {
-            let ctx = self.harness.ctx.clone();
-            let mut raw = std::mem::take(self.harness.input_mut());
-            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
-            *self.harness.input_mut() = raw;
-            self.harness.step();
-        }
-    }
-    fn ok(&mut self, method: &str, params: Value) -> Value {
-        let (req, reply) = ControlRequest::new(method, params.clone());
-        self.tx.send(req).unwrap();
-        for _ in 0..600 {
-            self.frames(1);
-            if let Ok(r) = reply.try_recv() {
-                assert_eq!(r["ok"], true, "{method} {params}: {r}");
-                return r["result"].clone();
-            }
-        }
-        panic!("no reply to {method} {params}");
+        Self::open(session, builder())
     }
     fn menu(&mut self, id: &str) {
         self.ok("ui.menu.invoke", json!({"id": id}));
@@ -55,10 +23,7 @@ impl Driver {
     }
     /// An automation element's rect.
     fn rect(&mut self, id: &str) -> egui::Rect {
-        let v = self.ok("ui.elements", json!({"prefix": id}));
-        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no element {id}"));
-        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+        egui_rect(self.expect_rect(id))
     }
     /// The cursor the app asks for with the pointer resting at `pos`.
     fn cursor_at(&mut self, pos: egui::Pos2) -> CursorIcon {
@@ -82,9 +47,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn demo() -> Session {
-    let mut s = Session::default();
-    s.execute("file.openDemoProject", json!({})).unwrap();
-    s
+    demo_session()
 }
 
 /// The next launch after a session crashed with unsaved edits: it has one recovery candidate.

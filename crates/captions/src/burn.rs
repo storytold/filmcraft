@@ -218,8 +218,13 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
 }
 
-/// Max-filter a coverage mask with a disc of radius `r`.
-fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+/// Upper bound on outline work for one caption: covered source pixels times disc offsets.
+/// Typical captions stay far below it (1080p text with a 3 px outline is a few million); a
+/// huge outline over a frame-sized block of text gets a thinner outline instead of stalling.
+const MAX_OUTLINE_WORK: usize = 1 << 28;
+
+/// The disc of radius `r`: `(dx, dy, weight)` with anti-aliased weights at the rim.
+fn disc(r: f32) -> Vec<(i32, i32, f32)> {
     let ri = r.ceil() as i32;
     let mut offs = Vec::new();
     for dy in -ri..=ri {
@@ -230,17 +235,36 @@ fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
             }
         }
     }
+    offs
+}
+
+/// Max-filter a coverage mask with a disc of radius `r`.
+///
+/// Only covered pixels contribute (the disc is symmetric, so spreading each covered pixel over
+/// it gives the same maximum as gathering it at every output pixel), and the radius shrinks
+/// until covered pixels times disc offsets fit [`MAX_OUTLINE_WORK`].
+fn dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+    let covered = m.iter().filter(|&&v| v > 0.0).count();
+    let mut r = r;
+    let mut offs = disc(r);
+    while r > 0.0 && covered.saturating_mul(offs.len()) > MAX_OUTLINE_WORK {
+        r = (r - 1.0).max(0.0);
+        offs = disc(r);
+    }
     let mut out = vec![0.0f32; w * h];
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let mut v = 0.0f32;
+    for sy in 0..h as i32 {
+        for sx in 0..w as i32 {
+            let v = m[sy as usize * w + sx as usize];
+            if v <= 0.0 {
+                continue;
+            }
             for &(dx, dy, wgt) in &offs {
-                let (sx, sy) = (x + dx, y + dy);
-                if sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 {
-                    v = v.max(m[sy as usize * w + sx as usize] * wgt);
+                let (x, y) = (sx + dx, sy + dy);
+                if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
+                    let o = &mut out[y as usize * w + x as usize];
+                    *o = o.max(v * wgt);
                 }
             }
-            out[y as usize * w + x as usize] = v;
         }
     }
     out
@@ -349,6 +373,61 @@ mod tests {
         let st = CaptionStyle { outline: 1_000_000.0, ..Default::default() };
         let o = render_caption(&cap("Safe"), &st, 640, 360).unwrap();
         assert!(o.w <= 640 && o.h <= 360, "{}x{}", o.w, o.h);
+    }
+
+    /// The disc max-filter `dilate` used to be: every output pixel gathers every disc offset.
+    fn reference_dilate(m: &[f32], w: usize, h: usize, r: f32) -> Vec<f32> {
+        let offs = disc(r);
+        let mut out = vec![0.0f32; w * h];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let mut v = 0.0f32;
+                for &(dx, dy, wgt) in &offs {
+                    let (sx, sy) = (x + dx, y + dy);
+                    if sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 {
+                        v = v.max(m[sy as usize * w + sx as usize] * wgt);
+                    }
+                }
+                out[y as usize * w + x as usize] = v;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn dilate_matches_the_gathering_max_filter() {
+        let (w, h) = (37, 23);
+        let m: Vec<f32> = (0..w * h).map(|i| if (i * 7919) % 11 < 3 { ((i % 5) as f32 + 1.0) / 5.0 } else { 0.0 }).collect();
+        for r in [0.5, 1.0, 2.3, 4.0, 9.7] {
+            assert_eq!(dilate(&m, w, h, r), reference_dilate(&m, w, h, r), "radius {r}");
+        }
+    }
+
+    #[test]
+    fn outline_work_is_bounded() {
+        // A fully covered 4K-sized mask with the largest radius would be ~10^11 disc visits.
+        let (w, h) = (3840, 2160);
+        let m = vec![1.0f32; w * h];
+        let started = std::time::Instant::now();
+        let out = dilate(&m, w, h, MAX_OUTLINE_RADIUS);
+        assert!(out.iter().all(|&v| v == 1.0));
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn outline_work_reduces_radius_for_a_mixed_mask() {
+        // 55,536 covered pixels times the r=64 disc exceeds the work cap, so the radius shrinks
+        // to roughly 39: the hole's center (50 px from its edge) stays clear, its rim does not.
+        let (w, h) = (256, 256);
+        let mut m = vec![1.0f32; w * h];
+        for y in 78..178 {
+            for x in 78..178 {
+                m[y * w + x] = 0.0;
+            }
+        }
+        let out = dilate(&m, w, h, MAX_OUTLINE_RADIUS);
+        assert_eq!(out[128 * w + 128], 0.0);
+        assert!(out[128 * w + 108] > 0.0);
     }
 
     #[test]

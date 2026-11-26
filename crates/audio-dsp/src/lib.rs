@@ -8,6 +8,7 @@
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`resample`] — streaming, block-invariant rate conversion for playback on a device at another rate.
+//! * [`stretch`] — WSOLA time stretch that keeps the pitch (Speed/Duration ▸ Maintain Audio Pitch).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
 //!
 //! Conventions: audio is **planar f32** (`&mut [&mut [f32]]`, one slice per channel, all the same
@@ -16,6 +17,10 @@
 //! stream is cut into blocks. Recursive state is flushed to zero when it decays below ~1e-30 so
 //! denormals never appear (no FTZ/DAZ CPU flags needed, which keeps the crate `unsafe`-free and
 //! portable to wasm).
+//!
+//! **Stability.** This crate is internal to the FilmCraft workspace (layer L1) and is not
+//! published. Its public surface exists for the other workspace crates only and may change
+//! without notice or a deprecation period; there is no supported use from outside the workspace.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -24,17 +29,18 @@ pub mod channels;
 pub mod design;
 pub mod ducking;
 pub mod effects;
-pub mod fft;
+pub(crate) mod fft;
 pub mod loudness;
-pub mod oversample;
+pub(crate) mod oversample;
 pub mod remix;
 pub mod resample;
 mod smooth;
+pub mod stretch;
 pub mod sync;
 
 pub use effects::{Category, EffectInfo, create_effect, effect_info, effects};
 pub use loudness::{LoudnessMeter, normalize_gain_db};
-pub use smooth::Smoothed;
+pub(crate) use smooth::Smoothed;
 
 /// Unit of a parameter value (for display and control construction).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -214,13 +220,13 @@ pub(crate) use param_plumbing;
 
 /// Decibels → linear amplitude.
 #[inline]
-pub fn db_to_gain(db: f32) -> f32 {
+pub(crate) fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
 /// Linear amplitude → decibels (−inf for 0).
-#[inline]
-pub fn gain_to_db(g: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn gain_to_db(g: f32) -> f32 {
     20.0 * g.abs().log10()
 }
 

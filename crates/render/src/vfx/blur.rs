@@ -8,7 +8,7 @@ use crate::effects::gaussian;
 
 /// Radius of a regular `n`-gon (circumradius 1, rotated by `rot`) in direction `theta`;
 /// `n == 0` is a circle.
-fn poly_radius(n: u32, theta: f32, rot: f32) -> f32 {
+pub(super) fn poly_radius(n: u32, theta: f32, rot: f32) -> f32 {
     if n == 0 {
         return 1.0;
     }
@@ -40,7 +40,41 @@ pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u3
             }
         });
     }
-    let rings = rings as usize;
+    let kernel = bokeh_kernel(sides, rot, rr, rings);
+    let src = work.clone();
+    let w = work.w;
+    work.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        for x in 0..w {
+            let mut acc = [0f32; 4];
+            for &(dx, dy, wt) in &kernel {
+                let p = src.get_clamped((x as isize).saturating_add(dx as isize), (y as isize).saturating_add(dy as isize));
+                for k in 0..4 {
+                    acc[k] += p[k] * wt;
+                }
+            }
+            row[x * 4..x * 4 + 4].copy_from_slice(&acc);
+        }
+    });
+    *img = if levels > 0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
+}
+
+/// How far (pixels) a Bokeh kernel offset reaches at most: more than any image is wide. A radius
+/// can be far larger (a huge amount on an image too small to halve).
+pub const KERNEL_REACH: i32 = 1 << 20;
+
+/// Bokeh Blur's iris gather as whole-pixel weights (`dx`, `dy`, weight; sorted by row, then
+/// column; the weights sum to 1): the mean of bilinear taps (`Image::sample_bilinear_clamped`) on
+/// `rings` rings out to radius `rr` around each pixel, the shape a regular `sides`-gon rotated by
+/// `rot` (`sides` 0: a circle).
+///
+/// A pixel's centre is a whole number and a half, so where a tap's four bilinear weights fall
+/// relative to the pixel, and how much each gets, is the same for every pixel; so is clamping at
+/// the image's edge, which moves a weight onto the edge pixel either way. Summing the weights per
+/// offset once gives each pixel about a fifth of the reads: 441 taps at radius 10 read 1764
+/// pixels, the kernel about 330. At most 4 entries a tap (2500 at 12 rings), however large `rr`;
+/// offsets stay within ±[`KERNEL_REACH`], so adding one to a pixel position can't overflow.
+pub fn bokeh_kernel(sides: u32, rot: f32, rr: f32, rings: u32) -> Vec<(i32, i32, f32)> {
+    let rings = rings.min(12) as usize;
     let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
     for ring in 1..=rings {
         let rad = rr * ring as f32 / rings as f32;
@@ -52,23 +86,28 @@ pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u3
         }
     }
     let inv = 1.0 / taps.len() as f32;
-    let src = work.clone();
-    let w = work.w;
-    work.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let mut acc = [0f32; 4];
-            for &(dx, dy) in &taps {
-                let p = src.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
-                for k in 0..4 {
-                    acc[k] += p[k];
-                }
-            }
-            for k in 0..4 {
-                row[x * 4 + k] = acc[k] * inv;
-            }
+    let mut cells: Vec<(i32, i32, f32)> = Vec::with_capacity(taps.len() * 4);
+    for (dx, dy) in taps {
+        // a tap off at a non-finite offset reads the pixel itself
+        let (dx, dy) = if dx.is_finite() && dy.is_finite() { (dx, dy) } else { (0.0, 0.0) };
+        let (fx, fy) = (dx.floor(), dy.floor());
+        let (tx, ty) = (dx - fx, dy - fy);
+        // farther than any image is wide reads its edge pixel either way
+        let reach = KERNEL_REACH as f32;
+        let (x0, y0) = (fx.clamp(-reach, reach) as i32, fy.clamp(-reach, reach) as i32);
+        let (x1, y1) = ((x0 + 1).min(KERNEL_REACH), (y0 + 1).min(KERNEL_REACH));
+        cells.extend([(x0, y0, (1.0 - tx) * (1.0 - ty) * inv), (x1, y0, tx * (1.0 - ty) * inv), (x0, y1, (1.0 - tx) * ty * inv), (x1, y1, tx * ty * inv)]);
+    }
+    cells.sort_by_key(|c| (c.1, c.0));
+    let mut kernel: Vec<(i32, i32, f32)> = Vec::with_capacity(cells.len());
+    for (x, y, wt) in cells {
+        match kernel.last_mut() {
+            Some(last) if (last.0, last.1) == (x, y) => last.2 += wt,
+            _ => kernel.push((x, y, wt)),
         }
-    });
-    *img = if levels > 0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
+    }
+    kernel.retain(|c| c.2 != 0.0);
+    kernel
 }
 
 /// Blur one channel of an image (0..3) with a Gaussian.

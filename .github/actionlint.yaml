@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates GitHub's queue key. Only this exact false positive is suppressed;
+# Packaging lint's independent source-contract job enforces the values.
+paths:
+  .github/workflows/nightly-sign.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

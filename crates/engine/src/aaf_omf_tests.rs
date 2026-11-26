@@ -163,9 +163,10 @@ fn aaf_separate_aiff_breakout_and_linked() {
     assert_eq!(files.len(), 4);
     for f in &files {
         let b = std::fs::read(f).unwrap();
-        let m = filmcraft_mxf::open(&b).unwrap();
+        let m = craft_media::mxf::open(&b).unwrap();
         assert_eq!(m.operational_pattern.name(), "OP-Atom");
-        let t = m.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
+        assert_eq!((m.product_name.as_deref(), m.company_name.as_deref()), (Some("FilmCraft"), Some("FilmCraft")));
+        let t = m.track_of_kind(craft_media::mxf::TrackKind::Sound).unwrap();
         assert_eq!(m.tracks[t].stored_sample_frames(), 48_000);
     }
     let r = s.execute("file.importAaf", json!({"path": path})).unwrap();
@@ -353,6 +354,38 @@ fn commands_are_registered_with_menus_and_validate_params() {
     assert!(s.execute("file.exportAaf", json!({"path": path, "bitDepth": 20})).is_err());
     assert!(s.execute("file.exportOmf", json!({"path": path, "audio": "linked"})).is_err(), "OMF has no linked mode");
     assert!(s.execute("file.importAaf", json!({"path": dir.join("a.mov").to_string_lossy()})).is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// `bitDepth` as `describe` lists it ("16|24", a string) or as a number. A string was read as 16
+// without a word, and 65560 wrapped to 24 (#4019).
+#[test]
+fn bit_depth_as_a_string_or_a_number_and_nothing_else() {
+    let (mut s, _, _, dir) = setup("aaf-bit-depth");
+    for (k, (cmd, ext, depth)) in [
+        ("file.exportAaf", "aaf", json!("24")),
+        ("file.exportOmf", "omf", json!("24")),
+        ("file.exportAaf", "aaf", json!(24)),
+        ("file.exportAaf", "aaf", json!(24.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.join(format!("d{k}.{ext}")).to_string_lossy().into_owned();
+        let r = s.execute(cmd, json!({"path": path, "audio": "separate", "audioFormat": "aiff", "bitDepth": depth})).unwrap();
+        let files = r["mediaFiles"].as_array().unwrap();
+        assert!(!files.is_empty(), "{r}");
+        for f in files {
+            let (_, _, _, bits) = filmcraft_interchange::wav::parse_aiff(&std::fs::read(f.as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(bits, 24, "{cmd} with bitDepth {depth}");
+        }
+    }
+    for (cmd, ext) in [("file.exportAaf", "aaf"), ("file.exportOmf", "omf")] {
+        let path = dir.join(format!("refused.{ext}")).to_string_lossy().into_owned();
+        for depth in [json!("20"), json!("24-bit"), json!(65560), json!(true)] {
+            assert!(s.execute(cmd, json!({"path": path, "bitDepth": depth})).is_err(), "{cmd} with bitDepth {depth}");
+        }
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 

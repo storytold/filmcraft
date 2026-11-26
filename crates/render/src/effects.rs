@@ -19,19 +19,22 @@ pub struct FxCtx<'a> {
     pub t: Tick,
     /// Working-image pixels per full-resolution clip pixel.
     pub px_scale: f32,
+    /// [`px_scale`](Self::px_scale) without the cap on effect sizes: mask outlines are placed in the
+    /// working image by the true ratio, however far the stored width is off the decoded one.
+    pub mask_scale: f32,
     /// Seconds since the clip start (for animated generators such as Noise/Strobe).
     pub seconds: f64,
     /// Formatted sequence timecode (for the Timecode effect).
     pub timecode: &'a str,
     pub clip_name: &'a str,
-    /// The project (LUT library for Lumetri); `None` in isolated effect tests.
+    /// The project (LUT library for Color Grading); `None` in isolated effect tests.
     pub project: Option<&'a filmcraft_project::Project>,
     /// The clip's surroundings (other frames, other tracks, sequence geometry) for temporal,
     /// track-reading and reframing effects; `None` in isolated tests and adjustment layers.
     pub env: Option<&'a dyn crate::vfx::FxEnv>,
     /// Sequence frame rate (shutter-angle motion blur); also known where `env` is `None`.
     pub frame_rate: f64,
-    /// The sequence's working colour space: Lumetri grades HDR (PQ / HLG) working spaces in their
+    /// The sequence's working colour space: Color Grading grades HDR (PQ / HLG) working spaces in their
     /// own signal, normalised to HDR White ([`filmcraft_color::GradeSpace`]).
     pub working: filmcraft_color::WorkingSpace,
 }
@@ -355,11 +358,14 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         "luma_key" => {
             let th = f(e, "threshold", cx) / 100.0;
             let cut = f(e, "cutoff", cx) / 100.0;
+            let invert = b(e, "invert");
             img.px.par_chunks_mut(4).for_each(|p| {
                 if p[3] <= 0.0 {
                     return;
                 }
                 let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                // keying out brights measures Cutoff / Threshold from white: the same ramp, mirrored
+                let l = if invert { 1.0 - l } else { l };
                 let a = if l <= cut {
                     0.0
                 } else if l >= th.max(cut + 1e-3) {
@@ -376,7 +382,13 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let cs = [color(e, "c1", cx), color(e, "c2", cx), color(e, "c3", cx), color(e, "c4", cx)];
             let op = f(e, "opacity", cx) / 100.0;
             let (w, h) = (img.w as f32, img.h as f32);
-            let pts = [(0.25 * w, 0.25 * h), (0.75 * w, 0.25 * h), (0.25 * w, 0.75 * h), (0.75 * w, 0.75 * h)];
+            // a point left at its NaN default sits a quarter in from its corner of the frame
+            let at = |id: &str, fx: f32, fy: f32| {
+                let v = e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
+                let px = |v: f64, frac: f32, size: f32| if v.is_finite() { v as f32 * cx.px_scale } else { frac * size };
+                (px(v.x, fx, w), px(v.y, fy, h))
+            };
+            let pts = [at("p1", 0.25, 0.25), at("p2", 0.75, 0.25), at("p3", 0.25, 0.75), at("p4", 0.75, 0.75)];
             let blend_exp = 1.0 + f(e, "blend", cx) / 100.0;
             fill_over(img, op, |x, y| {
                 let mut acc = [0.0f32; 3];
@@ -621,7 +633,7 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
-/// The luma (encoded, 0..1) down to which the Lumetri highlight / shadow lift scales a pixel by
+/// The luma (encoded, 0..1) down to which the Color Grading highlight / shadow lift scales a pixel by
 /// `new luma / luma`, preserving its hue exactly as it always has; below it the scale is held at
 /// this luma's and the rest of the lift is added equally to the channels, so a trace of chroma in
 /// a near-black pixel is not multiplied into a speck (#2094). About 5/255 in sRGB. Mirrored in
@@ -949,6 +961,7 @@ mod tests {
         FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "00:00:01:00",
             clip_name: "x",
@@ -994,6 +1007,54 @@ mod tests {
         let sum1: f32 = img.px.iter().sum();
         assert!((sum0 - sum1).abs() / sum0 < 0.02, "{sum0} {sum1}");
         assert!(img.get(32, 32)[0] < 0.9 && img.get(24, 32)[0] > 0.01);
+    }
+
+    /// Key Out Brights measures the thresholds from white: a 75 % grey with Cutoff 60 / Threshold 80
+    /// is 25 % from white, below the Cutoff, so it is keyed out (alpha 0), not left at 0.25.
+    #[test]
+    fn luma_key_inverted_thresholds_are_measured_from_white() {
+        let alpha_at = |srgb: f32, invert: bool| {
+            let l = srgb_to_linear(srgb);
+            let mut img = Image::filled(1, 1, [l, l, l, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(80.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(60.0);
+            e.params.get_mut("invert").unwrap().value = ParamValue::Bool(invert);
+            apply(&mut img, &e, &cx());
+            img.get(0, 0)[3]
+        };
+        assert!(alpha_at(0.75, true).abs() < 1e-4, "75 % is 25 % from white: keyed out, got {}", alpha_at(0.75, true));
+        // the ramp mirrored: opaque up to 20 %, transparent from 40 %, half way at 30 %
+        assert!(alpha_at(0.15, true) > 0.99, "darks stay");
+        assert!((alpha_at(0.30, true) - 0.5).abs() < 1e-3, "mid ramp: {}", alpha_at(0.30, true));
+        assert!(alpha_at(0.40, true).abs() < 1e-4);
+        // the normal ramp is unchanged (transparent to 60 %, half way at 70 %)
+        assert!((alpha_at(0.70, false) - 0.5).abs() < 1e-3);
+    }
+
+    /// Luma Key keys out darks by default; "Key Out Brights" keys out the light side instead, and a
+    /// project saved before the option existed keeps the old behaviour.
+    #[test]
+    fn luma_key_can_key_out_brights() {
+        let run = |invert: Option<bool>| {
+            let mut img = Image::new(2, 1);
+            img.px[0..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+            img.px[4..8].copy_from_slice(&[0.01, 0.01, 0.01, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(40.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(20.0);
+            match invert {
+                Some(v) => e.params.get_mut("invert").unwrap().value = ParamValue::Bool(v),
+                None => {
+                    e.params.remove("invert");
+                }
+            }
+            apply(&mut img, &e, &cx());
+            (img.get(0, 0)[3], img.get(1, 0)[3])
+        };
+        assert_eq!(run(Some(false)), (1.0, 0.0), "default keys out the dark grey");
+        assert_eq!(run(None), (1.0, 0.0), "a project without the param renders as before");
+        assert_eq!(run(Some(true)), (0.0, 1.0), "inverted keys out the white, keeps the grey");
     }
 
     /// #3465: Three-Way Color Corrector is the identity at its defaults, each wheel moves only its
@@ -1218,7 +1279,7 @@ pub fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     Some(lut[n - 1..2 * n - 1].to_vec())
 }
 
-/// Lumetri's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
+/// Color Grading's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
 /// points, like the hue curves, but over a straight 0..1 axis. Black and white are not neighbours,
 /// so the curve does not wrap; it stays flat beyond its outermost points.
 pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
@@ -1390,7 +1451,7 @@ fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft:
     mh * ms * ml
 }
 
-/// Lumetri ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
+/// Color Grading ▸ HSL Secondary: key on hue / saturation / lightness, Refine (Denoise, Blur) the key,
 /// then correct inside it (or show the mask).
 ///
 /// - **Denoise** removes speckle from the key: a median filter (radius 1–3 px at full
@@ -1712,6 +1773,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",
@@ -1744,7 +1806,7 @@ mod lumetri_cpu_parity_tests {
         }
     }
 
-    /// #719: positive Roundness rounds the Lumetri vignette (it used to be ignored), +100
+    /// #719: positive Roundness rounds the Color Grading vignette (it used to be ignored), +100
     /// is a circle and negative values widen the oval, on the CPU path and the GPU op alike.
     #[test]
     fn lumetri_vignette_roundness_shapes_the_vignette() {
@@ -1752,6 +1814,7 @@ mod lumetri_cpu_parity_tests {
         let cx = FxCtx {
             t: Tick::ZERO,
             px_scale: 1.0,
+            mask_scale: 1.0,
             seconds: 0.0,
             timecode: "",
             clip_name: "",

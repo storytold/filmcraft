@@ -142,6 +142,10 @@ impl VideoEncoder for NvencEncoder {
         // with B-frames the first DTS is `delay` frames before the first PTS
         (self.enc.delay() > 0).then_some(i64::from(self.enc.delay()).saturating_mul(self.rate.den))
     }
+
+    fn hardware(&self) -> Option<&'static str> {
+        Some("NVENC")
+    }
 }
 
 /// Why NVENC does not take this export (the software encoder does, for H.264), or the encoder's
@@ -164,6 +168,9 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     }
     if s.bitrate_mode == BitrateMode::Crf {
         return Err("CRF (constant quality)".into());
+    }
+    if !hevc && s.h264_intra_only {
+        return Err("all-intra H.264".into());
     }
     // the hardware path writes the aspect ratio of H.264 only
     if hevc && s.pixel_aspect.is_some_and(|(n, d)| n != d) {
@@ -200,6 +207,8 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
             (false, H264Profile::Baseline) => Profile::Baseline,
             (false, H264Profile::Main) => Profile::Main,
             (false, H264Profile::High) => Profile::High,
+            // 10-bit H.264 and all-intra streams are the built-in encoder's
+            (false, H264Profile::High10) => return Err("High 10".into()),
         },
         // the H.264 level setting means nothing for H.265: the encoder picks the level
         level: if hevc { None } else { s.h264_level },
@@ -245,7 +254,7 @@ fn factory_with(
     }
     let declined = |why: &str| {
         log::info!("hardware encoding declined: {why}");
-        filmcraft_export::note_hw_encode_declined();
+        filmcraft_export::note_hw_encode_declined_by("NVENC", why);
         None
     };
     let cfg = match config(format, w, h, rate, s) {
@@ -307,6 +316,10 @@ mod tests {
         s.h264_pass = H264Pass::Single;
         s.field_order = FieldOrder::UpperFirst;
         declined(Format::H264, 640, 360, &s);
+        s.field_order = FieldOrder::Progressive;
+        // 10-bit and all-intra H.264 are the built-in encoder's (#1221)
+        declined(Format::H264, 640, 360, &ExportSettings { h264_profile: H264Profile::High10, ..s.clone() });
+        declined(Format::H264, 640, 360, &ExportSettings { h264_intra_only: true, ..s.clone() });
     }
 
     #[test]
