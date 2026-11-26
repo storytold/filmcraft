@@ -136,7 +136,7 @@ separately. Focus and input-ownership regressions cover document/playhead preser
 
 Compact monitor layouts separate the current and duration timecodes from zoom, resolution and
 settings. Source video/audio drag choices retain their existing placement behavior. Transport
-buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width remain available
+buttons use `widgets::toolbar_fit::fit_toolbar`; commands beyond the available width remain available
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.

@@ -54,6 +54,23 @@ fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::V
     }
 }
 
+// A captured dock press may swallow Escape without ending egui's drag.
+fn graph_drag_cancelled(ui: &egui::Ui, response: &egui::Response) -> bool {
+    let id = response.id.with("graph-drag-cancelled");
+    if response.drag_started() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    let in_drag = response.dragged() || response.drag_stopped();
+    if in_drag && (crate::framework::escape_pressed(ui.ctx()) || crate::framework::escape_arrived(ui.ctx())) {
+        ui.data_mut(|d| d.insert_temp(id, true));
+    }
+    let cancelled = in_drag && ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+    cancelled
+}
+
 /// Whether `k` names a keyframe of the clip `it` (its effect, parameter and media time).
 fn keyframe_exists(it: &TrackItem, k: &KeyframeRef) -> bool {
     let Some(e) = it.effects.get(k.effect) else { return false };
@@ -837,19 +854,30 @@ fn param_value_widget(
             fit_to_row(vui);
             // (narrower when the effect list is narrow, so it stays left of the divider)
             let w = vui.available_width().min(130.0);
-            let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
-                for (i, o) in opts.iter().enumerate() {
-                    if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
-                        set = Some(json!(i));
+            let combo =
+                crate::legacy_dropdown::Dropdown::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| crate::i18n::t(o))).width(w).show_ui(vui, |ui| {
+                    for (i, o) in opts.iter().enumerate() {
+                        if ui.selectable_value(&mut sel, i, crate::i18n::t(o)).changed() {
+                            set = Some(json!(i));
+                        }
                     }
-                }
-            });
+                });
             crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
         }
         (ParamKind::Color, ParamValue::Color(c)) => {
-            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if egui::color_picker::color_edit_button_rgba(vui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                set = Some(json!([rgba.r(), rgba.g(), rgba.b(), rgba.a()]));
+            // A colour parameter holds sRGB-encoded components, not linear ones: `ultra_key`
+            // encodes each pixel with `effects::enc` (linear → sRGB) before comparing it with the
+            // key colour, which it uses as it is stored (`render/src/vfx/color.rs`). egui's `Rgba`
+            // is linear, so reading the parameter through it showed the wrong colour — Ultra Key's
+            // default `[0.0, 0.8, 0.2]` is `#00cc33`, but the picker opened on `#00e77c`. Reading
+            // and writing it as `Color32` keeps the swatch, the picker and the hex field agreed.
+            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let mut srgb = egui::Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
+            let sw = egui::color_picker::color_edit_button_srgba(vui, &mut srgb, egui::color_picker::Alpha::Opaque);
+            app.auto.add(&format!("effectControls.{}.{}.swatch", e.effect, pkey), sw.rect, pd.label);
+            if sw.changed() {
+                // `Alpha::Opaque` doesn't edit alpha, so the parameter keeps the one it had.
+                set = Some(json!([srgb.r() as f32 / 255.0, srgb.g() as f32 / 255.0, srgb.b() as f32 / 255.0, c[3]]));
             }
             // Eyedropper: arm it, then click a pixel in the Program monitor (Esc cancels)
             let target = crate::state::Eyedropper { clip: clip.0, effect: idx, param: pd.id.to_string(), mask };
@@ -858,6 +886,27 @@ fn param_value_widget(
             app.auto.add(&format!("effectControls.{}.{}.eyedropper", e.effect, pkey), drop.rect, "Eyedropper");
             if drop.clicked() {
                 app.ui.eyedropper = if armed { None } else { Some(target) };
+            }
+            // `#rrggbb`, for the colour you already know: a green screen's published value, a
+            // brand colour, one read off another shot. While the field has focus it shows what is
+            // typed, even when that isn't a colour yet (one character into `#00ff00`); each valid
+            // colour is applied as it comes, and leaving shows the kept one again. Same handling
+            // as the hex field in Settings ▸ Appearance.
+            let hex_id = id.with("hex");
+            let mut text = vui.data(|m| m.get_temp::<String>(hex_id)).unwrap_or_else(|| filmcraft_color::to_hex([c[0], c[1], c[2], 1.0]));
+            let h = vui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace));
+            app.auto.add(&format!("effectControls.{}.{}.hex", e.effect, pkey), h.rect, "Hex");
+            if h.has_focus() {
+                vui.data_mut(|m| m.insert_temp(hex_id, text.clone()));
+            } else {
+                vui.data_mut(|m| m.remove::<String>(hex_id));
+            }
+            if h.changed()
+                && let Some(v) = filmcraft_color::parse_hex(&text)
+            {
+                // The swatch is `Alpha::Opaque`, so a typed colour leaves this parameter's alpha
+                // alone, whether six digits were typed or eight.
+                set = Some(json!([v[0], v[1], v[2], c[3]]));
             }
         }
         (ParamKind::Path, _) => {
@@ -875,7 +924,7 @@ fn param_value_widget(
             let w = 150.0_f32.min(vui.available_width()).max(40.0);
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
+                crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
                     for (f, _) in &fams {
                         let r = ui.selectable_label(f == current, f);
                         app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
@@ -896,7 +945,7 @@ fn param_value_widget(
                         styles.push(extra);
                     }
                 }
-                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                crate::legacy_dropdown::Dropdown::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
                     for st in styles {
                         let r = ui.selectable_label(st == current, st);
                         app.auto.add(&format!("{prefix}.{st}"), r.rect, st);
@@ -1079,9 +1128,13 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                             actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": pd.default.as_f64().unwrap_or(0.0)}));
                         }
                     } else if let ParamValue::Color(c) = v {
-                        let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-                        if egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::Opaque).changed() {
-                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": [rgba.r(), rgba.g(), rgba.b(), 1.0]}));
+                        // sRGB-encoded, as in `param_row`: Lumetri's tints are the same kind of
+                        // colour parameter, so they must not be read through egui's linear `Rgba`.
+                        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                        let mut srgb = egui::Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
+                        if egui::color_picker::color_edit_button_srgba(ui, &mut srgb, egui::color_picker::Alpha::Opaque).changed() {
+                            let v = [srgb.r() as f32 / 255.0, srgb.g() as f32 / 255.0, srgb.b() as f32 / 255.0, 1.0];
+                            actions.push(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}));
                         }
                     }
                 });
@@ -1548,11 +1601,12 @@ fn draw_graph_keyframes(
                 p.line_segment([c, hp], Stroke::new(1.0, t.plot_handle_dim));
                 p.circle_filled(hp, 3.5, t.keyframe_handle);
                 let hr = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), hid.with("h"), Sense::drag());
-                if hr.dragged_by(egui::PointerButton::Primary) {
+                let cancelled = graph_drag_cancelled(ui, &hr);
+                if hr.dragged_by(egui::PointerButton::Primary) && !cancelled {
                     let nx = graph_drag_offset(ui, &hr, vec2(hdx, 0.0)).x;
                     ui.data_mut(|d| d.insert_temp(hid, nx));
                 }
-                if hr.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if cancelled {
                     ui.data_mut(|d| d.remove::<f32>(hid));
                 } else if hr.drag_stopped_by(egui::PointerButton::Primary) {
                     ui.data_mut(|d| d.remove::<f32>(hid));
@@ -1565,13 +1619,14 @@ fn draw_graph_keyframes(
                 }
             }
             p.circle_filled(c, 4.5, if resp.dragged_by(egui::PointerButton::Primary) { t.hot_text } else { t.plot_handle });
-            if resp.dragged_by(egui::PointerButton::Primary) {
+            let cancelled = graph_drag_cancelled(ui, &resp);
+            if resp.dragged_by(egui::PointerButton::Primary) && !cancelled {
                 let ny = graph_drag_offset(ui, &resp, vec2(0.0, dy)).y;
                 ui.data_mut(|d| d.insert_temp(id, ny));
                 p.text(c + vec2(8.0, -10.0), Align2::LEFT_BOTTOM, format!("{:.dec$}", v_of(c.y)), Tokens::ui(10.5), t.hot_text);
             }
             // egui ends a drag on Escape: that stop abandons it (#580)
-            if resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if cancelled {
                 ui.data_mut(|d| d.remove::<f32>(id));
             } else if resp.drag_stopped_by(egui::PointerButton::Primary) {
                 ui.data_mut(|d| d.remove::<f32>(id));

@@ -75,7 +75,7 @@ impl FilmcraftApp {
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
         panels::file_dialogs::show_overwrite(self, &ctx);
-        updates_ui::show(self, &ctx);
+        updates_ui::show(self, ui);
         if !self.ui.show_status_bar {
             return;
         }

@@ -306,15 +306,15 @@ For any UI change, look at the result:
 3. Assert on `ui.inspect`, `ui.elements` and `sequence.inspect`.
 4. Take `ui.screenshot` (the whole window and the panel you changed) and open the PNG.
 
-Screenshots you commit must follow [AGENTS.md](../AGENTS.md) §1: FilmCraft only, openly licensed
+Screenshots you commit must follow [standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md): FilmCraft only, openly licensed
 media, sidecar and `ATTRIBUTION.md` entry.
 
 # Part 2: developing FilmCraft
 
 ## 4. Orientation, in this order
 
-1. [AGENTS.md](../AGENTS.md): absolute rules (assets, clean-room, licences).
-2. [CLAUDE.md](../CLAUDE.md): working instructions and non-negotiables.
+1. [AGENTS.md](../AGENTS.md): the shared rules and the facts about this repository.
+2. [contributing.md](contributing.md): setup, checks and commits.
 3. [ROADMAP.md](../ROADMAP.md) for the summary, then [gaps.md](gaps.md) (the ranked shortfalls) first,
    [target-app-parity.md](target-app-parity.md) and [roadmap.md](roadmap.md) (milestones, current focus).
 4. [architecture.md](architecture.md), then the README and tests of the crate you'll touch.
@@ -332,7 +332,7 @@ everything you need to contribute is in the public docs above. Ask a maintainer 
    architecture section and crate README.
 2. **Plan tests first.** Write down the acceptance test before writing code.
 3. **Implement and test.**
-4. **Verify.** Run all gates (`cargo xtask ci`). For UI work, run the app with `--control`, drive it
+4. **Verify.** Run the checks for the crates you changed (contributing.md §3). For UI work, run the app with `--control`, drive it
    and look at the screenshots (§3).
 5. **Record.** Update the crate README (behaviour decisions, test results, limitations) and
    the progress docs when a milestone moves (ROADMAP.md, docs/roadmap.md, the relevant parity doc
@@ -347,7 +347,7 @@ Don't block on choices you can make yourself:
 
 - **Behaviour.** Match the publicly documented and observable behaviour of professional editors
   (help pages, published shortcut lists, using the app). Never inspect application internals
-  ([AGENTS.md](../AGENTS.md) §2). If behaviour is undocumented, choose what editors most commonly
+  ([standards/clean-room.md](https://github.com/storytold/craft-contrib/blob/main/standards/clean-room.md)). If behaviour is undocumented, choose what editors most commonly
   expect and record the choice in the crate README.
 - **Ask a human only about:**
   - licences outside the allowlist;
@@ -362,11 +362,11 @@ Don't block on choices you can make yourself:
 A feature is done when:
 
 - [ ] its command(s) are registered with label, menu path, shortcut (if any) and a parameter doc;
-- [ ] engine tests cover it, including undo/redo and the disabled case;
+- [ ] tests cover its behaviour per [testing.md](https://github.com/storytold/craft-contrib/blob/main/standards/testing.md), including undo/redo and the disabled case where they apply;
 - [ ] the UI is wired: menu, panel control and shortcut;
 - [ ] every new interactive widget has an automation id;
 - [ ] you have driven it through the control channel and reviewed a screenshot;
-- [ ] all gates pass (`cargo xtask ci`), and new assets have sidecars;
+- [ ] the checks for the crates you changed pass, and new assets have sidecars;
 - [ ] the crate README and the progress docs (ROADMAP.md, docs/gaps.md, the parity docs) are updated where relevant;
 - [ ] it is committed with its task id.
 
