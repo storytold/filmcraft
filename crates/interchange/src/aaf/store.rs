@@ -460,11 +460,12 @@ impl R<'_> {
         if at > props.len() {
             return Err(bad("truncated property index"));
         }
+        let mut seen = std::collections::HashSet::with_capacity(n);
         for i in 0..n {
             let (Some(pid), Some(sf), Some(len)) = (rd_u16(&props, 4 + i * 6), rd_u16(&props, 6 + i * 6), rd_u16(&props, 8 + i * 6)) else {
                 return Err(bad("truncated property index"));
             };
-            if o.props.iter().any(|(previous, _)| *previous == pid) {
+            if !seen.insert(pid) {
                 return Err(bad("duplicate property id"));
             }
             let v = props.get(at..at + len as usize).ok_or_else(|| bad("truncated property value"))?;

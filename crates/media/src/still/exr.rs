@@ -10,13 +10,16 @@
 //! it the data window does not cover are transparent. Tiled, deep and multi-part files, chroma
 //! subsampled channels and the PIZ, B44 and DWA compressions are refused with a clear error.
 
+#[cfg(test)]
 mod inflate;
 
 use std::sync::Arc;
 
+use craft_exr::zlib::inflate_exact_without_checksum;
 use filmcraft_color::{ColorInfo, Transfer};
 use filmcraft_frame::VideoFrame;
 use filmcraft_time::FrameRate;
+use image::metadata::Orientation;
 use rayon::prelude::*;
 
 use super::{DEFAULT_STILL_DURATION, StillSource};
@@ -57,6 +60,14 @@ pub struct Decoded {
     pub pixel_format: String,
 }
 
+/// The size [`still`] reports for this file, from its header alone: the display
+/// window, which is the frame the decoder produces.
+pub fn geometry(name: &str, bytes: &[u8]) -> Option<(u32, u32, Orientation)> {
+    let h = header(name, bytes).ok()?;
+    let (w, height) = h.display.size()?;
+    Some((u32::try_from(w).ok()?, u32::try_from(height).ok()?, Orientation::NoTransforms))
+}
+
 /// Open an EXR file as a still.
 pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
     let d = decode(name, bytes)?;
@@ -82,7 +93,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         start_timecode: None,
         file_size: Some(bytes.len() as u64),
     };
-    Ok(StillSource { info, frame: Arc::new(d.frame) })
+    Ok(StillSource { info, frame: Arc::new(d.frame), orientation: Orientation::NoTransforms })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -450,6 +461,10 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
         if y.map(i64::from) != Some(want) {
             return Err(bad(format!("chunk {i} is not at line {want}")));
         }
+        // stored raw: its length follows from the geometry, so check it before the output exists
+        if matches!(h.compression, Compression::None) && size != line.checked_mul(lpc.min(dh - i * lpc)).ok_or_else(|| bad("chunk size".into()))? {
+            return Err(bad(format!("chunk {i} has the wrong size")));
+        }
     }
     let mut px = vec![0f32; px_len];
     if !alpha {
@@ -479,11 +494,11 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
             match h.compression {
                 Compression::None => return Err(bad(format!("chunk {i} has the wrong size"))),
                 Compression::Rle => unpredict(unrle(data, expected).ok_or_else(|| bad(format!("chunk {i}: bad RLE data")))?).into(),
-                Compression::Zip => unpredict(inflate::zlib(data, expected).map_err(|e| bad(format!("chunk {i}: {e}")))?).into(),
+                Compression::Zip => unpredict(inflate_exact_without_checksum(data, expected).map_err(|e| bad(format!("chunk {i}: {e}")))?).into(),
                 Compression::Pxr24 => {
                     let per_line = h.channels.iter().try_fold(0usize, |t, c| t.checked_add(plane_count(c.ty).checked_mul(dw)?));
                     let planes = per_line.and_then(|l| l.checked_mul(n)).ok_or_else(|| bad("chunk size".into()))?;
-                    let inflated = inflate::zlib(data, planes).map_err(|e| bad(format!("chunk {i}: {e}")))?;
+                    let inflated = inflate_exact_without_checksum(data, planes).map_err(|e| bad(format!("chunk {i}: {e}")))?;
                     unpxr24(&inflated, &h.channels, dw, n).ok_or_else(|| bad(format!("chunk {i}: bad PXR24 data")))?.into()
                 }
             }

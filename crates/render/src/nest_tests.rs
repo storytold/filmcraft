@@ -69,7 +69,7 @@ impl Rig {
 
     /// The same frame through the frame plan (what the GPU compositor is given).
     fn planned(&self, seq: ItemId, t: Tick) -> Image {
-        plan::execute_cpu(&plan::plan_frame(&self.p, seq, t, RenderOptions::default(), &self.map))
+        plan::execute_cpu(&plan::plan_frame(&self.p, seq, t, RenderOptions::default(), plan::DeviceCaps::ALL, &self.map))
     }
 }
 
@@ -265,7 +265,7 @@ fn captions_inside_a_nest_are_part_of_its_picture() {
 
 /// How many layers the plan of `seq` at `t` has (None when it fell back to one CPU image).
 fn layer_count(r: &Rig, seq: ItemId, t: Tick) -> Option<usize> {
-    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), &r.map) {
+    match plan::plan_frame(&r.p, seq, t, RenderOptions::default(), plan::DeviceCaps::ALL, &r.map) {
         plan::FramePlan::Layers { layers, .. } => Some(layers.len()),
         _ => None,
     }
@@ -378,7 +378,7 @@ fn transformed_plain_nests_preserve_the_group_picture() {
         for preview in [1.0, 0.5] {
             let opts = RenderOptions { scale: preview, ..Default::default() };
             let reference = render_sequence(&r.p, outer, t, opts, &r.map);
-            let frame_plan = plan::plan_frame(&r.p, outer, t, opts, &r.map);
+            let frame_plan = plan::plan_frame(&r.p, outer, t, opts, plan::DeviceCaps::ALL, &r.map);
             let planned = plan::execute_cpu(&frame_plan);
             let difference = worst(&planned, &reference);
             assert!(difference < 0.001, "scale {scale}, rotation {rotation}, preview {preview}: {difference}");
@@ -411,4 +411,23 @@ fn a_transformed_nest_keeps_captions_at_its_held_source_time() {
     let without = r.frame(outer, t);
     assert!(worst(&with, &without) > 0.1, "held caption must be visible after its outer-time end");
     assert!(worst(&r.planned(outer, t), &without) < 0.001);
+}
+
+/// A project that stores a media width far from the file's (here 1 against 4096) used to scale
+/// every effect size by the ratio. The median filter's cost is its radius squared per pixel.
+#[test]
+fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
+    let mut r = Rig::new();
+    let m = r.matte(RED, 4096, 16);
+    if let Some(v) = r.p.item_mut(m).and_then(|i| i.as_media_mut()).and_then(|c| c.info.video.as_mut()) {
+        v.width = 1;
+    }
+    let s = r.seq("S", 4096, 16, FrameRate::FPS_24);
+    let c = r.put(s, m, 10);
+    let mut e = filmcraft_project::find_effect("median").unwrap().instance();
+    e.params.get_mut("radius").unwrap().value = ParamValue::Float(1.0);
+    r.clip(s, c).effects.push(e);
+    let t = std::time::Instant::now();
+    let _ = r.frame(s, Tick::ZERO);
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
