@@ -55,6 +55,8 @@ struct State {
 pub(crate) struct Interaction {
     state: State,
     points: Vec<Point>,
+    /// The timeline times of every keyframe drawn in the lane this frame, disabled rows' included (a Shift scrub snaps to them).
+    drawn: Vec<Tick>,
     area: Rect,
     background: Response,
     cancelled: bool,
@@ -117,9 +119,10 @@ pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64, fal
 }
 
 impl Interaction {
-    /// The timeline times of the keyframes drawn this frame, which a Shift scrub snaps to.
-    pub(crate) fn key_times(&self) -> Vec<Tick> {
-        self.points.iter().map(|p| p.time).collect()
+    /// The timeline times of the keyframes drawn this frame, which a Shift scrub snaps to: a disabled row's keyframes too, which
+    /// are drawn but can't be selected or dragged.
+    pub(crate) fn key_times(&self) -> &[Tick] {
+        &self.drawn
     }
 
     /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
@@ -159,7 +162,7 @@ impl Interaction {
                 None => {}
             }
         }
-        Self { state, points: Vec::new(), area, background, cancelled }
+        Self { state, points: Vec::new(), drawn: Vec::new(), area, background, cancelled }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -188,8 +191,12 @@ impl Interaction {
         }
         let time = super::timeline_time_of(it, key.time);
         let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+        let drawn = self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center());
+        if drawn {
+            self.drawn.push(time);
+        }
         // A disabled row's keyframes (Scale Width under Uniform Scale) can't be marquee-selected either.
-        if ui.is_enabled() && self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
+        if ui.is_enabled() && drawn {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
         if !self.cancelled && response.drag_started_by(egui::PointerButton::Primary) {

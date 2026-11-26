@@ -411,13 +411,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if (sresp.dragged() || sresp.clicked())
         && let Some(pos) = sresp.interact_pointer_pos()
     {
-        let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
-        let pointer_tk = it.start + Tick((f * it.duration.0 as f64) as i64);
-        let mut tk = rate.snap_nearest(pointer_tk);
-        // Shift snaps the playhead to the clip's keyframes, as it does for a dragged keyframe (#2441)
+        let f = ((pos.x - lane.min.x) / lane.width()) as f64;
+        let mut tk = rate.snap_nearest(it.start + Tick((f.clamp(0.0, 1.0) * it.duration.0 as f64) as i64));
+        // Shift snaps the playhead to the clip's keyframes, as it does for a dragged keyframe (#2441). The reach is measured from
+        // the pointer itself (not clamped to the clip, as a drag past the lane's edge would be), and the playhead lands on the
+        // frame nearest the keyframe: `set_playhead` keeps the playhead on frames, rounding down.
         if ui.input(|i| i.modifiers.shift) {
+            let pointer_tk = it.start + Tick((f * it.duration.0 as f64) as i64);
             let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
-            tk = selection::snap_scrub(pointer_tk, &keys.key_times(), pixels_per_tick, tk);
+            tk = rate.snap_nearest(selection::snap_scrub(pointer_tk, keys.key_times(), pixels_per_tick, tk));
         }
         app.stop_for_scrub();
         app.session.set_playhead(tk);
