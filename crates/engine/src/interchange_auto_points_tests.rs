@@ -323,3 +323,28 @@ fn fcpxml_video_still_can_be_relinked_after_save_and_reopen() {
     assert_eq!(crate::media_test_util::frame_rgba(&mut online, 150, 1.0), crate::media_test_util::frame_rgba(&mut reopened, 150, 1.0));
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// A clip placed past `Tick::MAX` (about 105 days) was imported, but the project saved after it
+/// failed load validation, so it could not be opened again (#2786). The import is refused instead.
+#[test]
+fn an_import_with_a_clip_outside_the_time_bounds_is_refused_before_it_can_be_saved() {
+    let d = tmp_dir("ix-time-bounds");
+    let doc = d.join("far.fcpxml");
+    let xml = r#"<fcpxml version="1.11"><resources>
+      <format id="f" frameDuration="1/25s" width="16" height="16"/>
+      <asset id="a" name="Shot" start="0s" duration="10s" hasVideo="1" format="f">
+        <media-rep kind="original-media" src="shot.mov"/>
+      </asset>
+    </resources><project name="Far"><sequence format="f" tcStart="0s"><spine>
+      <gap name="Gap" offset="0s" duration="10000000s"/>
+      <asset-clip ref="a" name="Shot" offset="10000000s" start="0s" duration="10s"/>
+    </spine></sequence></project></fcpxml>"#;
+    std::fs::write(&doc, xml).unwrap();
+    let mut s = Session::default();
+    let before = filmcraft_format::encode(&s.project, false);
+    let err = s.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap_err().to_string();
+    assert!(err.contains("invalid imported sequence `Far`"), "{err}");
+    assert!(err.contains("`Shot` at 10000000.000s for 10.000s is outside supported time bounds"), "names the clip and where it is: {err}");
+    assert_eq!(filmcraft_format::encode(&s.project, false), before, "a refused import leaves the project as it was");
+    let _ = std::fs::remove_dir_all(&d);
+}
