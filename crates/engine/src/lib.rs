@@ -804,8 +804,13 @@ impl Session {
         self.sync_persistence();
     }
 
-    /// Replace preferences (persisting them and updating the worker).
+    /// Persist preferences before applying them to the session and worker. A failed save leaves
+    /// the old runtime state intact, so callers comparing against `prefs` still retry the edit.
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
+        if let Some(path) = &self.prefs_path {
+            // Cache cleanup can delete files: do not apply any setting until persistence succeeds.
+            p.save(path)?;
+        }
         let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
         // the session mirrors the persisted Selection Follows Playhead toggle (#3089)
@@ -821,10 +826,7 @@ impl Session {
         if let Some(w) = &self.persistence {
             w.set_prefs(self.prefs.auto_save.clone());
         }
-        match &self.prefs_path {
-            Some(path) => self.prefs.save(path),
-            None => Ok(()),
-        }
+        Ok(())
     }
 
     /// Keep render previews next to the saved project (moves an unsaved project's previews).

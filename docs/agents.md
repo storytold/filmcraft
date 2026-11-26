@@ -278,6 +278,8 @@ the write (and the read for recent projects). Explicit preference saves still re
 A busy or unsupported lock refuses the write instead of blocking the UI or saving without a lock:
 `prefs.set`/`prefs.reset` report an error; recent projects remain in memory and the Events log records
 the failed update. An unreadable or malformed preferences file is not replaced by a recent-project update.
+Preference edits are saved before they affect the running session. If saving fails, the previous
+preferences, decoder mode, proxies and cache policy remain active, and the same edit can be retried.
 
 Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
 holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
