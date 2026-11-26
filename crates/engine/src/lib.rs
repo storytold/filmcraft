@@ -769,7 +769,8 @@ impl Session {
             return;
         }
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            // Clone the Premiere sidecar so "also save current" can write `.prproj` natively, not as FilmCraft bytes.
+            p.send_dirty(self.project.clone(), self.revision, self.path.clone(), self.premiere_native.clone());
         } else {
             p.send_clean();
         }

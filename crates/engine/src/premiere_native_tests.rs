@@ -83,6 +83,52 @@ fn save_as_fcproj_clears_native_premiere_state() {
 }
 
 #[test]
+fn autosave_also_saves_current_prproj_via_native_writer() {
+    // "Also save current" must patch Premiere XML into the open `.prproj`, not write FilmCraft bytes over it.
+    let dir = filmcraft_testkit::workspace_root().join("target/premiere-native-autosave").join(std::process::id().to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prproj = dir.join("live.prproj");
+    std::fs::write(&prproj, fixture_xml()).unwrap();
+
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&dir);
+    cfg.journal_debounce = std::time::Duration::from_millis(20);
+    s.start_autosave(cfg).unwrap();
+    s.execute("file.open", json!({"path": prproj.to_string_lossy()})).unwrap();
+    s.execute("prefs.set", json!({"key": "autoSave.saveCurrentProject", "value": true})).unwrap();
+
+    let seq_id = s.state.active_sequence.expect("sequence");
+    {
+        let project = std::sync::Arc::make_mut(&mut s.project);
+        let seq = project.sequence_mut(seq_id).unwrap();
+        seq.video_tracks[0].items[0].start = filmcraft_time::Tick(77);
+        seq.video_tracks[0].items[0].duration = filmcraft_time::Tick(123);
+    }
+    s.revision += 1;
+    s.sync_persistence();
+
+    s.execute("file.autoSaveNow", json!({})).unwrap();
+    let t0 = std::time::Instant::now();
+    while s.is_dirty() {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "timed out waiting for also-save-current");
+        s.poll_persistence();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let xml = std::fs::read_to_string(&prproj).unwrap();
+    assert!(xml.contains("<PremiereData>"), "original path must stay Premiere XML");
+    assert!(!xml.contains("filmcraft.project"), "must not overwrite .prproj with FilmCraft encoding");
+    assert!(xml.contains("OrphanCustom"), "unmodeled siblings must survive autosave");
+    assert!(xml.contains("<Start>77</Start>"));
+    assert!(xml.contains("<End>200</End>"));
+    assert!(s.premiere_native.is_some());
+
+    s.shutdown();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn failed_save_as_fcproj_keeps_premiere_native() {
     // A refused `.fcproj` write must not drop the sidecar while the session still points at `.prproj`.
     struct RefuseFcproj;

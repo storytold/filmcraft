@@ -142,7 +142,9 @@ the copies, so a clock change at the end of daylight saving time cannot reorder 
 unsaved project uses `<data dir>/Auto-Save/`. After each write the oldest copies beyond the limit are
 deleted. Only files named exactly `<name>-<timestamp>.fcproj` or `<name>-<timestamp>-<unix seconds>.fcproj` are ever deleted. An auto-save is an
 ordinary project file: open it with File ▸ Open Project. `file.listAutoSaves` lists them, newest
-first.
+first. With **also save the current project** on, the open file is updated too: a native
+`.prproj` is written through the Premiere round-trip writer (never replaced with FilmCraft
+bytes); a `.fcproj` gets the usual FilmCraft encoding.
 
 Project Settings ▸ Scratch Disks can send auto-saves (Project Auto Save), render previews (Video
 Previews), captured and generated media (Captured Audio and Video, also the default for proxies)

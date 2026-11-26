@@ -641,6 +641,8 @@ struct Snapshot {
     project: Arc<Project>,
     revision: u64,
     path: Option<String>,
+    /// Present when the session has a live native `.prproj` (needed if "also save current" writes `path`).
+    premiere_native: Option<crate::premiere::NativeOpen>,
 }
 
 enum Msg {
@@ -788,8 +790,14 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(
+        &self,
+        project: Arc<Project>,
+        revision: u64,
+        path: Option<String>,
+        premiere_native: Option<crate::premiere::NativeOpen>,
+    ) {
+        self.send(Msg::Dirty(Snapshot { project, revision, path, premiere_native }));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -1101,10 +1109,13 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmcraft_format::atomic_write(Path::new(p), &bytes) {
-                        Ok(()) => {
-                            let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
-                        }
+                    match current_project_bytes(s, &bytes) {
+                        Ok(path_bytes) => match filmcraft_format::atomic_write(Path::new(p), &path_bytes) {
+                            Ok(()) => {
+                                let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
+                            }
+                            Err(e) => self.error(format!("saving {p}: {e}")),
+                        },
                         Err(e) => self.error(format!("saving {p}: {e}")),
                     }
                 }
@@ -1117,6 +1128,23 @@ impl Worker {
             }
         }
     }
+}
+
+/// Bytes for "also save the current project": Premiere XML when a native `.prproj` is open, otherwise the FilmCraft encoding already built for the auto-save ring.
+fn current_project_bytes(s: &Snapshot, filmcraft_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let Some(path) = s.path.as_deref() else {
+        return Ok(filmcraft_bytes.to_vec());
+    };
+    if !crate::premiere::is_project(path) {
+        return Ok(filmcraft_bytes.to_vec());
+    }
+    let Some(native) = &s.premiere_native else {
+        return Err("open Premiere project has no native sidecar; refusing to overwrite the .prproj with FilmCraft data".into());
+    };
+    let mut source = native.source.clone();
+    let mut report = filmcraft_interchange::Report::default();
+    filmcraft_interchange::premiere::sync_from_project(&mut source, &native.bindings, &s.project, &mut report).map_err(|e| e.to_string())?;
+    filmcraft_interchange::premiere::encode(&source, native.gzip).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

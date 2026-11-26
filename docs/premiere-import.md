@@ -13,7 +13,9 @@ FilmCraft keeps the expanded Premiere XML beside the session; **File → Save** 
 patches mapped fields (clip Start/End, InPoint/OutPoint, media paths, sequence name) and
 writes gzip or plain XML to match how the file was opened. Unmodeled Premiere elements are
 retained in the XML and listed in the command result’s `warnings`. `.fcproj` remains the
-native FilmCraft format; Save As to `.fcproj` clears the Premiere XML sidecar.
+native FilmCraft format; Save As to `.fcproj` clears the Premiere XML sidecar. When
+**Auto Save also saves the current project** is on, the original-path write uses that same
+native Premiere writer (recovery / Auto-Save ring copies stay `.fcproj`).
 
 `premiere.import` remains available to bring a Premiere project into an `.fcproj` with an
 immutable source snapshot and provenance.
