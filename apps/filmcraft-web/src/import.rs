@@ -138,11 +138,13 @@ pub async fn open_project_file(file: web_sys::File) -> Result<Value, String> {
     open_project_bytes(format!("/projects/{}", file.name()), js_sys::Uint8Array::new(&buf).to_vec()).await
 }
 
-/// Open a `.fcproj` handed over as bytes (a host's `filmcraft:open`) at a virtual `/projects/`
-/// path, like a picked or dropped project: into the file table, then `file.open`.
+/// Open a `.fcproj` / `.prproj` handed over as bytes (a host's `filmcraft:open`) at a virtual
+/// `/projects/` path, like a picked or dropped project: into the file table, then File ▸ Open
+/// (asking Save / Don't Save / Cancel first when the current project has unsaved changes, as on
+/// desktop).
 pub async fn open_project_bytes(path: String, bytes: Vec<u8>) -> Result<Value, String> {
     fs::put(&path, bytes);
-    on_ui(move |w, _| w.app.session.execute("file.open", json!({ "path": path })).map_err(|e| e.to_string())).await
+    on_ui(move |w, ctx| filmcraft_ui_egui::menus::invoke(&mut w.app, ctx, "file.open", json!({ "path": path }))).await
 }
 
 /// Import a file handed over by a host (`filmcraft:open`): registered like a dropped file (a

@@ -190,6 +190,8 @@ fn deliver_open(bridge: &Bridge, name: &str, data: &FileData) {
         let opened = bridge.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match crate::import::open_project_bytes(path.clone(), bytes).await {
+                // Prompted for unsaved changes: the project is not open until the user answers.
+                Ok(v) if v.get("dialog").and_then(|d| d.as_str()) == Some("openProject") => {}
                 // The host has this file as the document now: a Save of it goes out under its
                 // own name (`saveAs: false`).
                 Ok(_) => opened.opened_document(&path),
