@@ -134,7 +134,7 @@ impl FilmcraftApp {
         {
             self.watched_render = None;
             let ok = j.progress.error.lock().map(|e| e.is_none()).unwrap_or(false);
-            if ok && self.ui.play_after_render && !self.playback.playing {
+            if ok && self.ui.play_after_render && !self.playback.playing && self.ui.mode != state::Mode::Export {
                 self.session.set_playhead(from);
                 self.play(1.0);
             }

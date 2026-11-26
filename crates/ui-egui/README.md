@@ -12,6 +12,20 @@ Overrides survive text edits, project saves and Undo/Redo. A width or colour dra
 step. `graphics_ui::stroke_colour_pickers_edit_only_the_type_tool_selection` drives both rows
 through the control channel; `FILMCRAFT_UI_SHOTS` enables a rendered screenshot.
 
+## Export preview playback
+
+Export shows a still at the retained sequence playhead. Opening it from a tab, Progress,
+menu, shortcut or control request pauses Program and Source playback, including pending
+preroll and audio. Held-pointer scrubbing and delayed speech-preview completion cannot reopen
+hidden audio; synthesized speech remains available for later audition in Edit. Active trim and recording operations use their normal stop/finalize paths.
+Return to Edit and press Play to resume. Hidden playback shortcuts and automation cannot
+restart a transport in Export, and preview-render completion cannot seek or auto-play there.
+Export and queue jobs continue independently.
+
+Mode changes go through `FilmcraftApp::set_mode`; transport entry points share
+`require_edit_transport`. `export_pause_ui` covers the entry routes, live audio output,
+retained positions, trim undo, voice-over, render completion and repeated painting of the still.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range
