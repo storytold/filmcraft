@@ -58,8 +58,12 @@ fn short_form(kbps: u32, max_kbps: u32) -> ExportSettings {
     ExportSettings { scaling: Scaling::ScaleToFill, effects: ExportEffects { loudness, ..Default::default() }, ..h264(Some((1080, 1920)), kbps, max_kbps) }
 }
 
+/// The Match Source presets: the sequence's frame size and rate, and its audio sample rate and
+/// channels (Audio ▸ Match Source, #2700); AAC at 320 kbps.
 fn adaptive(bpp: f32) -> ExportSettings {
-    ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
+    let mut s = ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) };
+    s.audio.match_source = true;
+    s
 }
 
 /// H.264 High 10 at the sequence's size and constant quality `crf`: a 10-bit master or (all-intra)
